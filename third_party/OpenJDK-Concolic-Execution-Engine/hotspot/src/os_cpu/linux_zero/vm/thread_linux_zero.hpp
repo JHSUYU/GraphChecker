@@ -29,9 +29,7 @@
  private:
   ZeroStack  _zero_stack;
   ZeroFrame* _top_zero_frame;
-#ifdef ENABLE_WEBRIDGE
   bool _first_print_assertion;
-#endif
   void pd_initialize() {
     _top_zero_frame = NULL;
   }
@@ -60,25 +58,16 @@
 
  public:
   void inline __attribute__((optimize("O0"))) record_base_of_stack_pointer() {
-#ifndef ENABLE_WEBRIDGE
-    assert(top_zero_frame() == NULL, "junk on stack prior to Java call");
-#else
     if (top_zero_frame() != NULL && !_first_print_assertion) {
       tty->print_cr("[Info] Unconfirmed assertion violated on record_base_of_stack_pointer");
       _first_print_assertion = true;
     }
-#endif
   }
   void set_base_of_stack_pointer(intptr_t* base_sp) {
-#ifndef ENABLE_WEBRIDGE
-    assert(base_sp == NULL, "should be");
-    assert(top_zero_frame() == NULL, "junk on stack after Java call");
-#else
     if ((top_zero_frame() != NULL || base_sp != NULL) && !_first_print_assertion) {
       tty->print_cr("[Info] Unconfirmed assertion violated on set_base_of_stack_pointer");
       _first_print_assertion = true;
     }
-#endif
   }
 
  public:

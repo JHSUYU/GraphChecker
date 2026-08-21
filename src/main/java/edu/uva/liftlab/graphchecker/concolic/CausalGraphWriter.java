@@ -4,6 +4,12 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -12,255 +18,592 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/** Emits a selected causal skeleton and its solver witness. */
+/**
+ * Draws the one canonical session model, and nothing else.
+ *
+ * <p>This writer used to build its own causal reading: it walked the runtime
+ * plan's resolved edge catalog, re-derived an evidence state per edge from
+ * whatever the trace had stamped on it, and merged the results into a graph the
+ * composed formula had never seen. Two independent readings of one run is the
+ * failure this phase removes, so the reconstruction is gone. Every node here
+ * comes from {@link CanonicalSessionModel}'s node table, every edge from one of
+ * its value bindings, order relations or structural rows, and the evidence
+ * state on the drawing is the state the model already carries.</p>
+ *
+ * <p>A solver result is an overlay and never a source: when one exists its
+ * selected read-from arms are marked and its verdict is reported; when none
+ * exists nothing is marked. The graph is diagnostic and cannot accept or
+ * reject the Composer's model.</p>
+ */
 public final class CausalGraphWriter {
-    private CausalGraphWriter() { }
+    /** The projected causal model. */
+    static final String MODEL_JSON = "causal_model.json";
+    /** The rendering of that same model. */
+    static final String MODEL_DOT = "causal_model.dot";
+    /** The optional vector rendering of the same {@code .dot}. */
+    static final String MODEL_SVG = "causal.svg";
+
+    static final String USAGE =
+            "usage: composed-manifest output-dir [solver-result]";
+
+    /** The input carried no canonical model to project. */
+    static final String NO_CANONICAL_MODEL =
+            "composed manifest carries no canonical session model";
+
+    /** No renderer is installed, so no SVG was produced. */
+    static final String SVG_SKIPPED = "SKIPPED_NO_RENDERER";
+    /** The renderer ran and produced the SVG. */
+    static final String SVG_RENDERED = "RENDERED";
+    /** A renderer exists and refused this graph. */
+    static final String SVG_FAILED = "RENDERER_FAILED";
+
+    private static final String OVERLAY_PRESENT = "SOLVER_MODEL_PRESENT";
+    private static final String OVERLAY_ABSENT = "NO_SOLVER_MODEL";
+    private static final String VALUE_BINDING = "VALUE_BINDING";
+    private static final String ORDER_RELATION = "ORDER_RELATION";
+    private static final String STRUCTURE = "STRUCTURE";
+
+    private CausalGraphWriter() {
+    }
 
     public static void main(String[] args) throws Exception {
-        if (args.length < 6) throw new IllegalArgumentException("usage: runtime-plan source-events schedule composition reach-report output-dir [summary-jsonl ...]");
-        List<JsonObject> rows = ArtifactIO.readJsonl(Paths.get(args[0]));
-        if (rows.isEmpty() || !rows.get(0).has("edges")) throw new IllegalArgumentException("runtime plan has no edge catalog");
-        JsonObject catalog = rows.remove(0);
-        List<JsonObject> summaries = new ArrayList<>();
-        for (int i = 6; i < args.length; i++) summaries.addAll(ArtifactIO.readJsonl(Paths.get(args[i])));
-        JsonObject composition = ArtifactIO.readObject(Paths.get(args[3]));
-        JsonObject graph = skeleton(rows, objects(array(catalog, "edges")), ArtifactIO.readJsonl(Paths.get(args[1])), ArtifactIO.readObject(Paths.get(args[2])), composition, summaries);
-        Path out = Paths.get(args[5]);
-        String json = new GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(graph) + "\n";
-        ArtifactIO.replace(out.resolve("causal_skeleton.json"), json);
-        JsonObject witness = witness(graph, ArtifactIO.readObject(Paths.get(args[4])), composition);
-        ArtifactIO.replace(out.resolve("causal_witness.json"), new GsonBuilder().disableHtmlEscaping().setPrettyPrinting().create().toJson(witness) + "\n");
-        ArtifactIO.replace(out.resolve("causal_witness.dot"), dot(witness));
+        if (args.length < 2) throw new IllegalArgumentException(USAGE);
+        JsonObject composed = ArtifactIO.readObject(Paths.get(args[0]));
+        JsonObject model = CanonicalSessionModel.read(composed);
+        if (model.size() == 0) {
+            throw new IllegalArgumentException(NO_CANONICAL_MODEL);
+        }
+        JsonObject solver = args.length > 2
+                ? ArtifactIO.readObject(Paths.get(args[2])) : new JsonObject();
+
+        JsonObject graph = graph(model, solver);
+        String dot = dot(graph);
+        Svg svg = render(dot);
+        Path out = Paths.get(args[1]);
+        graph.add("runManifest", runManifest(graph, model, composed, solver,
+                dot, svg, out));
+        JsonObject rendered = (JsonObject) CanonicalJson.copy(graph);
+
+        ArtifactIO.replace(out.resolve(MODEL_JSON), new GsonBuilder()
+                .disableHtmlEscaping().setPrettyPrinting().create()
+                .toJson(rendered) + "\n");
+        ArtifactIO.replace(out.resolve(MODEL_DOT), dot);
+        if (svg.bytes.length > 0) {
+            Files.createDirectories(out.toAbsolutePath().normalize());
+            Files.write(out.resolve(MODEL_SVG), svg.bytes);
+        }
     }
 
-    static JsonObject skeleton(List<JsonObject> plans, List<JsonObject> edgeRows, List<JsonObject> sourceEvents, JsonObject schedule, JsonObject composition, List<JsonObject> summaries) {
-        JsonArray gaps = new JsonArray();
-        Map<String, JsonObject> planById = index(plans, "occurrenceId"), edgeById = index(edgeRows, "edgeId");
-        JsonObject selectedTarget = object(schedule, "target");
-        Set<String> occurrences = new LinkedHashSet<>(), edgeIds = texts(array(composition, "resolvedEdgeBindings"));
-        add(occurrences, string(selectedTarget, "occurrenceId"));
-        for (JsonElement value : array(schedule, "producers")) if (value.isJsonObject()) add(occurrences, string(value.getAsJsonObject(), "occurrenceId"));
-        for (String id : edgeIds) {
-            JsonObject edge = edgeById.get(id);
-            if (edge == null) { gap(gaps, "EDGE_UNAVAILABLE", id); continue; }
-            add(occurrences, string(edge, "fromOccurrenceId")); add(occurrences, string(edge, "toOccurrenceId"));
+    /**
+     * Projects the canonical model, overlaying a solver result if one exists.
+     *
+     * @param model  the canonical session model
+     * @param solver the solver result, or an empty object
+     */
+    static JsonObject graph(JsonObject model, JsonObject solver) {
+        Set<String> selectedArms = selectedArms(solver);
+        Map<String, JsonObject> nodes = new LinkedHashMap<>();
+        for (JsonElement element : array(model, "nodes")) {
+            JsonObject row = element.getAsJsonObject().deepCopy();
+            row.addProperty("label", label(row));
+            row.addProperty("shape", shape(string(row, "nodeType")));
+            nodes.put(string(row, "nodeId"), row);
         }
-        Map<String, JsonObject> nodes = new LinkedHashMap<>(), edges = new LinkedHashMap<>();
-        Map<String, String> regionNodes = new LinkedHashMap<>(), sourceNodes = new LinkedHashMap<>();
-        Map<String, List<String>> requestRegions = new LinkedHashMap<>();
-        for (String occurrence : occurrences) {
-            JsonObject plan = planById.get(occurrence);
-            if (plan == null) { gap(gaps, "PLAN_UNAVAILABLE", occurrence); continue; }
-            String sourceKey = string(plan, "sourceKey");
-            if (sourceKey.isEmpty()) gap(gaps, "SOURCE_KEY_UNAVAILABLE", occurrence);
-            if ("WORKLOAD_FALLBACK".equals(
-                    string(plan, "sourceAuthority"))) {
-                gap(gaps, "SOURCE_IDENTITY_FALLBACK", occurrence);
-            }
-            if (!sourceKey.isEmpty() && !sourceNodes.containsKey(sourceKey)) {
-                JsonObject source = node("source:" + hash(sourceKey), "SOURCE");
-                copy(source, plan, "sourceKey", "sourceKind", "sourceRole",
-                        "sourceId", "sourceEpoch", "sourceAuthority");
-                nodes.put(string(source, "id"), source); sourceNodes.put(sourceKey, string(source, "id"));
-            }
-            JsonObject region = node("region:" + hash(occurrence), "REGION_OCCURRENCE");
-            copy(region, plan, "sourceKey", "occurrenceId", "relationKey",
-                    "relationContractHash", "regionId", "targetMethod",
-                    "requestKey", "requestApi", "sourceAuthority");
-            region.addProperty("target", occurrence.equals(string(selectedTarget, "occurrenceId")));
-            JsonArray relations = new JsonArray();
-            for (JsonObject summary : summaries) {
-                if (!string(plan, "relationKey").equals(
-                        summaryRelationKey(summary))) {
-                    continue;
-                }
-                relations.add(relationReference(summary));
-                String coverageState = or(string(summary,
-                        "pathCoverageState"), "CLOSED");
-                if (!"CLOSED".equals(coverageState)) {
-                    gap(gaps, "RELATION_" + coverageState,
-                            string(summary, "summaryId"));
-                }
-            }
-            region.add("symbolicRelations", relations); nodes.put(string(region, "id"), region); regionNodes.put(occurrence, string(region, "id"));
-            String requestKey = string(plan, "requestKey");
-            if (!requestKey.isEmpty()) {
-                requestRegions.computeIfAbsent(requestKey,
-                        ignored -> new ArrayList<>()).add(string(region, "id"));
-            }
-            if (sourceNodes.containsKey(sourceKey)) putEdge(edges, basic("SOURCE_CONTAINS_REGION", sourceNodes.get(sourceKey), string(region, "id"), "OBSERVED_BASELINE"));
+        List<JsonObject> edges = new ArrayList<>();
+        for (JsonElement element : array(model, "valueBindings")) {
+            edges.add(valueEdge(element.getAsJsonObject(), selectedArms));
         }
-        sourceEvents(sourceEvents, sourceNodes, requestRegions, nodes, edges,
-                gaps);
-        Map<String, JsonArray> assertions = assertions(composition);
-        for (String id : edgeIds) {
-            JsonObject evidence = edgeById.get(id); if (evidence == null) continue;
-            String from = regionNodes.get(string(evidence, "fromOccurrenceId")), to = regionNodes.get(string(evidence, "toOccurrenceId"));
-            if (from == null || to == null) { gap(gaps, "EDGE_ENDPOINT_UNAVAILABLE", id); continue; }
-            String state = state(evidence, id, gaps), alignment = or(string(evidence, "alignment"), "UNRESOLVED");
-            JsonObject edge = basic(or(string(evidence, "transportKind"), string(evidence, "kind"), "CAUSAL_FLOW"), from, to, state);
-            copy(edge, evidence, "fromOccurrenceId", "toOccurrenceId", "fromOutputPort", "toInputPort", "fieldPathDeclarations");
-            edge.add("selectedEdgeIds", one(id)); edge.add("evidenceIds", unique(array(evidence, "evidenceIds")));
-            edge.add("smtAssertions", assertions.containsKey(id) ? assertions.get(id).deepCopy() : new JsonArray());
-            edge.add("evidenceStates", one(state)); edge.add("alignmentStates", one(alignment)); edge.addProperty("alignment", alignment); edge.addProperty("style", style(state, alignment));
-            if (string(edge, "fromOutputPort").isEmpty() || string(edge, "toInputPort").isEmpty()) gap(gaps, "EDGE_PORT_UNAVAILABLE", id);
-            if (array(edge, "evidenceIds").size() == 0) gap(gaps, "EDGE_EVIDENCE_IDS_UNAVAILABLE", id);
-            if (!"ALIGNED".equals(alignment)) gap(gaps, "ALIGNMENT_" + alignment, id);
-            putEdge(edges, edge);
+        for (JsonElement element : array(model, "eventOrder")) {
+            edges.add(orderEdge(element.getAsJsonObject()));
         }
-        String targetOccurrence = string(selectedTarget, "occurrenceId"), targetNode = regionNodes.get(targetOccurrence);
-        if (targetNode == null) gap(gaps, "TARGET_UNAVAILABLE", targetOccurrence);
-        else {
-            JsonObject branch = node("branch:" + hash(targetOccurrence + "\n" + string(composition, "fatalSite")), "CRITICAL_BRANCH");
-            branch.addProperty("occurrenceId", targetOccurrence); branch.addProperty("siteId", string(composition, "fatalSite")); branch.addProperty("choice", "FATAL_PATH_ASSERTED");
-            branch.add("assertion", object(object(composition, "operandBindingLedger"), "fatalPathAssertion").deepCopy());
-            nodes.put(string(branch, "id"), branch); putEdge(edges, basic("REGION_REACHES_TARGET_BRANCH", targetNode, string(branch, "id"), "REPLAY_CONFIRMED"));
+        for (JsonElement element : array(model, "structuralEdges")) {
+            edges.add(structuralEdge(element.getAsJsonObject()));
         }
-        JsonObject result = new JsonObject(), coverage = new JsonObject(), target = selectedTarget.deepCopy();
-        result.addProperty("schemaVersion", 1); result.addProperty("kind", "CAUSAL_SKELETON"); result.addProperty("authority", "SELECTED_TARGET_BACKWARD_MODEL_V1");
-        target.addProperty("fatalSite", string(composition, "fatalSite")); result.add("target", target); result.add("nodes", values(nodes)); result.add("edges", values(edges));
-        coverage.addProperty("selectedOccurrences", occurrences.size()); coverage.addProperty("resolvedOccurrences", regionNodes.size()); coverage.addProperty("selectedEdges", edgeIds.size());
-        copy(coverage, composition, "compositionMode", "trustState",
-                "pathSetComplete");
-        for (JsonElement value : array(composition, "gaps")) {
-            gap(gaps, "COMPOSITION_GAP", value.toString());
-        }
-        coverage.addProperty("gapCount", gaps.size()); coverage.addProperty("relationOrSmtBlocked", false);
-        result.add("coverage", coverage); result.add("gaps", gaps); return (JsonObject) CanonicalJson.copy(result);
+
+        JsonObject graph = new JsonObject();
+        graph.addProperty("schemaVersion", 3);
+        graph.addProperty("kind", "CAUSAL_MODEL");
+        graph.addProperty("authority",
+                "CANONICAL_SESSION_MODEL_PROJECTION_V1");
+        JsonObject projection = new JsonObject();
+        projection.addProperty("sourceKind", CanonicalSessionModel.KIND);
+        projection.addProperty("sourceAuthority",
+                CanonicalSessionModel.AUTHORITY);
+        projection.addProperty("reDerivesEvidence", false);
+        graph.add("projection", projection);
+        graph.add("target", object(model, "target").deepCopy());
+        graph.add("solverOverlay", overlay(solver, selectedArms));
+        graph.addProperty("verdict", verdict(solver));
+        JsonArray nodeRows = new JsonArray();
+        for (JsonObject row : nodes.values()) nodeRows.add(row);
+        graph.add("nodes", nodeRows);
+        JsonArray edgeRows = new JsonArray();
+        for (JsonObject row : edges) edgeRows.add(row);
+        graph.add("edges", edgeRows);
+        graph.add("coverage", coverage(model, edges, selectedArms));
+        graph.add("gaps", array(model, "gaps").deepCopy());
+        return graph;
     }
 
-    private static void sourceEvents(List<JsonObject> events,
-                                     Map<String, String> sources,
-                                     Map<String, List<String>> requestRegions,
-                                     Map<String, JsonObject> nodes,
-                                     Map<String, JsonObject> edges,
-                                     JsonArray gaps) {
-        Set<String> requests = new LinkedHashSet<>();
-        for (JsonObject event : events) {
-            String kind = string(event, "kind"), source = string(event, "sourceKey"), related = string(event, "relatedSourceKey");
-            if ("SOURCE_RESTART".equals(kind)
-                    && (sources.containsKey(source)
-                    || sources.containsKey(related))) {
-                ensureSourceNode(event, false, source, sources, nodes);
-                ensureSourceNode(event, true, related, sources, nodes);
-                putEdge(edges, basic("SOURCE_RESTARTS_AS",
-                        sources.get(source), sources.get(related),
-                        "OBSERVED_BASELINE"));
-            }
-            if (!"REQUEST_BEGIN".equals(kind)) continue;
-            String request = scalar(event, "requestId");
-            String requestKey = string(event, "requestKey");
-            if (!requestRegions.containsKey(requestKey)) continue;
-            ensureSourceNode(event, false, source, sources, nodes);
-            String key = requestKey.isEmpty()
-                    ? source + "\n" + request : requestKey;
-            if (request.isEmpty() || requestKey.isEmpty()) {
-                gap(gaps, "REQUEST_IDENTITY_INCOMPLETE", source);
+    // ----- edges ----------------------------------------------------------
+
+    /**
+     * One value binding, drawn once.
+     *
+     * <p>The evidence state is copied, never recomputed: the model already
+     * decided whether the run proved this writer, guarded it, kept an unknown
+     * arm, or only ever resolved a trace candidate, and a second opinion here
+     * is exactly the divergence the audit exists to catch.</p>
+     */
+    private static JsonObject valueEdge(JsonObject binding,
+                                        Set<String> selectedArms) {
+        JsonObject edge = binding.deepCopy();
+        String state = string(binding, "evidenceState");
+        edge.addProperty("projection", VALUE_BINDING);
+        edge.addProperty("graphEdgeId", string(binding, "bindingId"));
+        edge.addProperty("bindingKind", string(binding, "kind"));
+        edge.addProperty("kind", edgeKind(string(binding, "kind")));
+        edge.addProperty("from", string(binding, "fromNodeId"));
+        edge.addProperty("to", string(binding, "toNodeId"));
+        boolean selected = !selectedArms.isEmpty()
+                && selectedArms.contains(longInteger(binding, "readEventId",
+                0L) + "\n" + string(binding, "arm"));
+        edge.addProperty("selected", selected);
+        style(edge, state, selected);
+        return edge;
+    }
+
+    private static JsonObject orderEdge(JsonObject relation) {
+        JsonObject edge = relation.deepCopy();
+        edge.addProperty("projection", ORDER_RELATION);
+        edge.addProperty("graphEdgeId", string(relation, "relationId"));
+        edge.addProperty("kind", "RECORDED_ORDER");
+        edge.addProperty("from", string(relation, "fromNodeId"));
+        edge.addProperty("to", string(relation, "toNodeId"));
+        edge.addProperty("selected", false);
+        style(edge, CanonicalSessionModel.NATURAL_ORDER, false);
+        return edge;
+    }
+
+    private static JsonObject structuralEdge(JsonObject row) {
+        JsonObject edge = row.deepCopy();
+        edge.addProperty("projection", STRUCTURE);
+        edge.addProperty("graphEdgeId", string(row, "structuralId"));
+        edge.addProperty("from", string(row, "fromNodeId"));
+        edge.addProperty("to", string(row, "toNodeId"));
+        edge.addProperty("selected", false);
+        style(edge, CanonicalSessionModel.STRUCTURAL, false);
+        return edge;
+    }
+
+    /** The short kind one binding row is drawn under. */
+    private static String edgeKind(String bindingKind) {
+        if ("RECORDED_READ_FROM_VALUE_BINDING".equals(bindingKind)) {
+            return "READ_FROM_ARM";
+        }
+        if ("RECORDED_EXACT_VALUE_BINDING".equals(bindingKind)) {
+            return "EXACT_VALUE";
+        }
+        if ("RECORDED_GUARDED_READ_PORT_BINDING".equals(bindingKind)) {
+            return "GUARDED_READ_PORT";
+        }
+        if (VmHandoffEvidence.BINDING_KIND.equals(bindingKind)) {
+            return "HANDOFF_EQUALITY";
+        }
+        return "RESOLVED_CANDIDATE";
+    }
+
+    /**
+     * The one place an evidence state becomes something visible.
+     *
+     * <p>Five states, five distinguishable pens. They differ in dash pattern
+     * and in colour, so the drawing stays readable when it is printed without
+     * colour and when it is read by someone who does not see the hues apart.
+     * </p>
+     */
+    private static void style(JsonObject edge, String state,
+                              boolean selected) {
+        String style;
+        String colour;
+        if (CanonicalSessionModel.EXACT.equals(state)) {
+            style = "solid";
+            colour = "#1a7f37";
+        } else if (CanonicalSessionModel.GUARDED.equals(state)) {
+            style = "dashed";
+            colour = "#0969da";
+        } else if (CanonicalSessionModel.UNKNOWN_ARM.equals(state)) {
+            style = "dotted";
+            colour = "#9a6700";
+        } else if (CanonicalSessionModel.NATURAL_ORDER.equals(state)) {
+            style = "solid";
+            colour = "#57606a";
+        } else if (CanonicalSessionModel.CANDIDATE.equals(state)) {
+            style = "dotted";
+            colour = "#8250df";
+        } else {
+            style = "solid";
+            colour = "#8c959f";
+        }
+        edge.addProperty("evidenceState", state);
+        edge.addProperty("style", style);
+        edge.addProperty("color", colour);
+        edge.addProperty("penwidth", selected ? 3
+                : CanonicalSessionModel.EXACT.equals(state) ? 2 : 1);
+        edge.addProperty("label", string(edge, "kind") + "\n" + state
+                + (selected ? "\nSELECTED" : ""));
+    }
+
+    // ----- solver overlay -------------------------------------------------
+
+    /** The {@code readEventId\narm} pairs one solver model selected. */
+    private static Set<String> selectedArms(JsonObject solver) {
+        Set<String> arms = new LinkedHashSet<>();
+        for (JsonElement element : array(object(solver, "selectedReadCut"),
+                "selections")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            arms.add(longInteger(row, "readEventId", 0L) + "\n"
+                    + string(row, "arm"));
+        }
+        return arms;
+    }
+
+    /**
+     * What the solver said, and nothing more.
+     *
+     * <p>An absent result is reported as an absent result. Reading a verdict
+     * out of a missing file - or marking an arm because only one arm exists -
+     * would be the drawing claiming a decision nobody made.</p>
+     */
+    private static JsonObject overlay(JsonObject solver,
+                                      Set<String> selectedArms) {
+        JsonObject overlay = new JsonObject();
+        boolean present = solver != null && solver.size() > 0;
+        overlay.addProperty("state", present ? OVERLAY_PRESENT
+                : OVERLAY_ABSENT);
+        overlay.addProperty("selectedArmCount", selectedArms.size());
+        overlay.addProperty("solverStatus", present
+                ? string(solver, "status") : "");
+        overlay.add("reachCondition", present
+                ? object(solver, "reachCondition").deepCopy()
+                : new JsonObject());
+        overlay.add("selections", present
+                ? array(object(solver, "selectedReadCut"), "selections")
+                .deepCopy() : new JsonArray());
+        overlay.add("rootAssignments", present ? assignments(solver)
+                : new JsonArray());
+        return overlay;
+    }
+
+    private static String verdict(JsonObject solver) {
+        if (solver == null || solver.size() == 0) return OVERLAY_ABSENT;
+        String reachable = string(object(solver, "reachCondition"),
+                "reachability");
+        if ("REACHABLE".equals(reachable)) return "SAT";
+        if ("UNREACHABLE".equals(reachable)) return "UNSAT";
+        String status = string(solver, "status");
+        if ("SAT_MODEL_READY".equals(status)) return "SAT";
+        if ("UNSAT".equals(status)) return "UNSAT";
+        return "UNKNOWN";
+    }
+
+    /** The root inputs one satisfiable valuation assigned. */
+    private static JsonArray assignments(JsonObject solver) {
+        JsonArray result = new JsonArray();
+        JsonArray roots = array(object(solver, "roots"), "booleanInputs");
+        for (JsonElement element : array(solver, "valuations")) {
+            if (!element.isJsonObject() || !"sat".equals(
+                    string(element.getAsJsonObject(), "status"))) {
                 continue;
             }
-            if (!requests.add(key)) continue;
-            JsonObject api = node("api:" + hash(key), "EXTERNAL_API");
-            api.addProperty("sourceKey", source);
-            api.addProperty("requestId", request);
-            api.addProperty("requestKey", requestKey);
-            api.addProperty("apiName", string(event, "apiName"));
-            api.addProperty("evidenceState", "OBSERVED_BASELINE");
-            nodes.put(string(api, "id"), api);
-            putEdge(edges, basic("SOURCE_ISSUES_API_REQUEST",
-                    sources.get(source), string(api, "id"),
-                    "OBSERVED_BASELINE"));
-            for (String region : requestRegions.getOrDefault(requestKey,
-                    java.util.Collections.<String>emptyList())) {
-                putEdge(edges, basic("API_REQUEST_REACHES_REGION",
-                        string(api, "id"), region, "OBSERVED_BASELINE"));
+            JsonArray values = array(element.getAsJsonObject(), "values");
+            for (int index = 0;
+                 index < Math.min(roots.size(), values.size()); index++) {
+                if (!roots.get(index).isJsonObject()) continue;
+                JsonObject root = roots.get(index).getAsJsonObject();
+                JsonObject row = new JsonObject();
+                for (String field : new String[]{"portId", "solverTerm",
+                        "javaTypeDescriptor"}) {
+                    if (root.has(field)) {
+                        row.add(field, root.get(field).deepCopy());
+                    }
+                }
+                row.add("value", values.get(index).deepCopy());
+                result.add(row);
             }
-        }
-    }
-
-    private static void ensureSourceNode(JsonObject event, boolean related,
-                                         String sourceKey,
-                                         Map<String, String> sourceNodes,
-                                         Map<String, JsonObject> nodes) {
-        if (sourceKey.isEmpty() || sourceNodes.containsKey(sourceKey)) return;
-        String prefix = related ? "relatedSource" : "source";
-        JsonObject source = node("source:" + hash(sourceKey), "SOURCE");
-        source.addProperty("sourceKey", sourceKey);
-        copyRenamed(source, event, prefix + "Kind", "sourceKind");
-        copyRenamed(source, event, prefix + "Role", "sourceRole");
-        copyRenamed(source, event, prefix + "Id", "sourceId");
-        copyRenamed(source, event, prefix + "Epoch", "sourceEpoch");
-        nodes.put(string(source, "id"), source);
-        sourceNodes.put(sourceKey, string(source, "id"));
-    }
-
-    static JsonObject witness(JsonObject graph, JsonObject reach, JsonObject composition) {
-        JsonObject result = new JsonObject(); String reachable = string(object(reach, "reachCondition"), "reachability");
-        result.addProperty("schemaVersion", 1); result.addProperty("kind", "CAUSAL_WITNESS"); result.addProperty("verdict", "REACHABLE".equals(reachable) ? "SAT" : "UNREACHABLE".equals(reachable) ? "UNSAT" : "UNKNOWN");
-        copy(result, reach, "trustState", "reachCondition"); result.add("target", object(graph, "target").deepCopy()); result.add("rootAssignments", assignments(reach));
-        result.add("nodes", array(graph, "nodes").deepCopy()); result.add("edges", array(graph, "edges").deepCopy()); result.add("coverage", object(graph, "coverage").deepCopy()); result.add("gaps", array(graph, "gaps").deepCopy());
-        result.add("solverEvidence", object(composition, "operandBindingLedger").deepCopy()); return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    private static JsonArray assignments(JsonObject reach) {
-        JsonArray result = new JsonArray(), roots = array(object(reach, "roots"), "booleanInputs");
-        for (JsonElement value : array(reach, "valuations")) {
-            if (!value.isJsonObject() || !"sat".equals(string(value.getAsJsonObject(), "status"))) continue;
-            JsonArray values = array(value.getAsJsonObject(), "values");
-            for (int i = 0; i < Math.min(roots.size(), values.size()); i++) if (roots.get(i).isJsonObject()) { JsonObject row = new JsonObject(); copy(row, roots.get(i).getAsJsonObject(), "portId", "solverTerm", "javaTypeDescriptor"); row.add("value", values.get(i).deepCopy()); result.add(row); }
             break;
         }
         return result;
     }
 
-    private static JsonObject relationReference(JsonObject summary) {
-        JsonObject result = new JsonObject();
-        copy(result, summary, "summaryId", "pathCoverageState");
-        JsonObject producer = object(object(summary,
-                "outputClosure"), "producer");
-        copyRenamed(result, producer, "relationKey", "relationKey");
-        copyRenamed(result, producer, "contractHash",
-                "relationContractHash");
-        result.addProperty("caseCount",
-                array(object(summary, "regionRelation"), "cases").size());
-        return result;
+    // ----- coverage and run manifest --------------------------------------
+
+    private static JsonObject coverage(JsonObject model,
+                                       List<JsonObject> edges,
+                                       Set<String> selectedArms) {
+        Map<String, Integer> states = new LinkedHashMap<>();
+        for (JsonObject edge : edges) {
+            String state = string(edge, "evidenceState");
+            Integer held = states.get(state);
+            states.put(state, held == null ? 1 : held + 1);
+        }
+        JsonObject coverage = new JsonObject();
+        coverage.add("modelCounts", object(model, "counts").deepCopy());
+        JsonObject byState = new JsonObject();
+        for (String state : new String[]{CanonicalSessionModel.EXACT,
+                CanonicalSessionModel.GUARDED,
+                CanonicalSessionModel.UNKNOWN_ARM,
+                CanonicalSessionModel.NATURAL_ORDER,
+                CanonicalSessionModel.CANDIDATE,
+                CanonicalSessionModel.STRUCTURAL}) {
+            byState.addProperty(state, states.containsKey(state)
+                    ? states.get(state) : 0);
+        }
+        coverage.add("edgesByEvidenceState", byState);
+        coverage.addProperty("selectedArms", selectedArms.size());
+        coverage.addProperty("gapCount", array(model, "gaps").size());
+        coverage.addProperty("partial",
+                bool(object(model, "target"), "partial", false));
+        return coverage;
     }
 
-    private static String summaryRelationKey(JsonObject summary) {
-        return string(object(object(summary, "outputClosure"), "producer"),
-                "relationKey");
+    /**
+     * The one run manifest: what was projected, and what each artifact is.
+     *
+     * <p>{@code causal_model.json} is the file this member lives in, so it
+     * cannot hold its own digest; it holds the digest of everything it was
+     * made from and everything it generates instead.</p>
+     */
+    private static JsonObject runManifest(JsonObject graph, JsonObject model,
+                                          JsonObject composed,
+                                          JsonObject solver, String dot,
+                                          Svg svg, Path out) {
+        JsonObject manifest = new JsonObject();
+        manifest.addProperty("schemaVersion", 1);
+        manifest.addProperty("kind", "CAUSAL_GRAPH_RUN_MANIFEST");
+        manifest.addProperty("authority",
+                "CANONICAL_SESSION_MODEL_PROJECTION_V1");
+        JsonObject counts = new JsonObject();
+        counts.addProperty("nodes", array(graph, "nodes").size());
+        counts.addProperty("edges", array(graph, "edges").size());
+        counts.addProperty("valueBindingEdges",
+                projected(graph, VALUE_BINDING));
+        counts.addProperty("orderRelationEdges",
+                projected(graph, ORDER_RELATION));
+        counts.addProperty("structuralEdges",
+                projected(graph, STRUCTURE));
+        counts.addProperty("smtValueBindings",
+                array(composed, "recordedValueBindings").size());
+        counts.addProperty("resolvedEdgeBindings",
+                array(composed, "resolvedEdgeBindings").size());
+        counts.addProperty("recordedOrderRelations",
+                array(object(composed, "recordedSessionModel"),
+                        "order").size());
+        counts.addProperty("selectedArms",
+                array(object(solver, "selectedReadCut"), "selections")
+                        .size());
+        counts.addProperty("gaps", array(graph, "gaps").size());
+        manifest.add("counts", counts);
+        JsonArray artifacts = new JsonArray();
+        artifacts.add(digest("canonicalModel", CanonicalJson.sha256(model)));
+        artifacts.add(digest("composedSmtManifest",
+                CanonicalJson.sha256(composed)));
+        artifacts.add(digest("candidateSmt", string(object(composed,
+                "composedSmtArtifact"), "sha256")));
+        artifacts.add(digest("solverResult", solver.size() == 0 ? ""
+                : CanonicalJson.sha256(solver)));
+        artifacts.add(path(digest(MODEL_DOT, ArtifactIO.sha256(dot)), out,
+                MODEL_DOT));
+        JsonObject svgRow = digest(MODEL_SVG, svg.bytes.length == 0 ? ""
+                : ArtifactIO.sha256(svg.bytes));
+        if (svg.bytes.length > 0) path(svgRow, out, MODEL_SVG);
+        artifacts.add(svgRow);
+        manifest.add("artifacts", artifacts);
+        manifest.addProperty("svg", svg.state);
+        return manifest;
     }
+
+    private static JsonObject digest(String name, String sha256) {
+        JsonObject row = new JsonObject();
+        row.addProperty("name", name);
+        row.addProperty("sha256", sha256);
+        return row;
+    }
+
+    private static JsonObject path(JsonObject row, Path out, String name) {
+        row.addProperty("path", out.toAbsolutePath().normalize()
+                .resolve(name).toString());
+        return row;
+    }
+
+    private static int projected(JsonObject graph, String projection) {
+        int count = 0;
+        for (JsonElement element : array(graph, "edges")) {
+            if (projection.equals(string(element.getAsJsonObject(),
+                    "projection"))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    // ----- rendering ------------------------------------------------------
 
     static String dot(JsonObject graph) {
-        StringBuilder out = new StringBuilder("digraph causal_witness {\n  rankdir=LR;\n");
-        for (JsonElement value : array(graph, "nodes")) { JsonObject node = value.getAsJsonObject(); String type = string(node, "type"), label = "SOURCE".equals(type) ? string(node, "sourceRole") + "\n" + string(node, "sourceId") + " epoch=" + scalar(node, "sourceEpoch") : "REGION_OCCURRENCE".equals(type) ? string(node, "regionId") + "\n" + string(node, "occurrenceId") : "EXTERNAL_API".equals(type) ? string(node, "apiName") : string(node, "siteId"); out.append("  \"").append(escape(string(node, "id"))).append("\" [shape=").append("REGION_OCCURRENCE".equals(type) ? "box" : "CRITICAL_BRANCH".equals(type) ? "diamond" : "oval").append(", label=\"").append(escape(label)).append("\"];\n"); }
-        for (JsonElement value : array(graph, "edges")) { JsonObject edge = value.getAsJsonObject(); out.append("  \"").append(escape(string(edge, "from"))).append("\" -> \"").append(escape(string(edge, "to"))).append("\" [style=").append(or(string(edge, "style"), "solid")).append(", label=\"").append(escape(string(edge, "kind"))).append("\"];\n"); }
+        StringBuilder out = new StringBuilder(
+                "digraph causal_model {\n  rankdir=LR;\n"
+                        + "  node [fontname=\"Helvetica\"];\n"
+                        + "  edge [fontname=\"Helvetica\", fontsize=9];\n");
+        for (JsonElement element : array(graph, "nodes")) {
+            JsonObject node = element.getAsJsonObject();
+            out.append("  \"").append(escape(string(node, "nodeId")))
+                    .append("\" [shape=").append(string(node, "shape"))
+                    .append(", label=\"").append(escape(string(node, "label")))
+                    .append("\"];\n");
+        }
+        for (JsonElement element : array(graph, "edges")) {
+            JsonObject edge = element.getAsJsonObject();
+            out.append("  \"").append(escape(string(edge, "from")))
+                    .append("\" -> \"").append(escape(string(edge, "to")))
+                    .append("\" [style=")
+                    .append(firstNonBlank(string(edge, "style"), "solid"))
+                    .append(", color=\"").append(string(edge, "color"))
+                    .append("\", penwidth=")
+                    .append(JsonFields.integer(edge, "penwidth", 1))
+                    .append(", label=\"")
+                    .append(escape(string(edge, "label"))).append("\"];\n");
+        }
         return out.append("}\n").toString();
     }
 
-    private static JsonObject node(String id, String type) { JsonObject value = new JsonObject(); value.addProperty("id", id); value.addProperty("type", type); return value; }
-    private static JsonObject basic(String kind, String from, String to, String state) { JsonObject edge = new JsonObject(); edge.addProperty("kind", kind); edge.addProperty("from", from); edge.addProperty("to", to); edge.addProperty("evidenceState", state); edge.addProperty("alignment", "ALIGNED"); edge.addProperty("style", style(state, "ALIGNED")); return edge; }
-    private static void putEdge(Map<String, JsonObject> edges, JsonObject row) { String key = string(row, "kind") + "\n" + string(row, "from") + "\n" + string(row, "to") + "\n" + string(row, "fromOutputPort") + "\n" + string(row, "toInputPort"); JsonObject prior = edges.get(key); if (prior == null) { row.addProperty("id", "edge:" + hash(key)); edges.put(key, row); return; } for (String field : new String[]{"selectedEdgeIds", "evidenceIds", "smtAssertions", "evidenceStates", "alignmentStates"}) prior.add(field, union(array(prior, field), array(row, field))); if (rank(string(row, "evidenceState")) > rank(string(prior, "evidenceState"))) prior.addProperty("evidenceState", string(row, "evidenceState")); if ("DEVIATED".equals(string(row, "alignment")) || "UNRESOLVED".equals(string(row, "alignment")) && "ALIGNED".equals(string(prior, "alignment"))) prior.addProperty("alignment", string(row, "alignment")); if ("dotted".equals(string(row, "style"))) prior.addProperty("style", "dotted"); else if ("dashed".equals(string(row, "style")) && !"dotted".equals(string(prior, "style"))) prior.addProperty("style", "dashed"); }
-    private static int rank(String state) { return "REPLAY_CONFIRMED".equals(state) ? 4 : "OBSERVED_BASELINE".equals(state) ? 3 : "APPROXIMATE".equals(state) ? 2 : 1; }
-    private static String state(JsonObject edge, String id, JsonArray gaps) { String state = string(edge, "evidenceState"); if ("OBSERVED_BASELINE".equals(state) || "REPLAY_CONFIRMED".equals(state) || "APPROXIMATE".equals(state) || "UNRESOLVED".equals(state)) { if ("APPROXIMATE".equals(state) || "UNRESOLVED".equals(state)) gap(gaps, "EDGE_" + state, id); return state; } gap(gaps, "EDGE_EVIDENCE_STATE_UNAVAILABLE", id); return "UNRESOLVED"; }
-    private static String style(String state, String alignment) { if ("DEVIATED".equals(alignment) || "APPROXIMATE".equals(state)) return "dotted"; return "OBSERVED_BASELINE".equals(state) || "UNRESOLVED".equals(state) || "UNRESOLVED".equals(alignment) ? "dashed" : "solid"; }
-    private static Map<String, JsonArray> assertions(JsonObject composition) { Map<String, JsonArray> result = new LinkedHashMap<>(); for (JsonElement value : array(object(composition, "operandBindingLedger"), "edgeAssertions")) if (value.isJsonObject()) result.put(string(value.getAsJsonObject(), "edgeId"), array(value.getAsJsonObject(), "assertionNames").deepCopy()); return result; }
-    private static Map<String, JsonObject> index(List<JsonObject> rows, String field) { Map<String, JsonObject> result = new LinkedHashMap<>(); for (JsonObject row : rows) if (!string(row, field).isEmpty()) result.put(string(row, field), row); return result; }
-    private static List<JsonObject> objects(JsonArray values) { List<JsonObject> result = new ArrayList<>(); for (JsonElement value : values) if (value.isJsonObject()) result.add(value.getAsJsonObject()); return result; }
-    private static JsonArray values(Map<String, JsonObject> values) { JsonArray result = new JsonArray(); for (JsonObject value : values.values()) result.add(value); return result; }
-    private static Set<String> texts(JsonArray values) { Set<String> result = new LinkedHashSet<>(); for (JsonElement value : values) if (value.isJsonPrimitive()) add(result, value.getAsString()); return result; }
-    private static JsonArray one(String value) { JsonArray result = new JsonArray(); result.add(value); return result; }
-    private static JsonArray unique(JsonArray values) { JsonArray result = new JsonArray(); for (String value : texts(values)) result.add(value); return result; }
-    private static JsonArray union(JsonArray left, JsonArray right) { JsonArray all = left.deepCopy(); for (JsonElement value : right) all.add(value.deepCopy()); return unique(all); }
-    private static void add(Set<String> values, String value) { if (value != null && !value.isEmpty()) values.add(value); }
-    private static void copy(JsonObject to, JsonObject from, String... fields) { for (String field : fields) if (from != null && from.has(field) && !from.get(field).isJsonNull()) to.add(field, from.get(field).deepCopy()); }
-    private static void copyRenamed(JsonObject to, JsonObject from, String source, String target) { if (from != null && from.has(source) && !from.get(source).isJsonNull()) to.add(target, from.get(source).deepCopy()); }
-    private static void gap(JsonArray gaps, String code, String detail) { JsonObject gap = new JsonObject(); gap.addProperty("code", code); if (detail != null && !detail.isEmpty()) gap.addProperty("detail", detail); gaps.add(gap); }
-    private static String scalar(JsonObject value, String field) { return value != null && value.has(field) && value.get(field).isJsonPrimitive() ? value.get(field).getAsString() : ""; }
-    private static String or(String... values) { for (String value : values) if (value != null && !value.isEmpty()) return value; return ""; }
-    private static String hash(String value) { return ArtifactIO.sha256(value).substring(0, 16); }
-    private static String escape(String value) { return or(value, "").replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "").replace("\n", "\\n"); }
+    /**
+     * Renders the SVG when a renderer is installed, and otherwise not.
+     *
+     * <p>Best effort in both directions: a machine with Graphviz gets the
+     * vector drawing, a machine without one gets a recorded skip. Neither a
+     * missing binary nor a renderer that refuses the graph fails the run,
+     * because the SVG is a convenience and the {@code .dot} is the artifact.
+     * No layout engine is reimplemented here - a hand-rolled one would draw a
+     * different picture from the one Graphviz draws elsewhere.</p>
+     */
+    static Svg render(String dot) {
+        if (!hasRenderer()) return new Svg(new byte[0], SVG_SKIPPED);
+        try {
+            Process process = new ProcessBuilder("dot", "-Tsvg")
+                    .redirectErrorStream(false).start();
+            try (OutputStream input = process.getOutputStream()) {
+                input.write(dot.getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] svg = readAll(process.getInputStream());
+            if (!process.waitFor(30L, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return new Svg(new byte[0], SVG_FAILED);
+            }
+            return process.exitValue() == 0 && svg.length > 0
+                    ? new Svg(svg, SVG_RENDERED)
+                    : new Svg(new byte[0], SVG_FAILED);
+        } catch (Exception unavailable) {
+            return new Svg(new byte[0], SVG_FAILED);
+        }
+    }
+
+    /** The optional vector rendering, and why it is or is not there. */
+    static final class Svg {
+        final byte[] bytes;
+        final String state;
+
+        private Svg(byte[] bytes, String state) {
+            this.bytes = bytes;
+            this.state = state;
+        }
+    }
+
+    private static boolean hasRenderer() {
+        try {
+            Process probe = new ProcessBuilder("dot", "-V")
+                    .redirectErrorStream(true).start();
+            readAll(probe.getInputStream());
+            return probe.waitFor(10L, TimeUnit.SECONDS)
+                    && probe.exitValue() == 0;
+        } catch (Exception unavailable) {
+            return false;
+        }
+    }
+
+    private static byte[] readAll(InputStream stream) throws java.io.IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int read;
+        while ((read = stream.read(chunk)) >= 0) buffer.write(chunk, 0, read);
+        return buffer.toByteArray();
+    }
+
+    // ----- labels ---------------------------------------------------------
+
+    private static String label(JsonObject node) {
+        String type = string(node, "nodeType");
+        if (CanonicalSessionModel.NODE_SOURCE.equals(type)) {
+            return string(node, "sourceKey");
+        }
+        if (CanonicalSessionModel.NODE_REGION.equals(type)) {
+            return firstNonBlank(string(node, "regionId"), "region") + "\n"
+                    + string(node, "occurrenceId");
+        }
+        boolean mapState = SharedStateEvidence.LOCATION_KIND_MAP_STATE
+                .equals(string(node, "locationKind"));
+        if (CanonicalSessionModel.NODE_FIELD_VERSION.equals(type)) {
+            // A map mutation publishes a whole immutable state, not a value,
+            // and the drawing says which so a reader is not left to infer the
+            // difference from the location key.
+            return (mapState ? "map state #" : "write #")
+                    + longInteger(node, "eventId", 0L) + "\n"
+                    + string(node, "locationKey");
+        }
+        if (CanonicalSessionModel.NODE_FIELD_READ.equals(type)) {
+            return (mapState ? "map query #" : "read #")
+                    + longInteger(node, "eventId", 0L) + "\n"
+                    + string(node, "resolution");
+        }
+        if (CanonicalSessionModel.NODE_UNKNOWN_WRITER.equals(type)) {
+            return "unknown writer\nread #"
+                    + longInteger(node, "readEventId", 0L);
+        }
+        if (CanonicalSessionModel.NODE_SESSION_EVENT.equals(type)) {
+            return "event #" + longInteger(node, "eventId", 0L);
+        }
+        return string(node, "siteId");
+    }
+
+    private static String shape(String type) {
+        if (CanonicalSessionModel.NODE_SOURCE.equals(type)) return "oval";
+        if (CanonicalSessionModel.NODE_REGION.equals(type)) return "box";
+        if (CanonicalSessionModel.NODE_FIELD_VERSION.equals(type)) {
+            return "parallelogram";
+        }
+        if (CanonicalSessionModel.NODE_FIELD_READ.equals(type)) {
+            return "hexagon";
+        }
+        if (CanonicalSessionModel.NODE_UNKNOWN_WRITER.equals(type)) {
+            return "octagon";
+        }
+        if (CanonicalSessionModel.NODE_TARGET_BRANCH.equals(type)) {
+            return "diamond";
+        }
+        return "ellipse";
+    }
+
+    private static String escape(String value) {
+        return (value == null ? "" : value).replace("\\", "\\\\")
+                .replace("\"", "\\\"").replace("\r", "")
+                .replace("\n", "\\n");
+    }
 }

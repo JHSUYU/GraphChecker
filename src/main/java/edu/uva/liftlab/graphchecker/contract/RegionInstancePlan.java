@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -11,28 +12,38 @@ import java.util.List;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Execution goals for one causal-skeleton region occurrence. */
 public final class RegionInstancePlan {
-    private static final String[] RETIRED_FIELDS = {
-            "regionInstanceId", "rootCallId", "logicalRegionId",
-            "logicalInstanceCount", "summaryReuseKey", "occurrences",
-            "occurrenceInstantiationCatalog", "logicalRootCallIds",
-            "logicalActivationIds"
+    /**
+     * Task members the runtime stamped on one coarse region occurrence, in a
+     * fixed order.  A field with no direct evidence stays absent, never
+     * defaulted.
+     */
+    private static final String[] OCCURRENCE_FIELDS = {
+            // The recorded root call this occurrence ran in.  Carried
+            // explicitly because a task has no other route to it: the
+            // identity block writes sourceKey/occurrenceId/relationKey/
+            // regionId and no traceEvidence, and an activationId is a
+            // different shape from an occurrenceId.
+            "activationId",
+            // The declared communication ports this occurrence exports or
+            // attaches, with the site each is handed to the VM at.
+            CommunicationHandoffSpec.FIELD,
+            edu.uva.liftlab.graphchecker.concolic.BoundedLoopComposition
+                    .PLAN_FIELD
     };
-
     private final JsonObject encoded;
     private final List<Goal> goals;
 
     private RegionInstancePlan(JsonObject source) {
         encoded = source.deepCopy();
-        rejectRetired(encoded, "region plan");
         require(sourceKey(), "sourceKey");
         require(occurrenceId(), "occurrenceId");
         require(relationKey(), "relationKey");
-        require(relationContractHash(), "relationContractHash");
         require(regionId(), "regionId");
 
         List<Goal> decoded = new ArrayList<>();
@@ -51,6 +62,11 @@ public final class RegionInstancePlan {
             }
             decoded.add(goal);
         }
+        if (decoded.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "region occurrence requires at least one closure goal: "
+                            + occurrenceId());
+        }
         goals = Collections.unmodifiableList(decoded);
     }
 
@@ -63,17 +79,31 @@ public final class RegionInstancePlan {
 
     public JsonObject json() { return encoded.deepCopy(); }
 
+    /**
+     * Read-only view for whole-plan indexing.  Callers must not mutate it.
+     * Large runtime plans are immutable after decoding; copying the complete
+     * output closure for every target-ranking pass is pure overhead.
+     */
+    public JsonObject jsonView() { return encoded; }
+
     public String sourceKey() { return string(encoded, "sourceKey"); }
 
     public String occurrenceId() { return string(encoded, "occurrenceId"); }
 
     public String relationKey() { return string(encoded, "relationKey"); }
 
-    public String relationContractHash() {
-        return string(encoded, "relationContractHash");
-    }
-
     public String regionId() { return string(encoded, "regionId"); }
+
+    /**
+     * The identity one plan row is unique under.
+     *
+     * <p>A region is coarse - one selected execution-context entry and the
+     * selected nested calls executed in it - so one region occurrence is one
+     * plan row, and the occurrence alone is that identity.</p>
+     */
+    public String occurrenceKey() {
+        return occurrenceId();
+    }
 
     public boolean containsOccurrence(String candidate) {
         return occurrenceId().equals(candidate == null ? ""
@@ -86,8 +116,10 @@ public final class RegionInstancePlan {
         target.addProperty("sourceKey", sourceKey());
         target.addProperty("occurrenceId", occurrenceId());
         target.addProperty("relationKey", relationKey());
-        target.addProperty("relationContractHash", relationContractHash());
         target.addProperty("regionId", regionId());
+        for (String field : OCCURRENCE_FIELDS) {
+            copyIfPresent(encoded, target, field);
+        }
         copyIfPresent(encoded, target, "rootSelector");
         copyIfPresent(encoded, target, "targetMethod");
     }
@@ -102,15 +134,13 @@ public final class RegionInstancePlan {
         private Goal(RegionInstancePlan plan, JsonObject source) {
             this.plan = plan;
             this.encoded = source.deepCopy();
-            rejectRetired(encoded, "closure goal");
-            rejectField(encoded, "executionOccurrence", "closure goal");
             require(goalId(), "goalId");
             try {
                 kind = ClosureGoalKind.fromGoal(encoded);
             } catch (RuntimeException invalid) {
-                throw new IllegalArgumentException(
-                        "goal kind must be OUTPUT_RELATION_CLOSURE or "
-                                + "TARGET_REACH_CLOSURE", invalid);
+                throw new IllegalArgumentException("goal kind must be one of "
+                        + java.util.Arrays.toString(
+                        ClosureGoalKind.values()), invalid);
             }
             runtimeDefinitionMethods = decodeRuntimeDefinitionMethods();
             outputClosure = encoded.has(OutputClosureContract.FIELD)
@@ -124,10 +154,6 @@ public final class RegionInstancePlan {
         public RegionInstancePlan plan() { return plan; }
 
         public String goalId() { return string(encoded, "goalId"); }
-
-        public String pathSeedKey() {
-            return string(encoded, "pathSeedKey");
-        }
 
         public ClosureGoalKind kind() { return kind; }
 
@@ -163,12 +189,38 @@ public final class RegionInstancePlan {
             return array(encoded, "symbolize").deepCopy();
         }
 
+        /** Read-only traversal view for target/producer graph discovery. */
+        public JsonArray symbolizeView() {
+            return array(encoded, "symbolize");
+        }
+
         public JsonArray branches() {
             return array(encoded, "branches").deepCopy();
         }
 
+        /** Read-only traversal view for target ranking and guard counting. */
+        public JsonArray branchesView() {
+            return array(encoded, "branches");
+        }
+
         public JsonArray edgeBindings() {
             return array(encoded, "edgeBindings").deepCopy();
+        }
+
+        /**
+         * Read-only traversal view for graph discovery.  The canonical plan
+         * owns this array; callers must copy individual rows before storing
+         * or changing them.  Avoiding a deep copy here matters because one
+         * bounded supergraph can contain the same edge ledger on hundreds of
+         * occurrence goals.
+         */
+        public JsonArray edgeBindingsView() {
+            return array(encoded, "edgeBindings");
+        }
+
+        /** Shared locations this goal asks its replay to select as carriers. */
+        public JsonArray sharedCarriers() {
+            return array(encoded, ExecutionTask.SHARED_CARRIERS).deepCopy();
         }
 
         void writeTaskIdentityTo(JsonObject target) {
@@ -177,50 +229,27 @@ public final class RegionInstancePlan {
 
         void writeTaskPayloadTo(JsonObject target) {
             target.addProperty("goalId", goalId());
-            if (encoded.has("pathSeedKey")) {
-                target.add("pathSeedKey",
-                        encoded.get("pathSeedKey").deepCopy());
-            }
+            copyIfPresent(encoded, target, ExecutionTask.REPLAY_ENTRY);
             if (outputClosure != null) {
                 target.add(OutputClosureContract.FIELD,
                         outputClosure.toJson());
             }
-        }
-
-        /** Stable grouping key for planner goals before relation keys exist. */
-        public static String semanticGoalKey(
-                JsonObject goal, String regionId) {
-            List<String> outputs = new ArrayList<>();
-            for (JsonElement element : array(object(goal,
-                    OutputClosureContract.FIELD), "members")) {
-                if (!element.isJsonObject()) continue;
-                String port = string(object(element.getAsJsonObject(),
-                        "output"), "portId");
-                if (!port.isEmpty()) outputs.add(port);
+            // Carrier declarations are the planner's, and only the replay can
+            // act on them, so they pass through untouched.  An absent member
+            // stays absent: a task that declares no carrier selects none, and
+            // inventing one here would version a location the target slice
+            // never asked about.
+            JsonArray carriers = sharedCarriers();
+            if (carriers.size() > 0) {
+                target.add(ExecutionTask.SHARED_CARRIERS, carriers);
             }
-            Collections.sort(outputs);
-            List<String> inputs = new ArrayList<>();
-            for (JsonElement element : array(goal, "symbolize")) {
-                if (!element.isJsonObject()) continue;
-                String port = string(element.getAsJsonObject(), "portId");
-                if (port.isEmpty()) {
-                    port = string(element.getAsJsonObject(), "symbol");
-                }
-                if (!port.isEmpty()) inputs.add(port);
-            }
-            Collections.sort(inputs);
-            return string(goal, "kind") + "\n" + regionId + "\n"
-                    + string(goal, "pathSeedKey") + "\n" + outputs
-                    + "\n" + inputs + "\n" + admissionIdentity(goal);
         }
 
         private OutputClosureContract decodeOutputClosure() {
             OutputClosureContract contract = OutputClosureCodec.decode(encoded);
             OutputClosureContract.Producer producer = contract.producer();
             if (!plan.regionId().equals(producer.regionId())
-                    || !plan.relationKey().equals(producer.relationKey())
-                    || !plan.relationContractHash().equals(
-                    producer.contractHash())) {
+                    || !plan.relationKey().equals(producer.relationKey())) {
                 throw new IllegalArgumentException(
                         "outputClosure producer conflicts with relation");
             }
@@ -248,32 +277,6 @@ public final class RegionInstancePlan {
             return Collections.unmodifiableSet(methods);
         }
 
-        private static String admissionIdentity(JsonObject goal) {
-            JsonObject admission = object(goal, "admission");
-            List<String> blockers = new ArrayList<>();
-            for (JsonElement element : array(admission, "blockers")) {
-                if (element.isJsonPrimitive()
-                        && element.getAsJsonPrimitive().isString()) {
-                    blockers.add(element.getAsString());
-                }
-            }
-            Collections.sort(blockers);
-            return string(admission, "state") + "\n" + blockers;
-        }
-    }
-
-    private static void rejectRetired(JsonObject value, String label) {
-        for (String field : RETIRED_FIELDS) {
-            rejectField(value, field, label);
-        }
-    }
-
-    private static void rejectField(
-            JsonObject value, String field, String label) {
-        if (value.has(field)) {
-            throw new IllegalArgumentException(label
-                    + " contains retired field " + field);
-        }
     }
 
     private static String require(String value, String field) {

@@ -1,3 +1,0 @@
-# Mark the exact application construction instead:
-# throw new @CausynthExceptionTarget("reach-bug") ReachBugException();
-exception_target_id: reach-bug

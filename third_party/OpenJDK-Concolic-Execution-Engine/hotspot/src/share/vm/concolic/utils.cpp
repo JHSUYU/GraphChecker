@@ -177,7 +177,8 @@ jdouble OopUtils::java_double_to_c(oop double_obj) {
 }
 
 Klass *OopUtils::get_fd_by_name(oop obj, const std::string &name, const std::string &signature, fieldDescriptor& ret_fd) {
-  Thread *thread = ConcolicMngr::ctx->get_thread();
+  Thread *thread = ConcolicMngr::ctx == NULL
+      ? Thread::current() : ConcolicMngr::ctx->get_thread();
   TempNewSymbol field_name = SymbolTable::new_symbol(name.c_str(), thread);
   TempNewSymbol field_signature = SymbolTable::new_symbol(signature.c_str(), thread);
   Klass *klass = obj->klass()->find_field(field_name, field_signature, &ret_fd);
@@ -193,7 +194,8 @@ Klass *OopUtils::get_local_fd_by_name(
     const std::string &signature, fieldDescriptor& ret_fd) {
   if (obj == NULL || !obj->is_instance()) return NULL;
 
-  Thread *thread = ConcolicMngr::ctx->get_thread();
+  Thread *thread = ConcolicMngr::ctx == NULL
+      ? Thread::current() : ConcolicMngr::ctx->get_thread();
   TempNewSymbol field_name = SymbolTable::new_symbol(name.c_str(), thread);
   TempNewSymbol field_signature =
       SymbolTable::new_symbol(signature.c_str(), thread);

@@ -44,8 +44,15 @@ import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-/** Finds exact {@link CausynthExceptionTarget} NEW instructions in inputs. */
-final class ExceptionTargetAnnotationScanner {
+/**
+ * Finds exact {@link CausynthExceptionTarget} NEW instructions in inputs.
+ *
+ * <p>{@link #scan} is public because it needs nothing but ASM: an integration
+ * layer can ask which targets a set of class outputs declares without
+ * starting Soot. {@link #select} stays package-private - it resolves the Soot
+ * signature and is only meaningful inside a running analysis.</p>
+ */
+public final class ExceptionTargetAnnotationScanner {
     private static final String ANNOTATION_DESCRIPTOR =
             Type.getDescriptor(CausynthExceptionTarget.class);
 
@@ -91,7 +98,7 @@ final class ExceptionTargetAnnotationScanner {
                 unresolved.sourceLine);
     }
 
-    static List<ExceptionTargetSite> scan(List<String> inputs)
+    public static List<ExceptionTargetSite> scan(List<String> inputs)
             throws IOException {
         Map<String, ExceptionTargetSite> unique = new LinkedHashMap<>();
         if (inputs != null) {

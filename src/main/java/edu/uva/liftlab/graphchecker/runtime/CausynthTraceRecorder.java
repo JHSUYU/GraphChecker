@@ -6,9 +6,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.ProtocolBoundaryScalarConfig;
-
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
 import java.io.File;
@@ -16,8 +13,6 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.lang.reflect.Array;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
@@ -39,7 +34,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
@@ -65,8 +59,6 @@ public final class CausynthTraceRecorder {
     private static volatile File outputDir;
     private static volatile String testName;
     private static volatile int maxEvents;
-    /** Immutable declarations shared by all recording threads. */
-    private static volatile ProtocolBoundaryScalarConfig boundaryScalars;
     /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
     private static boolean traceWriteFailure;
     private static BufferedWriter traceWriter;
@@ -103,10 +95,6 @@ public final class CausynthTraceRecorder {
         }
         File graph = skeletonOnly ? null
                 : new File(requiredArg(params, "candidate-graph"));
-        File regions = skeletonOnly ? null
-                : new File(requiredArg(params, "regions"));
-        File regionEdges = skeletonOnly ? null
-                : new File(requiredArg(params, "region-edges"));
         String configuredOutput = params.get("output-dir");
         File planOutputDirectory = configuredOutput == null
                 || configuredOutput.trim().isEmpty()
@@ -123,8 +111,7 @@ public final class CausynthTraceRecorder {
                         "refined_dataflow_edges.jsonl.gz")
                         : new File(configuredRefined.trim());
                 aggregateStateTrace(directory, graph, candidateSkeletons,
-                        refinedGraph, regions, regionEdges, test,
-                        planOutputDirectory);
+                        refinedGraph, test, planOutputDirectory);
             }
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
@@ -148,7 +135,6 @@ public final class CausynthTraceRecorder {
         String threadName = thread.getName();
         long tid = thread.getId();
         int objectId = identity(receiver);
-        String process = inferProcessName(method, threadName);
         Deque<ActiveCall> calls = ACTIVE_CALLS.get();
         ActiveCall parent = calls.peek();
         Deque<ActiveCallSite> sites = ACTIVE_CALL_SITES.get();
@@ -159,13 +145,12 @@ public final class CausynthTraceRecorder {
                 ? RuntimeTraceContext.enterRoot(receiver)
                 : RuntimeTraceContext.current();
         RuntimeRegionPlanner.MethodEvent event =
-                new RuntimeRegionPlanner.MethodEvent(id, testName, process,
+                new RuntimeRegionPlanner.MethodEvent(id, testName,
                         threadName, tid, method, objectId,
                         runtimeType(receiver), id, parentCallId, parentSiteId,
-                        context.ownerId, context.laneId, context.spanId,
-                        context.parentSpanId, context.remoteParentSpanId,
-                        context.source, context.requestKey,
-                        context.requestApi);
+                        context.laneId, context.spanId, context.parentSpanId,
+                        context.remoteParentSpanId, context.source,
+                        context.requestKey, context.requestApi);
         calls.push(new ActiveCall(id, parentSiteId, method,
                 context.spanId, parent == null));
         if (contextOnlyConcolicReplay) {
@@ -201,12 +186,11 @@ public final class CausynthTraceRecorder {
         String threadName = thread.getName();
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
-                        inferProcessName(method, threadName), threadName,
-                        thread.getId(), method, 0, "", id,
-                        parentCallId, 0L, context.ownerId, context.laneId,
-                        context.spanId, context.parentSpanId,
-                        context.remoteParentSpanId, context.source,
-                        context.requestKey, context.requestApi);
+                        threadName, thread.getId(), method, 0, "", id,
+                        parentCallId, 0L, context.laneId, context.spanId,
+                        context.parentSpanId, context.remoteParentSpanId,
+                        context.source, context.requestKey,
+                        context.requestApi);
         if (!contextOnlyConcolicReplay) {
             synchronized (LOCK) {
                 writeTraceLine(event);
@@ -226,10 +210,6 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(value);
         event.primitiveValue = safe(primitiveValue);
         emitExecutionEvent(event);
-        emitBoundaryScalars(boundaryScalars.serverLeaves(event.method,
-                        "REQUEST", argumentIndex), "SERVER", "REQUEST",
-                "METHOD_ARGUMENT", event.method, callId, 0L, event.id,
-                value);
     }
 
     public static long beginCall(long ownerCallId, String caller, int unitIndex,
@@ -273,10 +253,6 @@ public final class CausynthTraceRecorder {
             RuntimeTraceContext.captureAsync(value);
         }
         emitExecutionEvent(event);
-        emitBoundaryScalars(boundaryScalars.clientLeaves(
-                        event.declaredCallee, "REQUEST", argumentIndex),
-                "CLIENT", "REQUEST", "CALL_ARGUMENT", event.declaredCallee,
-                event.callId, invocationId, event.id, value);
     }
 
     public static void endCall(long invocationId, Object returnValue,
@@ -292,10 +268,6 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(returnValue);
         event.primitiveValue = safe(primitiveValue);
         emitExecutionEvent(event);
-        emitBoundaryScalars(boundaryScalars.clientLeaves(
-                        event.declaredCallee, "RESPONSE", -1),
-                "CLIENT", "RESPONSE", "CALL_RETURN", event.declaredCallee,
-                event.callId, invocationId, event.id, returnValue);
         removeCallSite(invocationId);
     }
 
@@ -338,10 +310,6 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(returnValue);
         event.primitiveValue = safe(primitiveValue);
         emitExecutionEvent(event);
-        emitBoundaryScalars(boundaryScalars.serverLeaves(event.method,
-                        "RESPONSE", -1), "SERVER", "RESPONSE",
-                "METHOD_RETURN", event.method, resolvedCallId, 0L, event.id,
-                returnValue);
         removeCall(resolvedCallId);
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
@@ -467,16 +435,60 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Records an RPC boundary/span and an optional receiver-side owner. */
+    /**
+     * Switches off application RPC correlation for one run.
+     *
+     * <p>An ablation control, not a tuning knob. The application names an
+     * exchange by calling {@link #recordRpc}; that name is the only thing
+     * that says two boundary crossings are one delivery. Turning it off is
+     * how a run demonstrates what the pipeline does when the correlation is
+     * absent: the exchange must become a named gap rather than an edge
+     * recovered from callsites and matching values.</p>
+     */
+    private static final String RPC_CORRELATION_PROPERTY =
+            "causynth.trace.rpc.correlation";
+
+    private static boolean rpcCorrelationEnabled() {
+        String configured = firstNonBlank(
+                System.getProperty(RPC_CORRELATION_PROPERTY),
+                System.getenv("CAUSYNTH_TRACE_RPC_CORRELATION"));
+        return configured == null || configured.trim().isEmpty()
+                || !"false".equalsIgnoreCase(configured.trim());
+    }
+
+    /**
+     * Records one fully stated RPC boundary/span and an optional receiver-side
+     * owner.
+     *
+     * <p>One exchange has two halves and each half has a send and a receive,
+     * so one correlation carries four legs.  The correlation names the
+     * exchange and only the exchange.  The attempt separates retries and the
+     * half separates request from response for the causal interaction trace;
+     * neither is inferred from a direction or payload value.</p>
+     */
     public static void recordRpc(String direction, String transport,
-                                 String correlationId, Object localOwner) {
+                                 String correlationId, String attemptId,
+                                 String half,
+                                 Object localOwner) {
         if (direction == null || transport == null
-                || correlationId == null) {
+                || correlationId == null
+                || !rpcCorrelationEnabled()) {
             return;
         }
         initialize();
+        String normalizedAttempt = safe(attemptId).trim();
+        String normalizedHalf = safe(half).trim();
         RuntimeTraceContext.View context = RuntimeTraceContext.rpc(direction,
-                transport, correlationId, localOwner);
+                transport, correlationId, normalizedHalf, localOwner);
+        // The same declared leg carries the live broker handles of the leaves
+        // inside this message.  That transfer is the propagation itself, so
+        // it happens whether or not this pass also serializes the trace.
+        ConcolicRegionRuntime.observeExchangeLeg(direction, transport,
+                correlationId, normalizedHalf);
+        if ("SEND".equalsIgnoreCase(safe(direction))
+                && "RESPONSE".equalsIgnoreCase(normalizedHalf)) {
+            ConcolicRegionRuntime.completeResponseHandoff();
+        }
         if (contextOnlyConcolicReplay) return;
         long id = EVENT_COUNTER.incrementAndGet();
         if (id > maxEvents) {
@@ -489,13 +501,14 @@ public final class CausynthTraceRecorder {
         RuntimeRegionPlanner.ProtocolEvent event =
                 new RuntimeRegionPlanner.ProtocolEvent(id,
                         safe(direction).toUpperCase(), safe(transport),
-                        safe(correlationId),
-                        inferProcessName(method, thread.getName()),
-                        thread.getName(), thread.getId(), method,
+                        safe(correlationId), normalizedAttempt,
+                        normalizedHalf,
+                        thread.getName(),
+                        thread.getId(), method,
                         call == null ? 0L : call.callId,
                         site == null ? 0L : site.invocationId,
                         site == null ? "" : site.declaredCallee,
-                        context.ownerId, context.laneId, context.spanId,
+                        context.laneId, context.spanId,
                         context.parentSpanId, context.remoteParentSpanId,
                         context.source, context.requestKey,
                         context.requestApi);
@@ -511,7 +524,8 @@ public final class CausynthTraceRecorder {
         initialize();
         SourceRef source = RuntimeTraceContext.registerSource(anchor,
                 new SourceRef(kind, role, sourceId, epoch));
-        writeSourceTraceLine("SOURCE_REGISTER", source, null, 0L, "");
+        writeSourceTraceLine("SOURCE_REGISTER", source, null, 0L, "",
+                identity(anchor));
     }
 
     /** Binds a service/handler object to an already registered source. */
@@ -520,7 +534,8 @@ public final class CausynthTraceRecorder {
         SourceRef source = RuntimeTraceContext.registerSourceAlias(alias,
                 anchor);
         writeSourceTraceLine("SOURCE_ALIAS", source, null, 0L,
-                alias == null ? "" : alias.getClass().getName());
+                alias == null ? "" : alias.getClass().getName(),
+                identity(alias));
     }
 
     /** Starts an external API request without changing the application data. */
@@ -531,14 +546,14 @@ public final class CausynthTraceRecorder {
                 apiName);
         writeSourceTraceLine("REQUEST_BEGIN",
                 RuntimeTraceContext.currentSource(), null, requestId,
-                safe(apiName));
+                safe(apiName), 0);
         return requestId;
     }
 
     public static void endSourceRequest(long requestId, String apiName) {
         SourceRef source = RuntimeTraceContext.currentSource();
         writeSourceTraceLine("REQUEST_END", source, null, requestId,
-                safe(apiName));
+                safe(apiName), 0);
         RuntimeTraceContext.endRequest(requestId);
     }
 
@@ -550,288 +565,8 @@ public final class CausynthTraceRecorder {
         SourceRef before = RuntimeTraceContext.sourceFor(stableAnchor);
         SourceRef after = RuntimeTraceContext.restartSource(stableAnchor,
                 new SourceRef(kind, role, sourceId, epoch));
-        writeSourceTraceLine("SOURCE_RESTART", before, after, 0L, "");
-    }
-
-    /**
-     * Records only configured scalar leaves at a logical call boundary.
-     * Reflection follows canonical declared fields and bounded reference-array
-     * indices from the boundary value itself.  A traversal failure emits one
-     * named gap and never a partial set of values for that declaration.
-     */
-    private static void emitBoundaryScalars(
-            List<ProtocolBoundaryScalarConfig.Leaf> leaves, String side,
-            String direction, String boundaryKind, String boundaryMethod,
-            long callId, long invocationId, long boundaryEventSeq,
-            Object root) {
-        if (contextOnlyConcolicReplay || leaves == null || leaves.isEmpty()
-                || boundaryEventSeq <= 0L) {
-            return;
-        }
-        for (ProtocolBoundaryScalarConfig.Leaf leaf : leaves) {
-            List<BoundaryScalarObservation> observations = new ArrayList<>();
-            List<String> containerObservations = new ArrayList<>();
-            BoundaryScalarGap gap = projectBoundaryScalar(leaf, root,
-                    observations, containerObservations);
-            if (gap != null) {
-                writeBoundaryScalarGap(leaf, side, direction, boundaryKind,
-                        boundaryMethod, callId, invocationId,
-                        boundaryEventSeq, identity(root), gap,
-                        containerObservations);
-                continue;
-            }
-            for (BoundaryScalarObservation observation : observations) {
-                writeBoundaryScalarValue(leaf, side, direction, boundaryKind,
-                        boundaryMethod, callId, invocationId,
-                        boundaryEventSeq, identity(root), observation,
-                        observations.size(), containerObservations);
-            }
-        }
-    }
-
-    private static BoundaryScalarGap projectBoundaryScalar(
-            ProtocolBoundaryScalarConfig.Leaf leaf, Object root,
-            List<BoundaryScalarObservation> output,
-            List<String> containerObservations) {
-        List<BoundaryScalarObservation> staged = new ArrayList<>();
-        BoundaryScalarGap gap = descendBoundaryScalar(leaf, root, 0,
-                new ArrayList<Integer>(), 0, staged,
-                containerObservations);
-        if (gap == null && staged.isEmpty()
-                && leaf.containerBound() > 0) {
-            // Empty and heterogeneous arrays must still leave explicit
-            // schema-4 evidence.  Otherwise a valid empty selection is
-            // indistinguishable from a pre-migration trace.
-            return new BoundaryScalarGap(
-                    "NO_CONFIGURED_SCALAR_ELEMENTS", -1);
-        }
-        if (gap == null) output.addAll(staged);
-        return gap;
-    }
-
-    private static BoundaryScalarGap descendBoundaryScalar(
-            ProtocolBoundaryScalarConfig.Leaf leaf, Object value, int step,
-            List<Integer> indices, int leafReceiverObjectId,
-            List<BoundaryScalarObservation> output,
-            List<String> containerObservations) {
-        if (value == null) {
-            return new BoundaryScalarGap("NULL_PATH_VALUE", -1);
-        }
-        List<String> path = leaf.declaredPath();
-        if (step >= path.size()) {
-            if (!boundaryScalarValue(leaf.javaType(), value)) {
-                return new BoundaryScalarGap("SCALAR_TYPE_MISMATCH", -1);
-            }
-            output.add(new BoundaryScalarObservation(indices,
-                    leafReceiverObjectId, identity(value),
-                    String.valueOf(value), false));
-            return null;
-        }
-        String pathStep = path.get(step);
-        if (ProtocolBoundaryScalarConfig.ARRAY_ELEMENT.equals(pathStep)) {
-            Class<?> type = value.getClass();
-            if (!type.isArray() || type.getComponentType().isPrimitive()) {
-                return new BoundaryScalarGap(
-                        "REFERENCE_ARRAY_TYPE_MISMATCH", -1);
-            }
-            int length = Array.getLength(value);
-            containerObservations.add(containerObservation(indices, length));
-            if (length > leaf.containerBound()) {
-                return new BoundaryScalarGap("CONTAINER_BOUND_INSUFFICIENT",
-                        length);
-            }
-            for (int index = 0; index < length; index++) {
-                Object element = Array.get(value, index);
-                if (step + 1 < path.size()
-                        && !ProtocolBoundaryScalarConfig.ARRAY_ELEMENT.equals(
-                        path.get(step + 1))) {
-                    FieldPathSpec.DeclaredField next =
-                            FieldPathSpec.declaredField(path.get(step + 1));
-                    if (element == null || next != null
-                            && !declaresOwner(element.getClass(),
-                            next.owner())) {
-                        // A heterogeneous reference array can carry several
-                        // declared variants.  A configured subclass field
-                        // selects only elements of that declared variant.
-                        continue;
-                    }
-                }
-                List<Integer> nested = new ArrayList<>(indices);
-                nested.add(index);
-                BoundaryScalarGap gap = descendBoundaryScalar(leaf,
-                        element, step + 1, nested,
-                        leafReceiverObjectId, output,
-                        containerObservations);
-                if (gap != null) return gap;
-            }
-            return null;
-        }
-
-        FieldPathSpec.DeclaredField declared =
-                FieldPathSpec.declaredField(pathStep);
-        Field field = exactDeclaredField(value.getClass(), declared);
-        if (field == null) {
-            return new BoundaryScalarGap("DECLARED_FIELD_UNAVAILABLE", -1);
-        }
-        try {
-            if (!field.isAccessible()) field.setAccessible(true);
-            Object fieldValue = field.get(value);
-            int receiver = identity(value);
-            if (step == path.size() - 1 && fieldValue == null
-                    && "java.lang.String".equals(leaf.javaType())) {
-                output.add(new BoundaryScalarObservation(indices, receiver,
-                        0, "", true));
-                return null;
-            }
-            return descendBoundaryScalar(leaf, fieldValue, step + 1,
-                    indices, receiver, output, containerObservations);
-        } catch (RuntimeException | IllegalAccessException inaccessible) {
-            return new BoundaryScalarGap("DECLARED_FIELD_UNAVAILABLE", -1);
-        }
-    }
-
-    private static Field exactDeclaredField(
-            Class<?> runtimeClass, FieldPathSpec.DeclaredField declared) {
-        if (runtimeClass == null || declared == null) return null;
-        for (Class<?> type = runtimeClass; type != null;
-             type = type.getSuperclass()) {
-            if (!declared.owner().equals(type.getName())) continue;
-            try {
-                Field field = type.getDeclaredField(declared.name());
-                return fieldType(field.getType()).equals(declared.type())
-                        ? field : null;
-            } catch (NoSuchFieldException missing) {
-                return null;
-            }
-        }
-        return null;
-    }
-
-    private static boolean declaresOwner(Class<?> runtimeClass,
-                                         String owner) {
-        for (Class<?> type = runtimeClass; type != null;
-             type = type.getSuperclass()) {
-            if (safe(owner).equals(type.getName())) return true;
-        }
-        return false;
-    }
-
-    private static String containerObservation(List<Integer> prefix,
-                                               int width) {
-        StringBuilder encoded = new StringBuilder();
-        if (prefix.isEmpty()) {
-            encoded.append("ROOT");
-        } else {
-            for (int index = 0; index < prefix.size(); index++) {
-                if (index > 0) encoded.append(',');
-                encoded.append(prefix.get(index));
-            }
-        }
-        return encoded.append('=').append(width).toString();
-    }
-
-    private static String fieldType(Class<?> type) {
-        if (!type.isArray()) return type.getName();
-        int dimensions = 0;
-        Class<?> component = type;
-        while (component.isArray()) {
-            dimensions++;
-            component = component.getComponentType();
-        }
-        StringBuilder result = new StringBuilder(component.getName());
-        for (int index = 0; index < dimensions; index++) {
-            result.append("[]");
-        }
-        return result.toString();
-    }
-
-    private static boolean boundaryScalarValue(String javaType,
-                                               Object value) {
-        if (value == null) return "java.lang.String".equals(javaType);
-        if ("java.lang.String".equals(javaType)) {
-            return value instanceof String;
-        }
-        if ("boolean".equals(javaType)) return value instanceof Boolean;
-        if ("char".equals(javaType)) return value instanceof Character;
-        return value instanceof Number;
-    }
-
-    private static void writeBoundaryScalarValue(
-            ProtocolBoundaryScalarConfig.Leaf leaf, String side,
-            String direction, String boundaryKind, String boundaryMethod,
-            long callId, long invocationId, long boundaryEventSeq,
-            int rootObjectId, BoundaryScalarObservation observation,
-            int leafValueCount, List<String> containerObservations) {
-        long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) return;
-        synchronized (LOCK) {
-            writeTraceRow(
-                    "schemaVersion", 4,
-                    "event", "RPC_BOUNDARY_SCALAR",
-                    "seq", id,
-                    "mappingId", leaf.mappingId(),
-                    "leafId", leaf.leafId(),
-                    "protocolDirection", direction,
-                    "side", side,
-                    "port", leaf.port(),
-                    "boundaryKind", boundaryKind,
-                    "boundaryMethod", boundaryMethod,
-                    "callId", callId,
-                    "invocationId", invocationId,
-                    "boundaryEventSeq", boundaryEventSeq,
-                    "boundaryRootObjectId", rootObjectId,
-                    "leafReceiverObjectId",
-                    observation.leafReceiverObjectId,
-                    "valueObjectId", observation.valueObjectId,
-                    "declaredPath", leaf.declaredPath(),
-                    "arrayIndices", observation.indices,
-                    "javaType", leaf.javaType(),
-                    "primitiveValue", observation.primitiveValue,
-                    "nullValue", observation.nullValue,
-                    "containerBound", leaf.containerBound(),
-                    "leafObservationComplete", true,
-                    "leafValueCount", leafValueCount,
-                    "containerObservations", containerObservations,
-                    "valueAuthority",
-                    ProtocolBoundaryScalarConfig.VALUE_AUTHORITY);
-        }
-    }
-
-    private static void writeBoundaryScalarGap(
-            ProtocolBoundaryScalarConfig.Leaf leaf, String side,
-            String direction, String boundaryKind, String boundaryMethod,
-            long callId, long invocationId, long boundaryEventSeq,
-            int rootObjectId, BoundaryScalarGap gap,
-            List<String> containerObservations) {
-        long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) return;
-        synchronized (LOCK) {
-            writeTraceRow(
-                    "schemaVersion", 4,
-                    "event", "RPC_BOUNDARY_SCALAR_GAP",
-                    "seq", id,
-                    "mappingId", leaf.mappingId(),
-                    "leafId", leaf.leafId(),
-                    "protocolDirection", direction,
-                    "side", side,
-                    "port", leaf.port(),
-                    "boundaryKind", boundaryKind,
-                    "boundaryMethod", boundaryMethod,
-                    "callId", callId,
-                    "invocationId", invocationId,
-                    "boundaryEventSeq", boundaryEventSeq,
-                    "boundaryRootObjectId", rootObjectId,
-                    "declaredPath", leaf.declaredPath(),
-                    "javaType", leaf.javaType(),
-                    "containerBound", leaf.containerBound(),
-                    "observedContainerWidth", gap.observedWidth,
-                    "leafObservationComplete", true,
-                    "leafValueCount", 0,
-                    "containerObservations", containerObservations,
-                    "gap", gap.reason,
-                    "valueAuthority",
-                    ProtocolBoundaryScalarConfig.GAP_AUTHORITY);
-        }
+        writeSourceTraceLine("SOURCE_RESTART", before, after, 0L, "",
+                identity(stableAnchor));
     }
 
     private static ExecutionEvent newExecutionEvent(String kind, String method,
@@ -978,6 +713,26 @@ public final class CausynthTraceRecorder {
         return safe(method) + "#u" + unitIndex;
     }
 
+    /**
+     * The trace identity this run already gave {@code value}, or 0 when the
+     * trace has never recorded it.
+     *
+     * <p>Lookup only, deliberately: {@link #identity} assigns on miss, and a
+     * caller outside the tracing path that assigned would shift every later
+     * object's number and change the trace it is trying to describe. An
+     * object the trace never saw has no cross-session name here, and 0 says
+     * exactly that rather than inventing one.</p>
+     */
+    static int recordedObjectId(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        synchronized (LOCK) {
+            Integer existing = OBJECT_IDS.get(value);
+            return existing == null ? 0 : existing;
+        }
+    }
+
     private static int identity(Object value) {
         if (value == null) {
             return 0;
@@ -1079,8 +834,6 @@ public final class CausynthTraceRecorder {
                     : new File(configuredOutputDir, "runtime_trace.jsonl");
             BufferedWriter configuredWriter = null;
             try {
-                ProtocolBoundaryScalarConfig configuredBoundaryScalars =
-                        ProtocolBoundaryScalarConfig.fromConfiguration();
                 if (configuredContextOnly) {
                     // Keep the exact method/call-site TLS alive for every
                     // accessor invocation.  Applying the ordinary trace event
@@ -1091,7 +844,6 @@ public final class CausynthTraceRecorder {
                     traceWriteFailure = false;
                     outputDir = null;
                     traceWriter = null;
-                    boundaryScalars = configuredBoundaryScalars;
                     contextOnlyConcolicReplay = true;
                     INITIALIZED.set(true);
                     return;
@@ -1123,7 +875,6 @@ public final class CausynthTraceRecorder {
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
-                boundaryScalars = configuredBoundaryScalars;
                 contextOnlyConcolicReplay = false;
                 INITIALIZED.set(true);
             } catch (IOException | RuntimeException failure) {
@@ -1193,8 +944,8 @@ public final class CausynthTraceRecorder {
 
     private static void aggregateStateTrace(
             File directory, File candidateGraph, File selectedSkeletons,
-            File refinedGraph, File regionFile, File regionEdgeFile,
-            String test, File planOutputDirectory) throws IOException {
+            File refinedGraph, String test, File planOutputDirectory)
+            throws IOException {
         synchronized (LOCK) {
             clearInMemoryTrace();
             requireClosedTrace(new File(directory,
@@ -1203,8 +954,8 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test, false);
             trace.sort();
+            reattributeFramesToRegisteredOwners(trace);
             writeSourceEvents(planOutputDirectory, trace.sources);
-            requireConfiguredBoundaryScalarEvidence(trace);
             long traceLoadMillis = elapsedMillis(traceLoadStart);
             Set<String> observedMethods = new LinkedHashSet<>();
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
@@ -1212,7 +963,8 @@ public final class CausynthTraceRecorder {
             }
             RuntimeRegionPlanner.Result activationGraph =
                     RuntimeRegionPlanner.planSkeletonGraph(
-                            selectedSkeletons, trace.methods);
+                            selectedSkeletons, trace.methods,
+                            trace.execution, trace.protocol);
             long refinementStart = System.nanoTime();
             RuntimeRefinedGraphBuilder.Result refinement =
                     RuntimeRefinedGraphBuilder.refine(candidateGraph,
@@ -1220,6 +972,7 @@ public final class CausynthTraceRecorder {
                             activationGraph.runtimeInstances,
                             trace.methods, trace.execution,
                             trace.fields, trace.arrays, trace.protocol,
+                            activationGraph.occurrenceLinks,
                             refinedGraph.toPath());
             long refinementMillis = elapsedMillis(refinementStart);
             long candidatePlanningStart = System.nanoTime();
@@ -1233,9 +986,9 @@ public final class CausynthTraceRecorder {
             RuntimeSelectedRegionFinalizer.Result closure =
                     RuntimeSelectedRegionFinalizer.finalizeRegions(
                     refinement.rows, refinedGraph, selectedSkeletons,
-                    regionFile, regionEdgeFile,
                     observedMethods, activationGraph.runtimeInstances,
-                    branchObservations(trace.execution));
+                    branchObservations(trace.execution, trace.methods),
+                    activationGraph.occurrenceLinks);
             long candidatePlanningMillis =
                     elapsedMillis(candidatePlanningStart);
             long planBindingStart = System.nanoTime();
@@ -1245,11 +998,13 @@ public final class CausynthTraceRecorder {
             for (Map<String, Object> row : closure.regionEdges) {
                 RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
             }
-            writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
-                    closure.regions, closure.regionEdges,
-                    regionFile, regionEdgeFile, trace,
+            RuntimeRegionPlanner.Result planned = writeRuntimeRegionPlans(
+                    planOutputDirectory, refinedFlowIndex, closure.regions,
+                    closure.regionEdges, trace,
                     activationGraph.runtimeInstances);
             long planBindingMillis = elapsedMillis(planBindingStart);
+            writeCommunicationEvidence(planOutputDirectory, activationGraph,
+                    planned, closure.gaps);
             writeFile(new File(planOutputDirectory,
                             "runtime_refinement_manifest.json"),
                     CausynthJson.objectWithoutNulls(
@@ -1263,11 +1018,26 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Compact, lossless BRANCH rows used to bind fatal sites to activations. */
+    /**
+     * Compact, lossless BRANCH rows used to bind fatal sites to activations.
+     *
+     * <p>Each row also carries the stable logical source current when the
+     * method owning the branch was entered.  A target region attributes its
+     * relation to the source of the event its selected failure branch was
+     * observed on, and that event lives inside the root subtree, so the root
+     * activation row cannot answer for it.</p>
+     */
     private static List<Map<String, Object>> branchObservations(
-            Collection<RuntimeRegionPlanner.RuntimeEvent> events) {
+            Collection<RuntimeRegionPlanner.RuntimeEvent> events,
+            Collection<RuntimeRegionPlanner.MethodEvent> methods) {
         List<Map<String, Object>> result = new ArrayList<>();
         if (events == null) return result;
+        Map<Long, String> sourceKeyByCall = new LinkedHashMap<>();
+        if (methods != null) {
+            for (RuntimeRegionPlanner.MethodEvent method : methods) {
+                sourceKeyByCall.put(method.callId, method.sourceKey);
+            }
+        }
         for (RuntimeRegionPlanner.RuntimeEvent event : events) {
             if (!"BRANCH".equals(event.kind) || event.outcome == null
                     || event.callId <= 0L || event.siteId.isEmpty()) {
@@ -1280,6 +1050,10 @@ public final class CausynthTraceRecorder {
             row.put("callId", event.callId);
             row.put("siteId", event.siteId);
             row.put("outcome", event.outcome);
+            String callSourceKey = sourceKeyByCall.get(event.callId);
+            if (callSourceKey != null && !callSourceKey.isEmpty()) {
+                row.put("callSourceKey", callSourceKey);
+            }
             if (event.successorIndex != null) {
                 row.put("successorIndex", event.successorIndex);
             }
@@ -1304,6 +1078,7 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test, true);
             trace.sort();
+            reattributeFramesToRegisteredOwners(trace);
             File skeletons = new File(outputDirectory,
                     "region_skeletons.jsonl");
             if (candidateSkeletons == null) {
@@ -1339,8 +1114,6 @@ public final class CausynthTraceRecorder {
         Map<String, String> selectionByRegion = new LinkedHashMap<>();
         Map<String, String> anchorByRegion = new LinkedHashMap<>();
         Map<String, Set<String>> anchorsByRegion = new LinkedHashMap<>();
-        Map<String, Set<String>> sourceRegionsByRegion =
-                new LinkedHashMap<>();
         for (Map<String, Object> instance : runtimeInstances) {
             String region = String.valueOf(instance.get("regionId"));
             String root = String.valueOf(instance.get("rootMethod"));
@@ -1350,19 +1123,6 @@ public final class CausynthTraceRecorder {
                         + "multiple execution-context roots: " + region);
             }
             activationCounts.merge(region, 1, Integer::sum);
-            Set<String> sourceRegions = sourceRegionsByRegion
-                    .computeIfAbsent(region,
-                            ignored -> new LinkedHashSet<>());
-            Object encodedRegions = instance.get("regionIds");
-            if (encodedRegions instanceof Collection<?>) {
-                for (Object sourceRegion
-                        : (Collection<?>) encodedRegions) {
-                    sourceRegions.add(String.valueOf(sourceRegion));
-                }
-            }
-            if (sourceRegions.isEmpty()) {
-                sourceRegions.add(region);
-            }
             String selection = String.valueOf(instance.get("selection"));
             String previousSelection = selectionByRegion.get(region);
             if (previousSelection == null
@@ -1436,31 +1196,25 @@ public final class CausynthTraceRecorder {
                                 + "activation: " + region + " " + anchor);
                     }
                 }
+                // One activation names exactly one static region, so its
+                // method universe and demanded scope are that region's own.
                 Set<String> potentialMethods = new LinkedHashSet<>();
-                // Coalescing several static regions into one activation
-                // widens the region; its demanded scope has to widen with it,
-                // or a guard contributed by one source would be judged
-                // against another source's demand.
                 Set<String> demandScope = new LinkedHashSet<>();
                 boolean demandScopeKnown = true;
-                for (String sourceRegion : sourceRegionsByRegion
-                        .getOrDefault(region,
-                                Collections.singleton(region))) {
-                    JsonObject source = candidateByRegion.get(sourceRegion);
-                    if (source == null) {
-                        throw new IOException("runtime activation references "
-                                + "unknown static region: " + sourceRegion);
-                    }
-                    for (JsonElement method
-                            : source.getAsJsonArray("methods")) {
-                        potentialMethods.add(method.getAsString());
-                    }
-                    JsonArray sourceScope = source.getAsJsonArray(
-                            RuntimeSelectedRegionFinalizer.DEMAND_SCOPE);
-                    if (sourceScope == null) {
-                        demandScopeKnown = false;
-                        continue;
-                    }
+                JsonObject source = candidateByRegion.get(region);
+                if (source == null) {
+                    throw new IOException("runtime activation references "
+                            + "unknown static region: " + region);
+                }
+                for (JsonElement method
+                        : source.getAsJsonArray("methods")) {
+                    potentialMethods.add(method.getAsString());
+                }
+                JsonArray sourceScope = source.getAsJsonArray(
+                        RuntimeSelectedRegionFinalizer.DEMAND_SCOPE);
+                if (sourceScope == null) {
+                    demandScopeKnown = false;
+                } else {
                     for (JsonElement method : sourceScope) {
                         demandScope.add(method.getAsString());
                     }
@@ -1547,311 +1301,75 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * Proves that every configured leaf at every observed logical boundary
-     * has one complete schema-4 observation.  Completeness is per leaf and
-     * occurrence: an unrelated row can never discharge a missing boundary.
+     * Applies every source registration this trace recorded to the frames of
+     * the object it registered.
+     *
+     * <p>A frame is stamped with the ambient source when it is entered, and a
+     * node starts its service threads before it declares which source owns
+     * them - a DataNode's {@code BPServiceActor} runs a quarter of a million
+     * events before the registration that names it.  Those frames kept the
+     * driver that started the thread, which filed a whole node's activations
+     * under the test driver and left a producer and its target on different
+     * owners.</p>
+     *
+     * <p>This runs after the trace is fully re-read, which is the first
+     * moment every registration is known.  It reads the durable rows, not a
+     * live map: the previous attempt consulted an in-process binding that
+     * {@link #clearInMemoryTrace()} had already emptied one statement
+     * earlier, so it returned null for every activation and was
+     * indistinguishable from a receiver that registered nothing.</p>
+     *
+     * <p>An identity that two registrations disagree about is left alone.
+     * Re-attributing it would move frames across a lifecycle boundary the
+     * frame's own stamp already answers correctly.</p>
      */
-    private static void requireConfiguredBoundaryScalarEvidence(
-            TraceData trace) throws IOException {
-        requireConfiguredBoundaryScalarEvidenceForTests(trace.execution,
-                trace.protocol);
-    }
-
-    static void requireConfiguredBoundaryScalarEvidenceForTests(
-            List<RuntimeRegionPlanner.RuntimeEvent> execution,
-            List<RuntimeRegionPlanner.ProtocolEvent> protocol)
-            throws IOException {
-        ProtocolBoundaryScalarConfig configured =
-                ProtocolBoundaryScalarConfig.fromConfiguration();
-        Map<String, ExpectedBoundaryLeaf> expected = new LinkedHashMap<>();
-        for (RuntimeRegionPlanner.RuntimeEvent event : execution) {
-            if ("CALL_ARGUMENT".equals(event.kind)) {
-                addExpectedBoundaryLeaves(expected,
-                        configured.clientLeaves(event.declaredCallee,
-                                "REQUEST", event.argumentIndex),
-                        "CLIENT", "CALL_ARGUMENT", event.declaredCallee,
-                        event);
-            } else if ("CALL_SITE_RETURN".equals(event.kind)) {
-                addExpectedBoundaryLeaves(expected,
-                        configured.clientLeaves(event.declaredCallee,
-                                "RESPONSE", -1),
-                        "CLIENT", "CALL_RETURN", event.declaredCallee,
-                        event);
-            } else if ("METHOD_ARGUMENT".equals(event.kind)) {
-                addExpectedBoundaryLeaves(expected,
-                        configured.serverLeaves(event.method,
-                                "REQUEST", event.argumentIndex),
-                        "SERVER", "METHOD_ARGUMENT", event.method, event);
-            } else if ("METHOD_EXIT_NORMAL".equals(event.kind)) {
-                addExpectedBoundaryLeaves(expected,
-                        configured.serverLeaves(event.method,
-                                "RESPONSE", -1),
-                        "SERVER", "METHOD_RETURN", event.method, event);
-            }
-        }
-
-        Map<String, List<RuntimeRegionPlanner.ProtocolEvent>> actual =
-                new LinkedHashMap<>();
-        for (RuntimeRegionPlanner.ProtocolEvent event : protocol) {
-            if (!("RPC_BOUNDARY_SCALAR".equals(event.direction)
-                    || "RPC_BOUNDARY_SCALAR_GAP".equals(event.direction))) {
+    private static void reattributeFramesToRegisteredOwners(TraceData trace) {
+        Map<Integer, SourceRef> owners = new LinkedHashMap<>();
+        Set<Integer> disputed = new LinkedHashSet<>();
+        for (SourceTraceEvent event : trace.sources) {
+            if (event.objectId <= 0 || event.source == null) continue;
+            if (!"SOURCE_REGISTER".equals(event.kind)
+                    && !"SOURCE_ALIAS".equals(event.kind)
+                    && !"SOURCE_RESTART".equals(event.kind)) {
                 continue;
             }
-            String key = boundaryEvidenceKey(event.mappingId,
-                    event.protocolDirection, event.side, event.port,
-                    event.leafId, event.declaredPath, event.javaType,
-                    event.containerBound, event.boundaryKind, event.method,
-                    event.boundaryEventSeq, event.callId,
-                    event.invocationId, event.boundaryRootObjectId);
-            if (!expected.containsKey(key)) {
-                throw new IOException("Unconfigured or misbound schema-4 "
-                        + "boundary-scalar row at seq " + event.seq);
+            SourceRef owner = "SOURCE_RESTART".equals(event.kind)
+                    ? event.relatedSource : event.source;
+            if (owner == null) continue;
+            SourceRef previous = owners.put(event.objectId, owner);
+            if (previous != null && !previous.equals(owner)) {
+                disputed.add(event.objectId);
             }
-            actual.computeIfAbsent(key,
-                    ignored -> new ArrayList<>()).add(event);
         }
-        for (Map.Entry<String, ExpectedBoundaryLeaf> entry
-                : expected.entrySet()) {
-            List<RuntimeRegionPlanner.ProtocolEvent> rows = actual.get(
-                    entry.getKey());
-            if (rows == null || rows.isEmpty()) {
-                throw new IOException("Missing complete schema-4 boundary "
-                        + "evidence for " + entry.getValue().description());
-            }
-            validateCompleteBoundaryLeaf(entry.getValue(), rows);
+        for (Integer objectId : disputed) {
+            owners.remove(objectId);
+        }
+        if (owners.isEmpty()) return;
+        for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+            event.reattribute(owners.get(event.objectId));
         }
     }
 
-    private static void addExpectedBoundaryLeaves(
-            Map<String, ExpectedBoundaryLeaf> expected,
-            List<ProtocolBoundaryScalarConfig.Leaf> leaves,
-            String side, String boundaryKind, String boundaryMethod,
-            RuntimeRegionPlanner.RuntimeEvent event) throws IOException {
-        for (ProtocolBoundaryScalarConfig.Leaf leaf : leaves) {
-            ExpectedBoundaryLeaf value = new ExpectedBoundaryLeaf(leaf,
-                    side, boundaryKind, boundaryMethod, event.seq,
-                    event.callId, event.invocationId, event.objectId);
-            String key = value.key();
-            if (expected.putIfAbsent(key, value) != null) {
-                throw new IOException("Duplicate configured boundary leaf "
-                        + "occurrence: " + value.description());
-            }
-        }
-    }
-
-    private static void validateCompleteBoundaryLeaf(
-            ExpectedBoundaryLeaf expected,
-            List<RuntimeRegionPlanner.ProtocolEvent> rows)
-            throws IOException {
-        List<RuntimeRegionPlanner.ProtocolEvent> values = new ArrayList<>();
-        List<RuntimeRegionPlanner.ProtocolEvent> gaps = new ArrayList<>();
-        for (RuntimeRegionPlanner.ProtocolEvent row : rows) {
-            if (!row.leafObservationComplete) {
-                throw incompleteBoundaryEvidence(expected,
-                        "completion marker absent");
-            }
-            if ("RPC_BOUNDARY_SCALAR_GAP".equals(row.direction)) {
-                gaps.add(row);
-            } else {
-                values.add(row);
-            }
-        }
-        if (!values.isEmpty() && !gaps.isEmpty()) {
-            throw incompleteBoundaryEvidence(expected,
-                    "value and gap rows are mixed");
-        }
-        if (!gaps.isEmpty()) {
-            if (gaps.size() != 1) {
-                throw incompleteBoundaryEvidence(expected,
-                        "gap row is not unique");
-            }
-            RuntimeRegionPlanner.ProtocolEvent gap = gaps.get(0);
-            if (!ProtocolBoundaryScalarConfig.GAP_AUTHORITY.equals(
-                    gap.valueAuthority) || gap.gap.isEmpty()
-                    || gap.leafValueCount != 0
-                    || !gap.arrayIndices.isEmpty()) {
-                throw incompleteBoundaryEvidence(expected,
-                        "invalid gap authority or completion metadata");
-            }
-            validateContainerObservations(expected, gap, false);
-            return;
-        }
-        if (values.isEmpty()) {
-            throw incompleteBoundaryEvidence(expected, "no value rows");
-        }
-        List<String> completedContainers = null;
-        Set<List<Integer>> indices = new LinkedHashSet<>();
-        for (RuntimeRegionPlanner.ProtocolEvent value : values) {
-            if (!ProtocolBoundaryScalarConfig.VALUE_AUTHORITY.equals(
-                    value.valueAuthority)
-                    || !value.gap.isEmpty()
-                    || value.leafValueCount != values.size()
-                    || value.leafReceiverObjectId <= 0) {
-                throw incompleteBoundaryEvidence(expected,
-                        "invalid value authority or count");
-            }
-            if (!indices.add(new ArrayList<>(value.arrayIndices))) {
-                throw incompleteBoundaryEvidence(expected,
-                        "duplicate array index tuple");
-            }
-            if (completedContainers == null) {
-                completedContainers = value.containerObservations;
-            } else if (!completedContainers.equals(
-                    value.containerObservations)) {
-                throw incompleteBoundaryEvidence(expected,
-                        "inconsistent container completion metadata");
-            }
-            validateContainerObservations(expected, value, true);
-        }
-        if (expected.arrayDepth == 0
-                && (values.size() != 1
-                || !values.get(0).arrayIndices.isEmpty())) {
-            throw incompleteBoundaryEvidence(expected,
-                    "non-array leaf must have exactly one scalar row");
-        }
-    }
-
-    private static void validateContainerObservations(
-            ExpectedBoundaryLeaf expected,
-            RuntimeRegionPlanner.ProtocolEvent row, boolean requireIndices)
-            throws IOException {
-        if (expected.arrayDepth == 0) {
-            if (!row.containerObservations.isEmpty()) {
-                throw incompleteBoundaryEvidence(expected,
-                        "non-array leaf has container metadata");
-            }
-            return;
-        }
-        Map<String, Integer> widths = new LinkedHashMap<>();
-        int overflowCount = 0;
-        for (String observation : row.containerObservations) {
-            int separator = observation.lastIndexOf('=');
-            if (separator <= 0 || separator == observation.length() - 1) {
-                throw incompleteBoundaryEvidence(expected,
-                        "malformed container observation");
-            }
-            String prefix = observation.substring(0, separator);
-            int width;
-            try {
-                width = Integer.parseInt(observation.substring(
-                        separator + 1));
-            } catch (NumberFormatException invalid) {
-                throw incompleteBoundaryEvidence(expected,
-                        "malformed container width");
-            }
-            if (width > expected.leaf.containerBound()) overflowCount++;
-            boolean declaredOverflow = !requireIndices
-                    && "CONTAINER_BOUND_INSUFFICIENT".equals(row.gap)
-                    && width == row.observedContainerWidth;
-            if (width < 0
-                    || width > expected.leaf.containerBound()
-                    && !declaredOverflow
-                    || widths.put(prefix, width) != null) {
-                throw incompleteBoundaryEvidence(expected,
-                        "invalid or duplicate container width");
-            }
-        }
-        if (!requireIndices
-                && "CONTAINER_BOUND_INSUFFICIENT".equals(row.gap)
-                && (overflowCount != 1 || row.observedContainerWidth
-                <= expected.leaf.containerBound())) {
-            throw incompleteBoundaryEvidence(expected,
-                    "bound gap lacks one exact overflowing width");
-        }
-        if (!requireIndices) return;
-        for (Integer index : row.arrayIndices) {
-            if (index == null || index < 0) {
-                throw incompleteBoundaryEvidence(expected,
-                        "negative array index");
-            }
-        }
-        if (row.arrayIndices.size() != expected.arrayDepth) {
-            throw incompleteBoundaryEvidence(expected,
-                    "array index depth mismatch");
-        }
-        for (int depth = 0; depth < expected.arrayDepth; depth++) {
-            String prefix = containerPrefix(row.arrayIndices, depth);
-            Integer width = widths.get(prefix);
-            if (width == null || row.arrayIndices.get(depth) >= width) {
-                throw incompleteBoundaryEvidence(expected,
-                        "array index lacks completed container width");
-            }
-        }
-    }
-
-    private static String containerPrefix(List<Integer> indices, int depth) {
-        if (depth == 0) return "ROOT";
-        StringBuilder result = new StringBuilder();
-        for (int index = 0; index < depth; index++) {
-            if (index > 0) result.append(',');
-            result.append(indices.get(index));
-        }
-        return result.toString();
-    }
-
-    private static IOException incompleteBoundaryEvidence(
-            ExpectedBoundaryLeaf expected, String reason) {
-        return new IOException("Incomplete schema-4 boundary evidence for "
-                + expected.description() + ": " + reason);
-    }
-
-    private static String boundaryEvidenceKey(
-            String mappingId, String direction, String side, String port,
-            String leafId, List<String> path, String javaType, int bound,
-            String boundaryKind, String method, long boundaryEventSeq,
-            long callId, long invocationId, int boundaryRootObjectId) {
-        return safe(mappingId) + '\n' + safe(direction) + '\n'
-                + safe(side) + '\n' + safe(port) + '\n' + safe(leafId)
-                + '\n' + path + '\n' + safe(javaType) + '\n' + bound
-                + '\n' + safe(boundaryKind) + '\n' + safe(method) + '\n'
-                + boundaryEventSeq + '\n' + callId + '\n' + invocationId
-                + '\n' + boundaryRootObjectId;
-    }
-
-    private static final class ExpectedBoundaryLeaf {
-        private final ProtocolBoundaryScalarConfig.Leaf leaf;
-        private final String side;
-        private final String boundaryKind;
-        private final String boundaryMethod;
-        private final long boundaryEventSeq;
-        private final long callId;
-        private final long invocationId;
-        private final int boundaryRootObjectId;
-        private final int arrayDepth;
-
-        private ExpectedBoundaryLeaf(
-                ProtocolBoundaryScalarConfig.Leaf leaf, String side,
-                String boundaryKind, String boundaryMethod,
-                long boundaryEventSeq, long callId, long invocationId,
-                int eventObjectId) {
-            this.leaf = leaf;
-            this.side = side;
-            this.boundaryKind = boundaryKind;
-            this.boundaryMethod = boundaryMethod;
-            this.boundaryEventSeq = boundaryEventSeq;
-            this.callId = callId;
-            this.invocationId = invocationId;
-            this.boundaryRootObjectId = eventObjectId;
-            int depth = 0;
-            for (String step : leaf.declaredPath()) {
-                if (ProtocolBoundaryScalarConfig.ARRAY_ELEMENT.equals(step)) {
-                    depth++;
-                }
-            }
-            this.arrayDepth = depth;
-        }
-
-        private String key() {
-            return boundaryEvidenceKey(leaf.mappingId(), leaf.direction(),
-                    side, leaf.port(), leaf.leafId(), leaf.declaredPath(),
-                    leaf.javaType(), leaf.containerBound(), boundaryKind,
-                    boundaryMethod, boundaryEventSeq, callId, invocationId,
-                    boundaryRootObjectId);
-        }
-
-        private String description() {
-            return leaf.mappingId() + "/" + leaf.leafId() + " " + side
-                    + " " + boundaryKind + "@" + boundaryEventSeq;
+    /**
+     * Test seam for load-time re-attribution, run as the planning path runs
+     * it: clear, re-read the durable trace, sort, re-attribute.
+     *
+     * <p>The sequence is the point.  A test that registers a source and looks
+     * it up in the same live session validates a path whose production
+     * precondition is impossible - the aggregation path clears the in-memory
+     * state one statement before it reads the trace, so any binding that
+     * lives only in memory is gone by the time it is consulted.  That is how
+     * the previous attempt passed its tests and never once matched in a
+     * campaign.</p>
+     */
+    static List<RuntimeRegionPlanner.MethodEvent> reattributedFramesForTests(
+            File traceFile, String test) throws IOException {
+        synchronized (LOCK) {
+            clearInMemoryTrace();
+            TraceData trace = loadExistingTrace(traceFile, test, false);
+            trace.sort();
+            reattributeFramesToRegisteredOwners(trace);
+            return trace.methods;
         }
     }
 
@@ -1866,7 +1384,6 @@ public final class CausynthTraceRecorder {
         contextOnlyConcolicReplay = false;
         traceWriteFailure = false;
         traceWriter = null;
-        boundaryScalars = null;
     }
 
     /**
@@ -1994,55 +1511,19 @@ public final class CausynthTraceRecorder {
             ConcurrentHashMap<String, String> pool) throws IOException {
         FlatJsonRow row = FlatJsonRow.parse(line, pool);
         if (row == null) {
-            // The strict flat scanner refused the row; reproduce the exact
-            // legacy diagnostics with the reference parser.
-            final JsonObject parsed;
-            try {
-                JsonElement element = JsonParser.parseString(line);
-                if (!element.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "row is not an object");
-                }
-                parsed = element.getAsJsonObject();
-            } catch (RuntimeException malformed) {
-                throw new IOException("Malformed runtime trace row "
-                        + lineNumber + " in " + file, malformed);
-            }
-            int schemaVersion = integer(parsed, "schemaVersion", -1);
-            if (schemaVersion != 3 && schemaVersion != 4) {
-                throw new IOException("Unsupported runtime trace row: "
-                        + line);
-            }
-            row = FlatJsonRow.fromJsonObject(parsed, pool);
+            throw new IOException("Malformed runtime trace row "
+                    + lineNumber + " in " + file);
         }
         long schemaVersion = row.longValue("schemaVersion", -1L);
-        if (schemaVersion != 3L && schemaVersion != 4L) {
+        if (schemaVersion != 3L) {
             throw new IOException("Unsupported runtime trace row: " + line);
         }
         String eventKind = row.stringValue("event");
-        if (schemaVersion == 3L
-                && ("RPC_BOUNDARY_SCALAR".equals(eventKind)
-                || "RPC_BOUNDARY_SCALAR_GAP".equals(eventKind))) {
-            throw new IOException("Boundary-scalar runtime rows require "
-                    + "schemaVersion 4: " + line);
-        }
-        if (schemaVersion == 4L
-                && !("RPC_BOUNDARY_SCALAR".equals(eventKind)
-                || "RPC_BOUNDARY_SCALAR_GAP".equals(eventKind))) {
-            throw new IOException("Unsupported schema-4 runtime trace row: "
-                    + line);
-        }
         if ("METHOD_ENTER".equals(eventKind)) {
-            String process = row.stringValue("process");
-            if (process.isEmpty()) {
-                throw new IOException("METHOD_ENTER has no process at "
-                        + file + ":" + lineNumber);
-            }
             long seq = row.longValue("seq", 0L);
             trace.methods.add(new RuntimeRegionPlanner.MethodEvent(
                     seq,
                     test,
-                    process,
                     row.stringValue("threadName"),
                     row.longValue("tid", 0L),
                     row.stringValue("method"),
@@ -2051,7 +1532,6 @@ public final class CausynthTraceRecorder {
                     row.longValue("callId", seq),
                     row.longValue("parentCallId", 0L),
                     row.longValue("parentSiteId", 0L),
-                    row.longValue("ownerId", 0L),
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
                     row.longValue("parentSpanId", 0L),
@@ -2091,20 +1571,28 @@ public final class CausynthTraceRecorder {
                     "RPC_SEND".equals(eventKind) ? "SEND" : "RECEIVE",
                     row.stringValue("transport"),
                     row.stringValue("correlationId"),
-                    row.stringValue("process"),
+                    row.stringValue("attemptId"),
+                    row.stringValue("half"),
                     row.stringValue("threadName"),
                     row.longValue("tid", 0L),
                     row.stringValue("method"),
                     row.longValue("callId", 0L),
                     row.longValue("invocationId", 0L),
                     row.stringValue("declaredCallee"),
-                    row.longValue("ownerId", 0L),
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
                     row.longValue("parentSpanId", 0L),
                     row.longValue("remoteParentSpanId", 0L),
                     sourceRef(row), row.stringValue("requestKey"),
                     row.stringValue("requestApi")));
+        } else if (PROTOCOL_NOTE_EVENT.equals(eventKind)) {
+            // Recognised, and deliberately not a protocol event.  The row
+            // records that an application named a gap or a lifecycle note
+            // about an exchange; it is not a leg of it, so it enters neither
+            // the delivery ledger nor the send/receive pairing.  Dropping it
+            // here is the refusal, not an oversight: nothing downstream may
+            // count it as a crossing.
+            return;
         } else if ("SOURCE_REGISTER".equals(eventKind)
                 || "SOURCE_ALIAS".equals(eventKind)
                 || "SOURCE_RESTART".equals(eventKind)
@@ -2117,36 +1605,9 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestKey"),
                     row.stringValue("apiName"),
                     row.stringValue("aliasClass"),
+                    row.intValue("objectId", 0),
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L)));
-        } else if (!skeletonOnly && ("RPC_BOUNDARY_SCALAR".equals(eventKind)
-                || "RPC_BOUNDARY_SCALAR_GAP".equals(eventKind))) {
-            trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
-                    row.longValue("seq", 0L), eventKind,
-                    row.stringValue("mappingId"),
-                    row.stringValue("protocolDirection"),
-                    row.stringValue("side"), row.stringValue("port"),
-                    row.stringValue("leafId"),
-                    row.stringValue("boundaryKind"),
-                    row.stringValue("boundaryMethod"),
-                    row.longValue("callId", 0L),
-                    row.longValue("invocationId", 0L),
-                    row.longValue("boundaryEventSeq", -1L),
-                    row.intValue("boundaryRootObjectId", 0),
-                    row.intValue("leafReceiverObjectId", 0),
-                    row.intValue("valueObjectId", 0),
-                    row.stringList("declaredPath"),
-                    row.integerList("arrayIndices"),
-                    row.stringValue("javaType"),
-                    row.stringValue("primitiveValue"),
-                    row.booleanValue("nullValue", false),
-                    row.intValue("containerBound", 0),
-                    row.intValue("observedContainerWidth", -1),
-                    row.stringValue("valueAuthority"),
-                    row.stringValue("gap"),
-                    row.booleanValue("leafObservationComplete", false),
-                    row.intValue("leafValueCount", -1),
-                    row.stringList("containerObservations")));
         } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
             trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                     row.longValue("seq", 0L), eventKind,
@@ -2176,6 +1637,20 @@ public final class CausynthTraceRecorder {
                 new ConcurrentHashMap<String, String>());
     }
 
+    /** Reads whole trace rows exactly as aggregation reads them. */
+    static TraceData parseTraceLinesForTests(List<String> lines)
+            throws IOException {
+        TraceData trace = new TraceData();
+        int lineNumber = 1;
+        for (String line : lines) {
+            parseTraceLine(trace, line, lineNumber++,
+                    new File("runtime-trace-test.jsonl"), "test", false,
+                    new ConcurrentHashMap<String, String>());
+        }
+        trace.sort();
+        return trace;
+    }
+
     private static boolean isExecutionEventKind(String kind) {
         return "METHOD_ARGUMENT".equals(kind)
                 || "METHOD_EXIT_NORMAL".equals(kind)
@@ -2193,7 +1668,6 @@ public final class CausynthTraceRecorder {
                 "schemaVersion", 3,
                 "event", "METHOD_ENTER",
                 "seq", event.seq,
-                "process", event.process,
                 "threadName", event.threadName,
                 "tid", event.tid,
                 "method", event.method,
@@ -2202,7 +1676,6 @@ public final class CausynthTraceRecorder {
                 "callId", event.callId,
                 "parentCallId", event.parentCallId,
                 "parentSiteId", event.parentSiteId,
-                "ownerId", event.ownerId,
                 "laneId", event.laneId,
                 "spanId", event.spanId,
                 "parentSpanId", event.parentSpanId,
@@ -2247,23 +1720,49 @@ public final class CausynthTraceRecorder {
                 "elementObjectId", event.elementObjectId);
     }
 
+    /**
+     * The row kind one recorded protocol leg is written under.
+     *
+     * <p>A boundary states {@code SEND} or {@code RECEIVE} and is a delivery.
+     * Everything else an application records on this hook - a named handoff
+     * gap, an exchange lifecycle note - states a direction that is
+     * deliberately neither, precisely so it cannot be read as a boundary of
+     * the exchange it is about.  Writing anything that is not a send as a
+     * receive threw that statement away and put a non-delivery into the
+     * delivery stream under a delivery's own name; only the annotation these
+     * rows carry in their correlation kept them from being paired with a
+     * real one.  A row that is not a boundary now says so in its kind.</p>
+     */
+    static final String PROTOCOL_NOTE_EVENT = "RPC_NOTE";
+
+    static String protocolEventKind(String direction) {
+        if ("SEND".equals(direction)) return "RPC_SEND";
+        if ("RECEIVE".equals(direction)) return "RPC_RECEIVE";
+        return PROTOCOL_NOTE_EVENT;
+    }
+
     private static void writeProtocolTraceLine(
             RuntimeRegionPlanner.ProtocolEvent event) {
+        String kind = protocolEventKind(event.direction);
         writeTraceRow(
                 "schemaVersion", 3,
-                "event", "SEND".equals(event.direction)
-                        ? "RPC_SEND" : "RPC_RECEIVE",
+                "event", kind,
+                // The stated direction of a non-boundary row, kept as the
+                // application named it: a handoff gap and a lifecycle note
+                // are two different notes and must not merge into one kind.
+                "noteKind", PROTOCOL_NOTE_EVENT.equals(kind)
+                        ? event.direction : null,
                 "seq", event.seq,
                 "transport", event.transport,
                 "correlationId", event.correlationId,
-                "process", event.process,
+                "attemptId", event.attemptId,
+                "half", event.half,
                 "threadName", event.threadName,
                 "tid", event.tid,
                 "method", event.method,
                 "callId", event.callId,
                 "invocationId", event.invocationId,
                 "declaredCallee", event.declaredCallee,
-                "ownerId", event.ownerId,
                 "laneId", event.laneId,
                 "spanId", event.spanId,
                 "parentSpanId", event.parentSpanId,
@@ -2279,7 +1778,8 @@ public final class CausynthTraceRecorder {
 
     private static void writeSourceTraceLine(String event, SourceRef source,
                                              SourceRef related,
-                                             long requestId, String detail) {
+                                             long requestId, String detail,
+                                             int objectId) {
         if (contextOnlyConcolicReplay || traceWriter == null) return;
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
         long seq = EVENT_COUNTER.incrementAndGet();
@@ -2301,6 +1801,13 @@ public final class CausynthTraceRecorder {
                     "requestId", requestId <= 0L ? null : requestId,
                     "requestKey", context.requestKey,
                     "requestApi", context.requestApi,
+                    // The identity that makes this row joinable to the
+                    // activations of the object it names.  Without it the
+                    // reloaded trace holds only a class name, two DataNodes'
+                    // service objects are byte-identical rows, and an
+                    // activation entered before its registration can never be
+                    // attributed to the receiver that later claimed it.
+                    "objectId", objectId <= 0 ? null : objectId,
                     event.startsWith("REQUEST_") ? "apiName" : "aliasClass",
                     detail,
                     "laneId", context.laneId,
@@ -2338,65 +1845,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static String inferProcessName(String method, String threadName) {
-        String configuredPatterns = firstNonBlank(
-                System.getProperty("causynth.trace.process.patterns"),
-                System.getenv("CAUSYNTH_TRACE_PROCESS_PATTERNS"), "");
-        if (configuredPatterns.isEmpty()) {
-            return "unknown";
-        }
-        StringBuilder evidence = new StringBuilder();
-        evidence.append(method == null ? "" : method).append(' ')
-                .append(threadName == null ? "" : threadName);
-        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-        int limit = Math.min(stack.length, 48);
-        for (int i = 0; i < limit; i++) {
-            evidence.append(' ').append(stack[i].getClassName())
-                    .append('.').append(stack[i].getMethodName());
-        }
-        String evidenceText = evidence.toString();
-        String configuredProcess = matchConfiguredRole(
-                "causynth.trace.process.patterns",
-                "CAUSYNTH_TRACE_PROCESS_PATTERNS",
-                evidenceText);
-        if (!configuredProcess.isEmpty()) {
-            return configuredProcess;
-        }
-        return "unknown";
-    }
-
-    private static String matchConfiguredRole(String propertyName, String envName,
-                                              String evidence) {
-        String spec = firstNonBlank(System.getProperty(propertyName),
-                System.getenv(envName), "");
-        if (spec.isEmpty() || evidence == null) {
-            return "";
-        }
-        for (String rawEntry : spec.split(";")) {
-            String entry = rawEntry.trim();
-            if (entry.isEmpty()) {
-                continue;
-            }
-            int equals = entry.indexOf('=');
-            if (equals <= 0 || equals == entry.length() - 1) {
-                continue;
-            }
-            String role = entry.substring(0, equals).trim();
-            String regex = entry.substring(equals + 1).trim();
-            if (role.isEmpty() || regex.isEmpty()) {
-                continue;
-            }
-            try {
-                if (Pattern.compile(regex, Pattern.CASE_INSENSITIVE)
-                        .matcher(evidence).find()) {
-                    return role;
-                }
-            } catch (RuntimeException ignored) {
-            }
-        }
-        return "";
-    }
-
     private static Map<String, String> parseArgs(String[] args) {
         Map<String, String> params = new LinkedHashMap<>();
         if (args == null) {
@@ -2432,30 +1880,63 @@ public final class CausynthTraceRecorder {
     }
 
     /** Binds frozen static regions to concrete same-thread invocations. */
-    private static void writeRuntimeRegionPlans(
+    private static RuntimeRegionPlanner.Result writeRuntimeRegionPlans(
             File directory, RuntimeRegionPlanner.RefinedFlowIndex flowIndex,
             List<Map<String, Object>> regions,
-            List<Map<String, Object>> regionEdges,
-            File regionFile, File regionEdgeFile, TraceData trace,
+            List<Map<String, Object>> regionEdges, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds) throws IOException {
         RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
-                regions, regionEdges, flowIndex, regionFile,
-                regionEdgeFile, runtimeSeeds, trace.methods,
-                trace.execution, trace.fields);
-        writeRuntimePlanArtifact(directory, planned.runtimePlanJsonl());
+                regions, regionEdges, flowIndex,
+                "runtime region closure", "runtime region edge closure",
+                runtimeSeeds, trace.methods,
+                trace.execution, trace.fields, trace.protocol);
+        writeFile(new File(directory, "concolic_region_plan.jsonl"),
+                planned.runtimePlanJsonl());
+        return planned;
     }
 
-    private static void writeRuntimePlanArtifact(
-            File directory, String runtimePlan)
+    /**
+     * Publishes the runtime half of README Step 1 as its own artifacts.
+     *
+     * <p>{@code runtime_occurrence_links.jsonl} carries recorded-exchange and
+     * shared-location links between independent coarse occurrences, and
+     * {@code communication_runtime_gaps.jsonl} carries every place the
+     * runtime could not stamp an occurrence, an outcome, an exchange or a
+     * source.
+     * Both are separate files so the canonical plan artifact keeps its
+     * existing three sections.</p>
+     */
+    @SafeVarargs
+    private static void writeCommunicationEvidence(
+            File directory, RuntimeRegionPlanner.Result activationGraph,
+            RuntimeRegionPlanner.Result plannedGraph,
+            List<Map<String, Object>>... stages)
             throws IOException {
-        writeFile(new File(directory,
-                        "concolic_region_plan.jsonl"),
-                runtimePlan);
-        // The edge catalog is now the first row of the canonical runtime
-        // plan. Remove a stale pre-normalization artifact so later stages
-        // cannot accidentally audit a different edge snapshot.
-        Files.deleteIfExists(new File(directory,
-                "runtime_region_edge_validation.jsonl").toPath());
+        List<Map<String, Object>> gaps = new ArrayList<>(
+                activationGraph.gaps);
+        gaps.addAll(plannedGraph.gaps);
+        for (List<Map<String, Object>> stage : stages) {
+            if (stage != null) gaps.addAll(stage);
+        }
+        List<Map<String, Object>> links = new ArrayList<>(
+                activationGraph.occurrenceLinks);
+        // Shared-location touch/admission links are known only after the
+        // target closure has enumerated its carriers.  The former call wrote
+        // only the pre-finalization activation links and silently discarded
+        // these final-plan evidence rows.
+        links.addAll(plannedGraph.occurrenceLinks);
+        writeFile(new File(directory, "runtime_occurrence_links.jsonl"),
+                jsonlOf(links));
+        writeFile(new File(directory, "communication_runtime_gaps.jsonl"),
+                jsonlOf(gaps));
+    }
+
+    private static String jsonlOf(List<Map<String, Object>> rows) {
+        StringBuilder encoded = new StringBuilder();
+        for (Map<String, Object> row : rows) {
+            encoded.append(CausynthJson.write(row)).append('\n');
+        }
+        return encoded.toString();
     }
 
     private static void writeSourceEvents(File directory,
@@ -2523,49 +2004,18 @@ public final class CausynthTraceRecorder {
         private Integer successorIndex;
     }
 
-    private static final class BoundaryScalarObservation {
-        private final List<Integer> indices;
-        private final int leafReceiverObjectId;
-        private final int valueObjectId;
-        private final String primitiveValue;
-        private final boolean nullValue;
-
-        private BoundaryScalarObservation(List<Integer> indices,
-                                          int leafReceiverObjectId,
-                                          int valueObjectId,
-                                          String primitiveValue,
-                                          boolean nullValue) {
-            this.indices = Collections.unmodifiableList(
-                    new ArrayList<>(indices));
-            this.leafReceiverObjectId = leafReceiverObjectId;
-            this.valueObjectId = valueObjectId;
-            this.primitiveValue = safe(primitiveValue);
-            this.nullValue = nullValue;
-        }
-    }
-
-    private static final class BoundaryScalarGap {
-        private final String reason;
-        private final int observedWidth;
-
-        private BoundaryScalarGap(String reason, int observedWidth) {
-            this.reason = safe(reason);
-            this.observedWidth = observedWidth;
-        }
-    }
-
-    private static final class TraceData {
-        private final List<RuntimeRegionPlanner.MethodEvent> methods =
+    static final class TraceData {
+        final List<RuntimeRegionPlanner.MethodEvent> methods =
                 new ArrayList<>();
-        private final List<RuntimeRegionPlanner.FieldAccessEvent> fields =
+        final List<RuntimeRegionPlanner.FieldAccessEvent> fields =
                 new ArrayList<>();
-        private final List<RuntimeRegionPlanner.ArrayAccessEvent> arrays =
+        final List<RuntimeRegionPlanner.ArrayAccessEvent> arrays =
                 new ArrayList<>();
-        private final List<RuntimeRegionPlanner.RuntimeEvent> execution =
+        final List<RuntimeRegionPlanner.RuntimeEvent> execution =
                 new ArrayList<>();
-        private final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
+        final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
                 new ArrayList<>();
-        private final List<SourceTraceEvent> sources = new ArrayList<>();
+        final List<SourceTraceEvent> sources = new ArrayList<>();
 
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));
@@ -2587,14 +2037,17 @@ public final class CausynthTraceRecorder {
         private final String requestKey;
         private final String apiName;
         private final String aliasClass;
+        /** Recorded identity of the object this row registered, or 0. */
+        private final int objectId;
         private final long laneId;
         private final long spanId;
 
         private SourceTraceEvent(long seq, String kind, SourceRef source,
                                  SourceRef relatedSource, long requestId,
                                  String requestKey, String apiName,
-                                 String aliasClass,
+                                 String aliasClass, int objectId,
                                  long laneId, long spanId) {
+            this.objectId = objectId;
             this.seq = seq;
             this.kind = safe(kind);
             this.source = source;
@@ -2836,42 +2289,6 @@ public final class CausynthTraceRecorder {
             return existing != null ? existing : value;
         }
 
-        private static FlatJsonRow fromJsonObject(
-                JsonObject object, ConcurrentHashMap<String, String> pool) {
-            List<String> keys = new ArrayList<>();
-            List<Object> values = new ArrayList<>();
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                JsonElement value = entry.getValue();
-                Object decoded;
-                if (value == null || value.isJsonNull()) {
-                    decoded = null;
-                } else if (value.isJsonPrimitive()) {
-                    if (value.getAsJsonPrimitive().isBoolean()) {
-                        decoded = value.getAsBoolean();
-                    } else if (value.getAsJsonPrimitive().isNumber()) {
-                        String token = value.getAsString();
-                        decoded = token.indexOf('.') >= 0
-                                || token.indexOf('e') >= 0
-                                || token.indexOf('E') >= 0
-                                ? (Object) value.getAsDouble()
-                                : (Object) value.getAsLong();
-                    } else {
-                        decoded = intern(pool, value.getAsString());
-                    }
-                } else {
-                    // Boundary scalar rows deliberately carry two small
-                    // arrays.  Preserve them for their dedicated accessors;
-                    // ordinary scalar accessors still treat structure as
-                    // absent, matching their legacy behavior.
-                    decoded = value.deepCopy();
-                }
-                keys.add(intern(pool, entry.getKey()));
-                values.add(decoded);
-            }
-            return new FlatJsonRow(keys.toArray(new String[0]),
-                    values.toArray(), keys.size());
-        }
-
         private Object find(String key) {
             // Later duplicate keys win, matching JsonObject.add overwrite.
             for (int index = size - 1; index >= 0; index--) {
@@ -2890,8 +2307,7 @@ public final class CausynthTraceRecorder {
 
         private String stringValue(String key) {
             Object value = find(key);
-            if (value == MISSING || value == null
-                    || value instanceof JsonElement) {
+            if (value == MISSING || value == null) {
                 return "";
             }
             return String.valueOf(value);
@@ -2899,8 +2315,7 @@ public final class CausynthTraceRecorder {
 
         private long longValue(String key, long fallback) {
             Object value = find(key);
-            if (value == MISSING || value == null
-                    || value instanceof JsonElement) {
+            if (value == MISSING || value == null) {
                 return fallback;
             }
             if (value instanceof Long) {
@@ -2921,8 +2336,7 @@ public final class CausynthTraceRecorder {
 
         private int intValue(String key, int fallback) {
             Object value = find(key);
-            if (value == MISSING || value == null
-                    || value instanceof JsonElement) {
+            if (value == MISSING || value == null) {
                 return fallback;
             }
             if (value instanceof Long) {
@@ -2943,8 +2357,7 @@ public final class CausynthTraceRecorder {
 
         private boolean booleanValue(String key, boolean fallback) {
             Object value = find(key);
-            if (value == MISSING || value == null
-                    || value instanceof JsonElement) {
+            if (value == MISSING || value == null) {
                 return fallback;
             }
             if (value instanceof Boolean) {
@@ -2955,36 +2368,6 @@ public final class CausynthTraceRecorder {
             return Boolean.parseBoolean(String.valueOf(value));
         }
 
-        private List<String> stringList(String key) {
-            Object value = find(key);
-            if (!(value instanceof JsonArray)) {
-                return Collections.emptyList();
-            }
-            List<String> result = new ArrayList<>();
-            for (JsonElement element : (JsonArray) value) {
-                if (!element.isJsonPrimitive()) {
-                    return Collections.emptyList();
-                }
-                result.add(element.getAsString());
-            }
-            return result;
-        }
-
-        private List<Integer> integerList(String key) {
-            Object value = find(key);
-            if (!(value instanceof JsonArray)) {
-                return Collections.emptyList();
-            }
-            List<Integer> result = new ArrayList<>();
-            for (JsonElement element : (JsonArray) value) {
-                if (!element.isJsonPrimitive()
-                        || !element.getAsJsonPrimitive().isNumber()) {
-                    return Collections.emptyList();
-                }
-                result.add(element.getAsInt());
-            }
-            return result;
-        }
     }
 
     private static final class ActiveCallSite {

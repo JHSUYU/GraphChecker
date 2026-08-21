@@ -26,13 +26,20 @@ enum BuiltInSym {
 class SymbolExpression : public Expression {
   static SymbolExpression* shared_exp[number_of_builtin_syms];
 public:
+  // Built-in symbols belong to the session, not to a thread.  They are
+  // arena-owned like every other node, so clear_single_instances() only drops
+  // the session's pointers to them.
   static void init_single_instances();
+  static void clear_single_instances();
   static SymbolExpression *get(BuiltInSym type) { return shared_exp[type];}
 
 public:
+  // Every symbol name is rendered into a caller-owned buffer of this size.
+  // It used to be one process-global scratch array shared by every symbol
+  // constructor, which is only sound while exactly one thread may build a
+  // symbol at a time.  A session shared by several threads has no such rule,
+  // so the storage is now the constructor's own stack frame.
   static const int BUF_SIZE = 1024;
-  static char str_buf[BUF_SIZE];
-  static char temp_buf[BUF_SIZE];
 
   SymbolExpression() {}
   SymbolExpression(const char *buf, int length) { set(buf, length);}
@@ -46,7 +53,7 @@ protected:
    */
   static void set_head(stringStream& ss, char main_type, BasicType class_type, oop obj = NULL);
   static void set_head(stringStream& ss, char main_type, BasicType class_type, const char* klass_name);
-  void finalize(int length);
+  void finalize(const char *buf, int length);
 
 public:
   void print();

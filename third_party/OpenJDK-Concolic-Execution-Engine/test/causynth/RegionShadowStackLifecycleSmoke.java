@@ -127,6 +127,8 @@ public final class RegionShadowStackLifecycleSmoke {
             }
         }
 
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String events = System.getConcolicBranchEvents();
         String summary = System.finishConcolicRegion();
 
@@ -143,11 +145,11 @@ public final class RegionShadowStackLifecycleSmoke {
         require(summary.contains("shadow_narrow")
                         && summary.contains("shadow_wide")
                         && summary.contains("shadow_ratio"), summary);
-        require(summary.contains("\"sourceJavaType\":\"I\"")
-                        && summary.contains("\"targetJavaType\":\"J\"")
-                        && summary.contains("\"sourceJavaType\":\"J\"")
-                        && summary.contains("\"targetJavaType\":\"I\""),
-                "cast chain was not preserved: " + summary);
+        require(path.contains("\"sourceJavaType\":\"I\"")
+                        && path.contains("\"targetJavaType\":\"J\"")
+                        && path.contains("\"sourceJavaType\":\"J\"")
+                        && path.contains("\"targetJavaType\":\"I\""),
+                "cast chain was not preserved: " + path);
 
         if (Boolean.getBoolean("causynth.smoke.dump")) {
             System.out.println(summary);

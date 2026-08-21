@@ -68,7 +68,8 @@ public final class ConcolicPathFlipSolver {
         JsonObject replay = "SAT_MODEL_READY".equals(string(solved.record,
                 "status"))
                 ? PathReplayTaskFactory.create(task, source,
-                solved.modelAssignments, solved.replayContract) : null;
+                solved.modelAssignments, solved.replayContract,
+                solved.readCut) : null;
         return new Result(solved, replay);
     }
 

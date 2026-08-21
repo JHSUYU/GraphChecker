@@ -23,8 +23,14 @@ method_set_t SymStrBuilder::init_handle_method_names() {
 
 std::map<std::string, bool> SymStrBuilder::init_skip_method_names() {
   std::map<std::string, bool> map;
-  map["<init>"] = true;
-  map["setLength"] = true;
+  // The concrete bodies of these methods are deliberately not summarized.
+  // In particular, an empty StringBuilder constructor has no symbolic input
+  // and must not open a symbolic method frame: Hadoop constructs builders for
+  // ordinary logging on virtually every service thread.  Treating every
+  // constructor as symbolic retains one dead expression per log message and
+  // lets unrelated formatting dominate a bounded concolic session.
+  map["<init>"] = false;
+  map["setLength"] = false;
   return map;
 }
 
@@ -37,10 +43,7 @@ SymStrBuilder::SymStrBuilder(sym_rid_t sym_rid)
     : SymInstance(sym_rid), _exp(NULL), _ref_exp(NULL) {
 }
 
-SymStrBuilder::~SymStrBuilder() {
-  Expression::gc(_exp);
-  Expression::gc(_ref_exp);
-}
+SymStrBuilder::~SymStrBuilder() {}
 
 void SymStrBuilder::print() {
   tty->print_cr("SymStrBuilder: ");
@@ -72,7 +75,8 @@ bool SymStrBuilder::invoke_method_helper(MethodSymbolizerHandle &handle) {
     std::map<std::string, bool>::iterator iter =
         skip_method_names.find(callee_name);
     if (iter != skip_method_names.end()) {
-      need_symbolize = iter->second;
+      need_symbolize = iter->second
+          && handle.general_check_param_symbolized();
     }
   }
   return need_symbolize;

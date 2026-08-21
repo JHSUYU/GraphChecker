@@ -33,11 +33,13 @@ public final class RegionObjectArrayMapApiSmoke {
             Entry entry = input.entries[i];
             map.put(entry.getKeyId(), entry);
         }
+        String relation = System.getSymbolicExpression(map);
         String summary = System.finishConcolicRegion();
 
-        require(summary.contains("\"operation\":\"PUT\""), summary);
-        require(summary.contains("ContainerRelation"), summary);
-        require(summary.contains("_field"), summary);
+        require(relation.contains("\"operation\":\"PUT\""), relation);
+        require(relation.contains("ContainerRelation"), relation);
+        require(relation.contains("_field"), relation);
+        require(summary.contains("\"complete\":true"), summary);
         System.out.println("CAUSYNTH_REGION_OBJECT_ARRAY_MAP_API_SMOKE_OK");
     }
 

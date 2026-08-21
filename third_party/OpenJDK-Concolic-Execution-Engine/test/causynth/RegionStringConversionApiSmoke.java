@@ -72,6 +72,8 @@ public final class RegionStringConversionApiSmoke {
                 System.getSymbolicExpression(longInstance);
         String builderValueExpression =
                 System.getSymbolicExpression(builderValue);
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String branchEvents = System.getConcolicBranchEvents();
         String summary = System.finishConcolicRegion();
 
@@ -130,15 +132,15 @@ public final class RegionStringConversionApiSmoke {
                 summary);
         require(summary.contains(
                 "\"taskId\":\"ACT.string-conversion\""), summary);
-        require(summary.contains(
+        require(path.contains(
                 "unsupportedPrimitiveStringConversion:"
                         + "java/lang/Boolean.toString(Z)Ljava/lang/String;"),
-                summary);
-        require(summary.contains(
+                path);
+        require(path.contains(
                 "unsupportedPrimitiveStringConversion:"
                         + "java/lang/Boolean.toString()Ljava/lang/String;"),
-                summary);
-        require(summary.contains("string_conversion_boolean"), summary);
+                path);
+        require(path.contains("string_conversion_boolean"), path);
         require("true".equals(booleanStatic), booleanStatic);
         require("true".equals(booleanInstance), booleanInstance);
         System.out.println("CAUSYNTH_REGION_STRING_CONVERSION_API_SMOKE_OK");

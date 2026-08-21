@@ -32,12 +32,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.va
 public final class OutputClosureCodec {
     private static final Set<String> OUTPUT_KINDS = set(
             "REGION_OUTPUT", "SINK_STATE", "HEAP_STATE",
-            "FAILURE_PREDICATE", "RETURN");
-    private static final Set<String> SINGULAR_FIELDS = set(
-            "requestedOutput", "requestedOutputSlice",
-            "requestedOutputCapture", "requestedOutputCaptureRequired",
-            "requestedOutputCaptureComplete", "requestedOutputMethods",
-            "outputs");
+            "FAILURE_PREDICATE", "RETURN", "INTERACTION_EVENT");
     private static final List<String> SCOPE_ARRAYS = Arrays.asList(
             "inputPorts", "sites", "staticSites", "methods",
             "causalEdgeIds");
@@ -59,26 +54,10 @@ public final class OutputClosureCodec {
             throw new IllegalArgumentException(
                     "outputClosure must be an object");
         }
-        rejectLegacyMirrors(artifact);
         OutputClosureContract contract =
                 decodeEnvelope(encoded.getAsJsonObject());
         validateOuterScope(artifact, contract.producer());
         return contract;
-    }
-
-    private static void rejectLegacyMirrors(JsonObject artifact) {
-        for (String field : SINGULAR_FIELDS) {
-            if (artifact.has(field)) {
-                throw new IllegalArgumentException(
-                        "explicit outputClosure forbids legacy mirror "
-                                + field);
-            }
-        }
-        rejectField(artifact, "occurrenceInstantiationCatalog");
-        rejectField(artifact, "executionOccurrence");
-        rejectField(artifact, "logicalRegionId");
-        rejectField(artifact, "logicalInstanceCount");
-        rejectField(artifact, "summaryReuseKey");
     }
 
     public static OutputClosureContract decodeEnvelope(JsonObject envelope) {
@@ -86,14 +65,11 @@ public final class OutputClosureCodec {
                 OutputClosureContract.SCHEMA_VERSION);
         requireText(envelope, "kind", OutputClosureContract.KIND);
         JsonObject scope = requireObject(envelope, "producer");
-        rejectField(scope, "regionInstanceId");
-        rejectField(scope, "rootCallId");
-        rejectField(envelope, "causalEdges");
         OutputClosureContract.Producer producer =
                 new OutputClosureContract.Producer(
                         requireText(scope, "relationKey"),
                         requireText(scope, "regionId"),
-                        requireText(scope, "contractHash"));
+                        declaredOutputPorts(scope));
 
         JsonArray rows = requireArray(envelope, "members");
         if (rows.size() == 0) {
@@ -136,6 +112,13 @@ public final class OutputClosureCodec {
             else if (!producer.sameAs(contract.producer())) {
                 throw new IllegalArgumentException(
                     "cannot merge different producer relations");
+            } else {
+                // Each contract publishes only the declarations its own
+                // members rely on, so the merged relation needs their union
+                // or a merged member would be refused by a declaration that
+                // travelled with a different contract.
+                producer = producer.withDeclaredOutputPorts(
+                        contract.producer().declaredOutputPorts());
             }
             for (OutputClosureContract.Member member : contract.members()) {
                 OutputClosureContract.Member prior =
@@ -147,6 +130,35 @@ public final class OutputClosureCodec {
             }
         }
         return new OutputClosureContract(producer, members.values());
+    }
+
+    /** Retains exactly the output members selected by target-first demand. */
+    public static OutputClosureContract project(
+            OutputClosureContract contract, Collection<String> outputPorts) {
+        if (contract == null || outputPorts == null
+                || outputPorts.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "output closure projection requires selected outputs");
+        }
+        Set<String> requested = new TreeSet<>();
+        for (String output : outputPorts) {
+            String port = output == null ? "" : output.trim();
+            if (port.isEmpty() || !requested.add(port)) {
+                throw new IllegalArgumentException(
+                        "output closure projection has blank or duplicate "
+                                + "output: " + output);
+            }
+        }
+        List<OutputClosureContract.Member> selected = new ArrayList<>();
+        for (String port : requested) {
+            OutputClosureContract.Member member = contract.member(port);
+            if (member == null) {
+                throw new IllegalArgumentException(
+                        "selected output is absent from closure: " + port);
+            }
+            selected.add(member);
+        }
+        return new OutputClosureContract(contract.producer(), selected);
     }
 
     private static OutputClosureContract.Member mergeMember(
@@ -175,8 +187,7 @@ public final class OutputClosureCodec {
         mergeCaptureBindings(firstSlice, secondSlice);
         for (String field : Arrays.asList("activationLocalOccurrence",
                 "selectedRuntimeEventSeq", "captureAnchorPort",
-                "selectedFieldReceiverObjectId", "selectedProcess",
-                "branchReplay")) {
+                "selectedFieldReceiverObjectId", "branchReplay")) {
             JsonElement a = firstSlice.remove(field);
             JsonElement b = secondSlice.remove(field);
             if (a == null ? b != null : !a.equals(b)) changed.add(field);
@@ -257,7 +268,26 @@ public final class OutputClosureCodec {
      * separate value; it never creates or decodes singular activation mirrors.
      */
     public static OutputClosureContract singleton(
-            String relationKey, String regionId, String contractHash,
+            String relationKey, String regionId,
+            String portId, String cell, String kind,
+            String javaType, JsonObject slice) {
+        return singleton(relationKey, regionId,
+                Collections.<String>emptyList(), portId, cell, kind,
+                javaType, slice);
+    }
+
+    /**
+     * The same adapter for a producer whose region declares output ports its
+     * own region identity does not mint - a communication cut is the case.
+     *
+     * <p>{@code declaredOutputPorts} is the region's own declaration, passed
+     * through unfiltered: the contract admits exactly the ids in it and
+     * refuses everything else by name, so a port nothing declared can never
+     * become a closure member.</p>
+     */
+    public static OutputClosureContract singleton(
+            String relationKey, String regionId,
+            Collection<String> declaredOutputPorts,
             String portId, String cell, String kind,
             String javaType, JsonObject slice) {
         JsonObject normalizedSlice = slice == null
@@ -293,7 +323,7 @@ public final class OutputClosureCodec {
 
         OutputClosureContract.Producer producer =
                 new OutputClosureContract.Producer(relationKey, regionId,
-                        contractHash);
+                        declaredOutputPorts);
         OutputClosureContract.Member decoded = decodeMember(member, 0);
         producer.requireOutputPort(decoded.portId());
         return new OutputClosureContract(producer,
@@ -307,7 +337,6 @@ public final class OutputClosureCodec {
                     "activation and output closure are required");
         }
         validateOuterScope(activation, contract.producer());
-        rejectLegacyMirrors(activation);
         activation.add(OutputClosureContract.FIELD, contract.toJson());
     }
 
@@ -399,14 +428,6 @@ public final class OutputClosureCodec {
         for (String name : SCOPE_ARRAYS) stringSet(slice, name);
         requireArray(slice, "captureBindings");
         requireArray(slice, "captureBindingIssues");
-        if (slice.has("captureBindingsComplete")) {
-            throw new IllegalArgumentException(
-                    path + " contains retired captureBindingsComplete");
-        }
-        if (slice.has("captureBindingsRequired")) {
-            throw new IllegalArgumentException(
-                    path + " contains retired captureBindingsRequired");
-        }
     }
 
     private static void validateCaptureLedger(
@@ -429,6 +450,10 @@ public final class OutputClosureCodec {
             String captureKind = text(binding, "captureKind");
             if (OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind)) {
                 validateCallArgumentEndpoint(binding, path, descriptor);
+            } else if (OutputCaptureSpec.COMMUNICATION_EFFECT.equals(
+                    captureKind)) {
+                validateCommunicationEffectEndpoint(binding, cell, path,
+                        descriptor);
             } else if (OutputCaptureSpec.MUTATION_STATE.equals(
                     captureKind)) {
                 validateMutationStateEndpoint(binding, cell, path,
@@ -437,7 +462,12 @@ public final class OutputClosureCodec {
                     captureKind)) {
                 validateFieldWriteStateEndpoint(binding, cell, path,
                         descriptor);
-            } else if (captureKind.isEmpty()) {
+            } else if (OutputCaptureSpec.HANDOFF_BOUND_LEAF.equals(
+                    captureKind)) {
+                validateHandoffBoundLeafEndpoint(binding, port, cell, path,
+                        descriptor);
+            } else if (OutputCaptureSpec.REGION_EXIT_FIELD.equals(
+                    captureKind)) {
                 if (hasOutputOccurrenceIdentity(binding)) {
                     throw new IllegalArgumentException(path
                             + " bounded heap outputs require an exact-site "
@@ -448,6 +478,49 @@ public final class OutputClosureCodec {
                 throw new IllegalArgumentException(path
                         + " captureKind is unsupported: " + captureKind);
             }
+        }
+    }
+
+    /**
+     * Validates a structured leaf at the broker boundary.
+     *
+     * <p>No positional or name-only recovery is accepted here.  The capture
+     * names the declared parent and encoding authority plus the exact
+     * static site and direction.  The expression and its dynamic delivery
+     * identity come directly from the VM handoff and its {@code VALUE_HANDOFF}
+     * ledger edge; this reusable output declaration does not re-attest an
+     * exchange, attempt, or runtime edge.</p>
+     */
+    private static void validateHandoffBoundLeafEndpoint(
+            JsonObject binding, String port, String cell, String path,
+            String descriptor) {
+        String javaType = requireText(binding, "javaType");
+        String parent = requireText(binding,
+                CommunicationCatalogContract.PORT_COMPONENT_OF);
+        String authority = requireText(binding,
+                CommunicationCatalogContract.PORT_ENCODING_AUTHORITY);
+        String site = requireText(binding,
+                CommunicationCatalogContract.EXCHANGE_SITE_KEY);
+        String leaf = requireText(binding, "leafPath");
+        String direction = requireText(binding,
+                CommunicationCatalogContract.PORT_DIRECTION);
+        String terminal = leaf.substring(leaf.lastIndexOf('/') + 1);
+        String expectedLeg = CommunicationCatalogContract.DIRECTION_REQUEST
+                .equals(direction) ? ".req." : ".resp";
+        boolean declaredDirection = CommunicationCatalogContract.DIRECTION_REQUEST.equals(direction)
+                || CommunicationCatalogContract.DIRECTION_RESPONSE.equals(
+                direction);
+        if (!cell.equals(port)
+                || !descriptor.equals(javaTypeDescriptor(javaType))
+                || parent.equals(port)
+                || !parent.startsWith(site + expectedLeg)
+                || !port.startsWith(site + expectedLeg)
+                || authority.isEmpty() || !declaredDirection
+                || !port.endsWith("." + terminal)
+                || binding.has("argumentIndex")
+                || binding.has("declaredCallee")) {
+            throw new IllegalArgumentException(path
+                    + " handoff-bound leaf is inconsistent");
         }
     }
 
@@ -462,6 +535,24 @@ public final class OutputClosureCodec {
         }
         requireText(binding, "definitionMethod");
         requireText(binding, "declaredCallee");
+    }
+
+    private static void validateCommunicationEffectEndpoint(
+            JsonObject binding, String cell, String path,
+            String descriptor) {
+        if (!hasOutputOccurrenceIdentity(binding)) {
+            throw new IllegalArgumentException(path
+                    + " communication effect has no bounded occurrence");
+        }
+        String method = requireText(binding, "definitionMethod");
+        String javaType = requireText(binding, "javaType");
+        if (!descriptor.equals(javaTypeDescriptor(javaType))
+                || !cell.equals(method + ".communication.response")
+                || binding.has("argumentIndex")
+                || binding.has("declaredCallee")) {
+            throw new IllegalArgumentException(
+                    path + " communication effect is inconsistent");
+        }
     }
 
     private static void validateMutationStateEndpoint(
@@ -517,6 +608,38 @@ public final class OutputClosureCodec {
         requireText(binding, "accessRootInputPort");
     }
 
+    /**
+     * The producer's declared output ports, as the wire states them.
+     *
+     * <p>Absent means "this producer declares nothing outside its own
+     * region", which is the shape every artifact written before cut ports
+     * existed has.  Present means the region named these ports, so the
+     * encoding is held to exactly the canonical form
+     * {@link OutputClosureContract.Producer#toJson()} writes back: a
+     * non-empty array of ids none of which the region identity already
+     * mints.  An empty array or a re-declared region-scoped id would decode
+     * to something the producer does not re-encode, and a wire that does not
+     * round-trip is not a contract.</p>
+     */
+    private static List<String> declaredOutputPorts(JsonObject scope) {
+        String field = OutputClosureContract.Producer.DECLARED_OUTPUT_PORTS;
+        if (!scope.has(field)) return Collections.emptyList();
+        Set<String> declared = stringSet(scope, field);
+        if (declared.isEmpty()) {
+            throw new IllegalArgumentException(
+                    field + " must not be empty when present");
+        }
+        String prefix = requireText(scope, "regionId") + ".out.";
+        for (String port : declared) {
+            if (port.startsWith(prefix) && port.length() > prefix.length()) {
+                throw new IllegalArgumentException(
+                        field + " must not restate a region-scoped port: "
+                                + port);
+            }
+        }
+        return new ArrayList<>(declared);
+    }
+
     private static void requireFieldDescriptor(String value, String path) {
         if (!validFieldDescriptor(value)) {
             throw new IllegalArgumentException(
@@ -552,19 +675,9 @@ public final class OutputClosureCodec {
                 requireText(activation, "regionId")))
                 || (activation.has("relationKey")
                 && !producer.relationKey().equals(
-                requireText(activation, "relationKey")))
-                || (activation.has("relationContractHash")
-                && !producer.contractHash().equals(
-                requireText(activation, "relationContractHash")))) {
+                requireText(activation, "relationKey")))) {
             throw new IllegalArgumentException(
                     "outputClosure producer conflicts with artifact scope");
-        }
-    }
-
-    private static void rejectField(JsonObject object, String field) {
-        if (object != null && object.has(field)) {
-            throw new IllegalArgumentException(
-                    "retired output closure field " + field);
         }
     }
 

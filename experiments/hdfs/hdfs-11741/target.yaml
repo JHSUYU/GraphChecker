@@ -1,1 +1,3 @@
+# Stable HDFS-11741 analysis input.  Generated campaign artifacts belong under
+# schedule_output_dir; cleaning a failed campaign must not delete its target.
 exception_target_id: hdfs-11741

@@ -90,16 +90,17 @@ public final class RegionNumericLoopApiSmoke {
                         == 6,
                 events);
 
+        String pathCondition = System.getPathCondition();
         String summary = System.finishConcolicRegion();
-        String longCondition = arrayObject(summary, "\"pathCondition\":[",
+        String longCondition = arrayObject(pathCondition, "[",
                 longIndex);
-        String doubleCondition = arrayObject(summary,
-                "\"pathCondition\":[", doubleIndex);
-        String loopFirst = arrayObject(summary, "\"pathCondition\":[",
+        String doubleCondition = arrayObject(pathCondition, "[",
+                doubleIndex);
+        String loopFirst = arrayObject(pathCondition, "[",
                 loopFirstIndex);
-        String loopSecond = arrayObject(summary, "\"pathCondition\":[",
+        String loopSecond = arrayObject(pathCondition, "[",
                 loopSecondIndex);
-        String loopExit = arrayObject(summary, "\"pathCondition\":[",
+        String loopExit = arrayObject(pathCondition, "[",
                 loopExitIndex);
 
         require(longCondition.contains("numeric_loop_wide")

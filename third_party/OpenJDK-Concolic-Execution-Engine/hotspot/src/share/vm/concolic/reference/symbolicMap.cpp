@@ -91,6 +91,13 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   if (ContainerSupport::claims_state(handle)
       && !ContainerSupport::follows_callee_body(callee_name)) {
+    // A selected map is shared, so this thread's abort is not the whole cost:
+    // an operation nobody modeled may have changed a state that other threads
+    // still read.  Mark the location before failing closed, so their reads
+    // keep an honest unknown arm instead of resolving against a writer set
+    // that is quietly missing one.
+    ContainerSupport::mark_state_gap(
+        handle.get_param<oop>(0), "ASSOCIATIVE_OPERATION_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
         "ASSOCIATIVE_OPERATION_UNSUPPORTED", handle).c_str());
   }
@@ -105,6 +112,12 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       || method == "replace" || method == "replaceAll"
       || method == "compute" || method == "computeIfAbsent"
       || method == "computeIfPresent" || method == "merge") {
+    // The mutation ran concretely and produced no version.  On a selected map
+    // that is a writer no later read can name, so say so permanently first --
+    // the abort below only ends *this* thread's path condition, while the
+    // missing writer is a fact about the location every other thread reads.
+    ContainerSupport::mark_state_gap(
+        handle.get_param<oop>(0), "ASSOCIATIVE_MUTATOR_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
         "ASSOCIATIVE_MUTATOR_UNSUPPORTED", handle).c_str());
     return NULL;
@@ -155,6 +168,7 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *new_state = new ContainerExpression(
         "ASSOCIATIVE", "PUT", old_state, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, new_state);
+    ContainerSupport::publish_state(receiver_object, new_state, "PUT");
     if (!arguments.empty()) {
       exp_list_t key;
       key.push_back(arguments[0]);
@@ -186,12 +200,14 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *new_state = new ContainerExpression(
         "ASSOCIATIVE", "REMOVE", receiver, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, new_state);
+    ContainerSupport::publish_state(receiver_object, new_state, "REMOVE");
     return old;
   }
   if (method == "clear" && root_map && arguments.empty()) {
     Expression *new_state = new ContainerExpression(
         "ASSOCIATIVE", "CLEAR", receiver, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, new_state);
+    ContainerSupport::publish_state(receiver_object, new_state, "CLEAR");
     return NULL;
   }
   if (method == "remove" && !root_map && arguments.empty()) {
@@ -209,6 +225,9 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "ASSOCIATIVE", "REMOVE_AT", root, remove_arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    // The receiver is the cursor, not the map; state_location canonicalizes it
+    // to the map it walks, so this is a version of that one location.
+    ContainerSupport::publish_state(receiver_object, next, "REMOVE_AT");
     return NULL;
   }
   if (method == "clear" && !root_map && arguments.empty()) {
@@ -222,11 +241,22 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "ASSOCIATIVE", "CLEAR", root, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, "CLEAR_VIEW");
     return NULL;
   }
   if (method == "remove" && (!root_map || arguments.size() != 1)) {
-    ConcolicMngr::ctx->abort_symbolic_execution(
-        "ASSOCIATIVE_REMOVE_OVERLOAD_UNSUPPORTED");
+    // A symbolic argument can make an unrelated map invocation enter this
+    // helper even though the receiver itself is not one of the selected
+    // shared carriers.  Its concrete body remains the only semantics claimed
+    // for that map, so do not discard the selected region for it.  Fail
+    // closed only when this receiver is selected: then the unsupported
+    // mutation really would leave a versioned state incomplete.
+    if (ContainerSupport::mark_state_gap(
+            receiver_object, "ASSOCIATIVE_REMOVE_OVERLOAD_UNSUPPORTED")) {
+      ConcolicMngr::ctx->abort_symbolic_execution(
+          ContainerSupport::unsupported(
+              "ASSOCIATIVE_REMOVE_OVERLOAD_UNSUPPORTED", handle).c_str());
+    }
     return NULL;
   }
   if (method == "clear" && !root_map) {
@@ -251,14 +281,43 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     expression_type = ContainerSupport::result_type(
         result_object, expression_type);
   }
-  Expression *result = new ContainerExpression(
-      "ASSOCIATIVE", operation, receiver, arguments,
-      expression_type,
-      ContainerSupport::java_type(result_object,
-                                  handle.get_result_type()));
-  if (method == "get" || method == "containsKey"
-      || method == "size" || method == "isEmpty"
-      || method == "next" && is_scalar_map_iterator(receiver_object)) {
+  const std::string result_java_type = ContainerSupport::java_type(
+      result_object, handle.get_result_type());
+
+  Expression *result = NULL;
+  // Every observation of a selected root map binds to the state it may have
+  // observed rather than to whichever state happens to be installed when the
+  // helper finishes.  Views are observations too: values().iterator().next()
+  // and values().toArray() must inherit the exact/guarded writer selected here
+  // instead of silently walking an unversioned last-state receiver.
+  bool observation_admitted = true;
+  bool root_observation = root_map
+      && (method == "get" || method == "containsKey"
+          || method == "size" || method == "isEmpty"
+          || method == "entrySet" || method == "keySet"
+          || method == "values");
+  if (root_observation) {
+    ContainerSupport::StateQuery bound = ContainerSupport::query_state(
+        receiver_object, "ASSOCIATIVE", operation, arguments,
+        expression_type, result_java_type);
+    if (bound.expression != NULL) {
+      result = bound.expression;
+      // A proven writer leaves the observation meaningful; an undecided one
+      // does not.  Asserting `choice == the value this run returned` would let
+      // concrete equality select the writer, which is the read-from guess the
+      // design forbids, so a guarded query records no value observation.
+      observation_admitted = bound.exact;
+    }
+  }
+  if (result == NULL) {
+    result = new ContainerExpression(
+        "ASSOCIATIVE", operation, receiver, arguments,
+        expression_type, result_java_type);
+  }
+  if (observation_admitted
+      && (method == "get" || method == "containsKey"
+          || method == "size" || method == "isEmpty"
+          || method == "next" && is_scalar_map_iterator(receiver_object))) {
     ContainerSupport::constrain_result(handle, result);
   }
   if ((method == "getKey" || method == "getValue")

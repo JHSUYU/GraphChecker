@@ -607,8 +607,6 @@
   template(classRedefinedCount_name,                   "classRedefinedCount")                                     \
   template(classLoader_name,                           "classLoader")                                             \
                                                                                                                   \
-  template(_wbridge_storedprocedure_StoredProcedureManager, "edu/sjtu/ipads/wbridge/storedprocedure/StoredProcedureManager")           \
-  template(_add_SQLTemplate, "addSQLTemplate")                                                                     \
   /* jfr signatures */                                                                                            \
   JFR_TEMPLATES(template)                                                                                         \
                                                                                                                   \
@@ -1157,15 +1155,9 @@
    do_name(     Double_valueOf_signature,                        "(D)Ljava/lang/Double;")                               \
                                                                                                                         \
                                                                                                                         \
-  /* WeBridge related symbols */                                                                                        \
-  do_intrinsic(_add_SQLTemplate_intrinsic, _wbridge_storedprocedure_StoredProcedureManager, _add_SQLTemplate, _add_SQLTemplate_signature, F_S)  \
-   do_signature(_add_SQLTemplate_signature, "(Ledu/sjtu/ipads/wbridge/sql/SymbolicSQLTemplate;)V")                      \
   do_class(java_math_BigDecimal,                      "java/math/BigDecimal")                                           \
    do_name(bd_intCompact, "intCompact") \
    do_name(bd_scale, "scale")                                                                                           \
-  do_class(java_sql_Timestamp, "java/sql/Timestamp")  \
-   do_name(fastTime, "fastTime")                                                                                                             \
-   do_name(nanos, "nanos")                                                                                                             \
     /*end*/
 
 

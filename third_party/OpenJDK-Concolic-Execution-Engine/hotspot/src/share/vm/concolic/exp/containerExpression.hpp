@@ -37,6 +37,7 @@ class ContainerExpression : public Expression {
   virtual ContainerExpression *as_container_expression() { return this; }
 
   const std::string &get_operation() const { return _operation; }
+  const std::string &get_shape() const { return _shape; }
   Expression *get_receiver() const { return _receiver; }
 
   virtual void print();

@@ -14,7 +14,6 @@ public:
   static const char *TYPE_NAME;
 
 private:
-  static sym_rid_t sym_count;
   Expression *_exp;
 
 public:
@@ -24,9 +23,7 @@ public:
   Expression *get(int field_offset);
   Expression *get_ref_exp() { return _exp; };
   void set_ref_exp(Expression *exp) {
-    Expression::gc(_exp);
     _exp = exp;
-    _exp->inc_ref();
     mark_semantic_expression();
   };
 

@@ -1866,8 +1866,9 @@ void JavaThread::exit(bool destroy_vm, ExitType exit_type) {
   // finish hook.  ShadowStack marks such a context terminal before this
   // method dispatches uncaught-exception/Thread.exit Java callbacks, so those
   // callbacks run with tracking disabled.  This owner-thread VM boundary is
-  // then the safe place to destroy the abandoned context and release the
-  // process-global concolic mutex.
+  // then the safe place to destroy the abandoned context and release this
+  // thread's symbolic-session membership.  Other attached threads keep
+  // theirs; the session ends only if this was the last member.
   ConcolicMngr::cleanupAbandonedContext(this);
 #endif
 

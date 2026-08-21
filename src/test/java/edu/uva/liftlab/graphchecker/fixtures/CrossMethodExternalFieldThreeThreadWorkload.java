@@ -378,22 +378,6 @@ public final class CrossMethodExternalFieldThreeThreadWorkload {
                     consumerStartedAfterProducersTerminated;
         }
 
-        public Boolean getProducerAEnabled() {
-            return producerAEnabled;
-        }
-
-        public Boolean getStrictThreshold() {
-            return strictThreshold;
-        }
-
-        public int getProducerValue() {
-            return producerValue;
-        }
-
-        public int getThresholdValue() {
-            return thresholdValue;
-        }
-
         public Throwable getFailure() {
             return failure;
         }

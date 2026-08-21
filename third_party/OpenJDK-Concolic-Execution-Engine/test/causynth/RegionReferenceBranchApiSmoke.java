@@ -17,10 +17,10 @@ public final class RegionReferenceBranchApiSmoke {
     public static void main(String[] args) {
         Trace nullSeed = executeNullBranch(null, "nullable_null");
         require(nullSeed.result == 1, nullSeed.summary);
-        require(nullSeed.summary.contains("nullable_null")
-                        && nullSeed.summary.contains("\"_op\":\"==\"")
-                        && nullSeed.summary.contains("\"_exp\":\"N\""),
-                nullSeed.summary);
+        require(nullSeed.path.contains("nullable_null")
+                        && nullSeed.path.contains("\"_op\":\"==\"")
+                        && nullSeed.path.contains("\"_exp\":\"N\""),
+                nullSeed.path);
         // javac lowers the early true arm to ifnonnull; for a null seed the
         // JVM conditional is not taken even though the source predicate is
         // true.  BranchEvent.outcome intentionally reports JVM control flow.
@@ -30,21 +30,21 @@ public final class RegionReferenceBranchApiSmoke {
         Trace nonNullSeed = executeNullBranch(new Object(),
                 "nullable_non_null");
         require(nonNullSeed.result == 0, nonNullSeed.summary);
-        require(nonNullSeed.summary.contains("nullable_non_null")
-                        && nonNullSeed.summary.contains("\"_op\":\"!=\"")
-                        && nonNullSeed.summary.contains("\"_exp\":\"N\""),
-                nonNullSeed.summary);
+        require(nonNullSeed.path.contains("nullable_non_null")
+                        && nonNullSeed.path.contains("\"_op\":\"!=\"")
+                        && nonNullSeed.path.contains("\"_exp\":\"N\""),
+                nonNullSeed.path);
         requireExactEvent(nonNullSeed.events,
                 "REF.NULL.nullable_non_null", true, 1);
 
         Trace distinct = executeReferenceComparison(new Object(),
                 new Object(), "distinct_refs");
         require(distinct.result == 0, distinct.summary);
-        require(distinct.summary.contains("reference_left_distinct_refs")
-                        && distinct.summary.contains(
+        require(distinct.path.contains("reference_left_distinct_refs")
+                        && distinct.path.contains(
                         "reference_right_distinct_refs")
-                        && distinct.summary.contains("\"_op\":\"!=\""),
-                distinct.summary);
+                        && distinct.path.contains("\"_op\":\"!=\""),
+                distinct.path);
         requireExactEvent(distinct.events, "REF.ACMP.distinct_refs", true,
                 1);
         System.out.println("CAUSYNTH_REGION_REFERENCE_BRANCH_API_SMOKE_OK");
@@ -63,9 +63,11 @@ public final class RegionReferenceBranchApiSmoke {
             result = 0;
         }
         require(event > 0L, "branch marker rejected");
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String events = System.getConcolicBranchEvents();
         String summary = System.finishConcolicRegion();
-        return new Trace(result, summary, events);
+        return new Trace(result, summary, events, path);
     }
 
     private static Trace executeReferenceComparison(Object left, Object right,
@@ -85,9 +87,11 @@ public final class RegionReferenceBranchApiSmoke {
             result = 0;
         }
         require(event > 0L, "branch marker rejected");
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String events = System.getConcolicBranchEvents();
         String summary = System.finishConcolicRegion();
-        return new Trace(result, summary, events);
+        return new Trace(result, summary, events, path);
     }
 
     private static void requireExactEvent(String events, String site,
@@ -109,11 +113,13 @@ public final class RegionReferenceBranchApiSmoke {
         final int result;
         final String summary;
         final String events;
+        final String path;
 
-        Trace(int result, String summary, String events) {
+        Trace(int result, String summary, String events, String path) {
             this.result = result;
             this.summary = summary;
             this.events = events;
+            this.path = path;
         }
     }
 }

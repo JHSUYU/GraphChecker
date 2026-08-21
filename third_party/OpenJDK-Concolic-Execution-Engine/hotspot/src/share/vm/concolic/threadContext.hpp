@@ -3,12 +3,12 @@
 
 #ifdef ENABLE_CONCOLIC
 
-#include "concolic/jdbc/jdbcMngr.hpp"
 #include "concolic/methodSymbolizer.hpp"
 #include "concolic/pathCondition.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
 #include "concolic/shadow/shadowStack.hpp"
+#include "concolic/vectorClock.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/handles.hpp"
 #include "runtime/jniHandles.hpp"
@@ -17,20 +17,41 @@
 #include <string>
 #include <vector>
 
+class SessionSymbolicHeap;
+
+/**
+ * One Java thread's symbolic execution state: its shadow frames, operand
+ * stack, locals, path condition, branch events and region stack.
+ *
+ * Everything here describes how *this* thread reached a value.  What a value
+ * *is* -- object shadows, container states, expressions, ids -- belongs to the
+ * session, and this class reaches it through heap() rather than owning it.
+ * That is what makes a region exit release only this thread's execution state.
+ *
+ * Regions form a stack, not a scalar.  A thread that is already attached can
+ * open another region inside the one it is running -- a producer region inside
+ * a driver region, a handler region inside an RPC region -- and the identity
+ * that labels branch events and summaries is the innermost one.  Only the
+ * outermost exit ends this thread's participation in the session.
+ *
+ * The path condition stays singular and thread-scoped underneath that stack.
+ * A nested region does not get a private path condition and does not reset the
+ * enclosing one: the thread executed one sequence of branches, and every
+ * region it was inside at the time is a label on that sequence, not a separate
+ * execution.  A nested region's summary therefore reports the thread's path
+ * condition, with its branch events carrying the region that was innermost
+ * when each of them was recorded.
+ */
 class ThreadContext {
-  /**
-   * TODO: make this hashtable!
-   */
-  typedef std::map<sym_rid_t, SymRef *> SymStore;
-  typedef std::vector<Expression *> SymTmpExpStore;
-  // Some VM-managed objects, most notably interned Strings, must never have
-  // their shared oop header marked symbolic.  Keep their per-region symbolic
-  // identity behind a GC-stable handle instead.  SymStore remains the sole
-  // owner of the SymInstance; this map is only an identity lookup index.
-  typedef std::map<jobject, SymInstance *> DetachedObjectStore;
-  typedef std::map<sym_rid_t, Expression *> ContainerStateStore;
-  typedef std::map<sym_rid_t, int> ContainerPositionStore;
-  typedef std::map<sym_rid_t, sym_rid_t> ContainerOwnerStore;
+private:
+  struct RegionFrame {
+    std::string region_id;
+    std::string task_id;
+    // The ledger event this occurrence opened with, so that its exit can be
+    // related to it by an edge rather than by matching identifiers.
+    jlong enter_event_id;
+    RegionFrame() : enter_event_id(0) {}
+  };
 
   struct BranchEvent {
     jlong event_id;
@@ -50,23 +71,26 @@ class ThreadContext {
 private:
   JavaThread *_thread;
   ShadowStack _s_stack;
-  SymStore _sym_refs;
-  SymTmpExpStore _sym_tmp_exps;
   PathCondition _path_condition;
+  // Only the taken predicates of instrumented branch sites.  Auxiliary
+  // symbolic constraints (container observations, method-result relations,
+  // and similar solver facts) remain in _path_condition, but copying them
+  // into every shared-field version turns a small writer guard into the
+  // whole execution DAG.  A recorded version is guarded by control flow;
+  // the enclosing region case carries the auxiliary constraints once.
+  PathCondition _branch_path_condition;
+  // Non-branch semantic constraints, stored once per thread path rather than
+  // copied into every shared-version guard.  The companion indices are their
+  // positions in _path_condition, so a consumer can merge them with exact
+  // branch witnesses without guessing execution order.
+  PathCondition _auxiliary_path_condition;
+  std::vector<int> _auxiliary_path_condition_indices;
   MethodSymbolizer _method_symbolizer;
-  JdbcMngr _jdbc_mngr;
-  DetachedObjectStore _detached_object_store;
-  ContainerStateStore _container_states;
-  ContainerPositionStore _container_positions;
-  // Iterator traversal ordinals name members in the entry state and must not
-  // move backwards after Iterator.remove().  Removal itself addresses the
-  // current (compacted) state, so remember how many earlier members this
-  // cursor removed and translate the stable ordinal to a live index there.
-  ContainerPositionStore _container_removals;
-  ContainerOwnerStore _container_owners;
 
-  sym_rid_t _sym_rid_counter;
-  sym_tmp_id_t _sym_tmp_id_counter;
+  // The session's shadow heap.  Fails closed if the session that owns this
+  // context has already been torn down.
+  SessionSymbolicHeap &heap() const;
+
 
   bool _path_condition_enabled;
   // Region capture begins only after the first selected input is
@@ -81,12 +105,17 @@ private:
   // symbolic operation fail closed.
   bool _aborted;
   std::string _abort_reason;
-  std::string _region_id;
-  std::string _task_id;
+  std::vector<RegionFrame> _region_stack;
   jlong _context_id;
   jlong _owner_java_thread_id;
   jlong _owner_os_thread_id;
   jlong _branch_sequence;
+  // This thread's own step counter and its happens-before knowledge.  Both are
+  // thread-owned execution state, mutated only by the owning thread and copied
+  // by value whenever a snapshot is published into shared session state.
+  jlong _clock_step;
+  jlong _last_event_id;
+  VectorClock _clock;
   bool _pending_branch_active;
   jlong _pending_branch_event_id;
   const ZeroFrame *_pending_branch_owner_frame;
@@ -111,27 +140,74 @@ public:
                                const char *method_name) {
     _method_symbolizer.add_method(class_name, method_name);
   }
-  inline void record_stmt_obj(oop stmt, oop obj) {
-    _jdbc_mngr.record_stmt_obj_pair(stmt, obj);
-  }
-  inline void record_persistent_obj(oop obj) {
-    _jdbc_mngr.record_persistent_obj(obj);
-  }
-
   PathCondition &get_path_condition();
 
-  inline void set_region_metadata(const char *region_id,
-                                  const char *task_id) {
-    _region_id = region_id == NULL ? "" : region_id;
-    _task_id = task_id == NULL ? "" : task_id;
-  }
+  // Opens a region on this thread.  The first push is the thread's outermost
+  // region; every later one nests inside the region that is currently
+  // innermost.
+  void push_region(const char *region_id, const char *task_id);
+  // Closes the innermost region and returns the remaining depth.  Zero means
+  // this thread has left every region and its membership can be released.
+  int pop_region();
+  inline int region_depth() const { return (int) _region_stack.size(); }
 
-  inline const std::string &get_region_id() const { return _region_id; }
-  inline const std::string &get_task_id() const {
-    return _task_id;
-  }
+  // The innermost region's identity, or empty when this thread is in none.
+  const std::string &get_region_id() const;
+  const std::string &get_task_id() const;
+  void set_region_enter_event(jlong event_id);
+  jlong region_enter_event() const;
+
+  /**
+   * One half-open index range of this thread's path condition, as its
+   * conditions.
+   *
+   * The window's conjunction is not inlined beside them.  It is the left fold
+   * of `conditions` in index order and nothing else, so a second copy of it in
+   * the same document restated every condition of the window twice.  The
+   * envelope says so explicitly (`conjunctionInline`, `conjunctionSource`,
+   * `conjunctionAuthority`) rather than silently omitting it, and
+   * `conditionCount` still gives the window's exact length, so an empty window
+   * is distinguishable from an omitted one without fetching anything.
+   */
+  std::string get_path_condition_range(int start, int end);
+
+  /**
+   * Every admitted non-branch solver constraint, paired with its position in
+   * the thread's full path condition.  This is the case-level counterpart of
+   * path_guard(): versions carry only control guards, while a region result
+   * carries these semantic relations once.
+   */
+  std::string get_auxiliary_path_conditions();
 
   inline jlong get_context_id() const { return _context_id; }
+  inline jlong get_owner_java_thread_id() const {
+    return _owner_java_thread_id;
+  }
+
+  // ---- happens-before, from this thread's point of view -------------------
+  // Advances this thread's own step and returns it.  Every ordered action this
+  // thread performs takes one step, so a later action of the same thread is
+  // always hb-after an earlier one without any extra edge.
+  jlong tick_clock();
+  inline const VectorClock &clock() const { return _clock; }
+  // Joins knowledge acquired from a release this thread has just observed.
+  inline void acquire_clock(const VectorClock &released) {
+    _clock.join(released);
+  }
+  inline jlong clock_step() const { return _clock_step; }
+  // This thread's most recent ledger event, which the next one is linked to
+  // by a program-order edge.  Thread-owned, so no lock is involved.
+  inline jlong last_event_id() const { return _last_event_id; }
+  inline void set_last_event_id(jlong event_id) {
+    _last_event_id = event_id;
+  }
+
+  // The conjunction of this thread's instrumented, taken branch predicates,
+  // or NULL for `true`.  This deliberately excludes auxiliary solver
+  // constraints retained in get_path_condition(); the region case carries
+  // those once, while a shared version needs only its control guard.
+  // Folded here so that a caller can obtain it before taking any engine lock.
+  Expression *path_guard();
 
   inline bool is_aborted() const { return _aborted; }
   inline const std::string &get_abort_reason() const { return _abort_reason; }
@@ -166,8 +242,6 @@ public:
     }
   }
 
-  inline JdbcMngr &get_jdbc_mngr() { return _jdbc_mngr; }
-
   inline MethodSymbolizer &get_method_symbolizer() {
     return _method_symbolizer;
   }
@@ -178,10 +252,6 @@ public:
 
   inline bool symbolic_tracking_enabled() const {
     return _s_stack.symbolic_tracking_enabled();
-  }
-
-  inline bool has_callback() const {
-    return _method_symbolizer.has_callback();
   }
 
 public:
@@ -221,16 +291,15 @@ public:
   }
   SymArr *find_sym_array(arrayOop array_obj) const;
 
-  sym_tmp_id_t get_next_sym_tmp_id(Expression *sym_exp);
-  void detach_tmp_exp(sym_tmp_id_t sym_tmp_id);
-
   inline void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
     if (_aborted || !_path_condition_enabled || !_path_condition_admitted
         || _path_condition_pause_depth > 0) {
       return;
     }
 
-    _path_condition.add(sym_exp);
+    const int full_index = _path_condition.add(sym_exp);
+    _auxiliary_path_condition.add(sym_exp);
+    _auxiliary_path_condition_indices.push_back(full_index);
   }
 
   void write_array_element(arrayOop array, int index,
@@ -238,8 +307,14 @@ public:
   Expression *track_container(oop container, const char *shape,
                               const std::string &prefix);
   Expression *container_state(oop container, const char *shape);
+  // The one id naming this container and every view of it; NULL_SYM_RID when
+  // it has no shadow.  Allocates nothing.
+  sym_rid_t canonical_container_id(oop container) const;
   Expression *find_container_state(oop container) const;
   void set_container_state(oop container, Expression *state);
+  bool admit_container_state(oop container, sym_rid_t evidence_owner,
+                             Expression *state);
+  Expression *find_admitted_container_state(oop container) const;
   void alias_container(oop derived, oop owner);
   int next_container_position(oop cursor);
   int current_container_position(oop cursor);
@@ -257,14 +332,6 @@ public:
                                    Expression *sym_exp);
   void set_stack_slot(int offset, Expression *sym_exp, sym_rid_t sym_rid,
                       int index);
-  /**
-   * Claim `sym_exp` for the rest of this activation on behalf of a shadow
-   * slot.  Every slot store goes through this: a slot may name an expression
-   * whose only other owner is free to release it on the next write to the
-   * same location.
-   */
-  void retain_for_activation(Expression *sym_exp);
-
   inline Expression *get_stack_slot(int offset) {
     return this->get_stack_entry(offset).exp;
   }
@@ -274,20 +341,11 @@ public:
         ? NULL : this->get_stack_entry(offset).exp;
   }
 
-  inline Expression *get_and_detach_stack_slot(int offset) {
-    return this->get_and_detach_stack_entry(offset).exp;
-  }
-
   inline Expression *get_local_slot(int offset) {
     return this->get_last_local().get_slot(offset);
   }
 
   inline void set_local_slot(int offset, Expression *exp) {
-    // Same claim as the stack slots: a local names an expression it does not
-    // own, and IINC is the one producer that reaches a slot without going
-    // through set_stack_slot, so nothing else would ever take a reference on
-    // this value's behalf.
-    this->retain_for_activation(exp);
     this->get_last_local().set_slot(offset, exp);
   }
 
@@ -332,38 +390,6 @@ private:
 
   inline ShadowTable::Entry &get_local_entry(int offset) {
     return this->get_last_local().get_entry(offset);
-  }
-
-  inline ShadowTable::Entry &get_and_detach_stack_entry(int offset) {
-    ShadowTable::Entry &entry = this->get_last_stack().get_entry(offset);
-    if (entry.exp) {
-      if (entry.sym_rid == NULL_SYM_RID) {
-        this->detach_tmp_exp(entry.index);
-      }
-    }
-    return entry;
-  }
-
-private:
-
-  void set_sym_ref(sym_rid_t sym_rid, SymRef *sym_ref) {
-    _sym_refs.insert(std::make_pair(sym_rid, sym_ref));
-  }
-
-  sym_rid_t get_next_sym_rid() {
-    sym_rid_t ret = _sym_rid_counter++;
-    guarantee(ret < MAX_SYM_RID, "sym_rid limitted");
-    return ret;
-  }
-
-  inline void init_sym_rid_counter() { _sym_rid_counter = 1; }
-  inline void init_sym_tmp_id_counter() {
-    /**
-     * tmp_id start from 1.
-     * Therefore, we push a placeholder.
-     */
-    _sym_tmp_exps.push_back(NULL);
-    _sym_tmp_id_counter = 1;
   }
 
 public:

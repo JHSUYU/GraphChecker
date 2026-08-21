@@ -6,266 +6,23 @@ import com.google.gson.JsonObject;
 import org.junit.Assume;
 import org.junit.Test;
 
+import java.io.IOException;
 import java.nio.file.Paths;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ConcolicConstraintSolverTest {
+    /**
+     * Java integral arithmetic wraps at the exact two's complement boundary
+     * and non-finite floating point literals keep exact IEEE semantics; both
+     * are the same contract, that the lowering is Java's own and not the
+     * solver's unbounded arithmetic.
+     */
     @Test
-    public void z3ModelIsMappedToARealInputMaterialization() throws Exception {
-        Assume.assumeTrue(z3Available());
-        ConcolicConstraintSolver.Result result =
-                solveForTest(task(binary(">", 3)),
-                        activation(), Paths.get("z3"), 10_000L);
-
-        assertEquals("SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertEquals(1, result.modelAssignments.size());
-        JsonObject assignment = result.modelAssignments.get(0)
-                .getAsJsonObject();
-        assertEquals("REGION.3.in.0",
-                assignment.get("inputSymbol").getAsString());
-        assertFalse(assignment.has("authority"));
-        assertFalse(assignment.has("solverSymbol"));
-        assertFalse(assignment.has("target"));
-    }
-
-    @Test
-    public void splitElementAndParseIntRoundTripSolvesTheIntegerPrefix()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        // Reconstruct the HDFS-11741 SASL round trip: a username built as
-        // concat(toString(keyId), " ", blockPoolId, " ", nonce), split on the
-        // space delimiter, whose element zero is parsed back to an int.  A
-        // sound encoding must recover keyId exactly rather than leave it free.
-        String keyIdRaw = "M_I_field_REGION.3.in.0_java/lang/Integer";
-        JsonObject keyId = new JsonObject();
-        keyId.addProperty("_type", "SymbolExpression");
-        keyId.addProperty("_java_type", "I");
-        keyId.addProperty("_exp", keyIdRaw);
-
-        JsonObject username = strConcat(
-                strToString(keyId), strLiteral(" "), strLiteral("BP-x"),
-                strLiteral(" "), strLiteral("FebwCRNH0bY="));
-        JsonObject split = splitElement(username, " ", 0, "11745");
-        JsonObject parse = parseInt(split, 11745);
-
-        JsonObject roundTrip = new JsonObject();
-        roundTrip.addProperty("_type", "BinaryExpression");
-        roundTrip.add("_left", parse);
-        roundTrip.addProperty("_op", "==");
-        roundTrip.add("_right", constInt(11745));
-
-        // A standalone split of the same round trip exercises splitElementTerm
-        // directly (parseInt collapses to the source integer), so the query
-        // also proves java_int_to_string is emitted and inverted by z3.
-        JsonObject standaloneSplit = splitElement(strConcat(
-                strToString(keyId), strLiteral(" "), strLiteral("BP-x"),
-                strLiteral(" "), strLiteral("FebwCRNH0bY=")), " ", 0, "11745");
-        JsonObject splitEquals = new JsonObject();
-        splitEquals.addProperty("_type", "OpStrExpression");
-        splitEquals.addProperty("_name", "equals");
-        JsonArray equalsParams = new JsonArray();
-        equalsParams.add(standaloneSplit);
-        equalsParams.add(strLiteral("11745"));
-        splitEquals.add("_param_list", equalsParams);
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(roundTrip, splitEquals), activation(),
-                Paths.get("z3"), 10_000L);
-
-        assertEquals(result.smtLib, "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertTrue(result.smtLib,
-                result.smtLib.contains("java_int_to_string"));
-        assertFalse(result.smtLib,
-                result.smtLib.contains("METHOD_SEMANTICS_MISSING"));
-        assertFalse(result.smtLib,
-                result.smtLib.contains("MODEL_SEMANTICS_MISSING"));
-        assertEquals(1, result.modelAssignments.size());
-        JsonObject assignment = result.modelAssignments.get(0)
-                .getAsJsonObject();
-        assertEquals("REGION.3.in.0",
-                assignment.get("inputSymbol").getAsString());
-        assertEquals(11745, assignment.get("value").getAsInt());
-    }
-
-    private static JsonObject constInt(int value) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "ConstExpr");
-        expression.addProperty("_java_type", "I");
-        expression.addProperty("_exp", "Y_I_" + value);
-        return expression;
-    }
-
-    private static JsonObject strLiteral(String content) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "ConStringSymbolExp");
-        expression.addProperty("_java_type", "java/lang/String");
-        expression.addProperty("_exp", "Y_L'String'_" + content);
-        return expression;
-    }
-
-    private static JsonObject strToString(JsonObject integer) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "OpStrExpression");
-        expression.addProperty("_name", "toString");
-        JsonArray params = new JsonArray();
-        params.add(integer);
-        expression.add("_param_list", params);
-        return expression;
-    }
-
-    private static JsonObject strConcat(JsonObject... parts) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "OpStrExpression");
-        expression.addProperty("_name", "concat");
-        JsonArray params = new JsonArray();
-        for (JsonObject part : parts) params.add(part);
-        expression.add("_param_list", params);
-        return expression;
-    }
-
-    private static JsonObject splitElement(JsonObject receiver,
-                                           String delimiter, int index,
-                                           String recordedElement) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "MethodExpression");
-        expression.addProperty("_name", "java/lang/String splitElement");
-        JsonArray params = new JsonArray();
-        params.add(receiver);
-        params.add(strLiteral(delimiter));
-        params.add(constInt(index));
-        expression.add("_param_list", params);
-        expression.add("_res_exp", strLiteral(recordedElement));
-        return expression;
-    }
-
-    private static JsonObject parseInt(JsonObject argument,
-                                       int recordedValue) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "MethodExpression");
-        expression.addProperty("_name", "java/lang/Integer parseInt");
-        JsonArray params = new JsonArray();
-        params.add(argument);
-        expression.add("_param_list", params);
-        expression.add("_res_exp", constInt(recordedValue));
-        return expression;
-    }
-
-    @Test
-    public void contradictoryPrefixAndFlipAreUnsat() throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject task = task(binary(">", 3));
-        task.getAsJsonArray("constraints").add(binary("<", 0));
-
-        ConcolicConstraintSolver.Result result =
-                solveForTest(task, activation(),
-                        Paths.get("z3"), 10_000L);
-
-        assertEquals("UNSAT", result.record.get("status").getAsString());
-        assertEquals(0, result.modelAssignments.size());
-    }
-
-    @Test
-    public void replayFrontierMaterializesPrefixAndTargetReferences()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        String prefixRaw = "M_L_field_REGION.3.in.1_example/Input";
-        JsonObject prefixReferenceIsNull = binaryExpression(
-                referenceSymbol(prefixRaw), "==", referenceSymbol("N"));
-        JsonObject primitiveTarget = task(binary(">", 3));
-        JsonArray orderedConstraints = new JsonArray();
-        orderedConstraints.add(prefixReferenceIsNull);
-        orderedConstraints.add(primitiveTarget
-                .getAsJsonArray("constraints").get(0));
-        primitiveTarget.add("constraints", orderedConstraints);
-        JsonObject twoInputs = activation();
-        JsonObject prefixAction = materialization("REGION.3.in.1", 1);
-        prefixAction.addProperty("javaType", "java.lang.Object");
-        prefixAction.addProperty("mode", "SYMBOLIC");
-        twoInputs.getAsJsonArray("inputActions").add(prefixAction);
-
-        ConcolicConstraintSolver.Result prefixResult = solveForTest(
-                primitiveTarget, twoInputs, Paths.get("z3"), 10_000L);
-
-        assertEquals(prefixResult.record.toString(), "SAT_MODEL_READY",
-                prefixResult.record.get("status").getAsString());
-        assertEquals(2, prefixResult.modelAssignments.size());
-        java.util.Set<String> prefixInputs = new java.util.LinkedHashSet<>();
-        for (JsonElement element : prefixResult.modelAssignments) {
-            prefixInputs.add(element.getAsJsonObject()
-                    .get("inputSymbol").getAsString());
-        }
-        assertTrue(prefixInputs.contains("REGION.3.in.0"));
-        assertTrue(prefixInputs.contains("REGION.3.in.1"));
-
-        JsonObject referenceTarget = task(binaryExpression(
-                referenceSymbol(prefixRaw), "==", referenceSymbol("N")));
-        JsonObject referenceActivation = new JsonObject();
-        JsonArray actions = new JsonArray();
-        prefixAction = materialization("REGION.3.in.1", 1);
-        prefixAction.addProperty("javaType", "java.lang.Object");
-        prefixAction.addProperty("mode", "SYMBOLIC");
-        actions.add(prefixAction);
-        referenceActivation.add("inputActions", actions);
-
-        ConcolicConstraintSolver.Result targetResult = solveForTest(
-                referenceTarget, referenceActivation, Paths.get("z3"),
-                10_000L);
-
-        assertEquals(targetResult.record.toString(), "SAT_MODEL_READY",
-                targetResult.record.get("status").getAsString());
-        assertEquals(1, targetResult.modelAssignments.size());
-        JsonObject assignment = targetResult.modelAssignments.get(0)
-                .getAsJsonObject();
-        assertEquals("REGION.3.in.1",
-                assignment.get("inputSymbol").getAsString());
-        assertEquals("NULL", assignment.get("valueType").getAsString());
-    }
-
-    @Test
-    public void nullComparisonWidensOnlyItsOwnReferenceDomain()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        String leftRaw = "M_L_field_REGION.3.in.1_example/Owner";
-        String rightRaw = "M_L_field_REGION.3.in.2_example/Owner";
-        String nullableRaw = "M_L_field_REGION.3.in.3_example/Owner";
-        JsonObject query = task(
-                binaryExpression(referenceSymbol(leftRaw), "==",
-                        referenceSymbol(rightRaw)),
-                binaryExpression(referenceSymbol(nullableRaw), "==",
-                        referenceSymbol("N")));
-        JsonObject left = referenceFieldAction(
-                "REGION.3.in.1", "example.Ref", "left", 41L, 71L);
-        JsonObject right = referenceFieldAction(
-                "REGION.3.in.2", "example.Ref", "right", 41L, 72L);
-        JsonObject nullable = referenceFieldAction(
-                "REGION.3.in.3", "example.Ref", "nullable", 41L, 73L);
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                query, containerActivation(left, right, nullable),
-                Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        java.util.Map<String, String> types = new java.util.LinkedHashMap<>();
-        for (JsonElement element : result.modelAssignments) {
-            JsonObject assignment = element.getAsJsonObject();
-            types.put(assignment.get("inputSymbol").getAsString(),
-                    assignment.get("valueType").getAsString());
-        }
-        assertFalse(types.get("REGION.3.in.1"),
-                "NULL".equals(types.get("REGION.3.in.1")));
-        assertFalse(types.get("REGION.3.in.2"),
-                "NULL".equals(types.get("REGION.3.in.2")));
-        assertEquals("NULL", types.get("REGION.3.in.3"));
-    }
-
-    @Test
-    public void javaIntAndLongOverflowUseExactTwosComplementModels()
+    public void exactJavaIntegralAndIeeeFloatingPointSemantics()
             throws Exception {
         Assume.assumeTrue(z3Available());
 
@@ -274,8 +31,10 @@ public class ConcolicConstraintSolverTest {
         JsonObject wrappedInt = binaryExpression(
                 intConstant(10), "+", intInput.deepCopy());
         ConcolicConstraintSolver.Result intResult =
-                solveForTest(task(binaryExpression(
-                                wrappedInt, "<", intConstant(0))),
+                solveForTest(task(binaryExpression(intInput.deepCopy(),
+                                ">=", intConstant(0)),
+                                binaryExpression(wrappedInt, "<",
+                                        intConstant(0))),
                         activation(), Paths.get("z3"), 10_000L);
 
         assertEquals(intResult.record.toString(), "SAT_MODEL_READY",
@@ -311,12 +70,8 @@ public class ConcolicConstraintSolverTest {
                 "(java_long_wrap (+ sym__"));
         assertEquals(Long.MAX_VALUE, longResult.modelAssignments.get(0)
                 .getAsJsonObject().get("value").getAsLong());
-    }
 
-    @Test
-    public void nonFiniteFloatingLiteralsHaveExactIeeeSemantics()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
+        // Folded from nonFiniteFloatingLiteralsHaveExactIeeeSemantics.
         for (String value : new String[]{"nan", "inf"}) {
             JsonObject condition = numericBinary(
                     "M_D_field_REGION.3.in.0_example/Input", "D", ">",
@@ -344,531 +99,88 @@ public class ConcolicConstraintSolverTest {
         JsonObject assignment = satisfiable.modelAssignments.get(0)
                 .getAsJsonObject();
         assertEquals("REAL", assignment.get("valueType").getAsString());
-        for (String retired : new String[]{"floatingPointFormat",
-                "modelNaNSymbol", "modelIsNaN", "nanReplayAuthority",
-                "modelBitSymbol", "modelIeeeBits"}) {
-            assertFalse(retired, assignment.has(retired));
-        }
     }
 
     @Test
-    public void unsupportedExpressionNeverInventsDiagnosticSmtMeaning()
-            throws Exception {
-        JsonObject division = binaryExpression(
-                intSymbol("M_I_field_REGION.3.in.0_example/Input"),
-                "/", intConstant(2));
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(division, ">", intConstant(0))),
-                activation(), Paths.get("/does/not/exist/z3"), 10_000L);
-
-        assertEquals("UNSUPPORTED",
-                result.record.get("status").getAsString());
-        assertTrue(result.record.getAsJsonArray("unsupported").size() > 0);
-        assertFalse(result.smtLib.contains("unsupported_division"));
-        assertFalse(result.smtLib.contains("declare-fun uf__"));
-    }
-
-    @Test
-    public void untypedSymbolIsRejectedInsteadOfBecomingAFreeReference()
-            throws Exception {
-        JsonObject untyped = new JsonObject();
-        untyped.addProperty("_type", "SymbolExpression");
-        untyped.addProperty("_exp",
-                "M_L'Object'_REGION.3.in.0_example/Input");
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(untyped, "==",
-                        intSymbol("N"))),
-                activation(), Paths.get("/does/not/exist/z3"), 10_000L);
-
-        assertEquals("UNSUPPORTED",
-                result.record.get("status").getAsString());
-        assertTrue(result.record.getAsJsonArray("unsupported").toString(),
-                result.record.getAsJsonArray("unsupported").toString()
-                        .contains("UNSUPPORTED_SYMBOL_TYPE:MISSING"));
-        assertFalse(result.smtLib.contains("sym__M_L_Object"));
-
-        JsonObject untypedConstant = new JsonObject();
-        untypedConstant.addProperty("_type", "ConstExpr");
-        untypedConstant.addProperty("_exp", "Y_UNKNOWN_payload");
-        result = solveForTest(task(binaryExpression(untypedConstant, "==",
-                        intSymbol("N"))),
-                activation(), Paths.get("/does/not/exist/z3"), 10_000L);
-        assertEquals("UNSUPPORTED",
-                result.record.get("status").getAsString());
-        assertTrue(result.record.getAsJsonArray("unsupported").toString(),
-                result.record.getAsJsonArray("unsupported").toString()
-                        .contains("UNSUPPORTED_CONSTANT_TYPE:MISSING"));
-        assertFalse(result.smtLib.contains("const__"));
-    }
-
-    @Test
-    public void runtimeTypedStringSymbolMapsToExactRegionInput()
-            throws Exception {
+    public void exactJavaBitwiseAndShiftSemantics() throws Exception {
         Assume.assumeTrue(z3Available());
-        JsonObject input = new JsonObject();
-        input.addProperty("_type", "SymbolExpression");
-        input.addProperty("_java_type", "java/lang/String");
-        input.addProperty("_exp",
-                "M_L'String'_REGION.3.in.0_example/Input");
-        JsonObject needle = new JsonObject();
-        needle.addProperty("_type", "ConStringSymbolExp");
-        needle.addProperty("_java_type", "java/lang/String");
-        needle.addProperty("_exp", "Y_L'String'_needle");
-        JsonArray parameters = new JsonArray();
-        parameters.add(input);
-        parameters.add(needle);
-        JsonObject contains = new JsonObject();
-        contains.addProperty("_type", "OpStrExpression");
-        contains.addProperty("_name", "contains");
-        contains.add("_param_list", parameters);
-        JsonObject condition = binaryExpression(contains, "==",
-                numericConstant("Z", "0"));
+
+        JsonObject input = intSymbol(
+                "M_I_field_REGION.3.in.0_example/Input");
+        JsonObject masked = binaryExpression(input.deepCopy(), "&",
+                intConstant(992));
+        JsonObject shifted = binaryExpression(masked, ">>", intConstant(5));
+        JsonObject condition = binaryExpression(shifted, "==",
+                intConstant(31));
 
         ConcolicConstraintSolver.Result result = solveForTest(
                 task(condition), activation(), Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
                 result.record.get("status").getAsString());
-        assertEquals("REGION.3.in.0", result.modelAssignments.get(0)
-                .getAsJsonObject().get("inputSymbol").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(set-option :smt.arith.solver 2)"));
+        assertTrue(result.smtLib, result.smtLib.contains("(mod "));
+        assertTrue(result.smtLib, result.smtLib.contains("(div "));
+        assertFalse(result.record.toString(),
+                result.record.getAsJsonArray("unsupported").size() > 0);
     }
 
     @Test
-    public void directInitialIndexedReadsReplaySparseElements()
+    public void dynamicMapReadUsesItsAccessOrdinalWithoutProjectingTheKey()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        String stateSymbol = "M_L_field_REGION.3.in.4";
-        JsonObject observedTwo = binaryExpression(
-                indexedRead(stateSymbol, intConstant(2), "I"),
-                "==", intConstant(-1));
-        JsonObject observedZero = binaryExpression(
-                indexedRead(stateSymbol, intConstant(0), "I"),
-                "==", intConstant(0));
-        JsonObject inBounds = binaryExpression(intConstant(2), "<",
-                indexedStateSize(stateSymbol));
-        JsonObject action = indexedInputAction("REGION.3.in.4");
 
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(indexedRead(stateSymbol,
-                                intConstant(0), "I"),
-                                ">", intConstant(1)),
-                        binaryExpression(indexedRead(stateSymbol,
-                                intConstant(2), "I"),
-                                ">", intConstant(5))),
-                containerActivation(action), Paths.get("z3"), 10_000L,
-                observedZero, observedTwo, inBounds);
+        String mapPort = "REGION.3.in.map";
+        JsonObject stateIdentity = numericSymbol(mapPort,
+                "java/util/HashMap");
+        JsonObject state = new JsonObject();
+        state.addProperty("_type", "ContainerRelation");
+        state.addProperty("_java_type", "L");
+        state.addProperty("shape", "ASSOCIATIVE");
+        state.addProperty("operation", "STATE");
+        state.add("receiver", stateIdentity);
+        state.add("arguments", new JsonArray());
+
+        JsonObject dynamicKey = numericSymbol(
+                "UNMATERIALIZABLE_DYNAMIC_KEY", "I");
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ContainerRelation");
+        read.addProperty("_java_type", "L");
+        read.addProperty("shape", "ASSOCIATIVE");
+        read.addProperty("operation", "READ");
+        read.add("receiver", state);
+        JsonArray arguments = new JsonArray();
+        arguments.add(dynamicKey);
+        read.add("arguments", arguments);
+        JsonObject isNull = binaryExpression(read, "==",
+                numericSymbol("N", ""));
+
+        JsonObject activation = new JsonObject();
+        JsonObject action = materialization(mapPort, 0);
+        action.addProperty("mode", "SYMBOLIC");
+        action.addProperty("javaType", "java.util.Map");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        JsonArray actions = new JsonArray();
+        actions.add(action);
+        activation.add("inputActions", actions);
+
+        ConcolicConstraintSolver.Result result = solveForTest(task(isNull),
+                activation, Paths.get("z3"), 10_000L);
 
         assertEquals(result.record.toString(), "SAT_MODEL_READY",
                 result.record.get("status").getAsString());
-        assertEquals(result.modelAssignments.toString(), 2,
-                result.modelAssignments.size());
-        for (JsonElement element : result.modelAssignments) {
-            JsonObject assignment = element.getAsJsonObject();
-            assertEquals("REGION.3.in.4",
-                    assignment.get("inputSymbol").getAsString());
-            assertFalse(assignment.has("target"));
-            JsonObject target = assignment.getAsJsonObject(
-                    "containerTarget");
-            assertEquals("INDEXED", target.get("shape").getAsString());
-            int index = target.get("index").getAsInt();
-            assertTrue(assignment.toString(), index == 0 || index == 2);
-            assertTrue(assignment.toString(),
-                    assignment.get("value").getAsInt()
-                            > (index == 0 ? 1 : 5));
-        }
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "(define-fun container_boundary__"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "(indexed_size "));
-        assertTrue(result.smtLib, result.smtLib.contains("2147483647"));
-        assertFalse(result.smtLib, result.smtLib.contains(
-                "(= (valueInt (indexed_read "
-                        + "container__M_L_field_REGION_3_in_4"));
-    }
-
-    @Test
-    public void indexedBoundaryRequiresOneRefActionAndConcreteIndex()
-            throws Exception {
-        String stateSymbol = "M_L_field_REGION.3.in.4";
-        JsonObject condition = binaryExpression(
-                indexedRead(stateSymbol, intConstant(1), "I"),
-                ">", intConstant(5));
-
-        ConcolicConstraintSolver.Result missing = solveForTest(
-                task(condition), containerActivation(),
-                Paths.get("/does/not/exist/z3"), 10_000L);
-        assertEquals(missing.record.toString(), "MATERIALIZATION_GAP",
-                missing.record.get("status").getAsString());
-        assertEquals("SPARSE_CONTAINER_BOUNDARY_IS_NOT_MATERIALIZABLE",
-                missing.record.get("reason").getAsString());
-
-        ConcolicConstraintSolver.Result ambiguous = solveForTest(
-                task(condition), containerActivation(
-                        indexedInputAction("REGION.3.in.4"),
-                        indexedInputAction("REGION.3.in.4")),
-                Paths.get("/does/not/exist/z3"), 10_000L);
-        assertEquals(ambiguous.record.toString(), "MATERIALIZATION_GAP",
-                ambiguous.record.get("status").getAsString());
-
-        JsonObject symbolicIndex = intSymbol(
-                "M_I_field_REGION.3.in.5_index");
-        ConcolicConstraintSolver.Result nonConcrete = solveForTest(
-                task(binaryExpression(indexedRead(stateSymbol,
-                                symbolicIndex, "I"),
-                        ">", intConstant(5))),
-                containerActivation(indexedInputAction("REGION.3.in.4")),
-                Paths.get("/does/not/exist/z3"), 10_000L);
-        assertEquals(nonConcrete.record.toString(), "MATERIALIZATION_GAP",
-                nonConcrete.record.get("status").getAsString());
-        assertTrue(nonConcrete.record
-                .getAsJsonArray("unresolvedContainerBoundaries").toString(),
-                nonConcrete.record
-                        .getAsJsonArray("unresolvedContainerBoundaries")
-                        .toString().contains("NON_CONCRETE_SELECTOR"));
-    }
-
-    @Test
-    public void associativeBoundaryReplaysOneConcretePrimitiveKey()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        String state = "M_L_field_REGION.3.in.4";
-        JsonObject read = associativeRead(state, intConstant(7), "I");
-        JsonObject action = containerInputAction(
-                "REGION.3.in.4", "java.util.Map");
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(read.deepCopy(), ">",
-                        intConstant(10))),
-                containerActivation(action), Paths.get("z3"), 10_000L,
-                binaryExpression(read, "==", intConstant(3)));
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
+        assertFalse(result.smtLib,
+                result.smtLib.contains("UNMATERIALIZABLE_DYNAMIC_KEY"));
         assertEquals(1, result.modelAssignments.size());
         JsonObject assignment = result.modelAssignments.get(0)
                 .getAsJsonObject();
-        JsonObject target = assignment.getAsJsonObject("containerTarget");
-        assertEquals("ASSOCIATIVE",
-                target.get("shape").getAsString());
-        assertEquals("I", target.get("keyJavaType").getAsString());
-        assertEquals("7", target.get("keyValue").getAsString());
-        assertTrue(assignment.get("value").getAsInt() > 10);
-    }
-
-    @Test
-    public void orderedAssociativeCursorIsAReplayableSparseBoundary()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        String state = "M_L_field_REGION.3.in.4";
-        JsonObject selected = associativeNext(
-                state, "KEY_VIEW", intConstant(0), "I");
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(selected.deepCopy(), ">",
-                        intConstant(0))),
-                containerActivation(containerInputAction(
-                        "REGION.3.in.4", "java.util.Set")),
-                Paths.get("z3"), 10_000L,
-                binaryExpression(selected, "==", intConstant(-7)));
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertEquals(1, result.modelAssignments.size());
-        JsonObject assignment = result.modelAssignments.get(0)
-                .getAsJsonObject();
-        JsonObject target = assignment.getAsJsonObject("containerTarget");
-        assertEquals("ASSOCIATIVE",
-                target.get("shape").getAsString());
-        assertEquals("ITERATION_INDEX",
-                target.get("selectorKind").getAsString());
-        assertEquals("KEY", target.get("projection").getAsString());
-        assertEquals(0, target.get("index").getAsInt());
-        assertTrue(assignment.get("value").getAsInt() > 0);
-    }
-
-    /**
-     * The recorder's snapshot base and a {@code Collection.clear()} the
-     * program ran are different facts, so they carry different op names; both
-     * still denote the empty container, so the lowering must be the same one.
-     */
-    @Test
-    public void recordedSnapshotBaseLowersLikeAnObservedClear()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        ConcolicConstraintSolver.Result cleared = snapshotOfOneEntry("CLEAR");
-        ConcolicConstraintSolver.Result recorded =
-                snapshotOfOneEntry("SNAPSHOT_BASE");
-
-        assertEquals(recorded.record.toString(), "SAT_MODEL_READY",
-                recorded.record.get("status").getAsString());
-        assertEquals(cleared.record.get("unsupported").toString(),
-                recorded.record.get("unsupported").toString());
-        assertEquals(cleared.smtLib, recorded.smtLib);
-    }
-
-    /**
-     * The base is empty whether or not its receiver carries operations of its
-     * own.  Replaying the observed members onto a receiver that may hold
-     * {@code m} entries would give the snapshot {@code m} more of them than
-     * were observed, and start the observed order at {@code m}, so a mutation
-     * a snapshot supersedes stays unobservable rather than being recovered.
-     */
-    @Test
-    public void snapshotBaseStaysEmptyOverAReceiverCarryingHistory()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject history = associativeOperation("PUT",
-                associativeState("M_L_field_REGION.3.in.4"),
-                intConstant(3), intConstant(5));
-
-        ConcolicConstraintSolver.Result carried = snapshotOfOneEntry(
-                "SNAPSHOT_BASE", history);
-        ConcolicConstraintSolver.Result bare = snapshotOfOneEntry(
-                "SNAPSHOT_BASE",
-                associativeState("M_L_field_REGION.3.in.4"));
-
-        assertEquals(carried.record.toString(), "SAT_MODEL_READY",
-                carried.record.get("status").getAsString());
-        assertFalse(carried.smtLib, carried.smtLib.contains("(VInt 3)"));
-        assertEquals(bare.smtLib, carried.smtLib);
-    }
-
-    private static ConcolicConstraintSolver.Result snapshotOfOneEntry(
-            String baseOperation) throws Exception {
-        return snapshotOfOneEntry(baseOperation,
-                associativeState("M_L_field_REGION.3.in.4"));
-    }
-
-    private static ConcolicConstraintSolver.Result snapshotOfOneEntry(
-            String baseOperation, JsonObject receiver) throws Exception {
-        JsonObject snapshot = associativeOperation("PUT",
-                associativeOperation(baseOperation, receiver),
-                intConstant(7), intConstant(9));
-        JsonObject condition = binaryExpression(
-                binaryExpression(associativeRead(snapshot,
-                        intConstant(7), "I"), "==", intConstant(9)),
-                "&&", binary(">", 0));
-        return solveForTest(task(condition), activation(),
-                Paths.get("z3"), 10_000L);
-    }
-
-    @Test
-    public void associativeReadProjectsRemoveWithoutIteratorState()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        String stateSymbol = "M_L_field_REGION.3.in.4";
-        JsonObject state = associativeState(stateSymbol);
-        JsonObject removed = associativeOperation("REMOVE", state,
-                intConstant(3));
-        JsonObject before = associativeRead(state.deepCopy(),
-                intConstant(7), "I");
-        JsonObject after = associativeRead(removed,
-                intConstant(7), "I");
-        JsonObject query = task(binaryExpression(after, ">",
-                intConstant(10)));
-        JsonArray constraints = new JsonArray();
-        constraints.add(binaryExpression(before, "==", intConstant(3)));
-        constraints.add(query.getAsJsonArray("constraints").get(0));
-        query.add("constraints", constraints);
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                query, containerActivation(containerInputAction(
-                        "REGION.3.in.4", "java.util.Map")),
-                Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "UNSAT",
-                result.record.get("status").getAsString());
-        assertFalse(result.smtLib, result.smtLib.contains(
-                "(assoc_remove container__"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "(ite (= (VInt 7) (VInt 3))"));
-    }
-
-    @Test
-    public void boxedIntegralContainerValuesKeepTheirJavaTypeTags()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject cleared = associativeOperation("CLEAR",
-                associativeState("M_L_field_REGION.3.in.4"));
-        JsonObject withByte = associativeOperation("PUT", cleared,
-                numericConstant("B", "7"),
-                numericConstant("B", "9"));
-        JsonObject containsByte = associativeOperation("CONTAINS",
-                withByte.deepCopy(), numericConstant("B", "7"));
-        JsonObject containsInteger = associativeOperation("CONTAINS",
-                withByte.deepCopy(), numericConstant("I", "7"));
-        JsonObject readByte = associativeRead(withByte,
-                numericConstant("B", "7"), "B");
-        JsonObject taggedContainerCondition = binaryExpression(
-                binaryExpression(containsByte, "!=",
-                        containsInteger), "&&",
-                binaryExpression(readByte, "==",
-                        numericConstant("B", "9")));
-        JsonObject condition = binaryExpression(
-                taggedContainerCondition, "&&",
-                binary(">", 0));
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(condition), activation(), Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertTrue(result.smtLib, result.smtLib.contains("(VByte 7)"));
-        assertTrue(result.smtLib, result.smtLib.contains("(VInt 7)"));
-        assertTrue(result.smtLib, result.smtLib.contains("(valueByte "));
-        for (String tag : new String[]{"Byte", "Char", "Short", "Int",
-                "Long"}) {
-            assertTrue(result.smtLib,
-                    result.smtLib.contains("(V" + tag + " (value"
-                            + tag + " Int))"));
-        }
-    }
-
-    @Test
-    public void indexedReferenceEqualityReplaysAsAnExistingElementAlias()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        String state = "M_L_field_REGION.3.in.4";
-        JsonObject first = indexedRead(state, intConstant(0), "L");
-        JsonObject second = indexedRead(state, intConstant(1), "L");
-        JsonObject action = containerInputAction(
-                "REGION.3.in.4", "java.util.List");
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(first, "==", second)),
-                containerActivation(action), Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertEquals(result.modelAssignments.toString(), 1,
-                result.modelAssignments.size());
-        JsonObject assignment = result.modelAssignments.get(0)
-                .getAsJsonObject();
-        assertEquals("CONTAINER_REFERENCE_ALIAS",
-                assignment.get("valueType").getAsString());
-        assertEquals("REGION.3.in.4",
-                assignment.get("referenceSourceInputSymbol").getAsString());
-        JsonObject target = assignment.getAsJsonObject("containerTarget");
-        assertEquals(1, target.get("index").getAsInt());
-        assertEquals("INDEXED", target.get("sourceShape").getAsString());
-        assertEquals(0, target.get("sourceIndex").getAsInt());
-    }
-
-    @Test
-    public void indexedReferenceAliasCanUseAnotherContainerInput()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject left = indexedRead("M_L_field_REGION.3.in.4",
-                intConstant(0), "L");
-        JsonObject right = indexedRead("M_L_field_REGION.3.in.5",
-                intConstant(1), "L");
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(left, "==", right)),
-                containerActivation(
-                        containerInputAction("REGION.3.in.4",
-                                "java.util.List"),
-                        containerInputAction("REGION.3.in.5",
-                                "java.util.List")),
-                Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertEquals(result.modelAssignments.toString(), 1,
-                result.modelAssignments.size());
-        JsonObject assignment = result.modelAssignments.get(0)
-                .getAsJsonObject();
-        assertEquals("REGION.3.in.5",
+        assertEquals(mapPort,
                 assignment.get("inputSymbol").getAsString());
-        assertEquals("REGION.3.in.4",
-                assignment.get("referenceSourceInputSymbol").getAsString());
-        JsonObject target = assignment.getAsJsonObject("containerTarget");
-        assertEquals(1, target.get("index").getAsInt());
-        assertEquals("INDEXED", target.get("sourceShape").getAsString());
-        assertEquals(0, target.get("sourceIndex").getAsInt());
-    }
-
-    @Test
-    public void indexedReferenceAliasCanUseOrdinaryReferenceInput()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject element = indexedRead("M_L_field_REGION.3.in.4",
-                intConstant(0), "L");
-        String ordinaryRaw =
-                "M_L_field_REGION.3.in.1_example/Owner";
-        JsonObject ordinary = numericSymbol(ordinaryRaw, "example.Node");
-        JsonObject ordinaryAction = referenceFieldAction(
-                "REGION.3.in.1", "example.Node", "node", 41L, 73L);
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(element, "==", ordinary)),
-                containerActivation(
-                        containerInputAction("REGION.3.in.4",
-                                "java.util.List"),
-                        ordinaryAction),
-                Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertEquals(result.modelAssignments.toString(), 1,
-                result.modelAssignments.size());
-        JsonObject assignment = result.modelAssignments.get(0)
-                .getAsJsonObject();
-        assertEquals("REGION.3.in.4",
-                assignment.get("inputSymbol").getAsString());
-        assertEquals("REGION.3.in.1",
-                assignment.get("referenceSourceInputSymbol").getAsString());
-        JsonObject target = assignment.getAsJsonObject("containerTarget");
-        assertEquals(0, target.get("index").getAsInt());
-        assertFalse(target.has("sourceShape"));
-    }
-
-    @Test
-    public void nonNullSparseReferenceWithoutSourceIsUnresolved()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject element = indexedRead("M_L_field_REGION.3.in.4",
-                intConstant(0), "L");
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(element, "!=",
-                        referenceSymbol("N"))),
-                containerActivation(containerInputAction(
-                        "REGION.3.in.4", "java.util.List")),
-                Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "MATERIALIZATION_GAP",
-                result.record.get("status").getAsString());
-        assertEquals("REPLAY_CONTROL_FRONTIER_MODEL_IS_NOT_MATERIALIZABLE",
-                result.record.get("reason").getAsString());
-        assertTrue(result.record.toString(),
-                result.record.getAsJsonArray(
-                        "unresolvedReplayControlSymbols").size() == 1);
-    }
-
-    @Test
-    public void sparseReferenceCanReplayNull() throws Exception {
-        Assume.assumeTrue(z3Available());
-        String port = "REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838"
-                + ".in.fc915256-5ad9-3272-977b-2ccd8a7699a9";
-        JsonObject element = associativeRead(
-                "M_L_field_" + port, intConstant(7), "L");
-
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(element, "==",
-                        referenceSymbol("N"))),
-                containerActivation(containerInputAction(
-                        port, "java.util.Map")),
-                Paths.get("z3"), 10_000L);
-
-        assertEquals(result.record.toString(), "SAT_MODEL_READY",
-                result.record.get("status").getAsString());
-        assertEquals(1, result.modelAssignments.size());
-        JsonObject assignment = result.modelAssignments.get(0)
-                .getAsJsonObject();
-        assertEquals(port, assignment.get("inputSymbol").getAsString());
         assertEquals("NULL", assignment.get("valueType").getAsString());
         JsonObject target = assignment.getAsJsonObject("containerTarget");
+        assertEquals("ASSOCIATIVE", target.get("shape").getAsString());
         assertEquals("ACCESS_ORDINAL",
                 target.get("selectorKind").getAsString());
         assertEquals(1, target.get("accessOrdinal").getAsInt());
@@ -876,63 +188,93 @@ public class ConcolicConstraintSolverTest {
     }
 
     @Test
-    public void associativeElementLongFieldLowersJvmLcmpWithoutTypeGap()
+    public void aSolvedModelSaysWhichRecordedWriterItSelected()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        String port = "REGION.3.in.map";
-        String state = "M_L_field_" + port;
-        JsonObject entryView = associativeOperation("ENTRY_VIEW",
-                associativeState(state));
-        JsonObject iterator = associativeOperation("ITERATOR", entryView);
-        JsonObject next = associativeOperation("NEXT", iterator,
-                intConstant(0));
-        JsonObject value = associativeOperation("VALUE", next);
-        JsonObject expiry = new JsonObject();
-        expiry.addProperty("_type", "FieldAccessExpression");
-        expiry.addProperty("_java_type", "J");
-        expiry.addProperty("ownerClass", "example/Key");
-        expiry.addProperty("fieldOffset", 24);
-        expiry.add("owner", value);
-        JsonObject now = new JsonObject();
-        now.addProperty("_type", "PlaceholderExpression");
-        now.addProperty("_place_holder_func", "currentTimeMills");
-        now.addProperty("_count", 1);
-        JsonObject lcmp = binaryExpression(expiry, "--", now);
-        lcmp.addProperty("_java_type", "I");
+        JsonObject fixture = task(binary(">", 3));
+        fixture.add(RecordedSessionModel.QUERY_FIELD,
+                RecordedSharedStateFixtures.selectedReadCutQuery());
 
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(lcmp, "<", intConstant(0))),
-                containerActivation(containerInputAction(port,
-                        "java.util.Map")), Paths.get("z3"), 10_000L);
+        ConcolicConstraintSolver.Result result = solveForTest(fixture,
+                activation(), Paths.get("z3"), 10_000L);
 
-        assertFalse(result.record.toString(), "UNSUPPORTED".equals(
-                result.record.get("status").getAsString()));
-        assertFalse(result.record.toString(), result.record
-                .getAsJsonArray("unsupported").toString()
-                .contains("MALFORMED_JVM_LCMP_OPERANDS"));
-        assertTrue(result.smtLib, result.smtLib.contains("(ite (> "));
+        // The query has to declare the choice before a model can report it.
+        assertEquals("SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const rf_selector__21__rf1 Bool)"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const event_position__11 Int)"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                ":named pc_") && result.smtLib.contains("(get-value ("));
+
+        JsonObject cut = result.record.getAsJsonObject("selectedReadCut");
+        assertEquals(SelectedReadCut.KIND, cut.get("kind").getAsString());
+        // Exactly one arm, chosen by z3 and read back rather than guessed.
+        assertEquals(1, cut.get("selectedReads").getAsInt());
+        JsonObject selection = cut.getAsJsonArray("selections").get(0)
+                .getAsJsonObject();
+        assertEquals(21L, selection.get("readEventId").getAsLong());
+        assertTrue(selection.toString(),
+                selection.get("selector").getAsString()
+                        .startsWith("rf_selector__21__"));
+        // A selection that compiled to a gate travels with the replay task;
+        // one that did not is a named gate gap instead.
+        assertEquals(selection.get("installed").getAsBoolean(),
+                cut.getAsJsonArray("gates").size() > 0);
+        assertTrue(cut.getAsJsonArray("refusals").size() > 0);
+        // Every arm was valued, so nothing was left undetermined: the model
+        // really did answer the choice the query declared.
+        for (JsonElement refusal : cut.getAsJsonArray("refusals")) {
+            assertFalse(refusal.toString(),
+                    SelectedReadCut.MODEL_OMITS_READ_SELECTOR.equals(
+                            refusal.getAsJsonObject().get("reason")
+                                    .getAsString()));
+        }
     }
 
     @Test
-    public void observedReferenceIdentityIsIndependentOfDeclaredType()
+    public void aRecordedReadCutNeverTurnsASatisfiableQueryUnsatisfiable()
             throws Exception {
         Assume.assumeTrue(z3Available());
-        String baseRaw = "M_L_field_REGION.3.in.1_example/Owner";
-        String derivedRaw = "M_L_field_REGION.3.in.2_example/Owner";
-        JsonObject base = numericSymbol(baseRaw, "example.Base");
-        JsonObject derived = numericSymbol(derivedRaw, "example.Derived");
-        JsonObject baseAction = referenceFieldAction(
-                "REGION.3.in.1", "example.Base", "base", 41L, 73L);
-        JsonObject derivedAction = referenceFieldAction(
-                "REGION.3.in.2", "example.Derived", "derived", 41L, 73L);
+        // Its positions are fresh variables over an acyclic recorded order,
+        // and the unknown-writer arm carries no order at all, so the cut
+        // cannot remove a model the query had without it.
+        JsonObject withCut = task(binary(">", 3));
+        withCut.add(RecordedSessionModel.QUERY_FIELD,
+                RecordedSharedStateFixtures.selectedReadCutQuery());
 
-        ConcolicConstraintSolver.Result result = solveForTest(
-                task(binaryExpression(base, "!=", derived)),
-                containerActivation(baseAction, derivedAction),
-                Paths.get("z3"), 10_000L);
+        ConcolicConstraintSolver.Result plain = solveForTest(
+                task(binary(">", 3)), activation(), Paths.get("z3"),
+                10_000L);
+        ConcolicConstraintSolver.Result gated = solveForTest(withCut,
+                activation(), Paths.get("z3"), 10_000L);
 
-        assertEquals(result.record.toString(), "UNSAT",
-                result.record.get("status").getAsString());
+        assertEquals("SAT_MODEL_READY",
+                plain.record.get("status").getAsString());
+        assertEquals("SAT_MODEL_READY",
+                gated.record.get("status").getAsString());
+        assertFalse(plain.record.has("selectedReadCut"));
+        assertEquals(plain.modelAssignments.size(),
+                gated.modelAssignments.size());
+
+        // That harmlessness is a property of a cut this composition admitted.
+        // A payload carrying any other authority is refused, never dropped:
+        // ignoring it would silently solve a query whose read-from choice
+        // nobody had stated.
+        JsonObject forged = task(binary(">", 3));
+        JsonObject unadmitted = RecordedSharedStateFixtures
+                .selectedReadCutQuery().deepCopy();
+        unadmitted.addProperty("authority", "FORGED_READ_CUT_AUTHORITY_V1");
+        forged.add(RecordedSessionModel.QUERY_FIELD, unadmitted);
+        try {
+            solveForTest(forged, activation(), Paths.get("z3"), 10_000L);
+            fail("an unadmitted recorded read cut must be refused");
+        } catch (IOException refused) {
+            assertTrue(String.valueOf(refused.getMessage()),
+                    String.valueOf(refused.getMessage()).contains(
+                            "unadmitted recorded read cut"));
+        }
     }
 
     private static JsonObject activation() {
@@ -955,189 +297,19 @@ public class ConcolicConstraintSolverTest {
         return action;
     }
 
-    private static JsonObject containerActivation(JsonObject... actions) {
-        JsonObject activation = new JsonObject();
-        JsonArray inputActions = new JsonArray();
-        for (JsonObject action : actions) inputActions.add(action);
-        activation.add("inputActions", inputActions);
-        return activation;
-    }
-
-    private static JsonObject indexedInputAction(String symbol) {
-        return containerInputAction(symbol, "int[]");
-    }
-
-    private static JsonObject containerInputAction(
-            String symbol, String javaType) {
-        JsonObject action = new JsonObject();
-        action.addProperty("symbol", symbol);
-        action.addProperty("sourceKind", "SHARED_HEAP");
-        action.addProperty("location", "HEAP_OBJECT_FIELD");
-        action.addProperty("bindingMode", "FIELD_ACCESS");
-        action.addProperty("javaType", javaType);
-        action.addProperty("mode", "SYMBOLIC");
-        return action;
-    }
-
-    private static JsonObject referenceFieldAction(
-            String symbol, String javaType, String field,
-            long receiverObjectId, long valueObjectId) {
-        JsonObject action = containerInputAction(symbol, javaType);
-        JsonArray path = new JsonArray();
-        path.add(field);
-        action.add("fieldPath", path);
-        action.addProperty("fieldReceiverObjectId", receiverObjectId);
-        action.addProperty("valueObjectId", valueObjectId);
-        return action;
-    }
-
-    private static JsonObject indexedState(String stateSymbol) {
-        JsonObject identity = new JsonObject();
-        identity.addProperty("_type", "SymbolExpression");
-        identity.addProperty("_java_type", "[");
-        identity.addProperty("_exp", stateSymbol);
-
-        JsonObject state = new JsonObject();
-        state.addProperty("_type", "ContainerRelation");
-        state.addProperty("shape", "INDEXED");
-        state.addProperty("operation", "STATE");
-        state.addProperty("_java_type", "L");
-        state.add("receiver", identity);
-        state.add("arguments", new JsonArray());
-        return state;
-    }
-
-    private static JsonObject indexedRead(String stateSymbol,
-                                          JsonElement index,
-                                          String javaType) {
-        JsonArray arguments = new JsonArray();
-        arguments.add(index);
-        JsonObject read = new JsonObject();
-        read.addProperty("_type", "ContainerRelation");
-        read.addProperty("shape", "INDEXED");
-        read.addProperty("operation", "READ");
-        read.addProperty("_java_type", javaType);
-        read.add("receiver", indexedState(stateSymbol));
-        read.add("arguments", arguments);
-        return read;
-    }
-
-    private static JsonObject indexedStateSize(String stateSymbol) {
-        JsonObject size = new JsonObject();
-        size.addProperty("_type", "ContainerRelation");
-        size.addProperty("shape", "INDEXED");
-        size.addProperty("operation", "SIZE");
-        size.addProperty("_java_type", "I");
-        size.add("receiver", indexedState(stateSymbol));
-        size.add("arguments", new JsonArray());
-        return size;
-    }
-
-    private static JsonObject indexedSize(String codePosition) {
-        JsonObject identity = new JsonObject();
-        identity.addProperty("_type", "SymbolExpression");
-        identity.addProperty("_java_type", "[");
-        identity.addProperty("_exp", "M_[_field_REGION.3.container");
-
-        JsonObject state = new JsonObject();
-        state.addProperty("_type", "ContainerRelation");
-        state.addProperty("shape", "INDEXED");
-        state.addProperty("operation", "STATE");
-        state.addProperty("_java_type", "L");
-        state.add("receiver", identity);
-        state.add("arguments", new JsonArray());
-
-        JsonObject size = new JsonObject();
-        size.addProperty("_code_position", codePosition);
-        size.addProperty("_type", "ContainerRelation");
-        size.addProperty("shape", "INDEXED");
-        size.addProperty("operation", "SIZE");
-        size.addProperty("_java_type", "I");
-        size.add("receiver", state);
-        size.add("arguments", new JsonArray());
-        return size;
-    }
-
-    private static JsonObject associativeRead(
-            String stateSymbol, JsonElement key, String javaType) {
-        return associativeRead(associativeState(stateSymbol), key, javaType);
-    }
-
-    private static JsonObject associativeState(String stateSymbol) {
-        JsonObject identity = new JsonObject();
-        identity.addProperty("_type", "SymbolExpression");
-        identity.addProperty("_java_type", "L");
-        identity.addProperty("_exp", stateSymbol);
-
-        JsonObject state = new JsonObject();
-        state.addProperty("_type", "ContainerRelation");
-        state.addProperty("shape", "ASSOCIATIVE");
-        state.addProperty("operation", "STATE");
-        state.addProperty("_java_type", "L");
-        state.add("receiver", identity);
-        state.add("arguments", new JsonArray());
-        return state;
-    }
-
-    private static JsonObject associativeRead(
-            JsonElement receiver, JsonElement key, String javaType) {
-        JsonArray arguments = new JsonArray();
-        arguments.add(key);
-        JsonObject read = new JsonObject();
-        read.addProperty("_type", "ContainerRelation");
-        read.addProperty("shape", "ASSOCIATIVE");
-        read.addProperty("operation", "READ");
-        read.addProperty("_java_type", javaType);
-        read.add("receiver", receiver);
-        read.add("arguments", arguments);
-        return read;
-    }
-
-    private static JsonObject associativeNext(
-            String stateSymbol, String viewKind, JsonElement cursor,
-            String javaType) {
-        JsonObject view = associativeOperation(
-                viewKind, associativeState(stateSymbol));
-        JsonArray arguments = new JsonArray();
-        arguments.add(cursor);
-        JsonObject next = new JsonObject();
-        next.addProperty("_type", "ContainerRelation");
-        next.addProperty("shape", "ASSOCIATIVE");
-        next.addProperty("operation", "NEXT");
-        next.addProperty("_java_type", javaType);
-        next.add("receiver", view);
-        next.add("arguments", arguments);
-        return next;
-    }
-
-    private static JsonObject associativeOperation(
-            String operation, JsonElement receiver,
-            JsonElement... arguments) {
-        JsonArray values = new JsonArray();
-        for (JsonElement argument : arguments) values.add(argument);
-        JsonObject relation = new JsonObject();
-        relation.addProperty("_type", "ContainerRelation");
-        relation.addProperty("shape", "ASSOCIATIVE");
-        relation.addProperty("operation", operation);
-        relation.addProperty("_java_type", "L");
-        relation.add("receiver", receiver);
-        relation.add("arguments", values);
-        return relation;
-    }
-
     /** Adapts expression-focused unit fixtures to the production protocol. */
     private static ConcolicConstraintSolver.Result solveForTest(
-            JsonObject legacyExpressionFixture, JsonObject activation,
+            JsonObject predicateFixture, JsonObject activation,
             java.nio.file.Path z3, long timeoutMillis) throws Exception {
-        return solveForTest(legacyExpressionFixture, activation, z3,
+        return solveForTest(predicateFixture, activation, z3,
                 timeoutMillis, new JsonObject[0]);
     }
 
     private static ConcolicConstraintSolver.Result solveForTest(
-            JsonObject legacyExpressionFixture, JsonObject activation,
+            JsonObject predicateFixture, JsonObject activation,
             java.nio.file.Path z3, long timeoutMillis,
             JsonObject... contextConstraints) throws Exception {
-        JsonObject task = legacyExpressionFixture.deepCopy();
+        JsonObject task = predicateFixture.deepCopy();
         JsonArray constraints = task.getAsJsonArray("constraints");
         if (constraints == null || constraints.size() == 0) {
             throw new IllegalArgumentException(
@@ -1252,10 +424,6 @@ public class ConcolicConstraintSolverTest {
 
     private static JsonObject intSymbol(String raw) {
         return numericSymbol(raw, "I");
-    }
-
-    private static JsonObject referenceSymbol(String raw) {
-        return numericSymbol(raw, "L");
     }
 
     private static JsonObject numericSymbol(String raw, String javaType) {

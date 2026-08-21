@@ -14,18 +14,9 @@ ContainerExpression::ContainerExpression(
       _java_type(java_type.empty()
                      ? std::string(1, type2char(result_type))
                      : java_type) {
-  if (_receiver != NULL) _receiver->inc_ref();
-  for (size_t index = 0; index < _arguments.size(); ++index) {
-    if (_arguments[index] != NULL) _arguments[index]->inc_ref();
-  }
 }
 
-ContainerExpression::~ContainerExpression() {
-  Expression::gc(_receiver);
-  for (size_t index = 0; index < _arguments.size(); ++index) {
-    Expression::gc(_arguments[index]);
-  }
-}
+ContainerExpression::~ContainerExpression() {}
 
 void ContainerExpression::print() {
   tty->print("(container %s %s ", _shape.c_str(), _operation.c_str());

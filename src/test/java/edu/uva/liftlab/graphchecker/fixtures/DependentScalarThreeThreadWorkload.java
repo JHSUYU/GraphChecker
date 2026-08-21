@@ -190,14 +190,6 @@ public final class DependentScalarThreeThreadWorkload {
             this.failureThread = failureThread;
         }
 
-        public int getArithmetic() {
-            return arithmetic;
-        }
-
-        public int getText() {
-            return text;
-        }
-
         public Throwable getFailure() {
             return failure;
         }

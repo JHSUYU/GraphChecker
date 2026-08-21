@@ -5,7 +5,6 @@
 #ifndef JDK8_CDB_SYMBOLICNDFUNC_HPP
 #define JDK8_CDB_SYMBOLICNDFUNC_HPP
 
-#ifdef ENABLE_WEBRIDGE
 #include "concolic/defs.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
@@ -35,10 +34,6 @@ public:
   static bool invoke_method_helper(MethodSymbolizerHandle &handle);
   static Expression *finish_method_helper(MethodSymbolizerHandle &handle);
   static void init_register_class(MethodSymbolizer *m_symbolizer);
-  static void gc();
-private:
-  static std::vector<Expression*> _exps;
 };
 
-#endif
 #endif //JDK8_CDB_SYMBOLICNDFUNC_HPP

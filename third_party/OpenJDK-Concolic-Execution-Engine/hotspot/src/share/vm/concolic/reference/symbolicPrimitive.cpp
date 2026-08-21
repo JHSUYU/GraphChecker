@@ -31,14 +31,10 @@ template <> const char *SymPrimitive<jlong>::TYPE_NAME = "java/lang/Long";
 template <> const char *SymPrimitive<jfloat>::TYPE_NAME = "java/lang/Float";
 template <> const char *SymPrimitive<jdouble>::TYPE_NAME = "java/lang/Double";
 
-template <class T> sym_rid_t SymPrimitive<T>::sym_count = 0;
-
 template <class T>
 SymPrimitive<T>::SymPrimitive(sym_rid_t sym_rid) : SymInstance(sym_rid), _exp(NULL) {}
 
-template <class T> SymPrimitive<T>::~SymPrimitive() {
-  Expression::gc(_exp);
-}
+template <class T> SymPrimitive<T>::~SymPrimitive() {}
 
 template <class T> Expression *SymPrimitive<T>::get(int field_offset) {
   assert(field_offset % 8 == 0,
@@ -50,18 +46,12 @@ template <class T>
 void SymPrimitive<T>::init_sym_exp(int field_offset, Expression *exp) {
   assert(field_offset % 8 == 0,
          "we are turning to field_offset, this should be true");
-  exp->inc_ref();
   _exp = exp;
 }
 
 template <class T>
 void SymPrimitive<T>::set_sym_exp(int field_offset, Expression *exp) {
-  Expression::gc(_exp);
-
   _exp = exp;
-  if (_exp) {
-    _exp->inc_ref();
-  }
 }
 
 template <class T> void SymPrimitive<T>::print() {

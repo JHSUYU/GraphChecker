@@ -285,7 +285,6 @@ public final class ContainerThreeThreadRpcWorkload {
                 throw new @CausynthExceptionTarget("containers")
                         ContainerBugReachedException(arrayValue, mapValue);
             }
-            int a=Integer.MAX_VALUE+1;
         }
     }
 
@@ -355,22 +354,6 @@ public final class ContainerThreeThreadRpcWorkload {
             this.producerConcurrencyObserved = producerConcurrencyObserved;
             this.consumerStartedAfterProducersTerminated =
                     consumerStartedAfterProducersTerminated;
-        }
-
-        public Boolean getArrayInput() {
-            return arrayInput;
-        }
-
-        public Boolean getMapInput() {
-            return mapInput;
-        }
-
-        public int getArrayValue() {
-            return arrayValue;
-        }
-
-        public int getMapValue() {
-            return mapValue;
         }
 
         public boolean isBugReached() {

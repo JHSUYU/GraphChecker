@@ -77,6 +77,7 @@
 #include "utilities/utf8.hpp"
 
 #include "concolic/concolicMngr.hpp"
+#include "concolic/expressionBroker.hpp"
 #ifdef TARGET_OS_FAMILY_linux
 # include "jvm_linux.h"
 #endif
@@ -98,7 +99,6 @@
 #endif // INCLUDE_ALL_GCS
 
 #include <errno.h>
-#include "webridge/webridgeMngr.hpp"
 #ifndef USDT2
 HS_DTRACE_PROBE_DECL1(hotspot, thread__sleep__begin, long long);
 HS_DTRACE_PROBE_DECL1(hotspot, thread__sleep__end, int);
@@ -326,15 +326,6 @@ JVM_ENTRY(void, JVM_PrintObjInfo(JNIEnv *env, jclass ignored, jobject obj))
 #endif
 JVM_END
 
-JVM_ENTRY(jlong, JVM_StartConcolic(JNIEnv *env, jclass ignored))
-  JVMWrapper("JVM_StartConcolic");
-#ifdef ENABLE_CONCOLIC
-  return ConcolicMngr::startConcolic((JavaThread*) THREAD);
-#else
-  return os::javaTimeNanos();
-#endif
-JVM_END
-
 JVM_ENTRY(jlong, JVM_StartConcolicRegion(JNIEnv *env, jclass ignored,
                                          jstring region_id,
                                          jstring task_id))
@@ -364,6 +355,44 @@ JVM_ENTRY(jlong, JVM_EndConcolic(JNIEnv *env, jclass ignored))
   return ConcolicMngr::endConcolic();
 #else
   return os::javaTimeNanos();
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_OpenWorkloadSession(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_OpenWorkloadSession");
+#ifdef ENABLE_CONCOLIC
+  return ConcolicMngr::openWorkloadSession();
+#else
+  // Without the engine no workload session exists or can be opened, which is
+  // WORKLOAD_SESSION_NOT_OPEN.
+  return -2;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_CloseWorkloadSession(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_CloseWorkloadSession");
+#ifdef ENABLE_CONCOLIC
+  return ConcolicMngr::closeWorkloadSession();
+#else
+  return -2;
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetWorkloadSessionStatus(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_GetWorkloadSessionStatus");
+#ifdef ENABLE_CONCOLIC
+  std::string serialized = ConcolicMngr::getWorkloadSessionStatus();
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_WORKLOAD_SESSION\","
+      "\"workloadSessionOpen\":false,\"sessionOpen\":false,"
+      "\"sessionState\":\"CLOSED\",\"sessionId\":0,\"sessionMembers\":0,"
+      "\"attached\":false,\"threadContextId\":0}",
+      THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
 #endif
 JVM_END
 
@@ -535,93 +564,6 @@ JVM_ENTRY(void, JVM_SymbolizeMethod(JNIEnv *env, jclass ignored,
 #endif
 JVM_END
 
-JVM_ENTRY(void, JVM_RecordStmtObj(JNIEnv *env, jclass ignored, jobject stmt, jobject obj))
-  JVMWrapper("JVM_RecordStmtObj");
-#ifdef ENABLE_CONCOLIC
-  if (stmt == NULL || obj == NULL) {
-    // TODO: use THROW instead of assertion
-    assert(false, "JVM_RecordStmtObj: obj is null");
-  }
-  oop s = JNIHandles::resolve_non_null(stmt);
-  oop o = JNIHandles::resolve_non_null(obj);
-
-  {
-    HandleMark hm;
-
-    Handle handle_s(THREAD, s);
-    Handle handle_o(THREAD, o);
-    assert(handle_s()->is_oop(), "JVM_RecordStmtObj: stmt not an oop");
-    assert(handle_o()->is_oop(), "JVM_RecordStmtObj: obj not an oop");
-    ConcolicMngr::recordStmtObj(handle_s, handle_o);
-  }
-#else
-  return;
-#endif
-JVM_END
-
-JVM_ENTRY(void, JVM_RecordPersistentObj(JNIEnv *env, jclass ignored, jobject obj))
-  JVMWrapper("JVM_RecordPersistentObj");
-#ifdef ENABLE_CONCOLIC
-  if (obj != NULL) {
-    oop o = JNIHandles::resolve_non_null(obj);
-    HandleMark hm;
-
-    Handle handle_o(THREAD, o);
-    assert(handle_o()->is_oop(), "JVM_RecordPersistentObj: obj not an oop");
-    ConcolicMngr::recordPersistentObj(handle_o);
-  }
-//  else {
-//    ConcolicMngr::recordPersistentObj(NULL);
-//  }
-#else
-  return;
-#endif
-JVM_END
-
-JVM_ENTRY(jstring, JVM_WeBridgeAnalysis(JNIEnv *env, jclass ignored, jobject classLoader))
-  JVMWrapper("JVM_WeBridgeAnalysis");
-#ifdef ENABLE_WEBRIDGE
-//  Handle h_loader(THREAD, JNIHandles::resolve(classLoader));
-//  Klass* klass = SystemDictionary::resolve_or_fail(vmSymbols::_wbridge_storedprocedure_StoredProcedureManager(),
-//                                                   h_loader,
-//                                                   Handle(),
-//                                                   true,
-//                                                   THREAD);
-
-//  if (HAS_PENDING_EXCEPTION) {
-//    CLEAR_PENDING_EXCEPTION;
-//  }
-
-//  if (klass == NULL) {
-//    tty->print_cr(
-//        "[WeBridge] Required class _wbridge_storedprocedure_StoredProcedureManager not found! Add to your class path");
-//    Handle str = java_lang_String::create_from_platform_dependent_str("", THREAD);
-//    return (jstring) JNIHandles::make_local(env, str());
-//  }
-//
-//  KlassHandle klass_handle(THREAD, klass);
-//  // Check if we should initialize the class
-//  if (klass_handle->oop_is_instance()) {
-//    klass_handle->initialize(THREAD);
-//  }
-
-//  jclass result = find_class_from_class_loader(env, vmSymbols::_wbridge_storedprocedure_StoredProcedureManager(),
-//                                               true, h_loader,
-//                                               Handle(), true, THREAD);
-//  oop clz = JNIHandles::resolve(result);
-//  if (clz == NULL) {
-//    tty->print_cr("WeBridge initialized failed! Could not find main StoredProcedure manager");
-//    return;
-//  }
-  std::string resStr = webridgeMngr::analyse(ConcolicMngr::ctx, NULL, env);
-  Handle str = java_lang_String::create_from_platform_dependent_str(resStr.c_str(), THREAD);
-  return (jstring) JNIHandles::make_local(env, str());
-#else
-  ShouldNotReachHere();
-  return NULL;
-#endif
-JVM_END
-
 JVM_ENTRY(void, JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src_pos,
                                jobject dst, jint dst_pos, jint length))
   JVMWrapper("JVM_ArrayCopy");
@@ -780,6 +722,308 @@ JVM_ENTRY(jboolean, JVM_SnapshotContainerExpression(
       ? JNI_TRUE : JNI_FALSE;
 #else
   return JNI_FALSE;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_ExportExpression(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor))
+  JVMWrapper("JVM_ExportExpression");
+#ifdef ENABLE_CONCOLIC
+  // No broker means there is no session-owned expression to forward.  Do not
+  // reject merely because this transport thread has no selected region:
+  // exportExpression may read an existing expression from an explicitly
+  // workload-owned session heap without creating a local symbolic context.
+  if (!ExpressionBroker::is_open()) {
+    return ExpressionBroker::HANDOFF_NO_ACTIVE_REGION;
+  }
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve(owner));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  return ConcolicMngr::exportExpression(field_owner, holder, name, type);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_AttachExpression(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor, jlong handle))
+  JVMWrapper("JVM_AttachExpression");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve(owner));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  return ConcolicMngr::attachExpression(
+      field_owner, holder, name, type, handle);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetConcolicPathConditionRange(
+    JNIEnv *env, jclass ignored, jint start_index, jint end_index))
+  JVMWrapper("JVM_GetConcolicPathConditionRange");
+#ifdef ENABLE_CONCOLIC
+  std::string serialized =
+      ConcolicMngr::getPathConditionRange(start_index, end_index);
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_PATH_CONDITION_RANGE\","
+      "\"active\":false,\"startIndex\":0,\"endIndex\":0,"
+      "\"pathConditionWatermark\":0,\"conditionCount\":0,"
+      "\"conditions\":[],\"conjunctionInline\":false,"
+      "\"conjunctionSource\":"
+      "\"conditions[0,conditionCount) folded left with &&\","
+      "\"conjunctionAuthority\":"
+      "\"VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1\","
+      "\"authority\":\"VM_THREAD_PATH_CONDITION_RANGE_V1\"}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_SelectSharedFieldCarrier(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor))
+  JVMWrapper("JVM_SelectSharedFieldCarrier");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve(owner));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  return ConcolicMngr::selectSharedFieldCarrier(
+      field_owner, holder, name, type);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_GetCurrentSharedFieldVersion(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor))
+  JVMWrapper("JVM_GetCurrentSharedFieldVersion");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve(owner));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  return ConcolicMngr::getCurrentSharedFieldVersion(
+      field_owner, holder, name, type);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_AdmitSharedFieldVersion(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor, jlong version_id,
+    jstring selected_edge_id))
+  JVMWrapper("JVM_AdmitSharedFieldVersion");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve(owner));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  const char *edge = selected_edge_id == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(selected_edge_id));
+  return ConcolicMngr::admitSharedFieldVersion(
+      field_owner, holder, name, type, version_id, edge);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_SelectSharedElementCarrier(
+    JNIEnv *env, jclass ignored, jobject array, jint index))
+  JVMWrapper("JVM_SelectSharedElementCarrier");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  Handle target(THREAD, JNIHandles::resolve(array));
+  return ConcolicMngr::selectSharedElementCarrier(target, index);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_SelectSharedMapCarrier(
+    JNIEnv *env, jclass ignored, jobject map))
+  JVMWrapper("JVM_SelectSharedMapCarrier");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  Handle target(THREAD, JNIHandles::resolve(map));
+  return ConcolicMngr::selectSharedMapCarrier(target);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_GetCurrentSharedMapVersion(
+    JNIEnv *env, jclass ignored, jobject map))
+  JVMWrapper("JVM_GetCurrentSharedMapVersion");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  Handle target(THREAD, JNIHandles::resolve(map));
+  return ConcolicMngr::getCurrentSharedMapVersion(target);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_AdmitSharedMapVersion(
+    JNIEnv *env, jclass ignored, jobject map, jlong version_id,
+    jstring selected_edge_id))
+  JVMWrapper("JVM_AdmitSharedMapVersion");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle target(THREAD, JNIHandles::resolve(map));
+  const char *edge = selected_edge_id == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(selected_edge_id));
+  return ConcolicMngr::admitSharedMapVersion(target, version_id, edge);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetSharedFieldVersions(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor))
+  JVMWrapper("JVM_GetSharedFieldVersions");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle field_owner(THREAD, JNIHandles::resolve(owner));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  std::string serialized = ConcolicMngr::getSharedFieldVersions(
+      field_owner, holder, name, type);
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"kind\":\"SHARED_FIELD_VERSIONS\","
+      "\"selected\":false,\"versions\":[]}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetSharedElementVersions(
+    JNIEnv *env, jclass ignored, jobject array, jint index))
+  JVMWrapper("JVM_GetSharedElementVersions");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle target(THREAD, JNIHandles::resolve(array));
+  std::string serialized =
+      ConcolicMngr::getSharedElementVersions(target, index);
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"kind\":\"SHARED_FIELD_VERSIONS\","
+      "\"selected\":false,\"versions\":[]}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetSharedMapVersions(
+    JNIEnv *env, jclass ignored, jobject map))
+  JVMWrapper("JVM_GetSharedMapVersions");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle target(THREAD, JNIHandles::resolve(map));
+  std::string serialized = ConcolicMngr::getSharedMapVersions(target);
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"kind\":\"SHARED_FIELD_VERSIONS\","
+      "\"selected\":false,\"versions\":[]}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#endif
+JVM_END
+
+JVM_ENTRY(jint, JVM_ProposeEventOrder(JNIEnv *env, jclass ignored,
+                                      jlong before_event_id,
+                                      jlong after_event_id))
+  JVMWrapper("JVM_ProposeEventOrder");
+#ifdef ENABLE_CONCOLIC
+  return ConcolicMngr::proposeEventOrder(before_event_id, after_event_id);
+#else
+  return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jstring, JVM_GetEventLedger(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_GetEventLedger");
+#ifdef ENABLE_CONCOLIC
+  std::string serialized = ConcolicMngr::getEventLedger();
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
+#else
+  Handle str = java_lang_String::create_from_platform_dependent_str(
+      "{\"schemaVersion\":1,\"kind\":\"SESSION_EVENT_LEDGER\","
+      "\"open\":false,\"events\":[]}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
 #endif
 JVM_END
 
@@ -3662,6 +3906,13 @@ JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
               "unable to create new native thread");
   }
 
+#ifdef ENABLE_CONCOLIC
+  // Everything this thread has done happens-before everything the started
+  // thread will do.  Released before the child can run, so the child's attach
+  // cannot miss it.
+  ConcolicMngr::publishThreadStartOrder(JNIHandles::resolve_non_null(jthread));
+#endif
+
   Thread::start(native_thread);
 
 JVM_END
@@ -3710,7 +3961,17 @@ JVM_ENTRY(jboolean, JVM_IsThreadAlive(JNIEnv* env, jobject jthread))
   JVMWrapper("JVM_IsThreadAlive");
 
   oop thread_oop = JNIHandles::resolve_non_null(jthread);
-  return java_lang_Thread::is_alive(thread_oop);
+  jboolean alive = java_lang_Thread::is_alive(thread_oop);
+#ifdef ENABLE_CONCOLIC
+  if (!alive) {
+    // Observing that a thread has terminated is the acquire half of the join
+    // edge, and it is where Thread.join() ends -- join loops on isAlive().
+    // Hooking the observation rather than join() itself also covers a caller
+    // that waits on isAlive() directly.
+    ConcolicMngr::acquireThreadTerminationOrder(thread_oop);
+  }
+#endif
+  return alive;
 JVM_END
 
 

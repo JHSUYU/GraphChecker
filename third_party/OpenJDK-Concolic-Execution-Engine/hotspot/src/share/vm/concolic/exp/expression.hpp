@@ -15,24 +15,38 @@
 #include <vector>
 
 class ContainerExpression;
+// One iterative rendering of an expression DAG into JSON.  Defined entirely in
+// expression.cpp: nothing outside the serializer needs its shape.
+class SerializationScope;
 
+/**
+ * An expression node is immutable once constructed and is owned by the
+ * GlobalSymbolicSession arena, never by whatever names it.
+ *
+ * Two rules follow, and every consumer in the engine depends on both:
+ *
+ *   - nothing deletes an Expression.  A shadow slot, field shadow, path
+ *     condition entry, container state, broker leaf or parent node that stops
+ *     naming a node simply stops naming it;
+ *   - a parent node does not own its children, so a subtree may be shared
+ *     freely, including between threads attached to the same session.
+ *
+ * Session teardown frees every node at once.  See globalSymbolicSession.hpp
+ * for why this replaced per-node reference counting.
+ */
 class Expression {
+  // The serializer drives serialize_internal directly, one node at a time,
+  // instead of letting nodes call each other.
+  friend class SerializationScope;
+
 private:
-  uint _ref_count;
+  // Session-scoped identity.  Allocated from one atomic counter so that
+  // concurrently built nodes cannot share an id.
   uint _unique_id;
   std::string _java_code_position;
-  static std::set<Expression *> deleted;
-  static std::set<Expression *> keep;
 
 public:
-  static ulong total_count;
-  static ulong unique_id;
-  static void gc(Expression *exp);
-  static void init_gc_helper();
-  static void finalize_dangling_objects();
-
-public:
-  virtual ~Expression();
+  virtual ~Expression() {}
   virtual void print();
   void print_cr();
   virtual bool is_op_str_expression() { return false; }
@@ -59,31 +73,45 @@ public:
     }
   }
 
-  inline void inc_ref() { _ref_count += 1; }
-  inline bool dec_ref() { return --_ref_count == 0; }
-  inline bool able_to_gc() { return _ref_count == 0; }
-
   void set_java_code_position(const std::string &javaCodePosition);
 
   const std::string &getJavaCodePosition() const;
 
-  inline int get_unique_id() { return _unique_id; }
+  inline uint get_unique_id() const { return _unique_id; }
+
 protected:
   Expression();
 
 protected:
+  /**
+   * Writes this node's own JSON members.  A node reaches its children the
+   * only way it ever did, by calling serialize() on them, but that call no
+   * longer descends: see serialize() below.
+   */
   virtual void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) = 0;
 
 public:
-  void __attribute__((optimize("O0"))) serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer) {
-    writer.StartObject();
-    if (!_java_code_position.empty()) {
-      writer.Key("_code_position");
-      writer.String(_java_code_position.c_str());
-    }
-    serialize_internal(writer);
-    writer.EndObject();
-  }
+  /**
+   * Renders the DAG rooted at this node as one JSON object.
+   *
+   * The walk is iterative.  It used to be one native frame per node -- two,
+   * with serialize_internal -- which put the depth of a traced workload's
+   * expressions directly on the native stack: a path-condition conjunction is
+   * one op_land node per branch the thread took, so a region that does string
+   * or container work builds a left-deep chain thousands of nodes long and
+   * overflowed the stack with a SIGSEGV that produced no hs_err file at all.
+   * Depth is now a heap-allocated worklist, so it costs memory rather than
+   * stack, and a node is rendered once per call rather than once per path that
+   * reaches it.
+   *
+   * A nested call -- this same method, on a child, from inside
+   * serialize_internal -- does not recurse.  It records the child as a slot in
+   * the parent's own text and returns, and the driver splices the child in
+   * afterwards.  A call that targets some other writer, which is how the few
+   * callers that serialize into a buffer of their own behave, starts an
+   * independent render instead.
+   */
+  void serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 
   virtual std::string get_name();
 };
@@ -95,13 +123,10 @@ private:
   Expression *_left;
   Expression *_right;
   SymbolicOp _op;
-  char* _left_cache;
-  char* _right_cache;
 
 public:
   OpSymExpression(Expression *l, Expression *r, SymbolicOp op, bool cmp = true);
   OpSymExpression(Expression *r, SymbolicOp op);
-  ~OpSymExpression();
   virtual std::string get_name();
   virtual bool is_boolean_expression();
 

@@ -25,9 +25,7 @@ public:
 
   Expression *get_ref_exp() { return _ref_exp; };
   void set_ref_exp(Expression *expression) {
-    Expression::gc(_ref_exp);
     _ref_exp = expression;
-    if (_ref_exp != NULL) _ref_exp->inc_ref();
     _semantic_expression = expression != NULL;
   }
 
@@ -44,9 +42,7 @@ public:
   }
 
   inline void set_length_exp(Expression *length_exp) {
-    Expression::gc(_length_exp);
     _length_exp = length_exp;
-    _length_exp->inc_ref();
   }
 
   inline Expression *get_length_exp() { return _length_exp; }

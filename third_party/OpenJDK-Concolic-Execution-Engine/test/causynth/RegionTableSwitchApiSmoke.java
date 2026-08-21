@@ -10,27 +10,24 @@ public final class RegionTableSwitchApiSmoke {
 
     public static void main(String[] args) {
         Trace below = execute(-1, "table_switch_below");
-        require(count(below.summary, "\"_op\":\"!=\"") == 3
-                        && below.summary.contains("Y_I_1")
-                        && below.summary.contains("Y_I_2")
-                        && below.summary.contains("Y_I_3"),
-                below.summary);
+        require(count(below.path, "\"_op\":\"!=\"") == 3
+                        && below.path.contains("Y_I_1")
+                        && below.path.contains("Y_I_2")
+                        && below.path.contains("Y_I_3"), below.path);
         requireExactEvent(below.events, "TABLE.table_switch_below", false,
                 3);
 
         Trace above = execute(9, "table_switch_above");
-        require(count(above.summary, "\"_op\":\"!=\"") == 3
-                        && above.summary.contains("Y_I_1")
-                        && above.summary.contains("Y_I_2")
-                        && above.summary.contains("Y_I_3"),
-                above.summary);
+        require(count(above.path, "\"_op\":\"!=\"") == 3
+                        && above.path.contains("Y_I_1")
+                        && above.path.contains("Y_I_2")
+                        && above.path.contains("Y_I_3"), above.path);
         requireExactEvent(above.events, "TABLE.table_switch_above", false,
                 3);
 
         Trace selected = execute(2, "table_switch_selected");
-        require(selected.summary.contains("\"_op\":\"==\"")
-                        && selected.summary.contains("Y_I_2"),
-                selected.summary);
+        require(selected.path.contains("\"_op\":\"==\"")
+                        && selected.path.contains("Y_I_2"), selected.path);
         requireExactEvent(selected.events, "TABLE.table_switch_selected",
                 true, 1);
         System.out.println("CAUSYNTH_REGION_TABLE_SWITCH_API_SMOKE_OK");
@@ -61,10 +58,15 @@ public final class RegionTableSwitchApiSmoke {
         require(event > 0L, "branch marker rejected");
         require(result == (value == 1 ? 11 : value == 2 ? 12
                 : value == 3 ? 13 : 19), "wrong tableswitch arm");
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String events = System.getConcolicBranchEvents();
         String summary = System.finishConcolicRegion();
-        require(summary.contains(symbol), summary);
-        return new Trace(summary, events);
+        require(summary.contains(
+                "\"pathConditionAuthority\":"
+                        + "\"VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1\""),
+                summary);
+        return new Trace(summary, events, path);
     }
 
     private static void requireExactEvent(String events, String site,
@@ -81,10 +83,12 @@ public final class RegionTableSwitchApiSmoke {
     private static final class Trace {
         final String summary;
         final String events;
+        final String path;
 
-        Trace(String summary, String events) {
+        Trace(String summary, String events, String path) {
             this.summary = summary;
             this.events = events;
+            this.path = path;
         }
     }
 

@@ -39,7 +39,6 @@ add_definitions(-DASSERT)
 add_definitions(-DENABLE_CONCOLIC)
 add_definitions(-DCONCOLIC_DEBUG)
 add_definitions(-DONELINE)
-add_definitions(-DCONCOLIC_JDBC)
 
 #add_definitions(-DTARGET_OS_FAMILY_linux)
 #add_definitions(-DINCLUDE_ALL_GCS)
@@ -48,5 +47,3 @@ add_definitions(-DCONCOLIC_JDBC)
 #add_definitions(-DCOMPILER2)
 #add_definitions(-DCOMPILER1)
 #add_definitions(-DAMD64)
-
-add_definitions(-DENABLE_WEBRIDGE)

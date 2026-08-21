@@ -25,6 +25,28 @@ int __attribute__((optimize("O0"))) PathCondition::add(Expression *exp) {
   return (int) _conds.size() - 1;
 }
 
+Expression *PathCondition::conjunction() {
+  const int size = (int) _conds.size();
+  if (size == 0) return NULL;
+  if (_conjunction != NULL && _conjunction_size == size) return _conjunction;
+
+  // Extend the memoized prefix rather than refolding it.  The nodes are
+  // session-owned, so keeping a pointer to the previous fold across calls is
+  // safe for the life of the session.
+  Expression *folded = _conjunction_size <= size ? _conjunction : NULL;
+  int start = _conjunction_size <= size ? _conjunction_size : 0;
+  for (int index = start; index < size; ++index) {
+    Expression *condition = _conds[index]->getExp();
+    if (condition == NULL) continue;
+    folded = folded == NULL
+        ? condition
+        : (Expression *) new OpSymExpression(folded, condition, op_land);
+  }
+  _conjunction = folded;
+  _conjunction_size = size;
+  return folded;
+}
+
 void PathCondition::gc() {
   int size = _conds.size();
   for (int i = 0; i < size; ++i) {
@@ -35,6 +57,8 @@ void PathCondition::gc() {
     delete[] _pc_str;
     _pc_str = NULL;
   }
+  _conjunction = NULL;
+  _conjunction_size = 0;
 }
 
 void PathCondition::print() {

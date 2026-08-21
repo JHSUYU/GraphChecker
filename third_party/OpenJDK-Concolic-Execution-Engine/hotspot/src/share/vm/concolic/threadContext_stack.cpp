@@ -3,14 +3,14 @@
 #include "concolic/threadContext.hpp"
 
 /**
- * this will generate a new tmp_id; use it when `exp` is newly
- * calculated, which doesn't have `sym_rid` and `index`
+ * Use this overload when `exp` is newly calculated, so it has no `sym_rid`
+ * and `index` provenance to carry.  Writing the provenance explicitly matters:
+ * the slot may still hold a previous occupant's field offset or array index.
  */
 void ThreadContext::set_stack_slot(int offset, Expression *exp) {
   ShadowTable &opr_stack = this->get_last_stack();
   if (exp) {
-    sym_tmp_id_t sym_tmp_id = this->get_next_sym_tmp_id(exp);
-    opr_stack.set_slot(offset, exp, NULL_SYM_RID, sym_tmp_id);
+    opr_stack.set_slot(offset, exp, NULL_SYM_RID, -1);
   } else {
     opr_stack.clear_slot(offset);
   }
@@ -32,35 +32,16 @@ void ThreadContext::set_stack_value_if_possible(int anchor_offset,
 
 
 /**
- * A shadow slot names a value; it never owns the expression it names, and it
- * has no say in when that expression dies.  This is where the reference that
- * makes the naming safe is taken.
- *
- * The activation's temporary store is the only structure that outlives every
- * shadow slot without outliving the region, so it is the slot's owner of
- * record.  No tmp id is handed back: this reference is a claim for the rest
- * of the activation, released once when the context is torn down, never by a
- * detach.
- */
-void ThreadContext::retain_for_activation(Expression *exp) {
-  if (exp == NULL) return;
-  this->get_next_sym_tmp_id(exp);
-}
-
-/**
  * `sym_rid` and `index` are provenance -- which field, element or length the
  * value was read from.  They are not the slot's identity, and the location
- * they name keeps mutating after the read: PUTFIELD hands the old field
- * expression to Expression::gc, a restated array element replaces its
- * reference expression, and either one frees a tree the operand stack and
- * the locals are still allowed to read.  Retain first, exactly as the
- * value-producing overload above already does, so a write to the location
- * can never delete a value some slot already took from it.
+ * they name keeps mutating after the read: PUTFIELD replaces the old field
+ * expression and a restated array element replaces its reference expression.
+ * Neither can invalidate a value some slot already took from that location,
+ * because an expression outlives every structure that names it.
  */
 void ThreadContext::set_stack_slot(int offset, Expression *exp,
                                    sym_rid_t sym_rid, int index) {
   if (exp) {
-    this->retain_for_activation(exp);
     this->get_last_stack().set_slot(offset, exp, sym_rid, index);
   } else {
     this->get_last_stack().clear_slot(offset);

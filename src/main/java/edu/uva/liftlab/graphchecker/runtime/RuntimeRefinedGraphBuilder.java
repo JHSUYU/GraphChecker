@@ -6,9 +6,7 @@ import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
 import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.contract.ProtocolBoundaryScalarConfig;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -27,7 +25,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -38,8 +35,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -51,32 +46,16 @@ import java.util.zip.GZIPOutputStream;
 final class RuntimeRefinedGraphBuilder {
     static final int REFINEMENT_SCHEMA_VERSION = 1;
     static final String GRAPH_KIND = "RUNTIME_REFINED_DATAFLOW";
-    static final String PATH_AUTHORITY =
-            "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1";
     static final String FIELD_ACCESS_AUTHORITY =
             "EXACT_RUNTIME_ACTIVATION_FIELD_ACCESS_V1";
-    static final String PROTOCOL_AUTHORITY =
-            "TRUSTED_CONFIGURED_RPC_MAPPING_V1";
-    static final String PROTOCOL_CALLSITE_AUTHORITY =
-            "EXACT_RUNTIME_PROTOCOL_CALLSITE_RESULT_V1";
     static final String ASSOCIATIVE_MEMBER_AUTHORITY =
             "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
-    private static final String NO_CONFIGURED_SCALAR_ELEMENTS =
-            "NO_CONFIGURED_SCALAR_ELEMENTS";
-    private static final String INCONSISTENT_BOUNDARY_SCALAR_EMPTY_SIDES =
-            "INCONSISTENT_CONFIGURED_BOUNDARY_SCALAR_EMPTY_SIDES";
-    private static final String BOUNDARY_SCALAR_ROLE_MISMATCH =
-            "BOUNDARY_SCALAR_ROLE_MISMATCH";
-    private static final String EXTERNAL_PRESTATE_AUTHORITY =
-            "EXACT_ACTIVATION_EXTERNAL_PRESTATE_WRITE_V1";
 
     private static final Type ROW_TYPE =
             new TypeToken<Map<String, Object>>() { }.getType();
     private static final Gson GSON = new GsonBuilder()
             .setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE)
             .create();
-    private static final Pattern METHOD = Pattern.compile(
-            "^<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>$");
 
     private RuntimeRefinedGraphBuilder() {
     }
@@ -91,7 +70,8 @@ final class RuntimeRefinedGraphBuilder {
         return refine(candidateGraph, selectedSkeletons, runtimeInstances,
                 methods, runtime, fields,
                 Collections.<RuntimeRegionPlanner.ArrayAccessEvent>emptyList(),
-                protocol, output);
+                protocol, Collections.<Map<String, Object>>emptyList(),
+                output);
     }
 
     static Result refine(File candidateGraph, File selectedSkeletons,
@@ -101,6 +81,20 @@ final class RuntimeRefinedGraphBuilder {
                          List<RuntimeRegionPlanner.FieldAccessEvent> fields,
                          List<RuntimeRegionPlanner.ArrayAccessEvent> arrays,
                          List<RuntimeRegionPlanner.ProtocolEvent> protocol,
+                         Path output) throws IOException {
+        return refine(candidateGraph, selectedSkeletons, runtimeInstances,
+                methods, runtime, fields, arrays, protocol,
+                Collections.<Map<String, Object>>emptyList(), output);
+    }
+
+    static Result refine(File candidateGraph, File selectedSkeletons,
+                         Collection<Map<String, Object>> runtimeInstances,
+                         List<RuntimeRegionPlanner.MethodEvent> methods,
+                         List<RuntimeRegionPlanner.RuntimeEvent> runtime,
+                         List<RuntimeRegionPlanner.FieldAccessEvent> fields,
+                         List<RuntimeRegionPlanner.ArrayAccessEvent> arrays,
+                         List<RuntimeRegionPlanner.ProtocolEvent> protocol,
+                         Collection<Map<String, Object>> occurrenceLinks,
                          Path output) throws IOException {
         if (candidateGraph == null || !candidateGraph.isFile()) {
             throw new IOException("candidate static graph not found: "
@@ -121,13 +115,6 @@ final class RuntimeRefinedGraphBuilder {
                 fields);
         Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
                 arraysByObject = arraysByObject(arrays, methodEvents);
-        List<RuntimeRegionPlanner.ProtocolEvent> protocolEvents =
-                sortedProtocol(protocol);
-        ProtocolBoundaryScalarConfig boundaryScalarConfig =
-                ProtocolBoundaryScalarConfig.fromConfiguration();
-        ProtocolCallsiteIndex protocolCallsites = new ProtocolCallsiteIndex(
-                methodEvents, runtimeEvents);
-
         Map<Long, List<RuntimeRegionPlanner.RuntimeEvent>> runtimeByCall =
                 groupRuntime(runtimeEvents);
         Map<Long, List<RuntimeRegionPlanner.FieldAccessEvent>> fieldsByCall =
@@ -139,9 +126,6 @@ final class RuntimeRefinedGraphBuilder {
                 new LinkedHashMap<>();
         List<Activation> activations = activations(runtimeInstances,
                 skeletons, methodEvents);
-        BoundaryScalarExternalPrestateIndex externalPrestate =
-                new BoundaryScalarExternalPrestateIndex(methodEvents,
-                        fieldEvents, protocolEvents, activations);
         for (Activation activation : activations) {
                 RuntimeRegionPlanner.MethodEvent root = activation.root;
                 Set<Long> calls = activation.calls;
@@ -158,28 +142,22 @@ final class RuntimeRefinedGraphBuilder {
                 if (activationFields.isEmpty()) {
                     continue;
                 }
-                ActivationPaths paths = ActivationPaths.build(root,
-                        activationRuntime, activationFields);
+                Map<Integer, List<RuntimeRegionPlanner.FieldAccessEvent>>
+                        fieldsByValueObject = fieldsByValueObject(
+                        activationFields);
                 for (RuntimeRegionPlanner.FieldAccessEvent field
                         : activationFields) {
                     StaticSite site = new StaticSite(field.method,
                             field.unitIndex, field.kind, field.field);
-                    List<RuntimeFieldPath> fieldPaths = paths.pathsFor(field);
-                    boolean boundaryRooted = !fieldPaths.isEmpty();
-                    if (!boundaryRooted) {
-                        fieldPaths = observedFieldPaths(field);
-                    }
+                    List<RuntimeFieldPath> fieldPaths =
+                            observedFieldPaths(field);
                     for (RuntimeFieldPath path : fieldPaths) {
                         bindingsBySite.computeIfAbsent(site,
                                 ignored -> new ArrayList<>()).add(
                                 new RuntimeFieldBinding(activation.regionId,
                                         root, field, path,
-                                        boundaryRooted
-                                                ? "DECLARED_FIELD_ACCESS"
-                                                : "ACTIVATION_FIELD_ACCESS",
-                                        boundaryRooted
-                                                ? PATH_AUTHORITY
-                                                : FIELD_ACCESS_AUTHORITY));
+                                        "ACTIVATION_FIELD_ACCESS",
+                                        FIELD_ACCESS_AUTHORITY));
                     }
                 }
                 for (RuntimeRegionPlanner.RuntimeEvent event
@@ -196,17 +174,16 @@ final class RuntimeRefinedGraphBuilder {
                     int unitIndex = unitIndex(event.siteId);
                     if (unitIndex < 0) continue;
                     for (RuntimeRegionPlanner.FieldAccessEvent container
-                            : latestContainerFields(activationFields,
-                            event.objectId, event.seq)) {
+                            : latestContainerFields(
+                            fieldsByValueObject.getOrDefault(event.objectId,
+                                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>
+                                            emptyList()),
+                            event.seq)) {
                         String field = container.field;
                         StaticSite site = new StaticSite(event.method,
                                 unitIndex, "FIELD_WRITE", field);
                         List<RuntimeFieldPath> containerPaths =
-                                paths.pathsFor(container);
-                        boolean boundaryRooted = !containerPaths.isEmpty();
-                        if (!boundaryRooted) {
-                            containerPaths = observedFieldPaths(container);
-                        }
+                                observedFieldPaths(container);
                         for (RuntimeFieldPath path : containerPaths) {
                             RuntimeRegionPlanner.FieldAccessEvent mutation =
                                     new RuntimeRegionPlanner.FieldAccessEvent(
@@ -221,9 +198,7 @@ final class RuntimeRefinedGraphBuilder {
                                             activation.regionId, root,
                                             mutation, path,
                                             "CONTAINER_MUTATION",
-                                            boundaryRooted
-                                                    ? PATH_AUTHORITY
-                                                    : FIELD_ACCESS_AUTHORITY,
+                                            FIELD_ACCESS_AUTHORITY,
                                             container, event, completion,
                                             callArguments.getOrDefault(
                                                     event.invocationId,
@@ -245,8 +220,7 @@ final class RuntimeRefinedGraphBuilder {
             String method = string(candidate.get("method"));
             String candidateTransfer = string(candidate.get(
                     "transferKind"));
-            if (!selectedMethods.contains(method)
-                    && !"PROTOCOL_TRANSFER".equals(candidateTransfer)) {
+            if (!selectedMethods.contains(method)) {
                 return;
             }
             Map<String, Object> edge = new LinkedHashMap<>(candidate);
@@ -256,12 +230,6 @@ final class RuntimeRefinedGraphBuilder {
             String transfer = string(edge.get("transferKind"));
             List<String> regionIds = new ArrayList<>(values(
                     skeletons.regionsByMethod.get(method)));
-            if ("PROTOCOL_TRANSFER".equals(transfer)) {
-                addAllUnique(regionIds, skeletons.regionsByMethod.get(
-                        string(edge.get("protocolClientStub"))));
-                addAllUnique(regionIds, skeletons.regionsByMethod.get(
-                        string(edge.get("protocolServerStub"))));
-            }
             edge.put("regionIds", regionIds);
             if (Boolean.TRUE.equals(edge.get("explicitSymbolicFault"))) {
                 List<RuntimeAccessorBinding> bindings = values(
@@ -307,28 +275,6 @@ final class RuntimeRefinedGraphBuilder {
                     runtimeBoundCounter[0]++;
                 } else {
                     edge.put("runtimeObserved", false);
-                }
-            } else if ("PROTOCOL_TRANSFER".equals(transfer)) {
-                List<RuntimeProtocolBinding> bindings = protocolBindings(
-                        edge, activations, methodEvents, protocolCallsites,
-                        protocolEvents, boundaryScalarConfig,
-                        externalPrestate);
-                if (bindings.isEmpty()) {
-                    edge.put("runtimeObserved", false);
-                } else {
-                    edge.put("runtimeProtocolBindings",
-                            encodeProtocolBindings(bindings));
-                    for (RuntimeProtocolBinding binding : bindings) {
-                        if (!regionIds.contains(binding.from.regionId)) {
-                            regionIds.add(binding.from.regionId);
-                        }
-                        if (!regionIds.contains(binding.to.regionId)) {
-                            regionIds.add(binding.to.regionId);
-                        }
-                    }
-                    edge.put("regionIds", regionIds);
-                    edge.put("runtimeObserved", true);
-                    runtimeBoundCounter[0]++;
                 }
             } else {
                 edge.put("runtimeObserved", true);
@@ -599,15 +545,28 @@ final class RuntimeRefinedGraphBuilder {
         return result;
     }
 
+    private static Map<Integer, List<RuntimeRegionPlanner.FieldAccessEvent>>
+            fieldsByValueObject(
+            List<RuntimeRegionPlanner.FieldAccessEvent> fields) {
+        Map<Integer, List<RuntimeRegionPlanner.FieldAccessEvent>> result =
+                new LinkedHashMap<>();
+        for (RuntimeRegionPlanner.FieldAccessEvent event : fields) {
+            if (event.valueObjectId != 0) {
+                result.computeIfAbsent(event.valueObjectId,
+                        ignored -> new ArrayList<>()).add(event);
+            }
+        }
+        return result;
+    }
+
     private static List<RuntimeRegionPlanner.FieldAccessEvent>
             latestContainerFields(
             List<RuntimeRegionPlanner.FieldAccessEvent> fields,
-            int containerObjectId, long beforeSeq) {
+            long beforeSeq) {
         Map<String, RuntimeRegionPlanner.FieldAccessEvent> selected =
                 new LinkedHashMap<>();
         for (RuntimeRegionPlanner.FieldAccessEvent event : fields) {
-            if (event.seq > beforeSeq
-                    || event.valueObjectId != containerObjectId) {
+            if (event.seq > beforeSeq) {
                 continue;
             }
             String identity = event.field + "\n" + event.receiverObjectId;
@@ -650,499 +609,6 @@ final class RuntimeRefinedGraphBuilder {
         }
     }
 
-    private static List<RuntimeProtocolBinding> protocolBindings(
-            Map<String, Object> edge, List<Activation> activations,
-            List<RuntimeRegionPlanner.MethodEvent> methods,
-            ProtocolCallsiteIndex callsites,
-            List<RuntimeRegionPlanner.ProtocolEvent> events,
-            ProtocolBoundaryScalarConfig boundaryScalarConfig,
-            BoundaryScalarExternalPrestateIndex externalPrestate) {
-        String transport = string(edge.get("protocolTransport"));
-        String clientStub = string(edge.get("protocolClientStub"));
-        String serverStub = string(edge.get("protocolServerStub"));
-        boolean response = "RESPONSE".equals(
-                string(edge.get("protocolDirection")));
-        List<RuntimeProtocolBinding> result = new ArrayList<>();
-        Set<Long> usedReceives = new LinkedHashSet<>();
-        for (RuntimeRegionPlanner.ProtocolEvent send : events) {
-            if (!"SEND".equals(send.direction)
-                    || !transport.equals(send.transport)) {
-                continue;
-            }
-            RuntimeRegionPlanner.RuntimeEvent callerSite = callsites.find(
-                    edge, send);
-            if (callerSite == null || callerSite.seq >= send.seq) {
-                continue;
-            }
-            RuntimeRegionPlanner.ProtocolEvent receive = null;
-            for (RuntimeRegionPlanner.ProtocolEvent candidate : events) {
-                if (!"RECEIVE".equals(candidate.direction)
-                        || usedReceives.contains(candidate.seq)
-                        || !transport.equals(candidate.transport)
-                        || candidate.seq <= send.seq
-                        || send.spanId <= 0L
-                        || candidate.remoteParentSpanId != send.spanId) {
-                    continue;
-                }
-                receive = candidate;
-                break;
-            }
-            if (receive == null) {
-                continue;
-            }
-            Activation client = activationForCall(activations, send.callId,
-                    send.method);
-            if (client == null) {
-                client = activationForCall(activations, send.callId, "");
-            }
-            RuntimeRegionPlanner.MethodEvent serverCall = methodForCall(
-                    methods, receive.callId, serverStub);
-            if (serverCall == null) {
-                serverCall = firstMethodAfter(methods, receive, serverStub);
-            }
-            Activation server = serverCall == null ? null
-                    : activationForCall(activations, serverCall.callId,
-                    serverStub);
-            if (client == null || server == null) {
-                continue;
-            }
-            String clientProcess = exactEndpointProcess(
-                    client.root.process, send.process);
-            String serverProcess = exactEndpointProcess(
-                    server.root.process, serverCall.process,
-                    receive.process);
-            RuntimeRegionPlanner.RuntimeEvent callerResult =
-                    callsites.returned(callerSite);
-            RuntimeRegionPlanner.RuntimeEvent producerResult = response
-                    ? callsites.uniqueNormalExit(serverCall.callId) : null;
-            usedReceives.add(receive.seq);
-            result.add(new RuntimeProtocolBinding(edge, send, receive,
-                    response ? server : client,
-                    response ? client : server, callerSite,
-                    callerResult, producerResult,
-                    boundaryScalarBindings(edge, events, callerSite,
-                            callerResult, serverCall, producerResult,
-                            response ? serverProcess : clientProcess,
-                            response ? clientProcess : serverProcess,
-                            response ? server : client,
-                            boundaryScalarConfig, externalPrestate)));
-        }
-        return result;
-    }
-
-    /**
-     * Returns one endpoint's exact process only when every independently
-     * correlated event/activation supplies the same non-empty identity.
-     */
-    private static String exactEndpointProcess(String... evidence) {
-        String selected = "";
-        for (String candidate : evidence) {
-            String process = string(candidate);
-            if (process.isEmpty()) return "";
-            if (selected.isEmpty()) {
-                selected = process;
-            } else if (!selected.equals(process)) {
-                return "";
-            }
-        }
-        return selected;
-    }
-
-    /**
-     * Pairs configured scalar observations by declaration and index only.
-     * Primitive values are evidence carried by each side, never a pairing
-     * key or a transport fingerprint.
-     */
-    private static BoundaryScalarBindings boundaryScalarBindings(
-            Map<String, Object> edge,
-            List<RuntimeRegionPlanner.ProtocolEvent> events,
-            RuntimeRegionPlanner.RuntimeEvent callerSite,
-            RuntimeRegionPlanner.RuntimeEvent callerResult,
-            RuntimeRegionPlanner.MethodEvent serverCall,
-            RuntimeRegionPlanner.RuntimeEvent producerResult,
-            String producerProcess, String consumerProcess,
-            Activation producerActivation,
-            ProtocolBoundaryScalarConfig boundaryScalarConfig,
-            BoundaryScalarExternalPrestateIndex externalPrestate) {
-        String mapping = string(edge.get("protocolStubMappingId"));
-        String direction = string(edge.get("protocolDirection"));
-        String port = string(edge.get("protocolPort"));
-        String serverStub = string(edge.get("protocolServerStub"));
-        String actualClientMethod = callerSite.declaredCallee;
-        boolean response = "RESPONSE".equals(direction);
-        BoundaryScalarBindings result = new BoundaryScalarBindings();
-        Map<String, List<RuntimeRegionPlanner.ProtocolEvent>> producerLeaves =
-                new LinkedHashMap<>();
-        Map<String, List<RuntimeRegionPlanner.ProtocolEvent>> consumerLeaves =
-                new LinkedHashMap<>();
-        for (RuntimeRegionPlanner.ProtocolEvent event : events) {
-            if (!mapping.equals(event.mappingId)
-                    || !direction.equals(event.protocolDirection)
-                    || !port.equals(event.port)
-                    || !("RPC_BOUNDARY_SCALAR".equals(event.direction)
-                    || "RPC_BOUNDARY_SCALAR_GAP".equals(event.direction))) {
-                continue;
-            }
-            boolean producerOccurrence = response
-                    ? producerResult != null
-                    && event.boundaryEventSeq == producerResult.seq
-                    && serverCall != null
-                    && event.callId == serverCall.callId
-                    : event.callId == callerSite.callId
-                    && event.invocationId == callerSite.invocationId;
-            boolean consumerOccurrence = response
-                    ? callerResult != null
-                    && event.boundaryEventSeq == callerResult.seq
-                    && event.callId == callerSite.callId
-                    && event.invocationId == callerSite.invocationId
-                    : serverCall != null && event.callId == serverCall.callId;
-            if (!producerOccurrence && !consumerOccurrence) continue;
-            boolean producer = producerOccurrence && !consumerOccurrence;
-            String expectedSide = response
-                    ? producer ? "SERVER" : "CLIENT"
-                    : producer ? "CLIENT" : "SERVER";
-            String expectedKind = response
-                    ? producer ? "METHOD_RETURN" : "CALL_RETURN"
-                    : producer ? "CALL_ARGUMENT" : "METHOD_ARGUMENT";
-            String expectedMethod = producer == response
-                    ? serverStub : actualClientMethod;
-            String leafKey = boundaryScalarLeafKey(event);
-            if (!expectedSide.equals(event.side)
-                    || !expectedKind.equals(event.boundaryKind)
-                    || !expectedMethod.equals(event.method)) {
-                // A malformed role is evidence about neither endpoint.  In
-                // particular, two malformed rows must never validate each
-                // other merely because their leaf identities coincide.
-                result.gaps.add(encodeBoundaryScalarGap(event,
-                        BOUNDARY_SCALAR_ROLE_MISMATCH));
-                continue;
-            }
-            (producer ? producerLeaves : consumerLeaves).computeIfAbsent(
-                    leafKey,
-                    ignored -> new ArrayList<>()).add(event);
-        }
-
-        Set<String> keys = new LinkedHashSet<>();
-        keys.addAll(producerLeaves.keySet());
-        keys.addAll(consumerLeaves.keySet());
-        for (String key : keys) {
-            BoundarySideEvidence from = completeBoundarySide(
-                    producerLeaves.getOrDefault(key,
-                            Collections.emptyList()));
-            BoundarySideEvidence to = completeBoundarySide(
-                    consumerLeaves.getOrDefault(key,
-                            Collections.emptyList()));
-            if (from == null || to == null) {
-                RuntimeRegionPlanner.ProtocolEvent sample = from != null
-                        ? from.sample : to.sample;
-                result.gaps.add(encodeBoundaryScalarGap(sample,
-                        "MISSING_CONFIGURED_BOUNDARY_SCALAR_SIDE"));
-                continue;
-            }
-            if (from.gap != null || to.gap != null) {
-                boolean fromEmpty = completeNoConfiguredElements(from);
-                boolean toEmpty = completeNoConfiguredElements(to);
-                if (fromEmpty && toEmpty) {
-                    result.gaps.add(encodeCompleteEmptyBoundaryScalarGap(
-                            from.sample, to.sample));
-                    continue;
-                }
-                if (fromEmpty || toEmpty) {
-                    result.gaps.add(encodeBoundaryScalarGap(to.sample,
-                            INCONSISTENT_BOUNDARY_SCALAR_EMPTY_SIDES));
-                    continue;
-                }
-                if (from.gap != null) {
-                    result.gaps.add(encodeBoundaryScalarGap(from.sample,
-                            from.gap));
-                }
-                if (to.gap != null) {
-                    result.gaps.add(encodeBoundaryScalarGap(to.sample,
-                            to.gap));
-                }
-                continue;
-            }
-            Set<String> indices = new LinkedHashSet<>();
-            indices.addAll(from.values.keySet());
-            indices.addAll(to.values.keySet());
-            for (String index : indices) {
-                RuntimeRegionPlanner.ProtocolEvent producer =
-                        from.values.get(index);
-                RuntimeRegionPlanner.ProtocolEvent consumer =
-                        to.values.get(index);
-                if (producer == null || consumer == null) {
-                    result.gaps.add(encodeBoundaryScalarGap(
-                            producer == null ? consumer : producer,
-                            "MISSING_CONFIGURED_BOUNDARY_SCALAR_SIDE"));
-                } else if (producerProcess.isEmpty()
-                        || consumerProcess.isEmpty()) {
-                    result.gaps.add(encodeBoundaryScalarGap(producer,
-                            "MISSING_OR_INCONSISTENT_CONFIGURED_BOUNDARY_"
-                                    + "SCALAR_PROCESS"));
-                } else {
-                    result.values.add(encodeBoundaryScalarPair(producer,
-                            consumer, producerProcess, consumerProcess,
-                            externalPrestate.evidence(producerProcess,
-                                    producerActivation, producer)));
-                }
-            }
-        }
-        for (ProtocolBoundaryScalarConfig.Leaf leaf
-                : boundaryScalarConfig.mappingLeaves(mapping)) {
-                if (!direction.equals(leaf.direction())
-                        || !port.equals(leaf.port())) {
-                    continue;
-                }
-                String leafKey = boundaryScalarLeafKey(leaf);
-                if (!producerLeaves.containsKey(leafKey)
-                        && !consumerLeaves.containsKey(leafKey)) {
-                    result.gaps.add(encodeMissingBoundaryScalarGap(leaf,
-                            response ? "CLIENT" : "SERVER",
-                            response && callerResult != null
-                                    ? callerResult.seq
-                                    : serverCall == null ? -1L
-                                    : serverCall.seq));
-                }
-        }
-        return result;
-    }
-
-    private static boolean completeNoConfiguredElements(
-            BoundarySideEvidence evidence) {
-        return evidence != null && NO_CONFIGURED_SCALAR_ELEMENTS.equals(
-                evidence.gap);
-    }
-
-    private static BoundarySideEvidence completeBoundarySide(
-            List<RuntimeRegionPlanner.ProtocolEvent> rows) {
-        if (rows.isEmpty()) return null;
-        RuntimeRegionPlanner.ProtocolEvent sample = rows.get(0);
-        List<RuntimeRegionPlanner.ProtocolEvent> gaps = new ArrayList<>();
-        Map<String, RuntimeRegionPlanner.ProtocolEvent> values =
-                new LinkedHashMap<>();
-        List<String> containers = null;
-        for (RuntimeRegionPlanner.ProtocolEvent row : rows) {
-            if (!row.leafObservationComplete) {
-                return BoundarySideEvidence.gap(sample,
-                        "INCOMPLETE_CONFIGURED_BOUNDARY_SCALAR_SIDE");
-            }
-            if ("RPC_BOUNDARY_SCALAR_GAP".equals(row.direction)) {
-                gaps.add(row);
-                continue;
-            }
-            if (!ProtocolBoundaryScalarConfig.VALUE_AUTHORITY.equals(
-                    row.valueAuthority) || row.leafValueCount != rows.size()
-                    || !row.gap.isEmpty()) {
-                return BoundarySideEvidence.gap(sample,
-                        "INVALID_CONFIGURED_BOUNDARY_SCALAR_COMPLETION");
-            }
-            if (containers == null) {
-                containers = row.containerObservations;
-            } else if (!containers.equals(row.containerObservations)) {
-                return BoundarySideEvidence.gap(sample,
-                        "INCONSISTENT_CONFIGURED_BOUNDARY_SCALAR_COMPLETION");
-            }
-            if (values.put(boundaryScalarIndexKey(row), row) != null) {
-                return BoundarySideEvidence.gap(sample,
-                        "DUPLICATE_CONFIGURED_BOUNDARY_SCALAR_INDEX");
-            }
-        }
-        if (!gaps.isEmpty()) {
-            if (!values.isEmpty() || gaps.size() != 1
-                    || !ProtocolBoundaryScalarConfig.GAP_AUTHORITY.equals(
-                    gaps.get(0).valueAuthority)
-                    || gaps.get(0).leafValueCount != 0
-                    || gaps.get(0).gap.isEmpty()) {
-                return BoundarySideEvidence.gap(sample,
-                        "MIXED_OR_INVALID_CONFIGURED_BOUNDARY_SCALAR_GAP");
-            }
-            return BoundarySideEvidence.gap(gaps.get(0), gaps.get(0).gap);
-        }
-        if (values.isEmpty()) {
-            return BoundarySideEvidence.gap(sample,
-                    "EMPTY_CONFIGURED_BOUNDARY_SCALAR_COMPLETION");
-        }
-        return BoundarySideEvidence.values(sample, values);
-    }
-
-    private static String boundaryScalarLeafKey(
-            RuntimeRegionPlanner.ProtocolEvent event) {
-        return event.mappingId + "\n" + event.protocolDirection + "\n"
-                + event.port + "\n" + event.leafId + "\n"
-                + event.declaredPath + "\n" + event.javaType + "\n"
-                + event.containerBound;
-    }
-
-    private static String boundaryScalarLeafKey(
-            ProtocolBoundaryScalarConfig.Leaf leaf) {
-        return leaf.mappingId() + "\n" + leaf.direction() + "\n"
-                + leaf.port() + "\n" + leaf.leafId() + "\n"
-                + leaf.declaredPath() + "\n" + leaf.javaType() + "\n"
-                + leaf.containerBound();
-    }
-
-    private static String boundaryScalarIndexKey(
-            RuntimeRegionPlanner.ProtocolEvent event) {
-        return String.valueOf(event.arrayIndices);
-    }
-
-    private static Map<String, Object> encodeBoundaryScalarPair(
-            RuntimeRegionPlanner.ProtocolEvent producer,
-            RuntimeRegionPlanner.ProtocolEvent consumer,
-            String producerProcess, String consumerProcess,
-            Map<String, Object> externalPrestate) {
-        Map<String, Object> result = boundaryScalarIdentity(producer);
-        result.put("authority",
-                "TRUSTED_CONFIGURED_RPC_BOUNDARY_SCALAR_V1");
-        putBoundaryScalarSide(result, "producer", producer,
-                producerProcess);
-        putBoundaryScalarSide(result, "consumer", consumer,
-                consumerProcess);
-        if (externalPrestate != null && !externalPrestate.isEmpty()) {
-            result.put("producerExternalPrestateEvidence", externalPrestate);
-        }
-        return result;
-    }
-
-    private static Map<String, Object> encodeBoundaryScalarGap(
-            RuntimeRegionPlanner.ProtocolEvent sample, String reason) {
-        Map<String, Object> result = boundaryScalarIdentity(sample);
-        result.put("authority",
-                "CONFIGURED_RPC_BOUNDARY_SCALAR_GAP_V1");
-        result.put("gap", reason);
-        result.put("side", sample.side);
-        result.put("boundaryEventSeq", sample.boundaryEventSeq);
-        if (sample.observedContainerWidth >= 0) {
-            result.put("observedContainerWidth",
-                    sample.observedContainerWidth);
-        }
-        return result;
-    }
-
-    /** Encodes the sole non-blocking gap: both exact endpoint sides are empty. */
-    private static Map<String, Object> encodeCompleteEmptyBoundaryScalarGap(
-            RuntimeRegionPlanner.ProtocolEvent producer,
-            RuntimeRegionPlanner.ProtocolEvent consumer) {
-        Map<String, Object> result = encodeBoundaryScalarGap(consumer,
-                NO_CONFIGURED_SCALAR_ELEMENTS);
-        result.put("bothBoundarySidesCompleteEmpty", true);
-        putEmptyBoundaryScalarSide(result, "producer", producer);
-        putEmptyBoundaryScalarSide(result, "consumer", consumer);
-        return result;
-    }
-
-    private static void putEmptyBoundaryScalarSide(
-            Map<String, Object> target, String prefix,
-            RuntimeRegionPlanner.ProtocolEvent event) {
-        target.put(prefix + "Side", event.side);
-        target.put(prefix + "BoundaryEventSeq", event.boundaryEventSeq);
-        target.put(prefix + "ValueAuthority", event.valueAuthority);
-        target.put(prefix + "LeafObservationComplete",
-                event.leafObservationComplete);
-        target.put(prefix + "LeafValueCount", event.leafValueCount);
-    }
-
-    private static Map<String, Object> encodeMissingBoundaryScalarGap(
-            ProtocolBoundaryScalarConfig.Leaf leaf, String side,
-            long boundaryEventSeq) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("mappingId", leaf.mappingId());
-        result.put("direction", leaf.direction());
-        result.put("port", leaf.port());
-        result.put("leafId", leaf.leafId());
-        result.put("declaredPath",
-                new ArrayList<>(leaf.declaredPath()));
-        result.put("arrayIndices", Collections.emptyList());
-        result.put("javaType", leaf.javaType());
-        result.put("containerBound", leaf.containerBound());
-        result.put("authority",
-                ProtocolBoundaryScalarConfig.GAP_AUTHORITY);
-        result.put("gap",
-                "MISSING_BOTH_CONFIGURED_BOUNDARY_SCALAR_SIDES");
-        result.put("side", side);
-        result.put("boundaryEventSeq", boundaryEventSeq);
-        return result;
-    }
-
-    private static Map<String, Object> boundaryScalarIdentity(
-            RuntimeRegionPlanner.ProtocolEvent event) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("mappingId", event.mappingId);
-        result.put("direction", event.protocolDirection);
-        result.put("port", event.port);
-        result.put("leafId", event.leafId);
-        result.put("declaredPath", new ArrayList<>(event.declaredPath));
-        result.put("arrayIndices", new ArrayList<>(event.arrayIndices));
-        result.put("javaType", event.javaType);
-        result.put("containerBound", event.containerBound);
-        return result;
-    }
-
-    private static void putBoundaryScalarSide(
-            Map<String, Object> target, String prefix,
-            RuntimeRegionPlanner.ProtocolEvent event, String process) {
-        target.put(prefix + "Side", event.side);
-        target.put(prefix + "Process", process);
-        target.put(prefix + "BoundaryEventSeq", event.boundaryEventSeq);
-        target.put(prefix + "LeafReceiverObjectId",
-                event.leafReceiverObjectId);
-        target.put(prefix + "ValueAuthority", event.valueAuthority);
-        target.put(prefix + "LeafObservationComplete",
-                event.leafObservationComplete);
-        target.put(prefix + "LeafValueCount", event.leafValueCount);
-    }
-
-    private static Activation activationForCall(List<Activation> activations,
-                                                long callId,
-                                                String expectedMethod) {
-        for (Activation activation : activations) {
-            if (activation.calls.contains(callId)
-                    && (expectedMethod == null || expectedMethod.isEmpty()
-                    || activation.hasMethod(expectedMethod))) {
-                return activation;
-            }
-        }
-        return null;
-    }
-
-    private static RuntimeRegionPlanner.MethodEvent methodForCall(
-            List<RuntimeRegionPlanner.MethodEvent> methods, long callId,
-            String method) {
-        if (callId == 0) {
-            return null;
-        }
-        for (RuntimeRegionPlanner.MethodEvent candidate : methods) {
-            if (candidate.callId == callId
-                    && (method == null || method.isEmpty()
-                    || candidate.method.equals(method))) {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
-    private static RuntimeRegionPlanner.MethodEvent firstMethodAfter(
-            List<RuntimeRegionPlanner.MethodEvent> methods,
-            RuntimeRegionPlanner.ProtocolEvent receive, String method) {
-        for (RuntimeRegionPlanner.MethodEvent candidate : methods) {
-            if (candidate.seq > receive.seq && candidate.tid == receive.tid
-                    && candidate.process.equals(receive.process)
-                    && candidate.method.equals(method)) {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
-    private static List<Map<String, Object>> encodeProtocolBindings(
-            Collection<RuntimeProtocolBinding> bindings) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (RuntimeProtocolBinding binding : bindings) {
-            result.add(binding.toMap());
-        }
-        return result;
-    }
-
     private static void requireCandidateEdge(Map<String, Object> edge,
                                              File source)
             throws IOException {
@@ -1166,7 +632,7 @@ final class RuntimeRefinedGraphBuilder {
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
         for (RuntimeFieldBinding binding : bindings) {
             Map<String, Object> encoded = binding.toMap();
-            attachArrayElementBindings(encoded, binding.root.process,
+            attachArrayElementBindings(encoded, binding.root.sourceKey,
                     binding.event.valueObjectId, arraysByObject);
             unique.put(CausynthJson.write(encoded), encoded);
         }
@@ -1177,9 +643,9 @@ final class RuntimeRefinedGraphBuilder {
             arraysByObject(
             Collection<RuntimeRegionPlanner.ArrayAccessEvent> events,
             Collection<RuntimeRegionPlanner.MethodEvent> methods) {
-        Map<Long, String> processByCall = new LinkedHashMap<>();
+        Map<Long, String> sourceKeyByCall = new LinkedHashMap<>();
         for (RuntimeRegionPlanner.MethodEvent method : methods) {
-            processByCall.put(method.callId, method.process);
+            sourceKeyByCall.put(method.callId, method.sourceKey);
         }
         Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>> result =
                 new LinkedHashMap<>();
@@ -1189,10 +655,10 @@ final class RuntimeRefinedGraphBuilder {
                                 emptyList() : events);
         sorted.sort((left, right) -> Long.compare(left.seq, right.seq));
         for (RuntimeRegionPlanner.ArrayAccessEvent event : sorted) {
-            String process = processByCall.get(event.callId);
-            if (event.arrayObjectId == 0 || process == null
-                    || process.isEmpty()) continue;
-            result.computeIfAbsent(process + "\n" + event.arrayObjectId,
+            String sourceKey = sourceKeyByCall.get(event.callId);
+            if (event.arrayObjectId == 0 || sourceKey == null
+                    || sourceKey.isEmpty()) continue;
+            result.computeIfAbsent(sourceKey + "\n" + event.arrayObjectId,
                     ignored -> new ArrayList<>()).add(event);
         }
         return result;
@@ -1207,7 +673,7 @@ final class RuntimeRefinedGraphBuilder {
         for (RuntimeAccessorBinding binding : bindings) {
             Map<String, Object> encoded = binding.toMap(edge);
             attachArrayElementBindings(encoded,
-                    binding.activation.root.process,
+                    binding.activation.root.sourceKey,
                     binding.returned.objectId, arraysByObject);
             unique.put(CausynthJson.write(encoded), encoded);
         }
@@ -1233,11 +699,11 @@ final class RuntimeRefinedGraphBuilder {
 
     /** Carries exact element identity with every reference-array value. */
     private static void attachArrayElementBindings(
-            Map<String, Object> encoded, String process, int valueObjectId,
+            Map<String, Object> encoded, String sourceKey, int valueObjectId,
             Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
                     arraysByObject) {
         List<RuntimeRegionPlanner.ArrayAccessEvent> accesses =
-                arraysByObject.getOrDefault(process + "\n" + valueObjectId,
+                arraysByObject.getOrDefault(sourceKey + "\n" + valueObjectId,
                         Collections.<RuntimeRegionPlanner.ArrayAccessEvent>
                                 emptyList());
         if (accesses.isEmpty()) return;
@@ -1351,14 +817,6 @@ final class RuntimeRefinedGraphBuilder {
         return result;
     }
 
-    private static List<RuntimeRegionPlanner.ProtocolEvent> sortedProtocol(
-            Collection<RuntimeRegionPlanner.ProtocolEvent> events) {
-        List<RuntimeRegionPlanner.ProtocolEvent> result = new ArrayList<>(
-                events == null ? Collections.emptyList() : events);
-        result.sort(Comparator.comparingLong(value -> value.seq));
-        return result;
-    }
-
     private static List<Map<String, Object>> readRows(File file)
             throws IOException {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -1439,25 +897,13 @@ final class RuntimeRefinedGraphBuilder {
         return declaration.substring(separator + 1, end);
     }
 
-    private static String associativeMemberToken(String process,
+    private static String associativeMemberToken(String sourceKey,
                                                   int containerObjectId,
                                                   long invocationId) {
-        String provenance = process + "\n" + containerObjectId + "\n"
+        String provenance = sourceKey + "\n" + containerObjectId + "\n"
                 + invocationId;
         return "MEMBER." + UUID.nameUUIDFromBytes(provenance.getBytes(
                 StandardCharsets.UTF_8));
-    }
-
-    private static List<String> parameterTypes(String signature) {
-        Matcher matcher = METHOD.matcher(signature);
-        if (!matcher.matches() || matcher.group(4).trim().isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<String> result = new ArrayList<>();
-        for (String parameter : matcher.group(4).split(",", -1)) {
-            result.add(parameter.trim());
-        }
-        return result;
     }
 
     private static String string(Object value) {
@@ -1603,463 +1049,12 @@ final class RuntimeRefinedGraphBuilder {
         private final String regionId;
         private final RuntimeRegionPlanner.MethodEvent root;
         private final Set<Long> calls;
-        private final Set<String> methods;
-
         private Activation(Skeleton skeleton,
                            RuntimeRegionPlanner.MethodEvent root,
                            Set<Long> calls) {
             this.regionId = skeleton.regionId;
             this.root = root;
             this.calls = calls;
-            this.methods = skeleton.methods;
-        }
-
-        private boolean hasMethod(String method) {
-            return methods.contains(method);
-        }
-    }
-
-    private static final class RuntimeProtocolBinding {
-        private final Map<String, Object> edge;
-        private final RuntimeRegionPlanner.ProtocolEvent send;
-        private final RuntimeRegionPlanner.ProtocolEvent receive;
-        private final Activation from;
-        private final Activation to;
-        private final RuntimeRegionPlanner.RuntimeEvent callerSite;
-        private final RuntimeRegionPlanner.RuntimeEvent callerResult;
-        private final RuntimeRegionPlanner.RuntimeEvent producerResult;
-        private final BoundaryScalarBindings boundaryScalars;
-
-        private RuntimeProtocolBinding(Map<String, Object> edge,
-                                       RuntimeRegionPlanner.ProtocolEvent send,
-                                       RuntimeRegionPlanner.ProtocolEvent receive,
-                                       Activation from, Activation to,
-                                       RuntimeRegionPlanner.RuntimeEvent callerSite,
-                                       RuntimeRegionPlanner.RuntimeEvent callerResult,
-                                       RuntimeRegionPlanner.RuntimeEvent producerResult,
-                                       BoundaryScalarBindings boundaryScalars) {
-            this.edge = edge;
-            this.send = send;
-            this.receive = receive;
-            this.from = from;
-            this.to = to;
-            this.callerSite = callerSite;
-            this.callerResult = callerResult;
-            this.producerResult = producerResult;
-            this.boundaryScalars = boundaryScalars;
-        }
-
-        private Map<String, Object> toMap() {
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("mappingId", edge.get("protocolStubMappingId"));
-            result.put("transport", send.transport);
-            result.put("direction", edge.get("protocolDirection"));
-            result.put("port", edge.get("protocolPort"));
-            result.put("fromRegionId", from.regionId);
-            result.put("toRegionId", to.regionId);
-            result.put("fromRootCallId", from.root.callId);
-            result.put("toRootCallId", to.root.callId);
-            result.put("fromCell", edge.get("fromCell"));
-            result.put("toCell", edge.get("toCell"));
-            result.put("callerSiteEventSeq", callerSite.seq);
-            result.put("sendEventSeq", send.seq);
-            result.put("receiveEventSeq", receive.seq);
-            boolean response = "RESPONSE".equals(
-                    string(edge.get("protocolDirection")));
-            putContext(result, "from", response ? receive : send,
-                    from.root);
-            putContext(result, "to", response ? send : receive,
-                    to.root);
-            if (receive.remoteParentSpanId > 0L) {
-                result.put("receiveRemoteParentSpanId",
-                        receive.remoteParentSpanId);
-            }
-            result.put("clientCallId", send.callId);
-            result.put("serverThreadId", receive.tid);
-            result.put("authority", PROTOCOL_AUTHORITY);
-            result.put("callsiteAuthority", PROTOCOL_CALLSITE_AUTHORITY);
-            result.put("callerMethod", callerSite.method);
-            result.put("callerSiteId", callerSite.siteId);
-            result.put("callerUnitIndex", unitIndex(callerSite.siteId));
-            result.put("callerInvocationId", callerSite.invocationId);
-            result.put("callerDeclaredCallee", callerSite.declaredCallee);
-            if (callerResult != null && callerResult.objectId != 0) {
-                result.put("callerResultObjectId", callerResult.objectId);
-                result.put("callerResultRuntimeType",
-                        callerResult.runtimeType);
-                result.put("callerResultEventSeq", callerResult.seq);
-            }
-            if (producerResult != null && producerResult.objectId != 0) {
-                result.put("producerResultObjectId",
-                        producerResult.objectId);
-                result.put("producerResultRuntimeType",
-                        producerResult.runtimeType);
-                result.put("producerResultEventSeq", producerResult.seq);
-            }
-            int clientIndex = integer(edge.get("protocolClientArgument"),
-                    -1);
-            int serverIndex = integer(edge.get("protocolServerParameter"),
-                    -1);
-            if (clientIndex >= 0) {
-                result.put("clientArgumentIndex", clientIndex);
-            }
-            if (serverIndex >= 0) {
-                result.put("serverParameterIndex", serverIndex);
-            }
-            if (boundaryScalars != null
-                    && !boundaryScalars.values.isEmpty()) {
-                result.put("runtimeBoundaryScalarBindings",
-                        new ArrayList<>(boundaryScalars.values));
-            }
-            if (boundaryScalars != null
-                    && !boundaryScalars.gaps.isEmpty()) {
-                result.put("runtimeBoundaryScalarGaps",
-                        new ArrayList<>(boundaryScalars.gaps));
-            }
-            return result;
-        }
-
-        private static void putContext(Map<String, Object> target,
-                                       String prefix,
-                                       RuntimeRegionPlanner.ProtocolEvent event,
-                                       RuntimeRegionPlanner.MethodEvent root) {
-            long ownerId = event.ownerId > 0L
-                    ? event.ownerId : root.ownerId;
-            long laneId = event.laneId > 0L ? event.laneId : root.laneId;
-            long spanId = event.spanId > 0L ? event.spanId : root.spanId;
-            if (ownerId > 0L) {
-                target.put(prefix + "OwnerId", ownerId);
-            }
-            if (laneId > 0L) {
-                target.put(prefix + "LaneId", laneId);
-            }
-            if (spanId > 0L) {
-                target.put(prefix + "SpanId", spanId);
-            }
-        }
-    }
-
-    private static final class BoundaryScalarBindings {
-        private final List<Map<String, Object>> values = new ArrayList<>();
-        private final List<Map<String, Object>> gaps = new ArrayList<>();
-    }
-
-    private static final class BoundarySideEvidence {
-        private final RuntimeRegionPlanner.ProtocolEvent sample;
-        private final Map<String, RuntimeRegionPlanner.ProtocolEvent> values;
-        private final String gap;
-
-        private BoundarySideEvidence(
-                RuntimeRegionPlanner.ProtocolEvent sample,
-                Map<String, RuntimeRegionPlanner.ProtocolEvent> values,
-                String gap) {
-            this.sample = sample;
-            this.values = values;
-            this.gap = gap;
-        }
-
-        private static BoundarySideEvidence values(
-                RuntimeRegionPlanner.ProtocolEvent sample,
-                Map<String, RuntimeRegionPlanner.ProtocolEvent> values) {
-            return new BoundarySideEvidence(sample, values, null);
-        }
-
-        private static BoundarySideEvidence gap(
-                RuntimeRegionPlanner.ProtocolEvent sample, String reason) {
-            return new BoundarySideEvidence(sample,
-                    Collections.<String,
-                            RuntimeRegionPlanner.ProtocolEvent>emptyMap(),
-                    reason);
-        }
-    }
-
-    /**
-     * Proves that one observed producer scalar is fixed by concrete setup
-     * state outside every selected activation in the producer process.  The
-     * proof is deliberately stricter than merely failing to find a refined-
-     * graph source: raw write/process evidence must identify one latest
-     * matching primitive write, and that write must precede the exact
-     * producer activation named by this protocol occurrence.  Membership is
-     * process-wide so a write modeled by another selected region cannot
-     * masquerade as setup.  Earlier executions of the same logical region do
-     * not invalidate later activation pre-state.
-     */
-    private static final class BoundaryScalarExternalPrestateIndex {
-        private final Map<String, List<RuntimeRegionPlanner.FieldAccessEvent>>
-                writes = new LinkedHashMap<>();
-        private final Map<String, Set<Long>> selectedCallsByProcess =
-                new LinkedHashMap<>();
-
-        private BoundaryScalarExternalPrestateIndex(
-                List<RuntimeRegionPlanner.MethodEvent> methods,
-                List<RuntimeRegionPlanner.FieldAccessEvent> fields,
-                List<RuntimeRegionPlanner.ProtocolEvent> protocol,
-                List<Activation> activations) {
-            Set<String> boundaryReceivers = new LinkedHashSet<>();
-            for (RuntimeRegionPlanner.ProtocolEvent event : values(protocol)) {
-                String declaration = lastBoundaryDeclaration(
-                        event.declaredPath);
-                if ("RPC_BOUNDARY_SCALAR".equals(event.direction)
-                        && event.leafReceiverObjectId != 0
-                        && !declaration.isEmpty()) {
-                    boundaryReceivers.add(receiverDeclarationKey(
-                            event.leafReceiverObjectId, declaration));
-                }
-            }
-            List<RuntimeRegionPlanner.FieldAccessEvent> relevantWrites =
-                    new ArrayList<>();
-            Set<String> relevantMethodCalls = new LinkedHashSet<>();
-            for (RuntimeRegionPlanner.FieldAccessEvent field
-                    : values(fields)) {
-                if (!"FIELD_WRITE".equals(field.kind)
-                        || field.seq < 0L || field.receiverObjectId == 0
-                        || FieldPathSpec.declaredField(field.field) == null
-                        || !boundaryReceivers.contains(receiverDeclarationKey(
-                        field.receiverObjectId, field.field))) {
-                    continue;
-                }
-                relevantWrites.add(field);
-                relevantMethodCalls.add(methodCallKey(field.callId,
-                        field.method));
-            }
-
-            Map<String, String> processByMethodCall = new LinkedHashMap<>();
-            Set<String> inconsistentMethodCalls = new LinkedHashSet<>();
-            for (RuntimeRegionPlanner.MethodEvent method : values(methods)) {
-                String process = string(method.process);
-                String key = methodCallKey(method.callId, method.method);
-                if (!relevantMethodCalls.contains(key)) continue;
-                if (process.isEmpty()) {
-                    inconsistentMethodCalls.add(key);
-                    processByMethodCall.remove(key);
-                    continue;
-                }
-                String previous = processByMethodCall.putIfAbsent(key,
-                        process);
-                if (previous != null && !previous.equals(process)) {
-                    inconsistentMethodCalls.add(key);
-                    processByMethodCall.remove(key);
-                }
-            }
-            for (String inconsistent : inconsistentMethodCalls) {
-                processByMethodCall.remove(inconsistent);
-            }
-
-            for (Activation activation : values(activations)) {
-                String process = string(activation.root.process);
-                if (process.isEmpty()) continue;
-                selectedCallsByProcess.computeIfAbsent(process,
-                        ignored -> new LinkedHashSet<>()).addAll(
-                        activation.calls);
-            }
-            for (RuntimeRegionPlanner.FieldAccessEvent field : relevantWrites) {
-                String methodCall = methodCallKey(field.callId, field.method);
-                if (inconsistentMethodCalls.contains(methodCall)) continue;
-                String process = processByMethodCall.get(methodCall);
-                if (process == null || process.isEmpty()) continue;
-                writes.computeIfAbsent(writeKey(process,
-                                field.receiverObjectId, field.field),
-                        ignored -> new ArrayList<>()).add(field);
-            }
-            for (List<RuntimeRegionPlanner.FieldAccessEvent> candidates
-                    : writes.values()) {
-                candidates.sort(Comparator.comparingLong(value -> value.seq));
-            }
-        }
-
-        private Map<String, Object> evidence(
-                String producerProcess,
-                Activation producerActivation,
-                RuntimeRegionPlanner.ProtocolEvent producer) {
-            String process = string(producerProcess);
-            String producerRegion = producerActivation == null ? ""
-                    : string(producerActivation.regionId);
-            long producerRootCallId = producerActivation == null ? -1L
-                    : producerActivation.root.callId;
-            long producerRootEventSeq = producerActivation == null ? -1L
-                    : producerActivation.root.seq;
-            String declaration = lastBoundaryDeclaration(
-                    producer.declaredPath);
-            if (process.isEmpty() || producerRegion.isEmpty()
-                    || producerActivation == null
-                    || !process.equals(producerActivation.root.process)
-                    || producerRootCallId <= 0L
-                    || producerRootEventSeq <= 0L
-                    || declaration.isEmpty()
-                    || producer.leafReceiverObjectId == 0
-                    || producer.boundaryEventSeq < 0L
-                    || producer.nullValue
-                    || producer.primitiveValue.isEmpty()
-                    || !primitiveScalarType(producer.javaType)) {
-                return Collections.emptyMap();
-            }
-            List<RuntimeRegionPlanner.FieldAccessEvent> candidates = writes.get(
-                    writeKey(process, producer.leafReceiverObjectId,
-                            declaration));
-            if (candidates == null || candidates.isEmpty()) {
-                return Collections.emptyMap();
-            }
-
-            RuntimeRegionPlanner.FieldAccessEvent latest = null;
-            int latestCount = 0;
-            for (RuntimeRegionPlanner.FieldAccessEvent candidate : candidates) {
-                if (candidate.seq >= producer.boundaryEventSeq) break;
-                if (latest == null || candidate.seq > latest.seq) {
-                    latest = candidate;
-                    latestCount = 1;
-                } else if (candidate.seq == latest.seq) {
-                    latestCount++;
-                }
-            }
-            if (latest == null || latestCount != 1
-                    || latest.valueObjectId != 0
-                    || !producer.primitiveValue.equals(latest.primitiveValue)) {
-                return Collections.emptyMap();
-            }
-
-            boolean noCoveringWrite = true;
-            for (RuntimeRegionPlanner.FieldAccessEvent candidate : candidates) {
-                if (candidate.seq > latest.seq
-                        && candidate.seq < producer.boundaryEventSeq) {
-                    noCoveringWrite = false;
-                    break;
-                }
-            }
-            Set<Long> selectedCalls = selectedCallsByProcess.get(process);
-            if (!noCoveringWrite || selectedCalls == null
-                    || selectedCalls.contains(latest.callId)
-                    || latest.seq >= producerRootEventSeq
-                    || producerRootEventSeq >= producer.boundaryEventSeq) {
-                return Collections.emptyMap();
-            }
-
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("authority", EXTERNAL_PRESTATE_AUTHORITY);
-            result.put("process", process);
-            result.put("producerRegionId", producerRegion);
-            result.put("receiverObjectId", producer.leafReceiverObjectId);
-            result.put("declaration", declaration);
-            result.put("latestWriteEventSeq", latest.seq);
-            result.put("producerRootCallId", producerRootCallId);
-            result.put("producerRootEventSeq", producerRootEventSeq);
-            result.put("beforeProducerRoot", true);
-            result.put("noCoveringWrite", true);
-            return result;
-        }
-
-        private static String lastBoundaryDeclaration(List<String> path) {
-            for (int index = path == null ? -1 : path.size() - 1;
-                 index >= 0; index--) {
-                String declaration = path.get(index);
-                if (FieldPathSpec.declaredField(declaration) != null) {
-                    return declaration;
-                }
-            }
-            return "";
-        }
-
-        private static boolean primitiveScalarType(String javaType) {
-            return "boolean".equals(javaType) || "byte".equals(javaType)
-                    || "char".equals(javaType) || "short".equals(javaType)
-                    || "int".equals(javaType) || "long".equals(javaType)
-                    || "float".equals(javaType)
-                    || "double".equals(javaType);
-        }
-
-        private static String methodCallKey(long callId, String method) {
-            return callId + "\n" + string(method);
-        }
-
-        private static String writeKey(String process, int receiver,
-                                       String declaration) {
-            return process + "\n" + receiver + "\n" + declaration;
-        }
-
-        private static String receiverDeclarationKey(int receiver,
-                                                     String declaration) {
-            return receiver + "\n" + declaration;
-        }
-
-    }
-
-    private static final class ProtocolCallsiteIndex {
-        private final Map<Long, RuntimeRegionPlanner.MethodEvent> methods =
-                new LinkedHashMap<>();
-        private final Map<Long, RuntimeRegionPlanner.RuntimeEvent> sitesBySeq =
-                new LinkedHashMap<>();
-        private final Map<Long, RuntimeRegionPlanner.RuntimeEvent>
-                sitesByInvocation = new LinkedHashMap<>();
-        private final Map<Long, RuntimeRegionPlanner.RuntimeEvent>
-                returnsByInvocation = new LinkedHashMap<>();
-        private final Map<Long, List<RuntimeRegionPlanner.RuntimeEvent>>
-                normalExitsByCall = new LinkedHashMap<>();
-        private ProtocolCallsiteIndex(
-                List<RuntimeRegionPlanner.MethodEvent> methodEvents,
-                List<RuntimeRegionPlanner.RuntimeEvent> runtimeEvents) {
-            for (RuntimeRegionPlanner.MethodEvent method : methodEvents) {
-                methods.put(method.callId, method);
-            }
-            for (RuntimeRegionPlanner.RuntimeEvent event : runtimeEvents) {
-                if ("CALL_SITE_ENTER".equals(event.kind)) {
-                    sitesBySeq.put(event.seq, event);
-                    if (event.invocationId > 0L) {
-                        sitesByInvocation.put(event.invocationId, event);
-                    }
-                } else if ("CALL_SITE_RETURN".equals(event.kind)
-                        && event.invocationId > 0L) {
-                    returnsByInvocation.put(event.invocationId, event);
-                } else if ("METHOD_EXIT_NORMAL".equals(event.kind)
-                        && event.callId > 0L) {
-                    normalExitsByCall.computeIfAbsent(event.callId,
-                            ignored -> new ArrayList<>()).add(event);
-                }
-            }
-        }
-
-        private RuntimeRegionPlanner.RuntimeEvent returned(
-                RuntimeRegionPlanner.RuntimeEvent site) {
-            return site == null ? null
-                    : returnsByInvocation.get(site.invocationId);
-        }
-
-        private RuntimeRegionPlanner.RuntimeEvent uniqueNormalExit(
-                long callId) {
-            List<RuntimeRegionPlanner.RuntimeEvent> exits =
-                    normalExitsByCall.getOrDefault(callId,
-                            Collections.<RuntimeRegionPlanner.RuntimeEvent>
-                                    emptyList());
-            return exits.size() == 1 ? exits.get(0) : null;
-        }
-
-        private RuntimeRegionPlanner.RuntimeEvent find(
-                Map<String, Object> edge,
-                RuntimeRegionPlanner.ProtocolEvent send) {
-            RuntimeRegionPlanner.RuntimeEvent direct =
-                    sitesByInvocation.get(send.invocationId);
-            if (matches(edge, direct)) {
-                return direct;
-            }
-            Set<Long> visited = new LinkedHashSet<>();
-            RuntimeRegionPlanner.MethodEvent method = methods.get(send.callId);
-            while (method != null && visited.add(method.callId)) {
-                RuntimeRegionPlanner.RuntimeEvent parent =
-                        sitesBySeq.get(method.parentSiteId);
-                if (matches(edge, parent)) {
-                    return parent;
-                }
-                method = methods.get(method.parentCallId);
-            }
-            return null;
-        }
-
-        private static boolean matches(Map<String, Object> edge,
-                                       RuntimeRegionPlanner.RuntimeEvent site) {
-            return site != null
-                    && string(edge.get("method")).equals(site.method)
-                    && integer(edge.get("unitIndex"), -1)
-                    == unitIndex(site.siteId)
-                    && string(edge.get("invoke")).equals(
-                    site.declaredCallee);
         }
     }
 
@@ -2208,7 +1203,7 @@ final class RuntimeRefinedGraphBuilder {
                     edge.get("declaredFieldSignature"));
             result.put("accessorImplementationMethod",
                     edge.get("accessorImplementationMethod"));
-            result.put("process", activation.root.process);
+            result.put("sourceKey", activation.root.sourceKey);
             result.put("authority",
                     "EXACT_RUNTIME_ACCESSOR_RECEIVER_RETURN_V1");
             return result;
@@ -2230,27 +1225,6 @@ final class RuntimeRefinedGraphBuilder {
                 mutationArguments;
         private final List<RuntimeRegionPlanner.FieldAccessEvent>
                 activationFields;
-
-        private RuntimeFieldBinding(String regionId,
-                                    RuntimeRegionPlanner.MethodEvent root,
-                                    RuntimeRegionPlanner.FieldAccessEvent event,
-                                    RuntimeFieldPath path) {
-            this(regionId, root, event, path, "DECLARED_FIELD_ACCESS",
-                    PATH_AUTHORITY, null, null, null,
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList());
-        }
-
-        private RuntimeFieldBinding(String regionId,
-                                    RuntimeRegionPlanner.MethodEvent root,
-                                    RuntimeRegionPlanner.FieldAccessEvent event,
-                                    RuntimeFieldPath path,
-                                    String bindingKind) {
-            this(regionId, root, event, path, bindingKind, PATH_AUTHORITY,
-                    null, null, null,
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList());
-        }
 
         private RuntimeFieldBinding(String regionId,
                                     RuntimeRegionPlanner.MethodEvent root,
@@ -2301,7 +1275,7 @@ final class RuntimeRefinedGraphBuilder {
             result.put("eventSeq", event.seq);
             result.put("rootKind", path.root.kind);
             result.put("rootMethod", path.root.method);
-            result.put("process", root.process);
+            result.put("sourceKey", root.sourceKey);
             result.put("rootCell", path.root.cell);
             if (path.root.parameterIndex >= 0) {
                 result.put("rootParameterIndex", path.root.parameterIndex);
@@ -2314,8 +1288,7 @@ final class RuntimeRefinedGraphBuilder {
             result.put("fieldPathDeclarations", path.fieldDeclarations());
             result.put("authority", authority);
             result.put("bindingKind", bindingKind);
-            result.put("boundaryState", PATH_AUTHORITY.equals(authority)
-                    ? "REGION_ROOTED" : "ACTIVATION_LOCAL");
+            result.put("boundaryState", "ACTIVATION_LOCAL");
             if (containerRead != null && mutationEnter != null
                     && mutationCompletion != null) {
                 result.put("writerFieldReadSeq", containerRead.seq);
@@ -2350,7 +1323,7 @@ final class RuntimeRefinedGraphBuilder {
                 return;
             }
             result.put("containerMemberToken", associativeMemberToken(
-                    root.process, mutationEnter.objectId,
+                    root.sourceKey, mutationEnter.objectId,
                     mutationEnter.invocationId));
             result.put("containerMemberIdentityAuthority",
                     ASSOCIATIVE_MEMBER_AUTHORITY);
@@ -2397,123 +1370,6 @@ final class RuntimeRefinedGraphBuilder {
                 selected = argument;
             }
             return selected;
-        }
-    }
-
-    private static final class ActivationPaths {
-        private final Map<Integer, Set<RuntimeRoot>> rootsByObject =
-                new LinkedHashMap<>();
-        private final Map<Integer, Map<String, Integer>> fieldsByReceiver =
-                new LinkedHashMap<>();
-        private final Map<Long, List<RuntimeFieldPath>> pathsByEvent =
-                new LinkedHashMap<>();
-
-        private static ActivationPaths build(
-                RuntimeRegionPlanner.MethodEvent root,
-                List<RuntimeRegionPlanner.RuntimeEvent> runtime,
-                List<RuntimeRegionPlanner.FieldAccessEvent> fields) {
-            ActivationPaths result = new ActivationPaths();
-            if (root.objectId != 0) {
-                result.addRoot(root.objectId, new RuntimeRoot("RECEIVER",
-                        root.method, root.method + ".receiver", -1,
-                        root.objectId));
-            }
-            List<String> parameterTypes = parameterTypes(root.method);
-            for (RuntimeRegionPlanner.RuntimeEvent event : runtime) {
-                if (!"METHOD_ARGUMENT".equals(event.kind)
-                        || event.callId != root.callId
-                        || event.objectId == 0 || event.argumentIndex < 0) {
-                    continue;
-                }
-                String declaredType = event.argumentIndex < parameterTypes.size()
-                        ? parameterTypes.get(event.argumentIndex)
-                        : event.runtimeType;
-                String cell = root.method + ".param" + event.argumentIndex
-                        + ":" + declaredType;
-                result.addRoot(event.objectId, new RuntimeRoot("PARAMETER",
-                        root.method, cell, event.argumentIndex,
-                        event.objectId));
-            }
-
-            for (RuntimeRegionPlanner.FieldAccessEvent event : fields) {
-                List<RuntimeFieldPath> receiverPaths = result.pathsTo(
-                        event.receiverObjectId);
-                List<RuntimeFieldPath> eventPaths = new ArrayList<>();
-                for (RuntimeFieldPath receiverPath : receiverPaths) {
-                    RuntimeFieldPath fieldPath = receiverPath.append(
-                            event.field, event.receiverObjectId,
-                            event.valueObjectId);
-                    if (fieldPath == null) {
-                        continue;
-                    }
-                    eventPaths.add(fieldPath);
-                }
-                if (!eventPaths.isEmpty()) {
-                    result.pathsByEvent.put(event.seq, eventPaths);
-                }
-                Map<String, Integer> receiverFields =
-                        result.fieldsByReceiver.computeIfAbsent(
-                                event.receiverObjectId,
-                                ignored -> new LinkedHashMap<>());
-                if (event.valueObjectId == 0) {
-                    receiverFields.remove(event.field);
-                } else {
-                    receiverFields.put(event.field, event.valueObjectId);
-                }
-            }
-            return result;
-        }
-
-        private void addRoot(int objectId, RuntimeRoot root) {
-            rootsByObject.computeIfAbsent(objectId,
-                    ignored -> new LinkedHashSet<>()).add(root);
-        }
-
-        private List<RuntimeFieldPath> pathsTo(int targetObjectId) {
-            if (targetObjectId == 0) {
-                return Collections.emptyList();
-            }
-            List<RuntimeFieldPath> result = new ArrayList<>();
-            Deque<ObjectPath> work = new ArrayDeque<>();
-            for (Map.Entry<Integer, Set<RuntimeRoot>> roots
-                    : rootsByObject.entrySet()) {
-                for (RuntimeRoot root : roots.getValue()) {
-                    work.addLast(new ObjectPath(roots.getKey(),
-                            RuntimeFieldPath.root(root)));
-                }
-            }
-            while (!work.isEmpty()) {
-                ObjectPath current = work.removeFirst();
-                if (current.objectId == targetObjectId) {
-                    result.add(current.path);
-                }
-                for (Map.Entry<String, Integer> field
-                        : fieldsByReceiver.getOrDefault(current.objectId,
-                        Collections.emptyMap()).entrySet()) {
-                    RuntimeFieldPath next = current.path.append(
-                            field.getKey(), current.objectId,
-                            field.getValue());
-                    if (next != null) {
-                        work.addLast(new ObjectPath(field.getValue(), next));
-                    }
-                }
-            }
-            return result;
-        }
-
-        private List<RuntimeFieldPath> pathsFor(
-                RuntimeRegionPlanner.FieldAccessEvent event) {
-            return values(pathsByEvent.get(event.seq));
-        }
-    }
-
-    private static final class ObjectPath {
-        private final int objectId;
-        private final RuntimeFieldPath path;
-
-        private ObjectPath(int objectId, RuntimeFieldPath path) {
-            this.objectId = objectId;
-            this.path = path;
         }
     }
 

@@ -1,20 +1,50 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
+import soot.Body;
+import soot.IntType;
+import soot.Local;
+import soot.Modifier;
+import soot.SootClass;
+import soot.SootMethod;
+import soot.Unit;
+import soot.VoidType;
+import soot.jimple.IntConstant;
+import soot.jimple.Jimple;
+import soot.toolkits.graph.BriefUnitGraph;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class SymbolicRegionPlannerTest {
+    @Before
+    public void resetBefore() {
+        soot.G.reset();
+    }
+
+    @After
+    public void resetAfter() {
+        soot.G.reset();
+    }
+
     private static final String ROOT = "<example.Root: void run()>";
     private static final String TARGET = "<example.Target: void fail()>";
-    private static final String REMOTE = "<example.Remote: void send()>";
     private static final String ASYNC = "<example.Worker: void run()>";
+    private static final String COMMUNICATION =
+            "<example.Client: int request()>";
+    private static final String CALLBACK =
+            "<example.Callback: void handle(java.lang.Object)>";
 
     @Test
     public void partitionsMethodsAndStopsBeforeStatePlanning() {
@@ -23,16 +53,17 @@ public class SymbolicRegionPlannerTest {
                 "y"));
         program.edges.add(edge(TARGET, "", "GUARD", "exception_guard",
                 "guard", TARGET + "#u7#exception:Failure"));
-        program.edges.add(edge(TARGET, REMOTE, "PROTOCOL_TRANSFER", "rpc",
-                "request", "parameter"));
         program.edges.add(edge(TARGET, ASYNC, "DYNAMIC_DISPATCH", "dispatch",
                 "task", "receiver"));
         program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
         program.executionContextAuthorities.put(ASYNC, "TASK_ENTRY");
+        program.targetResolved.put("method", TARGET);
 
         SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, TARGET, REMOTE, ASYNC));
+                Arrays.asList(ROOT, TARGET, ASYNC));
 
+        // A target an execution-context entry reaches keeps that entry's
+        // region; the target-activation fallback adds nothing.
         assertEquals(2, program.regions.size());
         Map<String, Object> target = regionContaining(program, TARGET);
         assertEquals(3, target.get("schemaVersion"));
@@ -48,244 +79,97 @@ public class SymbolicRegionPlannerTest {
         Map<String, Object> async = regionContaining(program, ASYNC);
         assertEquals("AUTHORITY_ENVELOPE", async.get("selection"));
         assertTrue(program.regionEdges.isEmpty());
+
+        // A target only a platform callback reaches has no execution-context
+        // entry above it, so its own activation is the region.
+        StaticProgram unreached = new StaticProgram();
+        unreached.edges.add(edge(CALLBACK, TARGET, "VALUE_PASS", "local", "x",
+                "y"));
+        unreached.edges.add(edge(TARGET, "", "GUARD", "exception_guard",
+                "guard", TARGET + "#u7#exception:Failure"));
+        unreached.targetResolved.put("method", TARGET);
+
+        SymbolicRegionPlanner.planSelectedSkeleton(unreached,
+                Arrays.asList(CALLBACK, TARGET));
+
+        assertEquals(1, unreached.regions.size());
+        Map<String, Object> activation = unreached.regions.get(0);
+        assertEquals(TARGET, activation.get("rootMethod"));
+        assertEquals("FAILURE_TARGET_ENTRY", activation.get("rootAuthority"));
+        assertEquals(TARGET, activation.get("anchorMethod"));
+        assertEquals("EXCEPTION_CONTEXT", activation.get("selection"));
+        assertEquals("STATIC_TARGET_ACTIVATION_SKELETON",
+                activation.get("planningMode"));
+        assertEquals(Collections.singletonList(TARGET),
+                activation.get(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
+
+        // Folded from CfgLoopControlTest#naturalLoopExitIsControlButBodyPredicateIsSemantic:
+        // the loop-control contract.
+        SootClass owner = new SootClass("example.Loop", Modifier.PUBLIC);
+        SootMethod method = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local running = Jimple.v().newLocal("running", IntType.v());
+        Local expiry = Jimple.v().newLocal("expiry", IntType.v());
+        Local now = Jimple.v().newLocal("now", IntType.v());
+        Local changed = Jimple.v().newLocal("changed", IntType.v());
+        body.getLocals().add(running);
+        body.getLocals().add(expiry);
+        body.getLocals().add(now);
+        body.getLocals().add(changed);
+
+        Unit exit = Jimple.v().newReturnVoidStmt();
+        Unit loopGuard = Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(running, IntConstant.v(0)), exit);
+        Unit latch = Jimple.v().newGotoStmt(loopGuard);
+        Unit semanticGuard = Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(expiry, now), latch);
+        body.getUnits().add(loopGuard);
+        body.getUnits().add(semanticGuard);
+        body.getUnits().add(Jimple.v().newAssignStmt(
+                changed, IntConstant.v(1)));
+        body.getUnits().add(latch);
+        body.getUnits().add(exit);
+
+        Set<Unit> guards = CfgLoopControl.guards(
+                CfgLoopControl.loopCfg(body, new BriefUnitGraph(body)));
+        assertTrue(guards.contains(loopGuard));
+        assertFalse(guards.contains(semanticGuard));
     }
 
     @Test
-    public void configuredProtocolMethodsBecomeRuntimeSelectionAnchors() {
+    @SuppressWarnings("unchecked")
+    public void communicationSiteDoesNotWidenFailureDemandScope() {
         StaticProgram program = new StaticProgram();
-        Map<String, Object> protocol = edge(ROOT, TARGET,
-                "PROTOCOL_TRANSFER", "rpc", "request", "parameter");
-        protocol.put("protocolStubMappingId", "example.rpc");
-        protocol.put("protocolClientStub", ROOT);
-        protocol.put("protocolServerStub", TARGET);
-        program.edges.add(protocol);
-        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
-        program.executionContextAuthorities.put(TARGET, "RPC_HANDLER");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, TARGET));
-
-        assertEquals(2, program.regions.size());
-        assertEquals(ROOT, program.regions.get(0).get("rootMethod"));
-        assertEquals(ROOT, program.regions.get(0).get("anchorMethod"));
-        assertEquals(TARGET, program.regions.get(1).get("rootMethod"));
-        assertEquals(TARGET, program.regions.get(1).get("anchorMethod"));
-        assertEquals("PROTOCOL_CONTEXT",
-                program.regions.get(0).get("selection"));
-        assertEquals("PROTOCOL_CONTEXT",
-                program.regions.get(1).get("selection"));
-    }
-
-    @Test
-    public void executionScopeIsRootedAtTheDemandingAnchor() {
-        String anchor = "<example.Demand: void act()>";
-        String needed = "<example.Needed: void helper()>";
-        String aside = "<example.Aside: void other()>";
-        StaticProgram program = new StaticProgram();
-        program.edges.add(edge(ROOT, anchor, "VALUE_PASS", "call", "arg",
-                "param"));
-        program.edges.add(edge(ROOT, aside, "VALUE_PASS", "call", "arg",
-                "param"));
-        program.edges.add(edge(anchor, needed, "VALUE_PASS", "call", "arg",
-                "param"));
-        program.edges.add(edge(anchor, "", "GUARD", "exception_guard",
-                "guard", anchor + "#u7#exception:Failure"));
-        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, anchor, needed, aside));
-
-        assertEquals(1, program.regions.size());
-        assertEquals("EXCEPTION_CONTEXT",
-                program.regions.get(0).get("selection"));
-        assertEquals(anchor, program.regions.get(0).get("anchorMethod"));
-        // The region still contains the context -- its outputs are produced
-        // there -- but only what the anchor reaches is demanded, so the other
-        // thing the outer frame does buys no path here.
-        assertEquals(Arrays.asList(aside, anchor, needed, ROOT),
-                program.regions.get(0).get("methods"));
-        assertEquals(Arrays.asList(anchor, needed, ROOT),
-                program.regions.get(0).get(
-                        RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
-    }
-
-    @Test
-    public void configuredClientStubCallEndsTheExecutionScope() {
-        String stub = "<example.Transport: void send(java.lang.String)>";
-        String internal = "<example.Transport: void frame()>";
-        String shared = "<example.Codec: void encode()>";
-        StaticProgram program = new StaticProgram();
-        program.edges.add(edge(ROOT, "", "GUARD", "exception_guard",
-                "guard", ROOT + "#u7#exception:Failure"));
-        program.edges.add(edge(ROOT, stub, "VALUE_PASS", "call", "arg",
-                "param"));
-        program.edges.add(edge(ROOT, shared, "VALUE_PASS", "call", "arg",
-                "param"));
-        program.edges.add(edge(stub, internal, "VALUE_PASS", "call", "arg",
-                "param"));
-        program.edges.add(edge(stub, shared, "VALUE_PASS", "call", "arg",
-                "param"));
-        Map<String, Object> protocol = edge(ROOT, TARGET,
-                "PROTOCOL_TRANSFER", "rpc", "request", "parameter");
-        protocol.put("protocolStubMappingId", "example.transport");
-        protocol.put("protocolClientStub", stub);
-        protocol.put("protocolServerStub", TARGET);
-        program.edges.add(protocol);
-        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, stub, internal, shared, TARGET));
-
-        assertEquals(1, program.regions.size());
-        // The region still contains the transport methods; they are simply
-        // not what it has to decide.  A callee the anchors also reach without
-        // crossing the boundary stays demanded.
-        assertEquals(Arrays.asList(shared, ROOT, internal, stub),
-                program.regions.get(0).get("methods"));
-        assertEquals(Arrays.asList(shared, ROOT),
-                program.regions.get(0).get(
-                        RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
-    }
-
-    @Test
-    public void concreteDynamicDispatchTargetJoinsOwningRegion() {
-        String declared = "<example.Factory: example.Value create()>";
-        String concrete = "<example.FactoryImpl: example.Value create()>";
-        StaticProgram program = new StaticProgram();
-        program.edges.add(edge(ROOT, declared, "DYNAMIC_DISPATCH",
-                "dispatch_activation", ROOT + "#u3",
-                concrete + ".activation"));
-        program.edges.add(edge(concrete, "", "GUARD", "exception_guard",
-                "guard", concrete + "#u7#exception:Failure"));
-        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, concrete));
-
-        assertEquals(1, program.regions.size());
-        assertEquals(Arrays.asList(concrete, ROOT),
-                program.regions.get(0).get("methods"));
-        assertEquals(concrete, program.regions.get(0).get("anchorMethod"));
-    }
-
-    @Test
-    public void nestedProtocolEndpointStaysInOwningContext() {
-        StaticProgram program = new StaticProgram();
-        program.edges.add(edge(ROOT, TARGET, "VALUE_PASS", "call",
-                "request", "parameter"));
-        Map<String, Object> protocol = edge(REMOTE, TARGET,
-                "PROTOCOL_TRANSFER", "rpc", "request", "parameter");
-        protocol.put("protocolStubMappingId", "example.nested");
-        protocol.put("protocolClientStub", REMOTE);
-        protocol.put("protocolServerStub", TARGET);
-        protocol.put("protocolServerContext", "NESTED_CALL");
-        program.edges.add(protocol);
-        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, TARGET, REMOTE));
-
-        assertEquals(1, program.regions.size());
-        assertEquals(ROOT, program.regions.get(0).get("rootMethod"));
-        assertEquals(Arrays.asList(ROOT, TARGET),
-                program.regions.get(0).get("methods"));
-        assertEquals("PROTOCOL_CONTEXT",
-                program.regions.get(0).get("selection"));
-    }
-
-    @Test
-    public void disconnectedNestedEndpointBecomesRuntimeBoundFragment() {
-        StaticProgram program = new StaticProgram();
+        program.edges.add(edge(ROOT, TARGET, "VALUE_PASS", "local", "x",
+                "y"));
+        program.edges.add(edge(ROOT, COMMUNICATION, "VALUE_PASS", "local",
+                "request", "reply"));
         program.edges.add(edge(TARGET, "", "GUARD", "exception_guard",
                 "guard", TARGET + "#u7#exception:Failure"));
-        program.nestedContextEndpoints.add(TARGET);
         program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
+        program.targetResolved.put("method", TARGET);
+        Map<String, Object> communication = new LinkedHashMap<>();
+        communication.put(CommunicationCatalogContract.CLIENT_METHOD,
+                COMMUNICATION);
+        communication.put(
+                CommunicationCatalogContract.SERVER_ENTRY_CANDIDATES,
+                Collections.emptyList());
+        program.communicationCallSites.add(communication);
 
         SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, TARGET));
+                Arrays.asList(ROOT, TARGET, COMMUNICATION));
 
-        assertEquals(2, program.regions.size());
-        assertEquals(ROOT, program.regions.get(0).get("rootMethod"));
-        assertEquals("AUTHORITY_ENVELOPE",
-                program.regions.get(0).get("selection"));
-        assertEquals(TARGET, program.regions.get(1).get("rootMethod"));
-        assertEquals("NESTED_CALL",
-                program.regions.get(1).get("rootAuthority"));
-        assertEquals("EXCEPTION_CONTEXT",
-                program.regions.get(1).get("selection"));
-        assertEquals("STATIC_NESTED_CONTEXT_FRAGMENT",
-                program.regions.get(1).get("planningMode"));
-    }
-
-    @Test
-    public void constructorIsFoldedIntoOwningExecutionContext() {
-        String constructor = "<example.State: void <init>(int)>";
-        StaticProgram program = new StaticProgram();
-        program.edges.add(edge(ROOT, "", "GUARD", "exception_guard",
-                "guard", ROOT + "#u7#exception:Failure"));
-        program.edges.add(edge(ROOT, constructor, "VALUE_PASS", "call",
-                "arg", "param"));
-        program.edges.add(edge(constructor, "", "HEAP_WRITE",
-                "field_write", "value", "<example.State: int value>"));
-        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, constructor));
-
-        assertEquals(1, program.regions.size());
-        assertEquals(ROOT, program.regions.get(0).get("rootMethod"));
-        assertTrue(((java.util.List<?>) program.regions.get(0).get("methods"))
-                .contains(constructor));
-        assertEquals(ROOT, program.regions.get(0).get("anchorMethod"));
-    }
-
-    @Test
-    public void constructorStateAloneDoesNotAdmitARegion() {
-        String constructor = "<example.State: void <init>(int)>";
-        StaticProgram program = new StaticProgram();
-        program.edges.add(edge(ROOT, constructor, "VALUE_PASS", "call",
-                "arg", "param"));
-        program.edges.add(edge(constructor, "", "HEAP_WRITE",
-                "field_write", "value", "<example.State: int value>"));
-        program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(ROOT, constructor));
-
-        assertEquals(1, program.regions.size());
-        assertEquals("AUTHORITY_ENVELOPE",
-                program.regions.get(0).get("selection"));
-    }
-
-    @Test
-    public void onlyFailureSlicedStateAdmitsStateRegions() {
-        String writer = "<example.Writer: void run()>";
-        String noise = "<example.Noise: void run()>";
-        String demanded = "<example.State: int key>";
-        String unrelated = "<example.State: int metric>";
-        String local = TARGET + "::key";
-        StaticProgram program = new StaticProgram();
-        program.edges.add(edge(TARGET, "", "HEAP_READ", "field_read",
-                demanded, local));
-        program.edges.add(edge(TARGET, "", "GUARD", "exception_guard",
-                local, TARGET + "#u7#exception:Failure"));
-        program.edges.add(edge(writer, "", "HEAP_WRITE", "field_write",
-                writer + "::value", demanded));
-        program.edges.add(edge(noise, "", "HEAP_WRITE", "field_write",
-                noise + "::value", unrelated));
-        program.executionContextAuthorities.put(TARGET, "TASK_ENTRY");
-        program.executionContextAuthorities.put(writer, "TASK_ENTRY");
-        program.executionContextAuthorities.put(noise, "TASK_ENTRY");
-
-        SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(TARGET, writer, noise));
-
-        assertEquals("EXCEPTION_CONTEXT",
-                regionRootedAt(program, TARGET).get("selection"));
-        assertEquals("STATE_CONTEXT",
-                regionRootedAt(program, writer).get("selection"));
-        assertEquals("AUTHORITY_ENVELOPE",
-                regionRootedAt(program, noise).get("selection"));
+        Map<String, Object> region = regionContaining(program, TARGET);
+        assertTrue(((List<String>) region.get("methods"))
+                .contains(COMMUNICATION));
+        List<String> demanded = (List<String>) region.get(
+                RuntimeSelectedRegionFinalizer.DEMAND_SCOPE);
+        assertTrue(demanded.contains(ROOT));
+        assertTrue(demanded.contains(TARGET));
+        assertFalse(demanded.contains(COMMUNICATION));
     }
 
     private static Map<String, Object> edge(
@@ -314,15 +198,5 @@ public class SymbolicRegionPlannerTest {
             }
         }
         throw new AssertionError("missing region for " + method);
-    }
-
-    private static Map<String, Object> regionRootedAt(
-            StaticProgram program, String method) {
-        for (Map<String, Object> region : program.regions) {
-            if (method.equals(region.get("rootMethod"))) {
-                return region;
-            }
-        }
-        throw new AssertionError("missing region rooted at " + method);
     }
 }

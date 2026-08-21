@@ -4,7 +4,6 @@
 
 #ifndef JDK8_CDB_TYPECASTEXPRESSION_HPP
 #define JDK8_CDB_TYPECASTEXPRESSION_HPP
-#ifdef ENABLE_WEBRIDGE
 
 #include "concolic/exp/expression.hpp"
 #include "concolic/SymbolicOp.hpp"
@@ -29,22 +28,16 @@ public:
       : _exp_to_cast(exp),
         _source_type(source_type == NULL ? "" : source_type),
         _target_type(target_type == NULL ? "" : target_type) {
-    if (exp) {
-      exp->inc_ref();
-    }
     // SymbolExpression::_type remains the legacy result descriptor consumed
     // by existing JSON readers.  Keep it in sync with the explicit target.
     set_type(_target_type);
   }
 
-  ~TypeCastExpression() {
-    Expression::gc(_exp_to_cast);
-  }
+  ~TypeCastExpression() {}
 
   virtual void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 
   virtual std::string get_name();
 };
 
-#endif
 #endif //JDK8_CDB_TYPECASTEXPRESSION_HPP

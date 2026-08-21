@@ -9,14 +9,11 @@ public final class RegionNumericSemanticsApiSmoke {
     private static final class Capture {
         final String before;
         final String after;
-        final String summary;
         final boolean outcome;
 
-        Capture(String before, String after, String summary,
-                boolean outcome) {
+        Capture(String before, String after, boolean outcome) {
             this.before = before;
             this.after = after;
-            this.summary = summary;
             this.outcome = outcome;
         }
     }
@@ -143,8 +140,9 @@ public final class RegionNumericSemanticsApiSmoke {
         String before = System.getPathCondition();
         boolean outcome = input.longValue >= 0L;
         String after = System.getPathCondition();
-        String summary = System.finishConcolicRegion();
-        return new Capture(before, after, summary, outcome);
+        require(System.finishConcolicRegion().contains("\"complete\":true"),
+                "lcmp region finish failed");
+        return new Capture(before, after, outcome);
     }
 
     private static Capture captureDoubleNaN(boolean lessThan) {
@@ -159,8 +157,9 @@ public final class RegionNumericSemanticsApiSmoke {
                 ? input.doubleValue < Double.NaN
                 : input.doubleValue > Double.NaN;
         String after = System.getPathCondition();
-        String summary = System.finishConcolicRegion();
-        return new Capture(before, after, summary, outcome);
+        require(System.finishConcolicRegion().contains("\"complete\":true"),
+                "double compare region finish failed");
+        return new Capture(before, after, outcome);
     }
 
     private static Capture captureFloatNaN(boolean lessThan) {
@@ -175,8 +174,9 @@ public final class RegionNumericSemanticsApiSmoke {
                 ? input.floatValue < Float.NaN
                 : input.floatValue > Float.NaN;
         String after = System.getPathCondition();
-        String summary = System.finishConcolicRegion();
-        return new Capture(before, after, summary, outcome);
+        require(System.finishConcolicRegion().contains("\"complete\":true"),
+                "float compare region finish failed");
+        return new Capture(before, after, outcome);
     }
 
     private static void requireComparison(Capture capture, String operator,
@@ -185,9 +185,7 @@ public final class RegionNumericSemanticsApiSmoke {
                 label + " compare recorded a premature PC: "
                         + capture.before);
         require(!capture.outcome, label + " NaN outcome must be false");
-        require(capture.after.contains("\"_op\":\"" + operator + "\"")
-                        && capture.summary.contains(
-                        "\"_op\":\"" + operator + "\""),
+        require(capture.after.contains("\"_op\":\"" + operator + "\""),
                 label + " trichotomy was not retained: " + capture.after);
         require(capture.after.contains("\"_java_type\":\"I\"")
                         && capture.after.contains("Y_I_0"),

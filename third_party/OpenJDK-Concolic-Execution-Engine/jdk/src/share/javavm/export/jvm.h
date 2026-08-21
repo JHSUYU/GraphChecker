@@ -108,14 +108,20 @@ JNIEXPORT void JNICALL
 JVM_PrintObjInfo(JNIEnv *env, jclass ignored, jobject obj);
 
 JNIEXPORT jlong JNICALL
-JVM_StartConcolic(JNIEnv *env, jclass ignored);
-
-JNIEXPORT jlong JNICALL
 JVM_StartConcolicRegion(JNIEnv *env, jclass ignored, jstring region_id,
                         jstring activation_id);
 
 JNIEXPORT jlong JNICALL
 JVM_EndConcolic(JNIEnv *env, jclass ignored);
+
+JNIEXPORT jlong JNICALL
+JVM_OpenWorkloadSession(JNIEnv *env, jclass ignored);
+
+JNIEXPORT jlong JNICALL
+JVM_CloseWorkloadSession(JNIEnv *env, jclass ignored);
+
+JNIEXPORT jstring JNICALL
+JVM_GetWorkloadSessionStatus(JNIEnv *env, jclass ignored);
 
 JNIEXPORT void JNICALL
 JVM_Symbolize(JNIEnv *env, jclass ignored, jobject obj);
@@ -139,15 +145,6 @@ JVM_ObserveExactPrimitiveField(JNIEnv *env, jclass ignored, jobject owner,
 
 JNIEXPORT void JNICALL
 JVM_SymbolizeMethod(JNIEnv *env, jclass ignored, jobject holder_name, jobject callee_name);
-
-JNIEXPORT void JNICALL
-JVM_RecordStmtObj(JNIEnv *env, jclass ignored, jobject stmt, jobject obj);
-
-JNIEXPORT void JNICALL
-JVM_RecordPersistentObj(JNIEnv *env, jclass ignored, jobject obj);
-
-JNIEXPORT jstring JNICALL
-JVM_WeBridgeAnalysis(JNIEnv *env, jclass ignored, jobject classLoader);
 
 JNIEXPORT void JNICALL
 JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src_pos,
@@ -191,6 +188,69 @@ JNIEXPORT jboolean JNICALL
 JVM_SnapshotContainerExpression(JNIEnv *env, jclass ignored,
                                 jobject container, jobjectArray keys,
                                 jobjectArray values, jint kind);
+
+JNIEXPORT jlong JNICALL
+JVM_ExportExpression(JNIEnv *env, jclass ignored, jobject owner,
+                     jstring declaring_class, jstring field_name,
+                     jstring descriptor);
+
+JNIEXPORT jlong JNICALL
+JVM_AttachExpression(JNIEnv *env, jclass ignored, jobject owner,
+                     jstring declaring_class, jstring field_name,
+                     jstring descriptor, jlong handle);
+
+JNIEXPORT jstring JNICALL
+JVM_GetConcolicPathConditionRange(JNIEnv *env, jclass ignored,
+                                  jint start_index, jint end_index);
+
+JNIEXPORT jlong JNICALL
+JVM_SelectSharedFieldCarrier(JNIEnv *env, jclass ignored, jobject owner,
+                             jstring declaring_class, jstring field_name,
+                             jstring descriptor);
+
+JNIEXPORT jlong JNICALL
+JVM_GetCurrentSharedFieldVersion(JNIEnv *env, jclass ignored, jobject owner,
+                                 jstring declaring_class, jstring field_name,
+                                 jstring descriptor);
+
+JNIEXPORT jlong JNICALL
+JVM_AdmitSharedFieldVersion(JNIEnv *env, jclass ignored, jobject owner,
+                            jstring declaring_class, jstring field_name,
+                            jstring descriptor, jlong version_id,
+                            jstring selected_edge_id);
+
+JNIEXPORT jlong JNICALL
+JVM_SelectSharedElementCarrier(JNIEnv *env, jclass ignored, jobject array,
+                               jint index);
+
+JNIEXPORT jlong JNICALL
+JVM_SelectSharedMapCarrier(JNIEnv *env, jclass ignored, jobject map);
+
+JNIEXPORT jlong JNICALL
+JVM_GetCurrentSharedMapVersion(JNIEnv *env, jclass ignored, jobject map);
+
+JNIEXPORT jlong JNICALL
+JVM_AdmitSharedMapVersion(JNIEnv *env, jclass ignored, jobject map,
+                          jlong version_id, jstring selected_edge_id);
+
+JNIEXPORT jstring JNICALL
+JVM_GetSharedFieldVersions(JNIEnv *env, jclass ignored, jobject owner,
+                           jstring declaring_class, jstring field_name,
+                           jstring descriptor);
+
+JNIEXPORT jstring JNICALL
+JVM_GetSharedElementVersions(JNIEnv *env, jclass ignored, jobject array,
+                             jint index);
+
+JNIEXPORT jstring JNICALL
+JVM_GetSharedMapVersions(JNIEnv *env, jclass ignored, jobject map);
+
+JNIEXPORT jint JNICALL
+JVM_ProposeEventOrder(JNIEnv *env, jclass ignored, jlong before_event_id,
+                      jlong after_event_id);
+
+JNIEXPORT jstring JNICALL
+JVM_GetEventLedger(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored);

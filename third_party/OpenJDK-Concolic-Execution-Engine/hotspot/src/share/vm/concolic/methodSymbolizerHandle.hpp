@@ -19,8 +19,21 @@ private:
   exp_list_t _param_list;
   std::string _callee_holder_name;
   std::string _callee_name;
+  // Whether the invoke hook decided to record this exact call.  The finish
+  // hook of the same call reads it back.  It belongs to the handle -- that is,
+  // to this thread's symbolizer -- because it describes one activation on one
+  // thread; a per-class static would be shared by every thread attached to the
+  // session and read back a decision another thread had just made.
+  bool _recording;
 
 public:
+  MethodSymbolizerHandle()
+      : _caller_frame(NULL), _callee_frame(NULL), _callee_istate(NULL),
+        _recording(false) {}
+
+  inline void set_recording(bool recording) { _recording = recording; }
+  inline bool is_recording() const { return _recording; }
+
   /**
    * returns the being offset of first parameter in callee's local variable
    * table
@@ -126,7 +139,7 @@ public:
   Expression *get_primitive_exp(int offset, BasicType type);
 
   // Returns an alias-specific operand shadow when one reached this call, or
-  // the ThreadContext-local object shadow otherwise.  It never allocates a
+  // the session's object shadow otherwise.  It never allocates a
   // symbolic object merely by observing an argument.
   Expression *get_reference_exp(int offset, oop obj);
 
@@ -142,14 +155,8 @@ public:
   Expression *general_prepare_result_helper();
 
 public:
+  // The parameter list only names expressions; the session arena owns them.
   inline void clear_param_list() {
-    int size = _param_list.size();
-    for (int i = 0; i < size; ++i) {
-      Expression *exp = _param_list[i];
-      if (exp && exp->able_to_gc()) {
-        delete exp;
-      }
-    }
     _param_list.clear();
   }
 
@@ -157,6 +164,7 @@ public:
     _caller_frame = NULL;
     _callee_frame = NULL;
     _callee_istate = NULL;
+    _recording = false;
     clear_param_list();
     _callee_holder_name.clear();
     _callee_name.clear();

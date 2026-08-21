@@ -1,7 +1,12 @@
 # Concolic integration contract
 
-主设计与验收标准见 [readme.md](../readme.md)。本文只记录 Java runtime 与 custom-JDK
+主设计与验收标准见 [README.md](../README.md)。本文只记录 Java runtime 与 custom-JDK
 之间当前唯一的 wire contract。
+
+> 范围：本文是当前 wire contract，目标架构见 [../README.md](../README.md)。
+> 「Worker isolation」中「一个 custom-JDK 进程只允许一个 active concolic context」
+> 属于 README Phase 1 的改造范围（以 attach/detach 线程成员关系取代
+> single-active-region mutex），不代表目标架构。
 
 ## Execution identity
 
@@ -13,7 +18,9 @@
   "goalId": "GOAL.OUTPUT_RELATION.<demand>",
   "goalKind": "OUTPUT_RELATION_CLOSURE",
   "regionId": "REGION.3",
-  "regionInstanceId": "REGION.3@producer#call2",
+  "sourceKey": "node#epoch0",
+  "occurrenceId": "node#epoch0/region/REGION.3#1",
+  "relationKey": "node#epoch0/REGION.3",
   "rootSelector": {
     "method": "<Producer: int compute()>",
     "ordinal": 1
@@ -21,7 +28,9 @@
 }
 ```
 
-不接受 `activationId`、singular `requestedOutput` 或独立 upstream activation。
+`goalKind` 只有 `OUTPUT_RELATION_CLOSURE` 与 `TARGET_REACH_CLOSURE` 两种：同步调用
+不切分调用方，所以一次 region occurrence 只有一条 relation。不接受 `regionInstanceId`、
+singular `requestedOutput` 或独立 upstream activation。
 
 ## Runtime calls
 
@@ -29,13 +38,22 @@ Java instrumentation 使用以下最小接口：
 
 ```text
 startConcolicRegion(regionId, taskId)
-symbolize / symbolizeField
-markBranch
-getPathCondition / getBranchEvents
-getSymbolicExpression
-getRegionSummary
+symbolize / symbolizeField / symbolizeExactField
+markConcolicBranch
+getConcolicBranchEvents
+getConcolicPathConditionRange(startIndex, endIndex)
+getSymbolicExpression / getSymbolicFieldExpression
+snapshotContainerExpression / trackContainerExpression
+exportExpression / attachExpression(handle)
+pauseConcolicPathCondition / resumeConcolicPathCondition
+finishConcolicRegion
 endConcolic
 ```
+
+region summary 不再内联整条 path condition，也不含任何 segment/watermark 成员：
+selected branch witness 只带 `conditionIndices`，需要谓词时用
+`getConcolicPathConditionRange` 按区间读回。该 native 单独绑定，与已删除的
+native 分组，否则一次分组失败会静默降级整条 witness 通道。
 
 Runtime 在 observation bookkeeping 前暂停 PC，完成 engine expression/summary 读取后结束
 context。pause 期间执行的 Gson、null check 或 logging 不允许污染程序 PC。
@@ -128,6 +146,29 @@ array/List/Map operation 的 concrete result 会形成 equality observation。�
 
 Java 侧没有第二份 container event ledger。
 
+## Symbolic expression handoff
+
+一次同一 workload JVM 内跨线程/逻辑节点的传值由 VM expression broker 承担，
+Java 侧只是桥；live handle 不能跨真实 JVM 地址空间：
+
+```text
+exportExpression(owner, declaringClass, fieldName, descriptor) -> handle
+attachExpression(owner, declaringClass, fieldName, descriptor, handle)
+    -> exportEventId
+```
+
+`attach` 成功即表示接收方的位置**就是**发送方的表达式；session ledger 用一条
+`VALUE_HANDOFF(exportEvent, attachEvent)` 记录这对事件，这是唯一的传播权威；session
+session 生命周期统一回收 live handle。桥本身
+不产出任何 edge artifact、不做 export×receive 配对、不做 tuple narrowing、不恢复
+delivery ordinal，也不做 fallback matching。普通 interaction trace 只保留具体消息
+correlation 与 request/response half 来观测拓扑；handoff bridge 不复制
+`exchangeId` / `attemptId` / `direction` / `leafPath` payload，更不把它们当 join key。
+
+失败的调用写一条命名 gap（`rpcHandoffGaps`），由 importer 收进 alignment gaps；
+成功但没有任何 case 能声明其接收端口的 handoff，同样在 importer 处被命名，而不是
+静默丢弃。
+
 ## Engine result
 
 每次结束写一条：
@@ -152,6 +193,10 @@ event 错误使 Importer 拒绝该 row。后续阶段不再重复解析 VM event
 
 ## Worker isolation
 
-一个 custom-JDK 进程只允许一个 active concolic context。并行 coordinator 启动多个 JVM
-worker，每个 worker 使用不同 `taskId` 和 output file。共享 worklist 只合并完整
-`PathObservation`，不共享 VM heap、shadow state 或 path-condition recorder。
+一个 custom-JDK worker 拥有一个 fresh workload session。同一 RPC/状态依赖组的
+selected region contexts 可以在该 session 的多个线程上共同执行；它们需要共享同一
+symbolic heap、broker 和 event ledger。互相独立的 replay obligations 由 coordinator
+放到多个 fresh JVM worker 并行执行，每个 worker 使用独立目录。
+
+合并只接受完整、已归一化的 case/拓扑 delta，不跨 worker 共享 VM heap、
+shadow state、raw event id 或 path-condition recorder。

@@ -5,16 +5,9 @@
 
 SymArr::SymArr(sym_rid_t sym_rid, Expression *length_exp)
     : SymRef(sym_rid), _version(0), _length_exp(length_exp), _ref_exp(NULL),
-      _semantic_expression(false) {
-  if (_length_exp) {
-    _length_exp->inc_ref();
-  }
-}
+      _semantic_expression(false) {}
 
-SymArr::~SymArr() {
-  Expression::gc(_length_exp);
-  Expression::gc(_ref_exp);
-}
+SymArr::~SymArr() {}
 
 void SymArr::print() {
   tty->print_cr("SymArr: ");

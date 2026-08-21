@@ -5,11 +5,15 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 
 import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
@@ -69,6 +73,84 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * valid SMT query is never mistaken for a complete model.</p>
  */
 public final class ConcolicSmtComposer {
+    /** Expression node the VM serializes one guarded read-from arm as. */
+    static final String RECORDED_ITE_TYPE = "IteExpression";
+    /** Prefix of the one value term of one guarded read. */
+    static final String READ_VALUE_PREFIX = "rf_value__";
+    /**
+     * A declared cut port on a relation that names no region for it.
+     *
+     * <p>A refusal and not a gap: the port is declared, the relation is real,
+     * and the one thing needed to place it - which activation's region the
+     * port belongs to - is stated by nobody. Answering {@code ""} dropped the
+     * relation out of the resolved summary graph in silence.</p>
+     */
+    static final String CUT_PORT_REGION_UNRESOLVED =
+            "CUT_PORT_REGION_UNRESOLVED";
+    static final String LIVE_HANDOFF_PRODUCER_RELATION_MISSING =
+            "LIVE_HANDOFF_PRODUCER_RELATION_MISSING";
+    static final String LIVE_HANDOFF_PRODUCER_RELATION_AMBIGUOUS =
+            "LIVE_HANDOFF_PRODUCER_RELATION_AMBIGUOUS";
+
+    /** The three authorities README {@code SMT-1} admits for one input. */
+    /**
+     * The recorded model holds reads that no arm and no guarded choice
+     * explains, so its completeness claim examined nothing.
+     */
+    static final String RECORDED_MODEL_UNEXPLAINED_READS =
+            "RecordedModelUnexplainedReads";
+
+    static final String LOCAL_SYMBOLIC_ROOT = "LOCAL_SYMBOLIC_ROOT";
+    static final String COMMUNICATION_LEAF = "COMMUNICATION_LEAF";
+    static final String READ_FROM_ARM = "READ_FROM_ARM";
+    /** A selected input several authorities claim; the lineage is not one. */
+    static final String INPUT_AUTHORITY_AMBIGUOUS =
+            "SelectedInputMultipleAuthorities";
+    /** A selected input term nothing in the run constrained. */
+    /**
+     * A state read the target performs whose recorded arm no authority
+     * admitted, while the container it reads is still asserted over.
+     */
+    static final String SELECTED_STATE_READ_WITHOUT_AUTHORITY =
+            "SelectedStateReadWithoutAuthority";
+
+    static final String INPUT_AUTHORITY_MISSING =
+            "SelectedInputWithoutAuthority";
+    /** A read the model kept open, so no witness over it is final. */
+    static final String SELECTED_READ_FROM_UNKNOWN_ARM =
+            "SelectedReadFromUnknownArm";
+    /** A selected edge the run only ever proposed. */
+    static final String SELECTED_EDGE_CANDIDATE_ONLY =
+            "SelectedEdgeCandidateOnly";
+    /** Names the gate that produced finalStatus and its refusal rows. */
+    static final String ACCEPTANCE_GATE_AUTHORITY =
+            "COMPOSER_ACCEPTANCE_GATE_V1";
+    /** The target published no reach query this composition could start at. */
+    static final String TARGET_REACH_QUERY_ABSENT =
+            "TARGET_REACH_QUERY_ABSENT";
+    /** The order domain holds no VALUE_HANDOFF edge for one export. */
+    static final String HANDOFF_ORDER_UNRECORDED =
+            "HANDOFF_SEND_BEFORE_RECEIVE_UNRECORDED";
+    /** A handoff whose receiving port the region catalog does not declare. */
+    static final String HANDOFF_PORT_UNDECLARED =
+            VmHandoffEvidence.PORT_UNDECLARED;
+    /**
+     * Declaration conflicts and a selected count beyond K_L refuse final
+     * acceptance. Missing path-local count/cardinality evidence remains a
+     * coverage gap and does not rewrite or discard the guarded case.
+     */
+    private static final Set<String> LOOP_AUTHORITY_REFUSALS =
+            new LinkedHashSet<>(Arrays.asList(
+                    BoundedLoopComposition.LOOP_BODY_BOUND_UNDECLARED,
+                    BoundedLoopComposition.LOOP_BODY_BOUND_DISAGREES,
+                    BoundedLoopComposition.LOOP_CLASSIFICATION_UNDECLARED,
+                    BoundedLoopComposition.LOOP_CLASSIFICATION_DISAGREES,
+                    LoopBoundPolicy.PATH_LOOP_COUNT_OUT_OF_BOUND));
+    /** Whether this artifact may be accepted as the milestone result. */
+    public static final String FINAL_STATUS = "finalStatus";
+    public static final String FINAL_READY = "FINAL_READY";
+    public static final String FINAL_REFUSED = "FINAL_REFUSED";
+
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().serializeNulls().setPrettyPrinting()
             .create();
@@ -86,24 +168,38 @@ public final class ConcolicSmtComposer {
     }
 
     public static Result compose(Arguments arguments) throws IOException {
-        require(arguments.fatalQueries, "fatal branch queries");
         require(arguments.runtimePlan, "runtime plan");
         RuntimePlanArtifact runtimePlan = RuntimePlanArtifact.read(
                 arguments.runtimePlan);
 
+        if (arguments.fatalQueries == null
+                || !Files.isRegularFile(arguments.fatalQueries)) {
+            return refusedComposition(arguments, arguments.fatalQueries
+                    + " does not exist: the target task published no reach"
+                    + " query at all");
+        }
         List<JsonObject> queryRows = ArtifactIO.readJsonl(
                 arguments.fatalQueries);
         List<RelationSummary> summaries = new ArrayList<>();
-        boolean observedUnderapproximation = false;
         for (Path summaryFile : arguments.summaries) {
             int row = 0;
             for (JsonObject encoded : ArtifactIO.readJsonl(summaryFile)) {
                 try {
+                    // Target-reach summaries carry the branch relation and
+                    // VM evidence that the fatal query already embeds.  They
+                    // deliberately have no outputClosure and are therefore
+                    // not upstream RelationSummary inputs.  A campaign file
+                    // may contain both roles; accepting it directly keeps the
+                    // production pipeline from needing a second filtering
+                    // artifact.
+                    if (ClosureGoalKind.fromTask(encoded)
+                            .capturesTargetReach()) {
+                        row++;
+                        continue;
+                    }
                     JsonObject coverage = object(encoded, "pathCoverage");
                     if (coverage.size() > 0) {
-                        requireObservedCoverage(encoded, coverage,
-                                arguments.compositionMode);
-                        observedUnderapproximation = true;
+                        requireObservedCoverage(encoded, coverage);
                     }
                     RelationSummary summary =
                             RelationSummary.decode(encoded);
@@ -127,17 +223,18 @@ public final class ConcolicSmtComposer {
         }
         JsonObject fatal = selectFatalQuery(queryRows, arguments);
         if (fatal.size() == 0) {
-            throw new IOException("No ready fatal query matches region="
+            return refusedComposition(arguments, arguments.fatalQueries
+                    + " exists with " + queryRows.size() + " row(s) and holds"
+                    + " no ready reach query for region="
                     + arguments.fatalRegion + " occurrence="
                     + arguments.occurrenceId);
         }
         requireCanonicalFatalQuerySchema(fatal);
         String fatalSite = string(fatal, "targetSiteId");
 
-        // This composer consumes a seed query.  A solver-ready branch replay
-        // contract is sufficient to build the candidate SMT, but it is not an
-        // observation that the complete workload naturally reached the target.
-        // Natural target replay promotion remains the explicit next-stage TODO.
+        // Every path in this query is backed by the runtime's exact target
+        // event.  The replay seed only fixes the selected branch identity; it
+        // is never promoted into target-reach evidence by composition.
         PortIndex ports = PortIndex.from(regions);
         JsonObject rawContext = object(fatal, "symbolicContext");
         // Runtime-confirmed first-hop demands are authoritative.  CLI bounds
@@ -147,8 +244,16 @@ public final class ConcolicSmtComposer {
         boolean instanceScopedContext = resolutionContext.size() > 0
                 && !string(resolutionContext, "occurrenceId").isEmpty();
 
+        SummaryIndex summaryIndex = SummaryIndex.build(summaries);
         ResolvedSummaryGraph resolved = resolveSummaryGraph(fatal,
-                resolutionContext, summaries);
+                resolutionContext, summaryIndex);
+        Map<String, RelationSummary> loweredBySummary = new LinkedHashMap<>();
+        for (RelationSummary relation
+                : resolved.selectedSummaries.values()) {
+            loweredBySummary.put(relation.summaryId(), relation);
+        }
+        List<RelationSummary> loweredRelations =
+                new ArrayList<>(loweredBySummary.values());
         FatalAbsenceMutationWitness failureWitness =
                 FatalAbsenceMutationWitness.resolve(fatal, resolved, ports);
         // Runtime identity can expose several aliases for one concrete
@@ -164,19 +269,83 @@ public final class ConcolicSmtComposer {
                         string(resolutionContext, "occurrenceId")),
                 failureWitness);
         emitter.begin(fatal);
-        emitter.registerExactEqualityBoundExpressions(
+        // A configured source may reach a selected downstream relation
+        // through VM value handoff without making its own summary a lowered
+        // relation.  All summaries passed to this composition are already the
+        // selected campaign scope, so source identity must be registered from
+        // that complete evidence set before case-local alpha-renaming.
+        emitter.registerSymbolicSources(caseEvidenceRows(summaries, fatal));
+        List<JsonObject> caseEvidenceRows = caseEvidenceRows(
+                loweredRelations, fatal);
+        emitter.registerExactSharedCarrierPorts(
                 resolved.selectedEdges.values());
         if (!instanceScopedContext) {
-            emitter.unsupported.add(
-                    "MissingTargetInstanceSymbolicContext");
+            // Named against the target the context is missing for, like every
+            // other composition gap: the row's kind is not its subject.
+            emitter.unsupported.add("MissingTargetInstanceSymbolicContext:"
+                    + firstNonBlank(string(fatal, "occurrenceId"), fatalSite,
+                    string(fatal, "regionId")));
         }
         emitter.unsupported.addAll(resolved.gaps);
 
+        // The bounded-loop prefixes of every selected occurrence, built here
+        // rather than beside their own emission because the writer universe
+        // places a writer at the loop slots of the loop it sits in.
+        List<JsonObject> selectedSummaryRows = summaryRows(loweredRelations);
+        List<JsonObject> selectedEvidenceRows =
+                new ArrayList<>(selectedSummaryRows);
+        List<JsonObject> scopedPlanRows = targetScopedPlanRows(
+                runtimePlan.plans(), fatal,
+                bindingRows(resolved.selectedEdges.values()),
+                loweredRelations);
+        List<JsonObject> loopBoundAuthorities =
+                new ArrayList<>(selectedSummaryRows);
+        loopBoundAuthorities.add(fatal);
+        BoundedLoopComposition loops =
+                BoundedLoopComposition.ofPlanRows(scopedPlanRows,
+                        loopBoundAuthorities);
+        for (RelationSummary relation : loweredRelations) {
+            for (JsonElement element : array(object(relation.toJson(),
+                    "regionRelation"), "cases")) {
+                if (element.isJsonObject()) {
+                    loops.observeCase(relation.occurrenceId(),
+                            element.getAsJsonObject());
+                }
+            }
+        }
+
+        // The recorded session model is lowered first because everything
+        // after it may consume it: the target predicate itself can be a
+        // guarded read, an exact binding orders its two events in this
+        // model's one position domain, and a guarded binding hands its
+        // consumer port the very value term these selectors choose.
+        List<JsonObject> evidenceRows =
+                new ArrayList<>(selectedEvidenceRows);
+        if (object(fatal, SharedStateEvidence.RECORDED_FIELD).size() > 0
+                || !VmHandoffEvidence.eventsOf(fatal).isEmpty()) {
+            evidenceRows.add(fatal);
+        }
+        RecordedSessionModel recorded = RecordedSessionModel.of(
+                evidenceRows,
+                fatalTargetTerms(fatal), string(fatal, "regionId"));
+        emitRecordedSessionModel(emitter, recorded);
+        // README SMT-1: a shared-state read the target performs is a
+        // selected input and must name exactly one authority.  The
+        // selected-input ledger below covers declared ports; a container
+        // read does not travel on a port, so a map whose only recorded arm
+        // the session excluded reached the formula with no authority and no
+        // refusal - the query then states a membership question about a
+        // container nothing constrains, which solves trivially and reads as
+        // success.  The exclusion is decided at import and was previously
+        // reported only while lowering a selected relation's edges, so a
+        // target whose producer relation was refused lost the finding
+        // altogether.  It is named here from the target's own bindings.
+        reportUnauthorizedTargetStateReads(emitter, fatal,
+                resolved.staticEdgeIds());
         List<String> fatalTerms = new ArrayList<>();
         List<String> fatalPrefixTerms = new ArrayList<>();
         String previousFatalScope = emitter.enterSymbolScope("fatal:"
-                + firstNonBlank(string(fatal, "occurrenceId"),
-                string(fatal, "queryId"), fatalSite,
+                + firstNonBlank(string(fatal, "occurrenceId"), fatalSite,
                 string(fatal, "regionId"), "selected"));
         try {
             int pathOrdinal = 0;
@@ -216,6 +385,8 @@ public final class ConcolicSmtComposer {
                 String prefixTerm = and(prefixTerms);
                 fatalTerms.add(pathTerm);
                 fatalPrefixTerms.add(prefixTerm);
+                emitter.recordTargetReach(selectedPathOrdinal, path,
+                        pathTerm, fatal);
                 emitter.bindFatalPathPrefix(selectedPathOrdinal,
                         prefixTerm);
                 emitter.bindFatalPath(selectedPathOrdinal, pathTerm);
@@ -223,23 +394,23 @@ public final class ConcolicSmtComposer {
         } finally {
             emitter.restoreSymbolScope(previousFatalScope);
         }
+        emitter.bindTargetReachAssertion();
         emitter.bindFatalPrefixAssertion(or(fatalPrefixTerms));
         emitter.bindFatalPathAssertion(or(fatalTerms));
 
-        for (RelationSummary selection
-                : resolved.selectedRegionSummaries.values()) {
-            emitter.regionSummaryWithBoundedTimeline(selection);
+        for (RelationSummary selection : loweredRelations) {
+            emitter.lowerRelation(selection);
         }
-
         emitter.merge(context);
         emitter.mergeEdgeBindings(resolved.selectedEdges.values());
+        emitter.mergeVmHandoffs(caseEvidenceRows,
+                loops, recorded);
+        emitter.finishRecordedReadExistence();
         emitter.finishFatalAbsenceMutationWitness();
-        emitter.emitExactCausalInputAliases(
-                resolved.selectedRegionSummaries.values());
         emitter.finishBindings();
         boolean auditedEdgeEvidence = true;
         auditDroppedEdgeEvidence(emitter, ports,
-                runtimePlan.edgeValidations());
+                resolved.valueBindingRows());
         emitter.finish();
         String composedSmt = emitter.render();
 
@@ -247,34 +418,750 @@ public final class ConcolicSmtComposer {
         manifest.addProperty("schemaVersion", 2);
         manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
         manifest.addProperty("fatalSite", fatalSite);
-        manifest.addProperty("compositionMode",
-                arguments.compositionMode);
-        manifest.addProperty("pathSetComplete",
-                !observedUnderapproximation);
         manifest.add("resolvedEdgeBindings",
                 GSON.toJsonTree(resolved.staticEdgeIds()));
         manifest.add("fatalAbsenceMutationWitness",
                 failureWitness.manifest());
-        manifest.add("suppliedInputs",
-                GSON.toJsonTree(emitter.suppliedInputs));
         manifest.add("portOccurrences", emitter.portOccurrences());
+        manifest.add("selectedInputLedger", emitter.selectedInputLedger());
+        // Present whenever the pass ran, so an empty ledger from a run that
+        // checked nothing stays distinguishable from one that found nothing.
+        manifest.add("selectedInputLedgerAudit",
+                emitter.selectedInputLedgerAudit());
         manifest.add("operandBindingLedger",
                 emitter.operandBindingLedger());
+        manifest.add("targetReachLedger", emitter.targetReachLedger());
         manifest.addProperty("droppedEdgeEvidenceAudit",
                 auditedEdgeEvidence ? "AUDITED"
                         : "EDGE_VALIDATIONS_NOT_SUPPLIED");
+        manifest.add("recordedSessionModel", recorded.manifest());
+        manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
+                loops.manifest());
+        manifest.add("recordedValueBindings",
+                emitter.recordedValueBindingLedger());
+        List<JsonObject> selectedBindings = bindingRows(
+                resolved.selectedEdges.values());
+        // README's rule for the sibling fact - "an empty selection: nothing
+        // was lowered, so nothing said anything, is not complete either" -
+        // stated for this one.  Both conjuncts of recordedModelComplete are
+        // vacuous on an empty model: retainsUnknownArm iterates nothing, and
+        // partial() is false precisely when there are no guarded reads.  A
+        // model that explained none of the reads it holds therefore asserted
+        // completeness *because* it contained nothing, and the guard that
+        // forbids reading UNSAT as unreachability was left with one working
+        // term.  A model holding no recorded read at all is deliberately not
+        // caught: there is nothing there to be incomplete about.
+        boolean recordedReadsUnexplained =
+                recorded.recordedReadCount() > 0
+                        && selectedBindings.isEmpty()
+                        && recorded.choiceReadEvents().isEmpty();
+        List<JsonObject> coverage = new ArrayList<>(recorded.coverageGaps());
+        coverage.addAll(emitter.recordedCoverage);
+        coverage.addAll(loops.gaps());
+        if (recordedReadsUnexplained) {
+            // Named in the coverage channel and not in `unsupported`: that
+            // one feeds `state`, and whether the composition is solvable is a
+            // separate question from how much of the run it still covers.
+            coverage.add(CoverageDivergence.of(CoverageDivergence.Kind.FLOW,
+                    RECORDED_MODEL_UNEXPLAINED_READS,
+                    String.valueOf(recorded.recordedReadCount()),
+                    "the recorded model holds "
+                            + recorded.recordedReadCount()
+                            + " read(s) and states no read-from arm or"
+                            + " guarded choice for any of them, so its"
+                            + " completeness claim examined nothing"));
+        }
+        // A writer the trace retained as a candidate and nothing resolved is
+        // not a recorded read-from relation, and neither is one whose read
+        // kept an unknown-writer arm.  Both stay in the model - the candidate
+        // set is what the run observed - and both are reported here, so a
+        // reader can tell either from a proven binding.
+        coverage.addAll(RecordedReadFrom.provenanceGaps(
+                resolved.valueBindingRows()));
+        coverage.addAll(sourceEpochDivergences(
+                resolved.selectedEdges.values()));
+        // Gaps the target query named while being built best effort.  They
+        // are coverage facts about the query this composition consumes, so
+        // they belong in the same stream rather than only in its artifact.
+        for (JsonElement element : array(fatal, "coverageGaps")) {
+            if (element.isJsonObject()) {
+                coverage.add(element.getAsJsonObject().deepCopy());
+            }
+        }
+        JsonArray coverageGaps = new JsonArray();
+        for (JsonObject gap : coverage) coverageGaps.add(gap);
+        manifest.add("coverageGaps", coverageGaps);
+        // The formula is emitted whenever a usable target relation remains;
+        // the coverage state says how much of the model the run still
+        // supports, so an UNSAT from a partial model is never read as a
+        // conclusion about the program.
+        manifest.add("divergence", CoverageDivergence.summary(coverage,
+                emitter.unsupported.isEmpty()));
         JsonArray gaps = new JsonArray();
         appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported);
         manifest.add("gaps", gaps);
         manifest.addProperty("state", gaps.size() == 0
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
-        manifest.addProperty("trustState", observedUnderapproximation
-                ? "OBSERVED_PATH_UNDERAPPROX"
-                : "CANDIDATE_ONLY");
+        // A recorded model that keeps an unknown-writer arm or an unclosed
+        // candidate set is an under-approximation of the run, so an
+        // unsatisfiable answer over it is inconclusive.  It does not reject a
+        // satisfying witnessed path: branch replay is best effort and later
+        // cases extend the causal supergraph instead of invalidating an
+        // already authoritative case.
+        manifest.addProperty("recordedModelComplete",
+                !recordedReadsUnexplained
+                        && !recorded.partial()
+                        && !retainsUnknownArm(resolved.valueBindingRows()));
+        // README GATE-1's decision, stated as its own member.
+        //
+        // It is deliberately not folded into "state": that member says the
+        // composition produced a usable model, and the diagnostic reach
+        // projection consumes it as such - a partial recorded model is still
+        // the run's own evidence and is still worth solving.  Whether the
+        // result may be accepted as the milestone artifact is a stricter and
+        // separate question, and an open arm or a candidate-only edge answers
+        // it no.
+        //
+        // Every blocker is one named row - code, subject, detail - so a later
+        // layer reports it instead of parsing it back out of a sentence, and
+        // so an empty list is readable beside finalStatusEvidence, which says
+        // what this gate ranged over to produce it.
+        AcceptanceGate gate = new AcceptanceGate();
+        for (JsonElement element : gaps) {
+            JsonObject gap = element.getAsJsonObject();
+            gate.refuse(string(gap, "kind"), string(gap, "subject"), "");
+        }
+        // Completion criterion 5, and README LOOP-1's "a missing
+        // classification, guard, slot, state version, cardinality, or bound is
+        // a gap".  An accepted witness may not consume a value whose loop
+        // prefix ran to the bound and was still continuing, and it may not be
+        // built over a loop whose kind, K_L or N no plan row states.  The
+        // composition already names each of those as coverage; here they also
+        // decide acceptance.  A slot with no relation is deliberately not in
+        // this set: a condition-bounded replay materializes only the slots it
+        // ran, and the fixed-count case where every slot is required is
+        // refused by the emitter instead.
+        Set<String> selectedScopeMethods =
+                selectedScopeMethods(loweredRelations);
+        for (JsonObject gap : loops.gaps()) {
+            String reason = string(gap, "reason");
+            if (!LOOP_AUTHORITY_REFUSALS.contains(reason)) continue;
+            // A retained loop outside every selected relation's slice is a
+            // loop this composition never had to model: the run walked it,
+            // nothing the witness rests on came out of it, and the coverage
+            // row above already says so.  Refusing on it would make an
+            // acceptance decision about startup, configuration parsing,
+            // metrics registration or protobuf validation.  The scope is the
+            // relation's own definition methods, so the rule follows the
+            // slice and needs no list of names to keep current.
+            if (!touchesSelectedScope(string(gap, "subject"),
+                    selectedScopeMethods)) {
+                continue;
+            }
+            gate.refuse(reason, string(gap, "subject"),
+                    string(gap, "detail"));
+        }
+        // The read-from half: a selected read whose writer set the trace only
+        // ever proposed, and one that kept the arm no writer answers. Both
+        // are already coverage; the location each one is about is the subject
+        // rather than the shape of the row it came in.
+        for (JsonObject gap : RecordedReadFrom.provenanceGaps(
+                resolved.valueBindingRows())) {
+            gate.refuse(integer(gap, "statusCode", 0)
+                            == SharedStateEvidence.UNKNOWN_WRITER
+                            ? SELECTED_READ_FROM_UNKNOWN_ARM
+                            : SELECTED_EDGE_CANDIDATE_ONLY,
+                    firstNonBlank(string(gap, "locationKey"),
+                            string(gap, "edgeId")),
+                    string(gap, "detail"));
+        }
+        manifest.addProperty(FINAL_STATUS, gate.size() == 0
+                ? FINAL_READY : FINAL_REFUSED);
+        manifest.add("finalStatusRefusals", gate.refusals);
+        // What the gate ranged over, so that an empty refusal list is the
+        // answer of a gate that ran and not the silence of one that did not.
+        manifest.add("finalStatusEvidence", gateEvidence(
+                loweredRelations.size(),
+                emitter.selectedInputLedger().size(),
+                selectedBindings.size(), gaps.size(),
+                loops.boundedLoops().size()));
         manifest.add("composedSmtArtifact", artifact(arguments.output,
                 composedSmt.getBytes(StandardCharsets.UTF_8)));
         manifest.add("runtimePlanArtifact", artifact(arguments.runtimePlan));
+        // Everything the causal graph needs is now in this manifest, and it
+        // is the same everything the formula was lowered from.  Assembling it
+        // once, here, is what stops the visualization from building a second
+        // reading of the run out of the runtime plan's edge catalog.
+        manifest.add(CanonicalSessionModel.MANIFEST_FIELD,
+                CanonicalSessionModel.of(manifest,
+                        localRelations(loweredRelations),
+                        resolvedEdgeEndpoints(resolved.selectedEdges
+                                .values()),
+                        string(fatal, "regionId"),
+                        firstNonBlank(
+                                string(resolutionContext, "occurrenceId"),
+                                string(fatal, "occurrenceId"))));
         return new Result(composedSmt, manifest);
+    }
+
+    /**
+     * What the acceptance gate ranged over, in the shape every composition
+     * publishes it in.
+     *
+     * <p>A composition that weighed nothing says so with zero counts.
+     * Omitting the member instead would make "the gate ran and found nothing
+     * to weigh" read exactly like "the gate never ran", and telling those two
+     * apart is the whole reason this member exists.</p>
+     */
+    private static JsonObject gateEvidence(int selectedRelations,
+                                           int selectedInputs,
+                                           int selectedEdgeBindings,
+                                           int compositionGaps,
+                                           int boundedLoops) {
+        JsonObject evidence = new JsonObject();
+        evidence.addProperty("authority", ACCEPTANCE_GATE_AUTHORITY);
+        evidence.addProperty("selectedRelations", selectedRelations);
+        evidence.addProperty("selectedInputs", selectedInputs);
+        evidence.addProperty("selectedEdgeBindings", selectedEdgeBindings);
+        evidence.addProperty("compositionGaps", compositionGaps);
+        evidence.addProperty("boundedLoops", boundedLoops);
+        return evidence;
+    }
+
+    /**
+     * The composition of a target whose reach query never arrived.
+     *
+     * <p>The query is the one input this component starts at, and a task that
+     * failed closed leaves it absent or holding no ready row.  That is a
+     * selected blocker of this run and not an infrastructure failure, so it
+     * is published as the Composer's own refusal - the layer README
+     * {@code GATE-1} makes the sole owner of that decision - rather than
+     * thrown, which left the failure to be inferred from gap rows written by
+     * other stages.</p>
+     *
+     * <p>The artifact is a header-only query with no assertion: there is
+     * nothing recorded to assert.  It carries the same closure members every
+     * composition does, all stating the same thing - that this one closed
+     * nothing.</p>
+     */
+    private static Result refusedComposition(Arguments arguments,
+                                             String detail)
+            throws IOException {
+        String subject = firstNonBlank(arguments.occurrenceId,
+                arguments.fatalRegion, String.valueOf(arguments.fatalQueries));
+        String smtLib = String.join(System.lineSeparator(),
+                "; GraphChecker composed concolic query",
+                "; composition refused: " + TARGET_REACH_QUERY_ABSENT
+                        + " " + subject,
+                "(set-logic ALL)") + System.lineSeparator();
+        AcceptanceGate gate = new AcceptanceGate();
+        gate.refuse(TARGET_REACH_QUERY_ABSENT, subject, detail);
+        JsonObject manifest = new JsonObject();
+        manifest.addProperty("schemaVersion", 2);
+        manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
+        manifest.addProperty("fatalSite", "");
+        manifest.addProperty("recordedModelComplete", false);
+        manifest.add("portOccurrences", new JsonArray());
+        // No port was occupied and no model was produced, so this artifact
+        // is not a candidate model a later stage may conclude from.
+        manifest.addProperty("state", "CANDIDATE_WITH_GAPS");
+        manifest.addProperty(FINAL_STATUS, FINAL_REFUSED);
+        manifest.add("finalStatusRefusals", gate.refusals);
+        manifest.add("finalStatusEvidence", gateEvidence(0, 0, 0, 0, 0));
+        manifest.add("composedSmtArtifact", artifact(arguments.output,
+                smtLib.getBytes(StandardCharsets.UTF_8)));
+        manifest.add("runtimePlanArtifact", artifact(arguments.runtimePlan));
+        return new Result(smtLib, manifest);
+    }
+
+    /**
+     * The endpoints of the resolved trace edges.
+     *
+     * <p>{@code resolvedEdgeBindings} names them by id alone, which is enough
+     * for an audit and not enough to draw one. An edge that never became a
+     * value binding is still part of what the composition selected, so the
+     * canonical model needs the pair it ran between.</p>
+     */
+    private static JsonArray resolvedEdgeEndpoints(
+            Collection<ResolvedEdge> edges) {
+        JsonArray rows = new JsonArray();
+        Set<String> seen = new LinkedHashSet<>();
+        for (ResolvedEdge edge : edges) {
+            String edgeId = string(edge.binding, "edgeId");
+            if (edgeId.isEmpty() || !seen.add(edgeId)) continue;
+            rows.add(CanonicalSessionModel.resolvedEdge(edgeId,
+                    bindingSourceInstance(edge.binding),
+                    bindingTargetInstance(edge.binding),
+                    bindingSourceOutput(edge.binding),
+                    bindingTargetInput(edge.binding)));
+        }
+        return rows;
+    }
+
+    /**
+     * The selected local region relations, as the canonical model holds them.
+     *
+     * <p>The formula keeps only their effects - assertion names, port terms -
+     * so the identity of the relation each one came from would otherwise reach
+     * no artifact at all, and the graph would have to rediscover it from the
+     * runtime plan.</p>
+     */
+    private static JsonArray localRelations(
+            Collection<RelationSummary> selected) {
+        JsonArray relations = new JsonArray();
+        for (RelationSummary summary : selected) {
+            JsonObject row = summary.toJson();
+            relations.add(CanonicalSessionModel.relation(
+                    summary.summaryId(), summary.relationKey(),
+                    summary.regionId(),
+                    summary.occurrenceId(), summary.sourceKey(),
+                    array(object(row, "regionRelation"), "cases").size(),
+                    string(row, "pathCoverageState")));
+        }
+        return relations;
+    }
+
+    /**
+     * Lowers the recorded session model into the formula.
+     *
+     * <p>Six things reach the SMT here, and every one of them is stated over
+     * the same two variable families - one {@code event_position__} per
+     * recorded event and one {@code rf_selector__} per candidate arm:</p>
+     *
+     * <ul>
+     *   <li>the shared order domain, one bounded position per recorded event,
+     *   related exactly where the ledger related them;</li>
+     *   <li>exactly-one selection per guarded read;</li>
+     *   <li>{@code write < read} and the latest-visible cut against the
+     *   competing writers, per selected arm;</li>
+     *   <li>writer existence: an arm whose write the domain does not hold is
+     *   asserted infeasible;</li>
+     *   <li>the reader-value equality, which is where the choice stops being
+     *   metadata and starts deciding the target's value;</li>
+     *   <li>the writer's own recorded path guard, which is what makes an arm
+     *   whose writer never took its branch infeasible.</li>
+     * </ul>
+     *
+     * <p>The first four are the recorded model's own terms. The last two need
+     * the expression emitter, so they are lowered here, against the same
+     * selector names, and never against a second selector family.</p>
+     */
+    private static void emitRecordedSessionModel(
+            Emitter emitter, RecordedSessionModel recorded) {
+        emitter.recorded = recorded;
+        emitter.recordedChoiceReads.addAll(recorded.choiceReadEvents());
+        for (RecordedSessionModel.OrderVariable position
+                : recorded.positions()) {
+            emitter.declareBoundedPosition(position.name, position.bound);
+        }
+        for (String selector : recorded.selectors()) {
+            emitter.declare(selector, Sort.BOOL);
+        }
+        // Case-owned state/order assertions are emitted before relation
+        // guards are lowered.  Declare the shared selector names now; the
+        // guarded relation defines the same constants later.
+        for (String selector : recorded.caseSelectors()) {
+            emitter.declare(selector, Sort.BOOL);
+        }
+        // Recorded event existence is declared beside the selectors it is
+        // implied by. Target existence is not part of this state model: it
+        // comes only from the exact target event carried by a fatal case.
+        for (String existence : recorded.existenceSymbols()) {
+            emitter.declare(existence, Sort.BOOL);
+        }
+        for (RecordedSessionModel.OrderAssertion assertion
+                : recorded.assertions()) {
+            emitter.assertNamed(assertion.name,
+                    assertion.caseGuard.isEmpty() ? assertion.term
+                            : "(=> " + assertion.caseGuard + " "
+                            + assertion.term + ")");
+        }
+        // A cyclic relation is not a partial order, so no order fact read out
+        // of it is sound.  The composition refuses it here, before a solver
+        // ever sees the query, rather than emitting a formula over it.
+        if (!recorded.orderDomainFault().isEmpty()) {
+            emitter.unsupported.add("RecordedOrderDomainCycle:"
+                    + recorded.orderDomainFault());
+        }
+        emitter.catalogingRecordedReads = true;
+        try {
+            for (Map.Entry<Long, JsonObject> entry
+                    : recorded.guardedReads().entrySet()) {
+                emitter.guardedReadTerm(entry.getValue(), null);
+            }
+        } finally {
+            emitter.catalogingRecordedReads = false;
+        }
+    }
+
+    /**
+     * Names every selected edge whose producer occurrence belongs to a source
+     * or epoch other than the producing summary's own.
+     *
+     * <p>Different nodes and different epochs never merge implicitly. A
+     * binding whose producer occurrence is not inside the producer's source
+     * key would do exactly that, so it is reported as a source/epoch
+     * divergence. The check is made only for occurrence ids in the canonical
+     * {@code <sourceKey>/region/<region>#<n>} form: claiming a divergence
+     * from an id this layer cannot parse would be inventing one.</p>
+     */
+    private static List<JsonObject> sourceEpochDivergences(
+            Collection<ResolvedEdge> edges) {
+        List<JsonObject> divergences = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (ResolvedEdge edge : edges) {
+            JsonObject divergence = sourceEpochDivergence(
+                    edge.summary.sourceKey(), edge.binding);
+            if (divergence.size() == 0
+                    || !seen.add(string(divergence, "subject") + "\n"
+                    + string(edge.binding, "fromOccurrenceId"))) {
+                continue;
+            }
+            divergences.add(divergence);
+        }
+        return divergences;
+    }
+
+    /** One producer binding's source/epoch check; empty when it agrees. */
+    static JsonObject sourceEpochDivergence(String sourceKey,
+                                            JsonObject binding) {
+        String occurrence = string(binding, "fromOccurrenceId");
+        if (sourceKey == null || sourceKey.isEmpty() || occurrence.isEmpty()
+                || !occurrence.contains("/region/")
+                || occurrence.startsWith(sourceKey + "/region/")) {
+            return new JsonObject();
+        }
+        return CoverageDivergence.of(
+                CoverageDivergence.Kind.SOURCE_EPOCH,
+                "PRODUCER_OCCURRENCE_OUTSIDE_SOURCE_KEY",
+                string(binding, "edgeId"),
+                "producer occurrence " + occurrence
+                        + " is not an occurrence of source " + sourceKey);
+    }
+
+    /**
+     * The refusal rows one acceptance gate collected.
+     *
+     * <p>One named row per code and subject, in the order the blockers were
+     * found. A row is never dropped for having a blank subject: a blocker
+     * nobody could name is still a blocker, and the shape that hides it is
+     * exactly the silence this gate exists to prevent.</p>
+     */
+    /**
+     * The definition methods of every relation this composition lowered.
+     *
+     * <p>This is the slice the witness is built out of.  A loop whose control
+     * sites all lie outside it was walked by the run but contributed nothing
+     * the model rests on.
+     */
+    private static Set<String> selectedScopeMethods(
+            List<RelationSummary> lowered) {
+        Set<String> methods = new LinkedHashSet<>();
+        for (RelationSummary relation : lowered) {
+            methods.addAll(relation.outputClosure().executionScope().methods());
+        }
+        return methods;
+    }
+
+    /**
+     * Whether a loop gap's subject names a control site in one of
+     * {@code scopeMethods}.  The subject carries the loop site id, which is a
+     * method signature plus a unit index, or an {@code L(a+b+...)} nest of
+     * them; a nest counts when any member does.
+     */
+    static boolean touchesSelectedScope(String subject,
+                                        Set<String> scopeMethods) {
+        if (scopeMethods.isEmpty()) return true;
+        for (Matcher matcher = LOOP_SITE_METHOD.matcher(subject);
+             matcher.find(); ) {
+            if (scopeMethods.contains(matcher.group())) return true;
+        }
+        return false;
+    }
+
+    /** The method-signature half of a loop site id. */
+    private static final Pattern LOOP_SITE_METHOD =
+            Pattern.compile("<[^<>]+>");
+
+    private static final class AcceptanceGate {
+        private final JsonArray refusals = new JsonArray();
+        private final Set<String> named = new LinkedHashSet<>();
+
+        void refuse(String code, String subject, String detail) {
+            if (!named.add(code + "\n" + subject)) return;
+            JsonObject row = new JsonObject();
+            row.addProperty("code", code);
+            row.addProperty("subject", subject);
+            row.addProperty("detail", detail);
+            refusals.add(row);
+        }
+
+        /**
+         * Copies {@code other}'s refusals except those whose code is in
+         * {@code coverageOnly}, which are appended to {@code coverage} as
+         * named partial-coverage rows instead.  A code that describes how much
+         * of the run the model covers belongs there; only a code that forbids
+         * acceptance belongs in the gate.
+         */
+        void refuseAllExcept(AcceptanceGate other, Set<String> coverageOnly,
+                             List<JsonObject> coverage) {
+            for (JsonElement element : other.refusals) {
+                JsonObject row = element.getAsJsonObject();
+                String code = string(row, "code");
+                if (coverageOnly.contains(code)) {
+                    coverage.add(CoverageDivergence.of(
+                            CoverageDivergence.Kind.FLOW, code,
+                            string(row, "subject"), string(row, "detail")));
+                    continue;
+                }
+                refuse(code, string(row, "subject"), string(row, "detail"));
+            }
+        }
+
+        void refuseAll(AcceptanceGate other) {
+            for (JsonElement element : other.refusals) {
+                JsonObject row = element.getAsJsonObject();
+                refuse(string(row, "code"), string(row, "subject"),
+                        string(row, "detail"));
+            }
+        }
+
+        int size() {
+            return refusals.size();
+        }
+    }
+
+    /**
+     * Whether any composed binding still admits a writer nobody recorded.
+     *
+     * <p>A read can keep its unknown arm without the slice holding a guarded
+     * term for it: an exact read of a location whose writer set is already
+     * incomplete is decided and still under-approximate, because an untracked
+     * write could have produced the same value.</p>
+     */
+    private static boolean retainsUnknownArm(Collection<JsonObject> rows) {
+        for (JsonObject binding : rows) {
+            if (!string(binding, RecordedReadFrom.EDGE_UNKNOWN_ARM)
+                    .isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The binding rows of the resolved edges. */
+    private static List<JsonObject> bindingRows(
+            Collection<ResolvedEdge> edges) {
+        List<JsonObject> rows = new ArrayList<>();
+        for (ResolvedEdge edge : edges) rows.add(edge.binding);
+        return rows;
+    }
+
+    /**
+     * Names every state read the target performs that reached the formula
+     * with no admitted read-from arm.
+     *
+     * <p>An excluded arm is not an absent one: the session decided that this
+     * read took a write other than the candidate the trace offered, which is
+     * exactly what {@link RecordedReadFrom}'s per-location index exists to
+     * establish when one declared field names several objects.  What must not
+     * happen is for that decision to leave no trace in the composed artifact
+     * while the container it concerns is still asserted over.</p>
+     */
+    private static void reportUnauthorizedTargetStateReads(
+            Emitter emitter, JsonObject fatal, Set<String> loweredEdges) {
+        for (JsonElement element : array(fatal, "selectedTargetBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            if (string(binding, RecordedReadFrom.EDGE_FIELD).isEmpty()) {
+                continue;
+            }
+            String edgeId = string(binding, "edgeId");
+            if (!edgeId.isEmpty() && loweredEdges.contains(edgeId)) continue;
+            String provenance = firstNonBlank(
+                    string(binding, RecordedReadFrom.EDGE_PROVENANCE),
+                    "NO_RECORDED_EVIDENCE");
+            if (RecordedReadFrom.PROVENANCE_EXACT.equals(provenance)
+                    || RecordedReadFrom.PROVENANCE_GUARDED.equals(
+                    provenance)) {
+                continue;
+            }
+            emitter.unsupported.add(SELECTED_STATE_READ_WITHOUT_AUTHORITY
+                    + ":" + firstNonBlank(string(binding, "locationKey"),
+                    string(binding, RecordedReadFrom.EDGE_FIELD), edgeId)
+                    + ":" + provenance);
+        }
+    }
+
+    /** The selected summaries' rows, as the recorded model reads them. */
+    private static List<JsonObject> summaryRows(
+            Collection<RelationSummary> selected) {
+        List<JsonObject> rows = new ArrayList<>();
+        for (RelationSummary summary : selected) {
+            JsonObject row = summary.toJson();
+            // Normalize already-published merged summaries that predate the
+            // explicit regionId field. The output closure is the canonical
+            // owner; no heuristic reconstruction is involved.
+            row.addProperty("regionId", summary.regionId());
+            rows.add(row);
+        }
+        return rows;
+    }
+
+
+    /**
+     * Every row that may carry case-local VM handoff references: each
+     * selected relation's guarded cases and the target-reach query itself.
+     */
+    private static List<JsonObject> caseEvidenceRows(
+            Collection<RelationSummary> relations, JsonObject fatal) {
+        List<JsonObject> rows = new ArrayList<>();
+        for (RelationSummary relation : relations == null
+                ? Collections.<RelationSummary>emptyList() : relations) {
+            JsonObject row = relation.toJson();
+            JsonArray cases = array(object(row, "regionRelation"), "cases");
+            for (int index = 0; index < cases.size(); index++) {
+                JsonElement element = cases.get(index);
+                if (!element.isJsonObject()) continue;
+                JsonObject item = element.getAsJsonObject();
+                item.addProperty("toOccurrenceId", relation.occurrenceId());
+                String owner = RecordedSessionModel.caseOwner(
+                        relation.regionId(), relation.occurrenceId(),
+                        string(item, "caseId"), index);
+                retainCaseOwner(item, owner);
+                rows.add(item);
+            }
+        }
+        if (fatal != null) {
+            JsonObject target = fatal.deepCopy();
+            target.addProperty("toOccurrenceId",
+                    string(fatal, "occurrenceId"));
+            rows.add(target);
+        }
+        return rows;
+    }
+
+    private static String symbolScopeKey(String raw, String scope,
+                                         String sourceIdentity) {
+        return sourceIdentity == null
+                ? firstNonBlank(scope, "global") + "\u0000" + raw
+                : "configured-source\u0000" + sourceIdentity;
+    }
+
+    /** Focused seam for the source/case alpha-renaming invariant. */
+    static String symbolScopeKeyForTests(List<JsonObject> owners, String raw,
+                                         String scope) {
+        String identity = SymbolicSourceEvidence.rawSymbolIdentities(owners)
+                .get(raw);
+        return symbolScopeKey(raw, scope, identity);
+    }
+
+    /** Stamps every case-local evidence family with its exact owner. */
+    private static void retainCaseOwner(JsonObject item, String owner) {
+        RecordedSessionModel.writeCaseOwnership(item, owner);
+        JsonObject state = object(item, SharedStateEvidence.RECORDED_FIELD);
+        if (state.size() > 0) {
+            RecordedSessionModel.writeCaseOwnership(state, owner);
+        }
+        for (JsonElement element : array(item,
+                RelationSummary.INTERACTION_EVENTS)) {
+            if (element.isJsonObject()) {
+                RecordedSessionModel.writeCaseOwnership(
+                        element.getAsJsonObject(), owner);
+            }
+        }
+        for (JsonElement element : array(item, VmHandoffEvidence.FIELD)) {
+            if (element.isJsonObject()) {
+                RecordedSessionModel.writeCaseOwnership(
+                        element.getAsJsonObject(), owner);
+            }
+        }
+    }
+
+    /**
+     * The plan rows in composition scope: the selected region occurrences.
+     *
+     * <p>The runtime plan is a workload-wide discovery catalog.  Relevance is
+     * admitted only by a lowered relation, an endpoint of a resolved edge, or
+     * the fatal target occurrence itself. Nothing is admitted by unresolved
+     * context, exchange identity, payload equality or catalog adjacency.</p>
+     */
+    static List<JsonObject> targetScopedPlanRows(
+            Collection<JsonObject> planRows,
+            JsonObject fatal,
+            Collection<JsonObject> resolvedBindings,
+            Collection<RelationSummary> loweredRelations) {
+        Set<String> selected = new LinkedHashSet<>();
+        for (RelationSummary relation : loweredRelations == null
+                ? Collections.<RelationSummary>emptyList()
+                : loweredRelations) {
+            String occurrence = relation.occurrenceId();
+            if (!occurrence.isEmpty()) selected.add(occurrence);
+        }
+        // Do not recursively scan the whole target query: it may embed the
+        // session event ledger.  Only its explicit target identity members
+        // are selection authorities.
+        addOccurrence(fatal, "occurrenceId", selected);
+        collectOccurrences(object(fatal, "selectedTargetOccurrence"),
+                selected);
+        for (JsonObject binding : resolvedBindings == null
+                ? Collections.<JsonObject>emptyList() : resolvedBindings) {
+            collectOccurrences(binding, selected);
+        }
+        addOccurrence(fatal, "occurrenceId", selected);
+
+        List<JsonObject> scoped = new ArrayList<>();
+        Set<String> held = new LinkedHashSet<>();
+        for (JsonObject row : planRows == null
+                ? Collections.<JsonObject>emptyList() : planRows) {
+            if (row == null) continue;
+            String occurrence = string(row, "occurrenceId");
+            if (occurrence.isEmpty() || !selected.contains(occurrence)
+                    || !held.add(occurrence)) {
+                continue;
+            }
+            scoped.add(row);
+        }
+        return scoped;
+    }
+
+    /** Collects direct and from/to occurrence ids without admitting them. */
+    private static void collectOccurrences(JsonElement element,
+                                           Set<String> selected) {
+        if (element == null || element.isJsonNull()) return;
+        if (element.isJsonArray()) {
+            for (JsonElement child : element.getAsJsonArray()) {
+                collectOccurrences(child, selected);
+            }
+            return;
+        }
+        if (!element.isJsonObject()) return;
+        JsonObject row = element.getAsJsonObject();
+        addOccurrence(row, "occurrenceId", selected);
+        addOccurrence(row, "fromOccurrenceId", selected);
+        addOccurrence(row, "toOccurrenceId", selected);
+        for (Map.Entry<String, JsonElement> member : row.entrySet()) {
+            collectOccurrences(member.getValue(), selected);
+        }
+    }
+
+    private static void addOccurrence(JsonObject row, String field,
+                                      Set<String> selected) {
+        String occurrence = string(row, field);
+        if (!occurrence.isEmpty()) selected.add(occurrence);
+    }
+
+    /** Every constraint on every selected fatal path, including state reads. */
+    private static JsonArray fatalTargetTerms(JsonObject fatal) {
+        JsonArray terms = new JsonArray();
+        for (JsonElement element : array(fatal, "paths")) {
+            JsonArray constraints = array(element.getAsJsonObject(),
+                    "constraints");
+            for (JsonElement constraint : constraints) {
+                terms.add(constraint.deepCopy());
+            }
+        }
+        return terms;
     }
 
     /**
@@ -291,11 +1178,11 @@ public final class ConcolicSmtComposer {
      * absence.</p>
      *
      * <p>The admission gate is the shared one.  An edge counts only where
-     * {@link AutomaticRegionEdge#composable} already admits it, so this audit
-     * can never widen what the composer is allowed to believe: an edge whose
-     * evidence the gate rejects could not have bound anything, and naming it
-     * here would be a false alarm.  One gap per unbound consumer port keeps
-     * the report proportional to the freedoms, not to the trace.</p>
+     * {@link AutomaticRegionEdge#selectedReadFromCompositionBinding} admits
+     * it and the resolved summary graph actually selected it. Concrete,
+     * candidate and excluded trace rows are scheduling/audit evidence, not a
+     * value relation the composer dropped. One gap per unbound consumer port
+     * keeps the report proportional to the freedoms, not to the trace.</p>
      */
     private static void auditDroppedEdgeEvidence(Emitter emitter,
                                                  PortIndex ports,
@@ -311,7 +1198,8 @@ public final class ConcolicSmtComposer {
         if (unbound.isEmpty()) return;
         Set<PortOccurrence> reported = new LinkedHashSet<>();
         for (JsonObject edge : edges) {
-            if (!AutomaticRegionEdge.composable(edge)) {
+            if (!AutomaticRegionEdge
+                    .selectedReadFromCompositionBinding(edge)) {
                 continue;
             }
             String consumer = bindingTargetInput(edge);
@@ -332,14 +1220,22 @@ public final class ConcolicSmtComposer {
         }
     }
 
+    /**
+     * Checks that an observed-path relation states its under-approximation.
+     *
+     * <p>There is no second mode to ask for. README's completion criteria say
+     * the observed concolic cases <em>are</em> an existential
+     * under-approximation, so every relation this composer reads is one, and
+     * a flag naming the only mode it is ever in could refuse a campaign but
+     * never make one more honest. What the run has to state is how far its
+     * coverage got, and it does: each relation carries its own
+     * {@code pathCoverageState}. That state guides further best-effort replay;
+     * it does not reject a satisfying path whose selected causal chain has
+     * complete value authority.</p>
+     */
     private static void requireObservedCoverage(JsonObject summary,
-                                                JsonObject coverage,
-                                                String compositionMode)
+                                                JsonObject coverage)
             throws IOException {
-        if (!"EXISTENTIAL_OBSERVED_PATHS".equals(compositionMode)) {
-            throw new IOException("Observed-path relation requires "
-                    + "--composition-mode EXISTENTIAL_OBSERVED_PATHS");
-        }
         JsonObject relation = object(summary, "regionRelation");
         if (integer(coverage, "schemaVersion", -1) != 1
                 || !"OBSERVED_PATH_COVERAGE".equals(
@@ -347,13 +1243,14 @@ public final class ConcolicSmtComposer {
                 || !"IMPORTED_VM_PATH_UNDERAPPROX_V1".equals(
                 string(coverage, "authority"))
                 || bool(coverage, "complete", true)
+                // One projection authority remains.  The full-path collision
+                // fallback was deleted with README PC-1's ambient path
+                // condition, so the disjunct admitting a relation whose guard
+                // and constraint authority were both that fallback could no
+                // longer be satisfied by anything the merge can emit.
                 || !("SELECTIVE_SYMBOLIC_BRANCH_SLICE".equals(
                 string(relation, "guardProjection"))
                 && "SELECTIVE_SYMBOLIC_INPUT_SLICE_V1".equals(
-                string(coverage, "constraintProjectionAuthority"))
-                || "FULL_PATH_COLLISION_FALLBACK".equals(
-                string(relation, "guardProjection"))
-                && "FULL_PATH_COLLISION_FALLBACK".equals(
                 string(coverage, "constraintProjectionAuthority")))
                 || integer(coverage, "observedCaseCount", -1)
                 != array(relation, "cases").size()
@@ -432,18 +1329,16 @@ public final class ConcolicSmtComposer {
      */
     private static ResolvedSummaryGraph resolveSummaryGraph(
             JsonObject fatal, JsonObject context,
-            List<RelationSummary> summaries) {
-        SummaryIndex summaryIndex = SummaryIndex.build(summaries);
+            SummaryIndex summaryIndex) {
         ProducerDemandIndex knownDemands = new ProducerDemandIndex();
         List<JsonObject> equalities = relationRows(context,
                 "equalityRelations");
-        List<JsonObject> readFrom = relationRows(context,
-                "versionedStateMerges");
-        List<JsonObject> alternatives = alternativeRelations(context);
+        List<JsonObject> targetBindings = relationRows(fatal,
+                "selectedTargetBindings");
         while (true) {
             ResolvedSummaryGraph result = resolveSummaryGraphPass(
                     fatal, context, summaryIndex, knownDemands, equalities,
-                    readFrom, alternatives);
+                    targetBindings);
             if (!knownDemands.addAll(result.demands)) return result;
         }
     }
@@ -451,26 +1346,22 @@ public final class ConcolicSmtComposer {
     private static ResolvedSummaryGraph resolveSummaryGraphPass(
             JsonObject fatal, JsonObject context, SummaryIndex summaries,
             ProducerDemandIndex knownDemands,
-            List<JsonObject> equalities, List<JsonObject> readFrom,
-            List<JsonObject> alternatives) {
+            List<JsonObject> equalities,
+            List<JsonObject> targetBindings) {
         String fatalRegion = string(fatal, "regionId");
         String fatalInstance = string(context, "occurrenceId");
         ResolvedSummaryGraph result = new ResolvedSummaryGraph(fatalRegion,
                 fatalInstance, knownDemands);
 
-        registerContextDemands(result, equalities, readFrom, alternatives);
-        seedContextRelations(result, summaries, equalities,
-                "EQUALITY", true);
-        seedContextRelations(result, summaries, readFrom,
-                "READ_FROM", true);
-        seedContextRelations(result, summaries, alternatives,
-                "READ_FROM", false);
+        registerContextDemands(result, equalities);
+        registerTargetDemands(result, targetBindings);
+        seedContextRelations(result, summaries, equalities, "EQUALITY");
+        seedTargetBindings(result, summaries, targetBindings);
 
         while (!result.pending.isEmpty()) {
             ProducerKey consumer = result.pending.removeFirst();
             RelationSummary consumerSelection =
-                    result.selectedRegionSummaries.get(
-                            consumer.invocation());
+                    result.summaryFor(consumer);
             if (consumerSelection == null) continue;
             Set<String> demandedInputs =
                     consumerSelection.outputClosure().executionScope()
@@ -486,9 +1377,15 @@ public final class ConcolicSmtComposer {
             List<JsonObject> admitted = new ArrayList<>();
             for (JsonObject binding : incoming) {
                 if (!bindingTargets(binding, consumer.regionId,
-                        consumer.instanceId, demandedInputs)
-                        || !AutomaticRegionEdge
-                        .trustedRuntimeCompositionBinding(binding)) {
+                        consumer.instanceId, demandedInputs)) {
+                    continue;
+                }
+                if (AutomaticRegionEdge.unselectedReadFromBinding(binding)) {
+                    continue;
+                }
+                if (!AutomaticRegionEdge.composerTraversalBinding(binding)) {
+                    result.gaps.add("UntrustedRecursiveEdgeBinding:"
+                            + string(binding, "edgeId"));
                     continue;
                 }
                 admitted.add(binding);
@@ -501,7 +1398,21 @@ public final class ConcolicSmtComposer {
                         consumer.regionId, consumer.instanceId);
             }
         }
+        if (hasComposerTraversalBinding(targetBindings)
+                && result.selectedSummaries.isEmpty()) {
+            result.gaps.add("SelectedTargetClosureResolvedNoProducer");
+        }
         return result;
+    }
+
+    private static boolean hasComposerTraversalBinding(
+            List<JsonObject> bindings) {
+        for (JsonObject binding : bindings) {
+            if (AutomaticRegionEdge.composerTraversalBinding(binding)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<JsonObject> relationRows(JsonObject context,
@@ -509,21 +1420,6 @@ public final class ConcolicSmtComposer {
         List<JsonObject> result = new ArrayList<>();
         for (JsonElement element : array(context, field)) {
             if (element.isJsonObject()) result.add(element.getAsJsonObject());
-        }
-        return result;
-    }
-
-    private static List<JsonObject> alternativeRelations(JsonObject context) {
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonElement element : array(context,
-                "alternativeWriterGroups")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject group = element.getAsJsonObject();
-            for (JsonElement alternative : array(group, "alternatives")) {
-                if (alternative.isJsonObject()) {
-                    result.add(alternative.getAsJsonObject());
-                }
-            }
         }
         return result;
     }
@@ -541,12 +1437,16 @@ public final class ConcolicSmtComposer {
     private static void registerContextDemand(ResolvedSummaryGraph graph,
                                               JsonObject relation) {
         String output = string(relation, "fromEndpoint");
-        String sourceRegion = regionOf(output);
-        if (!graph.fatalRegion.equals(regionOf(string(relation,
-                "toEndpoint"))) || sourceRegion.isEmpty()) return;
+        String sourceRegion = relationRegion(relation, "fromRegion", output);
+        if (!graph.fatalRegion.equals(relationRegion(relation, "toRegion",
+                string(relation, "toEndpoint")))
+                || sourceRegion.isEmpty()) return;
         for (JsonElement element : selectedBindings(relation)) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
+            if (!AutomaticRegionEdge.composerTraversalBinding(binding)) {
+                continue;
+            }
             String targetInstance = bindingTargetInstance(binding);
             if (!targetInstance.isEmpty()
                     && !graph.fatalInstance.equals(targetInstance)) {
@@ -559,25 +1459,41 @@ public final class ConcolicSmtComposer {
         }
     }
 
+    private static void registerTargetDemands(
+            ResolvedSummaryGraph graph, List<JsonObject> bindings) {
+        for (JsonObject binding : bindings) {
+            if (!AutomaticRegionEdge.composerTraversalBinding(binding)
+                    || !bindingTargets(binding, graph.fatalRegion,
+                    graph.fatalInstance, bindingTargetInput(binding))) {
+                continue;
+            }
+            String region = bindingSourceRegion(binding);
+            String instance = bindingSourceInstance(binding);
+            String output = bindingSourceOutput(binding);
+            if (!region.isEmpty() && !instance.isEmpty()
+                    && !output.isEmpty()) {
+                graph.registerDemand(region, instance, output);
+            }
+        }
+    }
+
     private static void seedContextRelations(
             ResolvedSummaryGraph graph, SummaryIndex summaries,
-            List<JsonObject> relations,
-            String expectedKind, boolean missingProducerIsGap) {
+            List<JsonObject> relations, String expectedKind) {
         for (JsonObject relation : relations) {
-            seedContextRelation(graph, relation, summaries,
-                    expectedKind, missingProducerIsGap);
+            seedContextRelation(graph, relation, summaries, expectedKind);
         }
     }
 
     private static void seedContextRelation(ResolvedSummaryGraph graph,
                                             JsonObject relation,
                                             SummaryIndex summaries,
-                                            String expectedRelationKind,
-                                            boolean missingProducerIsGap) {
+                                            String expectedRelationKind) {
         String output = string(relation, "fromEndpoint");
         String input = string(relation, "toEndpoint");
-        String sourceRegion = regionOf(output);
-        if (!graph.fatalRegion.equals(regionOf(input))
+        String sourceRegion = relationRegion(relation, "fromRegion", output);
+        if (!graph.fatalRegion.equals(
+                relationRegion(relation, "toRegion", input))
                 || sourceRegion.isEmpty()) {
             return;
         }
@@ -585,6 +1501,11 @@ public final class ConcolicSmtComposer {
         for (JsonElement element : bindings) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
+            if (!AutomaticRegionEdge.composerTraversalBinding(binding)) {
+                graph.gaps.add("UntrustedContextEdgeBinding:"
+                        + string(binding, "edgeId"));
+                continue;
+            }
             String targetInstance = bindingTargetInstance(binding);
             if (!targetInstance.isEmpty()
                     && !graph.fatalInstance.equals(targetInstance)) {
@@ -593,12 +1514,57 @@ public final class ConcolicSmtComposer {
             String sourceInstance = bindingSourceInstance(binding);
             if (sourceInstance.isEmpty()) continue;
             ProducerKey key = selectExactProducer(graph, summaries,
-                    sourceRegion, sourceInstance, output,
-                    missingProducerIsGap);
+                    sourceRegion, sourceInstance, output, binding);
             if (key != null) {
                 graph.addDirectBindingIfPresent(key, graph.fatalRegion,
                         graph.fatalInstance, input, relation,
                         binding, expectedRelationKind);
+            }
+        }
+    }
+
+    private static void seedTargetBindings(
+            ResolvedSummaryGraph graph, SummaryIndex summaries,
+            List<JsonObject> bindings) {
+        for (JsonObject binding : bindings) {
+            String edgeId = string(binding, "edgeId");
+            if (!bindingTargets(binding, graph.fatalRegion,
+                    graph.fatalInstance, bindingTargetInput(binding))) {
+                graph.gaps.add("SelectedTargetBindingScopeMismatch:"
+                        + edgeId);
+                continue;
+            }
+            if (!AutomaticRegionEdge.composerTraversalBinding(binding)) {
+                if (AutomaticRegionEdge
+                        .unselectedReadFromBinding(binding)) {
+                    continue;
+                }
+                graph.gaps.add("SelectedTargetBindingHasNoTraversalAuthority:"
+                        + edgeId);
+                continue;
+            }
+            String sourceRegion = bindingSourceRegion(binding);
+            String sourceInstance = bindingSourceInstance(binding);
+            String output = bindingSourceOutput(binding);
+            String input = bindingTargetInput(binding);
+            String relationKind = bindingRelationKind(binding);
+            if (sourceRegion.isEmpty() || sourceInstance.isEmpty()
+                    || output.isEmpty() || input.isEmpty()
+                    || relationKind.isEmpty()) {
+                graph.gaps.add("MalformedSelectedTargetBinding:"
+                        + string(binding, "edgeId"));
+                continue;
+            }
+            ProducerKey key = selectExactProducer(graph, summaries,
+                    sourceRegion, sourceInstance, output, binding);
+            if (key != null) {
+                graph.addDirectBindingIfPresent(key, graph.fatalRegion,
+                        graph.fatalInstance, input, binding, binding,
+                        relationKind);
+                if (!graph.containsExactBinding(binding)) {
+                    graph.gaps.add("SelectedTargetBindingUnresolved:"
+                            + string(binding, "edgeId"));
+                }
             }
         }
     }
@@ -608,7 +1574,10 @@ public final class ConcolicSmtComposer {
                                                SummaryIndex summaries,
                                                String targetRegion,
                                                String targetInstance) {
-        if (!AutomaticRegionEdge.trustedRuntimeCompositionBinding(binding)) {
+        if (!AutomaticRegionEdge.composerTraversalBinding(binding)) {
+            if (AutomaticRegionEdge.unselectedReadFromBinding(binding)) {
+                return;
+            }
             graph.gaps.add("UntrustedRecursiveEdgeBinding:"
                     + string(binding, "edgeId"));
             return;
@@ -623,47 +1592,46 @@ public final class ConcolicSmtComposer {
             return;
         }
         ProducerKey key = selectExactProducer(graph, summaries,
-                sourceRegion, sourceInstance, output, true);
+                sourceRegion, sourceInstance, output, binding);
         if (key == null) return;
-        RelationSummary selected = graph.selectedRegionSummaries.get(
-                key.invocation());
-        JsonObject exact = matchingBinding(selected, key, targetRegion,
-                targetInstance, input, binding);
-        if (exact.size() == 0) {
-            graph.gaps.add("SelectedSummaryMissingExactEdgeBinding:"
-                    + key + "->" + targetRegion + "@" + targetInstance
-                    + ":" + input);
+        if (AutomaticRegionEdge.tracedExchangeCandidate(binding)) {
+            graph.addDirectBindingIfPresent(key, targetRegion,
+                    targetInstance, input, binding, binding,
+                    bindingRelationKind(binding));
+            if (!graph.containsExactBinding(binding)) {
+                graph.gaps.add("SelectedTopologyBindingUnresolved:"
+                        + string(binding, "edgeId"));
+            }
             return;
         }
-        graph.addEdge(new ResolvedEdge(selected, exact));
+        RelationSummary selected = graph.summaryFor(key);
+        // The VM-selected row belongs to the reader, which is the only
+        // occurrence that can know which earlier write it consumed.  The
+        // producer summary was already complete when that read happened, so
+        // its diagnostic edge copy can only remain TRACE_CANDIDATE_WRITER.
+        // selectExactProducer has instead checked the producer occurrence,
+        // output port, and this edge id in that output member's causal slice.
+        graph.addEdge(new ResolvedEdge(selected, binding.deepCopy()));
     }
 
     private static ProducerKey selectExactProducer(
             ResolvedSummaryGraph graph, SummaryIndex summaries,
             String region, String requestedInstance,
-            String output, boolean missingProducerIsGap) {
-        Set<String> demandedOutputs = graph.demandedOutputs(region,
-                requestedInstance, output);
-        InvocationKey invocation = new InvocationKey(region,
-                requestedInstance);
-        RelationSummary regionSelection =
-                graph.selectedRegionSummaries.get(invocation);
-        boolean newlySelected = regionSelection == null;
-        if (regionSelection != null
-                && !regionSelection.outputClosure().outputPorts().containsAll(
-                demandedOutputs)) {
-            // The outer resolver reruns from a clean graph with the monotonic
-            // demand index.  Never keep using a closure that omits a newly
-            // discovered port.  A joint closure may safely cover a smaller
-            // demand because all of its outputs share the same path cases.
-            graph.gaps.add("ProducerDemandExpandedAfterSelection:"
-                    + producerLabel(region, requestedInstance,
-                    demandedOutputs) + ":selected="
-                    + regionSelection.outputClosure().outputPorts());
-            return null;
-        }
+            String output, JsonObject preferredBinding) {
+        graph.registerDemand(region, requestedInstance, output);
+        Set<String> demandedOutputs = Collections.singleton(output);
         Map<String, RelationSummary> unique = new LinkedHashMap<>();
         Set<String> fingerprints = new LinkedHashSet<>();
+        boolean selectedReadFrom = AutomaticRegionEdge
+                .selectedReadFromCompositionBinding(preferredBinding);
+        String preferredEdge = string(preferredBinding, "edgeId");
+        if (selectedReadFrom && (requestedInstance.isEmpty()
+                || output.isEmpty() || preferredEdge.isEmpty())) {
+            graph.gaps.add("MalformedSelectedReadFromProducerIdentity:"
+                    + preferredEdge);
+            return null;
+        }
+        boolean occurrenceAndPortFound = false;
         for (RelationSummary summary : summaries.covering(region,
                 demandedOutputs)) {
             if (!requestedInstance.isEmpty()
@@ -671,16 +1639,47 @@ public final class ConcolicSmtComposer {
                     summary.occurrenceId())) {
                 continue;
             }
+            occurrenceAndPortFound = true;
+            if (selectedReadFrom
+                    && !producerClosureCarriesEdge(summary, output,
+                    preferredEdge)) {
+                continue;
+            }
             unique.put(summary.summaryId(), summary);
             fingerprints.add(
                     summary.outputClosure().closureFingerprint());
         }
-        if (unique.isEmpty()) {
-            if (missingProducerIsGap) {
-                graph.gaps.add("MissingExactProducerSummary:"
-                        + producerLabel(region, requestedInstance,
-                        demandedOutputs));
+        if (selectedReadFrom && unique.isEmpty()
+                && occurrenceAndPortFound) {
+            graph.gaps.add("SelectedReadFromMissingProducerCausalEdge:"
+                    + preferredEdge + ":"
+                    + producerLabel(region, requestedInstance,
+                    demandedOutputs));
+            return null;
+        }
+        if (!selectedReadFrom && unique.size() > 1
+                && !preferredEdge.isEmpty()) {
+            Map<String, RelationSummary> exactEdge = new LinkedHashMap<>();
+            for (RelationSummary summary : unique.values()) {
+                for (JsonObject edge : summary.edgeBindings()) {
+                    if (preferredEdge.equals(string(edge, "edgeId"))
+                            && output.equals(bindingSourceOutput(edge))) {
+                        exactEdge.put(summary.summaryId(), summary);
+                        break;
+                    }
+                }
             }
+            if (exactEdge.size() == 1) {
+                unique = exactEdge;
+                fingerprints.clear();
+                fingerprints.add(unique.values().iterator().next()
+                        .outputClosure().closureFingerprint());
+            }
+        }
+        if (unique.isEmpty()) {
+            graph.gaps.add("MissingExactProducerSummary:"
+                    + producerLabel(region, requestedInstance,
+                    demandedOutputs));
             return null;
         }
         if (fingerprints.size() != 1) {
@@ -698,28 +1697,36 @@ public final class ConcolicSmtComposer {
         RelationSummary selected = unique.values().iterator().next();
         String instance = firstNonBlank(requestedInstance,
                 selected.occurrenceId());
-        ProducerKey key = new ProducerKey(region, instance, output);
-        invocation = key.invocation();
-        regionSelection = graph.selectedRegionSummaries.get(invocation);
-        newlySelected = regionSelection == null;
-        if (regionSelection != null && !regionSelection.same(selected)) {
+        ProducerKey key = new ProducerKey(region, instance, output,
+                selected.summaryId());
+        RelationSummary held = graph.selectedProducerSummaries.get(key);
+        if (held != null && !held.same(selected)) {
             graph.gaps.add("ConflictingProducerSummarySelection:" + key);
             return null;
         }
-        if (newlySelected) {
-            graph.selectedRegionSummaries.put(invocation, selected);
-            ProducerKey expansionKey = key;
-            for (String demanded : demandedOutputs) {
-                ProducerKey demandedKey = new ProducerKey(region, instance,
-                        demanded);
-                if (demanded.compareTo(expansionKey.outputPort) < 0) {
-                    expansionKey = demandedKey;
-                }
-            }
+        if (held == null) {
+            graph.selectedProducerSummaries.put(key, selected);
+            graph.selectedSummaries.put(selected.summaryId(), selected);
             graph.relevantRegions.add(region);
-            graph.pending.addLast(expansionKey);
+            if (graph.expandedSummaries.add(selected.summaryId())) {
+                graph.pending.addLast(key);
+            }
         }
         return key;
+    }
+
+    private static boolean producerClosureCarriesEdge(
+            RelationSummary summary, String output, String edgeId) {
+        if (summary == null || output.isEmpty() || edgeId.isEmpty()) {
+            return false;
+        }
+        OutputClosureContract.Member member =
+                summary.outputClosure().member(output);
+        if (member == null) return false;
+        for (JsonElement element : array(member.slice(), "causalEdgeIds")) {
+            if (edgeId.equals(element.getAsString())) return true;
+        }
+        return false;
     }
 
     private static String producerLabel(String region, String instance,
@@ -727,18 +1734,6 @@ public final class ConcolicSmtComposer {
         return region + "[instance="
                 + firstNonBlank(instance, "<unique-instance>")
                 + ",outputs=" + outputs + "]";
-    }
-
-    private static JsonObject matchingBinding(RelationSummary summary,
-                                              ProducerKey source,
-                                              String targetRegion,
-                                              String targetInstance,
-                                              String targetInput,
-                                              JsonObject preferred) {
-        List<JsonObject> matches = matchingBindings(summary, source,
-                targetRegion, targetInstance, targetInput, preferred, null,
-                bindingRelationKind(preferred));
-        return matches.size() == 1 ? matches.get(0) : new JsonObject();
     }
 
     private static List<JsonObject> matchingBindings(
@@ -751,7 +1746,7 @@ public final class ConcolicSmtComposer {
             if (!source.instanceId.equals(bindingSourceInstance(binding))
                     || !source.outputPort.equals(bindingSourceOutput(binding))
                     || !AutomaticRegionEdge
-                    .trustedRuntimeCompositionBinding(binding)
+                    .composerTraversalBinding(binding)
                     || !sameCompositionRelation(binding, expectedRelation,
                     expectedKind)
                     || expectedBinding != null
@@ -768,7 +1763,20 @@ public final class ConcolicSmtComposer {
     }
 
     private static JsonArray selectedBindings(JsonObject relation) {
-        return array(relation, "selectedBindings");
+        JsonArray admitted = new JsonArray();
+        for (JsonElement element : array(relation, "selectedBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            // Runtime refinement keeps a ruled-out trace candidate in the
+            // artifact for auditability.  It is not a selected read-from arm
+            // and therefore must neither demand a producer relation nor emit
+            // a value/order constraint.
+            if (AutomaticRegionEdge.unselectedReadFromBinding(binding)) {
+                continue;
+            }
+            admitted.add(binding);
+        }
+        return admitted;
     }
 
     /**
@@ -812,13 +1820,13 @@ public final class ConcolicSmtComposer {
 
     private static String bindingRelationKind(JsonObject binding) {
         String kind = string(binding, "evidenceKind");
-        if (AutomaticRegionEdge.CONFIGURED_PROTOCOL_EQUALITY.equals(kind)) {
-            return "EQUALITY";
-        }
         if (AutomaticRegionEdge.FIELD_ASSIGNMENT_READ_FROM.equals(kind)
                 || AutomaticRegionEdge.CONTAINER_MUTATION_READ_FROM
                 .equals(kind)) {
             return "READ_FROM";
+        }
+        if (AutomaticRegionEdge.tracedExchangeCandidate(binding)) {
+            return "TOPOLOGY";
         }
         return "";
     }
@@ -860,6 +1868,10 @@ public final class ConcolicSmtComposer {
         return string(binding, "toInputPort");
     }
 
+    /**
+     * The supplied relations, indexed by the demanded outputs each closure
+     * declares, because that is what a demand is resolved against.
+     */
     private static final class SummaryIndex {
         private final Map<String, List<RelationSummary>> byClosure =
                 new LinkedHashMap<>();
@@ -882,7 +1894,8 @@ public final class ConcolicSmtComposer {
                     String targetInstance =
                             bindingTargetInstance(binding);
                     if (targetRegion.isEmpty()
-                            || targetInstance.isEmpty()) {
+                            || targetInstance.isEmpty()
+                            || !readFromArmAuthority(decoded, binding)) {
                         continue;
                     }
                     result.bindingsByTarget.computeIfAbsent(
@@ -893,6 +1906,32 @@ public final class ConcolicSmtComposer {
             return result;
         }
 
+        /**
+         * Whether this summary is the one that may state a read-from arm.
+         *
+         * <p>The scheduler declares one read-from binding on <em>both</em>
+         * endpoints, and correctly: both the writer and the reader have to
+         * select the carrier.  Only the reader can attest the arm.  Its
+         * read-out of the session store names the read as its own
+         * activation's and resolves the writer; the writer's read-out of
+         * that same store sees a read of an activation it is not, cannot
+         * name the reader, and so its copy stays a trace candidate no matter
+         * what the run proved.  Both copies used to be indexed under the
+         * same target, so one edge id resolved twice and the copy that
+         * happened to arrive first became the arm - which is not an
+         * authority in either direction.  A binding that is not a read-from
+         * is not addressed by this rule and is indexed as before.</p>
+         */
+        private static boolean readFromArmAuthority(RelationSummary summary,
+                                                    JsonObject binding) {
+            if (string(binding, RecordedReadFrom.EDGE_FIELD).isEmpty()) {
+                return true;
+            }
+            return bindingTargetInstance(binding)
+                    .equals(summary.occurrenceId());
+        }
+
+        /** The producers that cover one demand. */
         private List<RelationSummary> covering(String region,
                                                Set<String> outputs) {
             List<RelationSummary> exact = byClosure.get(
@@ -980,16 +2019,14 @@ public final class ConcolicSmtComposer {
         private final String regionId;
         private final String instanceId;
         private final String outputPort;
+        private final String summaryId;
 
         private ProducerKey(String regionId, String instanceId,
-                            String outputPort) {
+                            String outputPort, String summaryId) {
             this.regionId = firstNonBlank(regionId);
             this.instanceId = firstNonBlank(instanceId);
             this.outputPort = firstNonBlank(outputPort);
-        }
-
-        private InvocationKey invocation() {
-            return new InvocationKey(regionId, instanceId);
+            this.summaryId = firstNonBlank(summaryId);
         }
 
         @Override
@@ -999,18 +2036,19 @@ public final class ConcolicSmtComposer {
             ProducerKey value = (ProducerKey) other;
             return regionId.equals(value.regionId)
                     && instanceId.equals(value.instanceId)
-                    && outputPort.equals(value.outputPort);
+                    && outputPort.equals(value.outputPort)
+                    && summaryId.equals(value.summaryId);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(regionId, instanceId, outputPort);
+            return Objects.hash(regionId, instanceId, outputPort, summaryId);
         }
 
         @Override
         public String toString() {
             return regionId + "[instance=" + instanceId + ",output="
-                    + outputPort + "]";
+                    + outputPort + ",summary=" + summaryId + "]";
         }
     }
 
@@ -1075,10 +2113,18 @@ public final class ConcolicSmtComposer {
     private static final class ResolvedEdge {
         private final RelationSummary summary;
         private final JsonObject binding;
+        private final boolean topologyOnly;
 
         private ResolvedEdge(RelationSummary summary, JsonObject binding) {
             this.summary = summary;
             this.binding = binding;
+            String provenance = string(binding,
+                    RecordedReadFrom.EDGE_PROVENANCE);
+            this.topologyOnly = !AutomaticRegionEdge
+                    .trustedRuntimeCompositionBinding(binding)
+                    || !provenance.isEmpty()
+                    && !RecordedReadFrom.PROVENANCE_EXACT.equals(provenance)
+                    && !RecordedReadFrom.PROVENANCE_GUARDED.equals(provenance);
         }
 
     }
@@ -1269,15 +2315,15 @@ public final class ConcolicSmtComposer {
                     ignored -> new ArrayList<>()).add(effect);
         }
 
-        private void connect(Emitter.VersionedWriter writer,
+        private void connect(JsonObject binding, PortOccurrence source,
                              PortOccurrence target, String writerGuard,
                              String targetState) {
-            List<RemovalCaseEffect> candidates = effects.get(writer.source);
+            List<RemovalCaseEffect> candidates = effects.get(source);
             if (candidates == null) return;
             for (Demand demand : demands) {
                 if (!demand.target.equals(target)
                         || !demand.binding.equals(
-                        new ResolvedBindingKey(writer.binding))
+                        new ResolvedBindingKey(binding))
                         || demand.pathTerm.isEmpty()
                         || demand.keyTerm.isEmpty()) {
                     continue;
@@ -1377,9 +2423,6 @@ public final class ConcolicSmtComposer {
         private final String toInput;
         private final long writerEventSeq;
         private final long readerEventSeq;
-        private final long callerSiteEventSeq;
-        private final long sendEventSeq;
-        private final long receiveEventSeq;
 
         private ResolvedBindingKey(JsonObject binding) {
             this.edgeId = string(binding, "edgeId");
@@ -1392,12 +2435,6 @@ public final class ConcolicSmtComposer {
                     "writerEventSeq", -1L);
             this.readerEventSeq = longInteger(binding,
                     "readerEventSeq", -1L);
-            this.callerSiteEventSeq = longInteger(binding,
-                    "callerSiteEventSeq", -1L);
-            this.sendEventSeq = longInteger(binding,
-                    "sendEventSeq", -1L);
-            this.receiveEventSeq = longInteger(binding,
-                    "receiveEventSeq", -1L);
         }
 
         @Override
@@ -1412,18 +2449,14 @@ public final class ConcolicSmtComposer {
                     && toInstance.equals(value.toInstance)
                     && toInput.equals(value.toInput)
                     && writerEventSeq == value.writerEventSeq
-                    && readerEventSeq == value.readerEventSeq
-                    && callerSiteEventSeq == value.callerSiteEventSeq
-                    && sendEventSeq == value.sendEventSeq
-                    && receiveEventSeq == value.receiveEventSeq;
+                    && readerEventSeq == value.readerEventSeq;
         }
 
         @Override
         public int hashCode() {
             return Objects.hash(edgeId, evidenceKind, fromInstance,
                     fromOutput, toInstance, toInput, writerEventSeq,
-                    readerEventSeq, callerSiteEventSeq, sendEventSeq,
-                    receiveEventSeq);
+                    readerEventSeq);
         }
     }
 
@@ -1431,8 +2464,11 @@ public final class ConcolicSmtComposer {
         private final String fatalRegion;
         private final String fatalInstance;
         private final ProducerDemandIndex demands;
-        private final Map<InvocationKey, RelationSummary>
-                selectedRegionSummaries = new LinkedHashMap<>();
+        private final Map<String, RelationSummary> selectedSummaries =
+                new LinkedHashMap<>();
+        private final Map<ProducerKey, RelationSummary>
+                selectedProducerSummaries = new LinkedHashMap<>();
+        private final Set<String> expandedSummaries = new LinkedHashSet<>();
         private final Map<ResolvedBindingKey, ResolvedEdge> selectedEdges =
                 new LinkedHashMap<>();
         private final Deque<ProducerKey> pending = new ArrayDeque<>();
@@ -1453,17 +2489,26 @@ public final class ConcolicSmtComposer {
             demands.add(region, instance, output);
         }
 
-        private Set<String> demandedOutputs(String region, String instance,
-                                            String requiredOutput) {
-            registerDemand(region, instance, requiredOutput);
-            return demands.outputs(region, instance);
+        private RelationSummary summaryFor(ProducerKey producer) {
+            return selectedProducerSummaries.get(producer);
         }
 
         private void addEdge(ResolvedEdge edge) {
             String edgeId = string(edge.binding, "edgeId");
-            if (!edgeId.isEmpty()) {
-                selectedEdges.putIfAbsent(
-                        new ResolvedBindingKey(edge.binding), edge);
+            if (edgeId.isEmpty()) return;
+            ResolvedBindingKey key = new ResolvedBindingKey(edge.binding);
+            ResolvedEdge held = selectedEdges.get(key);
+            if (held == null) {
+                selectedEdges.put(key, edge);
+                return;
+            }
+            // Two rows of one edge that say different things are two answers
+            // to one question, and which of them arrived first is not the
+            // authority that settles it.  Equal rows are the same evidence
+            // offered twice and are simply kept once.
+            if (!CanonicalJson.render(held.binding).equals(
+                    CanonicalJson.render(edge.binding))) {
+                gaps.add("AmbiguousRecordedEdgeArm:" + edgeId);
             }
         }
 
@@ -1474,11 +2519,32 @@ public final class ConcolicSmtComposer {
                                                JsonObject expectedRelation,
                                                JsonObject expectedBinding,
                                                String expectedRelationKind) {
-            RelationSummary summary = selectedRegionSummaries.get(
-                    source.invocation());
+            RelationSummary summary = summaryFor(source);
             if (summary == null
                     || !summary.outputClosure().outputPorts().contains(
                     source.outputPort)) {
+                return;
+            }
+            // The producer summary establishes the local transition at this
+            // exact producer occurrence.  The target query establishes the
+            // cross-region edge at this exact consumer occurrence.  Requiring
+            // the local summary to repeat the consumer edge would make one
+            // observed producer output unusable by a second recorded read of
+            // that same version.  Admit the query edge directly only when its
+            // VM/runtime authority and both endpoints agree with the selected
+            // local relation; no concrete value participates in this join.
+            if (AutomaticRegionEdge.composerTraversalBinding(
+                    expectedBinding)
+                    && source.instanceId.equals(
+                    bindingSourceInstance(expectedBinding))
+                    && source.outputPort.equals(
+                    bindingSourceOutput(expectedBinding))
+                    && bindingTargets(expectedBinding, targetRegion,
+                    targetInstance, targetInput)
+                    && sameCompositionRelation(expectedBinding,
+                    expectedRelation, expectedRelationKind)) {
+                addEdge(new ResolvedEdge(summary,
+                        expectedBinding.deepCopy()));
                 return;
             }
             List<JsonObject> matches = matchingBindings(summary, source,
@@ -1500,6 +2566,18 @@ public final class ConcolicSmtComposer {
                 if (!edgeId.isEmpty()) result.add(edgeId);
             }
             return result;
+        }
+
+        private List<JsonObject> valueBindingRows() {
+            List<JsonObject> result = new ArrayList<>();
+            for (ResolvedEdge edge : selectedEdges.values()) {
+                if (!edge.topologyOnly) result.add(edge.binding);
+            }
+            return result;
+        }
+
+        private boolean containsExactBinding(JsonObject binding) {
+            return selectedEdges.containsKey(new ResolvedBindingKey(binding));
         }
 
         private boolean containsBinding(JsonObject relation,
@@ -1527,49 +2605,20 @@ public final class ConcolicSmtComposer {
 
     private static JsonObject boundedContext(JsonObject source,
                                              ResolvedSummaryGraph graph) {
-        JsonObject result = source.deepCopy();
-        for (String field : new String[]{"equalityRelations",
-                "versionedStateMerges"}) {
-            JsonArray selected = new JsonArray();
-            for (JsonElement element : array(source, field)) {
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject relation = element.getAsJsonObject();
-                JsonObject exact = selectedContextRelation(relation, graph);
-                if (exact.size() > 0) selected.add(exact);
-            }
-            result.add(field, selected);
-        }
-
-        JsonArray direct = array(result, "versionedStateMerges");
-        JsonArray selectedGroups = new JsonArray();
-        for (JsonElement element : array(source,
-                "alternativeWriterGroups")) {
+        JsonObject result = new JsonObject();
+        result.addProperty("occurrenceId", string(source, "occurrenceId"));
+        result.add("equalityClasses",
+                array(source, "equalityClasses").deepCopy());
+        JsonArray selected = new JsonArray();
+        for (JsonElement element : array(source, "equalityRelations")) {
             if (!element.isJsonObject()) {
                 continue;
             }
-            JsonObject group = element.getAsJsonObject();
-            JsonArray selected = new JsonArray();
-            JsonArray alternatives = array(group, "alternatives");
-            for (JsonElement alternative : alternatives) {
-                if (!alternative.isJsonObject()) {
-                    continue;
-                }
-                JsonObject relation = alternative.getAsJsonObject();
-                JsonObject exact = selectedContextRelation(relation, graph);
-                if (exact.size() > 0) selected.add(exact);
-            }
-            if (selected.size() == 1) {
-                direct.add(selected.get(0));
-            } else if (selected.size() > 1) {
-                JsonObject copy = group.deepCopy();
-                copy.add("alternatives", selected);
-                selectedGroups.add(copy);
-            }
+            JsonObject relation = element.getAsJsonObject();
+            JsonObject exact = selectedContextRelation(relation, graph);
+            if (exact.size() > 0) selected.add(exact);
         }
-        result.add("versionedStateMerges", direct);
-        result.add("alternativeWriterGroups", selectedGroups);
+        result.add("equalityRelations", selected);
         return result;
     }
 
@@ -1589,6 +2638,20 @@ public final class ConcolicSmtComposer {
         return result;
     }
 
+    /**
+     * The region whose name an endpoint id carries, or {@code ""}.
+     *
+     * <p>A region mints its own ports as {@code <regionId>.in./.out.}, so for
+     * those the id is the answer. A <em>declared cut port</em> is not one of
+     * those and never will be: {@code CommunicationCatalogContract} names it
+     * after the exchange <em>site</em> - {@code <exchangeSiteKey>.req.<name>}
+     * or {@code .resp} - because the port belongs to a call site two
+     * occurrences meet at, and the site has no region. So
+     * {@code ""} is the right answer for one, and the wrong thing to do with
+     * that answer is to treat it as "give up": use {@link #relationRegion},
+     * which asks the relation itself, wherever an empty answer would drop the
+     * row.</p>
+     */
     private static String regionOf(String endpoint) {
         if (endpoint == null) return "";
         int marker = endpoint.indexOf(".in.");
@@ -1596,6 +2659,41 @@ public final class ConcolicSmtComposer {
         if (marker > 0) return endpoint.substring(0, marker);
         marker = endpoint.indexOf("::");
         return marker > 0 ? endpoint.substring(0, marker) : "";
+    }
+
+    /**
+     * The region one endpoint of a relation belongs to.
+     *
+     * <p>The relation states it, and the endpoint's own name is only the
+     * fallback for the rows that state nothing. That order matters now that a
+     * region can close on a declared cut port: parsing the id first answered
+     * {@code ""} for every such producer, and an empty source region is what
+     * {@link #seedContextRelation} returns on - so a client prefix whose
+     * output really is a cut port was dropped out of the resolved summary
+     * graph without a gap, a producer and its edge simply absent from the
+     * composition.</p>
+     *
+     * @throws IllegalStateException naming {@link #CUT_PORT_REGION_UNRESOLVED}
+     *         when the endpoint is a declared cut port and the relation names
+     *         no region for it. That row cannot be placed and cannot be
+     *         parsed either; dropping it is the loss above, and answering
+     *         with the fatal region would attribute one activation's port to
+     *         another.
+     */
+    static String relationRegion(JsonObject relation, String member,
+                                 String endpoint) {
+        String stated = string(relation, member);
+        if (!stated.isEmpty()) return stated;
+        String parsed = regionOf(endpoint);
+        if (!parsed.isEmpty()) return parsed;
+        if (CommunicationCatalogContract.declaredPortId(endpoint)) {
+            throw new IllegalStateException(CUT_PORT_REGION_UNRESOLVED
+                    + ": endpoint=" + endpoint + " member=" + member
+                    + " edge=" + string(relation, "edgeId")
+                    + " reason=A_DECLARED_CUT_PORT_CARRIES_NO_REGION_AND_THE"
+                    + "_RELATION_NAMES_NONE");
+        }
+        return "";
     }
 
     private static String findPort(String rawSymbol, PortIndex ports) {
@@ -1640,164 +2738,23 @@ public final class ConcolicSmtComposer {
         return result.append(')').toString();
     }
 
-    /**
-     * Scheduler-certified description of one repeatable container
-     * transition.  It carries identity only; all state and leaf equations
-     * still come from the imported VM relation.
-     */
-    private static final class BoundedTimelineStep {
-        private static final String KIND =
-                "SINGLE_WRITER_BOUNDED_CONTAINER_TIMELINE_STEP";
-        private static final String AUTHORITY =
-                "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
-        private final String preStatePort;
-        private final String postStatePort;
-        private final long containerObjectId;
-        private final int bound;
-        private final String blocker;
-
-        private BoundedTimelineStep(String preStatePort,
-                                    String postStatePort,
-                                    long containerObjectId,
-                                    int bound, String blocker) {
-            this.preStatePort = preStatePort;
-            this.postStatePort = postStatePort;
-            this.containerObjectId = containerObjectId;
-            this.bound = bound;
-            this.blocker = blocker;
+    /** Distinct case selectors may coexist; one repeated case may not. */
+    static boolean authorityCasesDefinitelyAmbiguous(
+            Collection<String> authorityGuards) {
+        Set<String> cases = new LinkedHashSet<>();
+        for (String guard : authorityGuards) {
+            if (!cases.add(guard)) return true;
         }
+        return cases.contains("true") && cases.size() > 1;
+    }
 
-        private static BoundedTimelineStep from(RelationSummary summary) {
-            JsonObject selected = null;
-            for (OutputClosureContract.Member member
-                    : summary.outputClosure().members()) {
-                JsonObject candidate = object(member.slice(),
-                        "boundedContainerTimelineStep");
-                if (candidate.size() == 0) continue;
-                if (selected != null && !sameStep(selected, candidate)) {
-                    return blocked("MULTIPLE_TIMELINE_WRITERS", summary);
-                }
-                selected = candidate;
-            }
-            if (selected == null) return null;
-            if (integer(selected, "schemaVersion", -1) != 1
-                    || !KIND.equals(string(selected, "kind"))
-                    || !"ENGINE_STATE_CHAIN_BOUND_V1".equals(string(selected,
-                    "boundAuthority"))
-                    || !"ONE_DEFINITION_INVOCATION".equals(string(selected,
-                    "transitionGranularity"))
-                    || !"EXACT_PRE_STATE_TO_NORMAL_DEFINITION_EXIT_V1"
-                    .equals(string(selected, "transitionAuthority"))
-                    || !"SINGLE_WRITER_REQUIRED".equals(string(selected,
-                    "writerPolicy"))) {
-                return blocked("MALFORMED_TIMELINE_STEP", summary);
-            }
-            if (!"PROVED".equals(string(selected, "admission"))) {
-                return blocked(firstNonBlank(string(selected, "blocker"),
-                        "TIMELINE_STEP_NOT_PROVED"), summary);
-            }
-            String pre = string(selected, "preStatePort");
-            String post = string(selected, "postStatePort");
-            String token = string(selected, "memberToken");
-            String lane = string(selected, "writerLaneId");
-            long container = longInteger(selected, "containerObjectId", 0L);
-            JsonArray projections = array(selected, "memberProjections");
-            if (!AUTHORITY.equals(string(selected, "authority"))
-                    || pre.isEmpty() || post.isEmpty() || token.isEmpty()
-                    || lane.isEmpty() || container <= 0L
-                    || !summary.outputClosure().executionScope()
-                    .inputPorts().contains(pre)
-                    || !summary.outputClosure().outputPorts().contains(post)
-                    || !validProjectionPair(projections, token, lane,
-                    container)) {
-                return blocked("INCOMPLETE_TIMELINE_MEMBER_PROJECTION",
-                        summary);
-            }
-            int bound = integer(selected, "stateChainBound", -1);
-            if (bound != LoopBoundPolicy.MAX_STATE_TIMELINE_TRANSITIONS) {
-                return blocked("INVALID_STATE_CHAIN_BOUND", summary);
-            }
-            return new BoundedTimelineStep(pre, post, container, bound, "");
+    static String exactlyOneAuthority(Collection<String> guards) {
+        if (guards.isEmpty()) return "false";
+        StringBuilder result = new StringBuilder("(= (+");
+        for (String guard : guards) {
+            result.append(" (ite ").append(guard).append(" 1 0)");
         }
-
-        private static boolean sameStep(JsonObject left,
-                                        JsonObject right) {
-            return left.equals(right);
-        }
-
-        private static boolean validProjectionPair(JsonArray projections,
-                                                   String token,
-                                                   String lane,
-                                                   long container) {
-            JsonObject pre = null;
-            JsonObject post = null;
-            for (JsonElement element : projections) {
-                if (!element.isJsonObject()) return false;
-                JsonObject projection = element.getAsJsonObject();
-                if (!token.equals(string(projection, "memberToken"))
-                        || !lane.equals(string(projection, "writerLaneId"))
-                        || container != longInteger(projection,
-                        "containerObjectId", 0L)
-                        || !AUTHORITY.equals(string(projection,
-                        "identityAuthority"))) {
-                    return false;
-                }
-                if ("PRE_STATE".equals(string(projection, "stateRole"))) {
-                    if (pre != null) return false;
-                    pre = projection;
-                } else if ("POST_STATE".equals(string(projection,
-                        "stateRole"))) {
-                    if (post != null) return false;
-                    post = projection;
-                } else {
-                    return false;
-                }
-            }
-            return pre != null && post != null
-                    && projectionLeaves(pre).equals(projectionLeaves(post))
-                    && projectionLeaves(pre).contains("PRESENT\nboolean\n");
-        }
-
-        private static Set<String> projectionLeaves(JsonObject projection) {
-            Set<String> result = new LinkedHashSet<>();
-            for (JsonElement element : array(projection, "leaves")) {
-                if (!element.isJsonObject()) {
-                    result.add("MALFORMED");
-                    continue;
-                }
-                JsonObject leaf = element.getAsJsonObject();
-                String kind = string(leaf, "kind");
-                String javaType = string(leaf, "javaType");
-                String field = string(leaf, "field");
-                if (kind.isEmpty() || javaType.isEmpty()
-                        || "VALUE_FIELD".equals(kind) && field.isEmpty()) {
-                    result.add("MALFORMED");
-                } else {
-                    result.add(kind + "\n" + javaType + "\n" + field);
-                }
-            }
-            return result;
-        }
-
-        private static BoundedTimelineStep blocked(
-                String blocker, RelationSummary summary) {
-            int bound = LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
-            try {
-                bound = LoopBoundPolicy.decode(summary.toJson())
-                        .maxBackedgeTraversals();
-            } catch (IllegalArgumentException ignored) {
-                // The named blocker below closes the formula.
-            }
-            return new BoundedTimelineStep("", "", 0L, bound, blocker);
-        }
-
-        private String channelIdentity(RelationSummary summary) {
-            // This identity is local to the exact selected occurrence.  The
-            // member token names one put inside the state; it must never
-            // split one container timeline into a channel per member.
-            return summary.occurrenceId() + "\n" + preStatePort
-                    + "\n" + postStatePort;
-        }
+        return result.append(") 1)").toString();
     }
 
     private static final class Emitter {
@@ -1824,6 +2781,12 @@ public final class ConcolicSmtComposer {
         private final Set<PortOccurrence> boundPorts = new LinkedHashSet<>();
         private final Set<PortOccurrence> mentionedPorts =
                 new LinkedHashSet<>();
+        /** Case guards under which one declared input is actually consumed. */
+        private final Map<PortOccurrence, Set<String>> inputUseGuards =
+                new LinkedHashMap<>();
+        /** Named exactly-one assertion for each case-local selected-input use. */
+        private final Map<PortOccurrence, Map<String, String>>
+                inputAuthorityAssertions = new LinkedHashMap<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> canonicalPortTermBindings =
                 new LinkedHashSet<>();
@@ -1831,29 +2794,103 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private final Set<String> javaIntegralRangeAssertions =
                 new LinkedHashSet<>();
-        private final Map<PortOccurrence, EqualityBoundExpression>
-                exactEqualityBoundExpressions = new LinkedHashMap<>();
-        private final Set<PortOccurrence>
-                ambiguousEqualityBoundExpressionPorts =
-                new LinkedHashSet<>();
-        private final Set<PortOccurrence> validatedIncomingEdgeInputs =
+        /**
+         * Exact target-side whole-map reads, indexed by the VM's session
+         * owner.  The fatal expression still names the concrete map object
+         * it queried; this table is the recorded proof that that object state
+         * is the consumer port already bound to its selected writer.
+         */
+        private final Map<String, PortOccurrence> recordedMapCarrierPorts =
+                new LinkedHashMap<>();
+        private final Set<String> ambiguousMapCarrierKeys =
                 new LinkedHashSet<>();
         private final Map<PortOccurrence, Sort>
                 validatedIncomingEdgeInputSorts =
                 new LinkedHashMap<>();
-        private final Set<String> emittedExactCausalInputAliasKeys =
-                new LinkedHashSet<>();
         private final List<PortOccurrence[]> portEqualities =
                 new ArrayList<>();
-        private final Set<String> emittedVersionedBindings =
+        private final Set<String> emittedEdgeBindings =
                 new LinkedHashSet<>();
-        private final Map<PortOccurrence, TimelineOutputExpansion>
-                boundedTimelineOutputs = new LinkedHashMap<>();
+        /** The recorded session model this composition is stated over. */
+        private RecordedSessionModel recorded;
+        /** Reads whose exactly-one the recorded model already asserted. */
+        private final Set<Long> recordedChoiceReads = new LinkedHashSet<>();
+        /**
+         * README {@code READ-1}'s {@code exists(e) <-> OR(case_k holds e)},
+         * collected as the guards under which each recorded read's value was
+         * actually consumed. A case selector means the load happens only in
+         * that case; {@code "true"} means it happens in the fatal path or in
+         * a selected edge binding, both of which the composition asserts
+         * outright.
+         */
+        private final Map<Long, Set<String>> readCaseGuards =
+                new LinkedHashMap<>();
+        /**
+         * Whether the emitter is walking the recorded read catalog.
+         *
+         * <p>That pass lowers every guarded read the slice holds so its arms
+         * and value symbol exist; it is not a case that contains them.
+         * Counting it as one would make every read exist unconditionally,
+         * which is exactly the one-unconditional-choice-per-task shape
+         * {@code READ-1} removes.</p>
+         */
+        private boolean catalogingRecordedReads;
+        /** One value term per lowered guarded read, keyed by read event. */
+        private final Map<Long, Term> guardedReadTerms =
+                new LinkedHashMap<>();
+        /**
+         * The read whose arms are currently being lowered.
+         *
+         * <p>A serialized {@code IteExpression} names its arm by the bare
+         * selector the read declared, so the read it belongs to is context.
+         * The stack, rather than a field, is what keeps a guarded read nested
+         * inside another guarded read's arm from stealing the outer read's
+         * selectors.</p>
+         */
+        private final Deque<Long> readFromContext = new ArrayDeque<>();
+        /** One evidence row per recorded value binding, for the manifest. */
+        private final JsonArray recordedValueBindings = new JsonArray();
+        /** Coverage findings of the recorded value lowering. */
+        private final List<JsonObject> recordedCoverage = new ArrayList<>();
+        /** Edges the recorded evidence ruled out, reported once each. */
+        private final Set<String> excludedWriters = new LinkedHashSet<>();
+        /** Consumer ports already handed a recorded guarded read's value. */
+        private final Set<PortOccurrence> recordedReadBoundPorts =
+                new LinkedHashSet<>();
+        /** Consumer ports whose writer/read choice the VM already decided. */
+        private final Set<PortOccurrence> recordedDecidedConsumerPorts =
+                new LinkedHashSet<>();
         private final Set<String> declaredOutputVersionChoices =
                 new LinkedHashSet<>();
-        private final Set<String> declaredReferenceIdentities =
-                new LinkedHashSet<>();
-        private final Set<String> suppliedInputs = new LinkedHashSet<>();
+        /**
+         * README {@code SMT-1}'s selected-input ledger: which authority
+         * constrained each selected input port occurrence.
+         *
+         * <p>Exactly one is required.  Zero authorities is a free SMT
+         * variable wearing a port name, and several is an ambiguous lineage;
+         * both refuse the composed artifact instead of being averaged into
+         * one binding, because either would let a satisfying model reach the
+         * target through a value nothing in the run produced.</p>
+         */
+        private final Map<PortOccurrence, Map<String,
+                List<InputAuthorityEvidence>>>
+                inputAuthorities = new LinkedHashMap<>();
+
+        private static final class InputAuthorityEvidence {
+            private final String evidence;
+            private final String caseSelector;
+
+            private InputAuthorityEvidence(String evidence,
+                                           String caseSelector) {
+                this.evidence = firstNonBlank(evidence);
+                this.caseSelector = firstNonBlank(caseSelector);
+            }
+
+            private boolean same(String candidate, String selector) {
+                return evidence.equals(firstNonBlank(candidate))
+                        && caseSelector.equals(firstNonBlank(selector));
+            }
+        }
         private final Set<PortOccurrence> suppliedInputOccurrences =
                 new LinkedHashSet<>();
         private final Map<String, JsonObject> portOccurrences =
@@ -1885,12 +2922,18 @@ public final class ConcolicSmtComposer {
         private String fatalPathAssertionTerm = "";
         private final Map<Integer, String> fatalPathPrefixes =
                 new LinkedHashMap<>();
+        /** Exact runtime target events and the fatal case that owns each. */
+        private final JsonArray targetReachEvents = new JsonArray();
+        private final List<String> targetReachCaseTerms = new ArrayList<>();
         private final Set<String> fatalDependentAssertionNames =
                 new LinkedHashSet<>();
         /** Definedness facts collected while lowering one container term. */
         private Set<String> currentContainerRequirements;
         private String currentGuard = "";
         private String currentSymbolScope = "global";
+        /** Raw VM symbol -> exact configured program-source identity. */
+        private Map<String, String> symbolicSourceIdentities =
+                Collections.emptyMap();
         private InvocationKey currentInvocation;
 
         private Emitter(PortIndex ports, InvocationKey fatalInvocation,
@@ -1965,6 +3008,17 @@ public final class ConcolicSmtComposer {
             preamble.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
         }
 
+        private void registerSymbolicSources(List<JsonObject> owners) {
+            try {
+                symbolicSourceIdentities =
+                        SymbolicSourceEvidence.rawSymbolIdentities(owners);
+            } catch (IllegalArgumentException malformed) {
+                symbolicSourceIdentities = Collections.emptyMap();
+                unsupported.add("SymbolicSourceEvidenceMalformed:"
+                        + firstNonBlank(malformed.getMessage(), "UNKNOWN"));
+            }
+        }
+
         private void bindFatalPath(int pathOrdinal, String pathTerm) {
             for (FatalAbsenceMutationWitness.Demand demand
                     : failureWitness.demands) {
@@ -1987,6 +3041,91 @@ public final class ConcolicSmtComposer {
             fatalPathAssertionTerm = pathTerm;
             fatalPathAssertionName = assertNamed("fatal_path", pathTerm);
             fatalDependentAssertionNames.add(fatalPathAssertionName);
+        }
+
+        /**
+         * Files one case-local source attestation after checking it against
+         * the selected query's replay witness. The case guard expresses the
+         * desired opposite outcome; the runtime event is never rewritten to
+         * claim that outcome was observed. A missing or mismatched event is
+         * an acceptance refusal, never a reason to synthesize target
+         * existence from state reads in the target region.
+         */
+        private void recordTargetReach(int pathOrdinal, JsonObject path,
+                                       String caseGuard, JsonObject fatal) {
+            JsonElement encoded = path.get(
+                    PathObservation.TargetReachEvent.FIELD);
+            if (encoded == null) {
+                unsupported.add("SelectedTargetReachEventMissing:path:"
+                        + pathOrdinal);
+                return;
+            }
+            final PathObservation.TargetReachEvent event;
+            try {
+                event = PathObservation.TargetReachEvent.decode(encoded);
+            } catch (IllegalArgumentException malformed) {
+                unsupported.add("SelectedTargetReachEventMalformed:path:"
+                        + pathOrdinal + ":" + firstNonBlank(
+                        malformed.getMessage(), "UNKNOWN"));
+                return;
+            }
+            JsonElement required = fatal.get("requiredTakenOutcome");
+            boolean exactRequired = required != null
+                    && required.isJsonPrimitive()
+                    && required.getAsJsonPrimitive().isBoolean();
+            JsonElement desired = path.get("desiredTakenOutcome");
+            boolean exactDesired = desired != null
+                    && desired.isJsonPrimitive()
+                    && desired.getAsJsonPrimitive().isBoolean();
+            final BranchReplayContract replay;
+            try {
+                replay = BranchReplayContract.fromJson(
+                        object(fatal, "seedReplayContract"));
+            } catch (IllegalArgumentException malformed) {
+                unsupported.add("SelectedTargetSourceAttestationMalformed:"
+                        + "path:" + pathOrdinal + ":" + firstNonBlank(
+                        malformed.getMessage(), "UNKNOWN"));
+                return;
+            }
+            BranchWitness source = replay.source();
+            int occurrence = JsonFields.exactInteger(fatal,
+                    "targetOccurrence", -1);
+            if (!exactRequired || !exactDesired
+                    || desired.getAsBoolean() != required.getAsBoolean()
+                    || required.getAsBoolean()
+                    != replay.requiredTakenOutcome()
+                    || !string(fatal, "targetSiteId").equals(
+                    source.siteId())
+                    || occurrence != source.occurrence()
+                    || !event.matches(source.siteId(), source.occurrence(),
+                    source.sourceTakenOutcome())) {
+                unsupported.add("SelectedTargetReachEventMismatch:path:"
+                        + pathOrdinal + ":" + event.siteId() + "#"
+                        + event.occurrence() + "=" + event.outcome());
+                return;
+            }
+            JsonObject row = event.toJson();
+            row.addProperty("attestationRole",
+                    "SOURCE_TARGET_REACH_EVENT");
+            row.addProperty("sourceObservedOutcome", event.outcome());
+            row.addProperty("desiredTakenOutcome",
+                    required.getAsBoolean());
+            row.addProperty("pathOrdinal", pathOrdinal);
+            row.addProperty("caseGuard", caseGuard);
+            targetReachEvents.add(row);
+            targetReachCaseTerms.add(caseGuard);
+        }
+
+        private void bindTargetReachAssertion() {
+            if (targetReachCaseTerms.isEmpty()) {
+                unsupported.add("SelectedTargetReachEventMissing:selected");
+            }
+            fatalDependentAssertionNames.add(assertNamed(
+                    "target_reach_event", or(targetReachCaseTerms)));
+        }
+
+        private JsonArray targetReachLedger() {
+            return targetReachEvents.deepCopy();
         }
 
         private void bindFatalPathPrefix(int pathOrdinal,
@@ -2157,108 +3296,80 @@ public final class ConcolicSmtComposer {
         }
 
         /**
-         * Catalogs a producer's exact String output expression for a
-         * consumer input only when the selected instance edge carries the
-         * same trusted configured protocol mapping that will later be
-         * asserted by {@link #mergeEdgeBindings(Collection)}. This is an
-         * expression-level view of an ordinary merge edge, not a protocol
-         * adapter: it lets sound Java codec reductions inspect the expression
-         * on the other side of an already-proved equality.
+         * Registers only VM-proven exact whole-map reads.
+         *
+         * <p>This is not field matching.  The VM location key supplies the
+         * session-stable map owner, and the exact read-from edge supplies the
+         * consumer occurrence and input port.  A conflicting port for the
+         * same owner/occurrence is refused instead of guessed.</p>
          */
-        private void registerExactEqualityBoundExpressions(
+        private void registerExactSharedCarrierPorts(
                 Collection<ResolvedEdge> edges) {
             for (ResolvedEdge edge : edges) {
-                JsonObject binding = edge.binding;
-                String output = bindingSourceOutput(binding);
-                String input = bindingTargetInput(binding);
-                if (!AutomaticRegionEdge
-                        .trustedRuntimeValueEqualityBinding(binding)
-                        || !ports.contains(output)
-                        || !ports.contains(input)) {
-                    continue;
-                }
-                JsonElement value = caseInvariantOutputExpression(
-                        edge.summary.toJson(), output);
-                // The consumer must be reading a declared String, and the
-                // producer's own expression must prove it built one.  That
-                // expression is the evidence substituted into the codec
-                // proof, and it is stronger than the producer port's
-                // declaration - which a local-valued cell may not carry at
-                // all.  A declaration that disagrees still stops here.
-                if (value == null || !value.isJsonObject()
-                        || !provablyStringValued(value)
-                        || !declaredString(input)
-                        || contradictsString(output)) {
-                    continue;
-                }
-                EqualityBoundExpression candidate =
-                        new EqualityBoundExpression(input, output,
-                                bindingSourceInstance(binding),
-                                bindingTargetInstance(binding), value);
-                PortOccurrence target = occurrence(
-                        bindingTargetInstance(binding), input);
-                EqualityBoundExpression previous =
-                        exactEqualityBoundExpressions.get(target);
-                if (previous == null
-                        && !ambiguousEqualityBoundExpressionPorts.contains(
-                        target)) {
-                    exactEqualityBoundExpressions.put(target, candidate);
-                } else if (previous != null
-                        && !previous.sameProofAndExpression(candidate)) {
-                    exactEqualityBoundExpressions.remove(target);
-                    ambiguousEqualityBoundExpressionPorts.add(target);
-                    unsupported.add(
-                            "AmbiguousExactEqualityBoundExpression:" + target);
-                }
+                registerExactSharedCarrierPort(edge.binding);
             }
         }
 
-        /** Whether Java declares this port's value to be a String. */
-        private boolean declaredString(String port) {
-            return sortOfJava(declaredPortJavaType(port)) == Sort.STRING;
-        }
-
-        /** Whether a known declaration rules a String value out. */
-        private boolean contradictsString(String port) {
-            String declared = declaredPortJavaType(port);
-            return !declared.isEmpty()
-                    && sortOfJava(declared) != Sort.STRING;
-        }
-
-        /**
-         * Reads one output's expression from a merged region relation.
-         *
-         * <p>{@link RelationSummary} publishes expressions per guarded case,
-         * never at the summary root: a case owns both the path condition and
-         * the bounded output version that produced its expression.  A reader
-         * outside the case scope may therefore only use an expression every
-         * case agrees on, because that is the one expression the producer
-         * binds whichever case the solver selects.  Cases that disagree -
-         * including the expanded bounded output versions - have no case-free
-         * expression, and the reader keeps its own named gap instead.</p>
-         */
-        private JsonElement caseInvariantOutputExpression(JsonObject summary,
-                                                          String port) {
-            JsonElement direct = object(summary, "outputExpressions")
-                    .get(port);
-            if (direct != null) return direct;
-            JsonArray cases = array(object(summary, "regionRelation"),
-                    "cases");
-            if (cases.size() == 0) return null;
-            JsonElement selected = null;
-            for (JsonElement element : cases) {
-                if (!element.isJsonObject()) return null;
-                JsonElement value = object(element.getAsJsonObject(),
-                        "outputExpressions").get(port);
-                if (value == null) return null;
-                if (selected == null) {
-                    selected = value;
-                } else if (!CanonicalJson.render(selected).equals(
-                        CanonicalJson.render(value))) {
-                    return null;
-                }
+        private void registerExactSharedCarrierPort(JsonObject binding) {
+            // Deliberately the session-local triple, not the canonical name
+            // the rest of the pipeline joins on: the owner recovered here is
+            // matched against a rid parsed out of this session's own symbol
+            // names, so both sides must speak the same session's numbering.
+            String location = SharedStateEvidence.sessionLocationKey(binding);
+            long owner = SharedStateEvidence.locationOwnerOf(location);
+            String instance = bindingTargetInstance(binding);
+            String input = bindingTargetInput(binding);
+            // Exact and guarded VM read-from edges both carry a whole map
+            // state.  The guarded edge still has to select one recorded arm;
+            // this registration only makes that state available at the
+            // consumer port instead of replaying a serialized seed history
+            // beside it.
+            String provenance = string(binding,
+                    RecordedReadFrom.EDGE_PROVENANCE);
+            if (!(RecordedReadFrom.PROVENANCE_EXACT.equals(provenance)
+                    || RecordedReadFrom.PROVENANCE_GUARDED.equals(provenance))
+                    || !SharedStateEvidence.isMapState(location)) {
+                return;
             }
-            return selected;
+            // Past that gate the arm *should* substitute the fatal map state
+            // for this consumer's port, and each remaining precondition is a
+            // way that substitution silently did not happen - the container
+            // join then falls back to a free `sym__fatal_...` map root and
+            // the paired signal reads "root vanished" and "root left
+            // unauthorized" the same.  README's fail-closed discipline: name
+            // the reason rather than let absence look like nothing wrong.
+            // The sort check is the one most likely to bite, so it reports
+            // the sort it actually found.
+            String reason = owner <= 0L
+                    ? "MAP_OWNER_UNRESOLVED_FROM_LOCATION_KEY:" + location
+                    : instance.isEmpty()
+                    ? "EXACT_MAP_ARM_NAMES_NO_CONSUMER_OCCURRENCE"
+                    : !ports.contains(input)
+                    ? "EXACT_MAP_ARM_CONSUMER_PORT_UNDECLARED:" + input
+                    : ports.sort(input) != Sort.MAP
+                    ? "EXACT_MAP_ARM_CONSUMER_PORT_NOT_MAP_SORTED:"
+                            + input + ":expected MAP got "
+                            + ports.sort(input)
+                    : "";
+            if (!reason.isEmpty()) {
+                unsupported.add("ExactMapStateArmNotJoined:" + reason);
+                return;
+            }
+            String key = mapCarrierKey(instance, owner);
+            PortOccurrence candidate = occurrence(instance, input);
+            PortOccurrence previous = recordedMapCarrierPorts.get(key);
+            if (previous == null && !ambiguousMapCarrierKeys.contains(key)) {
+                recordedMapCarrierPorts.put(key, candidate);
+            } else if (previous != null && !previous.equals(candidate)) {
+                recordedMapCarrierPorts.remove(key);
+                ambiguousMapCarrierKeys.add(key);
+                unsupported.add("AmbiguousExactMapCarrier:" + instance
+                        + ":" + owner);
+            }
+        }
+
+        private String mapCarrierKey(String instance, long owner) {
+            return firstNonBlank(instance) + "\u0000" + owner;
         }
 
         private String constraint(JsonElement expression, String origin) {
@@ -2404,8 +3515,8 @@ public final class ConcolicSmtComposer {
                 // The custom VM restarts placeholder ordinals for every
                 // replay task.  Therefore #1 identifies an event only inside
                 // the currently imported path case; treating it as a global
-                // identity accidentally equates (for example) a NameNode
-                // clock read with a later DataNode clock read.
+                // identity accidentally equates (for example) one source's
+                // clock read with a later read on a different source.
                 String identity = function + "#" + count;
                 String scopedIdentity = currentSymbolScope + "\u0000"
                         + identity;
@@ -2422,6 +3533,12 @@ public final class ConcolicSmtComposer {
             if ("TypeCastExpression".equals(type)) {
                 return typeCast(object);
             }
+            if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
+                return guardedReadTerm(object, expected);
+            }
+            if (RECORDED_ITE_TYPE.equals(type)) {
+                return recordedIteTerm(object, expected);
+            }
             if ("MethodExpression".equals(type)) {
                 return methodTerm(object);
             }
@@ -2436,8 +3553,393 @@ public final class ConcolicSmtComposer {
             return unsupportedTerm(sort);
         }
 
+        /**
+         * Lowers one VM guarded read-from node into the value it denotes.
+         *
+         * <p>The node is the whole answer to "which write did this read
+         * take": an exactly-one selection over the recorded candidate arms
+         * plus an unconditional unknown-writer arm. The value it denotes is
+         * one fresh constant, and each arm says what that constant equals
+         * when its selector holds:</p>
+         *
+         * <pre>
+         * rf_k -&gt; (v = expr_k AND guard(W_k))
+         * </pre>
+         *
+         * <p>{@code write &lt; read}, the latest-visible cut and writer
+         * existence are stated by the recorded model over the same selector
+         * names, so nothing here needs to restate them and nothing here may
+         * contradict them. The unknown arm deliberately constrains nothing
+         * but the value - it is a fresh VM symbol - which is what keeps the
+         * choice satisfiable when the recorded order rules every observed
+         * writer out.</p>
+         *
+         * <p>The term is memoised per read event. Two mentions of one read
+         * are one read, and giving them two constants would let a model take
+         * two different writers for a single Java load.</p>
+         */
+        private Term guardedReadTerm(JsonObject node, Sort expected) {
+            String fault = SharedStateEvidence.guardedReadFault(node);
+            if (!fault.isEmpty()) {
+                unsupported.add("UnadmittedGuardedRead:" + fault);
+                return unsupportedTerm(expected == null
+                        ? Sort.VALUE : expected);
+            }
+            long readEventId = longInteger(node, "readEventId", 0L);
+            noteReadCase(readEventId);
+            Term memoised = guardedReadTerms.get(readEventId);
+            if (memoised != null) return memoised;
+            if (readFromContext.contains(readEventId)) {
+                // A read whose own arm mentions it again is not a value.
+                unsupported.add("RecursiveGuardedRead:" + readEventId);
+                return unsupportedTerm(expected == null
+                        ? Sort.VALUE : expected);
+            }
+            String javaType = string(node, "_java_type");
+            Sort declared = sortOfJava(javaType);
+            Sort want = declared != Sort.VALUE ? declared : expected;
+            JsonArray candidates = array(node, "candidates");
+            List<Term> arms = new ArrayList<>();
+            readFromContext.push(readEventId);
+            try {
+                for (JsonElement element : candidates) {
+                    arms.add(term(element.getAsJsonObject().get("expression"),
+                            want));
+                }
+            } finally {
+                readFromContext.pop();
+            }
+            Sort sort = want != null && want != Sort.VALUE
+                    ? want : arms.get(0).sort;
+            for (Term arm : arms) {
+                if (arm.sort != sort) {
+                    unsupported.add("GuardedReadArmSortConflict:"
+                            + readEventId + ":" + sort + "!=" + arm.sort);
+                    return unsupportedTerm(sort);
+                }
+            }
+            String value = READ_VALUE_PREFIX + readEventId;
+            declare(value, sort);
+            Term result = new Term(value, sort,
+                    integralWidthOfJava(javaType));
+            guardedReadTerms.put(readEventId, result);
+            assertJavaIntegralDomain(value, sort, javaType,
+                    "recorded read " + readEventId);
+            emitGuardedReadArms(node, readEventId, candidates, arms, value);
+            emitRecordedSelectionTerm(node, readEventId, sort, value);
+            return result;
+        }
+
+        /**
+         * Lowers the node's own serialized selection term.
+         *
+         * <p>The VM writes the choice twice: once as the candidate array the
+         * arms above are stated over, and once as a nested
+         * {@code IteExpression} chain over the same selectors. Admission
+         * already requires both, so both are lowered - a chain this emitter
+         * cannot render is a gap and not a detail, and finding that out here
+         * is the difference between a named refusal and a formula quietly
+         * built from half of an admitted node.</p>
+         *
+         * <p>Given the exactly-one selection the two are the same statement,
+         * so asserting the chain cannot remove a model the arms admitted. It
+         * can only conflict where the VM's two halves conflict, and a node
+         * whose selection term contradicts its own candidates supports
+         * nothing.</p>
+         */
+        private void emitRecordedSelectionTerm(JsonObject node,
+                                               long readEventId, Sort sort,
+                                               String value) {
+            String previousGuard = currentGuard;
+            currentGuard = "";
+            readFromContext.push(readEventId);
+            try {
+                Term chain = term(node.get("ite"), sort);
+                if (chain.sort != sort) {
+                    unsupported.add("RecordedSelectionTermSortConflict:"
+                            + readEventId + ":" + sort + "!=" + chain.sort);
+                    return;
+                }
+                assertNamed("recorded_read_term__" + readEventId,
+                        and(Arrays.asList(chain.precondition, "(= " + value
+                                + " " + chain.text + ")")));
+            } finally {
+                readFromContext.pop();
+                currentGuard = previousGuard;
+            }
+        }
+
+        /** Records the case guard one consumption of a read happened under. */
+        private void noteReadCase(long readEventId) {
+            if (catalogingRecordedReads || readEventId <= 0L) return;
+            readCaseGuards.computeIfAbsent(readEventId,
+                            ignored -> new LinkedHashSet<>())
+                    .add(currentGuard.isEmpty() ? "true" : currentGuard);
+        }
+
+        /**
+         * Defines {@code exists(read)} for every recorded read this formula
+         * states a choice over.
+         *
+         * <p>The recorded model gates each read's exactly-one on this Boolean
+         * and every arm implies it; here it is bound to the cases that
+         * actually consume the load. A read no selected case and no selected
+         * binding consumes is bound false - it has no arm, and it imposes no
+         * write/read order - and named, because "this run watched a load the
+         * composed witness does not contain" is a coverage finding and not a
+         * silent omission.</p>
+         */
+        private void finishRecordedReadExistence() {
+            Set<Long> reads = new LinkedHashSet<>(guardedReadTerms.keySet());
+            reads.addAll(recordedChoiceReads);
+            for (Long readEventId : reads) {
+                String symbol = RecordedSessionModel.readExistsName(
+                        readEventId);
+                declare(symbol, Sort.BOOL);
+                Set<String> guards = readCaseGuards.get(readEventId);
+                if (guards == null || guards.isEmpty()) {
+                    assertNamed("recorded_read_absent__" + readEventId,
+                            "(not " + symbol + ")");
+                    recordedCoverage.add(CoverageDivergence.of(
+                            CoverageDivergence.Kind.FLOW,
+                            "RECORDED_READ_OUTSIDE_SELECTED_CASES",
+                            String.valueOf(readEventId),
+                            "no selected case or binding consumes recorded"
+                                    + " read " + readEventId + ", so it"
+                                    + " selects no writer arm"));
+                    continue;
+                }
+                assertNamed("recorded_read_exists__" + readEventId,
+                        "(= " + symbol + " "
+                                + or(new ArrayList<>(guards)) + ")");
+            }
+        }
+
+        /**
+         * Emits the value equality and the writer path guard of every arm.
+         *
+         * <p>Both are stated unconditionally with respect to the region case
+         * currently being lowered. A writer's path guard is a fact about the
+         * writer's own execution, and the selector is the read's own choice;
+         * neither becomes true only because some consumer case was taken, and
+         * nesting them under {@code currentGuard} would let an unselected
+         * consumer case silently license any writer.</p>
+         */
+        private void emitGuardedReadArms(JsonObject node, long readEventId,
+                                         JsonArray candidates,
+                                         List<Term> arms, String value) {
+            String previousGuard = currentGuard;
+            currentGuard = "";
+            List<String> selectors = new ArrayList<>();
+            try {
+                for (int index = 0; index < candidates.size(); index++) {
+                    JsonObject candidate = candidates.get(index)
+                            .getAsJsonObject();
+                    String arm = string(candidate, "selector");
+                    String selector = RecordedSessionModel.selectorName(
+                            readEventId, arm);
+                    declare(selector, Sort.BOOL);
+                    selectors.add(selector);
+                    Term armTerm = arms.get(index);
+                    String equality = assertNamed(
+                            "recorded_read_value__" + readEventId + "__" + arm,
+                            "(=> " + selector + " " + and(Arrays.asList(
+                                    armTerm.precondition, "(= " + value + " "
+                                            + armTerm.text + ")")) + ")");
+                    String guardAssertion = emitRecordedWriterGuard(
+                            readEventId, arm, selector, candidate);
+                    recordedValueBindings.add(recordedValueBinding(node,
+                            candidate, selector, equality, guardAssertion));
+                }
+                if (!recordedChoiceReads.contains(readEventId)) {
+                    // The recorded model states the choice for every read it
+                    // could place in the order domain.  A read it could not -
+                    // an unwatched location, a session with no ledger - still
+                    // denotes one value, so the choice is stated here, gated
+                    // on the same read-existence Boolean, and the missing
+                    // order stays a named coverage finding.
+                    String exists = RecordedSessionModel.readExistsName(
+                            readEventId);
+                    declare(exists, Sort.BOOL);
+                    StringBuilder exactlyOne = new StringBuilder("(= (+");
+                    for (int index = 0; index < selectors.size(); index++) {
+                        exactlyOne.append(" (ite ")
+                                .append(selectors.get(index)).append(" 1 0)");
+                        assertNamed("recorded_read_arm_exists__"
+                                        + readEventId + "__" + index,
+                                "(=> " + selectors.get(index) + " " + exists
+                                        + ")");
+                    }
+                    assertNamed("recorded_read_choice__" + readEventId,
+                            "(=> " + exists + " "
+                                    + exactlyOne.append(") 1)") + ")");
+                    recordedChoiceReads.add(readEventId);
+                    recordedCoverage.add(CoverageDivergence.of(
+                            CoverageDivergence.Kind.FLOW,
+                            "RECORDED_READ_CHOICE_WITHOUT_ORDER",
+                            SharedStateEvidence.locationKey(node),
+                            "read " + readEventId + " chooses a writer with no"
+                                    + " position in the recorded order"
+                                    + " domain"));
+                }
+            } finally {
+                currentGuard = previousGuard;
+            }
+        }
+
+        /** Emits the VM-selected arm's own writer path guard. */
+        private String emitRecordedWriterGuard(long readEventId, String arm,
+                                               String selector,
+                                               JsonObject candidate) {
+            if (bool(candidate, "unknown", false)) return "";
+            long fieldVersionId = longInteger(candidate, "fieldVersionId", 0L);
+            JsonObject version = recorded == null
+                    ? new JsonObject()
+                    : recorded.writerVersion(fieldVersionId);
+            if (version.size() == 0) {
+                unsupported.add("RecordedWriterVersionMissing:"
+                        + readEventId + ":" + arm + ":" + fieldVersionId);
+                return assertNamed("recorded_write_guard__" + readEventId
+                                + "__" + arm,
+                        "(=> " + selector + " false)");
+            }
+            // The guarded-read candidate is the reader-side VM answer.  A
+            // version-store snapshot can confirm that its writer exists, but
+            // cannot replace the path guard serialized on the selected arm:
+            // doing so can make an infeasible reader choice satisfiable when
+            // the two snapshots were captured at different points.
+            JsonElement pathGuard = candidate.get("pathGuard");
+            if (SharedStateEvidence.unguarded(pathGuard)) return "";
+            String guard = constraint(pathGuard,
+                    "recorded writer guard " + arm + " of read "
+                            + readEventId);
+            return assertNamed("recorded_write_guard__" + readEventId + "__"
+                    + arm, "(=> " + selector + " " + guard + ")");
+        }
+
+        /** One machine-checkable evidence row for one lowered arm. */
+        private JsonObject recordedValueBinding(JsonObject node,
+                                                JsonObject candidate,
+                                                String selector,
+                                                String valueAssertion,
+                                                String guardAssertion) {
+            JsonObject row = new JsonObject();
+            row.addProperty("kind", "RECORDED_READ_FROM_VALUE_BINDING");
+            row.addProperty("authority",
+                    SharedStateEvidence.GUARDED_READ_AUTHORITY);
+            row.addProperty("readEventId",
+                    longInteger(node, "readEventId", 0L));
+            String locationKey = SharedStateEvidence.locationKey(node);
+            row.addProperty("locationKey", locationKey);
+            // A map-state read is lowered by the same arms as a scalar one -
+            // the arm expression is the only thing that differs - so the kind
+            // travels as a property of the row rather than as a second row
+            // shape the model and the drawing would each have to know.
+            row.addProperty("locationKind",
+                    SharedStateEvidence.locationKindOf(locationKey));
+            row.addProperty("selector", selector);
+            row.addProperty("arm", string(candidate, "selector"));
+            row.addProperty("unknown", bool(candidate, "unknown", false));
+            row.addProperty("fieldVersionId",
+                    longInteger(candidate, "fieldVersionId", 0L));
+            row.addProperty("writerRegionId", string(candidate, "regionId"));
+            row.addProperty("valueAssertion", valueAssertion);
+            row.addProperty("writerGuardAssertion", guardAssertion);
+            row.addProperty("writerExists", recorded != null
+                    && recorded.ordersEvent(longInteger(candidate,
+                    "fieldVersionId", 0L)));
+            return row;
+        }
+
+        /**
+         * Lowers one arm of the VM's own serialized selection term.
+         *
+         * <p>The node names its arm by the bare selector the enclosing read
+         * declared, so it is only meaningful inside that read. Outside one it
+         * is refused rather than resolved against whichever read happens to
+         * be in scope.</p>
+         */
+        private Term recordedIteTerm(JsonObject node, Sort expected) {
+            String arm = string(node, "selector");
+            if (readFromContext.isEmpty() || arm.isEmpty()) {
+                unsupported.add("RecordedIteOutsideGuardedRead:"
+                        + firstNonBlank(arm, "unnamed"));
+                return unsupportedTerm(expected == null
+                        ? Sort.VALUE : expected);
+            }
+            String selector = RecordedSessionModel.selectorName(
+                    readFromContext.peek(), arm);
+            declare(selector, Sort.BOOL);
+            Term then = term(node.get("then"), expected);
+            Term otherwise = term(node.get("else"), expected);
+            if (then.sort != otherwise.sort) {
+                unsupported.add("RecordedIteArmSortConflict:" + arm + ":"
+                        + then.sort + "!=" + otherwise.sort);
+                return unsupportedTerm(then.sort);
+            }
+            return dependent(new Term("(ite " + selector + " " + then.text
+                    + " " + otherwise.text + ")", then.sort,
+                    then.integralWidth), then, otherwise);
+        }
+
+        /** The recorded value bindings, as one manifest member. */
+        private JsonArray recordedValueBindingLedger() {
+            return recordedValueBindings.deepCopy();
+        }
+
         private Term containerTerm(JsonObject expression) {
-            return lowerContainerTerm(expression, false);
+            return lowerContainerTerm(exactMapReadState(expression), false);
+        }
+
+        /**
+         * An exact whole-map input already denotes the selected VM version.
+         * A serialized read also contains that version's historic PUT/REMOVE
+         * chain; replaying the chain on top of the input duplicates the state
+         * and turns its stored values into unrelated fatal-scope roots.  For
+         * an observational operation, replace that receiver by the same
+         * STATE identity whose exact carrier resolves to the input port.
+         */
+        private JsonObject exactMapReadState(JsonObject expression) {
+            if (!"ASSOCIATIVE".equals(string(expression, "shape"))) {
+                return expression;
+            }
+            String operation = string(expression, "operation");
+            if (!("READ".equals(operation) || "CONTAINS".equals(operation)
+                    || "SIZE".equals(operation)
+                    || "IS_EMPTY".equals(operation)
+                    || "ITERATOR".equals(operation))) {
+                return expression;
+            }
+            JsonObject state = containerState(expression.get("receiver"));
+            if (state == null) return expression;
+            JsonObject identity = object(state, "receiver");
+            if (!"SymbolExpression".equals(string(identity, "_type"))) {
+                return expression;
+            }
+            long owner = symbolicContainerOwner(string(identity, "_exp"));
+            if (owner <= 0L || !recordedMapCarrierPorts.containsKey(
+                    mapCarrierKey(currentInvocation.instanceId, owner))) {
+                return expression;
+            }
+            JsonObject projected = expression.deepCopy();
+            projected.add("receiver", state.deepCopy());
+            return projected;
+        }
+
+        private JsonObject containerState(JsonElement expression) {
+            JsonElement cursor = expression;
+            while (cursor != null && cursor.isJsonObject()) {
+                JsonObject object = cursor.getAsJsonObject();
+                if (!ContainerSmtCodec.EXPRESSION_TYPE.equals(
+                        string(object, "_type"))) {
+                    return null;
+                }
+                if ("STATE".equals(string(object, "operation"))) {
+                    return object;
+                }
+                cursor = object.get("receiver");
+            }
+            return null;
         }
 
         private Term containerFieldTerm(JsonObject expression) {
@@ -2470,6 +3972,19 @@ public final class ConcolicSmtComposer {
                     if (identity != null && identity.isJsonObject()
                             && "SymbolExpression".equals(string(
                             identity.getAsJsonObject(), "_type"))) {
+                        if (shape == ContainerSmtCodec.Sort.ASSOCIATIVE) {
+                            long owner = symbolicContainerOwner(string(
+                                    identity.getAsJsonObject(), "_exp"));
+                            PortOccurrence exact = owner <= 0L ? null
+                                    : recordedMapCarrierPorts.get(mapCarrierKey(
+                                    currentInvocation.instanceId, owner));
+                            if (exact != null) {
+                                declarePort(exact, Sort.MAP);
+                                mentionPort(exact);
+                                return new ContainerSmtCodec.Term(
+                                        portName(exact), shape);
+                            }
+                        }
                         String port = findPort(string(
                                 identity.getAsJsonObject(), "_exp"));
                         Sort required = shape
@@ -2638,6 +4153,37 @@ public final class ConcolicSmtComposer {
             };
         }
 
+        /**
+         * Reads the session owner from the VM's container symbol.
+         *
+         * <p>Older fixtures used {@code M_<type>__<rid>}; the Zero VM emits
+         * {@code M_L'<type>'_<rid>}.  The type spelling is deliberately not
+         * interpreted here: the final positive decimal component is the
+         * session identity shared with {@code MAP_STATE/<rid>#-3}.</p>
+         */
+        private long symbolicContainerOwner(String raw) {
+            if (raw == null) return 0L;
+            int marker = raw.lastIndexOf("__M_");
+            if (marker < 0 && raw.startsWith("M_")) marker = 0;
+            int separator = raw.lastIndexOf("__");
+            int width = 2;
+            if (separator <= marker + 2
+                    || separator + width >= raw.length()) {
+                separator = raw.lastIndexOf('_');
+                width = 1;
+            }
+            if (marker < 0 || separator <= marker + 2
+                    || separator + width >= raw.length()) {
+                return 0L;
+            }
+            try {
+                long owner = Long.parseLong(raw.substring(separator + width));
+                return owner > 0L ? owner : 0L;
+            } catch (NumberFormatException invalid) {
+                return 0L;
+            }
+        }
+
         private ContainerSmtCodec.Term toContainerTerm(Term value) {
             if (value == null) return null;
             ContainerSmtCodec.Sort sort = value.sort == Sort.BOOL
@@ -2699,7 +4245,7 @@ public final class ConcolicSmtComposer {
 
             String port = findPort(raw);
             if (!port.isEmpty()) {
-                mentionedPorts.add(currentOccurrence(port));
+                mentionPort(currentOccurrence(port));
                 if (expected == Sort.MAP) {
                     promotePort(port, Sort.MAP);
                     declarePort(port, Sort.MAP);
@@ -2874,7 +4420,20 @@ public final class ConcolicSmtComposer {
             rows.sort(Map.Entry.comparingByKey());
             JsonArray result = new JsonArray();
             for (Map.Entry<String, JsonObject> row : rows) {
-                result.add(row.getValue().deepCopy());
+                JsonObject encoded = row.getValue().deepCopy();
+                String portId = string(encoded, "portId");
+                String occurrenceId = string(encoded, "occurrenceId");
+                boolean supplied = false;
+                for (PortOccurrence occurrence : suppliedInputOccurrences) {
+                    if (occurrence.portId.equals(portId)
+                            && occurrence.invocation.instanceId.equals(
+                            occurrenceId)) {
+                        supplied = true;
+                        break;
+                    }
+                }
+                encoded.addProperty("supplied", supplied);
+                result.add(encoded);
             }
             return result;
         }
@@ -3074,10 +4633,15 @@ public final class ConcolicSmtComposer {
         private Term scopedSymbol(String raw, String prefix, Sort requested,
                                   String javaType, String domainLabel,
                                   String conflictLabel, String sourcePrefix) {
-            String key = currentSymbolScope + "\u0000" + raw;
+            String sourceIdentity = symbolicSourceIdentities.get(raw);
+            String key = symbolScopeKey(raw, currentSymbolScope,
+                    sourceIdentity);
             RawSymbol symbol = rawSymbols.get(key);
             if (symbol == null) {
-                symbol = new RawSymbol(scopedName(prefix, raw), requested);
+                String name = sourceIdentity == null
+                        ? scopedName(prefix, raw)
+                        : "source__" + scopeToken(sourceIdentity);
+                symbol = new RawSymbol(name, requested);
                 rawSymbols.put(key, symbol);
                 declare(symbol.name, symbol.sort);
                 assertJavaIntegralDomain(symbol.name, symbol.sort, javaType,
@@ -3164,9 +4728,9 @@ public final class ConcolicSmtComposer {
             String sourceType = castDescriptor(
                     firstNonBlank(string(expression, "sourceJavaType"),
                             expressionJavaType(sourceExpression)));
-            String targetType = castTargetDescriptor(firstNonBlank(
+            String targetType = castDescriptor(firstNonBlank(
                     string(expression, "targetJavaType"),
-                    string(expression, "_java_type")), sourceType);
+                    string(expression, "_java_type")));
             Sort sourceSort = castSort(sourceType);
             Sort targetSort = castSort(targetType);
             boolean primitivePair = JavaPrimitiveSmtSemantics
@@ -3215,6 +4779,12 @@ public final class ConcolicSmtComposer {
                     unsupported.add("AmbiguousJavaIntegralUnaryWidth:"
                             + firstNonBlank(operator, "MISSING"));
                     return unsupportedTerm(Sort.INT);
+                }
+                if ("~".equals(operator) && operand.sort == Sort.INT
+                        && operand.integralWidth != IntegralWidth.NONE) {
+                    return dependent(new Term(JavaPrimitiveSmtSemantics
+                            .complement(operand.text, operand.integralWidth),
+                            Sort.INT, operand.integralWidth), operand);
                 }
                 unsupported.add("NonNumericOrUnknownUnary:"
                         + firstNonBlank(operator, "MISSING") + ":"
@@ -3359,6 +4929,31 @@ public final class ConcolicSmtComposer {
                 }
                 return dependent(new Term("(" + smt + " " + left.text + " "
                         + right.text + ")", Sort.BOOL), left, right);
+            }
+            if (bitwiseOperator(operator)) {
+                IntegralWidth width = promotedIntegralWidth(left, right);
+                if (width == IntegralWidth.NONE) {
+                    unsupported.add("AmbiguousJavaIntegralBitwiseWidth:"
+                            + operator + ":" + left.integralWidth + ":"
+                            + right.integralWidth);
+                    return unsupportedTerm(Sort.INT);
+                }
+                return dependent(new Term(JavaPrimitiveSmtSemantics.bitwise(
+                        operator, left.text, right.text, width), Sort.INT,
+                        width), left, right);
+            }
+            if (shiftOperator(operator)) {
+                if (left.sort != Sort.INT || right.sort != Sort.INT
+                        || left.integralWidth == IntegralWidth.NONE) {
+                    unsupported.add("AmbiguousJavaIntegralShift:"
+                            + operator + ":" + left.integralWidth + ":"
+                            + right.integralWidth);
+                    return unsupportedTerm(Sort.INT);
+                }
+                return dependent(new Term(JavaPrimitiveSmtSemantics.shift(
+                        operator, left.text, right.text,
+                        left.integralWidth), Sort.INT,
+                        left.integralWidth), left, right);
             }
             if (arithmeticOperator(operator)) {
                 if (!numeric(left.sort) || !numeric(right.sort)) {
@@ -3754,8 +5349,8 @@ public final class ConcolicSmtComposer {
                 }
             }
 
-            ScopedExpression receiver = resolveExactEqualityBoundExpression(
-                    params.get(0));
+            ScopedExpression receiver = new ScopedExpression(
+                    params.get(0), currentInvocation);
             List<JsonElement> parts = new ArrayList<>();
             if (!flattenConcat(receiver.expression, parts)) {
                 return SplitSegment.gap("CONCAT_RECEIVER_REQUIRED");
@@ -3868,41 +5463,6 @@ public final class ConcolicSmtComposer {
                 return null;
             }
             return params.get(0);
-        }
-
-        /**
-         * Chases only exact, uniquely selected String equality edges.  The
-         * returned producer expression is still connected to the consumer
-         * port by the ordinary merge assertion; this lookup merely exposes
-         * its syntax to a structural codec proof.
-         */
-        private ScopedExpression resolveExactEqualityBoundExpression(
-                JsonElement expression) {
-            JsonElement current = expression;
-            Set<PortOccurrence> visited = new LinkedHashSet<>();
-            InvocationKey invocation = currentInvocation;
-            while (current != null && current.isJsonObject()) {
-                JsonObject object = current.getAsJsonObject();
-                if (!"SymbolExpression".equals(string(object, "_type"))) {
-                    break;
-                }
-                String port = findPort(string(object, "_exp"));
-                PortOccurrence occurrence =
-                        occurrence(invocation.instanceId, port);
-                if (port.isEmpty() || !visited.add(occurrence)
-                        || ambiguousEqualityBoundExpressionPorts.contains(
-                        occurrence)) {
-                    break;
-                }
-                EqualityBoundExpression binding =
-                        exactEqualityBoundExpressions.get(occurrence);
-                if (binding == null) break;
-                current = binding.expression;
-                invocation = new InvocationKey(
-                        regionOf(binding.outputPort),
-                        binding.sourceInstance);
-            }
-            return new ScopedExpression(current, invocation);
         }
 
         private boolean flattenConcat(JsonElement expression,
@@ -4095,283 +5655,6 @@ public final class ConcolicSmtComposer {
             return unsupportedTerm(result.sort);
         }
 
-        private void regionSummaryWithBoundedTimeline(
-                RelationSummary selected) {
-            BoundedTimelineStep timeline = BoundedTimelineStep.from(selected);
-            if (timeline == null) {
-                regionSummary(selected);
-                return;
-            }
-            if (!timeline.blocker.isEmpty()) {
-                unsupported.add("BoundedContainerTimelineGap:"
-                        + selected.regionId() + ":" + timeline.blocker);
-                regionSummary(selected);
-                return;
-            }
-            if (timeline.bound < 1
-                    || ports.sort(timeline.preStatePort) != Sort.MAP
-                    || ports.sort(timeline.postStatePort) != Sort.MAP) {
-                unsupported.add("BoundedContainerTimelineGap:"
-                        + selected.regionId() + ":INVALID_STATE_PORTS");
-                regionSummary(selected);
-                return;
-            }
-
-            InvocationKey canonical = new InvocationKey(
-                    selected.regionId(), selected.occurrenceId());
-            Map<String, String> recurrence = timelineRecurrencePairs(
-                    selected, timeline);
-            Set<String> frozen = timelineFrozenInputs(selected,
-                    recurrence.keySet());
-            Set<String> derived = timelineDerivedInputs(selected, timeline);
-            if (!recurrence.containsKey(timeline.preStatePort)
-                    || !classifiedTimelineInputs(selected, recurrence,
-                    frozen, derived)) {
-                unsupported.add("BoundedContainerTimelineGap:"
-                        + selected.regionId() + ":UNCLASSIFIED_INPUT");
-                regionSummary(selected);
-                return;
-            }
-            Map<String, List<TimelineCut>> outputCuts = new LinkedHashMap<>();
-            for (String output : selected.outputClosure().outputPorts()) {
-                outputCuts.put(output, new ArrayList<TimelineCut>());
-            }
-            Map<String, PortOccurrence> previousOutputsByInput =
-                    new LinkedHashMap<>();
-            for (int ordinal = 0; ordinal < timeline.bound; ordinal++) {
-                InvocationKey invocation = ordinal == 0 ? canonical
-                        : new InvocationKey(selected.regionId(),
-                        selected.occurrenceId() + "#boundedStep"
-                                + ordinal);
-                regionSummary(selected, invocation, "bounded-step-"
-                        + ordinal);
-                if (ordinal == 0) {
-                    // Cut zero exists only for an explicit recurrence pair.
-                    for (Map.Entry<String, String> pair
-                            : recurrence.entrySet()) {
-                        outputCuts.get(pair.getValue()).add(new TimelineCut(
-                                new PortOccurrence(invocation,
-                                        pair.getKey()), 0));
-                    }
-                } else {
-                    for (Map.Entry<String, String> pair
-                            : recurrence.entrySet()) {
-                        PortOccurrence previous = previousOutputsByInput.get(
-                                pair.getKey());
-                        PortOccurrence input = new PortOccurrence(invocation,
-                                pair.getKey());
-                        if (previous == null) {
-                            unsupported.add("BoundedContainerTimelineGap:"
-                                    + selected.regionId()
-                                    + ":MISSING_RECURRENCE_OUTPUT:"
-                                    + pair.getKey());
-                            continue;
-                        }
-                        assertPortEquality(previous, input,
-                                "container_timeline_chain_"
-                                        + scopeToken(timeline
-                                        .channelIdentity(selected)) + "_"
-                                        + smtName(pair.getKey()) + "_"
-                                        + ordinal);
-                    }
-                }
-                if (ordinal > 0) {
-                    for (String external : frozen) {
-                        assertPortEquality(new PortOccurrence(canonical,
-                                        external),
-                                new PortOccurrence(invocation, external),
-                                "container_timeline_frozen_input_"
-                                        + scopeToken(timeline
-                                        .channelIdentity(selected)) + "_"
-                                        + smtName(external) + "_" + ordinal);
-                    }
-                }
-                int cut = ordinal + 1;
-                for (String output : outputCuts.keySet()) {
-                    outputCuts.get(output).add(new TimelineCut(
-                            new PortOccurrence(invocation, output), cut));
-                }
-                for (Map.Entry<String, String> pair
-                        : recurrence.entrySet()) {
-                    previousOutputsByInput.put(pair.getKey(),
-                            new PortOccurrence(invocation,
-                                    pair.getValue()));
-                }
-            }
-            String channel = timeline.channelIdentity(selected);
-            for (Map.Entry<String, List<TimelineCut>> output
-                    : outputCuts.entrySet()) {
-                boundedTimelineOutputs.put(new PortOccurrence(canonical,
-                                output.getKey()),
-                        new TimelineOutputExpansion(channel,
-                                output.getValue()));
-            }
-        }
-
-        private Map<String, String> timelineRecurrencePairs(
-                RelationSummary selected, BoundedTimelineStep timeline) {
-            Map<String, String> result = new LinkedHashMap<>();
-            result.put(timeline.preStatePort, timeline.postStatePort);
-            Set<String> usedOutputs = new LinkedHashSet<>(result.values());
-            for (String input : selected.outputClosure().executionScope()
-                    .inputPorts()) {
-                if (result.containsKey(input)) continue;
-                String match = "";
-                for (String output : selected.outputClosure().outputPorts()) {
-                    if (usedOutputs.contains(output)
-                            || !ports.sameStateCell(input, output)) {
-                        continue;
-                    }
-                    if (!match.isEmpty()) {
-                        match = "";
-                        break;
-                    }
-                    match = output;
-                }
-                if (!match.isEmpty()) {
-                    result.put(input, match);
-                    usedOutputs.add(match);
-                }
-            }
-            return result;
-        }
-
-        private Set<String> timelineFrozenInputs(RelationSummary selected,
-                                                 Set<String> recurrent) {
-            Set<String> result = new LinkedHashSet<>();
-            for (String input : selected.outputClosure().executionScope()
-                    .inputPorts()) {
-                if (!recurrent.contains(input)
-                        && ports.explicitReplayInvariant(input)) {
-                    result.add(input);
-                }
-            }
-            return result;
-        }
-
-        /**
-         * Finds scalar inputs the VM defines from the current timeline state.
-         * Every case that mentions such an input must contain its own exact
-         * field materialization, and that field owner must be rooted only in
-         * this timeline's pre-state port.  Alpha-renaming can then apply the
-         * relation at each step without either freeing the scalar or freezing
-         * an old member's value after the container changes.
-         */
-        private Set<String> timelineDerivedInputs(
-                RelationSummary selected, BoundedTimelineStep timeline) {
-            Set<String> derived = new LinkedHashSet<>();
-            Set<String> unsafe = new LinkedHashSet<>();
-            for (JsonElement element : array(object(selected.toJson(),
-                    "regionRelation"), "cases")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject pathCase = element.getAsJsonObject();
-                Set<String> mentioned = new LinkedHashSet<>();
-                collectTimelineInputPorts(pathCase, selected.regionId(),
-                        mentioned);
-                Set<String> defined = new LinkedHashSet<>();
-                collectTimelineFieldDefinitions(pathCase,
-                        selected.regionId(), timeline.preStatePort, defined);
-                derived.addAll(defined);
-                for (String input : mentioned) {
-                    if (!defined.contains(input)) unsafe.add(input);
-                }
-            }
-            derived.removeAll(unsafe);
-            return derived;
-        }
-
-        private void collectTimelineFieldDefinitions(
-                JsonElement expression, String region, String preStatePort,
-                Set<String> result) {
-            if (expression == null || expression.isJsonNull()) return;
-            if (expression.isJsonArray()) {
-                for (JsonElement item : expression.getAsJsonArray()) {
-                    collectTimelineFieldDefinitions(item, region,
-                            preStatePort, result);
-                }
-                return;
-            }
-            if (!expression.isJsonObject()) return;
-            JsonObject object = expression.getAsJsonObject();
-            if (ContainerSmtCodec.handlesFieldBinding(object)) {
-                JsonElement left = object.get("_left");
-                JsonElement right = object.get("_right");
-                JsonElement field = ContainerSmtCodec.handlesField(left)
-                        ? left : right;
-                JsonElement symbol = field == left ? right : left;
-                Set<String> ownerInputs = new LinkedHashSet<>();
-                collectTimelineInputPorts(field, region, ownerInputs);
-                String input = symbol != null && symbol.isJsonObject()
-                        ? findPort(string(symbol.getAsJsonObject(), "_exp"))
-                        : "";
-                if (ports.isInput(input) && region.equals(regionOf(input))
-                        && ownerInputs.size() == 1
-                        && ownerInputs.contains(preStatePort)) {
-                    result.add(input);
-                }
-                return;
-            }
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                collectTimelineFieldDefinitions(entry.getValue(), region,
-                        preStatePort, result);
-            }
-        }
-
-        /** Every relation-mentioned repeated input is either an exact
-         * recurrence pair or an explicitly replay-invariant port.  Static
-         * closure inputs that the VM relation does not mention create no SMT
-         * term and therefore no new freedom on an alpha-renamed step. */
-        private boolean classifiedTimelineInputs(RelationSummary selected,
-                                                 Map<String, String> recurrence,
-                                                 Set<String> frozen,
-                                                 Set<String> derived) {
-            for (String input : frozen) {
-                if (!ports.isInput(input)
-                        || !selected.regionId().equals(regionOf(input))) {
-                    return false;
-                }
-            }
-            for (String input : derived) {
-                if (!ports.isInput(input)
-                        || !selected.regionId().equals(regionOf(input))) {
-                    return false;
-                }
-            }
-            Set<String> mentioned = new LinkedHashSet<>();
-            collectTimelineInputPorts(object(selected.toJson(),
-                    "regionRelation"), selected.regionId(), mentioned);
-            Set<String> classified = new LinkedHashSet<>(frozen);
-            classified.addAll(recurrence.keySet());
-            classified.addAll(derived);
-            Set<String> scoped = selected.outputClosure().executionScope()
-                    .inputPorts();
-            return scoped.containsAll(mentioned)
-                    && classified.containsAll(mentioned);
-        }
-
-        private void collectTimelineInputPorts(JsonElement expression,
-                                               String region,
-                                               Set<String> result) {
-            if (expression == null || expression.isJsonNull()) return;
-            if (expression.isJsonArray()) {
-                for (JsonElement item : expression.getAsJsonArray()) {
-                    collectTimelineInputPorts(item, region, result);
-                }
-                return;
-            }
-            if (!expression.isJsonObject()) return;
-            JsonObject object = expression.getAsJsonObject();
-            if ("SymbolExpression".equals(string(object, "_type"))) {
-                String port = findPort(string(object, "_exp"));
-                if (ports.isInput(port) && region.equals(regionOf(port))) {
-                    result.add(port);
-                }
-            }
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                collectTimelineInputPorts(entry.getValue(), region, result);
-            }
-        }
-
         private void regionSummary(RelationSummary selected) {
             regionSummary(selected, new InvocationKey(selected.regionId(),
                     selected.occurrenceId()), "selected");
@@ -4381,9 +5664,12 @@ public final class ConcolicSmtComposer {
                                    InvocationKey invocation,
                                    String scopeSuffix) {
             JsonObject summary = selected.toJson();
+            // Null for README section 3's T_C1.  Everything below that reads
+            // it is a question about a demanded output, and a consumer has
+            // none; its cases are lowered exactly as a producer's are.
             OutputClosureContract outputClosure =
                     selected.outputClosure();
-            String region = outputClosure.producer().regionId();
+            String region = selected.regionId();
             if (!bool(summary, "relationallyComplete", false)) {
                 heapGap("IncompleteRegionSummary@" + region);
                 return;
@@ -4436,9 +5722,14 @@ public final class ConcolicSmtComposer {
                 }
                 Set<String> casePorts = new LinkedHashSet<>(
                         object(item, "outputExpressions").keySet());
-                casePorts.addAll(object(item,
-                        "outputReferenceIdentities").keySet());
-                if (outputClosure.outputPorts().size() > 1
+                for (JsonElement event : array(item,
+                        RelationSummary.INTERACTION_EVENTS)) {
+                    if (!event.isJsonObject()) continue;
+                    String port = string(event.getAsJsonObject(), "portId");
+                    if (!port.isEmpty()) casePorts.add(port);
+                }
+                if (outputClosure != null
+                        && outputClosure.outputPorts().size() > 1
                         && !casePorts.equals(outputClosure.outputPorts())) {
                     heapGap("JointOutputExpressionSetMismatch@" + region
                             + ":" + index);
@@ -4450,10 +5741,8 @@ public final class ConcolicSmtComposer {
                             + ":" + index);
                     continue;
                 }
-                String caseIdentity = "region:" + region + "/instance:"
-                        + invocation.instanceId + "/case:"
-                        + firstNonBlank(string(item, "caseId"),
-                        String.valueOf(index));
+                String caseIdentity = RecordedSessionModel.caseOwner(region,
+                        invocation.instanceId, string(item, "caseId"), index);
                 String previousScope = enterSymbolScope(caseIdentity);
                 try {
                     List<String> conditionTerms = new ArrayList<>();
@@ -4463,8 +5752,8 @@ public final class ConcolicSmtComposer {
                                 "region " + region + " case " + index));
                     }
                     String guard = and(conditionTerms);
-                    String selector = "case_selector__"
-                            + scopeToken(caseIdentity);
+                    String selector = RecordedSessionModel.caseSelector(
+                            caseIdentity);
                     if (!selectorSymbols.add(selector)) {
                         heapGap("DuplicateCaseSelector@" + region + ":"
                                 + index);
@@ -4553,7 +5842,6 @@ public final class ConcolicSmtComposer {
                 }
                 bindPort(port, value);
             }
-            bindReferenceIdentityOutputs(region, summary, closure);
         }
 
         /**
@@ -4575,6 +5863,7 @@ public final class ConcolicSmtComposer {
         private void requireExactRuntimePutReferenceValue(
                 String port, JsonElement expression,
                 OutputClosureContract closure) {
+            if (closure == null) return;
             OutputClosureContract.Member member = closure.member(port);
             Port schema = ports.get(port);
             if (member == null || schema == null
@@ -4628,85 +5917,6 @@ public final class ConcolicSmtComposer {
                             + CanonicalJson.sha256(identity)
                             .substring(0, 16),
                     "(distinct " + value.text + " nullRef)");
-        }
-
-        /**
-         * Passes a reference-only output on as the alias it recorded.
-         *
-         * <p>A reference the custom VM never symbolised was recorded by
-         * identity: the producer says which object it handed on, and nothing
-         * about any value inside it.  Naming that object is exactly what the
-         * relation states, so the port is bound to one constant per recorded
-         * identity - equal producers hand on equal objects, and a concrete
-         * object is not null.  No value is claimed to live inside it.</p>
-         *
-         * <p>What such an alias cannot answer is a consumer reading a scalar
-         * leaf below the reference: that leaf needs its own producer.  So
-         * every other output this closure demands is checked one leaf at a
-         * time, and only a leaf left without a producer is reported.  A leaf
-         * that has its own versioned writer is already constrained and the
-         * alias is all that was missing.</p>
-         */
-        private void bindReferenceIdentityOutputs(
-                String region, JsonObject summary,
-                OutputClosureContract closure) {
-            JsonObject identities = object(summary,
-                    "outputReferenceIdentities");
-            if (identities.size() == 0) return;
-            for (Map.Entry<String, JsonElement> entry
-                    : identities.entrySet()) {
-                String port = entry.getKey();
-                if (!ports.contains(port)) continue;
-                if (!bindConcreteReferenceIdentity(port, entry.getValue())) {
-                    heapGap("ConcreteReferenceIdentityWithoutLeafProducer@"
-                            + region + ":" + port);
-                    continue;
-                }
-                for (String demanded : closure.outputPorts()) {
-                    if (identities.has(demanded)
-                            || !ports.contains(demanded)
-                            || boundPorts.contains(
-                            currentOccurrence(demanded))) {
-                        continue;
-                    }
-                    heapGap("ConcreteReferenceIdentityWithoutLeafProducer@"
-                            + region + ":" + demanded);
-                }
-            }
-        }
-
-        /**
-         * Binds one port to the object a concrete reference identity names.
-         *
-         * <p>The constant is derived from the recorded identity, so two
-         * producers that recorded the same object reach the same constant and
-         * the alias travels.  Two different records stay merely unequated:
-         * nothing asserts they denote different objects.</p>
-         */
-        private boolean bindConcreteReferenceIdentity(String port,
-                                                      JsonElement identity) {
-            if (identity == null || !identity.isJsonObject()) return false;
-            JsonObject record = identity.getAsJsonObject();
-            if (!ConcolicSummaryImporter
-                    .CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
-                    string(record, "authority"))) {
-                return false;
-            }
-            String constant = "reference_identity__"
-                    + scopeToken(CanonicalJson.render(record));
-            if (declaredReferenceIdentities.add(constant)) {
-                declare(constant, Sort.REF);
-                String previousGuard = currentGuard;
-                currentGuard = "";
-                try {
-                    assertNamed(constant + "_non_null",
-                            "(distinct " + constant + " nullRef)");
-                } finally {
-                    currentGuard = previousGuard;
-                }
-            }
-            bindPort(port, new Term(constant, Sort.REF));
-            return boundPorts.contains(currentOccurrence(port));
         }
 
         /**
@@ -4793,340 +6003,6 @@ public final class ConcolicSmtComposer {
                     assertPortEquality(first, selected.get(index), "alias");
                 }
             }
-            Map<PortOccurrence, List<VersionedWriter>> contextWriters =
-                    new LinkedHashMap<>();
-            Map<PortOccurrence, List<String>> contextChannels =
-                    new LinkedHashMap<>();
-            for (JsonElement element : array(context,
-                    "versionedStateMerges")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject relation = element.getAsJsonObject();
-                String from = string(relation, "fromEndpoint");
-                String to = string(relation, "toEndpoint");
-                JsonArray bindings = selectedBindings(relation);
-                if (!allTrustedReadFromEvidence(bindings)) {
-                    unsupported.add("UntrustedVersionedStateReadFrom:"
-                            + string(relation, "edgeId"));
-                    continue;
-                }
-                for (int index = 0; index < bindings.size(); index++) {
-                    JsonObject binding = bindings.get(index).getAsJsonObject();
-                    PortOccurrence target = occurrence(
-                            bindingTargetInstance(binding), to);
-                    contextWriters.computeIfAbsent(target,
-                            ignored -> new ArrayList<>()).add(
-                            new VersionedWriter(binding,
-                            occurrence(bindingSourceInstance(binding), from),
-                            firstNonBlank(string(relation, "guardSymbol"),
-                                    "")));
-                    contextChannels.computeIfAbsent(target,
-                            ignored -> new ArrayList<>()).add(
-                            firstNonBlank(string(relation, "edgeId"),
-                                    "state_edge"));
-                }
-            }
-            for (Map.Entry<PortOccurrence, List<VersionedWriter>> entry
-                    : contextWriters.entrySet()) {
-                List<String> channels = contextChannels.get(entry.getKey());
-                String channel = entry.getValue().size() == 1
-                        && channels != null && !channels.isEmpty()
-                        ? channels.get(0)
-                        : "versioned_state_channel__" + entry.getKey();
-                emitVersionedReadChoice(channel, entry.getValue(),
-                        entry.getKey());
-            }
-            for (JsonElement element : array(context,
-                    "alternativeWriterGroups")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject group = element.getAsJsonObject();
-                JsonArray alternatives = array(group, "alternatives");
-                String groupId = firstNonBlank(string(group, "groupId"),
-                        "alternative");
-                if (!"EXACTLY_ONE_GUARDED".equals(string(group,
-                        "selectionSemantics")) || alternatives.size() < 2) {
-                    unsupported.add("MalformedAlternativeWriterGroup:"
-                            + groupId);
-                    continue;
-                }
-                List<VersionedWriter> writers = new ArrayList<>();
-                PortOccurrence target = null;
-                for (int index = 0; index < alternatives.size(); index++) {
-                    if (!alternatives.get(index).isJsonObject()) continue;
-                    JsonObject relation = alternatives.get(index)
-                            .getAsJsonObject();
-                    String from = string(relation, "fromEndpoint");
-                    String to = string(relation, "toEndpoint");
-                    if (!allTrustedReadFromEvidence(
-                            selectedBindings(relation))) {
-                        unsupported.add("UntrustedAlternativeWriterReadFrom:"
-                                + groupId + ":" + index);
-                        continue;
-                    }
-                    JsonArray bindings = selectedBindings(relation);
-                    for (JsonElement bindingElement : bindings) {
-                        JsonObject binding = bindingElement.getAsJsonObject();
-                        PortOccurrence candidateTarget = occurrence(
-                                bindingTargetInstance(binding), to);
-                        if (target != null && !target.equals(candidateTarget)) {
-                            unsupported.add("AlternativeWriterTargetMismatch:"
-                                    + groupId);
-                            continue;
-                        }
-                        target = candidateTarget;
-                        writers.add(new VersionedWriter(binding,
-                                occurrence(bindingSourceInstance(binding),
-                                        from),
-                                string(relation, "guardSymbol")));
-                    }
-                }
-                if (writers.size() < 2 || target == null) {
-                    unsupported.add("IncompleteAlternativeWriterGroup:"
-                            + groupId + ":" + writers.size());
-                    continue;
-                }
-                emitVersionedReadChoice(groupId, writers, target);
-            }
-        }
-
-        private boolean allTrustedReadFromEvidence(JsonArray bindings) {
-            if (bindings == null || bindings.size() == 0) return false;
-            for (JsonElement element : bindings) {
-                if (!element.isJsonObject()
-                        || !AutomaticRegionEdge.trustedReadFromEvidence(
-                        element.getAsJsonObject())) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private String assertGuardedPortEquality(PortOccurrence left,
-                                                 PortOccurrence right,
-                                                 String guard,
-                                                 String label) {
-            if (!preparePortEquality(left, right)) return "";
-            return assertNamed(label, "(=> " + guard + " (= "
-                    + portName(left) + " " + portName(right) + "))");
-        }
-
-        /**
-         * Models a bounded channel history independently of the observed
-         * runtime schedule. The trace proves that each writer belongs to this
-         * channel; solver positions choose which selected VM writer is the
-         * latest writer preceding the read. An initial version is not implicit:
-         * if one is relevant to a future closure, it must be supplied by an
-         * explicit producer summary like every other writer.
-         */
-        private void emitVersionedReadChoice(String channelId,
-                                             List<VersionedWriter> writers,
-                                             PortOccurrence target) {
-            if (writers.isEmpty()) return;
-            writers = expandBoundedTimelineWriters(writers);
-            String timelineChannel = "";
-            boolean timeline = false;
-            for (VersionedWriter writer : writers) {
-                if (writer.timelineChannel.isEmpty()) {
-                    if (timeline) {
-                        unsupported.add("MixedTimelineAndObservedWriters:"
-                                + channelId + ":" + target);
-                        return;
-                    }
-                    continue;
-                }
-                if (!timelineChannel.isEmpty()
-                        && !timelineChannel.equals(writer.timelineChannel)) {
-                    unsupported.add("MultipleTimelineChannels:"
-                            + channelId + ":" + target);
-                    return;
-                }
-                timeline = true;
-                timelineChannel = writer.timelineChannel;
-            }
-            if (timeline) {
-                for (VersionedWriter writer : writers) {
-                    if (writer.timelineChannel.isEmpty()) {
-                        unsupported.add("MixedTimelineAndObservedWriters:"
-                                + channelId + ":" + target);
-                        return;
-                    }
-                }
-            }
-            String suffix = smtName(channelId + "__" + target);
-            String sharedTimelineCut = "";
-            if (timeline) {
-                int firstCut = Integer.MAX_VALUE;
-                int lastCut = Integer.MIN_VALUE;
-                for (VersionedWriter writer : writers) {
-                    firstCut = Math.min(firstCut, writer.timelineOrdinal);
-                    lastCut = Math.max(lastCut, writer.timelineOrdinal);
-                }
-                sharedTimelineCut = "state_timeline_cut__" + scopeToken(
-                        timelineChannel + "\n" + target.invocation);
-                declare(sharedTimelineCut, Sort.INT);
-                assertNamed("state_timeline_cut_bounds__" + suffix,
-                        "(and (<= " + firstCut + " "
-                                + sharedTimelineCut + ") (<= "
-                                + sharedTimelineCut + " " + lastCut
-                                + "))");
-            }
-            String readPosition = "state_read_position__" + suffix;
-            int bound = writers.size() + 1;
-            declareBoundedPosition(readPosition, bound);
-
-            List<String> writePositions = new ArrayList<>();
-            for (int index = 0; index < writers.size(); index++) {
-                VersionedWriter writer = writers.get(index);
-                String position = "state_write_position__" + suffix + "_"
-                        + index;
-                writer.position = position;
-                writePositions.add(position);
-                declareBoundedPosition(position, bound);
-                // The observed writer may precede this reader, but its
-                // alpha-renamed future steps are precisely the alternatives
-                // the reader cut chooses among.  Requiring every synthetic
-                // step to precede the read would force the final cut.
-                if (writer.timelineChannel.isEmpty()
-                        && bool(writer.binding, "programOrderRequired",
-                        false)) {
-                    assertNamed("state_program_order__" + suffix + "_"
-                                    + index,
-                            "(< " + position + " " + readPosition + ")");
-                }
-            }
-            for (int left = 0; left < writers.size(); left++) {
-                VersionedWriter first = writers.get(left);
-                String firstLane = string(first.binding, "writerLaneId");
-                long firstEvent = longInteger(first.binding,
-                        "writerEventSeq", -1L);
-                for (int right = left + 1; right < writers.size(); right++) {
-                    VersionedWriter second = writers.get(right);
-                    if (!first.timelineChannel.isEmpty()
-                            && first.timelineChannel.equals(
-                            second.timelineChannel)
-                            && first.timelineOrdinal
-                            != second.timelineOrdinal) {
-                        String before = first.timelineOrdinal
-                                < second.timelineOrdinal
-                                ? first.position : second.position;
-                        String after = first.timelineOrdinal
-                                < second.timelineOrdinal
-                                ? second.position : first.position;
-                        assertNamed("state_timeline_order__" + suffix
-                                        + "_" + left + "_" + right,
-                                "(< " + before + " " + after + ")");
-                        continue;
-                    }
-                    if (firstLane.isEmpty() || firstEvent < 0L) continue;
-                    long secondEvent = longInteger(second.binding,
-                            "writerEventSeq", -1L);
-                    if (!firstLane.equals(string(second.binding,
-                            "writerLaneId")) || secondEvent < 0L
-                            || firstEvent == secondEvent) {
-                        continue;
-                    }
-                    String before = firstEvent < secondEvent
-                            ? first.position : second.position;
-                    String after = firstEvent < secondEvent
-                            ? second.position : first.position;
-                    assertNamed("state_writer_program_order__" + suffix
-                                    + "_" + left + "_" + right,
-                            "(< " + before + " " + after + ")");
-                }
-            }
-            StringBuilder distinct = new StringBuilder("(distinct ")
-                    .append(readPosition);
-            for (String write : writePositions) {
-                distinct.append(' ').append(write);
-            }
-            distinct.append(')');
-            assertNamed("state_event_positions_distinct__" + suffix,
-                    distinct.toString());
-
-            List<String> guards = new ArrayList<>();
-            Set<String> usedGuards = new LinkedHashSet<>();
-            for (int index = 0; index < writers.size(); index++) {
-                VersionedWriter writer = writers.get(index);
-                String guard = firstNonBlank(writer.requestedGuard,
-                        "state_writer_before_reader__" + suffix + "_"
-                                + index);
-                guard = smtName(guard);
-                if (!usedGuards.add(guard)) {
-                    guard = guard + "_occurrence_" + index;
-                    usedGuards.add(guard);
-                }
-                declare(guard, Sort.BOOL);
-                List<String> latest = new ArrayList<>();
-                latest.add("(< " + writer.position + " "
-                        + readPosition + ")");
-                for (int other = 0; other < writers.size(); other++) {
-                    if (other == index) continue;
-                    String otherPosition = writers.get(other).position;
-                    latest.add("(or (< " + otherPosition + " "
-                            + writer.position + ") (< " + readPosition
-                            + " " + otherPosition + "))");
-                }
-                if (!sharedTimelineCut.isEmpty()) {
-                    latest.add("(= " + sharedTimelineCut + " "
-                            + writer.timelineOrdinal + ")");
-                }
-                assertNamed("state_writer_guard_definition__" + suffix
-                        + "_" + index, "(= " + guard + " "
-                        + and(latest) + ")");
-                String valueAssertion = assertGuardedPortEquality(
-                        writer.source, target, guard,
-                        "state_writer_value__" + suffix + "_" + index);
-                if (!valueAssertion.isEmpty()) {
-                    guards.add(guard);
-                    emittedVersionedBindings.add(
-                            versionedBindingKey(writer.binding));
-                    recordProducerVersionBinding(writer.binding,
-                            writer.source, target, valueAssertion);
-                    failureWitness.connect(writer, target, guard,
-                            portName(target));
-                }
-            }
-
-            if (guards.isEmpty()) {
-                unsupported.add("MissingSelectedVersionedWriter:"
-                        + channelId + ":" + target);
-                return;
-            }
-
-            StringBuilder exactlyOne = new StringBuilder("(= (+");
-            for (String guard : guards) {
-                exactlyOne.append(" (ite ").append(guard).append(" 1 0)");
-            }
-            exactlyOne.append(") 1)");
-            assertNamed("state_version_choice__" + suffix,
-                    exactlyOne.toString());
-            mentionedPorts.add(target);
-            boundPorts.add(target);
-            if (ports.isInput(target.portId)) {
-                markSuppliedInput(target);
-            }
-        }
-
-        private List<VersionedWriter> expandBoundedTimelineWriters(
-                List<VersionedWriter> writers) {
-            List<VersionedWriter> result = new ArrayList<>();
-            for (VersionedWriter writer : writers) {
-                TimelineOutputExpansion expansion =
-                        boundedTimelineOutputs.get(
-                        writer.source);
-                if (expansion == null || expansion.cuts.isEmpty()) {
-                    result.add(writer);
-                    continue;
-                }
-                for (TimelineCut cut : expansion.cuts) {
-                    String guard = writer.requestedGuard.isEmpty() ? ""
-                            : writer.requestedGuard + "_bounded_step_"
-                            + cut.ordinal;
-                    result.add(new VersionedWriter(writer.binding,
-                            cut.source, guard, expansion.channel,
-                            cut.ordinal));
-                }
-            }
-            return result;
         }
 
         private void declareBoundedPosition(String position, int bound) {
@@ -5136,10 +6012,26 @@ public final class ConcolicSmtComposer {
         }
 
         private void mergeEdgeBindings(Collection<ResolvedEdge> edges) {
-            int edgeIndex = 0;
-            Map<PortOccurrence, List<VersionedWriter>> pendingVersioned =
-                    new LinkedHashMap<>();
+            // Decide this from the whole selected set before lowering it.
+            // Edge order is not evidence: a diagnostic candidate may sort
+            // before the exact/guarded row that rules out a second binding of
+            // the same consumer port.
             for (ResolvedEdge edge : edges) {
+                if (edge.topologyOnly) continue;
+                JsonObject binding = edge.binding;
+                String provenance = string(binding,
+                        RecordedReadFrom.EDGE_PROVENANCE);
+                if (RecordedReadFrom.PROVENANCE_EXACT.equals(provenance)
+                        || RecordedReadFrom.PROVENANCE_GUARDED.equals(
+                        provenance)) {
+                    recordedDecidedConsumerPorts.add(occurrence(
+                            bindingTargetInstance(binding),
+                            bindingTargetInput(binding)));
+                }
+            }
+            int edgeIndex = 0;
+            for (ResolvedEdge edge : edges) {
+                if (edge.topologyOnly) continue;
                 JsonObject binding = edge.binding;
                 String region = bindingSourceRegion(binding);
                 String targetRegion = string(binding, "toRegion");
@@ -5156,9 +6048,39 @@ public final class ConcolicSmtComposer {
                             + ":" + output + "->" + input);
                     continue;
                 }
-                boolean valueEquality = "EQUALITY".equals(
-                        bindingRelationKind(binding));
-                if (valueEquality) {
+                if (skipExcludedWriter(binding)) continue;
+                String provenance = string(binding,
+                        RecordedReadFrom.EDGE_PROVENANCE);
+                if (recordedDecidedConsumerPorts.contains(inputOccurrence)
+                        && !RecordedReadFrom.PROVENANCE_EXACT.equals(
+                        provenance)
+                        && !RecordedReadFrom.PROVENANCE_GUARDED.equals(
+                        provenance)) {
+                    recordedCoverage.add(CoverageDivergence.of(
+                            CoverageDivergence.Kind.FLOW,
+                            "RECORDED_EVIDENCE_DECIDED_CONSUMER_PORT",
+                            string(binding, "edgeId"),
+                            "consumer port " + inputOccurrence + " was"
+                                    + " already decided by VM read-from"
+                                    + " evidence; this diagnostic candidate"
+                                    + " is retained for audit and not"
+                                    + " composed"));
+                    continue;
+                }
+                if (emittedEdgeBindings.contains(
+                        edgeBindingKey(binding))) {
+                    validateIncomingEdgeInput(inputOccurrence, input);
+                    continue;
+                }
+                // An exact read-from is an equality, not a choice: the VM
+                // proved which write the read took, so a selector over one
+                // arm would only restate it with a free Boolean in the way.
+                if (bindRecordedExactWriter(binding, outputOccurrence,
+                        inputOccurrence, label)) {
+                    validateIncomingEdgeInput(inputOccurrence, input);
+                    continue;
+                }
+                if ("EQUALITY".equals(bindingRelationKind(binding))) {
                     String equalityAssertion = assertPortEqualityNamed(
                             outputOccurrence,
                             inputOccurrence, label);
@@ -5166,10 +6088,11 @@ public final class ConcolicSmtComposer {
                         recordProducerVersionBinding(binding,
                                 outputOccurrence, inputOccurrence,
                                 equalityAssertion);
-                        emitProtocolCausalOrder(binding, label);
+                        emitRecordedBindingOrder(binding, label,
+                                equalityAssertion, false);
                         validateIncomingEdgeInput(inputOccurrence, input);
-                        failureWitness.connect(new VersionedWriter(binding,
-                                        outputOccurrence, ""),
+                        emittedEdgeBindings.add(edgeBindingKey(binding));
+                        failureWitness.connect(binding, outputOccurrence,
                                 inputOccurrence, "true",
                                 portName(inputOccurrence));
                     } else {
@@ -5178,40 +6101,200 @@ public final class ConcolicSmtComposer {
                     }
                     continue;
                 }
-                if (emittedVersionedBindings.contains(
-                        versionedBindingKey(binding))) {
+                if (bindRecordedGuardedRead(binding, outputOccurrence,
+                        inputOccurrence, label)) {
                     validateIncomingEdgeInput(inputOccurrence, input);
+                    emittedEdgeBindings.add(edgeBindingKey(binding));
                 } else {
-                    pendingVersioned.computeIfAbsent(inputOccurrence,
-                            ignored -> new ArrayList<>()).add(
-                            new VersionedWriter(binding, outputOccurrence,
-                                    ""));
-                }
-            }
-            for (Map.Entry<PortOccurrence, List<VersionedWriter>> entry
-                    : pendingVersioned.entrySet()) {
-                PortOccurrence target = entry.getKey();
-                emitVersionedReadChoice("resolved_state_channel__" + target,
-                        entry.getValue(), target);
-                boolean complete = true;
-                for (VersionedWriter writer : entry.getValue()) {
-                    if (!emittedVersionedBindings.contains(
-                            versionedBindingKey(writer.binding))) {
-                        complete = false;
-                        break;
-                    }
-                }
-                if (complete) {
-                    validateIncomingEdgeInput(target, target.portId);
-                } else {
-                    heapGap("EdgeBindingEqualityGap@" + target);
+                    heapGap("UnresolvedRecordedEdgeBinding:"
+                            + string(binding, "edgeId"));
                 }
             }
         }
 
+
+        /** Lowers one selected region occurrence's guarded relation. */
+        private void lowerRelation(RelationSummary selection) {
+            regionSummary(selection);
+        }
+
+        /**
+         * Lowers the case-local VM handoffs of the selected occurrences.
+         *
+         * <p>A successful attach means the receiver's location already
+         * denotes the sender's expression, so no value equality is
+         * manufactured here: what the formula needs is the ledger's own
+         * {@code send < receive} order and one recorded authority for the
+         * receiving port.  Both come from the {@code VALUE_HANDOFF} edge the
+         * VM wrote, addressed by the exact export event the case references.
+         * A reference the order domain does not hold is a named gap, never a
+         * proposed order.</p>
+         */
+        private void mergeVmHandoffs(List<JsonObject> caseRows,
+                                     BoundedLoopComposition model,
+                                     RecordedSessionModel recorded) {
+            for (JsonObject owner : caseRows) {
+                String occurrence = string(owner, "toOccurrenceId");
+                String caseOwner = string(owner,
+                        RecordedSessionModel.CASE_OWNER);
+                String selector = string(owner,
+                        RecordedSessionModel.CASE_SELECTOR);
+                List<JsonObject> events = VmHandoffEvidence.eventsOf(owner);
+                if (events.isEmpty()) continue;
+                if (occurrence.isEmpty()) {
+                    model.gap("HANDOFF_CASE_OCCURRENCE_MISSING", "",
+                            "a VM handoff case names no receiving occurrence");
+                    continue;
+                }
+                if (caseOwner.isEmpty()) {
+                    // Target handoffs are currently carried at query level.
+                    // That is exact only for a single selected target path;
+                    // multiple path selectors need path-local ownership.
+                    if (array(owner, "paths").size() != 1) {
+                        model.gap("HANDOFF_CASE_SCOPE_MISSING", occurrence,
+                                "a target query with multiple paths carries"
+                                        + " an unowned VM handoff");
+                        continue;
+                    }
+                } else if (selector.isEmpty()
+                        || !selector.equals(RecordedSessionModel.caseSelector(
+                        caseOwner))) {
+                    model.gap("HANDOFF_CASE_SCOPE_MISSING", caseOwner,
+                            "a guarded VM handoff has no exact case selector");
+                    continue;
+                }
+                Map<String, List<JsonObject>> byPort = new LinkedHashMap<>();
+                for (JsonObject event : events) {
+                    byPort.computeIfAbsent(string(event, "portId"),
+                            ignored -> new ArrayList<>()).add(event);
+                }
+                for (Map.Entry<String, List<JsonObject>> entry
+                        : byPort.entrySet()) {
+                    if (entry.getValue().size() != 1) {
+                        model.gap("HANDOFF_CASE_VALUE_AMBIGUOUS",
+                                occurrence + ":" + entry.getKey(),
+                                "one case attached more than one value to the"
+                                        + " same unversioned receiving port");
+                        continue;
+                    }
+                    emitVmHandoff(entry.getValue().get(0), occurrence,
+                            caseOwner, selector, model, recorded);
+                }
+            }
+        }
+
+        private void emitVmHandoff(JsonObject event, String occurrenceId,
+                                   String caseOwner, String caseSelector,
+                                   BoundedLoopComposition model,
+                                   RecordedSessionModel recorded) {
+            long exportEvent = longInteger(event, "exportEventId", 0L);
+            String consumerPort = string(event, "portId");
+            JsonObject evidence = event.deepCopy();
+            // The receiving occurrence is the case's, not the event's: a VM
+            // handoff reference states which export it attached, and the case
+            // it is local to states where that attach happened.
+            evidence.addProperty("toOccurrenceId", occurrenceId);
+            evidence.addProperty("kind", VmHandoffEvidence.BINDING_KIND);
+            if (!caseOwner.isEmpty()) {
+                evidence.addProperty(RecordedSessionModel.CASE_OWNER,
+                        caseOwner);
+                evidence.addProperty(RecordedSessionModel.CASE_SELECTOR,
+                        caseSelector);
+            }
+            String order = recorded == null ? ""
+                    : recorded.handoffOrderAssertion(exportEvent,
+                    caseSelector);
+            if (order.isEmpty() && model != null) {
+                model.gap(HANDOFF_ORDER_UNRECORDED,
+                        String.valueOf(exportEvent),
+                        "the recorded order domain holds no VALUE_HANDOFF"
+                                + " edge for this export event, so"
+                                + " send < receive is not asserted");
+                return;
+            }
+            evidence.addProperty("orderAssertion", order);
+            PortOccurrence consumer = occurrence(
+                    string(evidence, "toOccurrenceId"), consumerPort);
+            if (!ports.contains(consumerPort)) {
+                if (model != null) {
+                    model.gap(HANDOFF_PORT_UNDECLARED, consumerPort,
+                            "the runtime region port catalog declares no such"
+                                    + " port, so this handoff is a model row"
+                                    + " and no SMT term");
+                }
+                return;
+            }
+            InvocationKey previousInvocation = enterInvocation(
+                    consumer.invocation);
+            String scope = caseOwner.isEmpty()
+                    ? "fatal:" + occurrenceId : caseOwner;
+            String previousScope = enterSymbolScope(scope);
+            String previousGuard = currentGuard;
+            currentGuard = firstNonBlank(caseSelector);
+            try {
+                int unsupportedBefore = unsupported.size();
+                Term attached = term(event.get(VmHandoffEvidence.EXPRESSION),
+                        portSort(consumer));
+                if (unsupported.size() != unsupportedBefore) {
+                    model.gap("HANDOFF_EXPRESSION_UNSUPPORTED",
+                            occurrenceId + ":" + consumerPort,
+                            "the exact attached VM expression cannot be"
+                                    + " lowered at the receiving port sort");
+                    return;
+                }
+                if (attached.sort == Sort.MAP
+                        || attached.sort == Sort.ARRAY_VALUE) {
+                    promotePort(consumerPort, attached.sort);
+                }
+                String valueAssertion = emitPortBindingAssertion(
+                        consumerPort, attached);
+                if (valueAssertion.isEmpty()) {
+                    model.gap("HANDOFF_EXPRESSION_BINDING_FAILED",
+                            occurrenceId + ":" + consumerPort,
+                            "the exact attached expression did not produce a"
+                                    + " receiving-port assertion");
+                    return;
+                }
+                boundPorts.add(consumer);
+                if (ports.isInput(consumerPort)) {
+                    markSuppliedInput(consumer);
+                }
+                recordInputAuthority(consumer, COMMUNICATION_LEAF,
+                        valueAssertion);
+                validateIncomingEdgeInput(consumer, consumerPort);
+                evidence.addProperty("valueAssertion", valueAssertion);
+                recordValueBinding(evidence,
+                        VmHandoffEvidence.BINDING_KIND + "\n" + exportEvent
+                                + "\n" + consumerPort, "VMH.");
+            } finally {
+                currentGuard = previousGuard;
+                restoreSymbolScope(previousScope);
+                restoreInvocation(previousInvocation);
+            }
+        }
+
+        /**
+         * Files one lowered value binding in the ledger both artifacts
+         * project.
+         *
+         * <p>Only an equality that reached the formula is filed. The ledger
+         * is "one row per lowered SMT value binding" and the parity audit
+         * reads it as exactly that, so a row with no assertion would make the
+         * drawing claim a constraint the query does not contain. The equality
+         * itself is not lost: it stays in the composition member beside the
+         * named gap that says why nothing was lowered.</p>
+         */
+        private void recordValueBinding(JsonObject evidence,
+                                        String bindingKey, String prefix) {
+            if (string(evidence, "valueAssertion").isEmpty()) return;
+            evidence.addProperty("bindingKey", bindingKey);
+            evidence.addProperty("edgeId", prefix
+                    + sha256(bindingKey).substring(0, 16));
+            recordedValueBindings.add(evidence);
+        }
+
         private void validateIncomingEdgeInput(PortOccurrence occurrence,
                                                String input) {
-            validatedIncomingEdgeInputs.add(occurrence);
             Sort incomingSort = ports.get(input) == null ? null
                     : sortOfJava(ports.get(input).javaType);
             Sort previous = validatedIncomingEdgeInputSorts.get(occurrence);
@@ -5226,23 +6309,314 @@ public final class ConcolicSmtComposer {
             }
         }
 
-        private void emitProtocolCausalOrder(JsonObject binding,
-                                             String label) {
-            String suffix = smtName(label + "__"
-                    + string(binding, "mappingId"));
-            String caller = "rpc_caller_position__" + suffix;
-            String send = "rpc_send_position__" + suffix;
-            String receive = "rpc_receive_position__" + suffix;
-            declareBoundedPosition(caller, 3);
-            declareBoundedPosition(send, 3);
-            declareBoundedPosition(receive, 3);
-            assertNamed("rpc_caller_before_send__" + suffix,
-                    "(< " + caller + " " + send + ")");
-            assertNamed("rpc_send_before_receive__" + suffix,
-                    "(< " + send + " " + receive + ")");
+        /**
+         * States one exact binding's recorded order in the one order domain.
+         *
+         * <p>An RPC exchange used to get three fresh integers of its own -
+         * caller, send, receive - in a domain nothing else shared, and two
+         * assertions relating them. Three unconstrained integers admit every
+         * assignment, so those assertions ruled nothing out; what they did do
+         * was suggest an order model where there was none. They are gone. The
+         * order of a recorded handoff is the ledger's own
+         * {@code HANDOFF_EXPORT} / {@code HANDOFF_ATTACH} events, which reach
+         * the formula through the same {@code event_position__} family as
+         * every field event, and the delivery this binding rests on is
+         * reported as evidence rather than as a position.</p>
+         *
+         * <p>An exact field read-from does have both of its events in that
+         * family, so it is ordered there: {@code write < read}, proposed
+         * through the recorded domain first so a proposal that would close a
+         * cycle is refused before the solve rather than asserted into it.</p>
+         */
+        private void emitRecordedBindingOrder(JsonObject binding,
+                                              String label,
+                                              String equalityAssertion,
+                                              boolean recordedExact) {
+            JsonObject evidence = new JsonObject();
+            evidence.addProperty("kind", "RECORDED_EXACT_VALUE_BINDING");
+            evidence.addProperty("edgeId", string(binding, "edgeId"));
+            evidence.addProperty("valueAssertion", equalityAssertion);
+            evidence.addProperty("fromOccurrenceId",
+                    string(binding, "fromOccurrenceId"));
+            evidence.addProperty("toOccurrenceId",
+                    string(binding, "toOccurrenceId"));
+            evidence.addProperty("fromOutputPort",
+                    string(binding, "fromOutputPort"));
+            evidence.addProperty("toInputPort",
+                    string(binding, "toInputPort"));
+            for (String member : new String[]{
+                    RecordedReadFrom.EDGE_PROVENANCE,
+                    RecordedReadFrom.EDGE_FIELD, "locationKey"}) {
+                if (binding.has(member)) {
+                    evidence.addProperty(member, string(binding, member));
+                }
+            }
+            long version = longInteger(binding, "fieldVersionId", 0L);
+            long read = longInteger(binding, "readEventId", 0L);
+            evidence.addProperty("fieldVersionId", version);
+            evidence.addProperty("readEventId", read);
+            if (recordedExact && recorded != null && version > 0L
+                    && read > 0L) {
+                evidence.addProperty("orderAssertion",
+                        emitRecordedOrder(version, read, label));
+            }
+            recordedValueBindings.add(evidence);
         }
 
-        private String versionedBindingKey(JsonObject binding) {
+        /**
+         * Asserts {@code before < after} in the shared position domain, after
+         * offering it to the recorded relation. A refusal is named and never
+         * asserted: a proposal the recorded order contradicts is a cycle
+         * across channels, and this composition must not solve over one.
+         */
+        private String emitRecordedOrder(long before, long after,
+                                         String label) {
+            if (!recorded.ordersEvent(before)
+                    || !recorded.ordersEvent(after)) {
+                recordedCoverage.add(CoverageDivergence.of(
+                        CoverageDivergence.Kind.FLOW,
+                        RecordedSessionModel.UNORDERED_READ_CUT, label,
+                        "events " + before + " and " + after + " are not both"
+                                + " in the recorded order domain"));
+                return "";
+            }
+            int status = recorded.propose(before, after);
+            if (status != SessionOrderDomain.ORDER_OK) {
+                unsupported.add("RecordedOrderRefused:"
+                        + SessionOrderDomain.statusName(status) + ":"
+                        + before + "->" + after);
+                return "";
+            }
+            return assertNamed("recorded_exact_order__" + before + "__"
+                            + after,
+                    "(< " + RecordedSessionModel.positionName(before) + " "
+                            + RecordedSessionModel.positionName(after) + ")");
+        }
+
+        /**
+         * Whether the recorded evidence ruled this candidate writer out.
+         *
+         * <p>An excluded candidate stays on the edge - it is the trace's own
+         * observation - and it is reported here, but it never becomes a
+         * writer the formula may choose: this run's session named a different
+         * write for that read, and admitting the ruled-out one anyway would
+         * put a value in the model the run showed did not flow.</p>
+         */
+        private boolean skipExcludedWriter(JsonObject binding) {
+            if (!RecordedReadFrom.PROVENANCE_EXCLUDED.equals(string(binding,
+                    RecordedReadFrom.EDGE_PROVENANCE))) {
+                return false;
+            }
+            if (excludedWriters.add(string(binding, "edgeId"))) {
+                recordedCoverage.add(CoverageDivergence.of(
+                        CoverageDivergence.Kind.FLOW,
+                        RecordedReadFrom.PROVENANCE_EXCLUDED,
+                        string(binding, "edgeId"),
+                        "the recorded read-from evidence names another writer"
+                                + " for " + bindingTargetInput(binding)
+                                + "; this candidate is not composed"));
+            }
+            return true;
+        }
+
+        /**
+         * Lowers one proven read-from as the equality it is.
+         *
+         * <p>{@code F_in = writerExpr} plus the recorded order, and no
+         * selector: the session already answered which write the read took,
+         * so a one-armed choice would only add a free Boolean between the two
+         * sides of a proven equality.</p>
+         *
+         * @return whether this binding was an exact one and was bound
+         */
+        private boolean bindRecordedExactWriter(JsonObject binding,
+                                                PortOccurrence source,
+                                                PortOccurrence target,
+                                                String label) {
+            if (!RecordedReadFrom.PROVENANCE_EXACT.equals(string(binding,
+                    RecordedReadFrom.EDGE_PROVENANCE))) {
+                return false;
+            }
+            String equality = assertPortEqualityNamed(source, target, label);
+            if (equality.isEmpty()) {
+                heapGap("RecordedExactReadFromGap@" + target);
+                return false;
+            }
+            recordProducerVersionBinding(binding, source, target, equality);
+            emitRecordedBindingOrder(binding, label, equality, true);
+            emittedEdgeBindings.add(edgeBindingKey(binding));
+            mentionPort(target);
+            boundPorts.add(target);
+            recordInputAuthority(target, READ_FROM_ARM,
+                    string(binding, "edgeId"));
+            if (ports.isInput(target.portId)) markSuppliedInput(target);
+            failureWitness.connect(binding, source, target, "true",
+                    portName(target));
+            return true;
+        }
+
+        /**
+         * Hands one consumer port the value the read-from selectors choose.
+         *
+         * <p>A guarded field binding names a location and a consuming
+         * activation; the recorded session names the read that activation
+         * performed of that location, and that read's arms are already
+         * lowered over the one selector family. Binding the port to the
+         * read's own value term is what keeps them one family: a second
+         * writer choice over the same read, with its own Booleans, could
+         * select one writer's value while the cut selected another's.</p>
+         *
+         * @return whether the port was bound
+         */
+        private boolean bindRecordedGuardedRead(JsonObject binding,
+                                                PortOccurrence producer,
+                                                PortOccurrence consumer,
+                                                String label) {
+            if (recorded == null || !RecordedReadFrom.PROVENANCE_GUARDED
+                    .equals(string(binding,
+                            RecordedReadFrom.EDGE_PROVENANCE))) {
+                return false;
+            }
+            long read = recorded.readEventOf(string(binding, "locationKey"),
+                    RecordedEvidenceIdentity.siteKey(string(binding,
+                            "toOccurrenceId")));
+            Term value = read > 0L ? guardedReadTerms.get(read) : null;
+            if (value != null) noteReadCase(read);
+            if (value == null) {
+                recordedCoverage.add(CoverageDivergence.of(
+                        CoverageDivergence.Kind.FLOW,
+                        SharedStateEvidence.reason(
+                                SharedStateEvidence.NOT_SELECTED),
+                        string(binding, "edgeId"),
+                        "no recorded guarded read of "
+                                + string(binding, "locationKey")
+                                + " addresses consumer "
+                                + string(binding, "toOccurrenceId")));
+                return false;
+            }
+            // One consumer port is one read.  The context relation and the
+            // resolved edge are two views of that one binding, so the second
+            // of them must not restate it.
+            if (!recordedReadBoundPorts.add(consumer)) {
+                emittedEdgeBindings.add(edgeBindingKey(binding));
+                recordedCoverage.add(CoverageDivergence.of(
+                        CoverageDivergence.Kind.FLOW,
+                        "RECORDED_GUARDED_READ_ALREADY_BOUND",
+                        string(binding, "edgeId"),
+                        "consumer port " + consumer + " already holds a"
+                                + " recorded guarded read's value; this edge"
+                                + " adds no second one"));
+                return true;
+            }
+            Sort portSort = portSort(consumer);
+            if (portSort == Sort.MAP && value.sort != Sort.MAP) {
+                return bindRecordedGuardedState(binding, producer, consumer,
+                        read, label);
+            }
+            Term bound = portSort == Sort.VALUE
+                    ? asValue(value, ports.get(consumer.portId) == null ? ""
+                    : ports.get(consumer.portId).javaType) : value;
+            if (bound.sort != portSort) {
+                unsupported.add("RecordedReadPortSortConflict:" + consumer
+                        + ":" + portSort + "!=" + bound.sort);
+                return false;
+            }
+            declarePort(consumer, portSort);
+            mentionPort(consumer);
+            String assertion = assertNamed(label + "_recorded_read",
+                    and(Arrays.asList(bound.precondition, "(= "
+                            + portName(consumer) + " " + bound.text + ")")));
+            boundPorts.add(consumer);
+            recordInputAuthority(consumer, READ_FROM_ARM,
+                    string(binding, "edgeId"));
+            if (ports.isInput(consumer.portId)) markSuppliedInput(consumer);
+            JsonObject evidence = new JsonObject();
+            evidence.addProperty("kind", "RECORDED_GUARDED_READ_PORT_BINDING");
+            evidence.addProperty("edgeId", string(binding, "edgeId"));
+            evidence.addProperty("locationKey",
+                    string(binding, "locationKey"));
+            evidence.addProperty(RecordedReadFrom.EDGE_FIELD,
+                    string(binding, RecordedReadFrom.EDGE_FIELD));
+            evidence.addProperty("toOccurrenceId",
+                    string(binding, "toOccurrenceId"));
+            evidence.addProperty("toInputPort", consumer.portId);
+            evidence.addProperty("readEventId", read);
+            evidence.addProperty("valueTerm", value.text);
+            evidence.addProperty("valueAssertion", assertion);
+            evidence.addProperty(RecordedReadFrom.EDGE_UNKNOWN_ARM,
+                    string(binding, RecordedReadFrom.EDGE_UNKNOWN_ARM));
+            recordedValueBindings.add(evidence);
+            emittedEdgeBindings.add(edgeBindingKey(binding));
+            return true;
+        }
+
+        /**
+         * Binds a container-state edge to the VM versions selected by its
+         * guarded read.  The read expression itself is a leaf value; the edge
+         * carries the state on which that read operates.  Candidate versions
+         * are admitted only when their exact writer occurrence is this
+         * edge's producer, and INITIAL is not a mutation produced by the
+         * edge.
+         */
+        private boolean bindRecordedGuardedState(JsonObject binding,
+                                                 PortOccurrence producerPort,
+                                                 PortOccurrence consumer,
+                                                 long readEventId,
+                                                 String label) {
+            JsonObject guarded = recorded.guardedReads().get(readEventId);
+            if (guarded == null) return false;
+            String producer = string(binding, "fromOccurrenceId");
+            List<String> selectors = new ArrayList<>();
+            for (JsonElement element : array(guarded, "candidates")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject candidate = element.getAsJsonObject();
+                if (bool(candidate, "unknown", false)) continue;
+                JsonObject version = recorded.writerVersion(longInteger(
+                        candidate, "fieldVersionId", 0L));
+                if (version.size() == 0
+                        || "INITIAL".equals(string(version, "versionKind"))
+                        || !producer.equals(
+                        SharedStateEvidence.writerSite(version))) {
+                    continue;
+                }
+                String selector = RecordedSessionModel.selectorName(
+                        readEventId, string(candidate, "selector"));
+                selectors.add(selector);
+            }
+            if (selectors.isEmpty()) {
+                unsupported.add("RecordedWriterOccurrenceHasNoStateArm:"
+                        + string(binding, "edgeId") + ":" + producer);
+                return false;
+            }
+            String stateBinding = assertPortEqualityNamed(producerPort,
+                    consumer, label + "_state");
+            if (stateBinding.isEmpty()) return false;
+            String selection = assertNamed(label + "_selected_writer",
+                    or(selectors));
+            boundPorts.add(consumer);
+            recordInputAuthority(consumer, READ_FROM_ARM,
+                    string(binding, "edgeId"));
+            if (ports.isInput(consumer.portId)) markSuppliedInput(consumer);
+            JsonObject evidence = new JsonObject();
+            evidence.addProperty("kind",
+                    "RECORDED_GUARDED_STATE_PORT_BINDING");
+            evidence.addProperty("edgeId", string(binding, "edgeId"));
+            evidence.addProperty("locationKey",
+                    string(binding, "locationKey"));
+            evidence.addProperty("toOccurrenceId",
+                    string(binding, "toOccurrenceId"));
+            evidence.addProperty("toInputPort", consumer.portId);
+            evidence.addProperty("readEventId", readEventId);
+            evidence.addProperty("selectedWriterAssertion", selection);
+            evidence.addProperty("valueAssertion", stateBinding);
+            recordedValueBindings.add(evidence);
+            emittedEdgeBindings.add(edgeBindingKey(binding));
+            failureWitness.connect(binding, producerPort, consumer,
+                    selection, portName(consumer));
+            return true;
+        }
+
+        private String edgeBindingKey(JsonObject binding) {
             return string(binding, "edgeId") + "\n"
                     + bindingSourceInstance(binding) + "\n"
                     + bindingSourceOutput(binding) + "\n"
@@ -5383,295 +6757,6 @@ public final class ConcolicSmtComposer {
                 return result;
             }
         }
-
-        private static final class VersionedWriter {
-            private final JsonObject binding;
-            private final PortOccurrence source;
-            private final String requestedGuard;
-            private final String timelineChannel;
-            private final int timelineOrdinal;
-            private String position;
-
-            private VersionedWriter(JsonObject binding,
-                                    PortOccurrence source,
-                                    String requestedGuard) {
-                this(binding, source, requestedGuard, "", -1);
-            }
-
-            private VersionedWriter(JsonObject binding,
-                                    PortOccurrence source,
-                                    String requestedGuard,
-                                    String timelineChannel,
-                                    int timelineOrdinal) {
-                this.binding = binding;
-                this.source = source;
-                this.requestedGuard = requestedGuard;
-                this.timelineChannel = timelineChannel;
-                this.timelineOrdinal = timelineOrdinal;
-            }
-        }
-
-        private static final class TimelineCut {
-            private final PortOccurrence source;
-            private final int ordinal;
-
-            private TimelineCut(PortOccurrence source, int ordinal) {
-                this.source = source;
-                this.ordinal = ordinal;
-            }
-        }
-
-        private static final class TimelineOutputExpansion {
-            private final String channel;
-            private final List<TimelineCut> cuts;
-
-            private TimelineOutputExpansion(String channel,
-                                            List<TimelineCut> cuts) {
-                this.channel = channel;
-                this.cuts = Collections.unmodifiableList(
-                        new ArrayList<>(cuts));
-            }
-        }
-
-        /**
-         * Relates two scalar inputs of one selected summary only when (1) an
-         * exact runtime edge has already bound the source input, (2) the
-         * requested output expression directly consumes the target input,
-         * and (3) the summary's static slice contains a directed path made
-         * exclusively of equality-preserving transfers between exact input
-         * cells.  This closes a common object-field-copy chain without
-         * treating arbitrary data dependence as equality.
-         */
-        private void emitExactCausalInputAliases(
-                Iterable<RelationSummary> selections) {
-            for (RelationSummary selection : selections) {
-                InvocationKey previous = enterInvocation(new InvocationKey(
-                        selection.regionId(),
-                        selection.occurrenceId()));
-                try {
-                    JsonObject summary = selection.toJson();
-                    for (String output
-                            : selection.outputClosure().outputPorts()) {
-                        JsonObject slice = selection.outputClosure()
-                                .member(output).slice();
-                        if (slice.size() == 0) continue;
-                        JsonElement expression =
-                                caseInvariantOutputExpression(summary, output);
-                        if (expression == null) continue;
-                        Set<String> consumedInputs = new LinkedHashSet<>();
-                        collectExpressionInputPorts(expression,
-                                selection.regionId(), consumedInputs);
-                        emitExactCausalInputAliasesForMember(selection, slice,
-                                selection.edgeBindings(),
-                                consumedInputs);
-                    }
-                } finally {
-                    restoreInvocation(previous);
-                }
-            }
-        }
-
-        private void emitExactCausalInputAliasesForMember(
-                RelationSummary selection, JsonObject slice,
-                List<JsonObject> causalEdges,
-                Set<String> consumedInputs) {
-            if (consumedInputs.isEmpty()) return;
-            JsonObject summary = selection.toJson();
-            Map<String, List<String>> exactCells =
-                    exactInputCells(slice, selection.regionId());
-            Map<String, List<JsonObject>> adjacency =
-                    exactCausalAdjacency(slice, causalEdges);
-            if (exactCells.isEmpty() || adjacency.isEmpty()) return;
-
-            List<PortOccurrence> sources = new ArrayList<>();
-            for (PortOccurrence input : validatedIncomingEdgeInputs) {
-                if (selection.occurrenceId().equals(
-                        input.invocation.instanceId)
-                        && selection.regionId().equals(regionOf(input.portId))
-                        && exactCells.containsKey(input.portId)) {
-                    sources.add(input);
-                }
-            }
-            Collections.sort(sources, Comparator.comparing(
-                    PortOccurrence::toString));
-            List<String> targets = new ArrayList<>(consumedInputs);
-            Collections.sort(targets);
-            for (PortOccurrence source : sources) {
-                Port sourcePort = ports.get(source.portId);
-                Sort sourceSort = validatedIncomingEdgeInputSorts.get(source);
-                if (sourceSort == null && sourcePort != null) {
-                    sourceSort = sortOfJava(sourcePort.javaType);
-                }
-                if (!exactCausalScalarSort(sourceSort)) continue;
-                Set<String> reachable = exactCausalReachable(
-                        exactCells.get(source.portId), adjacency);
-                for (String target : targets) {
-                    PortOccurrence targetOccurrence =
-                            currentOccurrence(target);
-                    if (source.equals(targetOccurrence)
-                            || !exactCells.containsKey(target)) continue;
-                    Port targetPort = ports.get(target);
-                    if (targetPort == null || sourceSort != sortOfJava(
-                            targetPort.javaType)) continue;
-                    if (Collections.disjoint(reachable,
-                            exactCells.get(target))) continue;
-                    String key = firstNonBlank(string(summary,
-                            "summaryId"), selection.regionId()) + "\n"
-                            + source + "\n" + targetOccurrence;
-                    if (!emittedExactCausalInputAliasKeys.add(key)) {
-                        continue;
-                    }
-
-                    Term from = canonicalPortTerm(source.portId, sourceSort);
-                    Term to = canonicalPortTerm(target, sourceSort);
-                    String formula = "(= " + from.text + " "
-                            + to.text + ")";
-                    String label = "exact_causal_input_alias_"
-                            + (emittedExactCausalInputAliasKeys.size() - 1);
-                    assertNamed(label, formula);
-                    recordSuppliedInput(source, targetOccurrence);
-                }
-            }
-        }
-
-        private void collectExpressionInputPorts(JsonElement expression,
-                                                 String region,
-                                                 Set<String> result) {
-            if (expression == null || expression.isJsonNull()) return;
-            if (expression.isJsonArray()) {
-                for (JsonElement item : expression.getAsJsonArray()) {
-                    collectExpressionInputPorts(item, region, result);
-                }
-                return;
-            }
-            if (!expression.isJsonObject()) return;
-            JsonObject object = expression.getAsJsonObject();
-            if ("SymbolExpression".equals(string(object, "_type"))) {
-                String port = findPort(string(object, "_exp"));
-                if (ports.isInput(port) && region.equals(regionOf(port))) {
-                    result.add(port);
-                }
-                return;
-            }
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                if (!"_res_exp".equals(entry.getKey())) {
-                    collectExpressionInputPorts(entry.getValue(), region,
-                            result);
-                }
-            }
-        }
-
-        private Map<String, List<String>> exactInputCells(JsonObject slice,
-                                                          String region) {
-            Map<String, List<String>> result = new LinkedHashMap<>();
-            for (JsonElement element : array(slice, "inputBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                String input = string(binding, "inputPort");
-                String cell = string(binding, "dependencyCell");
-                if (!"EXACT_CELL_IDENTITY".equals(string(binding,
-                        "bindingAuthority"))
-                        || !region.equals(regionOf(input))
-                        || !ports.isInput(input) || cell.isEmpty()) {
-                    continue;
-                }
-                List<String> cells = result.get(input);
-                if (cells == null) {
-                    cells = new ArrayList<>();
-                    result.put(input, cells);
-                }
-                if (!cells.contains(cell)) cells.add(cell);
-            }
-            for (List<String> cells : result.values()) {
-                Collections.sort(cells);
-            }
-            return result;
-        }
-
-        private Map<String, List<JsonObject>> exactCausalAdjacency(
-                JsonObject slice, List<JsonObject> causalEdges) {
-            Set<String> declared = new LinkedHashSet<>();
-            for (JsonElement element : array(slice, "causalEdgeIds")) {
-                if (element.isJsonPrimitive()
-                        && element.getAsJsonPrimitive().isString()) {
-                    declared.add(element.getAsString());
-                }
-            }
-            Map<String, JsonObject> unique = new LinkedHashMap<>();
-            Set<String> duplicates = new LinkedHashSet<>();
-            for (JsonObject edge : causalEdges) {
-                String id = string(edge, "edgeId");
-                if (id.isEmpty()
-                        || unique.putIfAbsent(id, edge) != null) {
-                    duplicates.add(id);
-                }
-            }
-            Map<String, List<JsonObject>> result = new LinkedHashMap<>();
-            for (JsonObject edge : unique.values()) {
-                String id = string(edge, "edgeId");
-                String from = string(edge, "fromCell");
-                String to = string(edge, "toCell");
-                if (!declared.contains(id) || duplicates.contains(id)
-                        || from.isEmpty() || to.isEmpty()
-                        || !equalityPreservingCausalTransfer(
-                        string(edge, "transferKind"))) {
-                    continue;
-                }
-                List<JsonObject> outgoing = result.get(from);
-                if (outgoing == null) {
-                    outgoing = new ArrayList<>();
-                    result.put(from, outgoing);
-                }
-                outgoing.add(edge);
-            }
-            for (List<JsonObject> outgoing : result.values()) {
-                Collections.sort(outgoing, Comparator.comparing(
-                        value -> string(value, "edgeId")));
-            }
-            return result;
-        }
-
-        private Set<String> exactCausalReachable(
-                List<String> sources,
-                Map<String, List<JsonObject>> adjacency) {
-            Set<String> reachable = new LinkedHashSet<>();
-            for (String source : sources) {
-                Deque<String> pending = new ArrayDeque<>();
-                Map<String, Integer> depths = new LinkedHashMap<>();
-                pending.add(source);
-                depths.put(source, 0);
-                while (!pending.isEmpty()) {
-                    String cell = pending.removeFirst();
-                    int depth = depths.get(cell);
-                    if (depth >= 64) continue;
-                    List<JsonObject> outgoing = adjacency.get(cell);
-                    if (outgoing == null) continue;
-                    for (JsonObject edge : outgoing) {
-                        String next = string(edge, "toCell");
-                        if (depths.containsKey(next)) continue;
-                        depths.put(next, depth + 1);
-                        reachable.add(next);
-                        pending.addLast(next);
-                    }
-                }
-            }
-            return reachable;
-        }
-
-        private boolean exactCausalScalarSort(Sort sort) {
-            return sort == Sort.INT || sort.floating()
-                    || sort == Sort.STRING || sort == Sort.BOOL;
-        }
-
-        private boolean equalityPreservingCausalTransfer(String kind) {
-            return "VALUE_PASS".equals(kind)
-                    || "FUNCTION_RETURN".equals(kind)
-                    || "IDENTITY_BINDING".equals(kind)
-                    || "HEAP_READ".equals(kind)
-                    || "HEAP_WRITE".equals(kind)
-                    || "PROTOCOL_TRANSFER".equals(kind);
-        }
-
         private void finishBindings() {
             Map<PortOccurrence, Set<PortOccurrence>> equalPorts =
                     new LinkedHashMap<>();
@@ -5695,6 +6780,146 @@ public final class ConcolicSmtComposer {
                     unsupported.add("UnboundPort:" + port);
                 }
             }
+            // README SMT-1 is case-local: a selected input may legitimately
+            // have different authorities in mutually-exclusive cases, but at
+            // every use exactly one of those authority facts must be active.
+            // The assertion belongs outside the case being checked; putting it
+            // under currentGuard here would silently authorize only whichever
+            // case happened to be lowered last.
+            String previousGuard = currentGuard;
+            currentGuard = "";
+            try {
+                for (Map.Entry<PortOccurrence, Set<String>> useEntry
+                        : inputUseGuards.entrySet()) {
+                    PortOccurrence port = useEntry.getKey();
+                    Map<String, List<InputAuthorityEvidence>> authorities =
+                            authoritiesOf(port);
+                    List<String> activeGuards = authorityGuards(authorities);
+                    if (activeGuards.isEmpty()) {
+                        unsupported.add(INPUT_AUTHORITY_MISSING + ":" + port);
+                    }
+                    if (authorityCasesDefinitelyAmbiguous(activeGuards)) {
+                        unsupported.add(INPUT_AUTHORITY_AMBIGUOUS + ":" + port);
+                    }
+                    int ordinal = 0;
+                    for (String useGuard : useEntry.getValue()) {
+                        String obligation = exactlyOneAuthority(activeGuards);
+                        if (!"true".equals(useGuard)) {
+                            obligation = "(=> " + useGuard + " "
+                                    + obligation + ")";
+                        }
+                        String assertion = assertNamed(
+                                "selected_input_authority_" + portName(port)
+                                        + "_" + ordinal++, obligation);
+                        inputAuthorityAssertions.computeIfAbsent(port,
+                                ignored -> new LinkedHashMap<>())
+                                .put(useGuard, assertion);
+                    }
+                }
+            } finally {
+                currentGuard = previousGuard;
+            }
+        }
+
+        private static List<String> authorityGuards(
+                Map<String, List<InputAuthorityEvidence>> authorities) {
+            List<String> result = new ArrayList<>();
+            for (List<InputAuthorityEvidence> evidence
+                    : authorities.values()) {
+                for (InputAuthorityEvidence fact : evidence) {
+                    result.add(firstNonBlank(fact.caseSelector, "true"));
+                }
+            }
+            return result;
+        }
+
+        /**
+         * One row per selected input port occurrence and the authority that
+         * constrained it, in the deterministic order the ports were named.
+         */
+        private JsonArray selectedInputLedger() {
+            List<PortOccurrence> ordered = new ArrayList<>();
+            for (PortOccurrence port : mentionedPorts) {
+                if (ports.isInput(port.portId)) ordered.add(port);
+            }
+            ordered.sort(Comparator.comparing(PortOccurrence::toString));
+            JsonArray result = new JsonArray();
+            for (PortOccurrence port : ordered) {
+                Map<String, List<InputAuthorityEvidence>> authorities =
+                        authoritiesOf(port);
+                JsonObject row = new JsonObject();
+                row.addProperty("portId", port.portId);
+                row.addProperty("occurrenceId", port.invocation.instanceId);
+                List<String> activeGuards = authorityGuards(authorities);
+                row.addProperty("authority", activeGuards.isEmpty()
+                        ? INPUT_AUTHORITY_MISSING
+                        : authorityCasesDefinitelyAmbiguous(activeGuards)
+                        ? INPUT_AUTHORITY_AMBIGUOUS
+                        : activeGuards.size() == 1
+                        ? authorities.keySet().iterator().next()
+                        : "CASE_LOCAL_EXACTLY_ONE");
+                JsonArray uses = new JsonArray();
+                Map<String, String> assertions = inputAuthorityAssertions
+                        .getOrDefault(port, Collections.emptyMap());
+                for (String guard : inputUseGuards.getOrDefault(port,
+                        Collections.emptySet())) {
+                    JsonObject use = new JsonObject();
+                    use.addProperty("caseGuard", guard);
+                    String assertion = assertions.get(guard);
+                    if (assertion != null) {
+                        use.addProperty("authorityAssertion", assertion);
+                    }
+                    uses.add(use);
+                }
+                row.add("uses", uses);
+                JsonArray evidence = new JsonArray();
+                for (Map.Entry<String, List<InputAuthorityEvidence>> entry
+                        : authorities.entrySet()) {
+                    for (InputAuthorityEvidence fact : entry.getValue()) {
+                        JsonObject named = new JsonObject();
+                        named.addProperty("authority", entry.getKey());
+                        named.addProperty("evidence", fact.evidence);
+                        if (!fact.caseSelector.isEmpty()) {
+                            named.addProperty(
+                                    RecordedSessionModel.CASE_SELECTOR,
+                                    fact.caseSelector);
+                        }
+                        evidence.add(named);
+                    }
+                }
+                row.add("evidence", evidence);
+                result.add(row);
+            }
+            return result;
+        }
+
+        /** One row stating that the case-local selected-input pass ran. */
+        private JsonObject selectedInputLedgerAudit() {
+            int ports = 0;
+            int uses = 0;
+            int facts = 0;
+            int missing = 0;
+            int ambiguous = 0;
+            for (Map.Entry<PortOccurrence, Set<String>> entry
+                    : inputUseGuards.entrySet()) {
+                ports++;
+                uses += entry.getValue().size();
+                List<String> guards = authorityGuards(
+                        authoritiesOf(entry.getKey()));
+                facts += guards.size();
+                if (guards.isEmpty()) missing++;
+                else if (authorityCasesDefinitelyAmbiguous(guards)) ambiguous++;
+            }
+            JsonObject audit = new JsonObject();
+            audit.addProperty("schemaVersion", 3);
+            audit.addProperty("kind", "SELECTED_INPUT_LEDGER_AUDIT");
+            audit.addProperty("authority", "SELECTED_INPUT_LEDGER_V3");
+            audit.addProperty("inputOccurrencesChecked", ports);
+            audit.addProperty("inputUsesChecked", uses);
+            audit.addProperty("authorityEvidenceChecked", facts);
+            audit.addProperty("missingOccurrences", missing);
+            audit.addProperty("ambiguousOccurrences", ambiguous);
+            return audit;
         }
 
         private boolean assertPortEquality(String left, String right,
@@ -5743,8 +6968,8 @@ public final class ConcolicSmtComposer {
             }
             declarePort(left, leftSort);
             declarePort(right, rightSort);
-            mentionedPorts.add(left);
-            mentionedPorts.add(right);
+            mentionPort(left);
+            mentionPort(right);
             return true;
         }
 
@@ -5818,10 +7043,82 @@ public final class ConcolicSmtComposer {
             }
         }
 
+        /**
+         * Names the one authority that constrained a selected input port.
+         *
+         * <p>Recorded at the binding site rather than reconstructed later:
+         * only the site knows whether the value arrived from this
+         * occurrence's own relation, a VM communication leaf, or a read-from
+         * selector, and a name-shaped guess at the end would be exactly the
+         * provenance the README forbids.</p>
+         */
+        private void recordInputAuthority(PortOccurrence occurrence,
+                                          String authority, String evidence) {
+            // Filed for whatever the value arrived at.  Requiring the catalog
+            // to declare that port an input first would drop the authority of
+            // exactly the arrivals the catalog does not describe, and the
+            // ledger below would then read them as inputs nothing constrained.
+            if (occurrence == null) return;
+            List<InputAuthorityEvidence> facts = inputAuthorities
+                    .computeIfAbsent(occurrence,
+                            ignored -> new LinkedHashMap<>())
+                    .computeIfAbsent(authority,
+                            ignored -> new ArrayList<>());
+            for (InputAuthorityEvidence fact : facts) {
+                if (fact.same(evidence, currentGuard)) return;
+            }
+            facts.add(new InputAuthorityEvidence(evidence, currentGuard));
+        }
+
+        /**
+         * The authorities that constrain one selected input port.
+         *
+         * <p>A port no edge bound is admitted only when the plan declared it
+         * a value frontier: that is where the backward slice legitimately
+         * stops, so the port is an external workload input rather than a
+         * value the composition failed to connect.  A structure carrier that
+         * reaches SMT unbound is the second case, and it stays unnamed here
+         * so the caller refuses it.</p>
+         */
+        private Map<String, List<InputAuthorityEvidence>> authoritiesOf(
+                PortOccurrence port) {
+            Map<String, List<InputAuthorityEvidence>> bound =
+                    inputAuthorities.get(port);
+            Map<String, List<InputAuthorityEvidence>> result =
+                    new LinkedHashMap<>();
+            if (bound != null) {
+                for (Map.Entry<String, List<InputAuthorityEvidence>> entry
+                        : bound.entrySet()) {
+                    result.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+                }
+            }
+            Port schema = ports.get(port.portId);
+            // VALUE_FRONTIER permits an otherwise-unbound selected input to
+            // be a local symbolic root.  It is not a second value source once
+            // an exact read-from or VM handoff has constrained this concrete
+            // port occurrence.
+            if (result.isEmpty() && schema != null
+                    && DependencyRole.VALUE_FRONTIER.equals(
+                    string(schema.metadata, "dependencyRole"))) {
+                result.computeIfAbsent(LOCAL_SYMBOLIC_ROOT,
+                                ignored -> new ArrayList<>())
+                        .add(new InputAuthorityEvidence(
+                                DependencyRole.VALUE_FRONTIER, ""));
+            }
+            return result;
+        }
+
+        /** Records the exact case in which a selected input term is read. */
+        private void mentionPort(PortOccurrence occurrence) {
+            mentionedPorts.add(occurrence);
+            if (!ports.isInput(occurrence.portId)) return;
+            String useGuard = firstNonBlank(currentGuard, "true");
+            inputUseGuards.computeIfAbsent(occurrence,
+                    ignored -> new LinkedHashSet<>()).add(useGuard);
+        }
+
         private void markSuppliedInput(PortOccurrence occurrence) {
             suppliedInputOccurrences.add(occurrence);
-            // Schema-v2 compatibility for the reach-condition extractor.
-            suppliedInputs.add(occurrence.portId);
         }
 
         private void recordSuppliedInput(String left, String right) {
@@ -5872,11 +7169,16 @@ public final class ConcolicSmtComposer {
         }
 
         private boolean emitPortBinding(String port, Term value) {
+            return !emitPortBindingAssertion(port, value).isEmpty();
+        }
+
+        /** Emits and returns the exact named receiving-port assertion. */
+        private String emitPortBindingAssertion(String port, Term value) {
             PortOccurrence occurrence = currentOccurrence(port);
             Port schema = ports.get(port);
             Sort portSort = schema == null ? Sort.VALUE : portSort(port);
             declarePort(occurrence, portSort);
-            mentionedPorts.add(occurrence);
+            mentionPort(occurrence);
             if (portSort == Sort.MAP) {
                 Term state = value.sort == Sort.MAP ? value
                         : value.sort == Sort.REF
@@ -5885,13 +7187,12 @@ public final class ConcolicSmtComposer {
                         : null;
                 if (state == null) {
                     unsupported.add("MapPortBinding:" + port + ":" + value.sort);
-                    return false;
+                    return "";
                 }
                 String formula = and(Arrays.asList(state.precondition,
                         "(= " + portName(occurrence) + " " + state.text
                                 + ")"));
-                assertNamed("bind_" + port, formula);
-                return true;
+                return assertNamed("bind_" + port, formula);
             } else if (portSort == Sort.ARRAY_VALUE) {
                 Term state = value.sort == Sort.ARRAY_VALUE ? value
                         : value.sort == Sort.REF
@@ -5901,26 +7202,24 @@ public final class ConcolicSmtComposer {
                 if (state == null) {
                     unsupported.add("ArrayValuePortBinding:" + port + ":"
                             + value.sort);
-                    return false;
+                    return "";
                 }
                 String formula = and(Arrays.asList(state.precondition,
                         "(= " + portName(occurrence) + " " + state.text
                                 + ")"));
-                assertNamed("bind_" + port, formula);
-                return true;
+                return assertNamed("bind_" + port, formula);
             } else {
                 if (value.sort == Sort.ARRAY_VALUE) {
                     unsupported.add("UnsupportedArrayToScalarBinding:" + port
                             + ":" + value.sort);
-                    return false;
+                    return "";
                 }
                 Term boxed = asValue(value,
                         schema == null ? "" : schema.javaType);
                 String formula = and(Arrays.asList(boxed.precondition,
                         "(= " + portName(occurrence) + " " + boxed.text
                                 + ")"));
-                assertNamed("bind_" + port, formula);
-                return true;
+                return assertNamed("bind_" + port, formula);
             }
         }
 
@@ -6017,6 +7316,7 @@ public final class ConcolicSmtComposer {
             }
             String asserted = currentGuard.isEmpty() ? expression
                     : "(=> " + currentGuard + " " + expression + ")";
+            asserted = CaseLocalLetCse.compress(asserted);
             assertions.add("(assert (! " + asserted + " :named "
                     + unique + "))");
             return unique;
@@ -6140,6 +7440,398 @@ public final class ConcolicSmtComposer {
         }
     }
 
+    /**
+     * Shares one repeated, closed SMT term inside one named assertion.
+     *
+     * <p>The VM expression format is a tree, even when hundreds of reads use
+     * the same bounded container snapshot. Lowering that tree literally
+     * repeats the snapshot in every read. A local SMT {@code let} restores
+     * that lost DAG without adding a solver variable or moving a constraint
+     * across an assertion or case boundary.</p>
+     *
+     * <p>This is deliberately bounded: one binding, terms of at least one
+     * KiB, and a finite parser budget. A candidate that mentions an
+     * identifier bound by an enclosing {@code let}, quantifier, or lambda is
+     * not hoisted. Binder declaration lists are never terms. Any malformed
+     * input is returned byte-for-byte.</p>
+     */
+    private static final class CaseLocalLetCse {
+        private static final int MIN_TERM_LENGTH = 1024;
+        private static final int MAX_NODES = 250_000;
+        private static final int MAX_ATOMS = 500_000;
+        private static final String NAME_PREFIX = "gc_case_cse__";
+
+        private CaseLocalLetCse() {
+        }
+
+        private static String compress(String expression) {
+            if (expression == null
+                    || expression.length() < 2 * MIN_TERM_LENGTH) {
+                return expression;
+            }
+            ParsedSmt parsed = ParsedSmt.parse(expression);
+            if (parsed == null) return expression;
+
+            Map<SpanKey, Repetitions> groups = new LinkedHashMap<>();
+            for (SmtNode node : parsed.nodes) {
+                if (node.end - node.start < MIN_TERM_LENGTH
+                        || node.head.isEmpty()
+                        || parsed.inBinderDeclarations(node)
+                        || parsed.referencesAncestorBinding(node)) {
+                    continue;
+                }
+                SpanKey key = parsed.span(node);
+                Repetitions group = groups.get(key);
+                if (group == null) {
+                    group = new Repetitions(key);
+                    groups.put(key, group);
+                }
+                group.occurrences.add(node);
+            }
+
+            Repetitions best = null;
+            long bestSaving = 0L;
+            for (Repetitions group : groups.values()) {
+                if (group.occurrences.size() < 2) continue;
+                long saving = group.estimatedSaving();
+                if (saving > bestSaving
+                        || saving == bestSaving && best != null
+                        && group.key.length() > best.key.length()
+                        || saving == bestSaving && best != null
+                        && group.key.length() == best.key.length()
+                        && group.key.start < best.key.start) {
+                    best = group;
+                    bestSaving = saving;
+                }
+            }
+            if (best == null || bestSaving <= 0L) return expression;
+
+            String term = expression.substring(best.key.start,
+                    best.key.end);
+            String stem = NAME_PREFIX + sha256(term).substring(0, 16);
+            String name = parsed.freshAtom(stem);
+            List<SmtNode> occurrences = new ArrayList<>(best.occurrences);
+            Collections.sort(occurrences,
+                    Comparator.comparingInt(node -> node.start));
+            StringBuilder body = new StringBuilder(
+                    expression.length() - occurrences.size()
+                            * (term.length() - name.length()));
+            int cursor = 0;
+            for (SmtNode occurrence : occurrences) {
+                if (occurrence.start < cursor) {
+                    // Equal-length exact spans cannot overlap. Keep the
+                    // fail-safe local in case a future parser admits one.
+                    return expression;
+                }
+                body.append(expression, cursor, occurrence.start)
+                        .append(name);
+                cursor = occurrence.end;
+            }
+            body.append(expression, cursor, expression.length());
+            String compressed = "(let ((" + name + " " + term + ")) "
+                    + body + ")";
+            return compressed.length() < expression.length()
+                    ? compressed : expression;
+        }
+
+        private static final class Repetitions {
+            private final SpanKey key;
+            private final List<SmtNode> occurrences = new ArrayList<>();
+
+            private Repetitions(SpanKey key) {
+                this.key = key;
+            }
+
+            private long estimatedSaving() {
+                int count = occurrences.size();
+                // The deterministic name is 30 characters before a rare
+                // collision suffix. This estimate only ranks candidates;
+                // the exact final length is checked before returning it.
+                return (long) (count - 1) * key.length()
+                        - (long) count * 32L - 64L;
+            }
+        }
+
+        private static final class SpanKey {
+            private final String source;
+            private final int start;
+            private final int end;
+            private final int hash;
+
+            private SpanKey(String source, int start, int end, int hash) {
+                this.source = source;
+                this.start = start;
+                this.end = end;
+                this.hash = hash;
+            }
+
+            private int length() {
+                return end - start;
+            }
+
+            @Override
+            public int hashCode() {
+                return 31 * hash + length();
+            }
+
+            @Override
+            public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof SpanKey)) return false;
+                SpanKey value = (SpanKey) other;
+                return length() == value.length()
+                        && hash == value.hash
+                        && source.regionMatches(start, value.source,
+                        value.start, length());
+            }
+        }
+
+        private static final class ParsedSmt {
+            private final String source;
+            private final List<SmtNode> nodes;
+            private final List<SmtAtom> atoms;
+            private final int[] prefixHashes;
+            private final int[] powersOf31;
+
+            private ParsedSmt(String source, List<SmtNode> nodes,
+                              List<SmtAtom> atoms) {
+                this.source = source;
+                this.nodes = nodes;
+                this.atoms = atoms;
+                this.prefixHashes = new int[source.length() + 1];
+                this.powersOf31 = new int[source.length() + 1];
+                powersOf31[0] = 1;
+                for (int index = 0; index < source.length(); index++) {
+                    prefixHashes[index + 1] = 31 * prefixHashes[index]
+                            + source.charAt(index);
+                    powersOf31[index + 1] = 31 * powersOf31[index];
+                }
+            }
+
+            private SpanKey span(SmtNode node) {
+                int length = node.end - node.start;
+                int hash = prefixHashes[node.end]
+                        - prefixHashes[node.start] * powersOf31[length];
+                return new SpanKey(source, node.start, node.end, hash);
+            }
+
+            private static ParsedSmt parse(String source) {
+                List<SmtNode> nodes = new ArrayList<>();
+                List<SmtAtom> atoms = new ArrayList<>();
+                Deque<Integer> open = new ArrayDeque<>();
+                int roots = 0;
+                for (int index = 0; index < source.length();) {
+                    char current = source.charAt(index);
+                    if (Character.isWhitespace(current)) {
+                        index++;
+                        continue;
+                    }
+                    if (current == ';') {
+                        // assertNamed emits no comments. Refuse rather than
+                        // guess whether a parenthesis is commented out.
+                        return null;
+                    }
+                    if (current == '(') {
+                        int parent = open.isEmpty() ? -1 : open.peek();
+                        if (parent < 0) roots++;
+                        if (nodes.size() >= MAX_NODES || roots > 1) {
+                            return null;
+                        }
+                        SmtNode node = new SmtNode(nodes.size(), parent,
+                                index, atoms.size());
+                        nodes.add(node);
+                        if (parent >= 0) {
+                            SmtNode owner = nodes.get(parent);
+                            owner.sawElement = true;
+                            owner.children.add(node.id);
+                        }
+                        open.push(node.id);
+                        index++;
+                        continue;
+                    }
+                    if (current == ')') {
+                        if (open.isEmpty()) return null;
+                        SmtNode node = nodes.get(open.pop());
+                        node.end = index + 1;
+                        node.atomEnd = atoms.size();
+                        index++;
+                        continue;
+                    }
+                    if (open.isEmpty() || atoms.size() >= MAX_ATOMS) {
+                        return null;
+                    }
+                    int end = atomEnd(source, index);
+                    if (end <= index) return null;
+                    SmtNode owner = nodes.get(open.peek());
+                    if (!owner.sawElement) {
+                        owner.head = source.substring(index, end);
+                    }
+                    owner.sawElement = true;
+                    atoms.add(new SmtAtom(index, end));
+                    index = end;
+                }
+                if (!open.isEmpty() || roots != 1 || nodes.isEmpty()) {
+                    return null;
+                }
+                return new ParsedSmt(source, nodes, atoms);
+            }
+
+            private static int atomEnd(String source, int start) {
+                char first = source.charAt(start);
+                if (first == '"') {
+                    int cursor = start + 1;
+                    while (cursor < source.length()) {
+                        if (source.charAt(cursor) != '"') {
+                            cursor++;
+                            continue;
+                        }
+                        if (cursor + 1 < source.length()
+                                && source.charAt(cursor + 1) == '"') {
+                            cursor += 2;
+                            continue;
+                        }
+                        return cursor + 1;
+                    }
+                    return -1;
+                }
+                if (first == '|') {
+                    int cursor = start + 1;
+                    while (cursor < source.length()) {
+                        char current = source.charAt(cursor);
+                        if (current == '\\') {
+                            cursor += 2;
+                        } else if (current == '|') {
+                            return cursor + 1;
+                        } else {
+                            cursor++;
+                        }
+                    }
+                    return -1;
+                }
+                int cursor = start;
+                while (cursor < source.length()) {
+                    char current = source.charAt(cursor);
+                    if (Character.isWhitespace(current)
+                            || current == '(' || current == ')') {
+                        break;
+                    }
+                    cursor++;
+                }
+                return cursor;
+            }
+
+            private boolean inBinderDeclarations(SmtNode candidate) {
+                int cursor = candidate.id;
+                while (cursor >= 0) {
+                    SmtNode node = nodes.get(cursor);
+                    int parent = node.parent;
+                    if (parent >= 0) {
+                        SmtNode owner = nodes.get(parent);
+                        if (binder(owner)
+                                && !owner.children.isEmpty()
+                                && owner.children.get(0) == cursor) {
+                            return true;
+                        }
+                    }
+                    cursor = parent;
+                }
+                return false;
+            }
+
+            private boolean referencesAncestorBinding(SmtNode candidate) {
+                Set<String> bound = new LinkedHashSet<>();
+                int cursor = candidate.parent;
+                while (cursor >= 0) {
+                    SmtNode ancestor = nodes.get(cursor);
+                    if (binder(ancestor) && !ancestor.children.isEmpty()) {
+                        SmtNode declarations = nodes.get(
+                                ancestor.children.get(0));
+                        for (Integer declarationId
+                                : declarations.children) {
+                            String identifier = nodes.get(
+                                    declarationId).head;
+                            if (!identifier.isEmpty()) bound.add(identifier);
+                        }
+                    }
+                    cursor = ancestor.parent;
+                }
+                if (bound.isEmpty()) return false;
+                for (int index = candidate.atomStart;
+                     index < candidate.atomEnd; index++) {
+                    SmtAtom atom = atoms.get(index);
+                    for (String identifier : bound) {
+                        if (atom.end - atom.start == identifier.length()
+                                && source.regionMatches(atom.start,
+                                identifier, 0, identifier.length())) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            private String freshAtom(String stem) {
+                String value = stem;
+                int suffix = 2;
+                while (containsAtom(value)) {
+                    value = stem + "_" + suffix++;
+                }
+                return value;
+            }
+
+            private boolean containsAtom(String value) {
+                for (SmtAtom atom : atoms) {
+                    if (atom.end - atom.start == value.length()
+                            && source.regionMatches(atom.start, value,
+                            0, value.length())) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            private static boolean binder(SmtNode node) {
+                return "let".equals(node.head)
+                        || "forall".equals(node.head)
+                        || "exists".equals(node.head)
+                        || "lambda".equals(node.head);
+            }
+        }
+
+        private static final class SmtNode {
+            private final int id;
+            private final int parent;
+            private final int start;
+            private final int atomStart;
+            private final List<Integer> children = new ArrayList<>();
+            private int end;
+            private int atomEnd;
+            private String head = "";
+            private boolean sawElement;
+
+            private SmtNode(int id, int parent, int start, int atomStart) {
+                this.id = id;
+                this.parent = parent;
+                this.start = start;
+                this.atomStart = atomStart;
+            }
+        }
+
+        private static final class SmtAtom {
+            private final int start;
+            private final int end;
+
+            private SmtAtom(int start, int end) {
+                this.start = start;
+                this.end = end;
+            }
+        }
+    }
+
+    static String caseLocalLetCseForTests(String expression) {
+        return CaseLocalLetCse.compress(expression);
+    }
+
     static String materializedPortJavaType(JsonObject port) {
         return MaterializationSpec.logicalJavaType(port);
     }
@@ -6182,8 +7874,7 @@ public final class ConcolicSmtComposer {
             }
             ports.put(id, new Port(javaType,
                     firstNonBlank(declaredFieldJavaType(json),
-                            declaredCellJavaType(cell)), sort, input,
-                    cell, json));
+                            declaredCellJavaType(cell)), sort, input, json));
         }
 
         /**
@@ -6219,19 +7910,6 @@ public final class ConcolicSmtComposer {
             return port != null && port.input;
         }
 
-        private boolean sameStateCell(String input, String output) {
-            Port left = ports.get(input);
-            Port right = ports.get(output);
-            return left != null && right != null && left.input && !right.input
-                    && !left.cell.isEmpty() && left.cell.equals(right.cell)
-                    && left.sort == right.sort;
-        }
-
-        private boolean explicitReplayInvariant(String id) {
-            Port port = ports.get(id);
-            return port != null && port.explicitReplayInvariant();
-        }
-
     }
 
     private static final class Port {
@@ -6239,17 +7917,14 @@ public final class ConcolicSmtComposer {
         private final String declaredFieldJavaType;
         private final Sort sort;
         private final boolean input;
-        private final String cell;
         private final JsonObject metadata;
 
         private Port(String javaType, String declaredFieldJavaType,
-                     Sort sort, boolean input, String cell,
-                     JsonObject metadata) {
+                     Sort sort, boolean input, JsonObject metadata) {
             this.javaType = javaType;
             this.declaredFieldJavaType = declaredFieldJavaType;
             this.sort = sort;
             this.input = input;
-            this.cell = firstNonBlank(cell);
             this.metadata = metadata == null
                     ? new JsonObject() : metadata.deepCopy();
         }
@@ -6257,17 +7932,6 @@ public final class ConcolicSmtComposer {
         /** The type Java declares for this port's value, when it is known. */
         private String declaredJavaType() {
             return firstNonBlank(javaType, declaredFieldJavaType);
-        }
-
-        private boolean explicitReplayInvariant() {
-            String role = string(metadata, "dependencyRole");
-            String demand = string(metadata, "symbolicDemand");
-            return "CONCRETE_STRUCTURE_CARRIER".equals(role)
-                    || bool(metadata, "captureRootOnly", false)
-                    || bool(metadata, "loopControlOnly", false)
-                    || bool(metadata, "controlOnly", false)
-                    || bool(metadata, "pathAssumptionOnly", false)
-                    || demand.startsWith("CONCRETE_");
         }
 
     }
@@ -6435,35 +8099,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static final class EqualityBoundExpression {
-        private final String inputPort;
-        private final String outputPort;
-        private final String sourceInstance;
-        private final String targetInstance;
-        private final JsonElement expression;
-
-        private EqualityBoundExpression(String inputPort, String outputPort,
-                                        String sourceInstance,
-                                        String targetInstance,
-                                        JsonElement expression) {
-            this.inputPort = firstNonBlank(inputPort);
-            this.outputPort = firstNonBlank(outputPort);
-            this.sourceInstance = firstNonBlank(sourceInstance);
-            this.targetInstance = firstNonBlank(targetInstance);
-            this.expression = expression.deepCopy();
-        }
-
-        private boolean sameProofAndExpression(
-                EqualityBoundExpression other) {
-            return other != null
-                    && inputPort.equals(other.inputPort)
-                    && outputPort.equals(other.outputPort)
-                    && sourceInstance.equals(other.sourceInstance)
-                    && targetInstance.equals(other.targetInstance)
-                    && expression.equals(other.expression);
-        }
-    }
-
     public static final class Result {
         public final String smtLib;
         public final JsonObject manifest;
@@ -6482,7 +8117,6 @@ public final class ConcolicSmtComposer {
         private Path runtimePlan;
         private String fatalRegion = "";
         private String occurrenceId = "";
-        private String compositionMode = "CLOSED_PATH_SET";
 
         public static Arguments parse(String[] argv) {
             Arguments result = new Arguments();
@@ -6509,8 +8143,6 @@ public final class ConcolicSmtComposer {
                     result.fatalRegion = firstNonBlank(value);
                 } else if ("occurrence-id".equals(key)) {
                     result.occurrenceId = firstNonBlank(value);
-                } else if ("composition-mode".equals(key)) {
-                    result.compositionMode = firstNonBlank(value);
                 } else {
                     throw new IllegalArgumentException(
                             "Unknown composer option: --" + key);
@@ -6524,13 +8156,6 @@ public final class ConcolicSmtComposer {
             if (result.manifest == null) {
                 result.manifest = sibling(result.output,
                         "composed_smt_manifest.json");
-            }
-            if (!"CLOSED_PATH_SET".equals(result.compositionMode)
-                    && !"EXISTENTIAL_OBSERVED_PATHS".equals(
-                    result.compositionMode)) {
-                throw new IllegalArgumentException(
-                        "unsupported --composition-mode: "
-                                + result.compositionMode);
             }
             return result;
         }
@@ -6640,6 +8265,16 @@ public final class ConcolicSmtComposer {
                 || "/".equals(operator) || "%".equals(operator);
     }
 
+    private static boolean bitwiseOperator(String operator) {
+        return "&".equals(operator) || "|".equals(operator)
+                || "^".equals(operator);
+    }
+
+    private static boolean shiftOperator(String operator) {
+        return "<<".equals(operator) || ">>".equals(operator)
+                || ">>>".equals(operator);
+    }
+
     private static boolean numeric(Sort sort) {
         return sort == Sort.INT || sort.floating();
     }
@@ -6691,15 +8326,6 @@ public final class ConcolicSmtComposer {
 
     private static String castDescriptor(String javaType) {
         return JavaPrimitiveSmtSemantics.primitiveDescriptor(javaType);
-    }
-
-    /** The VM uses bare L for primitive long conversions, while other IR
-     * nodes also use it as a legacy reference tag.  The primitive source
-     * disambiguates conversion bytecodes without mistyping a reference cast. */
-    private static String castTargetDescriptor(String javaType,
-                                               String sourceType) {
-        return JavaPrimitiveSmtSemantics.primitiveTargetDescriptor(
-                javaType, sourceType);
     }
 
     private static String expressionJavaType(JsonElement expression) {

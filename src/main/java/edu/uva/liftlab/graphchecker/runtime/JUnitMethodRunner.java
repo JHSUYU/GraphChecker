@@ -7,7 +7,16 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Runs one JUnit 4 method without adding JUnit to GraphChecker's API. */
+/**
+ * Runs one JUnit 4 method without adding JUnit to GraphChecker's API.
+ *
+ * <p>This class is also the owner of the workload's symbolic lifetime. The
+ * JUnit method is what "the workload" means for GraphChecker, so the
+ * workload-wide session opens before the method starts and closes after it
+ * ends -- on every exit path, including a failing test. Region entry and exit
+ * no longer bound that lifetime, which is what lets one producer's exported
+ * expression outlive the producer's thread.</p>
+ */
 public final class JUnitMethodRunner {
     private static final String EXIT_AFTER_RUN_PROPERTY =
             "causynth.junit.exit.after.run";
@@ -16,8 +25,19 @@ public final class JUnitMethodRunner {
     }
 
     public static void main(String[] args) throws Exception {
+        String refusedOpen = ConcolicRegionRuntime.openWorkloadSession();
+        if (!refusedOpen.isEmpty()) {
+            // A campaign whose session the VM refused would run with
+            // per-region symbolic lifetimes and quietly lose every
+            // cross-thread expression it exists to record.
+            throw new IllegalStateException(refusedOpen);
+        }
         if (!Boolean.getBoolean(EXIT_AFTER_RUN_PROPERTY)) {
-            run(args);
+            try {
+                run(args);
+            } finally {
+                reportWorkloadSessionClose();
+            }
             return;
         }
         int status = 0;
@@ -27,8 +47,26 @@ public final class JUnitMethodRunner {
             failure.printStackTrace(System.err);
             status = 1;
         }
+        // Publications first: a result still being appended belongs to a
+        // region that is still a session member, and closing under it would
+        // be refused anyway.
         ConcolicRegionRuntime.awaitSelectedResultPublications();
+        reportWorkloadSessionClose();
         System.exit(status);
+    }
+
+    /**
+     * Closes the workload session and names a refusal on stderr.
+     *
+     * <p>The refusal is reported rather than thrown: it is discovered while
+     * unwinding, possibly already on a failure path, and replacing the
+     * workload's own outcome with it would hide the original result.</p>
+     */
+    private static void reportWorkloadSessionClose() {
+        String refusedClose = ConcolicRegionRuntime.closeWorkloadSession();
+        if (!refusedClose.isEmpty()) {
+            System.err.println(refusedClose);
+        }
     }
 
     private static void run(String[] args) throws Exception {

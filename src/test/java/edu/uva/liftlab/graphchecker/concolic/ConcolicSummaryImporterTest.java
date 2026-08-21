@@ -1,25 +1,20 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
-import java.util.NavigableMap;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConcolicSummaryImporterTest {
@@ -27,632 +22,372 @@ public class ConcolicSummaryImporterTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
-    public void loopBoundCutNeverBecomesComposableRelation()
+    public void selectedBranchWitnessesRecoverACompactTargetPath()
             throws Exception {
-        Path directory = folder.newFolder("cut-import").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
 
-        JsonObject task = new JsonObject();
-        task.addProperty("taskId", "TASK.CUT");
-        task.addProperty("goalId", "GOAL.CUT");
-        task.addProperty("regionId", "REGION.CUT");
-        task.addProperty("sourceKey", "test/source#epoch0");
-        task.addProperty("occurrenceId",
-                "test/source#epoch0/region/REGION.CUT#1");
-        task.addProperty("relationKey", "test/source/REGION.CUT");
-        task.addProperty("relationContractHash", "CONTRACT.CUT");
-        ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
-        task.add("inputActions", new JsonArray());
-        task.add("branches", new JsonArray());
-        LoopBoundPolicy.cfgBackedges(8).writeTo(task);
-
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.CUT");
-
-        JsonObject cut = new JsonObject();
-        cut.addProperty("event", "CONCOLIC_REGION_RESULT");
-        cut.addProperty("taskId", "TASK.CUT");
-        cut.addProperty("exitKind", "CUT");
-        cut.addProperty("exceptionType", "");
-        JsonObject pathCut = new JsonObject();
-        pathCut.addProperty("kind", "LOOP_BOUND");
-        pathCut.addProperty("backedgeId", "<L: void run()>#backedge:u4->u1");
-        pathCut.addProperty("maxBackedgeTraversals", 8);
-        pathCut.addProperty("maxLoopBodyIterations", 8);
-        pathCut.addProperty("attemptedTraversal", 4);
-        pathCut.addProperty("reason", "MAX_LOOP_BODY_ITERATIONS_REACHED");
-        cut.add("pathCut", pathCut);
-        // Even a VM-complete prefix must not be admitted as a relation.
-        JsonObject engine = new JsonObject();
-        engine.addProperty("complete", true);
-        engine.addProperty("aborted", false);
-        engine.add("pathCondition", new JsonArray());
-        cut.add("engineSummary", engine);
-        cut.add("unresolvedInputs", new JsonArray());
-        cut.add("branchMappings", new JsonArray());
-
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(cut));
-
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
-
-        assertEquals(1, imported.rawResultCount);
-        assertEquals(0, imported.validSummaryCount);
-        assertEquals(1, imported.diagnosticCount);
-        assertEquals(0, ArtifactIO.readJsonl(output).size());
-        List<JsonObject> rejected = ArtifactIO.readJsonl(diagnostics);
-        assertEquals("LOOP_BOUND_PATH_CUT",
-                rejected.get(0).get("code").getAsString());
-    }
-
-    @Test
-    public void aServiceLoopResourceCapIsNamedByItsOwnLedger()
-            throws Exception {
-        // The replay resource cap and the unroll bound cut for opposite
-        // reasons.  Reporting the cap under the unroll bound's name -- with an
-        // empty body, because the unroll field was never written -- is the
-        // ledger confusion the split exists to prevent.
-        PathImport imported = importPath("resource-cap", pathTask(false),
-                resourceCapResult(false));
-
-        assertEquals(0, imported.result.validSummaryCount);
-        assertEquals(0, ArtifactIO.readJsonl(imported.output).size());
-        JsonObject diagnostic = ArtifactIO.readJsonl(
-                imported.diagnostics).get(0);
-        assertEquals("REPLAY_LOOP_RESOURCE_CAP",
-                diagnostic.get("code").getAsString());
-        assertTrue(diagnostic.get("detail").getAsString()
-                .contains("<L: void offerService()>#loop:u38"));
-    }
-
-    @Test
-    public void theResourceCapOutranksTheUnrollBoundInTheDiagnostic()
-            throws Exception {
-        // The runtime publishes the resource cut first when both fire; the
-        // reader must agree with it, or the two disagree about one run.
-        PathImport imported = importPath("both-cuts", pathTask(false),
-                resourceCapResult(true));
-
-        assertEquals("REPLAY_LOOP_RESOURCE_CAP", ArtifactIO.readJsonl(
-                imported.diagnostics).get(0).get("code").getAsString());
-    }
-
-    @Test
-    public void capturedOutputBeforeResourceCapImportsAsBoundedCompletion()
-            throws Exception {
-        PathImport imported = importOutputPath("captured-resource-cap",
-                outputBoundaryTask(2), resourceCapOutputResult(2));
+        PathImport imported = importPath("compact-selected-path",
+                pathTask(false), raw);
 
         assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
         JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
-        assertTrue(summary.get("normalExit").getAsBoolean());
-        assertTrue(summary.get("boundedExit").getAsBoolean());
-        assertTrue(summary.get("relationallyComplete").getAsBoolean());
-        assertEquals(2,
-                summary.getAsJsonObject("outputExpressions").size());
-    }
-
-    @Test
-    public void resourceCapKeepsCapturedPortsAndNamesMissingPorts()
-            throws Exception {
-        PathImport imported = importOutputPath("missing-resource-output",
-                outputBoundaryTask(2), resourceCapOutputResult(1));
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(1, imported.result.diagnosticCount);
-        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
-        assertTrue(summary.get("boundedExit").getAsBoolean());
-        assertTrue(!summary.get("relationallyComplete").getAsBoolean());
-        assertEquals(1,
-                summary.getAsJsonObject("outputExpressions").size());
-        JsonObject diagnostic = ArtifactIO.readJsonl(
-                imported.diagnostics).get(0);
-        assertEquals("INCOMPLETE_RELATION",
-                diagnostic.get("code").getAsString());
-        assertTrue(diagnostic.get("detail").getAsString()
-                .contains("OUTPUT_CAPTURE_COUNT:"
-                        + "REGION.BOUNDARY.out.1:0"));
-    }
-
-    @Test
-    public void resourceCapWithoutAnyDemandedOutputRemainsAGap()
-            throws Exception {
-        PathImport imported = importOutputPath("empty-resource-output",
-                outputBoundaryTask(2), resourceCapOutputResult(0));
-
-        assertEquals(0, imported.result.validSummaryCount);
-        assertEquals(1, imported.result.diagnosticCount);
-        JsonObject diagnostic = ArtifactIO.readJsonl(
-                imported.diagnostics).get(0);
-        assertEquals("REPLAY_LOOP_RESOURCE_CAP",
-                diagnostic.get("code").getAsString());
-        assertTrue(diagnostic.get("detail").getAsString()
-                .contains("no demanded output relation was captured "
-                        + "before cut"));
-    }
-
-    private static JsonObject resourceCapResult(boolean alsoUnrollBound) {
-        JsonObject raw = pathResult(false, true);
-        raw.addProperty("exitKind", "CUT");
-        JsonObject cap = new JsonObject();
-        cap.addProperty("kind", "REPLAY_LOOP_RESOURCE_CAP");
-        cap.addProperty("loopId", "<L: void offerService()>#loop:u38");
-        cap.addProperty("maxLoopBodies", 32);
-        cap.addProperty("attemptedBody", 33);
-        cap.addProperty("reason", "REPLAY_LOOP_RESOURCE_CAP");
-        raw.add("replayResourceCut", cap);
-        if (alsoUnrollBound) {
-            JsonObject pathCut = new JsonObject();
-            pathCut.addProperty("kind", "LOOP_BOUND");
-            pathCut.addProperty("backedgeId", "<L: void run()>#backedge:u4->u1");
-            raw.add("pathCut", pathCut);
-        }
-        return raw;
-    }
-
-    private static JsonObject resourceCapOutputResult(int capturedCount) {
-        JsonObject raw = outputBoundaryResult(capturedCount);
-        raw.addProperty("exitKind", "BOUNDED");
-        JsonObject cap = new JsonObject();
-        cap.addProperty("kind", "REPLAY_LOOP_RESOURCE_CAP");
-        cap.addProperty("loopId", "<L: void offerService()>#loop:u38");
-        cap.addProperty("maxLoopBodies", 32);
-        cap.addProperty("attemptedBody", 33);
-        cap.addProperty("reason", "REPLAY_LOOP_RESOURCE_CAP");
-        raw.add("replayResourceCut", cap);
-        return raw;
-    }
-
-    @Test
-    public void exactOutputBoundaryImportsAsNormalBoundedPrefix()
-            throws Exception {
-        Path directory = folder.newFolder("output-boundary-import").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
-
-        JsonObject task = outputBoundaryTask(2);
-        JsonObject raw = outputBoundaryResult(2);
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
-
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
-
-        assertEquals(1, imported.rawResultCount);
-        assertEquals(1, imported.validSummaryCount);
-        assertEquals(0, imported.diagnosticCount);
-        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
-        assertTrue(summary.get("normalExit").getAsBoolean());
-        assertTrue(summary.get("boundedExit").getAsBoolean());
-        assertTrue(summary.get("relationallyComplete").getAsBoolean());
-        assertEquals(2, summary.getAsJsonObject("outputExpressions").size());
-    }
-
-    @Test
-    public void producerSeedKeepsItsBoundaryPathGuard()
-            throws Exception {
-        JsonObject task = outputBoundaryTask(1);
-        task.addProperty("pathSeedKey", "PATH.SEED.RELATION");
-        task.add("branches", pathTask(false).get("branches").deepCopy());
-        JsonObject raw = outputBoundaryResult(1);
-        raw.getAsJsonObject("engineSummary").getAsJsonArray("pathCondition")
-                .add(branchPredicate(true));
-
-        PathImport imported = importOutputPath("relation-boundary-guard",
-                task, raw);
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
-        assertEquals(1, summary.getAsJsonArray("pathCondition").size());
-        assertEquals(branchPredicate(true),
-                summary.getAsJsonArray("pathCondition").get(0));
-        assertEquals(0, summary.getAsJsonArray("branchMappings").size());
-    }
-
-    @Test
-    public void explicitFaultProducerKeepsReplayableBranchWitness()
-            throws Exception {
-        String fault = "REGION.BOUNDARY.in.rpcFails";
-        JsonObject task = outputBoundaryTask(1);
-        task.add("branches", pathTask(false).get("branches").deepCopy());
-        JsonObject action = new JsonObject();
-        action.addProperty("portId", fault);
-        action.addProperty("symbol", fault);
-        action.addProperty("mode", "SYMBOLIC");
-        action.addProperty("javaType", "boolean");
-        action.addProperty("authority",
-                "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
-        JsonArray actions = new JsonArray();
-        actions.add(action);
-        task.add("inputActions", actions);
-
-        JsonObject predicate = branchPredicate(true);
-        predicate.getAsJsonObject("_left").addProperty("_exp", fault);
-        JsonObject raw = outputBoundaryResult(1);
-        raw.getAsJsonObject("engineSummary").getAsJsonArray("pathCondition")
-                .add(predicate);
-        raw.getAsJsonArray("symbolizedInputs").add(fault);
-        JsonObject event = new JsonObject();
-        event.addProperty("eventId", 1L);
-        event.addProperty("contextId", 1L);
-        event.addProperty("predicateNormalization", "IDENTITY");
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", seedSite());
-        mapping.addProperty("method", seedMethod());
-        mapping.addProperty("unitIndex", 3);
-        mapping.addProperty("occurrence", 1);
-        mapping.addProperty("rawPathConditionBaseline", 0);
-        mapping.addProperty("rawPathConditionSize", 1);
-        mapping.add("witness", BranchWitness.vmPc(seedSite(), seedMethod(),
-                3, 1, true, predicate, 0, event).toJson());
-        raw.getAsJsonArray("branchMappings").add(mapping);
-
-        PathImport imported = importOutputPath("explicit-fault-guard",
-                task, raw);
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertEquals("VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1",
+                summary.get("pathConditionAuthority").getAsString());
         assertEquals(1, summary.getAsJsonArray("pathCondition").size());
         assertEquals(1, summary.getAsJsonArray("branchMappings").size());
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        assertEquals(PathObservation.TargetReachEvent.KIND,
+                summary.getAsJsonObject(
+                        PathObservation.TargetReachEvent.FIELD)
+                        .get("kind").getAsString());
     }
 
     @Test
-    public void composedFieldInputDropsOnlyItsReplayMaterialization()
+    public void compactCaseMergesAuxiliaryConstraintsExactlyOnce()
             throws Exception {
-        JsonObject task = outputBoundaryTask(1);
-        task.addProperty("pathSeedKey", "PATH.SEED.COMPOSED.FIELD");
-        JsonObject action = new JsonObject();
-        action.addProperty("portId", "REGION.BOUNDARY.in.key");
-        action.addProperty("symbol", "REGION.BOUNDARY.in.key");
-        action.addProperty("mode", "SYMBOLIC");
-        action.addProperty("intraRegionSourceOutputPort",
-                "REGION.BOUNDARY.out.previous-key");
-        action.addProperty("intraRegionReadFromAuthority",
-                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
-        JsonArray actions = new JsonArray();
-        actions.add(action);
-        task.add("inputActions", actions);
+        JsonObject raw = pathResult(true, true);
+        JsonObject auxiliary = auxiliaryPathCondition(1_000_000);
+        auxiliary.getAsJsonArray("pathConditionIndices").add(999_999);
+        auxiliary.getAsJsonArray("conditions").add(
+                auxiliaryContainerRelation("AUX.MAP.READ"));
+        auxiliary.addProperty("conditionCount", 1);
+        installAuxiliaryPathCondition(raw, auxiliary);
 
-        JsonObject raw = outputBoundaryResult(1);
-        JsonArray path = raw.getAsJsonObject("engineSummary")
-                .getAsJsonArray("pathCondition");
-        JsonObject definition = new JsonObject();
-        definition.addProperty("_type", "BinaryExpression");
-        definition.addProperty("_op", "==");
-        definition.addProperty("_code_position",
-                "static void java.lang.System.symbolizeExactField("
-                        + "jobject,jobject,jobject,jobject,jobject):-1");
-        JsonObject field = new JsonObject();
-        field.addProperty("_type", "FieldAccessExpression");
-        definition.add("_left", field);
-        JsonObject symbol = new JsonObject();
-        symbol.addProperty("_type", "SymbolExpression");
-        symbol.addProperty("_exp",
-                "M_I_field_REGION.BOUNDARY.in.key_test/Key");
-        definition.add("_right", symbol);
-        path.add(definition);
-        path.add(branchPredicate(true));
-
-        PathImport imported = importOutputPath(
-                "composed-field-materialization", task, raw);
+        PathImport imported = importPath("compact-branch-and-auxiliary",
+                pathTask(false), raw);
 
         assertEquals(1, imported.result.validSummaryCount);
         assertEquals(0, imported.result.diagnosticCount);
-        JsonArray semanticPath = ArtifactIO.readJsonl(imported.output).get(0)
-                .getAsJsonArray("pathCondition");
-        assertEquals(1, semanticPath.size());
-        assertEquals(branchPredicate(true), semanticPath.get(0));
-    }
-
-    @Test
-    public void anObservationAtAnotherOccurrenceIsImported() throws Exception {
-        // The goal states the relation without an invocation ordinal, so a
-        // bounded replay that reached the site a different number of times
-        // than the recording did has still observed the relation.  A failed
-        // earlier occurrence is a guarded observation, not a gap.
-        Path directory = folder.newFolder("relaxed-occurrence").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
-
-        JsonObject raw = outputBoundaryResult(1);
-        JsonArray captures = raw.getAsJsonArray("outputCaptures");
-        JsonObject guarded = new JsonObject();
-        guarded.addProperty("captureBindingId", "CAPTURE.0");
-        guarded.addProperty("outputSiteId", "<test.Worker: void run()>#u1");
-        guarded.addProperty("outputOccurrence", 1);
-        guarded.addProperty("replayOccurrence", 1);
-        // Twenty-six is far past the CFG loop bound: the per-site ordinal
-        // counts nested-call executions too, so a bounded replay can reach
-        // the site that often, and the importer must still admit it.
-        captures.get(0).getAsJsonObject()
-                .addProperty("outputOccurrence", 26);
-        JsonArray ordered = new JsonArray();
-        ordered.add(guarded);
-        ordered.add(captures.get(0));
-        raw.add("outputCaptures", ordered);
-
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
-                outputBoundaryTask(1)));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
-
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
-
-        assertEquals(1, imported.validSummaryCount);
-        assertEquals(0, imported.diagnosticCount);
-        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertEquals("VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1",
+                summary.get("pathConditionAuthority").getAsString());
+        assertEquals(2, summary.getAsJsonArray("pathCondition").size());
+        assertEquals(1_000_000,
+                summary.get("pathConditionVmWatermark").getAsInt());
+        assertEquals("BinaryExpression", summary.getAsJsonArray(
+                "pathCondition").get(0).getAsJsonObject()
+                .get("_type").getAsString());
+        assertEquals("AUX.MAP.READ", summary.getAsJsonArray(
+                "pathCondition").get(1).getAsJsonObject()
+                .get("relationId").getAsString());
         assertTrue(summary.get("relationallyComplete").getAsBoolean());
-        assertEquals(1, summary.getAsJsonObject("outputExpressions").size());
     }
 
     @Test
-    public void boundedSiteLocalOutputVersionsAreAllExported()
+    public void relationOnlySeedImportsAuxiliaryWithoutABranchWitness()
             throws Exception {
-        // The bounded replay wrote the captured site eight times inside one
-        // activation.  The ordinal is a site-local bounded index, so every
-        // version is exported; which one a reader observes is settled by the
-        // composed versioned channel, never by collapsing or picking here.
-        Path directory = folder.newFolder("bounded-versions").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
+        JsonObject raw = pathResult(false, true);
+        JsonObject auxiliary = auxiliaryPathCondition(8);
+        auxiliary.getAsJsonArray("pathConditionIndices").add(7);
+        auxiliary.getAsJsonArray("conditions").add(
+                auxiliaryContainerRelation("AUX.ONLY"));
+        auxiliary.addProperty("conditionCount", 1);
+        installAuxiliaryPathCondition(raw, auxiliary);
+        installRootOutput(raw);
 
-        JsonObject raw = outputBoundaryResult(0);
-        raw.add("outputCaptures", versionedCaptures(8, false));
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
-                outputBoundaryTask(1)));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+        PathImport imported = importPath("auxiliary-only-relation",
+                relationOnlyTask(), raw);
 
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
-
-        assertEquals(1, imported.validSummaryCount);
-        assertEquals(0, imported.diagnosticCount);
-        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertEquals(1, summary.getAsJsonArray("pathCondition").size());
+        assertEquals("AUX.ONLY", summary.getAsJsonArray("pathCondition")
+                .get(0).getAsJsonObject().get("relationId").getAsString());
+        assertEquals(0, summary.getAsJsonArray("branchMappings").size());
         assertTrue(summary.get("relationallyComplete").getAsBoolean());
-        JsonObject outputs = summary.getAsJsonObject("outputExpressions");
-        assertEquals(1, outputs.size());
-        JsonObject versionSet = outputs.getAsJsonObject(
-                "REGION.BOUNDARY.out.0");
-        assertTrue(BoundedOutputVersions.isVersionSet(versionSet));
-        assertEquals("<test.Worker: void run()>#u1",
-                BoundedOutputVersions.outputSiteId(versionSet));
-        NavigableMap<Integer, JsonElement> versions =
-                BoundedOutputVersions.versions(versionSet);
-        assertEquals(8, versions.size());
-        assertEquals(Integer.valueOf(1), versions.firstKey());
-        assertEquals(Integer.valueOf(8), versions.lastKey());
-        assertEquals("Y_I_3", versions.get(3).getAsJsonObject()
-                .get("_exp").getAsString());
     }
 
     @Test
-    public void collidingOutputVersionOrdinalsFailClosed() throws Exception {
-        Path directory = folder.newFolder("version-collision").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
-
-        JsonObject raw = outputBoundaryResult(0);
-        raw.add("outputCaptures", versionedCaptures(2, true));
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
-                outputBoundaryTask(1)));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
-
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
-
-        assertEquals(1, imported.diagnosticCount);
-        JsonObject diagnostic = ArtifactIO.readJsonl(diagnostics).get(0);
-        assertEquals("INCOMPLETE_RELATION",
-                diagnostic.get("code").getAsString());
-        assertTrue(diagnostic.get("detail").getAsString()
-                .contains("OUTPUT_CAPTURE_VERSION_COLLISION:"
-                        + "REGION.BOUNDARY.out.0:1"));
-    }
-
-    @Test
-    public void identicalOutputVersionOrdinalsAreDeduplicated()
+    public void relationOnlySeedAcceptsAnEmptyAuxiliaryPath()
             throws Exception {
-        Path directory = folder.newFolder("version-duplicate").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
-        JsonObject raw = outputBoundaryResult(0);
-        JsonArray captures = versionedCaptures(2, true);
-        captures.get(1).getAsJsonObject().add("expression",
-                captures.get(0).getAsJsonObject().get("expression")
-                        .deepCopy());
-        raw.add("outputCaptures", captures);
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
-                outputBoundaryTask(1)));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+        JsonObject raw = pathResult(false, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(0));
+        installRootOutput(raw);
 
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
+        PathImport imported = importPath("empty-auxiliary-relation",
+                relationOnlyTask(), raw);
 
-        assertEquals(1, imported.validSummaryCount);
-        assertEquals(0, imported.diagnosticCount);
-    }
-
-    private static JsonArray versionedCaptures(int count,
-                                               boolean collide) {
-        JsonArray captures = new JsonArray();
-        for (int version = 1; version <= count; version++) {
-            JsonObject capture = new JsonObject();
-            capture.addProperty("captureBindingId", "CAPTURE.0");
-            capture.addProperty("outputSiteId",
-                    "<test.Worker: void run()>#u1");
-            // Every capture is the first selected mutation of its own
-            // definition invocation, so outputOccurrence is 1 throughout.
-            // replayOccurrence is the request provenance and also stays 1;
-            // only the boundary-wide version ordinal tells them apart.
-            capture.addProperty("outputOccurrence", 1);
-            capture.addProperty("outputVersionOrdinal",
-                    collide ? 1 : version);
-            capture.addProperty("replayOccurrence", 1);
-            JsonObject expression = new JsonObject();
-            expression.addProperty("_type", "ConstExpr");
-            expression.addProperty("_exp", "Y_I_" + version);
-            capture.add("expression", expression);
-            captures.add(capture);
-        }
-        return captures;
-    }
-
-    @Test
-    public void aReferenceOutputIsKeptAsAnIdentityRelation() throws Exception {
-        // The VM has no expression for a reference; the write still related
-        // an exact object, and that alias is kept apart from the values so a
-        // composition cannot read a scalar out of it.
-        Path directory = folder.newFolder("reference-identity").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
-
-        JsonObject raw = outputBoundaryResult(1);
-        JsonObject capture = raw.getAsJsonArray("outputCaptures").get(0)
-                .getAsJsonObject();
-        capture.remove("expression");
-        JsonObject identity = new JsonObject();
-        identity.addProperty("authority", ConcolicSummaryImporter
-                .CONCRETE_REFERENCE_IDENTITY_AUTHORITY);
-        identity.addProperty("fieldSignature", "<test.State: int value0>");
-        identity.addProperty("javaType", "test.Held");
-        identity.addProperty("objectId", 74965L);
-        capture.add("referenceIdentity", identity);
-
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
-                outputBoundaryTask(1)));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
-
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
-
-        assertEquals(1, imported.validSummaryCount);
-        assertEquals(0, imported.diagnosticCount);
-        JsonObject summary = ArtifactIO.readJsonl(output).get(0);
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertEquals(0, summary.getAsJsonArray("pathCondition").size());
+        assertEquals(0, summary.getAsJsonArray("branchMappings").size());
+        assertEquals(0, summary.get("pathConditionVmWatermark").getAsInt());
         assertTrue(summary.get("relationallyComplete").getAsBoolean());
-        assertEquals(0, summary.getAsJsonObject("outputExpressions").size());
-        assertEquals(1, summary.getAsJsonObject(
-                "outputReferenceIdentities").size());
     }
 
     @Test
-    public void anObservationAtAnotherSiteIsRejectedFailClosed()
+    public void configuredSymbolicSourceSurvivesExactImport()
             throws Exception {
-        Path directory = folder.newFolder("wrong-site").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
+        JsonObject task = pathTask(false);
+        declareSymbolicSource(task);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
+                symbolicSourceEvent(task)));
 
-        JsonObject raw = outputBoundaryResult(1);
-        raw.getAsJsonArray("outputCaptures").get(0).getAsJsonObject()
-                .addProperty("outputSiteId",
-                        "<test.Worker: void run()>#u99");
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
-                outputBoundaryTask(1)));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+        PathImport imported = importPath("configured-symbolic-source",
+                task, raw);
 
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
-
-        assertEquals(0, imported.validSummaryCount);
-        assertTrue(imported.diagnosticCount > 0);
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        JsonObject event = summary.getAsJsonArray(
+                SymbolicSourceEvidence.FIELD).get(0).getAsJsonObject();
+        assertEquals("M_I_field_SRC.promoted_key",
+                event.get("rawSymbol").getAsString());
+        assertEquals(task.get("occurrenceId").getAsString(),
+                event.get("sourceOccurrenceId").getAsString());
     }
 
     @Test
-    public void incompleteOutputBoundaryIsRejectedFailClosed()
+    public void configuredSymbolicSourceAcceptsMultipleRequiredOutputs()
             throws Exception {
-        Path directory = folder.newFolder("incomplete-boundary").toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
+        JsonObject task = pathTask(false);
+        declareSymbolicSource(task);
+        JsonObject declaration = task.getAsJsonArray(
+                SymbolicSourceEvidence.TASK_FIELD).get(0).getAsJsonObject();
+        declaration.remove("requiredOutputFieldSignature");
+        JsonArray outputs = new JsonArray();
+        outputs.add("<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: java.util.Map allKeys>");
+        outputs.add("<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: org.apache.hadoop.hdfs.security.token.block.BlockKey currentKey>");
+        declaration.add("requiredOutputFieldSignatures", outputs);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
+                symbolicSourceEvent(task)));
 
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", "REGION.BOUNDARY");
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(
-                outputBoundaryTask(2)));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(
-                outputBoundaryResult(1)));
+        PathImport imported = importPath("configured-symbolic-source-outputs",
+                task, raw);
 
-        ConcolicSummaryImporter.ImportResult imported =
-                ConcolicSummaryImporter.importSummaries(results, tasks,
-                        regions, output, diagnostics);
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        assertTrue(ArtifactIO.readJsonl(imported.output).get(0)
+                .get("relationallyComplete").getAsBoolean());
+    }
 
-        assertEquals(0, imported.validSummaryCount);
-        assertEquals(1, imported.diagnosticCount);
-        assertEquals("INCOMPLETE_OUTPUT_BOUNDARY",
-                ArtifactIO.readJsonl(diagnostics).get(0)
+    @Test
+    public void missingConfiguredSymbolicSourceMakesSeedIncomplete()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareSymbolicSource(task);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+
+        PathImport imported = importPath("missing-configured-source",
+                task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertFalse(summary.get("relationallyComplete").getAsBoolean());
+        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString().contains(
+                        "SYMBOLIC_SOURCE_EVIDENCE_MISSING"));
+    }
+
+    @Test
+    public void compactCaseRejectsFractionalAuxiliaryIntegers()
+            throws Exception {
+        JsonObject raw = pathResult(false, true);
+        JsonObject auxiliary = auxiliaryPathCondition(4);
+        auxiliary.getAsJsonArray("pathConditionIndices").add(1.5);
+        auxiliary.getAsJsonArray("conditions").add(
+                auxiliaryContainerRelation("AUX.FRACTIONAL"));
+        auxiliary.addProperty("conditionCount", 1);
+        installAuxiliaryPathCondition(raw, auxiliary);
+        installRootOutput(raw);
+
+        assertIncomplete("fractional-auxiliary-index", relationOnlyTask(),
+                raw, "AUXILIARY_PATH_CONDITION_MALFORMED:INDEX_0");
+
+        JsonObject fractionalWatermark = pathResult(false, true);
+        JsonObject watermarkAuxiliary = auxiliaryPathCondition(0);
+        watermarkAuxiliary.addProperty("pathConditionWatermark", 0.5);
+        installAuxiliaryPathCondition(fractionalWatermark,
+                watermarkAuxiliary);
+        installRootOutput(fractionalWatermark);
+        assertIncomplete("fractional-auxiliary-watermark",
+                relationOnlyTask(), fractionalWatermark,
+                "AUXILIARY_PATH_CONDITION_MALFORMED:CARDINALITY");
+
+        JsonObject fractionalCount = pathResult(false, true);
+        JsonObject countAuxiliary = auxiliaryPathCondition(0);
+        countAuxiliary.addProperty("conditionCount", 0.5);
+        installAuxiliaryPathCondition(fractionalCount, countAuxiliary);
+        installRootOutput(fractionalCount);
+        assertIncomplete("fractional-auxiliary-count", relationOnlyTask(),
+                fractionalCount,
+                "AUXILIARY_PATH_CONDITION_MALFORMED:CARDINALITY");
+    }
+
+    @Test
+    public void compactCaseRejectsWrongAuthorities()
+            throws Exception {
+        JsonObject raw = pathResult(false, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(0));
+        raw.getAsJsonObject("engineSummary").addProperty(
+                "pathConditionAuthority", "WRONG_AUTHORITY");
+        installRootOutput(raw);
+
+        assertIncomplete("wrong-omitted-path-authority", relationOnlyTask(),
+                raw, "OMITTED_PATH_CONDITION_AUTHORITY_MISSING");
+
+        JsonObject wrongAuxiliary = pathResult(false, true);
+        JsonObject auxiliary = auxiliaryPathCondition(0);
+        auxiliary.addProperty("authority", "WRONG_AUXILIARY_AUTHORITY");
+        installAuxiliaryPathCondition(wrongAuxiliary, auxiliary);
+        installRootOutput(wrongAuxiliary);
+        assertIncomplete("wrong-auxiliary-authority", relationOnlyTask(),
+                wrongAuxiliary,
+                "AUXILIARY_PATH_CONDITION_MALFORMED:ENVELOPE");
+    }
+
+    @Test
+    public void compactCaseRejectsSparseBranchAuxiliaryCollision()
+            throws Exception {
+        JsonObject raw = pathResult(true, true);
+        JsonObject auxiliary = auxiliaryPathCondition(1_000_000);
+        auxiliary.getAsJsonArray("pathConditionIndices").add(0);
+        auxiliary.getAsJsonArray("conditions").add(
+                auxiliaryContainerRelation("AUX.COLLISION"));
+        auxiliary.addProperty("conditionCount", 1);
+        installAuxiliaryPathCondition(raw, auxiliary);
+
+        PathImport imported = importPath("sparse-auxiliary-collision",
+                pathTask(false), raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertFalse(summary.get("relationallyComplete").getAsBoolean());
+        assertEquals(1, summary.getAsJsonArray("pathCondition").size());
+        assertEquals(1_000_000,
+                summary.get("pathConditionVmWatermark").getAsInt());
+        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString().contains(
+                        "AUXILIARY_PATH_CONDITION_CONFLICT:0"));
+    }
+
+    @Test
+    public void compactCaseRefusesMissingOrTruncatedAuxiliaryEvidence()
+            throws Exception {
+        JsonObject missing = pathResult(true, true);
+        installAuxiliaryPathCondition(missing, null);
+        PathImport missingImport = importPath("missing-auxiliary-path",
+                pathTask(false), missing);
+        JsonObject missingSummary = ArtifactIO.readJsonl(
+                missingImport.output).get(0);
+        assertFalse(missingSummary.get("relationallyComplete").getAsBoolean());
+        assertTrue(ArtifactIO.readJsonl(missingImport.diagnostics).get(0)
+                .get("detail").getAsString().contains(
+                        "AUXILIARY_PATH_CONDITION_MISSING"));
+
+        JsonObject truncated = pathResult(true, true);
+        JsonObject auxiliary = auxiliaryPathCondition(2);
+        auxiliary.getAsJsonArray("pathConditionIndices").add(1);
+        JsonObject marker = new JsonObject();
+        marker.addProperty("_type", "TruncatedExpression");
+        marker.addProperty("expressionAuthority",
+                "VM_SERIALIZATION_TRUNCATION_V1");
+        auxiliary.getAsJsonArray("conditions").add(marker);
+        auxiliary.addProperty("conditionCount", 1);
+        installAuxiliaryPathCondition(truncated, auxiliary);
+        PathImport truncatedImport = importPath("truncated-auxiliary-path",
+                pathTask(false), truncated);
+        JsonObject truncatedSummary = ArtifactIO.readJsonl(
+                truncatedImport.output).get(0);
+        assertFalse(truncatedSummary.get("relationallyComplete")
+                .getAsBoolean());
+        assertEquals(1, truncatedSummary.getAsJsonArray(
+                "pathCondition").size());
+        assertTrue(ArtifactIO.readJsonl(truncatedImport.diagnostics).get(0)
+                .get("detail").getAsString().contains(
+                        "VM_EXPRESSION_SERIALIZATION_TRUNCATED:"
+                                + "AUXILIARY_PATH_CONDITION:1"));
+    }
+
+    @Test
+    public void targetPathWithoutTheExactRuntimeEventIsRefused()
+            throws Exception {
+        JsonObject missing = pathResult(true, true);
+        missing.remove(PathObservation.TargetReachEvent.FIELD);
+        PathImport missingImport = importPath("missing-target-event",
+                pathTask(false), missing);
+        assertEquals(0, missingImport.result.validSummaryCount);
+        assertEquals("TARGET_REACH_EVENT_MISSING",
+                ArtifactIO.readJsonl(missingImport.diagnostics).get(0)
+                        .get("code").getAsString());
+
+        JsonObject mismatched = pathResult(true, true);
+        mismatched.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("occurrence", 2);
+        PathImport mismatchImport = importPath("mismatched-target-event",
+                pathTask(false), mismatched);
+        assertEquals(0, mismatchImport.result.validSummaryCount);
+        assertEquals("TARGET_REACH_EVENT_MISMATCH",
+                ArtifactIO.readJsonl(mismatchImport.diagnostics).get(0)
                         .get("code").getAsString());
     }
 
     @Test
-    public void matchingStableSeedBranchIdentityIsImported()
+    public void selectedExploreWitnessSurvivesARelationOnlySeed()
             throws Exception {
-        PathImport imported = importPath("matching-seed",
-                pathTask(false), pathResult(true, true));
+        JsonObject task = pathTask(false);
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
+        OutputClosureCodec.writeTo(task, OutputClosureCodec.singleton(
+                "test/source/REGION.SEED", "REGION.SEED",
+                "REGION.SEED.out.0", "<Test: int output>", "REGION_OUTPUT",
+                "int", outputSlice("REGION.SEED.out.0",
+                        "<Test: int output>")));
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+
+        PathImport imported = importPath("relation-selected-branch",
+                task, raw);
 
         assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-        assertEquals(1, ArtifactIO.readJsonl(imported.output).size());
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertEquals(1, summary.getAsJsonArray("pathCondition").size());
+        assertEquals(1, summary.getAsJsonArray("branchMappings").size());
+        assertEquals("EXPLORE", summary.getAsJsonArray("branchMappings")
+                .get(0).getAsJsonObject().get("policy").getAsString());
+        assertEquals("VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1",
+                summary.get("pathConditionAuthority").getAsString());
+    }
+
+    @Test
+    public void inheritedLoopBoundAcceptsZeroAndRefusesAboveK()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        task.add(BoundedLoopComposition.PLAN_FIELD,
+                retainedConditionLoop());
+
+        PathImport zero = importPath("implicit-loop-zero", task.deepCopy(),
+                pathResult(true, true));
+        assertEquals(1, zero.result.validSummaryCount);
+        JsonObject count = ArtifactIO.readJsonl(zero.output).get(0)
+                .getAsJsonArray(LoopBoundPolicy.PATH_LOOP_COUNTS)
+                .get(0).getAsJsonObject();
+        assertEquals(0, count.get(LoopBoundPolicy.LOOP_BODY_COUNT).getAsInt());
+        assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
+                count.get(LoopBoundPolicy.LOOP_BODY_BOUND).getAsInt());
+        assertEquals(LoopBoundPolicy.BOUND_FROM_POLICY,
+                count.get(LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY)
+                        .getAsString());
+
+        JsonObject beyond = pathResult(true, true);
+        JsonObject bodies = new JsonObject();
+        bodies.addProperty(helperMethod() + "#loop:u4",
+                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS + 1);
+        beyond.add("loopBackedgeTraversals", bodies);
+        PathImport refused = importPath("implicit-loop-above-bound",
+                task.deepCopy(), beyond);
+        assertEquals(0, refused.result.validSummaryCount);
+        assertEquals(LoopBoundPolicy.PATH_LOOP_COUNT_OUT_OF_BOUND,
+                ArtifactIO.readJsonl(refused.diagnostics).get(0)
+                        .get("code").getAsString());
     }
 
     @Test
@@ -666,307 +401,290 @@ public class ConcolicSummaryImporterTest {
         assertEquals(0, ArtifactIO.readJsonl(imported.output).size());
         JsonObject diagnostic = ArtifactIO.readJsonl(
                 imported.diagnostics).get(0);
-        assertEquals("PATH_SEED_MISMATCH",
+        assertEquals("BRANCH_REPLAY_MISMATCH",
                 diagnostic.get("code").getAsString());
         assertTrue(diagnostic.get("detail").getAsString()
                 .contains("wrong outcome"));
-    }
 
-    @Test
-    public void replaySourceMustReachRequestedOppositeOutcome()
-            throws Exception {
-        PathImport imported = importPath("wrong-replay-source",
-                pathTask(true), pathResult(true, true));
-
-        assertEquals(0, imported.result.validSummaryCount);
-        assertEquals(1, imported.result.diagnosticCount);
-        assertEquals("PATH_SEED_MISMATCH", ArtifactIO.readJsonl(
-                imported.diagnostics).get(0).get("code").getAsString());
-    }
-
-    @Test
-    public void matchingReplaySourceIsImported()
-            throws Exception {
-        PathImport imported = importPath("matching-replay-source",
-                pathTask(true), pathResult(true, false));
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-    }
-
-    @Test
-    public void unreachedSeedBranchSiteIsRejectedFailClosed()
-            throws Exception {
-        // Neither a symbolic mapping nor a concrete execution witness: the
-        // replay never reached the recorded site at all.
-        PathImport imported = importPath("missing-seed-event",
-                pathTask(false), pathResult(false, true));
-
-        assertEquals(0, imported.result.validSummaryCount);
-        assertEquals("PATH_SEED_MISMATCH", ArtifactIO.readJsonl(
-                imported.diagnostics).get(0).get("code").getAsString());
-        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
-                .get("detail").getAsString().contains("missing"));
-    }
-
-    @Test
-    public void abortedSymbolicExecutionIsChargedToItselfNotToTheSeed()
-            throws Exception {
-        // The engine gave up mid-region, so it stopped recording branch
-        // events and the activation ran on concretely to a NORMAL exit.
-        // Coverage of the recorded sites necessarily fails, but the gap is
-        // the abort, not a seed mismatch.  Naming the wrong one sends the
-        // reader after a semantics defect that does not exist.
-        JsonObject raw = pathResult(false, true);
-        raw.getAsJsonObject("engineSummary")
-                .addProperty("aborted", true);
-        raw.getAsJsonObject("engineSummary")
-                .addProperty("abortReason", "ASSOCIATIVE_OPERATION_UNSUPPORTED");
-
-        PathImport imported = importPath("aborted-seed", pathTask(false), raw);
-
-        assertEquals(0, imported.result.validSummaryCount);
-        assertEquals(1, imported.result.diagnosticCount);
-        JsonObject diagnostic = ArtifactIO.readJsonl(
-                imported.diagnostics).get(0);
-        assertEquals("SYMBOLIC_EXECUTION_ABORTED",
-                diagnostic.get("code").getAsString());
-        assertEquals("ASSOCIATIVE_OPERATION_UNSUPPORTED",
-                diagnostic.get("detail").getAsString());
-    }
-
-    @Test
-    public void abortedSymbolicExecutionIsRefusedEvenWhenCoverageHolds()
-            throws Exception {
-        // A truncated path condition cannot be a region summary even when the
-        // sites that did execute happen to attest the whole seed: the
-        // constraints after the abort are missing, not merely unproven.
+        // Folded Phase 2 field acceptance: campaign completion is where the
+        // trace's candidate writers meet the session's own answer.  The task
+        // arrives carrying two equal-valued candidates and no decision; the
+        // execution's recorded store proves one of them, and the summary the
+        // composer will read says so per candidate.  Nothing about the
+        // reader's local relation is involved in that.
+        JsonObject task = pathTask(false);
+        task.add("edgeBindings", candidateEdges());
         JsonObject raw = pathResult(true, true);
-        raw.getAsJsonObject("engineSummary")
-                .addProperty("aborted", true);
-        raw.getAsJsonObject("engineSummary")
-                .addProperty("abortReason", "ASSOCIATIVE_MUTATOR_UNSUPPORTED");
+        JsonArray recorded = new JsonArray();
+        recorded.add(RecordedSharedStateFixtures.versionsRecord(
+                RecordedSharedStateFixtures.twoWriterEnvelope(
+                        SharedStateEvidence.RESOLUTION_EXACT, "SYNC_ORDERED",
+                        11L), "example.State#value"));
+        raw.add("sharedFieldVersions", recorded);
 
-        PathImport imported = importPath("aborted-covered",
-                pathTask(false), raw);
+        PathImport resolved = importPath("recorded-provenance", task, raw);
 
-        assertEquals(0, imported.result.validSummaryCount);
-        assertEquals(0, ArtifactIO.readJsonl(imported.output).size());
-        assertEquals("SYMBOLIC_EXECUTION_ABORTED", ArtifactIO.readJsonl(
-                imported.diagnostics).get(0).get("code").getAsString());
+        assertEquals(1, resolved.result.validSummaryCount);
+        JsonArray bindings = ArtifactIO.readJsonl(resolved.output).get(0)
+                .getAsJsonArray("edgeBindings");
+        assertEquals(RecordedReadFrom.PROVENANCE_EXACT,
+                bindings.get(0).getAsJsonObject()
+                        .get(RecordedReadFrom.EDGE_PROVENANCE).getAsString());
+        assertEquals(RecordedReadFrom.PROVENANCE_EXCLUDED,
+                bindings.get(1).getAsJsonObject()
+                        .get(RecordedReadFrom.EDGE_PROVENANCE).getAsString());
+
+        // With no recorded evidence the same task keeps both candidates and
+        // the gap that names why, rather than acquiring a writer from the
+        // equal concrete value both of them published.
+        JsonObject unwatched = pathTask(false);
+        unwatched.add("edgeBindings", candidateEdges());
+        PathImport unresolved = importPath("no-recorded-provenance",
+                unwatched, pathResult(true, true));
+
+        JsonArray kept = ArtifactIO.readJsonl(unresolved.output).get(0)
+                .getAsJsonArray("edgeBindings");
+        for (int edge = 0; edge < kept.size(); edge++) {
+            assertEquals(RecordedReadFrom.PROVENANCE_CANDIDATE,
+                    kept.get(edge).getAsJsonObject()
+                            .get(RecordedReadFrom.EDGE_PROVENANCE)
+                            .getAsString());
+            assertEquals("SHARED_STATE_NOT_SELECTED",
+                    kept.get(edge).getAsJsonObject()
+                            .get(RecordedReadFrom.EDGE_PROVENANCE_GAP)
+                            .getAsString());
+        }
+
     }
 
     @Test
-    public void anUnabortedTruncationIsStillASeedMismatch() throws Exception {
-        // The converse guard: without an abort, a replay that never reached a
-        // recorded site is still refused, and still as a seed mismatch.
-        PathImport imported = importPath("unaborted-truncation",
-                pathTask(false), pathResult(false, true));
-
-        assertEquals(0, imported.result.validSummaryCount);
-        assertEquals("PATH_SEED_MISMATCH", ArtifactIO.readJsonl(
-                imported.diagnostics).get(0).get("code").getAsString());
-    }
-
-    @Test
-    public void concretelyExecutedSeedBranchSiteAttestsCoverage()
+    public void vmHandoffV2ExpressionSurvivesSummaryImport()
             throws Exception {
-        // The branch ran before the symbolic gate opened, so it has no VM
-        // event. Execution still attests the recorded site.
-        JsonObject raw = pathResult(false, true);
-        raw.add("concreteBranchWitnesses", concreteWitnesses(true));
+        // The exact destination expression travels with the VM ledger
+        // reference.  Import keeps both case-local and performs no pairing.
+        JsonObject rpcTask = pathTask(false);
+        JsonObject rpcRaw = pathResult(true, true);
+        JsonArray events = new JsonArray();
+        JsonObject attachedExpression = new JsonObject();
+        attachedExpression.addProperty("_type", "Int");
+        attachedExpression.addProperty("_value", 17);
+        events.add(VmHandoffEvidence.event("XCH.1.req.keyId", 41L,
+                attachedExpression));
+        rpcRaw.add(VmHandoffEvidence.FIELD, events);
 
-        PathImport imported = importPath("concrete-seed-event",
-                pathTask(false), raw);
+        PathImport handoff = importPath("recorded-handoff", rpcTask, rpcRaw);
 
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(handoff.output).get(0);
+        assertEquals(1, VmHandoffEvidence.eventsOf(summary).size());
+        assertEquals(41L, VmHandoffEvidence.eventsOf(summary).get(0)
+                .get("exportEventId").getAsLong());
+        assertEquals(VmHandoffEvidence.SCHEMA_VERSION,
+                VmHandoffEvidence.eventsOf(summary).get(0)
+                        .get("schemaVersion").getAsInt());
+        assertEquals(attachedExpression,
+                VmHandoffEvidence.eventsOf(summary).get(0)
+                        .get(VmHandoffEvidence.EXPRESSION));
     }
 
     @Test
-    public void concreteWitnessStillFailsClosedOnTheOppositeOutcome()
-            throws Exception {
-        JsonObject raw = pathResult(false, true);
-        raw.add("concreteBranchWitnesses", concreteWitnesses(false));
+    public void vmHandoffV2RequiresTheExactAttachedExpression() {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "Int");
+        expression.addProperty("_value", 23);
+        JsonObject event = VmHandoffEvidence.event(
+                "XCH.1.req.keyId", 43L, expression);
 
-        PathImport imported = importPath("concrete-wrong-outcome",
-                pathTask(false), raw);
+        assertTrue(VmHandoffEvidence.isEvent(event));
+        assertEquals(2, event.get("schemaVersion").getAsInt());
+        assertEquals(expression, event.get(VmHandoffEvidence.EXPRESSION));
 
-        assertEquals(0, imported.result.validSummaryCount);
-        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
-                .get("detail").getAsString().contains("wrong outcome"));
+        JsonObject missingExpression = event.deepCopy();
+        missingExpression.remove(VmHandoffEvidence.EXPRESSION);
+        assertFalse(VmHandoffEvidence.isEvent(missingExpression));
+
+        JsonObject legacy = event.deepCopy();
+        legacy.addProperty("schemaVersion", 1);
+        assertFalse(VmHandoffEvidence.isEvent(legacy));
+
+        JsonObject truncated = event.deepCopy();
+        JsonObject bounded = new JsonObject();
+        bounded.addProperty("_type", "TruncatedExpression");
+        bounded.addProperty("expressionAuthority",
+                "VM_SERIALIZATION_TRUNCATION_V1");
+        truncated.add(VmHandoffEvidence.EXPRESSION, bounded);
+        assertFalse(VmHandoffEvidence.isEvent(truncated));
     }
 
-    @Test
-    public void concreteWitnessNeverMakesASiteUnexpected() throws Exception {
-        // A concrete prefix decides branches the demanded slice never
-        // planned; that is ordinary execution, not a path divergence.
-        JsonObject raw = pathResult(true, true);
-        JsonArray witnesses = concreteWitnesses(true);
-        JsonObject unplanned = witnesses.get(0).getAsJsonObject().deepCopy();
-        unplanned.addProperty("siteId", "<test.Other: void run()>#u7");
-        unplanned.addProperty("method", "<test.Other: void run()>");
-        unplanned.addProperty("unitIndex", 7);
-        witnesses.add(unplanned);
-        raw.add("concreteBranchWitnesses", witnesses);
 
-        PathImport imported = importPath("concrete-unplanned",
-                pathTask(false), raw);
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-    }
-
-    @Test
-    public void earlyStopExitDoesNotDemandCoverageOfTheRecordedTail()
-            throws Exception {
-        // A target-reach activation stops at its target; the recorded tail of
-        // the region is never executed and cannot be witnessed.
-        JsonObject raw = pathResult(false, true);
-        raw.addProperty("exitKind", "TARGET_REACHED");
-
-        PathImport imported = importPath("early-stop-tail",
-                pathTask(false), raw);
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-    }
-
-    @Test
-    public void earlyStopExitStillFailsClosedOnAContradiction()
-            throws Exception {
-        JsonObject raw = pathResult(true, false);
-        raw.addProperty("exitKind", "TARGET_REACHED");
-
-        PathImport imported = importPath("early-stop-contradiction",
-                pathTask(false), raw);
-
-        assertEquals(0, imported.result.validSummaryCount);
-        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
-                .get("detail").getAsString().contains("wrong outcome"));
-    }
-
-    private static JsonArray concreteWitnesses(boolean outcome) {
-        JsonObject witness = new JsonObject();
-        witness.addProperty("kind", "CONCRETE_BRANCH_EXECUTION_WITNESS_V1");
-        witness.addProperty("schemaVersion", 1);
-        witness.addProperty("siteId", seedSite());
-        witness.addProperty("method", seedMethod());
-        witness.addProperty("unitIndex", 3);
-        witness.addProperty("sourceTakenOutcome", outcome);
-        JsonArray witnesses = new JsonArray();
-        witnesses.add(witness);
-        return witnesses;
-    }
-
-    @Test
-    public void narrowerEnvironmentWidthKeepsTheSameSeedWitness()
-            throws Exception {
-        PathImport imported = importPath("narrower-width",
-                widthTask(2), widthResult(1));
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-    }
-
-    @Test
-    public void widerEnvironmentWidthKeepsTheSameSeedWitness()
-            throws Exception {
-        PathImport imported = importPath("wider-width",
-                widthTask(1), widthResult(3));
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
+    /** The two candidate writers trace refinement retained for one read. */
+    private static JsonArray candidateEdges() {
+        JsonArray edges = new JsonArray();
+        for (String writer : new String[]{"REGION.writerA", "REGION.writerB"}) {
+            JsonObject edge = new JsonObject();
+            edge.addProperty("edgeId", "RF." + writer);
+            edge.addProperty("kind", "RUNTIME_FIELD_FLOW");
+            edge.addProperty("fromRegion", writer);
+            edge.addProperty("toRegion", "REGION.reader");
+            edge.addProperty("fromOccurrenceId",
+                    RecordedSharedStateFixtures.occurrenceOf(writer));
+            edge.addProperty("toOccurrenceId",
+                    RecordedSharedStateFixtures.occurrenceOf(
+                            "REGION.reader"));
+            edge.addProperty(RecordedReadFrom.EDGE_FIELD,
+                    "example.State#value");
+            edge.addProperty(RecordedReadFrom.EDGE_SOURCE_KEY,
+                    RecordedSharedStateFixtures.TEST_SOURCE);
+            edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                    RecordedReadFrom.PROVENANCE_CANDIDATE);
+            edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE_GAP,
+                    "SHARED_STATE_NOT_SELECTED");
+            edges.add(edge);
+        }
+        return edges;
     }
 
     /**
-     * The seed campaign witnessed an outcome at a site the recording only ever
-     * witnessed the other way, and the flip's replay prefix carries that
-     * event.  The planner may refuse such a contract before spending a solve
-     * and a replay on it, but only if it refuses exactly what admission
-     * refuses -- so both verdicts are pinned against each other here, in the
-     * refusing direction and in the admitting one.
+     * README Step 1: identical planned identity and schema adds a guarded
+     * local case, a new cut writes {@code TOPOLOGY_DIVERGENCE}, and a planned
+     * event that did not occur writes a gap.  Nothing a run failed to observe
+     * removes evidence, and no refused row leaves the delta silent.
      */
     @Test
-    public void contractSeedConflictIsTheSameVerdictEarlyAndLate()
+    public void topologyDeltaClassifiesCasesCutsAndRefusals()
             throws Exception {
-        BranchReplayContract conflicting = BranchReplayContract.flip(
-                Collections.singletonList(BranchWitness.vmPc(seedSite(),
-                        seedMethod(), 3, 1, false, branchPredicate(false), 0,
-                        new JsonObject())),
-                BranchWitness.vmPc(seedSite(), seedMethod(), 3, 2, true,
-                        branchPredicate(true), 1, new JsonObject()));
-        JsonObject conflicted = pathTask(true);
-        conflicted.add("replayContract", conflicting.toJson());
+        JsonObject second = pathResult(true, true);
+        second.addProperty("exceptionType", "java.io.IOException");
+        PathImport cases = importPath("delta-local-cases", pathTask(false),
+                pathResult(true, true), second);
 
-        String early = ConcolicSummaryImporter.plannedReplaySeedConflict(
-                conflicted, conflicting);
-        assertEquals("replay event conflicts with task seed at "
-                + seedSite() + "#1", early);
-        PathImport refused = importPath("contract-seed-conflict", conflicted,
-                pathResult(true, true));
-        assertEquals(0, refused.result.validSummaryCount);
-        JsonObject diagnostic = ArtifactIO.readJsonl(
-                refused.diagnostics).get(0);
-        assertEquals("PATH_SEED_MISMATCH",
-                diagnostic.get("code").getAsString());
-        assertTrue(diagnostic.get("detail").getAsString().endsWith(early));
+        assertEquals(2, cases.result.validSummaryCount);
+        java.util.List<JsonObject> rows = ArtifactIO.readJsonl(cases.delta);
+        assertEquals(2, rows.size());
+        JsonObject occurrence = deltaRow(rows, TopologyDelta.NEW_OCCURRENCE);
+        assertEquals("test/source#epoch0",
+                occurrence.get("sourceKey").getAsString());
+        assertEquals(occurrence.get("plannedIdentityDigest").getAsString(),
+                occurrence.get("observedIdentityDigest").getAsString());
+        assertEquals(occurrence.get("plannedSchemaDigest").getAsString(),
+                occurrence.get("observedSchemaDigest").getAsString());
+        // The second case of one planned occurrence is a guarded local case,
+        // never a second occurrence node.
+        assertEquals("", deltaRow(rows, TopologyDelta.NEW_LOCAL_CASE)
+                .get("gap").getAsString());
 
-        JsonObject consistent = pathTask(true);
-        assertEquals("", ConcolicSummaryImporter.plannedReplaySeedConflict(
-                consistent, BranchReplayContract.fromJson(
-                        consistent.getAsJsonObject("replayContract"))));
-        assertEquals(1, importPath("contract-seed-agreement", consistent,
-                pathResult(true, false)).result.validSummaryCount);
+        // An execution whose identity the frozen plan does not contain
+        // belongs to the next iteration's plan: it publishes a divergence and
+        // no local case at all.
+        JsonObject unplanned = pathTask(false);
+        unplanned.addProperty("regionId", "REGION.UNPLANNED");
+        java.util.List<JsonObject> diverged = ArtifactIO.readJsonl(
+                importPath("delta-unplanned-activation", unplanned,
+                        pathResult(true, true)).delta);
 
-        // Incomplete information is not a verdict.  A source task stating no
-        // seed is admitted early and still fails closed late, which is the
-        // only direction the two answers are allowed to differ in.
-        JsonObject seedless = pathTask(true);
-        seedless.add("branches", new JsonArray());
-        assertEquals("", ConcolicSummaryImporter.plannedReplaySeedConflict(
-                seedless, conflicting));
-        seedless.add("replayContract", conflicting.toJson());
-        assertEquals(0, importPath("contract-seed-unstated", seedless,
-                pathResult(true, true)).result.validSummaryCount);
+        JsonObject divergence = deltaRow(diverged,
+                TopologyDelta.TOPOLOGY_DIVERGENCE);
+        assertEquals("REGION.UNPLANNED",
+                divergence.get("regionId").getAsString());
+        assertEquals("UNKNOWN_REGION", divergence
+                .getAsJsonArray("divergences").get(0).getAsJsonObject()
+                .get("field").getAsString());
+        for (JsonObject row : diverged) {
+            String kind = row.get("deltaKind").getAsString();
+            assertTrue(kind, !TopologyDelta.NEW_LOCAL_CASE.equals(kind)
+                    && !TopologyDelta.NEW_OCCURRENCE.equals(kind));
+        }
+
+        // A refused row is named, never dropped silently.
+        java.util.List<JsonObject> refused = ArtifactIO.readJsonl(
+                importPath("delta-refused", pathTask(false),
+                        pathResult(true, false)).delta);
+
+        assertEquals(1, refused.size());
+        assertEquals(TopologyDelta.COVERAGE_GAP,
+                refused.get(0).get("deltaKind").getAsString());
+        assertEquals("BRANCH_REPLAY_MISMATCH",
+                refused.get(0).get("gap").getAsString());
+    }
+
+    private static JsonObject deltaRow(java.util.List<JsonObject> rows,
+                                       String deltaKind) {
+        for (JsonObject row : rows) {
+            if (deltaKind.equals(row.get("deltaKind").getAsString())) {
+                return row;
+            }
+        }
+        throw new AssertionError("no " + deltaKind + " row in " + rows);
     }
 
     private PathImport importPath(String name, JsonObject task,
-                                  JsonObject raw) throws Exception {
+                                  JsonObject... raws) throws Exception {
         Path directory = folder.newFolder(name).toPath();
         Path results = directory.resolve("results.jsonl");
         Path tasks = directory.resolve("tasks.jsonl");
         Path regions = directory.resolve("regions.jsonl");
         Path output = directory.resolve("summaries.jsonl");
         Path diagnostics = directory.resolve("diagnostics.jsonl");
-        raw.addProperty("taskId", task.get("taskId").getAsString());
+        Path delta = directory.resolve(TopologyDelta.FILE_NAME);
         JsonObject region = new JsonObject();
         region.addProperty("regionId", "REGION.SEED");
+        java.util.List<JsonObject> rows = new java.util.ArrayList<>();
+        for (JsonObject row : raws) {
+            row.addProperty("taskId", task.get("taskId").getAsString());
+            rows.add(row);
+        }
         ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
         ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
+        ArtifactIO.replaceJsonl(results, rows);
         return new PathImport(ConcolicSummaryImporter.importSummaries(
                 results, tasks, regions, output, diagnostics), output,
-                diagnostics);
+                diagnostics, delta);
     }
 
-    private PathImport importOutputPath(String name, JsonObject task,
-                                        JsonObject raw) throws Exception {
-        Path directory = folder.newFolder(name).toPath();
-        Path results = directory.resolve("results.jsonl");
-        Path tasks = directory.resolve("tasks.jsonl");
-        Path regions = directory.resolve("regions.jsonl");
-        Path output = directory.resolve("summaries.jsonl");
-        Path diagnostics = directory.resolve("diagnostics.jsonl");
-        raw.addProperty("taskId", task.get("taskId").getAsString());
-        JsonObject region = new JsonObject();
-        region.addProperty("regionId", task.get("regionId").getAsString());
-        ArtifactIO.replaceJsonl(tasks, Collections.singletonList(task));
-        ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
-        ArtifactIO.replaceJsonl(results, Collections.singletonList(raw));
-        return new PathImport(ConcolicSummaryImporter.importSummaries(
-                results, tasks, regions, output, diagnostics), output,
-                diagnostics);
+    private void assertIncomplete(String name, JsonObject task,
+                                  JsonObject raw, String issue)
+            throws Exception {
+        PathImport imported = importPath(name, task, raw);
+        assertEquals(1, imported.result.validSummaryCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertFalse(summary.get("relationallyComplete").getAsBoolean());
+        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString().contains(issue));
+    }
+
+    /** The one demanded output a relation-only seed closes. */
+    private static JsonObject outputSlice(String port, String cell) {
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", cell);
+        slice.add("inputPorts", new JsonArray());
+        for (String member : new String[]{"sites", "staticSites", "methods",
+                "causalEdgeIds", "captureBindings", "captureBindingIssues"}) {
+            slice.add(member, new JsonArray());
+        }
+        return slice;
+    }
+
+    private static JsonArray retainedConditionLoop() {
+        JsonObject loop = new JsonObject();
+        loop.addProperty("enclosingMethod", helperMethod());
+        loop.addProperty(LoopBoundPolicy.LOOP_SITE_ID,
+                helperMethod() + "#u4");
+        loop.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID,
+                helperMethod() + "#loop:u4");
+        loop.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION,
+                LoopBoundPolicy.LOOP_CONDITION_BOUNDED);
+        loop.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY,
+                LoopBoundPolicy.LOOP_CLASSIFIED_CONDITION_CONTROLLED);
+        JsonArray sites = new JsonArray();
+        sites.add(helperMethod() + "#u4");
+        loop.add(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS, sites);
+        JsonArray loops = new JsonArray();
+        loops.add(loop);
+        return loops;
+    }
+
+    private static String helperMethod() {
+        return "<test.Helper: void scan()>";
     }
 
     private static JsonObject pathTask(boolean replay) {
@@ -978,8 +696,6 @@ public class ConcolicSummaryImporterTest {
         task.addProperty("occurrenceId",
                 "test/source#epoch0/region/REGION.SEED#1");
         task.addProperty("relationKey", "test/source/REGION.SEED");
-        task.addProperty("relationContractHash", "CONTRACT.SEED");
-        task.addProperty("pathSeedKey", "PATH.SEED.STABLE");
         ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
         task.add("inputActions", new JsonArray());
         JsonObject branch = new JsonObject();
@@ -996,6 +712,10 @@ public class ConcolicSummaryImporterTest {
         JsonArray branches = new JsonArray();
         branches.add(branch);
         task.add("branches", branches);
+        JsonObject targetBranch = new JsonObject();
+        targetBranch.addProperty("siteId", seedSite());
+        targetBranch.addProperty("occurrence", 1);
+        task.add("targetBranch", targetBranch);
         LoopBoundPolicy.cfgBackedges(8).writeTo(task);
         if (replay) {
             task.add("replayContract", BranchReplayContract.flip(
@@ -1005,42 +725,42 @@ public class ConcolicSummaryImporterTest {
         return task;
     }
 
-    private static JsonObject widthTask(int occurrenceCount) {
+    private static JsonObject relationOnlyTask() {
         JsonObject task = pathTask(false);
-        JsonArray occurrences = task.getAsJsonArray("branches").get(0)
-                .getAsJsonObject().getAsJsonArray("occurrences");
-        while (occurrences.size() < occurrenceCount) {
-            JsonObject occurrence = new JsonObject();
-            occurrence.addProperty("occurrence", occurrences.size() + 1);
-            occurrence.addProperty("outcome", true);
-            occurrences.add(occurrence);
-        }
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
+        OutputClosureCodec.writeTo(task, OutputClosureCodec.singleton(
+                "test/source/REGION.SEED", "REGION.SEED",
+                "REGION.SEED.out.0", "<Test: int output>", "REGION_OUTPUT",
+                "int", outputSlice("REGION.SEED.out.0",
+                        "<Test: int output>")));
         return task;
     }
 
-    private static JsonObject widthResult(int occurrenceCount) {
-        JsonObject raw = pathResult(true, true);
-        JsonArray path = raw.getAsJsonObject("engineSummary")
-                .getAsJsonArray("pathCondition");
-        JsonArray mappings = raw.getAsJsonArray("branchMappings");
-        for (int occurrence = 2; occurrence <= occurrenceCount;
-             occurrence++) {
-            int pcIndex = path.size();
-            path.add(branchPredicate(true));
-            JsonObject mapping = new JsonObject();
-            mapping.addProperty("siteId", seedSite());
-            mapping.addProperty("method", seedMethod());
-            mapping.addProperty("unitIndex", 3);
-            mapping.addProperty("occurrence", occurrence);
-            mapping.addProperty("rawPathConditionBaseline", pcIndex);
-            mapping.addProperty("rawPathConditionSize", pcIndex + 1);
-            mapping.add("witness", BranchWitness.vmPc(seedSite(),
-                    seedMethod(), 3, occurrence, true,
-                    branchPredicate(true), pcIndex,
-                    new JsonObject()).toJson());
-            mappings.add(mapping);
-        }
-        return raw;
+    private static void declareSymbolicSource(JsonObject task) {
+        JsonObject source = new JsonObject();
+        source.addProperty("authority",
+                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
+        source.addProperty("sourceId",
+                "HDFS11741.NAMENODE.PROMOTED_KEY_ID");
+        source.addProperty("fieldSignature",
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>");
+        source.addProperty("requiredOutputFieldSignature",
+                "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: java.util.Map allKeys>");
+        JsonArray sources = new JsonArray();
+        sources.add(source);
+        task.add(SymbolicSourceEvidence.TASK_FIELD, sources);
+    }
+
+    private static JsonObject symbolicSourceEvent(JsonObject task) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "int");
+        expression.addProperty("_exp", "M_I_field_SRC.promoted_key");
+        return SymbolicSourceEvidence.event(
+                "HDFS11741.NAMENODE.PROMOTED_KEY_ID",
+                task.get("occurrenceId").getAsString(),
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>",
+                expression);
     }
 
     private static JsonObject pathResult(boolean includeMapping,
@@ -1073,7 +793,58 @@ public class ConcolicSummaryImporterTest {
             mappings.add(mapping);
         }
         raw.add("branchMappings", mappings);
+        JsonObject targetReach = new JsonObject();
+        targetReach.addProperty("kind",
+                PathObservation.TargetReachEvent.KIND);
+        targetReach.addProperty("siteId", seedSite());
+        targetReach.addProperty("occurrence", 1);
+        targetReach.addProperty("outcome", outcome);
+        raw.add(PathObservation.TargetReachEvent.FIELD, targetReach);
         return raw;
+    }
+
+    private static void installAuxiliaryPathCondition(
+            JsonObject raw, JsonObject auxiliary) {
+        JsonObject engine = raw.getAsJsonObject("engineSummary");
+        engine.addProperty("active", true);
+        engine.addProperty("pathConditionOmitted", true);
+        engine.add("pathCondition", new JsonArray());
+        engine.addProperty("pathConditionAuthority",
+                "VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1");
+        if (auxiliary != null) {
+            engine.add("auxiliaryPathCondition", auxiliary);
+        }
+    }
+
+    private static JsonObject auxiliaryPathCondition(int watermark) {
+        JsonObject auxiliary = new JsonObject();
+        auxiliary.addProperty("schemaVersion", 1);
+        auxiliary.addProperty("kind",
+                "CONCOLIC_AUXILIARY_PATH_CONDITION");
+        auxiliary.addProperty("active", true);
+        auxiliary.addProperty("aborted", false);
+        auxiliary.addProperty("pathConditionWatermark", watermark);
+        auxiliary.addProperty("conditionCount", 0);
+        auxiliary.add("pathConditionIndices", new JsonArray());
+        auxiliary.add("conditions", new JsonArray());
+        auxiliary.addProperty("authority",
+                "VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
+        return auxiliary;
+    }
+
+    private static JsonObject auxiliaryContainerRelation(String relationId) {
+        JsonObject relation = new JsonObject();
+        relation.addProperty("_type", "ContainerRelation");
+        relation.addProperty("relationId", relationId);
+        relation.addProperty("kind", "ASSOCIATIVE_READ");
+        return relation;
+    }
+
+    private static void installRootOutput(JsonObject raw) {
+        JsonObject root = new JsonObject();
+        root.addProperty("kind", "SYMBOLIC_EXPRESSION");
+        root.add("expression", branchPredicate(true));
+        raw.add("rootOutputExpression", root);
     }
 
     private static BranchWitness branchWitness(boolean outcome) {
@@ -1108,107 +879,14 @@ public class ConcolicSummaryImporterTest {
         private final ConcolicSummaryImporter.ImportResult result;
         private final Path output;
         private final Path diagnostics;
+        private final Path delta;
 
         private PathImport(ConcolicSummaryImporter.ImportResult result,
-                           Path output, Path diagnostics) {
+                           Path output, Path diagnostics, Path delta) {
             this.result = result;
             this.output = output;
             this.diagnostics = diagnostics;
+            this.delta = delta;
         }
-    }
-
-    private static JsonObject outputBoundaryTask(int outputCount) {
-        String region = "REGION.BOUNDARY";
-        String instance = region + "@test#call1";
-        String method = "<test.Worker: void run()>";
-        List<OutputClosureContract> members = new ArrayList<>();
-        for (int index = 0; index < outputCount; index++) {
-            String port = region + ".out." + index;
-            String cell = "<test.State: int value" + index + ">";
-            String site = method + "#u" + (index + 1);
-            JsonObject binding = new JsonObject();
-            binding.addProperty("captureBindingId", "CAPTURE." + index);
-            binding.addProperty("captureKind",
-                    OutputCaptureSpec.FIELD_WRITE_STATE);
-            binding.addProperty("outputPort", port);
-            binding.addProperty("outputCell", cell);
-            binding.addProperty("fieldSignature", cell);
-            binding.addProperty("javaType", "int");
-            binding.addProperty("definitionMethod", method);
-            binding.addProperty("definitionUnitIndex", index + 1);
-            binding.addProperty("outputSiteId", site);
-            binding.addProperty("outputOccurrence", 1);
-            binding.addProperty("replayOccurrence", 1);
-
-            JsonArray bindings = new JsonArray();
-            bindings.add(binding);
-            JsonObject slice = new JsonObject();
-            slice.addProperty("outputPort", port);
-            slice.addProperty("outputCell", cell);
-            slice.add("inputPorts", new JsonArray());
-            slice.add("sites", strings(site));
-            slice.add("staticSites", strings(site));
-            slice.add("methods", strings(method));
-            slice.add("causalEdgeIds", new JsonArray());
-            slice.add("captureBindings", bindings);
-            slice.add("captureBindingIssues", new JsonArray());
-            members.add(OutputClosureCodec.singleton("REL." + region, region,
-                    "CONTRACT.TEST",
-                    port, cell, "HEAP_STATE", "int", slice));
-        }
-
-        JsonObject task = new JsonObject();
-        task.addProperty("taskId", "TASK.BOUNDARY");
-        task.addProperty("goalId", "GOAL.BOUNDARY");
-        task.addProperty("regionId", region);
-        task.addProperty("sourceKey", "test/source#epoch0");
-        task.addProperty("occurrenceId", instance);
-        task.addProperty("relationKey", "REL." + region);
-        task.addProperty("relationContractHash", "CONTRACT.TEST");
-        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
-        task.add("inputActions", new JsonArray());
-        task.add("branches", new JsonArray());
-        LoopBoundPolicy.cfgBackedges(
-                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(task);
-        OutputClosureCodec.writeTo(task, OutputClosureCodec.merge(members));
-        return task;
-    }
-
-    private static JsonObject outputBoundaryResult(int capturedCount) {
-        JsonObject raw = new JsonObject();
-        raw.addProperty("event", "CONCOLIC_REGION_RESULT");
-        raw.addProperty("taskId", "TASK.BOUNDARY");
-        raw.addProperty("exitKind", "OUTPUT_BOUNDARY");
-        raw.addProperty("exceptionType", "");
-        JsonObject engine = new JsonObject();
-        engine.addProperty("complete", true);
-        engine.addProperty("aborted", false);
-        engine.add("pathCondition", new JsonArray());
-        raw.add("engineSummary", engine);
-        raw.add("unresolvedInputs", new JsonArray());
-        raw.add("symbolizedInputs", new JsonArray());
-        raw.add("branchMappings", new JsonArray());
-        JsonArray captures = new JsonArray();
-        for (int index = 0; index < capturedCount; index++) {
-            JsonObject capture = new JsonObject();
-            capture.addProperty("captureBindingId", "CAPTURE." + index);
-            capture.addProperty("outputSiteId",
-                    "<test.Worker: void run()>#u" + (index + 1));
-            capture.addProperty("outputOccurrence", 1);
-            capture.addProperty("replayOccurrence", 1);
-            JsonObject expression = new JsonObject();
-            expression.addProperty("_type", "ConstExpr");
-            expression.addProperty("_exp", "Y_I_" + index);
-            capture.add("expression", expression);
-            captures.add(capture);
-        }
-        raw.add("outputCaptures", captures);
-        return raw;
-    }
-
-    private static JsonArray strings(String... values) {
-        JsonArray result = new JsonArray();
-        for (String value : values) result.add(value);
-        return result;
     }
 }

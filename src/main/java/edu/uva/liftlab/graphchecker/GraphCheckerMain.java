@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker;
 
 import edu.uva.liftlab.graphchecker.analysis.AnalysisManager;
 import edu.uva.liftlab.graphchecker.analysis.PhaseInfo;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.option.OptionError;
 import edu.uva.liftlab.graphchecker.option.OptionParser;
@@ -25,6 +26,7 @@ import java.nio.file.Paths;
 import java.util.Date;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -39,6 +41,11 @@ public class GraphCheckerMain {
     private static final Logger LOG = LoggerFactory.getLogger(GraphCheckerMain.class);
 
     private final GraphCheckerOptions options;
+    private final Set<String> explicitApplicationClasses =
+            new LinkedHashSet<>();
+    private final List<String> productionProcessDirs = new ArrayList<>();
+    private final Set<String> testClassOutputDirs = new LinkedHashSet<>();
+    private boolean concolicInstrumentation;
 
     public GraphCheckerMain(GraphCheckerOptions options) {
         this.options = options;
@@ -56,6 +63,7 @@ public class GraphCheckerMain {
             System.err.println("Error in parsing Soot options");
             return false;
         }
+        enforceProductionApplicationScope();
 
         Options.v().warnNonexistentPhase();
         if (Options.v().phase_list()) {
@@ -112,17 +120,40 @@ public class GraphCheckerMain {
         Options.v().set_allow_phantom_refs(true);
         Options.v().set_prepend_classpath(true);
         List<String> processDirs = expandProcessDirs(options.getInputList());
-        Options.v().set_soot_classpath(expandClassPath(appendClasspathEntries(
-                options.getClassPath(), processDirs)));
+        List<String> configuredTestDirs = new ArrayList<>();
+        splitProcessDirs(processDirs, productionProcessDirs,
+                configuredTestDirs);
+        testClassOutputDirs.addAll(configuredTestDirs);
+        String classPath = expandClassPath(prependClasspathEntries(
+                processDirs, options.getClassPath()));
+        collectTestClassOutputs(classPath, testClassOutputDirs);
+        Options.v().set_soot_classpath(classPath);
         Options.v().set_keep_line_number(options.keepDebug());
         Options.v().set_whole_program(true);
 
         if (options.getMainClass() != null) {
             Options.v().set_main_class(options.getMainClass());
         }
-        if (!processDirs.isEmpty()) {
-            Options.v().set_process_dir(processDirs);
+        concolicInstrumentation = ConcolicInstrumentationSelections
+                .instrumentationRequested();
+        if (concolicInstrumentation) {
+            explicitApplicationClasses.addAll(
+                    ConcolicInstrumentationSelections
+                            .applicationClassesFromEnvironment());
+            LOG.info("Concolic instrumentation limits Soot application "
+                            + "classes to {} task-plan owner(s); {} full "
+                            + "project root(s) remain on the classpath",
+                    explicitApplicationClasses.size(), processDirs.size());
+        } else if (!configuredTestDirs.isEmpty()) {
+            LOG.info("Static discovery keeps {} test output(s) on the "
+                            + "classpath but excludes every test class "
+                            + "from application scope; {} production "
+                            + "root(s) remain",
+                    configuredTestDirs.size(),
+                    productionProcessDirs.size());
         }
+        Options.v().set_process_dir(concolicInstrumentation
+                ? new ArrayList<>() : productionProcessDirs);
         if (options.getOutputDir() != null) {
             Options.v().set_output_dir(options.getOutputDir());
         }
@@ -181,6 +212,9 @@ public class GraphCheckerMain {
             LOG.info("Adding input class {}", className);
             Options.v().classes().add(className);
         }
+        for (String className : explicitApplicationClasses) {
+            Options.v().classes().add(className);
+        }
 
         Class<?>[] basicClasses = {PrintStream.class, System.class, Thread.class, Throwable.class};
         for (Class<?> cls : basicClasses) {
@@ -194,6 +228,75 @@ public class GraphCheckerMain {
                 SIGNATURES);
         Scene.v().addBasicClass("java.lang.Object[]", SootClass.HIERARCHY);
         Scene.v().addBasicClass("java.lang.String[]", SootClass.HIERARCHY);
+    }
+
+    static void splitProcessDirs(Collection<String> processDirs,
+                                 List<String> productionDirs,
+                                 List<String> testDirs) {
+        for (String directory : processDirs) {
+            File path = new File(directory);
+            if ("test-classes".equals(path.getName())) {
+                testDirs.add(path.getAbsolutePath());
+            } else {
+                productionDirs.add(path.getAbsolutePath());
+            }
+        }
+    }
+
+    private static void collectTestClassOutputs(
+            String classPath, Collection<String> testDirs) {
+        if (classPath == null || classPath.trim().isEmpty()) {
+            return;
+        }
+        for (String entry : classPath.split(Pattern.quote(
+                File.pathSeparator))) {
+            File path = new File(entry);
+            if ("test-classes".equals(path.getName())
+                    && path.isDirectory()) {
+                testDirs.add(path.getAbsolutePath());
+            }
+        }
+    }
+
+    /**
+     * Raw Soot arguments are parsed after GraphChecker's own options. Reapply
+     * the production-only boundary here so a trailing {@code -process-dir}
+     * or {@code -c} cannot turn runtime-only test classes into application
+     * classes.
+     */
+    private void enforceProductionApplicationScope() {
+        // Soot parses a trailing -cp after configureSoot(). Discover test
+        // outputs from that final classpath too, before accepting any raw
+        // -c/main-class entry from it.
+        collectTestClassOutputs(Options.v().soot_classpath(),
+                testClassOutputDirs);
+        Options.v().set_process_dir(concolicInstrumentation
+                ? new ArrayList<>() : productionProcessDirs);
+        for (String className : new ArrayList<>(Options.v().classes())) {
+            if (classComesFromTestOutput(className)) {
+                throw new IllegalStateException("Test class cannot enter "
+                        + "GraphChecker application scope: " + className);
+            }
+        }
+        String mainClass = Options.v().main_class();
+        if (classComesFromTestOutput(mainClass)) {
+            throw new IllegalStateException("Test main class cannot enter "
+                    + "GraphChecker application scope: " + mainClass);
+        }
+    }
+
+    private boolean classComesFromTestOutput(String className) {
+        if (className == null || className.trim().isEmpty()) {
+            return false;
+        }
+        String relative = className.replace('.', File.separatorChar)
+                + ".class";
+        for (String directory : testClassOutputDirs) {
+            if (Files.isRegularFile(Paths.get(directory, relative))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static String expandClassPath(String classPath) {
@@ -280,14 +383,19 @@ public class GraphCheckerMain {
         return properties;
     }
 
-    private static String appendClasspathEntries(String classPath, List<String> entries) {
+    /**
+     * Put the authoritative project outputs ahead of dependency jars.  Maven
+     * classpaths commonly contain an older installed copy of the project; if
+     * that jar wins, Soot can rewrite stale bytecode even though the matching
+     * process directory contains the current class.
+     */
+    private static String prependClasspathEntries(
+            List<String> entries, String classPath) {
         StringBuilder builder = new StringBuilder();
-        if (classPath != null && !classPath.trim().isEmpty()) {
-            builder.append(classPath);
-        }
         for (String entry : entries) {
             appendClasspathEntry(builder, entry);
         }
+        appendClasspathEntry(builder, classPath);
         return builder.toString();
     }
 

@@ -4,8 +4,9 @@ import java.util.Map;
 
 /**
  * Verifies that a mutation performed through a backed Map entry iterator is
- * exported as a map-state effect while the application guard remains in the
- * region path condition.
+ * exported as a map-state effect.  Whole-thread path conditions are omitted
+ * from the finish envelope; selected branch hooks export their predicates
+ * separately in production.
  */
 public final class RegionMapIteratorRemoveApiSmoke {
     private static final class Value {
@@ -53,16 +54,14 @@ public final class RegionMapIteratorRemoveApiSmoke {
             }
         }
         String relation = System.getSymbolicExpression(state.entries);
+        String window = System.getConcolicPathConditionRange(0, 64);
         String summary = System.finishConcolicRegion();
 
         require(!state.entries.containsKey(7), summary);
         require(state.entries.containsKey(8), summary);
-        require(summary.contains("iterator_expiry"), summary);
-        require(summary.contains("iterator_fresh_expiry"), summary);
-        require(summary.contains("iterator_now"), summary);
         require(relation.contains("\"operation\":\"REMOVE_AT\""), relation);
-        require(summary.contains("\"_op\":\"<\""), summary);
-        require(summary.contains("\"_exp\":\"Y_I_1\""), summary);
+        require(summary.contains("\"pathConditionOmitted\":true"), summary);
+        require(window.contains("\"pathConditionWatermark\":20"), window);
         if (args.length > 0 && "--dump".equals(args[0])) {
             System.out.println(summary);
         }

@@ -14,14 +14,36 @@ final class StaticProgram {
     /**
      * Methods that are allowed to own a REGION activation.  The value is a
      * project-independent authority such as THREAD_ENTRY, TASK_ENTRY,
-     * MAIN_ENTRY, RPC_HANDLER, or a configured WORKLOAD_ENTRY. Constructors
-     * and ordinary helpers never appear here.
+     * MAIN_ENTRY, or RPC_HANDLER. Constructors and ordinary helpers never
+     * appear here.
      */
     final Map<String, String> executionContextAuthorities =
             new LinkedHashMap<>();
-    /** Configured protocol endpoints that execute inside an enclosing root. */
-    final Set<String> nestedContextEndpoints = new LinkedHashSet<>();
     final List<Map<String, Object>> regions = new ArrayList<>();
     final List<Map<String, Object>> regionEdges = new ArrayList<>();
     final Map<String, Object> targetResolved = new LinkedHashMap<>();
+    /**
+     * Static communication discovery: one row per target-selected
+     * communication call site ({@code COMMUNICATION_CALL_SITE}) and one row
+     * per named gap.  The schema is
+     * {@link edu.uva.liftlab.graphchecker.contract
+     * .CommunicationCatalogContract}.
+     */
+    final List<Map<String, Object>> communicationCallSites =
+            new ArrayList<>();
+    /** One row per retained loop of a selected method. */
+    final List<Map<String, Object>> retainedLoops = new ArrayList<>();
+    final List<Map<String, Object>> communicationGaps = new ArrayList<>();
+    /**
+     * Callee signatures that are communication boundaries in the selected
+     * slice.  This is the sole authority for where a demand walk stops; it
+     * is discovered from the slice, never declared.
+     */
+    final Set<String> communicationCallSiteCallees = new LinkedHashSet<>();
+    /**
+     * Static-only implementation frames removed before region closure.
+     * Never serialized: artifacts contain only the resulting application
+     * envelope, not a second classification schema for excluded methods.
+     */
+    final Set<String> regionEnvelopeExclusions = new LinkedHashSet<>();
 }

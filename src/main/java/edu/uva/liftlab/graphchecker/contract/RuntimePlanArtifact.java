@@ -65,13 +65,6 @@ public final class RuntimePlanArtifact {
         return mutableCopies(regions);
     }
 
-    /** Encodes compact plans plus their one canonical edge catalog. */
-    public static String encode(Collection<JsonObject> encodedPlans,
-                                Collection<JsonObject> encodedEdges) {
-        return encode(encodedPlans, encodedEdges,
-                Collections.<JsonObject>emptyList());
-    }
-
     /** Encodes compact plans plus one canonical region/edge catalog. */
     public static String encode(Collection<JsonObject> encodedPlans,
                                 Collection<JsonObject> encodedEdges,
@@ -145,21 +138,6 @@ public final class RuntimePlanArtifact {
                     malformed);
         }
         return new RuntimePlanArtifact(hydrated, edges, regions);
-    }
-
-    /** Reads only the canonical catalog, for consumers that do not need goals. */
-    public static List<JsonObject> readEdgeValidations(Path path)
-            throws IOException {
-        JsonObject catalog = catalog(readRows(path), path);
-        List<JsonObject> edges = objects(array(catalog, "edges"),
-                "runtime edge catalog", path);
-        try {
-            indexEdges(edges);
-        } catch (IllegalArgumentException malformed) {
-            throw new IOException("invalid runtime edge catalog: " + path,
-                    malformed);
-        }
-        return copies(edges);
     }
 
     private static List<JsonObject> readRows(Path path) throws IOException {
@@ -343,17 +321,44 @@ public final class RuntimePlanArtifact {
             JsonObject port = new JsonObject();
             for (String field : new String[]{
                     "portId", "symbol", "cell", "javaType",
-                    "materialization", "sourceKind", "dependencyRole",
+                    "sourceKind", "dependencyRole",
                     "declaredFieldSignature", "accessFieldSignature",
                     "leafFieldSignature", "callerMethod", "unitIndex",
+                    // Where a cut port's value is read, by name.  The site
+                    // itself is recoverable from callerMethod/unitIndex, but
+                    // "this is a CALL_ARGUMENT capture, at argument n, defined
+                    // at this method and unit" is the semantics, and dropping
+                    // the names left the composer to re-derive it from a
+                    // position - which is the guess the cut vocabulary exists
+                    // to avoid.
+                    CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
+                    CommunicationCatalogContract.PORT_ARGUMENT_INDEX,
+                    CommunicationCatalogContract.PORT_DEFINITION_METHOD,
+                    CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX,
+                    CommunicationCatalogContract.PORT_SERVER_PARAMETER_INDEX,
+                    // Which side of which call site this port is:
+                    // REQUEST/RESPONSE, the role that owns it, and the static
+                    // identity of the site pair and the client call.  Without
+                    // them a consumer sees a port id and has to re-derive the
+                    // direction from the id's spelling.
+                    CommunicationCatalogContract.PORT_DIRECTION,
+                    "portRole",
+                    CommunicationCatalogContract.EXCHANGE_SITE_KEY,
+                    CommunicationCatalogContract.CALL_SITE_ID,
+                    // A structured leaf has no argument position of its own.
+                    // Its parent and encoding authority are therefore the
+                    // complete static address of the value; retain them in
+                    // the canonical catalog instead of asking a downstream
+                    // consumer to infer either from the port spelling.
+                    CommunicationCatalogContract.PORT_COMPONENT_OF,
+                    CommunicationCatalogContract.PORT_ENCODING_AUTHORITY,
+                    CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
+                    CommunicationCatalogContract.PORT_HANDOFF_PATH,
+                    CommunicationCatalogContract.PORT_MANUAL_CARRIER_CLASS,
+                    CommunicationCatalogContract.PORT_MANUAL_CARRIER_FIELD,
+                    CommunicationCatalogContract.PORT_MANUAL_CARRIER_DESCRIPTOR,
                     "declaredCallee", "accessorImplementationMethod",
-                    "fieldPath", "fieldPathDeclarations",
-                    "boundedContainerStateRole",
-                    "boundedContainerMemberProjectionAdmission",
-                    "containerTimelineWriterPolicy",
-                    "boundedContainerMemberProjectionBlocker",
-                    "boundedContainerPreStatePorts",
-                    "boundedContainerMemberProjections"}) {
+                    "fieldPath", "fieldPathDeclarations"}) {
                 copy(port, source, field);
             }
             JsonArray accesses = compactProjectionAccesses(
@@ -374,24 +379,18 @@ public final class RuntimePlanArtifact {
         for (JsonElement element : accesses) {
             if (!element.isJsonObject()) continue;
             JsonObject source = element.getAsJsonObject();
-            boolean boundedProjection = source.has(
-                    "boundedContainerMemberProjection");
-            boolean referencePut = "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1"
+            if (!"EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1"
                     .equals(string(source,
-                            "containerMemberIdentityAuthority"));
-            if (!boundedProjection && !referencePut) continue;
+                            "containerMemberIdentityAuthority"))) {
+                continue;
+            }
             JsonObject access = new JsonObject();
+            // The observed event ordinal is the only identity a compacted
+            // access needs; the recording root call is trace evidence and
+            // never leaves the runtime module.
             copy(access, source, "eventSeq");
-            copy(access, source, "rootCallId");
-            if (boundedProjection) {
-                copy(access, source,
-                        "boundedContainerMemberProjection");
-            }
-            if (referencePut) {
-                copy(access, source,
-                        "containerMemberIdentityAuthority");
-                copy(access, source, "containerValueObjectId");
-            }
+            copy(access, source, "containerMemberIdentityAuthority");
+            copy(access, source, "containerValueObjectId");
             result.add(access);
         }
         return result;

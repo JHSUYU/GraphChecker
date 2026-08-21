@@ -27,13 +27,21 @@ public final class RegionMapApiSmoke {
         if (value == null) {
             throw new AssertionError("concrete lookup unexpectedly failed");
         }
+        String writeRelation = System.getSymbolicExpression(state.allKeys);
+        String readRelation = System.getSymbolicExpression(value);
+        String pathCondition = System.getPathCondition();
         String summary = System.finishConcolicRegion();
-        require(summary.contains("\"operation\":\"READ\""), summary);
-        require(summary.contains("\"operation\":\"PUT\""), summary);
-        require(summary.contains("map_input_allKeys"), summary);
-        require(summary.contains("map_input_keyId"), summary);
-        require(summary.contains("\"_op\":\"!=\""), summary);
-        require(summary.contains("\"_code_position\""), summary);
+        require(readRelation.contains("\"operation\":\"READ\""),
+                readRelation);
+        require(writeRelation.contains("\"operation\":\"PUT\""),
+                writeRelation);
+        require((writeRelation + readRelation).contains("map_input_allKeys"),
+                writeRelation + readRelation);
+        require((writeRelation + readRelation).contains("map_input_keyId"),
+                writeRelation + readRelation);
+        require(pathCondition.contains("\"_op\":\"!=\""), pathCondition);
+        require(pathCondition.contains("\"_code_position\""), pathCondition);
+        require(summary.contains("\"pathConditionOmitted\":true"), summary);
         System.out.println("CAUSYNTH_REGION_MAP_API_SMOKE_OK");
     }
 

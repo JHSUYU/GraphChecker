@@ -10,6 +10,8 @@
 #include "oops/oop.inline.hpp"
 #include "utilities/debug.hpp"
 
+#include <pthread.h>
+
 #include <map>
 #include <set>
 #include <stdio.h>
@@ -20,11 +22,38 @@ private:
   bool _semantic_expression;
   std::set<int> _written_fields;
 
+protected:
+  /**
+   * Guards this shadow's per-instance field containers: _written_fields here,
+   * SymObj::_exps and SymBigDecimal::_internal_fields in the subclasses.  See
+   * the field-shadow write policy in sessionSymbolicHeap.hpp -- the policy is
+   * last-writer-wins, and this lock is what makes that literally true rather
+   * than a description of undefined behaviour.
+   *
+   * It is a leaf lock in every sense that matters: nothing that can block runs
+   * inside it, no Expression is constructed under it, and it is never held
+   * while the session heap lock is taken.  Order, when both are involved, is
+   * heap -> instance -> arena.
+   */
+  mutable pthread_mutex_t _field_mutex;
+
+  class FieldLock {
+  public:
+    FieldLock(const SymInstance *owner) : _owner(owner) {
+      pthread_mutex_lock(&_owner->_field_mutex);
+    }
+    ~FieldLock() { pthread_mutex_unlock(&_owner->_field_mutex); }
+  private:
+    const SymInstance *_owner;
+  };
+
 public:
   SymInstance(sym_rid_t sym_rid)
       : SymRef(sym_rid), _demand_symbolic_fields(false),
-        _semantic_expression(false) {}
-  ~SymInstance() {}
+        _semantic_expression(false) {
+    pthread_mutex_init(&_field_mutex, NULL);
+  }
+  virtual ~SymInstance() { pthread_mutex_destroy(&_field_mutex); }
 
   inline void enable_demand_symbolic_fields() {
     _demand_symbolic_fields = true;
@@ -51,10 +80,12 @@ public:
   }
 
   inline void mark_field_written(int field_offset) {
+    FieldLock guard(this);
     _written_fields.insert(field_offset);
   }
 
   inline bool field_written(int field_offset) const {
+    FieldLock guard(this);
     return _written_fields.find(field_offset) != _written_fields.end();
   }
 

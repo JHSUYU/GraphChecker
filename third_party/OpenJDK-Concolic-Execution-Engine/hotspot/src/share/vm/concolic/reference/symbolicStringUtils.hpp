@@ -13,7 +13,6 @@ public:
   static std::set<std::string> target_class_names;
   static method_set_t handle_method_names;
   static std::map<std::string, bool> skip_method_names;
-  static bool need_recording;
 
 public:
   static bool invoke_method_helper(MethodSymbolizerHandle &handle);

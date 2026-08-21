@@ -1,7 +1,6 @@
 //
 // Created by gansen on 6/28/22.
 //
-#ifdef ENABLE_WEBRIDGE
 
 #include "typeCastExpression.hpp"
 
@@ -22,4 +21,3 @@ std::string TypeCastExpression::get_name() {
   std::string name = "CAST_AS_" + _target_type + "_";
   return name + _exp_to_cast->get_name();
 }
-#endif

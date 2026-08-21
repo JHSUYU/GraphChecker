@@ -27,7 +27,6 @@
 #include "precompiled.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/thread.inline.hpp"
-#include "webridge/pathCondition/pathConditionPruner.hpp"
 
 void JavaThread::cache_global_variables() {
   // nothing to do
@@ -53,12 +52,6 @@ void JavaThread::push_zero_frame(ZeroFrame *zframe) {
         _top_zero_frame, *(ZeroFrame **)zframe, zero_stack()->sp(),
         ConcolicMngr::can_do_concolic());
   }
-#ifdef ENABLE_WEBRIDGE
-//  ConcolicMngr::method_enter_callback(_top_zero_frame, *(ZeroFrame **)zframe);
-  if (ConcolicMngr::ctx != NULL) {
-    PathConditionPruner::method_enter(_top_zero_frame);
-  }
-#endif
 #endif
 }
 
@@ -78,15 +71,6 @@ void JavaThread::pop_zero_frame() {
   }
   if (ConcolicMngr::has_symbolized_method()) {
     ConcolicMngr::ctx->get_method_symbolizer().finish_method(_top_zero_frame);
-  } else if (ConcolicMngr::should_try_handle_method()) {
-    // this is for those are not symbolized method
-    ConcolicMngr::ctx->get_method_symbolizer().finish_handling_method(_top_zero_frame);
   }
-#ifdef ENABLE_WEBRIDGE
-//  ConcolicMngr::method_exit_callback(_top_zero_frame);
-  if (ConcolicMngr::ctx != NULL) {
-    PathConditionPruner::method_exit(temp_frame);
-  }
-#endif
 #endif
 }

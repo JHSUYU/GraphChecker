@@ -17,7 +17,10 @@ cd "$JDK_ROOT"
   test/causynth/RegionBranchEventApiSmoke.java \
   test/causynth/RegionFieldApiSmoke.java \
   test/causynth/RegionFieldExpressionApiSmoke.java \
+  test/causynth/RegionExpressionHandoffApiSmoke.java \
   test/causynth/RegionContainerLiveInApiSmoke.java \
+  test/causynth/RegionCompetingWritersSmoke.java \
+  test/causynth/RegionDeepExpressionSerializeSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
   test/causynth/RegionMapValuesToObjectArrayApiSmoke.java \
@@ -27,14 +30,22 @@ cd "$JDK_ROOT"
   test/causynth/RegionOutputContainerSnapshotApiSmoke.java \
   test/causynth/RegionPausedSymbolizationSmoke.java \
   test/causynth/RegionLookupSwitchApiSmoke.java \
+  test/causynth/org/slf4j/helpers/CausynthObservationProbe.java \
+  test/causynth/RegionLoggingObservationSmoke.java \
   test/causynth/RegionReferenceBranchApiSmoke.java \
   test/causynth/RegionRepeatedFieldOwnerMapApiSmoke.java \
   test/causynth/RegionShadowStackLifecycleSmoke.java \
+  test/causynth/RegionSharedFieldVersionSmoke.java \
+  test/causynth/RegionSharedFieldProducerStateSmoke.java \
+  test/causynth/RegionSharedMapProducerStateSmoke.java \
+  test/causynth/RegionSymbolicKeySourceSmoke.java \
+  test/causynth/RegionSharedReadFromSmoke.java \
+  test/causynth/RegionSharedSyncOrderSmoke.java \
+  test/causynth/RegionEventOrderLedgerSmoke.java \
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
   test/causynth/RegionStringSplitParseMapApiSmoke.java \
-  test/causynth/RegionTableSwitchApiSmoke.java \
-  test/causynth/RegionThreadIsolationSmoke.java
+  test/causynth/RegionTableSwitchApiSmoke.java
 
 for smoke in \
   RegionApiSmoke \
@@ -44,7 +55,10 @@ for smoke in \
   RegionBranchEventApiSmoke \
   RegionFieldApiSmoke \
   RegionFieldExpressionApiSmoke \
+  RegionExpressionHandoffApiSmoke \
   RegionContainerLiveInApiSmoke \
+  RegionCompetingWritersSmoke \
+  RegionDeepExpressionSerializeSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \
   RegionMapValuesToObjectArrayApiSmoke \
@@ -54,13 +68,20 @@ for smoke in \
   RegionOutputContainerSnapshotApiSmoke \
   RegionPausedSymbolizationSmoke \
   RegionLookupSwitchApiSmoke \
+  RegionLoggingObservationSmoke \
   RegionReferenceBranchApiSmoke \
   RegionRepeatedFieldOwnerMapApiSmoke \
   RegionShadowStackLifecycleSmoke \
+  RegionSharedFieldVersionSmoke \
+  RegionSharedFieldProducerStateSmoke \
+  RegionSharedMapProducerStateSmoke \
+  RegionSymbolicKeySourceSmoke \
+  RegionSharedReadFromSmoke \
+  RegionSharedSyncOrderSmoke \
+  RegionEventOrderLedgerSmoke \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \
   RegionStringSplitParseMapApiSmoke \
-  RegionTableSwitchApiSmoke \
-  RegionThreadIsolationSmoke; do
+  RegionTableSwitchApiSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done

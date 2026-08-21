@@ -1,7 +1,10 @@
 #include "concolic/concolicMngr.hpp"
+#include "concolic/eventLedger.hpp"
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/stringExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
+#include "concolic/expressionBroker.hpp"
+#include "concolic/globalSymbolicSession.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/threadContext.hpp"
@@ -9,9 +12,9 @@
 #include "memory/resourceArea.hpp"
 #include "oops/arrayKlass.hpp"
 #include "oops/objArrayOop.hpp"
+#include "runtime/atomic.inline.hpp"
 #include "runtime/fieldDescriptor.hpp"
 #include "runtime/thread.hpp"
-#include "webridge/webridgeMngr.hpp"
 #include "utilities/ostream.hpp"
 #include "utilities/vmError.hpp"
 
@@ -19,8 +22,11 @@
 
 #ifdef ENABLE_CONCOLIC
 
-volatile int ConcolicMngr::_num_threads_in_concolic = 0;
-jlong ConcolicMngr::_next_context_id = 0;
+int ConcolicMngr::_session_members = 0;
+bool ConcolicMngr::_workload_session_open = false;
+ConcolicMngr::SessionState ConcolicMngr::_session_state =
+    ConcolicMngr::SESSION_CLOSED;
+volatile intptr_t ConcolicMngr::_next_context_id = 0;
 pthread_mutex_t ConcolicMngr::mutex = PTHREAD_MUTEX_INITIALIZER;
 __thread ThreadContext *ConcolicMngr::ctx = NULL;
 
@@ -36,14 +42,6 @@ Expression *attached_reference_expression(oop value) {
   }
   SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(value);
   return instance == NULL ? NULL : instance->get_ref_exp();
-}
-
-void serialize_temporary_expression(ExpressionWriter &writer,
-                                    Expression *expression) {
-  guarantee(expression != NULL, "temporary expression required");
-  expression->inc_ref();
-  expression->serialize(writer);
-  Expression::gc(expression);
 }
 
 std::string serialize_field_expression(const char *kind, bool symbolic,
@@ -73,8 +71,6 @@ std::string serialize_field_expression(const char *kind, bool symbolic,
   writer.Key("expression");
   if (expression == NULL) {
     writer.Null();
-  } else if (temporary_expression) {
-    serialize_temporary_expression(writer, expression);
   } else {
     expression->serialize(writer);
   }
@@ -136,58 +132,289 @@ bool object_array_contains_symbolic_reference(arrayOop array,
 
 } // anonymous namespace
 
-jlong ConcolicMngr::startConcolic(JavaThread *thread) {
-  // Ownership of this mutex spans the entire region.  A contender must never
-  // block while the owner is asking the VM thread for a cleanup safepoint;
-  // trylock makes overlap an immediate, fail-closed rejection instead.
-  int lock_status = pthread_mutex_trylock(&mutex);
-  if (lock_status != 0) {
-    tty->print_cr("Concolic start rejected: region mutex busy (%d)",
-                  lock_status);
-    return 1;
+jlong ConcolicMngr::next_context_id() {
+  return (jlong) Atomic::add_ptr((intptr_t) 1, &_next_context_id);
+}
+
+int ConcolicMngr::session_member_count() {
+  pthread_mutex_lock(&mutex);
+  int members = _session_members;
+  pthread_mutex_unlock(&mutex);
+  return members;
+}
+
+void ConcolicMngr::session_snapshot(int *members, bool *workload_open,
+                                    SessionState *state, jlong *session_id) {
+  pthread_mutex_lock(&mutex);
+  *members = _session_members;
+  *workload_open = _workload_session_open;
+  *state = _session_state;
+  // Only an open session has an id.  During SESSION_CLOSING the arena is
+  // already being freed, so reporting the departing id would name a universe
+  // a caller can no longer use.
+  *session_id = _session_state == SESSION_OPEN
+      ? GlobalSymbolicSession::session_id() : 0;
+  pthread_mutex_unlock(&mutex);
+}
+
+const char *ConcolicMngr::session_state_name(SessionState state) {
+  switch (state) {
+    case SESSION_OPEN:    return "OPEN";
+    case SESSION_CLOSING: return "CLOSING";
+    default:              return "CLOSED";
   }
-  /**
-   * Although ThreadContext is thread-local, there are some static fields of
-   * other classes, which are still global.
-   *
-   * Therefore, we still assume that only one thread can execute in concolic
-   * model
-   */
-  // Product builds compile HotSpot assertions out.  The engine contains
-  // process-global expression/symbolizer state, so an assertion alone does
-  // not enforce its single-active-context contract.  Reject overlap before
-  // allocating a TLS context; callers can then record a deterministic skip
-  // instead of racing global symbolic state.
-  if (_num_threads_in_concolic != 0 || ctx != NULL || thread == NULL) {
-    int active = _num_threads_in_concolic;
+}
+
+jlong ConcolicMngr::openWorkloadSession() {
+  // Minted outside the lock: the broker's per-session salt must not be drawn
+  // from a counter another thread is also mixing into its own salt.
+  jlong salt = next_context_id();
+  jlong session = 0;
+  jlong status = WORKLOAD_SESSION_OK;
+  {
+    pthread_mutex_lock(&mutex);
+    if (_workload_session_open) {
+      // No second reference: one close must still close.
+      status = WORKLOAD_SESSION_ALREADY_OPEN;
+    } else if (_session_state == SESSION_CLOSING) {
+      // The same narrow race attach() refuses, for the same reason: the
+      // departing owner is inside close() waiting for a safepoint, and a
+      // thread parked here is a thread that safepoint never gets.
+      status = WORKLOAD_SESSION_CLOSING;
+    } else {
+      if (_session_state == SESSION_CLOSED) {
+        // Identical to the opening half of attach(): allocation and built-in
+        // symbols only, no HotSpot Mutex and no VM operation, so it is safe
+        // with the membership lock held.
+        GlobalSymbolicSession::open();
+        ExpressionBroker::open_session(salt);
+        _session_state = SESSION_OPEN;
+      }
+      // An already-open session is adopted rather than replaced: threads may
+      // already be attached to it, and their expressions are the ones the
+      // workload wants to keep.
+      _workload_session_open = true;
+      session = GlobalSymbolicSession::session_id();
+    }
     pthread_mutex_unlock(&mutex);
-    tty->print_cr("Concolic start rejected: active contexts=%d, local context=%s",
-                  active, ctx == NULL ? "false" : "true");
+  }
+  if (status != WORKLOAD_SESSION_OK) {
+    tty->print_cr("Concolic workload session not opened: status %d",
+                  (int) status);
+    return status;
+  }
+  tty->print_cr("Opened concolic workload session %ld", (long) session);
+  return session;
+}
+
+jlong ConcolicMngr::closeWorkloadSession() {
+  jlong status = WORKLOAD_SESSION_OK;
+  int remaining = 0;
+  jlong session = 0;
+  bool tear_down = false;
+  {
+    pthread_mutex_lock(&mutex);
+    if (!_workload_session_open) {
+      // Never opened, or already closed.  Idempotent by construction.
+      status = WORKLOAD_SESSION_NOT_OPEN;
+    } else if (_session_state == SESSION_CLOSING) {
+      status = WORKLOAD_SESSION_CLOSING;
+    } else if (_session_members > 0) {
+      // Refuse, and keep the reference.  A member holds live shadow slots and
+      // expressions in this arena; freeing it under that thread is the one
+      // outcome that is never acceptable.
+      remaining = _session_members;
+      status = WORKLOAD_SESSION_MEMBERS_REMAIN;
+    } else {
+      session = GlobalSymbolicSession::session_id();
+      _workload_session_open = false;
+      _session_state = SESSION_CLOSING;
+      tear_down = true;
+    }
+    pthread_mutex_unlock(&mutex);
+  }
+  if (!tear_down) {
+    if (status == WORKLOAD_SESSION_MEMBERS_REMAIN) {
+      tty->print_cr("Concolic workload session close refused: %d thread(s)"
+                    " still attached", remaining);
+    } else {
+      tty->print_cr("Concolic workload session not closed: status %d",
+                    (int) status);
+    }
+    return status;
+  }
+
+  // Outside the lock, exactly as the last detach does it: close() runs a
+  // blocking VM operation to retire object identity, and every other Java
+  // thread has to be able to reach that safepoint while it does.
+  ExpressionBroker::close_session();
+  GlobalSymbolicSession::close();
+
+  pthread_mutex_lock(&mutex);
+  _session_state = SESSION_CLOSED;
+  pthread_mutex_unlock(&mutex);
+  tty->print_cr("Closed concolic workload session %ld", (long) session);
+  return WORKLOAD_SESSION_OK;
+}
+
+std::string ConcolicMngr::getWorkloadSessionStatus() {
+  using namespace rapidjson;
+  int members = 0;
+  bool workload_open = false;
+  SessionState state = SESSION_CLOSED;
+  jlong session_id = 0;
+  session_snapshot(&members, &workload_open, &state, &session_id);
+
+  StringBuffer buffer;
+  Writer<StringBuffer> writer(buffer);
+  writer.StartObject();
+  writer.Key("schemaVersion");
+  writer.Int(1);
+  writer.Key("kind");
+  writer.String("CONCOLIC_WORKLOAD_SESSION");
+  writer.Key("workloadSessionOpen");
+  writer.Bool(workload_open);
+  writer.Key("sessionOpen");
+  writer.Bool(state == SESSION_OPEN);
+  writer.Key("sessionState");
+  writer.String(session_state_name(state));
+  writer.Key("sessionId");
+  writer.Int64(session_id);
+  writer.Key("sessionMembers");
+  writer.Int(members);
+  // This thread's own relationship to the session, which is separate from the
+  // session-wide facts above: the workload owner is typically not a member.
+  writer.Key("attached");
+  writer.Bool(ctx != NULL);
+  writer.Key("threadContextId");
+  writer.Int64(ctx == NULL ? 0 : ctx->get_context_id());
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetLength());
+}
+
+jlong ConcolicMngr::attach(JavaThread *thread) {
+  if (thread == NULL) {
+    tty->print_cr("Concolic attach rejected: no Java thread");
+    return 1;
+  }
+  // Already a member.  Re-attaching is how a nested region start reaches an
+  // existing context, and it must not count twice.
+  if (ctx != NULL) return 0;
+
+  jlong context_id = next_context_id();
+  bool rejected = false;
+  {
+    pthread_mutex_lock(&mutex);
+    if (_session_state == SESSION_CLOSING) {
+      // The last member is inside GlobalSymbolicSession::close(), which is
+      // waiting for a safepoint.  Waiting here would be what stops that
+      // safepoint from happening, so refuse instead.
+      rejected = true;
+    } else {
+      if (_session_state == SESSION_CLOSED) {
+        // Opening allocates and builds the built-in symbols.  It takes no
+        // HotSpot Mutex and requests no VM operation, so unlike close() it is
+        // safe to run with the membership lock held.
+        GlobalSymbolicSession::open();
+        // Handoff tokens address expressions inside this session's arena, so
+        // the table opens and closes with the session that owns them.
+        ExpressionBroker::open_session(context_id);
+        _session_state = SESSION_OPEN;
+      }
+      ++_session_members;
+    }
+    pthread_mutex_unlock(&mutex);
+  }
+  if (rejected) {
+    tty->print_cr("Concolic attach rejected: session is tearing down");
     return 1;
   }
 
-  ++_num_threads_in_concolic;
-
-  ctx = new ThreadContext(thread, ++_next_context_id);
+  ctx = new ThreadContext(thread, context_id);
+  // The other half of the thread-start edge: whatever the starting thread had
+  // done before Thread.start() is visible here, so a carrier it wrote before
+  // starting this thread resolves exactly rather than as a race.
+  if (thread->threadObj() != NULL) {
+    acquireThreadStartOrder(thread->threadObj());
+  }
   tty->print_cr("Starting concolic execution");
   return 0;
+}
+
+void ConcolicMngr::detach() {
+  if (ctx == NULL) return;
+
+  // Release into this thread's own Thread object before the state goes away.
+  // Everything this thread did is necessarily before its death, so a joiner
+  // that later observes the thread as dead may soundly learn all of it; the
+  // acquire side is gated on the thread actually having terminated, so
+  // publishing at detach cannot hand the edge over too early.
+  if (ctx->get_thread() != NULL && ctx->get_thread()->threadObj() != NULL) {
+    publishThreadTerminationOrder(ctx->get_thread()->threadObj());
+  }
+
+  // Only this thread's execution state.  Object shadows, container states and
+  // published expressions belong to the session and survive for the other
+  // members.
+  delete ctx;
+  ctx = NULL;
+  ThreadContext::memory_leak_check();
+
+  bool last_owner = false;
+  {
+    pthread_mutex_lock(&mutex);
+    guarantee(_session_members > 0, "detach without a matching attach");
+    --_session_members;
+    // The last *owner*, which is not the same as the last member: an open
+    // workload session is an owner too, and while it holds its reference a
+    // departing thread -- even the one that started the workload -- never
+    // tears down the arena, broker, shadow heap, versions or ledger.
+    if (_session_members == 0 && !_workload_session_open) {
+      _session_state = SESSION_CLOSING;
+      last_owner = true;
+    }
+    pthread_mutex_unlock(&mutex);
+  }
+  if (!last_owner) return;
+
+  // Outside the lock: close() runs a blocking VM operation to retire object
+  // identity, and every other Java thread has to be able to reach that
+  // safepoint while it does.
+  ExpressionBroker::close_session();
+  GlobalSymbolicSession::close();
+
+  pthread_mutex_lock(&mutex);
+  _session_state = SESSION_CLOSED;
+  pthread_mutex_unlock(&mutex);
 }
 
 jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
                                         const char *region_id,
                                         const char *task_id) {
-  jlong result = startConcolic(thread);
-  if (result == 0 && ctx != NULL) {
-    ctx->set_region_metadata(region_id, task_id);
+  bool outermost = ctx == NULL;
+  jlong status = attach(thread);
+  if (status != 0) return status;
+  ctx->push_region(region_id, task_id);
+  // A region occurrence is an event of the same domain as everything else, so
+  // that a read-from or handoff edge can be related to the region it happened
+  // in without a second, parallel notion of time.
+  ctx->set_region_enter_event(
+      EventLedger::record(EventLedger::EVENT_REGION_ENTER, NULL_SYM_RID,
+                          ctx->region_depth(), "ENTER"));
+  if (outermost) {
     // A selected region can begin long before its first materialized input.
     // Keep shadow frames tracking across that concrete prefix, but do not
     // admit ambient library predicates into the path condition.  The first
     // explicit symbolize/track/observe operation below opens this gate before
-    // installing its input expression.  Legacy startConcolic() retains its
-    // eager recording behavior.
+    // installing its input expression.
+    //
+    // Admission is a property of the thread, not of one region: once this
+    // thread holds a materialized symbolic input, an inner region start must
+    // not throw that away, or the enclosing region would silently stop
+    // recording when the inner one finished.
     ctx->set_pc_admitted(false);
   }
-  return result;
+  return status;
 }
 
 void ConcolicMngr::abandonPendingBranchForException(Thread *thread) {
@@ -214,9 +441,11 @@ void ConcolicMngr::cleanupAbandonedContext(JavaThread *thread) {
   }
   ctx->abort_symbolic_execution("OWNER_JAVA_THREAD_EXIT");
   // This is a safe owner-thread boundary: no concolic Java frame remains and
-  // uncaught-exception callbacks have already completed.  Release the
-  // process-global single-context lock before the JavaThread is destroyed.
-  endConcolic();
+  // uncaught-exception callbacks have already completed.  The thread is about
+  // to be destroyed, so drop every region it still owns at once and release
+  // its membership -- other members keep theirs, and the session survives
+  // unless this was the last one.
+  detach();
 }
 
 std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
@@ -313,8 +542,6 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   writer.Key("expression");
   if (expression == NULL) {
     writer.Null();
-  } else if (temporary_expression) {
-    serialize_temporary_expression(writer, expression);
   } else {
     expression->serialize(writer);
   }
@@ -490,6 +717,12 @@ bool ConcolicMngr::snapshotContainerExpression(
 
 std::string ConcolicMngr::getRegionSummary() {
   using namespace rapidjson;
+  int session_members = 0;
+  bool workload_open = false;
+  SessionState session_state = SESSION_CLOSED;
+  jlong session_id = 0;
+  session_snapshot(&session_members, &workload_open, &session_state,
+                   &session_id);
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
   writer.StartObject();
@@ -512,6 +745,20 @@ std::string ConcolicMngr::getRegionSummary() {
   writer.String(ctx == NULL ? "" : ctx->get_region_id().c_str());
   writer.Key("taskId");
   writer.String(ctx == NULL ? "" : ctx->get_task_id().c_str());
+  // How many regions this thread is currently inside, innermost last, and how
+  // many threads currently share the session.  A consumer needs both to tell
+  // "the workload finished" from "this thread finished its part of it".
+  writer.Key("regionDepth");
+  writer.Int(ctx == NULL ? 0 : ctx->region_depth());
+  writer.Key("sessionMembers");
+  writer.Int(session_members);
+  // The symbolic universe this thread's region belongs to.  Two regions that
+  // report the same id name the same expressions, on whichever thread; a
+  // changed id is proof that a teardown happened in between.
+  writer.Key("sessionId");
+  writer.Int64(session_id);
+  writer.Key("workloadSessionOpen");
+  writer.Bool(workload_open);
   writer.Key("threadContextId");
   writer.Int64(ctx == NULL ? 0 : ctx->get_context_id());
   writer.Key("pathConditionRecordingPaused");
@@ -519,12 +766,45 @@ std::string ConcolicMngr::getRegionSummary() {
   writer.Key("pathConditionPauseDepth");
   writer.Int(ctx == NULL ? 0 : ctx->path_condition_pause_depth());
   writer.Key("pathCondition");
-  if (has_active_context()) {
-    const char *path_condition = ctx->get_path_condition().toString();
-    writer.RawValue(path_condition, strlen(path_condition), kArrayType);
+  // Do not serialize the whole thread path here.  A large system thread may
+  // execute millions of irrelevant conditions before a selected region
+  // finishes, and recursively serializing every expression DAG duplicates
+  // them into an unbounded native cache.  Selected branch hooks already read
+  // their exact one-condition ranges and publish those predicates with their
+  // VM indices.  The importer reconstructs the selected case guard from that
+  // sparse evidence instead.
+  writer.StartArray();
+  writer.EndArray();
+  writer.Key("pathConditionOmitted");
+  writer.Bool(has_active_context());
+  writer.Key("pathConditionAuthority");
+  writer.String(has_active_context()
+      ? "VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1" : "NONE");
+  writer.Key("auxiliaryPathCondition");
+  if (ctx != NULL) {
+    std::string auxiliary = ctx->get_auxiliary_path_conditions();
+    writer.RawValue(auxiliary.c_str(), auxiliary.length(), kObjectType);
   } else {
+    writer.StartObject();
+    writer.Key("schemaVersion");
+    writer.Int(1);
+    writer.Key("kind");
+    writer.String("CONCOLIC_AUXILIARY_PATH_CONDITION");
+    writer.Key("active");
+    writer.Bool(false);
+    writer.Key("pathConditionWatermark");
+    writer.Int(0);
+    writer.Key("conditionCount");
+    writer.Int(0);
+    writer.Key("pathConditionIndices");
     writer.StartArray();
     writer.EndArray();
+    writer.Key("conditions");
+    writer.StartArray();
+    writer.EndArray();
+    writer.Key("authority");
+    writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
+    writer.EndObject();
   }
   writer.Key("branchEvents");
   if (ctx != NULL) {
@@ -546,6 +826,29 @@ std::string ConcolicMngr::getRegionSummary() {
   }
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
+}
+
+// ---------------------------------------------------------------------------
+// Delta path conditions
+//
+// Reads and writes only the calling thread's own ThreadContext.  It takes no
+// engine lock, frees no expression, pops no region and ends no session.
+// ---------------------------------------------------------------------------
+
+std::string ConcolicMngr::getPathConditionRange(jint start, jint end) {
+  if (ctx != NULL) {
+    return ctx->get_path_condition_range(start, end);
+  }
+  return std::string("{\"schemaVersion\":1,\"kind\":"
+                     "\"CONCOLIC_PATH_CONDITION_RANGE\",\"active\":false,"
+                     "\"startIndex\":0,\"endIndex\":0,"
+                     "\"pathConditionWatermark\":0,\"conditionCount\":0,"
+                     "\"conditions\":[],\"conjunctionInline\":false,"
+                     "\"conjunctionSource\":"
+                     "\"conditions[0,conditionCount) folded left with &&\","
+                     "\"conjunctionAuthority\":"
+                     "\"VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1\","
+                     "\"authority\":\"VM_THREAD_PATH_CONDITION_RANGE_V1\"}");
 }
 
 jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
@@ -583,22 +886,24 @@ void ConcolicMngr::resumePathConditionRecording() {
 
 jlong ConcolicMngr::endConcolic() {
   if (!ctx) {
-    tty->print_cr("Warning: corrupted concolic execution thread state, is startConcolic() invoked properly?");
+    tty->print_cr("Warning: corrupted concolic execution thread state, is startConcolicRegion() invoked properly?");
     return 1;
   }
 
-  // A successful start deliberately leaves mutex owned by this JavaThread
-  // for the lifetime of the region.  JavaThread/OS-thread affinity and the
-  // TLS context therefore make this the matching owner-side unlock; rejected
-  // contenders never reach this path with a context.
-  assert(_num_threads_in_concolic == 1, "should be");
-  --_num_threads_in_concolic;
+  jlong entered = ctx->region_enter_event();
+  jlong exited = EventLedger::record(
+      EventLedger::EVENT_REGION_EXIT, NULL_SYM_RID, ctx->region_depth(),
+      "EXIT");
+  EventLedger::add_observed_edge(entered, exited, EventLedger::EDGE_REGION);
 
-//  ctx->print();
-  delete ctx;
-  ctx = NULL;
-  ThreadContext::memory_leak_check();
-  pthread_mutex_unlock(&mutex);
+  // Closing an inner region only changes which identity labels this thread's
+  // subsequent branches.  Its shadow stack, path condition and branch history
+  // belong to the thread and keep running in the enclosing region.
+  if (ctx->pop_region() > 0) return 0;
+
+  // Outermost exit: this thread leaves the session.  Whether the session
+  // itself ends depends on the other members, not on this region.
+  detach();
   return 0;
 }
 
@@ -622,7 +927,7 @@ void ConcolicMngr::symbolize(Handle handle) {
       ctx->pause_path_condition_recording();
     }
   } else {
-    tty->print_cr("Warning: symbolize canned without proper ctx, try System.startConcolic() before symbolize");
+    tty->print_cr("Warning: symbolize canned without proper ctx, try System.startConcolicRegion() before symbolize");
   }
 //  tty->print_cr("----- %s", ctx->get_code_pos_for_first("main").c_str());
 }
@@ -640,7 +945,7 @@ void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
       ctx->pause_path_condition_recording();
     }
   } else {
-    tty->print_cr("Warning: symbolize canned without proper ctx, try System.startConcolic() before symbolize");
+    tty->print_cr("Warning: symbolize canned without proper ctx, try System.startConcolicRegion() before symbolize");
   }
 //  tty->print_cr("----- %s", ctx->get_code_pos_for_first("main").c_str());
 }
@@ -739,28 +1044,7 @@ void ConcolicMngr::symbolizeMethod(Handle holder_name_handle,
   tty->print_cr("added symbolic method: %s.%s", holder_name, callee_name);
 }
 
-void ConcolicMngr::recordStmtObj(Handle stmt, Handle obj) {
-  if (ctx == NULL) {
-    // tty->print_cr(CL_RED"[warning] You should only call `recordStmtObj` after start concolic" CNONE);
-    return;
-  }
-  ctx->record_stmt_obj(stmt(), obj());
-}
-
-void ConcolicMngr::recordPersistentObj(Handle obj) {
-  if (ctx == NULL) {
-    // tty->print_cr(CL_RED"[warning] You should only call `recordPersistentObj` after start concolic" CNONE);
-    return;
-  }
-  ctx->record_persistent_obj(obj());
-}
-
 #else
-
-jlong ConcolicMngr::startConcolic() {
-  tty->print("Start concolic!\n");
-  return 0;
-}
 
 jlong ConcolicMngr::endConcolic() {
   tty->print("End concolic!\n");

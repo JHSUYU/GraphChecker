@@ -6,5 +6,4 @@
 /src/main/java/activations.json
 /src/main/java/concolicplan.jsonl
 /experiments-output/
-/src/test/java/edu/uva/liftlab/graphchecker/fixtures/stress/StressRoundFixture*.java
-/experiments/generic/three-thread-rpc/stress/generated/
+__pycache__/

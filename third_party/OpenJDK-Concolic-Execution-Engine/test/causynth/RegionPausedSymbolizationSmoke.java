@@ -39,6 +39,9 @@ public final class RegionPausedSymbolizationSmoke {
 
         System.pauseConcolicPathCondition();
         symbolizeFromPausedHelper(input);
+        String pausedExpression = System.getSymbolicFieldExpression(input,
+                Input.class.getName(), "value", "I",
+                Integer.valueOf(input.value));
         String pausedBaseline = System.getPathCondition();
         // This is deliberately bookkeeping under the pause.  It must not
         // become part of the captured path condition.
@@ -50,7 +53,8 @@ public final class RegionPausedSymbolizationSmoke {
         String whilePaused = System.getConcolicRegionSummary();
         require(has(whilePaused, "\"pathConditionRecordingPaused\":true"),
                 whilePaused);
-        require(has(whilePaused, "paused_helper_value"), whilePaused);
+        require(has(pausedExpression, "paused_helper_value"),
+                pausedExpression);
         System.resumeConcolicPathCondition();
 
         boolean decision = input.value > 0;
@@ -60,7 +64,7 @@ public final class RegionPausedSymbolizationSmoke {
         require(decision, "unexpected concrete decision");
         require(!"[]".equals(afterBranch),
                 "symbolic branch was not recorded");
-        require(has(finished, "paused_helper_value"), finished);
+        require(has(finished, "\"complete\":true"), finished);
         require(has(finished, "\"pathConditionPauseDepth\":0"), finished);
         require(sink == 1, "unexpected bookkeeping result: " + sink);
 
@@ -78,11 +82,15 @@ public final class RegionPausedSymbolizationSmoke {
         System.resumeConcolicPathCondition();
         Object found = state.values.get(Integer.valueOf(42));
         String mapPc = System.getPathCondition();
+        String mapExpression = System.getSymbolicExpression(state.values);
+        String mapReadExpression = System.getSymbolicExpression(found);
         String mapFinished = System.finishConcolicRegion();
         require(found != null, "concrete map lookup unexpectedly failed");
         require(!"[]".equals(mapPc), "symbolic map get was not recorded");
-        require(has(mapFinished, "paused_helper_values"), mapFinished);
-        require(has(mapFinished, "\"operation\":\"READ\""), mapFinished);
+        require(has(mapExpression, "paused_helper_values"), mapExpression);
+        require(has(mapReadExpression, "\"operation\":\"READ\""),
+                mapReadExpression);
+        require(has(mapFinished, "\"complete\":true"), mapFinished);
 
         // Array symbolization installs an activation-local container state.
         // This exercises the temporary pause-depth drain: the pause must be
@@ -107,9 +115,14 @@ public final class RegionPausedSymbolizationSmoke {
                 "\"pathConditionPauseDepth\":1"), pausedArraySummary);
         System.resumeConcolicPathCondition();
         boolean arrayDecision = arrayInput.entries[0].keyId > 0;
+        String arrayPc = System.getPathCondition();
+        String arrayExpression = System.getSymbolicExpression(
+                arrayInput.entries);
         String arrayFinished = System.finishConcolicRegion();
         require(arrayDecision, "unexpected array decision");
-        require(has(arrayFinished, "ContainerRelation"), arrayFinished);
+        require(has(arrayExpression, "ContainerRelation"), arrayExpression);
+        require(!"[]".equals(arrayPc)
+                        && has(arrayPc, "FieldAccessExpression"), arrayPc);
         require(has(arrayFinished, "\"pathConditionPauseDepth\":0"),
                 arrayFinished);
         System.out.println("CAUSYNTH_REGION_PAUSED_SYMBOLIZATION_SMOKE_OK");

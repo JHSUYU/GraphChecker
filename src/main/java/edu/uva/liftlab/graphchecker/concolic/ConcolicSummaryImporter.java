@@ -2,12 +2,16 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
+import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import java.io.BufferedReader;
@@ -17,6 +21,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -28,6 +33,7 @@ import java.util.TreeMap;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
@@ -43,6 +49,15 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * selectors from concrete runtime snapshots.</p>
  */
 public final class ConcolicSummaryImporter {
+    private static final String AUXILIARY_PATH_CONDITION_FIELD =
+            "auxiliaryPathCondition";
+    private static final String SELECTED_BRANCH_AND_AUXILIARY_AUTHORITY =
+            "VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1";
+    private static final String AUXILIARY_PATH_CONDITION_KIND =
+            "CONCOLIC_AUXILIARY_PATH_CONDITION";
+    private static final String AUXILIARY_PATH_CONDITION_AUTHORITY =
+            "VM_THREAD_AUXILIARY_PATH_CONDITION_V1";
+
     private ConcolicSummaryImporter() {
     }
 
@@ -58,10 +73,16 @@ public final class ConcolicSummaryImporter {
                 options.get("diagnostics"),
                 sibling(results,
                         "concolic_import_diagnostics.jsonl").toString()));
+        Path delta = Paths.get(firstNonBlank(options.get("topology-delta"),
+                sibling(output, TopologyDelta.FILE_NAME).toString()));
         Set<String> regions = regionIds(RuntimePlanArtifact.read(
                 runtimePlan).regions());
         ImportResult imported = importSummaries(results, tasks, regions,
-                output, diagnostics);
+                output, diagnostics, delta,
+                firstNonBlank(options.get("iteration-id"), ""));
+        // The iteration manifest is published by the campaign orchestrator;
+        // the digests it must record are stated here, once, on stdout.
+        System.out.println(imported.manifestDigests);
         if (imported.diagnosticCount > 0) {
             try (BufferedReader reader = Files.newBufferedReader(diagnostics,
                     StandardCharsets.UTF_8)) {
@@ -80,210 +101,850 @@ public final class ConcolicSummaryImporter {
     public static ImportResult importSummaries(
             Path resultsFile, Path taskPlanFile, Path regionFile,
             Path outputFile, Path diagnosticFile) throws IOException {
+        return importSummaries(resultsFile, taskPlanFile, regionFile,
+                outputFile, diagnosticFile,
+                sibling(outputFile, TopologyDelta.FILE_NAME), "");
+    }
+
+    public static ImportResult importSummaries(
+            Path resultsFile, Path taskPlanFile, Path regionFile,
+            Path outputFile, Path diagnosticFile, Path deltaFile,
+            String iterationId) throws IOException {
         return importSummaries(resultsFile, taskPlanFile,
                 regionIds(ArtifactIO.readJsonl(regionFile)), outputFile,
-                diagnosticFile);
+                diagnosticFile, deltaFile, iterationId);
     }
 
     private static ImportResult importSummaries(
             Path resultsFile, Path taskPlanFile, Set<String> regions,
-            Path outputFile, Path diagnosticFile) throws IOException {
+            Path outputFile, Path diagnosticFile, Path deltaFile,
+            String iterationId) throws IOException {
         Map<String, ExecutionTask> tasks = taskIndex(
                 ArtifactIO.readJsonl(taskPlanFile));
         List<JsonObject> rawResults = ArtifactIO.readJsonl(resultsFile);
         List<JsonObject> summaries = new ArrayList<>();
         List<JsonObject> diagnostics = new ArrayList<>();
         Set<String> hashes = new LinkedHashSet<>();
+        // README "Delta ownership is also singular": the frozen-plan
+        // comparison happens here, while each raw row is imported, and not as
+        // a later pass over a second store.
+        TopologyDelta delta = new TopologyDelta(iterationId,
+                TopologyDelta.planDigest(tasks.values()));
 
         for (int index = 0; index < rawResults.size(); index++) {
             JsonObject raw = rawResults.get(index);
             String taskId = string(raw, "taskId");
             if (!"CONCOLIC_REGION_RESULT".equals(string(raw, "event"))) {
-                diagnostics.add(diagnostic(raw, index,
-                        skippedEventCode(raw), skippedEventDetail(raw)));
+                String code = skippedEventCode(raw);
+                diagnostics.add(diagnostic(raw, index, code,
+                        skippedEventDetail(raw)));
+                delta.classify(tasks.get(taskId), raw, index,
+                        TopologyDelta.Observation.refused(code));
                 continue;
             }
             ExecutionTask task = tasks.get(taskId);
             if (task == null) {
                 diagnostics.add(diagnostic(raw, index,
                         "UNKNOWN_EXECUTION_TASK", taskId));
+                delta.classify(null, raw, index,
+                        TopologyDelta.Observation.unplanned(
+                                "UNKNOWN_EXECUTION_TASK"));
                 continue;
             }
             if (!regions.contains(task.regionId())) {
                 diagnostics.add(diagnostic(raw, index,
                         "UNKNOWN_REGION", task.regionId()));
+                delta.classify(task, raw, index,
+                        TopologyDelta.Observation.unplanned("UNKNOWN_REGION"));
                 continue;
             }
-            // An aborted symbolic execution stops recording branch events and
-            // path condition at the point it gave up, and the activation then
-            // runs on concretely to whatever exit it reaches.  Every later
-            // attestation therefore reads a truncated execution: coverage of
-            // the recorded sites, the output boundary, the replay prefix.
-            // Charging the truncation to any of them names a gap the run does
-            // not have and hides the one it does, so the abort is charged to
-            // itself, first, and the summary is refused.
-            JsonObject engine = object(raw, "engineSummary");
-            if (bool(engine, "aborted", false)) {
-                diagnostics.add(diagnostic(raw, index,
-                        "SYMBOLIC_EXECUTION_ABORTED",
-                        firstNonBlank(string(engine, "abortReason"),
-                                "UNSPECIFIED")));
-                continue;
-            }
-            String exitKind = string(raw, "exitKind");
-            boolean hasCut = raw.has("pathCut")
-                    || raw.has("replayResourceCut");
-            if ("CUT".equals(exitKind)
-                    || hasCut && !boundedOutputExit(raw, task)) {
-                // The two ledgers cut for opposite reasons and are answered by
-                // opposite work: an unroll bound says the path space was too
-                // wide to walk, a resource cap says a service loop outlasted
-                // the replay budget.  The latter may still preserve demanded
-                // ports the VM captured before the cut.
-                // The runtime publishes each under its own field and lets the
-                // resource cap outrank the unroll bound; reading only the
-                // unroll field reports the resource cap under the other
-                // ledger's name and with an empty body, which is exactly the
-                // confusion the two ledgers exist to prevent.
-                boolean resourceCut = raw.has("replayResourceCut");
-                String cutDetail = object(raw,
-                        resourceCut ? "replayResourceCut"
-                                : "pathCut").toString();
-                if (resourceCut && !hasCapturedDemandedOutput(raw, task)) {
-                    cutDetail += "; no demanded output relation was "
-                            + "captured before cut";
+            TopologyDelta.Observation observation =
+                    new TopologyDelta.Observation();
+            JsonObject summary = importRow(raw, index, task, hashes,
+                    diagnostics, observation);
+            if (summary != null) {
+                // The VM's location rid is a per-session allocation ordinal,
+                // so two replays of one occurrence name the same map with
+                // different rids and every later index splits it in two.
+                // Renaming here - the earliest stage holding both the edges
+                // that carry the receiver id and the rows keyed on the rid -
+                // is what lets the whole downstream read one name.
+                for (String location
+                        : SharedStateEvidence.canonicalizeLocations(summary)) {
+                    diagnostics.add(diagnostic(raw, index,
+                            "LOCATION_NOT_NAMED_ACROSS_SESSIONS", location));
                 }
-                diagnostics.add(diagnostic(raw, index,
-                        resourceCut ? "REPLAY_LOOP_RESOURCE_CAP"
-                                : "LOOP_BOUND_PATH_CUT",
-                        cutDetail));
-                // No admitted bounded prefix exists here.  Keep the cut as an
-                // explicit gap rather than inventing an output relation.
-                continue;
+                for (String location : SharedStateEvidence
+                        .canonicalizeContainerStateSymbols(summary)) {
+                    diagnostics.add(diagnostic(raw, index,
+                            "AMBIGUOUS_CONTAINER_STATE_INPUT", location));
+                }
+                summaries.add(summary);
             }
-            if ("OUTPUT_BOUNDARY".equals(exitKind)
-                    && !exactOutputBoundaryExit(raw, task)) {
-                diagnostics.add(diagnostic(raw, index,
-                        "INCOMPLETE_OUTPUT_BOUNDARY", taskId));
-                continue;
-            }
-
-            List<String> issues = new ArrayList<>();
-            if (!bool(engine, "complete", false)) {
-                issues.add("VM_SUMMARY_INCOMPLETE:"
-                        + string(engine, "abortReason"));
-            }
-            for (JsonElement unresolved : array(raw,
-                    "unresolvedInputs")) {
-                issues.add("UNRESOLVED_INPUT:" + unresolved);
-            }
-
-            boolean relationOnlySeed = relationOnlySeed(task);
-            SemanticPath path = relationOnlySeed
-                    ? SemanticPath.atRelationBoundary(
-                    array(engine, "pathCondition"), task)
-                    : SemanticPath.from(array(engine, "pathCondition"),
-                    array(raw, "branchMappings"));
-            JsonArray mappings = relationOnlySeed
-                    ? new JsonArray()
-                    : branchMappings(raw, task, path, issues);
-            String pathSeedMismatch = relationOnlySeed ? ""
-                    : pathSeedMismatch(raw, task, mappings);
-            if (!pathSeedMismatch.isEmpty()) {
-                diagnostics.add(diagnostic(raw, index,
-                        "PATH_SEED_MISMATCH", pathSeedMismatch));
-                continue;
-            }
-            JsonObject referenceIdentities = new JsonObject();
-            JsonObject outputs = outputExpressions(raw, task, issues,
-                    referenceIdentities);
-            JsonArray alignmentGaps = alignmentGaps(task);
-            JsonArray symbolicInputs = symbolicInputs(raw);
-            JsonElement replayContract = task.replayContract();
-
-            JsonObject summary = new JsonObject();
-            summary.addProperty("schemaVersion", 1);
-            summary.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
-            summary.addProperty("goalId", task.goalId());
-            summary.addProperty("taskId", task.taskId());
-            summary.addProperty("sourceKey", task.sourceKey());
-            summary.addProperty("regionId", task.regionId());
-            summary.addProperty("occurrenceId", task.occurrenceId());
-            summary.addProperty("relationKey", task.relationKey());
-            summary.addProperty("relationContractHash",
-                    task.relationContractHash());
-            if (!task.pathSeedKey().isEmpty()) {
-                summary.addProperty("pathSeedKey", task.pathSeedKey());
-            }
-            task.loopBound().writeTo(summary);
-            task.goalKind().writeToTask(summary);
-            if (task.outputClosure() != null) {
-                summary.add(OutputClosureContract.FIELD,
-                        task.outputClosure().toJson());
-            }
-            summary.add("symbolicInputs", symbolicInputs);
-            summary.add("edgeBindings", task.edgeBindings());
-            summary.add("pathCondition", path.expressions);
-            summary.add("branchMappings", mappings);
-            summary.add("outputExpressions", outputs);
-            if (alignmentGaps.size() > 0) {
-                summary.add("alignmentGaps", alignmentGaps);
-            }
-            if (referenceIdentities.size() > 0) {
-                summary.add("outputReferenceIdentities",
-                        referenceIdentities);
-            }
-            boolean boundedExit = "BOUNDED".equals(exitKind)
-                    || "OUTPUT_BOUNDARY".equals(exitKind);
-            summary.addProperty("normalExit", boundedExit
-                    || "NORMAL".equals(exitKind));
-            summary.addProperty("boundedExit", boundedExit);
-            summary.addProperty("exceptionType",
-                    string(raw, "exceptionType"));
-            summary.addProperty("relationallyComplete", issues.isEmpty());
-
-            if (replayContract != null && !issues.isEmpty()) {
-                diagnostics.add(diagnostic(raw, index,
-                        "PATH_REPLAY_ADMISSION_REJECTED",
-                        String.join(";", issues)));
-                continue;
-            }
-
-            JsonObject semantic = summary.deepCopy();
-            semantic.remove("taskId");
-            String hash = sha256(CanonicalJson.render(semantic));
-            if (!hashes.add(hash)) {
-                diagnostics.add(diagnostic(raw, index,
-                        "DUPLICATE_SUMMARY", hash));
-                continue;
-            }
-            summary.addProperty("summaryId",
-                    "SUMMARY." + task.regionId() + "." + hash);
-            summaries.add(summary);
-            if (!issues.isEmpty()) {
-                diagnostics.add(diagnostic(raw, index,
-                        "INCOMPLETE_RELATION",
-                        String.join(";", issues)));
-            }
+            delta.classify(task, raw, index, observation);
         }
+        // A planned activation that produced no row at all is the plainest
+        // "planned event that did not occur"; it is named, never dropped.
+        delta.classifyUnobservedTasks(tasks.values());
 
         ArtifactIO.replaceJsonl(outputFile, summaries);
         ArtifactIO.replaceJsonl(diagnosticFile, diagnostics);
+        // Written even when empty: an absent file and an empty file must not
+        // mean the same thing to the campaign that validates it.
+        ArtifactIO.replaceJsonl(deltaFile, delta.rows());
         return new ImportResult(rawResults.size(), summaries.size(),
-                diagnostics.size());
+                diagnostics.size(), delta.rows().size(), delta.planDigest(),
+                delta.manifestDigests(summaries.size()).toString());
     }
 
-    private static JsonArray alignmentGaps(ExecutionTask task) {
+    /**
+     * Imports one raw VM result, or refuses it under one named gap.
+     *
+     * @return the admitted summary, or {@code null} when the row was refused
+     */
+    private static JsonObject importRow(
+            JsonObject raw, int index, ExecutionTask task,
+            Set<String> hashes, List<JsonObject> diagnostics,
+            TopologyDelta.Observation observation) {
+        String taskId = task.taskId();
+        // An aborted symbolic execution stops recording branch events and
+        // path condition at the point it gave up, and the activation then
+        // runs on concretely to whatever exit it reaches.  Every later
+        // attestation therefore reads a truncated execution: coverage of
+        // the recorded sites, the output boundary, the replay prefix.
+        // Charging the truncation to any of them names a gap the run does
+        // not have and hides the one it does, so the abort is charged to
+        // itself, first, and the summary is refused.
+        JsonObject engine = object(raw, "engineSummary");
+        if (bool(engine, "aborted", false)) {
+            diagnostics.add(diagnostic(raw, index,
+                    "SYMBOLIC_EXECUTION_ABORTED",
+                    firstNonBlank(string(engine, "abortReason"),
+                            "UNSPECIFIED")));
+            return refuse(observation, diagnostics);
+        }
+        String exitKind = string(raw, "exitKind");
+        boolean hasCut = raw.has("pathCut")
+                || raw.has("replayResourceCut");
+        if ("CUT".equals(exitKind)
+                || hasCut && !boundedOutputExit(raw, task)) {
+            // The two ledgers cut for opposite reasons and are answered by
+            // opposite work: an unroll bound says the path space was too
+            // wide to walk, a resource cap says a service loop outlasted
+            // the replay budget.  The latter may still preserve demanded
+            // ports the VM captured before the cut.
+            // The runtime publishes each under its own field and lets the
+            // resource cap outrank the unroll bound; reading only the
+            // unroll field reports the resource cap under the other
+            // ledger's name and with an empty body, which is exactly the
+            // confusion the two ledgers exist to prevent.
+            boolean resourceCut = raw.has("replayResourceCut");
+            String cutDetail = object(raw,
+                    resourceCut ? "replayResourceCut"
+                            : "pathCut").toString();
+            if (resourceCut && !hasCapturedDemandedOutput(raw, task)) {
+                cutDetail += "; no demanded output relation was "
+                        + "captured before cut";
+            }
+            diagnostics.add(diagnostic(raw, index,
+                    resourceCut ? "REPLAY_LOOP_RESOURCE_CAP"
+                            : "LOOP_BOUND_PATH_CUT",
+                    cutDetail));
+            // No admitted bounded prefix exists here.  Keep the cut as an
+            // explicit gap rather than inventing an output relation.
+            return refuse(observation, diagnostics);
+        }
+        List<String> issues = new ArrayList<>();
+        for (JsonElement unresolved : array(raw,
+                "unresolvedInputs")) {
+            // A bounded output-version capacity notice is a statement about
+            // how much of the run the model covers, not about an input that
+            // found no authority.  Charged as an unresolved input it made
+            // relationallyComplete false, and one output site exceeding its
+            // capacity then discarded the whole producer relation - so the
+            // run published nothing instead of publishing a model with a
+            // stated limit.  It travels as a named bounded-coverage gap
+            // instead; the relation is imported and the Composer's own gate
+            // refuses it, because a coverage gap leaves pathCoverageState
+            // short of CLOSED and SelectedPathSetIncomplete still blocks.
+            if (boundedOutputVersionNotice(unresolved)) continue;
+            issues.add("UNRESOLVED_INPUT:" + unresolved);
+        }
+
+        boolean relationOnlySeed = relationOnlySeed(task);
+        // A relation-only seed that carries no decision at all still imports
+        // as empty.  What it may no longer do is discard the decisions it
+        // does carry: the runtime records a declared site's decision as a
+        // concreteObservation when the symbolic gate was closed, and
+        // demanding a witness threw those rows away - which is exactly
+        // LOOP-1's entersLoop/continue_i attribution.  The two authorities
+        // stay distinct either way, because branchMappings() builds a
+        // witnessed row only from a `witness` and a concrete row only from a
+        // `concreteObservation`, and never promotes one into the other.
+        boolean anyBranchDecision =
+                SemanticPath.hasAdmissibleBranchDecision(
+                        array(raw, "branchMappings"));
+        boolean pathConditionOmitted = bool(engine,
+                "pathConditionOmitted", false);
+        boolean branchAndAuxiliarySummary =
+                SELECTED_BRANCH_AND_AUXILIARY_AUTHORITY.equals(
+                        string(engine, "pathConditionAuthority"));
+        if (pathConditionOmitted) {
+            JsonElement omittedPath = engine.get("pathCondition");
+            if (omittedPath == null || !omittedPath.isJsonArray()
+                    || omittedPath.getAsJsonArray().size() != 0) {
+                issues.add("OMITTED_PATH_CONDITION_NOT_EMPTY");
+            }
+            if (!branchAndAuxiliarySummary) {
+                issues.add("OMITTED_PATH_CONDITION_AUTHORITY_MISSING");
+            }
+            if (!bool(engine, "active", false)) {
+                issues.add("OMITTED_PATH_CONDITION_ENGINE_INACTIVE");
+            }
+        }
+        if (!bool(engine, "complete", false)) {
+            issues.add("VM_SUMMARY_INCOMPLETE:"
+                    + string(engine, "abortReason"));
+        }
+        SemanticPath path = pathConditionOmitted
+                ? SemanticPath.fromSelectedEvidence(engine,
+                array(raw, "branchMappings"), issues)
+                : relationOnlySeed
+                ? SemanticPath.atRelationBoundary(
+                array(engine, "pathCondition"), task)
+                : SemanticPath.from(array(engine, "pathCondition"),
+                array(raw, "branchMappings"));
+        JsonArray mappings = relationOnlySeed && !anyBranchDecision
+                ? new JsonArray()
+                : branchMappings(raw, task, path, issues);
+        String branchReplayMismatch = relationOnlySeed ? ""
+                : branchReplayMismatch(raw, task, mappings);
+        if (!branchReplayMismatch.isEmpty()) {
+            diagnostics.add(diagnostic(raw, index,
+                    "BRANCH_REPLAY_MISMATCH", branchReplayMismatch));
+            return refuse(observation, diagnostics);
+        }
+        JsonObject targetReach = admittedTargetReach(raw, index, task,
+                path.expressions, mappings, diagnostics);
+        if (targetReach == null) {
+            return refuse(observation, diagnostics);
+        }
+        JsonObject outputs = outputExpressions(raw, task, issues);
+        JsonArray interactionEvents = interactionEvents(raw, task, issues);
+        PathLoopCounts loopCounts = pathLoopCounts(raw, task);
+        if (!loopCounts.refusal.isEmpty()) {
+            diagnostics.add(diagnostic(raw, index,
+                    LoopBoundPolicy.PATH_LOOP_COUNT_OUT_OF_BOUND,
+                    loopCounts.refusal));
+            return refuse(observation, diagnostics);
+        }
+        JsonArray alignmentGaps = alignmentGaps(task, raw);
+        JsonObject recordedSharedState =
+                recordedSharedState(raw, alignmentGaps);
+        List<JsonObject> vmHandoffEvents =
+                vmHandoffEvents(raw, alignmentGaps);
+        JsonArray symbolicSources = symbolicSourceEvidence(raw, task,
+                issues);
+        // A replay that carried a selected read cut is validated against
+        // its own recorded evidence, never against the reference run's
+        // event ids: this is a different session, and its events restart.
+        ReplayedReadCut readCut = ReplayedReadCut.validate(
+                SelectedReadCut.planOf(task.json()),
+                Collections.singletonList(recordedSharedState));
+        for (JsonObject gap : readCut.gaps()) alignmentGaps.add(gap);
+        JsonArray symbolicInputs = symbolicInputs(raw);
+        JsonElement replayContract = task.replayContract();
+
+        JsonObject summary = new JsonObject();
+        summary.addProperty("schemaVersion", 1);
+        summary.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
+        summary.addProperty("goalId", task.goalId());
+        summary.addProperty("taskId", task.taskId());
+        summary.addProperty("sourceKey", task.sourceKey());
+        summary.addProperty("regionId", task.regionId());
+        summary.addProperty("occurrenceId", task.occurrenceId());
+        summary.addProperty("relationKey", task.relationKey());
+        task.loopBound().writeTo(summary);
+        task.goalKind().writeToTask(summary);
+        if (task.outputClosure() != null) {
+            summary.add(OutputClosureContract.FIELD,
+                    task.outputClosure().toJson());
+        }
+        summary.add("symbolicInputs", symbolicInputs);
+        if (symbolicSources.size() > 0) {
+            summary.add(SymbolicSourceEvidence.FIELD, symbolicSources);
+        }
+        summary.add("edgeBindings", resolvedEdgeBindings(task,
+                recordedSharedState));
+        summary.add("pathCondition", path.expressions);
+        summary.add("branchMappings", mappings);
+        if (targetReach.size() > 0) {
+            summary.add(PathObservation.TargetReachEvent.FIELD,
+                    targetReach);
+        }
+        if (pathConditionOmitted) {
+            summary.addProperty("pathConditionAuthority",
+                    SELECTED_BRANCH_AND_AUXILIARY_AUTHORITY);
+            summary.addProperty("pathConditionVmWatermark",
+                    path.vmWatermark());
+        }
+        summary.add("outputExpressions", outputs);
+        if (loopCounts.counts.size() > 0) {
+            summary.add(LoopBoundPolicy.PATH_LOOP_COUNTS,
+                    loopCounts.counts);
+        }
+        if (loopCounts.gaps.size() > 0) {
+            summary.add(LoopBoundPolicy.PATH_LOOP_COUNT_GAPS,
+                    loopCounts.gaps);
+        }
+        if (interactionEvents.size() > 0) {
+            summary.add(RelationSummary.INTERACTION_EVENTS,
+                    interactionEvents);
+        }
+        if (alignmentGaps.size() > 0) {
+            summary.add("alignmentGaps", alignmentGaps);
+        }
+        if (recordedSharedState.size() > 0) {
+            summary.add(SharedStateEvidence.RECORDED_FIELD,
+                    recordedSharedState);
+        }
+        VmHandoffEvidence.writeTo(summary, vmHandoffEvents);
+        if (!readCut.isEmpty()) {
+            summary.add("readCutRealisation", readCut.toJson());
+        }
+        boolean boundedExit = "BOUNDED".equals(exitKind);
+        summary.addProperty("normalExit", boundedExit
+                || "NORMAL".equals(exitKind));
+        summary.addProperty("boundedExit", boundedExit);
+        summary.addProperty("exceptionType",
+                string(raw, "exceptionType"));
+        summary.addProperty("relationallyComplete", issues.isEmpty());
+
+        if (replayContract != null && !issues.isEmpty()) {
+            diagnostics.add(diagnostic(raw, index,
+                    "PATH_REPLAY_ADMISSION_REJECTED",
+                    String.join(";", issues)));
+            return refuse(observation, diagnostics);
+        }
+
+        JsonObject semantic = summary.deepCopy();
+        semantic.remove("taskId");
+        String hash = sha256(CanonicalJson.render(semantic));
+        if (!hashes.add(hash)) {
+            diagnostics.add(diagnostic(raw, index,
+                    "DUPLICATE_SUMMARY", hash));
+            return refuse(observation, diagnostics);
+        }
+        summary.addProperty("summaryId",
+                "SUMMARY." + task.regionId() + "." + hash);
+        if (!issues.isEmpty()) {
+            diagnostics.add(diagnostic(raw, index,
+                    "INCOMPLETE_RELATION",
+                    String.join(";", issues)));
+            observation.gap = "INCOMPLETE_RELATION";
+        }
+        observation.summary = summary;
+        // Exact typed delivery evidence and recorded state versions are
+        // different evidence classes from the guarded case itself, so the
+        // delta names each of them once beside it.
+        observation.binding = !vmHandoffEvents.isEmpty();
+        observation.effect = recordedSharedState.size() > 0;
+        return summary;
+    }
+
+    /**
+     * Decodes the aggregate runtime counters as one replay path's loop-count
+     * vector.  The vector is case evidence: it never creates iteration-local
+     * states or ports.  An absent counter for a retained while is zero when
+     * none of that loop's declared control sites executed; evidence that did
+     * execute but cannot be joined to the runtime loop id is named as a
+     * coverage gap.  Only a count beyond the declared K_L refuses the row.
+     */
+    private static PathLoopCounts pathLoopCounts(
+            JsonObject raw, ExecutionTask task) {
+        PathLoopCounts result = new PathLoopCounts();
+        JsonObject fixedBodies = object(raw, "replayLoopBodies");
+        JsonObject conditionBodies = object(raw,
+                "loopBackedgeTraversals");
+        Set<String> decidedSites = new LinkedHashSet<>();
+        for (JsonElement element : array(raw, "branchMappings")) {
+            if (!element.isJsonObject()) continue;
+            String site = string(element.getAsJsonObject(), "siteId");
+            if (!site.isEmpty()) decidedSites.add(site);
+        }
+        for (JsonElement element : array(task.json(),
+                BoundedLoopComposition.PLAN_FIELD)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject declaration = element.getAsJsonObject();
+            String loopSiteId = string(declaration,
+                    LoopBoundPolicy.LOOP_SITE_ID);
+            String classification = string(declaration,
+                    LoopBoundPolicy.LOOP_CLASSIFICATION);
+            if (loopSiteId.isEmpty()) {
+                result.gap(LoopBoundPolicy.PATH_LOOP_COUNT_MISSING, "",
+                        "retained loop declares no loopSiteId");
+                continue;
+            }
+            int bound = 0;
+            if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(
+                    classification)) {
+                bound = task.loopBound().maxBackedgeTraversals(loopSiteId);
+                JsonElement stated = declaration.get(
+                        LoopBoundPolicy.LOOP_BODY_BOUND);
+                if (stated != null && (!stated.isJsonPrimitive()
+                        || !stated.getAsJsonPrimitive().isNumber()
+                        || stated.getAsInt() != bound)) {
+                    result.refusal = loopSiteId + " retained row states K_L="
+                            + stated + " but task loopBound states K_L="
+                            + bound;
+                    return result;
+                }
+            }
+            String runtimeLoopId = runtimeLoopId(declaration);
+            boolean controlObserved = false;
+            for (JsonElement site : array(declaration,
+                    LoopBoundPolicy.LOOP_CONTROL_SITE_IDS)) {
+                if (site.isJsonPrimitive()
+                        && decidedSites.contains(site.getAsString())) {
+                    controlObserved = true;
+                }
+            }
+            if (decidedSites.contains(loopSiteId)) controlObserved = true;
+            JsonObject bodies = LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED
+                    .equals(classification) ? fixedBodies : conditionBodies;
+            int bodyCount = runtimeLoopId.isEmpty()
+                    ? -1 : integer(bodies, runtimeLoopId, -1);
+            if (bodyCount < 0 && !controlObserved) bodyCount = 0;
+            if (bodyCount < 0) {
+                result.gap(LoopBoundPolicy.PATH_LOOP_COUNT_MISSING,
+                        loopSiteId, "declared loop control executed but "
+                                + (LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED
+                                .equals(classification)
+                                ? "replayLoopBodies" : "loopBackedgeTraversals")
+                                + " names no matching "
+                                + "runtime loop id");
+                continue;
+            }
+            if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(
+                    classification) && bodyCount > bound) {
+                result.refusal = loopSiteId + " executed " + bodyCount
+                        + " bodies outside declared 0.." + bound;
+                return result;
+            }
+            JsonObject row = declaration.deepCopy();
+            if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(
+                    classification)) {
+                row.addProperty(LoopBoundPolicy.LOOP_BODY_BOUND, bound);
+                row.addProperty(LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY,
+                        task.loopBound().declaredBounds().containsKey(loopSiteId)
+                                ? LoopBoundPolicy.BOUND_FROM_DECLARATION
+                                : LoopBoundPolicy.BOUND_FROM_POLICY);
+            }
+            row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, runtimeLoopId);
+            row.addProperty(LoopBoundPolicy.LOOP_BODY_COUNT, bodyCount);
+            row.addProperty("countAuthority",
+                    LoopBoundPolicy.PATH_BODY_COUNT_AUTHORITY);
+            if (LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(
+                    classification)) {
+                JsonArray cardinalities = exactCardinalities(
+                        raw, runtimeLoopId, loopSiteId, result);
+                if (cardinalities.size() == 0) {
+                    result.gap(
+                            LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
+                            loopSiteId, "fixed-count loop has a path-local "
+                                    + "body count but no exact dynamic array "
+                                    + "cardinality observation");
+                } else {
+                    row.add(LoopBoundPolicy.LOOP_CARDINALITIES,
+                            cardinalities);
+                }
+            }
+            result.counts.add(row);
+        }
+        return result;
+    }
+
+    /** Exact dynamic array lengths published for one runtime natural loop. */
+    private static JsonArray exactCardinalities(
+            JsonObject raw, String runtimeLoopId, String loopSiteId,
+            PathLoopCounts result) {
+        JsonArray exact = new JsonArray();
+        Map<Integer, Integer> byOccurrence = new LinkedHashMap<>();
+        for (JsonElement element : array(raw,
+                LoopBoundPolicy.LOOP_CARDINALITIES)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if (!runtimeLoopId.equals(string(row,
+                    LoopBoundPolicy.RUNTIME_LOOP_ID))) {
+                continue;
+            }
+            int occurrence = integer(row,
+                    LoopBoundPolicy.DYNAMIC_OCCURRENCE, -1);
+            int cardinality = integer(row,
+                    LoopBoundPolicy.LOOP_CARDINALITY, -1);
+            if (occurrence < 1 || cardinality < 0
+                    || !LoopBoundPolicy.PATH_CARDINALITY_AUTHORITY.equals(
+                    string(row, "cardinalityAuthority"))) {
+                result.gap(LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS,
+                        loopSiteId, "malformed exact array cardinality row");
+                continue;
+            }
+            Integer previous = byOccurrence.putIfAbsent(
+                    occurrence, cardinality);
+            if (previous != null) {
+                if (previous.intValue() != cardinality) {
+                    result.gap(LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS,
+                            loopSiteId, "dynamic occurrence " + occurrence
+                                    + " observes both N=" + previous
+                                    + " and N=" + cardinality);
+                }
+                continue;
+            }
+            exact.add(row.deepCopy());
+        }
+        for (JsonElement element : array(raw,
+                LoopBoundPolicy.LOOP_CARDINALITY_GAPS)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject gap = element.getAsJsonObject();
+            if (!runtimeLoopId.equals(string(gap,
+                    LoopBoundPolicy.RUNTIME_LOOP_ID))) {
+                continue;
+            }
+            result.gap(firstNonBlank(string(gap, "reason"),
+                            LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS),
+                    loopSiteId, firstNonBlank(string(gap, "detail"),
+                            "runtime array cardinality observation gap"));
+        }
+        return exact;
+    }
+
+    /** Exact natural-loop counter id published with the retained loop. */
+    private static String runtimeLoopId(JsonObject declaration) {
+        return string(declaration, LoopBoundPolicy.RUNTIME_LOOP_ID);
+    }
+
+    private static final class PathLoopCounts {
+        private final JsonArray counts = new JsonArray();
+        private final JsonArray gaps = new JsonArray();
+        private String refusal = "";
+
+        private void gap(String reason, String subject, String detail) {
+            JsonObject row = new JsonObject();
+            row.addProperty("kind", "PATH_LOCAL_LOOP_COUNT_GAP");
+            row.addProperty("authority", "PATH_LOCAL_LOOP_COUNT_GAP_V1");
+            row.addProperty("reason", reason);
+            row.addProperty("subject", subject);
+            row.addProperty("detail", detail);
+            gaps.add(row);
+        }
+    }
+
+    /**
+     * Refuses the row the caller just filed one diagnostic for, and carries
+     * that diagnostic's own code into the delta as the named gap.  Every
+     * refusal path files exactly one diagnostic immediately before returning
+     * here, so a dropped row can never leave the delta silent.
+     */
+    private static JsonObject refuse(TopologyDelta.Observation observation,
+                                     List<JsonObject> diagnostics) {
+        observation.gap = string(
+                diagnostics.get(diagnostics.size() - 1), "code");
+        return null;
+    }
+
+    /**
+     * Joins the planned output-version gaps with the handoff gaps this
+     * execution recorded.  A failed symbolic expression handoff is a coverage
+     * fact of the run, not of the plan, so it enters the summary from the VM
+     * result row; keeping it in the same stream means the worklist and the
+     * composer see it exactly the way they already see a loop, read-from or
+     * output-version misalignment.
+     */
+    /**
+     * The runtime's text for one bounded output-version capacity notice.
+     *
+     * <p>Matching on the message is the only channel the notice has today; a
+     * structured row would be better and belongs with the hook that raises
+     * it in {@code runtime/}.  The prefix is matched rather than the whole
+     * sentence so that the site and the number stay readable from it.</p>
+     */
+    private static final String BOUNDED_OUTPUT_VERSION_NOTICE =
+            ": bounded output version capacity ";
+
+    /** The notice's trailing clause, stripped to recover the site id. */
+    private static final String BOUNDED_OUTPUT_VERSION_TAIL =
+            "; later occurrences are counted, not captured";
+
+    /** Kind the coverage filter already admits for this class of gap. */
+    private static final String BOUNDED_OUTPUT_VERSION_GAP_KIND =
+            "OUTPUT_VERSION_ALIGNMENT_GAP";
+
+    private static boolean boundedOutputVersionNotice(JsonElement notice) {
+        return notice != null && notice.isJsonPrimitive()
+                && notice.getAsString().contains(
+                        BOUNDED_OUTPUT_VERSION_NOTICE);
+    }
+
+    /**
+     * One named bounded-coverage gap per output site that ran past its
+     * bounded version capacity.
+     *
+     * <p>README's resource rule: truncation of selected evidence is a named
+     * gap and is never read as the evidence being absent.  The gap states
+     * the site and the capacity so the next reader can size the real bound
+     * instead of rediscovering it.  It also states how many versions were
+     * captured, and says outright that the number actually observed is not
+     * carried on the result - the runtime counts it but its notice does not
+     * publish it, and inventing the figure here would be worse than naming
+     * its absence.</p>
+     */
+    private static List<JsonObject> boundedOutputVersionGaps(JsonObject raw) {
+        List<JsonObject> gaps = new ArrayList<>();
+        for (JsonElement notice : array(raw, "unresolvedInputs")) {
+            if (!boundedOutputVersionNotice(notice)) continue;
+            String text = notice.getAsString();
+            int mark = text.indexOf(BOUNDED_OUTPUT_VERSION_NOTICE);
+            String binding = text.substring(0, mark);
+            String tail = text.substring(
+                    mark + BOUNDED_OUTPUT_VERSION_NOTICE.length());
+            String capacity = tail.split(" ", 2)[0];
+            int at = tail.indexOf(" reached at ");
+            String site = at < 0 ? "" : tail.substring(
+                    at + " reached at ".length());
+            // Anchored on the notice's own trailing clause, not on the
+            // first "; ": a site id embeds Java descriptors and one of those
+            // may legitimately contain a semicolon.
+            int clause = site.lastIndexOf(BOUNDED_OUTPUT_VERSION_TAIL);
+            if (clause >= 0) site = site.substring(0, clause);
+            int captured = 0;
+            for (JsonElement element : array(raw, "outputCaptures")) {
+                if (element.isJsonObject() && binding.equals(string(
+                        element.getAsJsonObject(), "captureBindingId"))) {
+                    captured++;
+                }
+            }
+            JsonObject gap = new JsonObject();
+            gap.addProperty("kind", BOUNDED_OUTPUT_VERSION_GAP_KIND);
+            gap.addProperty("schemaVersion", 1);
+            gap.addProperty("authority",
+                    "BOUNDED_OUTPUT_VERSION_CAPACITY_V1");
+            gap.addProperty("captureBindingId", binding);
+            gap.addProperty("outputSiteId", site);
+            gap.addProperty("versionCapacity", capacity);
+            gap.addProperty("versionsCaptured", captured);
+            gap.addProperty("versionsObserved", "NOT_CARRIED_BY_RESULT");
+            gap.addProperty("reason", binding + " ran past its bounded"
+                    + " output version capacity " + capacity + " at " + site
+                    + "; " + captured + " version(s) were captured and the"
+                    + " model covers only those, so this relation is a"
+                    + " bounded prefix of the run and not a closed one");
+            gaps.add(gap);
+        }
+        return gaps;
+    }
+
+    private static JsonArray alignmentGaps(ExecutionTask task,
+                                           JsonObject raw) {
         JsonArray result = new JsonArray();
-        if (task.outputClosure() == null) return result;
-        for (OutputClosureContract.Member member
-                : task.outputClosure().members()) {
-            for (JsonElement gap : array(member.slice(),
-                    "alignmentGaps")) {
+        for (JsonObject gap : boundedOutputVersionGaps(raw)) {
+            result.add(gap);
+        }
+        if (task.outputClosure() != null) {
+            for (OutputClosureContract.Member member
+                    : task.outputClosure().members()) {
+                for (JsonElement gap : array(member.slice(),
+                        "alignmentGaps")) {
+                    result.add(gap.deepCopy());
+                }
+            }
+        }
+        for (JsonElement gap : array(raw, "rpcHandoffGaps")) {
+            if (gap.isJsonObject()
+                    && RpcExpressionHandoff.isGap(gap.getAsJsonObject())) {
+                result.add(gap.deepCopy());
+            }
+        }
+        for (JsonElement gap : array(raw, "sharedStateGaps")) {
+            if (gap.isJsonObject()
+                    && SharedStateEvidence.isGap(gap.getAsJsonObject())) {
+                result.add(gap.deepCopy());
+            }
+        }
+        for (JsonElement gap : array(raw, "readCutGaps")) {
+            if (gap.isJsonObject() && SparseReadCutGate.GAP_KIND.equals(
+                    string(gap.getAsJsonObject(), "kind"))) {
                 result.add(gap.deepCopy());
             }
         }
         return result;
+    }
+
+    /**
+     * Applies this execution's recorded read-from evidence to the candidate
+     * writers the trace retained.
+     *
+     * <p>This is campaign completion for one execution, and it is where the
+     * two halves of the design finally meet. Trace refinement ran before any
+     * symbolic session existed, so it could only state which writers the run
+     * made possible; the session then observed which one the read took, or
+     * that it could not tell. Resolving here rather than at refinement is what
+     * keeps the reader's own relation reusable: a second run with a different
+     * legal writer changes this binding and nothing else about the summary.
+     * </p>
+     *
+     * <p>The store is session-wide, so a reader's own read-out holds the
+     * writes its siblings published; a task therefore resolves its own edges
+     * without needing another task's summary. Whatever this execution did not
+     * record stays a candidate under its existing gap, and the composer
+     * reports it there.</p>
+     */
+    private static JsonArray resolvedEdgeBindings(ExecutionTask task,
+                                                  JsonObject recorded) {
+        JsonArray bindings = task.edgeBindings();
+        if (recorded.size() == 0 || bindings.size() == 0) return bindings;
+        List<JsonObject> rows = new ArrayList<>();
+        for (JsonElement element : bindings) {
+            if (element.isJsonObject()) rows.add(element.getAsJsonObject());
+        }
+        RecordedReadFrom.index(Collections.singletonList(recorded))
+                .resolve(rows);
+        return bindings;
+    }
+
+    /**
+     * Ingests the VM handoff references this execution recorded.
+     *
+     * <p>A successful attach means the receiver holds the sender's own
+     * expression; the session ledger relates the two events once, as
+     * {@code VALUE_HANDOFF}.  What enters the summary is only the reference
+     * into that ledger - the declared port and the VM export event - and it
+     * enters through the same admission the runtime applied.  A row that
+     * references no export event is dropped and named, never repaired.</p>
+     */
+    private static List<JsonObject> vmHandoffEvents(JsonObject raw,
+                                                    JsonArray gaps) {
+        List<JsonObject> events = new ArrayList<>();
+        for (JsonElement element : array(raw, VmHandoffEvidence.FIELD)) {
+            JsonObject record = element.isJsonObject()
+                    ? element.getAsJsonObject() : new JsonObject();
+            if (VmHandoffEvidence.isEvent(record)) {
+                events.add(record);
+            } else {
+                gaps.add(RpcExpressionHandoff.gap(
+                        RpcExpressionHandoff.STAGE_ATTACH,
+                        RpcExpressionHandoff.MALFORMED_RESULT,
+                        0L,
+                        "recorded VM handoff reference did not survive "
+                                + "import admission"));
+            }
+        }
+        return events;
+    }
+
+    /** Admits only the exact source declarations frozen into this task. */
+    private static JsonArray symbolicSourceEvidence(
+            JsonObject raw, ExecutionTask task, List<String> issues) {
+        Map<String, String> expected = new LinkedHashMap<>();
+        for (JsonElement element : array(task.json(),
+                SymbolicSourceEvidence.TASK_FIELD)) {
+            if (!element.isJsonObject()) {
+                issues.add("SYMBOLIC_SOURCE_DECLARATION_MALFORMED");
+                continue;
+            }
+            JsonObject declaration = element.getAsJsonObject();
+            String id = string(declaration, "sourceId");
+            String field = string(declaration, "fieldSignature");
+            Set<String> outputs = new LinkedHashSet<>();
+            String output = string(declaration,
+                    "requiredOutputFieldSignature");
+            if (!output.isEmpty()) outputs.add(output);
+            for (JsonElement encoded : array(declaration,
+                    "requiredOutputFieldSignatures")) {
+                if (!encoded.isJsonPrimitive()
+                        || encoded.getAsString().trim().isEmpty()
+                        || !outputs.add(encoded.getAsString())) {
+                    issues.add("SYMBOLIC_SOURCE_DECLARATION_MALFORMED:"
+                            + id);
+                }
+            }
+            if (!SymbolicSourceEvidence.DECLARATION_AUTHORITY.equals(
+                    string(declaration, "authority"))
+                    || id.isEmpty() || field.isEmpty() || outputs.isEmpty()
+                    || (!output.isEmpty()
+                    && declaration.has("requiredOutputFieldSignatures"))
+                    || expected.putIfAbsent(id, field) != null) {
+                issues.add("SYMBOLIC_SOURCE_DECLARATION_MALFORMED:" + id);
+            }
+        }
+        JsonArray admitted = new JsonArray();
+        Set<String> observed = new LinkedHashSet<>();
+        final List<JsonObject> events;
+        try {
+            events = SymbolicSourceEvidence.eventsOf(raw);
+        } catch (IllegalArgumentException malformed) {
+            issues.add("SYMBOLIC_SOURCE_EVIDENCE_MALFORMED:"
+                    + malformed.getMessage());
+            return admitted;
+        }
+        for (JsonObject event : events) {
+            String id = string(event, "sourceId");
+            String field = string(event, "fieldSignature");
+            if (!task.occurrenceId().equals(string(event,
+                    "sourceOccurrenceId"))
+                    || !field.equals(expected.get(id))
+                    || !observed.add(id)) {
+                issues.add("SYMBOLIC_SOURCE_EVIDENCE_NOT_DECLARED:" + id);
+                continue;
+            }
+            admitted.add(event.deepCopy());
+        }
+        for (String id : expected.keySet()) {
+            if (!observed.contains(id)) {
+                issues.add("SYMBOLIC_SOURCE_EVIDENCE_MISSING:" + id);
+            }
+        }
+        return admitted;
+    }
+
+    /**
+     * Ingests the shared-state evidence this execution recorded.
+     *
+     * <p>The version store and the event ledger are the runtime's answer to
+     * "which write did this read take" and "what is ordered against what".
+     * They enter the summary only after passing the same admission the
+     * runtime applied, because a record that cannot prove its own claim is
+     * worse than no record: a consumer would read a writer set as complete,
+     * or an order domain as acyclic, on the strength of a field that was
+     * never checked.  A row that fails admission here is dropped and named,
+     * never repaired.</p>
+     */
+    private static JsonObject recordedSharedState(JsonObject raw,
+                                                  JsonArray gaps) {
+        List<JsonObject> versions = new ArrayList<>();
+        for (JsonElement element : array(raw, "sharedFieldVersions")) {
+            JsonObject record = element.isJsonObject()
+                    ? element.getAsJsonObject() : new JsonObject();
+            if (SharedStateEvidence.isVersionsRecord(record)) {
+                versions.add(record);
+            } else {
+                gaps.add(SharedStateEvidence.gap(
+                        SharedStateEvidence.STAGE_VERSIONS,
+                        SharedStateEvidence.MALFORMED_ENVELOPE,
+                        string(record, "locationKey"),
+                        "recorded version store did not survive import "
+                                + "admission"));
+            }
+        }
+        JsonObject ledger = object(raw, "sessionEventLedger");
+        if (ledger.size() > 0
+                && !SharedStateEvidence.isLedgerRecord(ledger)) {
+            gaps.add(SharedStateEvidence.gap(
+                    SharedStateEvidence.STAGE_LEDGER,
+                    SharedStateEvidence.MALFORMED_ENVELOPE, "",
+                    "recorded event ledger did not survive import "
+                            + "admission"));
+        }
+        return SharedStateEvidence.recorded(versions, ledger);
     }
 
     /**
@@ -297,19 +958,9 @@ public final class ConcolicSummaryImporter {
      * replay prefix and the requested opposite source outcome; only behavior
      * after that source event may form a newly discovered path.</p>
      */
-    private static String pathSeedMismatch(
+    private static String branchReplayMismatch(
             JsonObject raw, ExecutionTask task, JsonArray mappings) {
         JsonElement encodedReplay = task.replayContract();
-        if (task.pathSeedKey().isEmpty() && encodedReplay == null) {
-            // Legacy task rows have no stable seed contract to attest.
-            return "";
-        }
-        if (raw.has("pathSeedKey")
-                && !task.pathSeedKey().equals(string(raw,
-                "pathSeedKey"))) {
-            return "runtime pathSeedKey differs from task pathSeedKey";
-        }
-
         BranchEventCatalog seed = taskSeedEvents(task.branches());
         if (!seed.issue.isEmpty()) {
             return seed.issue;
@@ -319,9 +970,9 @@ public final class ConcolicSummaryImporter {
             return observed.issue;
         }
         if (encodedReplay == null) {
-            return exactSeedMismatch(task.pathSeedKey(), seed.events,
+            return exactSeedMismatch(task.goalId(), seed.events,
                     observed.events, concreteBranchOutcomes(raw),
-                    earlyStopExit(string(raw, "exitKind")));
+                    boundedPrefixExit(string(raw, "exitKind")));
         }
         if (!encodedReplay.isJsonObject()) {
             return "replayContract is not an object";
@@ -334,8 +985,7 @@ public final class ConcolicSummaryImporter {
         } catch (IllegalArgumentException malformed) {
             return "malformed replayContract: " + malformed.getMessage();
         }
-        return replayPrefixMismatch(task.pathSeedKey(), seed.events,
-                observed.events, replay);
+        return replayPrefixMismatch(task.goalId(), observed.events, replay);
     }
 
     private static BranchEventCatalog taskSeedEvents(JsonArray branches) {
@@ -453,7 +1103,7 @@ public final class ConcolicSummaryImporter {
      * only the contradiction rules.</p>
      */
     private static String exactSeedMismatch(
-            String pathSeedKey, List<BranchEvent> expected,
+            String replayId, List<BranchEvent> expected,
             List<BranchEvent> observed,
             Map<String, Set<Boolean>> concrete, boolean earlyStop) {
         Map<String, Set<Boolean>> wanted = outcomesBySite(expected);
@@ -463,11 +1113,11 @@ public final class ConcolicSummaryImporter {
                     concrete.get(entry.getKey()));
             if (found.isEmpty()) {
                 if (earlyStop) continue;
-                return seedDetail(pathSeedKey, "missing " + entry.getKey());
+                return replayDetail(replayId, "missing " + entry.getKey());
             }
             for (Boolean outcome : entry.getValue()) {
                 if (!found.contains(outcome)) {
-                    return seedDetail(pathSeedKey, "wrong outcome at "
+                    return replayDetail(replayId, "wrong outcome at "
                             + entry.getKey() + ": expected " + outcome
                             + " but observed " + found);
                 }
@@ -475,20 +1125,22 @@ public final class ConcolicSummaryImporter {
         }
         for (String site : actual.keySet()) {
             if (!wanted.containsKey(site)) {
-                return seedDetail(pathSeedKey, "unexpected " + site);
+                return replayDetail(replayId, "unexpected " + site);
             }
         }
         return "";
     }
 
     /**
-     * Exit kinds where the activation stopped on purpose before the recorded
-     * region ended.
+     * The one exit kind where the activation stopped before its own terminal.
+     *
+     * <p>A bounded cut is the declared bound running out, so the region tail
+     * it never ran is that bound and not a coverage finding.  Reaching the
+     * target is not such an exit: the occurrence records the reach and keeps
+     * running to its terminal, so its unreached sites remain findings.</p>
      */
-    static boolean earlyStopExit(String exitKind) {
-        return "TARGET_REACHED".equals(exitKind)
-                || "OUTPUT_BOUNDARY".equals(exitKind)
-                || "BOUNDED".equals(exitKind);
+    static boolean boundedPrefixExit(String exitKind) {
+        return "BOUNDED".equals(exitKind);
     }
 
     /**
@@ -527,13 +1179,8 @@ public final class ConcolicSummaryImporter {
     }
 
     private static String replayPrefixMismatch(
-            String pathSeedKey, List<BranchEvent> seedEvents,
-            List<BranchEvent> observed, BranchReplayContract replay) {
-        Map<String, Set<Boolean>> seed = outcomesBySite(seedEvents);
-        String conflict = replayContractSeedConflict(seed, replay);
-        if (!conflict.isEmpty()) {
-            return seedDetail(pathSeedKey, conflict);
-        }
+            String replayId, List<BranchEvent> observed,
+            BranchReplayContract replay) {
         List<BranchEvent> expected = new ArrayList<>();
         for (BranchWitness witness : replay.orderedPrefix()) {
             if (witness.isPcPredicateDecision()) continue;
@@ -554,7 +1201,7 @@ public final class ConcolicSummaryImporter {
             BranchEvent wanted = expected.get(next);
             if (wanted.identity.equals(actual.identity)) {
                 if (wanted.outcome != actual.outcome) {
-                    return seedDetail(pathSeedKey, "wrong replay outcome at "
+                    return replayDetail(replayId, "wrong replay outcome at "
                             + wanted.siteOccurrence() + ": expected "
                             + wanted.outcome + " but observed "
                             + actual.outcome);
@@ -564,89 +1211,22 @@ public final class ConcolicSummaryImporter {
             }
             for (int future = next + 1; future < expected.size(); future++) {
                 if (expected.get(future).identity.equals(actual.identity)) {
-                    return seedDetail(pathSeedKey, "replay event "
+                    return replayDetail(replayId, "replay event "
                             + actual.siteOccurrence() + " occurred before "
                             + wanted.siteOccurrence());
                 }
             }
-            Set<Boolean> original = seed.get(actual.site);
-            if (original == null) {
-                return seedDetail(pathSeedKey,
-                        "unexpected pre-source " + actual.display());
-            }
-            if (!original.contains(actual.outcome)) {
-                return seedDetail(pathSeedKey,
-                        "pre-source path diverged at "
-                                + actual.siteOccurrence());
-            }
+            // A union-instrumented campaign records selected sites belonging
+            // to other tasks as well. They are evidence for later refinement,
+            // not members of this task's replay contract. Only an expected
+            // event occurring early, missing, or with the wrong outcome can
+            // contradict this ordered prefix.
         }
         if (next != expected.size()) {
-            return seedDetail(pathSeedKey, "missing replay event "
+            return replayDetail(replayId, "missing replay event "
                     + expected.get(next).display());
         }
         return "";
-    }
-
-    /**
-     * The contradiction between a replay contract and the task seed it must be
-     * replayed against, or empty when there is none.
-     *
-     * <p>Nothing here reads runtime evidence: the contract and the seed are
-     * both fixed when the flip is proposed, so a contract this names is
-     * refused by admission no matter which activation executes it.  That is
-     * what lets the planner ask the same question before it spends a solve and
-     * a replay to learn the answer, and it is why the two answers cannot
-     * disagree -- they are this one method.</p>
-     */
-    static String replayContractSeedConflict(
-            Map<String, Set<Boolean>> seed, BranchReplayContract replay) {
-        for (BranchWitness witness : replay.orderedPrefix()) {
-            if (witness.isPcPredicateDecision()) continue;
-            String issue = replaySeedInconsistency(seed, new BranchEvent(
-                    witness.siteId(), witness.occurrence(),
-                    witness.sourceTakenOutcome()));
-            if (!issue.isEmpty()) return issue;
-        }
-        BranchWitness source = replay.source();
-        if (source.isPcPredicateDecision()) {
-            return "replay source is not a source-level branch event";
-        }
-        return replaySeedInconsistency(seed, new BranchEvent(source.siteId(),
-                source.occurrence(), source.sourceTakenOutcome()));
-    }
-
-    /**
-     * Plan-time form of {@link #replayContractSeedConflict}, reading the seed
-     * off the source execution task the flip would be replayed against.
-     *
-     * <p>This is an additional early answer, never a replacement: a source
-     * task that states no parsable seed contract is not decided here at all,
-     * and the flip proceeds to admission, which still fails closed on it.  So
-     * the early answer only ever refuses what the late answer refuses.</p>
-     */
-    public static String plannedReplaySeedConflict(
-            JsonObject sourceTask, BranchReplayContract replay) {
-        if (sourceTask == null) return "";
-        JsonElement branches = sourceTask.get("branches");
-        if (branches == null || !branches.isJsonArray()
-                || branches.getAsJsonArray().size() == 0) {
-            return "";
-        }
-        BranchEventCatalog seed = taskSeedEvents(branches.getAsJsonArray());
-        if (!seed.issue.isEmpty()) return "";
-        return replayContractSeedConflict(outcomesBySite(seed.events), replay);
-    }
-
-    private static String replaySeedInconsistency(
-            Map<String, Set<Boolean>> seed, BranchEvent replayEvent) {
-        Set<Boolean> original = seed.get(replayEvent.site);
-        if (original == null) {
-            return "replay event is absent from task seed: "
-                    + replayEvent.siteOccurrence();
-        }
-        return original.contains(replayEvent.outcome) ? ""
-                : "replay event conflicts with task seed at "
-                + replayEvent.siteOccurrence();
     }
 
     private static Map<String, Set<Boolean>> outcomesBySite(
@@ -666,9 +1246,85 @@ public final class ConcolicSummaryImporter {
                 ? value.getAsBoolean() : null;
     }
 
-    private static String seedDetail(String pathSeedKey, String issue) {
-        return (pathSeedKey.isEmpty() ? "<replay>" : pathSeedKey)
-                + ": " + issue;
+    /**
+     * Admits the runtime's exact target event against both authorities fixed
+     * before composition: the task-selected branch identity and the
+     * witnessed branch mapping imported from this execution.  A selected
+     * target task with no such event is not a partial target path.
+     */
+    private static JsonObject admittedTargetReach(
+            JsonObject raw, int index, ExecutionTask task,
+            JsonArray pathCondition, JsonArray mappings,
+            List<JsonObject> diagnostics) {
+        if (!task.goalKind().capturesTargetReach()) {
+            return new JsonObject();
+        }
+        JsonElement encoded = raw.get(PathObservation.TargetReachEvent.FIELD);
+        if (encoded == null) {
+            diagnostics.add(diagnostic(raw, index,
+                    "TARGET_REACH_EVENT_MISSING",
+                    "selected target execution published no targetReach"));
+            return null;
+        }
+        final PathObservation.TargetReachEvent event;
+        try {
+            event = PathObservation.TargetReachEvent.decode(encoded);
+        } catch (IllegalArgumentException malformed) {
+            diagnostics.add(diagnostic(raw, index,
+                    "TARGET_REACH_EVENT_MALFORMED",
+                    firstNonBlank(malformed.getMessage(), "UNKNOWN")));
+            return null;
+        }
+
+        JsonObject selected = object(task.json(), "targetBranch");
+        String selectedSite = string(selected, "siteId");
+        int selectedOccurrence = JsonFields.exactInteger(selected,
+                "occurrence", -1);
+        if (!event.siteId().equals(selectedSite)
+                || event.occurrence() != selectedOccurrence) {
+            diagnostics.add(diagnostic(raw, index,
+                    "TARGET_REACH_EVENT_MISMATCH",
+                    "event " + event.siteId() + "#" + event.occurrence()
+                            + " does not match selected target "
+                            + firstNonBlank(selectedSite, "<missing>") + "#"
+                            + selectedOccurrence));
+            return null;
+        }
+
+        JsonObject canonical = new JsonObject();
+        canonical.add("pathCondition", pathCondition.deepCopy());
+        canonical.add("branchMappings", mappings.deepCopy());
+        int exactWitnesses = 0;
+        try {
+            for (SummaryBranchMapping mapping
+                    : SummaryBranchMapping.fromSummary(canonical)) {
+                if (mapping.isWitnessed()
+                        && event.matches(mapping.siteId(),
+                        mapping.occurrence(),
+                        mapping.sourceTakenOutcome())) {
+                    exactWitnesses++;
+                }
+            }
+        } catch (IllegalArgumentException malformed) {
+            diagnostics.add(diagnostic(raw, index,
+                    "TARGET_REACH_EVENT_MISMATCH",
+                    "target branch evidence is malformed: "
+                            + firstNonBlank(malformed.getMessage(),
+                            "UNKNOWN")));
+            return null;
+        }
+        if (exactWitnesses != 1) {
+            diagnostics.add(diagnostic(raw, index,
+                    "TARGET_REACH_EVENT_MISMATCH",
+                    "event has " + exactWitnesses
+                            + " exact witnessed branch mapping(s)"));
+            return null;
+        }
+        return event.toJson();
+    }
+
+    private static String replayDetail(String replayId, String issue) {
+        return replayId + ": " + issue;
     }
 
     private static final class BranchEventCatalog {
@@ -719,54 +1375,17 @@ public final class ConcolicSummaryImporter {
                     && hasCapturedDemandedOutput(raw, task);
         }
         JsonObject cut = object(raw, "pathCut");
+        String loopId = string(cut, "backedgeId");
         return "LOOP_BOUND".equals(string(cut, "kind"))
-                && !string(cut, "backedgeId").isEmpty()
-                && integer(cut, "maxBackedgeTraversals", -1)
-                == task.loopBound().maxBackedgeTraversals();
+                && "MAX_LOOP_BODY_ITERATIONS_REACHED".equals(
+                string(cut, "reason"))
+                && !loopId.isEmpty()
+                && task.loopBound().acceptsInstrumentedBound(loopId,
+                integer(cut, "maxBackedgeTraversals", -1))
+                && hasCapturedDemandedOutput(raw, task);
     }
 
     /** Admits only a complete, exact producer prefix as a normal relation. */
-    private static boolean exactOutputBoundaryExit(
-            JsonObject raw, ExecutionTask task) {
-        if (!task.goalKind().capturesOutputRelation()
-                || task.outputCaptures().isEmpty()) {
-            return false;
-        }
-        JsonArray captures = array(raw, "outputCaptures");
-        Set<String> requestedBindings = new LinkedHashSet<>();
-        for (OutputCaptureSpec request : task.outputCaptures()) {
-            if (!(request.capturesCallArgument()
-                    || request.capturesFieldWriteState()
-                    || request.capturesMutationState())
-                    || !requestedBindings.add(request.captureBindingId())) {
-                return false;
-            }
-            int successfulRows = 0;
-            for (JsonElement element : captures) {
-                if (!element.isJsonObject()) continue;
-                JsonObject capture = element.getAsJsonObject();
-                if (!request.captureBindingId().equals(
-                        string(capture, "captureBindingId"))) {
-                    continue;
-                }
-                JsonElement expression = capture.get("expression");
-                boolean related = expression != null
-                        && !expression.isJsonNull()
-                        || referenceIdentity(capture) != null;
-                if (related
-                        && exactOutputCaptureOccurrence(request, capture)) {
-                    successfulRows++;
-                }
-            }
-            // One admitted observation is the relation.  A row that carried
-            // no expression is a guarded observation of an occurrence that
-            // produced nothing, and a further admitted row is another version
-            // of the same relation rather than a second relation.
-            if (successfulRows < 1) return false;
-        }
-        return true;
-    }
-
     /**
      * Resource-bounded output is admitted per port.  One real VM capture is
      * enough to preserve that port from this path; missing demanded ports are
@@ -782,6 +1401,8 @@ public final class ConcolicSummaryImporter {
         JsonArray captures = array(raw, "outputCaptures");
         for (OutputCaptureSpec request : task.outputCaptures()) {
             if (!(request.capturesCallArgument()
+                    || request.capturesCommunicationEffect()
+                    || request.capturesHandoffBoundLeaf()
                     || request.capturesFieldWriteState()
                     || request.capturesMutationState())) {
                 continue;
@@ -794,9 +1415,12 @@ public final class ConcolicSummaryImporter {
                     continue;
                 }
                 JsonElement expression = capture.get("expression");
-                boolean related = expression != null
-                        && !expression.isJsonNull()
-                        || referenceIdentity(capture) != null;
+                boolean related = request.capturesCommunicationEffect()
+                        ? "COMMUNICATION_EFFECT".equals(
+                        string(capture, "interactionKind"))
+                        && "INSTRUMENTED_INTERACTION_SITE_V1".equals(
+                        string(capture, "authority"))
+                        : expression != null && !expression.isJsonNull();
                 if (related
                         && exactOutputCaptureOccurrence(request, capture)) {
                     return true;
@@ -839,10 +1463,12 @@ public final class ConcolicSummaryImporter {
                     direct = BranchWitness.fromJson(
                             row.getAsJsonObject("witness"));
                     int pcIndex = direct.vmPcIndex();
-                    if (pcIndex < 0 || pcIndex >= path.original.size()
+                    JsonElement originalPredicate = path.originalAt(pcIndex);
+                    if (pcIndex < 0 || pcIndex >= path.vmWatermark()
+                            || originalPredicate == null
                             || !BranchPredicateAlgebra.equivalent(
                             direct.sourceSatisfiedPredicate(),
-                            path.original.get(pcIndex))) {
+                            originalPredicate)) {
                         issues.add("BRANCH_PC_MISMATCH:" + site);
                         continue;
                     }
@@ -857,11 +1483,11 @@ public final class ConcolicSummaryImporter {
                     continue;
                 }
 
-                int baseline = integer(row,
+                int baseline = exactInteger(row,
                         "rawPathConditionBaseline", -1);
-                int limit = integer(row, "rawPathConditionSize", -1);
+                int limit = exactInteger(row, "rawPathConditionSize", -1);
                 if (baseline < 0 || limit < baseline
-                        || limit > path.original.size()
+                        || limit > path.vmWatermark()
                         || direct != null
                         && (direct.vmPcIndex() < baseline
                         || direct.vmPcIndex() >= limit)) {
@@ -933,25 +1559,18 @@ public final class ConcolicSummaryImporter {
     }
 
     private static JsonObject outputExpressions(
-            JsonObject raw, ExecutionTask task, List<String> issues,
-            JsonObject identities) {
+            JsonObject raw, ExecutionTask task, List<String> issues) {
         JsonObject result = new JsonObject();
         OutputClosureContract closure = task.outputClosure();
         if (closure == null) return result;
 
         Map<String, List<JsonObject>> captures = new LinkedHashMap<>();
-        Map<String, List<JsonObject>> referenceRows = new LinkedHashMap<>();
         for (JsonElement element : array(raw, "outputCaptures")) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
             JsonElement expression = row.get("expression");
             if (expression != null && !expression.isJsonNull()) {
                 captures.computeIfAbsent(string(row, "captureBindingId"),
-                        ignored -> new ArrayList<>())
-                        .add(row.deepCopy());
-            } else if (referenceIdentity(row) != null) {
-                referenceRows.computeIfAbsent(
-                        string(row, "captureBindingId"),
                         ignored -> new ArrayList<>())
                         .add(row.deepCopy());
             }
@@ -965,6 +1584,16 @@ public final class ConcolicSummaryImporter {
         }
         for (String port : closure.outputPorts()) {
             List<OutputCaptureSpec> specs = specsByPort.get(port);
+            boolean communicationEffect = specs != null
+                    && !specs.isEmpty()
+                    && specs.stream().allMatch(
+                    OutputCaptureSpec::capturesCommunicationEffect);
+            if (communicationEffect) {
+                // The event is imported separately.  Its payload is never a
+                // synthetic whole-object expression; the VM handoff ledger
+                // is the only value authority across the boundary.
+                continue;
+            }
             List<JsonObject> admitted = new ArrayList<>();
             if (specs != null) {
                 for (OutputCaptureSpec spec : specs) {
@@ -999,17 +1628,6 @@ public final class ConcolicSummaryImporter {
                 if (versionSet != null) result.add(port, versionSet);
                 continue;
             }
-            // A reference the VM never symbolised still related an exact
-            // object.  Keep it apart from the expressions so a composition
-            // can only pass the alias on, never read a value out of it.
-            if (specs != null) {
-                JsonObject identity = admittedReferenceIdentity(specs,
-                        referenceRows);
-                if (identity != null) {
-                    identities.add(port, identity);
-                    continue;
-                }
-            }
             // A port published as the activation's own return value has no
             // capture site to bind, so the root observation is the whole
             // relation - and only when this is the one output demanded, since
@@ -1022,12 +1640,6 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             if (rootPublished) {
-                JsonObject identity = rootReferenceIdentity(raw,
-                        closure.member(port), task);
-                if (identity != null) {
-                    identities.add(port, identity);
-                    continue;
-                }
                 // Nothing was ever counted here, so a capture count names the
                 // wrong thing.  Say what the root observation actually was.
                 issues.add("OUTPUT_ROOT_VALUE_UNRELATED:" + port + ":"
@@ -1036,6 +1648,45 @@ public final class ConcolicSummaryImporter {
             }
             issues.add("OUTPUT_CAPTURE_COUNT:" + port + ":"
                     + admitted.size());
+        }
+        return result;
+    }
+
+    /** Case-local declared interaction events observed by this execution. */
+    private static JsonArray interactionEvents(
+            JsonObject raw, ExecutionTask task, List<String> issues) {
+        JsonArray result = new JsonArray();
+        Map<String, OutputCaptureSpec> requested = new LinkedHashMap<>();
+        for (OutputCaptureSpec spec : task.outputCaptures()) {
+            if (spec.capturesCommunicationEffect()) {
+                requested.put(spec.captureBindingId(), spec);
+            }
+        }
+        if (requested.isEmpty()) return result;
+        Set<String> observed = new LinkedHashSet<>();
+        for (JsonElement element : array(raw, "outputCaptures")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            OutputCaptureSpec spec = requested.get(
+                    string(row, "captureBindingId"));
+            if (spec == null
+                    || !"COMMUNICATION_EFFECT".equals(
+                    string(row, "interactionKind"))
+                    || !"INSTRUMENTED_INTERACTION_SITE_V1".equals(
+                    string(row, "authority"))
+                    || !exactOutputCaptureOccurrence(spec, row)) {
+                continue;
+            }
+            JsonObject event = row.deepCopy();
+            event.remove("captureBindingId");
+            event.addProperty("portId", spec.outputPort());
+            result.add(event);
+            observed.add(spec.captureBindingId());
+        }
+        for (String binding : requested.keySet()) {
+            if (!observed.contains(binding)) {
+                issues.add("INTERACTION_EVENT_MISSING:" + binding);
+            }
         }
         return result;
     }
@@ -1061,8 +1712,7 @@ public final class ConcolicSummaryImporter {
             String captureSite = string(capture, "outputSiteId");
             int occurrence = integer(capture, "outputVersionOrdinal", -1);
             if (captureSite.isEmpty() || occurrence < 1) {
-                // Legacy unscoped captures carry no site-local index, so
-                // several of them stay the original ambiguous count.
+                // A capture without its site-local ordinal is ambiguous.
                 issues.add("OUTPUT_CAPTURE_COUNT:" + port + ":"
                         + admitted.size());
                 return null;
@@ -1085,50 +1735,6 @@ public final class ConcolicSummaryImporter {
         }
         return byOrdinal.size() == 1 ? byOrdinal.firstEntry().getValue()
                 : BoundedOutputVersions.encodeVersionSet(site, byOrdinal);
-    }
-
-    /** Names a reference output the custom VM never symbolised. */
-    public static final String CONCRETE_REFERENCE_IDENTITY_AUTHORITY =
-            "CONCRETE_REFERENCE_IDENTITY_RELATION_V1";
-
-    /** The exact object a reference-valued write handed on, or null. */
-    private static JsonObject referenceIdentity(JsonObject capture) {
-        JsonElement identity = capture == null
-                ? null : capture.get("referenceIdentity");
-        if (identity == null || !identity.isJsonObject()) return null;
-        JsonObject value = identity.getAsJsonObject();
-        return CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
-                string(value, "authority")) ? value : null;
-    }
-
-    /**
-     * Selects the one reference identity a port's captures agree on.
-     *
-     * <p>This is an alias relation, not a value: it says which object the
-     * consumer received.  Several distinct objects at one port would be
-     * several relations, so that stays unadmitted and the port keeps its
-     * ordinary count issue.</p>
-     */
-    private static JsonObject admittedReferenceIdentity(
-            List<OutputCaptureSpec> specs,
-            Map<String, List<JsonObject>> referenceRows) {
-        JsonObject selected = null;
-        for (OutputCaptureSpec spec : specs) {
-            List<JsonObject> rows = referenceRows.get(
-                    spec.captureBindingId());
-            if (rows == null) continue;
-            for (JsonObject row : rows) {
-                if (!exactOutputCaptureOccurrence(spec, row)) return null;
-                JsonObject identity = referenceIdentity(row);
-                if (identity == null) return null;
-                if (selected == null) {
-                    selected = identity;
-                } else if (!selected.equals(identity)) {
-                    return null;
-                }
-            }
-        }
-        return selected;
     }
 
     /**
@@ -1164,45 +1770,6 @@ public final class ConcolicSummaryImporter {
         JsonElement encoded = raw.get("rootOutputExpression");
         return encoded != null && encoded.isJsonObject()
                 ? string(encoded.getAsJsonObject(), "kind") : "";
-    }
-
-    /**
-     * Admits a returned reference as the object the activation handed on.
-     *
-     * <p>This is the same rule a reference-valued write already follows -
-     * a reference with no expression relates an object, not a value - applied
-     * where the port is published as the activation's return value and so has
-     * no write to hook.  The port's declared type is what decides it: only
-     * the closure states that, which is why the runtime records the object
-     * and this admits it.  A primitive return with no expression stays a
-     * genuine failure, exactly as it does at a write.</p>
-     *
-     * <p>The recorded object number counts objects inside one activation, so
-     * it is unique only there.  A composition mints one constant per distinct
-     * identity record and lets equal records denote the same object, so the
-     * publishing port and activation are carried in the record: without them
-     * two activations of one region would both hand on their own first object
-     * and be read as having handed on the same one.</p>
-     */
-    private static JsonObject rootReferenceIdentity(
-            JsonObject raw, OutputClosureContract.Member member,
-            ExecutionTask task) {
-        if (member == null) return null;
-        String descriptor = member.javaTypeDescriptor();
-        if (!descriptor.startsWith("L") && !descriptor.startsWith("[")) {
-            return null;
-        }
-        JsonElement encoded = raw.get("rootOutputReferenceIdentity");
-        if (encoded == null || !encoded.isJsonObject()) return null;
-        JsonObject identity = encoded.getAsJsonObject();
-        if (!CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
-                string(identity, "authority"))) {
-            return null;
-        }
-        JsonObject scoped = identity.deepCopy();
-        scoped.addProperty("outputPort", member.portId());
-        scoped.addProperty("occurrenceId", task.occurrenceId());
-        return scoped;
     }
 
     private static JsonArray symbolicInputs(JsonObject raw) {
@@ -1280,6 +1847,20 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
+    /**
+     * Whether this seed publishes the one relation observed at its own
+     * boundary rather than a branch-by-branch replay path.
+     *
+     * <p>A producer's relation is read at its semantic output boundary.  It
+     * does not stop at every branch and has no branch mapping to be checked
+     * against a path seed.</p>
+     *
+     * <p>Written as the kind that says yes and not as
+     * {@code !capturesTargetReach()}: {@code ClosureGoalKind} states outright
+     * that its kinds are not complements, and a further kind must have to be
+     * added here deliberately rather than inherit this exemption by
+     * default.</p>
+     */
     private static boolean relationOnlySeed(ExecutionTask task) {
         if (!task.goalKind().capturesOutputRelation()
                 || task.replayContract() != null) {
@@ -1297,39 +1878,258 @@ public final class ConcolicSummaryImporter {
 
     /** Removes replay-only container observations and remaps PC ownership. */
     private static final class SemanticPath {
-        private final JsonArray original;
+        /** Exact retained VM terms by absolute full-PC index. */
+        private final NavigableMap<Integer, JsonElement> original;
         private final JsonArray expressions;
-        private final int[] summaryIndices;
+        /** Absolute VM index to compact summary index. */
+        private final Map<Integer, Integer> summaryIndices;
+        /** Size of the VM full PC without allocating its omitted holes. */
+        private final int vmWatermark;
 
-        private SemanticPath(JsonArray original, JsonArray expressions,
-                             int[] summaryIndices) {
+        private SemanticPath(NavigableMap<Integer, JsonElement> original,
+                             JsonArray expressions,
+                             Map<Integer, Integer> summaryIndices,
+                             int vmWatermark) {
             this.original = original;
             this.expressions = expressions;
             this.summaryIndices = summaryIndices;
+            this.vmWatermark = vmWatermark;
         }
 
         private static SemanticPath from(JsonArray raw,
                                          JsonArray branchMappings) {
-            JsonArray original = raw == null
-                    ? new JsonArray() : raw.deepCopy();
+            JsonArray source = raw == null ? new JsonArray() : raw;
+            NavigableMap<Integer, JsonElement> original = new TreeMap<>();
             JsonArray expressions = new JsonArray();
-            int[] indices = new int[original.size()];
+            Map<Integer, Integer> indices = new LinkedHashMap<>();
             Set<Integer> branchDecisions =
                     witnessedVmPcIndices(branchMappings);
-            for (int index = 0; index < original.size(); index++) {
-                JsonElement expression = original.get(index);
+            for (int index = 0; index < source.size(); index++) {
+                JsonElement expression = source.get(index);
+                original.put(index, expression == null
+                        ? JsonNull.INSTANCE : expression.deepCopy());
                 boolean witnessed = branchDecisions.contains(index);
                 if (!witnessed
+                        && (expression == null || expression.isJsonNull())) {
+                } else if (!witnessed
                         && (InitialContainerObservation.isConcreteEquality(
                         expression)
                         || pcPredicate(expression))) {
-                    indices[index] = -1;
                 } else {
-                    indices[index] = expressions.size();
+                    indices.put(index, expressions.size());
                     expressions.add(expression.deepCopy());
                 }
             }
-            return new SemanticPath(original, expressions, indices);
+            return new SemanticPath(original, expressions, indices,
+                    source.size());
+        }
+
+        /**
+         * Reconstructs one compact case from its selected branch witnesses
+         * and the VM's separately bounded non-branch solver constraints.
+         *
+         * <p>The two channels name positions in the same full VM path
+         * condition.  Keeping that index is what lets us carry a container
+         * or method relation once per case without copying it into every
+         * shared-field version guard.  Missing, conflicting or truncated
+         * evidence is a named incomplete relation; no position is guessed or
+         * silently overwritten.</p>
+         */
+        private static SemanticPath fromSelectedEvidence(
+                JsonObject engine, JsonArray branchMappings,
+                List<String> issues) {
+            Map<Integer, JsonElement> evidence = new LinkedHashMap<>();
+            int size = selectedBranchEvidence(branchMappings, evidence,
+                    issues);
+
+            JsonElement encoded = engine.get(
+                    AUXILIARY_PATH_CONDITION_FIELD);
+            if (encoded == null || !encoded.isJsonObject()) {
+                issues.add("AUXILIARY_PATH_CONDITION_MISSING");
+                return fromSparseEvidence(evidence, size, branchMappings);
+            }
+            JsonObject auxiliary = encoded.getAsJsonObject();
+            if (exactInteger(auxiliary, "schemaVersion", -1) != 1
+                    || !AUXILIARY_PATH_CONDITION_KIND.equals(
+                    string(auxiliary, "kind"))
+                    || !AUXILIARY_PATH_CONDITION_AUTHORITY.equals(
+                    string(auxiliary, "authority"))
+                    || !bool(auxiliary, "active", false)
+                    || bool(auxiliary, "aborted", false)) {
+                issues.add("AUXILIARY_PATH_CONDITION_MALFORMED:ENVELOPE");
+                return fromSparseEvidence(evidence, size, branchMappings);
+            }
+
+            int watermark = exactInteger(auxiliary,
+                    "pathConditionWatermark", -1);
+            int count = exactInteger(auxiliary, "conditionCount", -1);
+            JsonElement encodedIndices = auxiliary.get(
+                    "pathConditionIndices");
+            JsonElement encodedConditions = auxiliary.get("conditions");
+            JsonArray indices = encodedIndices != null
+                    && encodedIndices.isJsonArray()
+                    ? encodedIndices.getAsJsonArray() : new JsonArray();
+            JsonArray conditions = encodedConditions != null
+                    && encodedConditions.isJsonArray()
+                    ? encodedConditions.getAsJsonArray() : new JsonArray();
+            if (watermark < 0 || count < 0 || count != indices.size()
+                    || count != conditions.size()
+                    || encodedIndices == null
+                    || !encodedIndices.isJsonArray()
+                    || encodedConditions == null
+                    || !encodedConditions.isJsonArray()) {
+                issues.add("AUXILIARY_PATH_CONDITION_MALFORMED:CARDINALITY");
+                return fromSparseEvidence(evidence,
+                        Math.max(size, watermark), branchMappings);
+            }
+
+            int prior = -1;
+            for (int ordinal = 0; ordinal < count; ordinal++) {
+                JsonElement indexElement = indices.get(ordinal);
+                JsonElement condition = conditions.get(ordinal);
+                JsonObject indexHolder = new JsonObject();
+                indexHolder.add("value", indexElement.deepCopy());
+                int index = exactInteger(indexHolder, "value", -1);
+                if (index < 0) {
+                    issues.add("AUXILIARY_PATH_CONDITION_MALFORMED:INDEX_"
+                            + ordinal);
+                    continue;
+                }
+                if (index <= prior || index < 0 || index >= watermark) {
+                    issues.add("AUXILIARY_PATH_CONDITION_MALFORMED:ORDER_"
+                            + ordinal);
+                    prior = Math.max(prior, index);
+                    continue;
+                }
+                prior = index;
+                if (condition == null || condition.isJsonNull()) {
+                    issues.add("AUXILIARY_PATH_CONDITION_MALFORMED:NULL_"
+                            + index);
+                    continue;
+                }
+                if (SharedStateEvidence.containsVmSerializationTruncation(
+                        condition)) {
+                    issues.add("VM_EXPRESSION_SERIALIZATION_TRUNCATED:"
+                            + "AUXILIARY_PATH_CONDITION:" + index);
+                    continue;
+                }
+                JsonElement existing = evidence.get(index);
+                if (existing != null) {
+                    issues.add("AUXILIARY_PATH_CONDITION_CONFLICT:" + index);
+                    continue;
+                }
+                evidence.put(index, condition.deepCopy());
+            }
+            for (Integer branchIndex : witnessedVmPcIndices(branchMappings)) {
+                if (branchIndex >= watermark) {
+                    issues.add("AUXILIARY_PATH_CONDITION_MALFORMED:"
+                            + "BRANCH_INDEX_" + branchIndex);
+                }
+            }
+            return fromSparseEvidence(evidence,
+                    Math.max(size, watermark), branchMappings);
+        }
+
+        private static int selectedBranchEvidence(
+                JsonArray branchMappings,
+                Map<Integer, JsonElement> evidence,
+                List<String> issues) {
+            int size = 0;
+            for (JsonElement element : branchMappings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                if (!row.has("witness")
+                        || !row.get("witness").isJsonObject()) {
+                    continue;
+                }
+                try {
+                    BranchWitness witness = BranchWitness.fromJson(
+                            row.getAsJsonObject("witness"));
+                    int index = witness.vmPcIndex();
+                    if (index < 0) continue;
+                    if (evidence.putIfAbsent(index,
+                            witness.sourceSatisfiedPredicate().deepCopy())
+                            != null) {
+                        issues.add("AMBIGUOUS_BRANCH_PC:" + index);
+                    }
+                    size = Math.max(size, Math.max(index + 1,
+                            exactInteger(row, "rawPathConditionSize", 0)));
+                } catch (IllegalArgumentException ignored) {
+                    // branchMappings() reports the malformed witness by name.
+                }
+            }
+            return size;
+        }
+
+        private static SemanticPath fromSparseEvidence(
+                Map<Integer, JsonElement> evidence, int size,
+                JsonArray branchMappings) {
+            NavigableMap<Integer, JsonElement> original = new TreeMap<>();
+            JsonArray expressions = new JsonArray();
+            Map<Integer, Integer> summaryIndices = new LinkedHashMap<>();
+            Set<Integer> branchDecisions =
+                    witnessedVmPcIndices(branchMappings);
+            for (Map.Entry<Integer, JsonElement> entry
+                    : new TreeMap<>(evidence).entrySet()) {
+                int index = entry.getKey();
+                JsonElement expression = entry.getValue();
+                if (index < 0 || expression == null
+                        || expression.isJsonNull()) {
+                    continue;
+                }
+                original.put(index, expression.deepCopy());
+                boolean witnessed = branchDecisions.contains(index);
+                if (!witnessed
+                        && (InitialContainerObservation.isConcreteEquality(
+                        expression) || pcPredicate(expression))) {
+                    continue;
+                }
+                summaryIndices.put(index, expressions.size());
+                expressions.add(expression.deepCopy());
+            }
+            return new SemanticPath(original, expressions, summaryIndices,
+                    Math.max(0, size));
+        }
+
+        /**
+         * Whether any row carries a decision the summary can admit.
+         *
+         * <p>Deliberately weaker than {@link #hasSelectedBranchWitness}: that
+         * one asks for a witnessed row because it decides whether the path
+         * condition can be rebuilt from witnesses, and a concrete observation
+         * owns no path-condition term to rebuild from.  This one only asks
+         * whether the execution decided anything a case could attribute.</p>
+         */
+        private static boolean hasAdmissibleBranchDecision(
+                JsonArray branchMappings) {
+            if (hasSelectedBranchWitness(branchMappings)) return true;
+            for (JsonElement element : branchMappings) {
+                if (!element.isJsonObject()) continue;
+                JsonElement concrete = element.getAsJsonObject()
+                        .get("concreteObservation");
+                if (concrete != null && concrete.isJsonObject()) return true;
+            }
+            return false;
+        }
+
+        private static boolean hasSelectedBranchWitness(
+                JsonArray branchMappings) {
+            for (JsonElement element : branchMappings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                if (!row.has("witness")
+                        || !row.get("witness").isJsonObject()) {
+                    continue;
+                }
+                try {
+                    int index = BranchWitness.fromJson(
+                            row.getAsJsonObject("witness")).vmPcIndex();
+                    if (index >= 0) return true;
+                } catch (IllegalArgumentException ignored) {
+                    // branchMappings() owns the diagnostic.
+                }
+            }
+            return false;
         }
 
         /**
@@ -1340,10 +2140,10 @@ public final class ConcolicSummaryImporter {
          */
         private static SemanticPath atRelationBoundary(
                 JsonArray raw, ExecutionTask task) {
-            JsonArray original = raw == null
-                    ? new JsonArray() : raw.deepCopy();
+            JsonArray source = raw == null ? new JsonArray() : raw;
+            NavigableMap<Integer, JsonElement> original = new TreeMap<>();
             JsonArray expressions = new JsonArray();
-            int[] indices = new int[original.size()];
+            Map<Integer, Integer> indices = new LinkedHashMap<>();
             Set<String> composedFieldInputs = new LinkedHashSet<>();
             for (JsonElement element : task.inputActions().all()) {
                 if (!element.isJsonObject()) continue;
@@ -1356,17 +2156,19 @@ public final class ConcolicSummaryImporter {
                     if (!symbol.isEmpty()) composedFieldInputs.add(symbol);
                 }
             }
-            for (int index = 0; index < indices.length; index++) {
-                JsonElement expression = original.get(index);
+            for (int index = 0; index < source.size(); index++) {
+                JsonElement expression = source.get(index);
+                original.put(index, expression == null
+                        ? JsonNull.INSTANCE : expression.deepCopy());
                 if (composedFieldMaterialization(
                         expression, composedFieldInputs)) {
-                    indices[index] = -1;
                 } else {
-                    indices[index] = expressions.size();
+                    indices.put(index, expressions.size());
                     expressions.add(expression.deepCopy());
                 }
             }
-            return new SemanticPath(original, expressions, indices);
+            return new SemanticPath(original, expressions, indices,
+                    source.size());
         }
 
         /**
@@ -1419,8 +2221,16 @@ public final class ConcolicSummaryImporter {
         }
 
         private int summaryIndex(int vmIndex) {
-            return vmIndex < 0 || vmIndex >= summaryIndices.length
-                    ? -1 : summaryIndices[vmIndex];
+            Integer index = summaryIndices.get(vmIndex);
+            return index == null ? -1 : index;
+        }
+
+        private JsonElement originalAt(int vmIndex) {
+            return original.get(vmIndex);
+        }
+
+        private int vmWatermark() {
+            return vmWatermark;
         }
     }
 
@@ -1466,12 +2276,21 @@ public final class ConcolicSummaryImporter {
         public final int rawResultCount;
         public final int validSummaryCount;
         public final int diagnosticCount;
+        public final int deltaRowCount;
+        /** Digest of the frozen task plan this import compared against. */
+        public final String planDigest;
+        /** One JSON line of what an iteration manifest has to record. */
+        public final String manifestDigests;
 
         private ImportResult(int rawResultCount, int validSummaryCount,
-                             int diagnosticCount) {
+                             int diagnosticCount, int deltaRowCount,
+                             String planDigest, String manifestDigests) {
             this.rawResultCount = rawResultCount;
             this.validSummaryCount = validSummaryCount;
             this.diagnosticCount = diagnosticCount;
+            this.deltaRowCount = deltaRowCount;
+            this.planDigest = planDigest;
+            this.manifestDigests = manifestDigests;
         }
     }
 }

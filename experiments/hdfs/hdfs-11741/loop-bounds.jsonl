@@ -1,0 +1,58 @@
+# HDFS-11741's per-loop body bounds (K_L), one row per retained
+# condition-controlled loop of the failure-relevant chain.
+#
+# Schema: {"loopSiteId": "<signature>#u<unitIndex>", "loopBodyBound": K_L,
+#          "reason": "..."}.  loopSiteId is one entry of a retained loop row's
+# loopControlSiteIds, so a declaration is greppable against the artifact it
+# applies to.  A nest with several guards declares every one of its guards
+# with the same bound; a member left out would leave the nest without one
+# prefix and is refused by name.
+#
+# Only CONDITION_BOUNDED loops belong in this file.  A FIXED_COUNT_INDEXED
+# loop never receives a K_L declaration: instrumentation records the exact
+# array length N at the loop's unique arraylength definition for each dynamic
+# occurrence, and the imported path case carries that cardinality.  N may
+# differ between invocations (for example, BlockTokenSecretManager.addKeys
+# receives differently sized BlockKey[] values as keys rotate); this does not
+# turn the loop into a condition-bounded prefix.  It remains exact-N within
+# each invocation and different N values materialize different replay cases.
+# An early break is a guarded path effect; it does not change the array's N.
+#
+# CONDITION_BOUNDED outputs are likewise the expressions recorded after that
+# replay's observed iteration count vector.  Different counts may produce
+# different Map/field values and therefore different guarded cases in the
+# causal supergraph.  The SMT composer consumes those recorded expressions;
+# it does not unroll a second synthetic loop or invent per-iteration ports.
+#
+# Every site below was read back from a real loop site, not invented:
+#   - the retained-loop set and its complete guard sets come from the loop CFG
+#     the analyzer itself uses (CfgLoopControl over the Jimple bodies of
+#     /opt/hadoop's compiled production classes);
+#   - KeyManager$BlockKeyUpdater.run()#u3 and BPServiceActor.register(..)#u12
+#     are additionally named by BOUNDED_LOOP_BODY_BOUND_UNDECLARED rows of
+#     analysis/communication_gaps.jsonl.gz;
+#   - every enclosing method is in the selected slice and in no transport
+#     surface, per analysis/region_skeletons.jsonl.gz;
+#   - every bound value is the body count runtime/runtime_trace.jsonl recorded
+#     at that guard, plus the spare slot that keeps the loop's exit inside the
+#     bound.
+#
+# Bound values are load-bearing, not advisory.  A witness that still continues
+# at K_L is BOUNDED_LOOP_BOUND_EXHAUSTED -- a named bounded-coverage gap, never
+# an accepted candidate.  In particular the DataNode heartbeat loop polls tens
+# of times per activation while carrying only a handful of selected events, so
+# a raw polling ordinal is not replay identity: an occurrence is addressed by
+# its selected causal anchor, never by "the 48th turn".
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.balancer.KeyManager$BlockKeyUpdater: void run()>#u3", "loopBodyBound": 4, "reason": "Balancer key-refresh service loop; its body holds the NN-to-Balancer getBlockKeys call site (same method, #u8) and the addKeys install into the Balancer's own key map. The recorded pass entered one body (one BRANCH at #u3; two Balancer addKeys entries, one from KeyManager.<init> and one from this loop). Bound four admits replay cases through the refresh-before-rotation and refresh-after-rotation alternatives while keeping exit inside the bounded search."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.blockmanagement.HeartbeatManager$Monitor: void run()>#u4", "loopBodyBound": 24, "reason": "NameNode monitor loop whose body polls BlockManager.shouldUpdateBlockKey and owns key rotation. campaign-run23 observed 18 required bodies, so 16 excluded the selected rotation occurrence; 24 is the smallest existing measured bound above that requirement."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.blockmanagement.HeartbeatManager$Monitor: void run()>#u30", "loopBodyBound": 4, "reason": "Per-rotation walk of the registered DatanodeDescriptors that sets needKeyUpdate, i.e. what turns one NameNode rotation into the later heartbeat installs. The workload registers two DataNodes (SOURCE_REGISTER cluster0/dn0 and cluster0/dn1 in runtime/causal_source_events.jsonl); the recorded rotations found the collection empty and ran no body. Bound four admits cases visiting both DataNodes and then exiting."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>#u6", "loopBodyBound": 24, "reason": "Walk of allKeys that removes expired ids: the removal half of rotate-or-remove K, and it runs on the NameNode, Balancer and DataNode maps alike. The stock trace saw at most 5 bodies, but the selected concolic state contains the full key history and the 8-body replay attempted body 9 before addKeys could publish its state output. Twenty-four covers the measured nineteen-key payload and one further rotation while keeping the exit guard inside the declared prefix."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void offerService()>#u39", "loopBodyBound": 8, "reason": "DataNode heartbeat service loop, guard 1 of 4 of one nest (#u39, #u189, #u193, #u197 all take the same K_L). Its body sends the heartbeat and processes the returned KeyUpdateCommand, so it owns the later DN key-state install. The recorded pass polled 18 to 70 turns per activation but carried only four selected installs in total (four BlockPoolTokenSecretManager.addKeys entries, at most two per activation) and one registration per activation. Bound eight covers selected causal turns with margin; unrelated polling is stutter rather than replay identity."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void offerService()>#u189", "loopBodyBound": 8, "reason": "DataNode heartbeat service loop, guard 2 of 4 of the nest headed at #u39. One loop has one prefix, so every member guard declares the same K_L."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void offerService()>#u193", "loopBodyBound": 8, "reason": "DataNode heartbeat service loop, guard 3 of 4 of the nest headed at #u39. One loop has one prefix, so every member guard declares the same K_L."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void offerService()>#u197", "loopBodyBound": 8, "reason": "DataNode heartbeat service loop, guard 4 of 4 of the nest headed at #u39. One loop has one prefix, so every member guard declares the same K_L."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void register(org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)>#u12", "loopBodyBound": 4, "reason": "DataNode registration retry loop; its body holds the NN-to-DN registerDatanode call site (same method, #u14), whose response carries the ExportedBlockKeys the DataNode's own manager is built from. The recorded pass ran exactly one body in each of its four activations (one BRANCH at #u12 each) because the first call succeeded and broke out. Bound four covers a retry case and its exit."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void run()>#u14", "loopBodyBound": 4, "reason": "Initial handshake retry loop of the DataNode service thread, the loop that reaches connectToNNAndHandshake and hence register(..). The recorded pass ran one body per activation and never evaluated this guard, because the first handshake succeeded. Bound four covers one retry round."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void run()>#u54", "loopBodyBound": 4, "reason": "Outer service loop that re-enters offerService(). The recorded pass evaluated this guard twice per activation, i.e. one body per activation, in all four activations. Bound four covers one re-entry after a failed heartbeat round and its exit."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: boolean processCommand(org.apache.hadoop.hdfs.server.protocol.DatanodeCommand[])>#u5", "loopBodyBound": 4, "reason": "Walk of the DatanodeCommand[] a heartbeat response carries, i.e. the step that delivers a KeyUpdateCommand to BPOfferService and hence to the DataNode key map. It is array-indexed but demoted to CONDITION_BOUNDED by its early 'return false', so its length is decided by data and it takes a K_L rather than an exact N. Guard 1 of 2 of the nest. The recorded pass evaluated #u5 526 times over 341 activations, i.e. at most one command per response. Bound four admits a multi-command response case."}
+{"loopSiteId": "<org.apache.hadoop.hdfs.server.datanode.BPServiceActor: boolean processCommand(org.apache.hadoop.hdfs.server.protocol.DatanodeCommand[])>#u9", "loopBodyBound": 4, "reason": "Walk of the DatanodeCommand[] a heartbeat response carries, guard 2 of 2 of the nest headed at #u5: the early 'return false' that demotes the loop from fixed-count. One loop has one prefix, so both member guards declare the same K_L."}

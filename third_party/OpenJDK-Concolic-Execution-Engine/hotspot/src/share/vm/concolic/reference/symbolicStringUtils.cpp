@@ -12,7 +12,6 @@ std::set<std::string> SymStrUtils::target_class_names = init_target_class_names(
 method_set_t SymStrUtils::handle_method_names = init_handle_method_names();
 std::map<std::string, bool> SymStrUtils::skip_method_names =
     init_skip_method_names();
-bool SymStrUtils::need_recording = false;
 
 method_set_t SymStrUtils::init_handle_method_names() {
   method_set_t m_set;
@@ -47,9 +46,10 @@ bool SymStrUtils::invoke_method_helper(MethodSymbolizerHandle &handle) {
 
   const std::string &callee_name = handle.get_callee_name();
   bool need_symbolize = false;
-  need_recording = false;
+  handle.set_recording(false);
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
-    need_recording = handle.general_check_param_symbolized();
+    bool need_recording = handle.general_check_param_symbolized();
+    handle.set_recording(need_recording);
     need_symbolize = need_recording;
     if (need_recording) {
       SymStrUtils::prepare_param(handle);
@@ -109,10 +109,6 @@ int SymStrUtils::prepare_param_helper(MethodSymbolizerHandle &handle,
     exp = handle.get_reference_exp(locals_offset, obj);
     if (exp == NULL) exp = SymString::get_exp_of(obj);
   } else if (type == T_ARRAY) {
-    tty->print_cr("record string method having a array param: ");
-    handle.get_callee_method()->print_name(tty);
-    tty->cr();
-
     arrayOop arr_obj = handle.get_param<arrayOop>(locals_offset);
     exp = ConcolicMngr::ctx->container_state(arr_obj, "INDEXED");
   } else {
@@ -125,7 +121,7 @@ int SymStrUtils::prepare_param_helper(MethodSymbolizerHandle &handle,
 }
 
 Expression *SymStrUtils::finish_method_helper(MethodSymbolizerHandle &handle) {
-  if (need_recording) {
+  if (handle.is_recording()) {
     const std::string &callee_name = handle.get_callee_name();
     BasicType type = handle.get_result_type();
     Expression *exp = NULL;

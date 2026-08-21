@@ -12,8 +12,22 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 /** One canonical output endpoint captured by a scheduled execution task. */
 public final class OutputCaptureSpec {
     public static final String CALL_ARGUMENT = "CALL_ARGUMENT";
+    /** A declared communication effect reached at a normal method return. */
+    public static final String COMMUNICATION_EFFECT =
+            "COMMUNICATION_EFFECT";
     public static final String MUTATION_STATE = "MUTATION_STATE";
     public static final String FIELD_WRITE_STATE = "FIELD_WRITE_STATE";
+    public static final String REGION_EXIT_FIELD = "REGION_EXIT_FIELD";
+    /**
+     * A structured communication leaf exported by the VM handoff broker.
+     *
+     * <p>The leaf has no Java argument position of its own: it is carried
+     * inside a declared parent cut value.  Its output boundary is therefore
+     * the successful export of the exact field expression, under the exact
+     * exchange, attempt, direction and leaf path stated by the planned RPC
+     * edge.  It is deliberately not a heap or parent-argument fallback.</p>
+     */
+    public static final String HANDOFF_BOUND_LEAF = "HANDOFF_BOUND_LEAF";
     public static final String REGION_ACTIVATION_SCOPE =
             "REGION_ACTIVATION";
     public static final String DEFINITION_INVOCATION_SCOPE =
@@ -36,8 +50,9 @@ public final class OutputCaptureSpec {
     private final boolean occurrenceScoped;
     private final String occurrenceScope;
     private final String outputSiteId;
-    private final int outputOccurrence;
     private final int replayOccurrence;
+    private final String leafPath;
+    private final String direction;
 
     static OutputCaptureSpec decodeValidated(JsonObject encoded) {
         return new OutputCaptureSpec(encoded);
@@ -47,6 +62,16 @@ public final class OutputCaptureSpec {
         captureBindingId = string(encoded, "captureBindingId");
         outputPort = string(encoded, "outputPort");
         captureKind = string(encoded, "captureKind");
+        if (!CALL_ARGUMENT.equals(captureKind)
+                && !COMMUNICATION_EFFECT.equals(captureKind)
+                && !MUTATION_STATE.equals(captureKind)
+                && !FIELD_WRITE_STATE.equals(captureKind)
+                && !REGION_EXIT_FIELD.equals(captureKind)
+                && !HANDOFF_BOUND_LEAF.equals(captureKind)) {
+            throw new IllegalArgumentException(
+                    "output capture requires an explicit captureKind: "
+                            + captureKind);
+        }
         outputCell = string(encoded, "outputCell");
         javaType = string(encoded, "javaType");
         accessRootInputPort = string(encoded, "accessRootInputPort");
@@ -69,16 +94,17 @@ public final class OutputCaptureSpec {
                 || encoded.has("outputOccurrence")
                 || encoded.has("replayOccurrence");
         occurrenceScope = occurrenceScoped
-                ? string(encoded, "occurrenceScope").isEmpty()
-                ? REGION_ACTIVATION_SCOPE
-                : string(encoded, "occurrenceScope")
+                ? string(encoded, "occurrenceScope")
                 : "";
         outputSiteId = string(encoded, "outputSiteId");
-        outputOccurrence = encoded.has("outputOccurrence")
-                ? encoded.get("outputOccurrence").getAsInt() : 1;
+        int outputOccurrence = encoded.has("outputOccurrence")
+                ? encoded.get("outputOccurrence").getAsInt() : -1;
         replayOccurrence = encoded.has("replayOccurrence")
                 ? encoded.get("replayOccurrence").getAsInt()
-                : outputOccurrence;
+                : -1;
+        leafPath = string(encoded, "leafPath");
+        direction = string(encoded,
+                CommunicationCatalogContract.PORT_DIRECTION);
         // The ordinal is recorded provenance, not a replay demand: the goal
         // states the relation without one, and a bounded replay reaches the
         // site a different number of times than the recording did.  Refusing
@@ -114,9 +140,13 @@ public final class OutputCaptureSpec {
         return outputPort;
     }
 
-    /** Empty is the original region-exit field capture contract. */
     public boolean capturesCallArgument() {
         return CALL_ARGUMENT.equals(captureKind);
+    }
+
+    /** Records a communication event; its value is carried only by the VM. */
+    public boolean capturesCommunicationEffect() {
+        return COMMUNICATION_EFFECT.equals(captureKind);
     }
 
     /**
@@ -136,10 +166,19 @@ public final class OutputCaptureSpec {
         return capturesMutationState() || capturesFieldWriteState();
     }
 
-    /** The compatibility endpoint observed only when the region exits. */
+    /** The owner field snapshot observed only when the region exits. */
     public boolean capturesRegionExitField() {
-        return captureKind.isEmpty();
+        return REGION_EXIT_FIELD.equals(captureKind);
     }
+
+    /** Captures one exact field expression at a successful RPC export. */
+    public boolean capturesHandoffBoundLeaf() {
+        return HANDOFF_BOUND_LEAF.equals(captureKind);
+    }
+
+    public String leafPath() { return leafPath; }
+
+    public String direction() { return direction; }
 
     public String accessRootInputPort() {
         return accessRootInputPort;
@@ -234,16 +273,8 @@ public final class OutputCaptureSpec {
         return DEFINITION_INVOCATION_SCOPE.equals(occurrenceScope);
     }
 
-    public String occurrenceScope() {
-        return occurrenceScope;
-    }
-
     public String outputSiteId() {
         return outputSiteId;
-    }
-
-    public int outputOccurrence() {
-        return outputOccurrence;
     }
 
     public int replayOccurrence() {
@@ -252,7 +283,7 @@ public final class OutputCaptureSpec {
 
     /**
      * Validates the narrow nested-write extension without changing the
-     * legacy direct {@code FIELD_WRITE_STATE} wire contract.  The semantic
+     * direct {@code FIELD_WRITE_STATE} wire contract.  The semantic
      * endpoint remains {@code fieldSignature == leafFieldSignature}; the
      * separately declared definition field is used only to select the exact
      * assignment whose stored value owns that leaf.
@@ -270,8 +301,8 @@ public final class OutputCaptureSpec {
             }
             return;
         }
-        // Existing direct captures predate this extension and are still
-        // unambiguous because their putfield and semantic leaf are identical.
+        // A direct capture declares no projection and is unambiguous
+        // because its putfield and semantic leaf are identical.
         if (!declaresProjection) return;
         if (!hasDefinition || !hasLeaf || !hasPath) {
             throw new IllegalArgumentException(

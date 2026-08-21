@@ -120,45 +120,117 @@ public final class OutputClosureContract {
     }
 
     public static final class Producer {
+        /**
+         * Output ports the producing region declared by name, beyond the ones
+         * its own region identity mints.
+         *
+         * <p>Absent for a producer that publishes nothing outside its own
+         * region, so such a producer's wire form is exactly what it was
+         * before this member existed.</p>
+         */
+        public static final String DECLARED_OUTPUT_PORTS =
+                "declaredOutputPorts";
+
         private final String relationKey;
         private final String regionId;
-        private final String contractHash;
+        private final SortedSet<String> declaredOutputPorts;
 
-        Producer(String relationKey, String regionId, String contractHash) {
+        Producer(String relationKey, String regionId) {
+            this(relationKey, regionId, Collections.<String>emptyList());
+        }
+
+        Producer(String relationKey, String regionId,
+                 Collection<String> declaredOutputPorts) {
             this.relationKey = required(relationKey,
                     "producer.relationKey");
             this.regionId = required(regionId, "producer.regionId");
-            this.contractHash = required(contractHash,
-                    "producer.contractHash");
+            TreeSet<String> declared = new TreeSet<>();
+            for (String port : declaredOutputPorts == null
+                    ? Collections.<String>emptyList()
+                    : declaredOutputPorts) {
+                String id = trim(port);
+                // A region-scoped port is already admitted by the region
+                // identity it is minted from, so re-declaring it says
+                // nothing.  Dropping it here is what keeps a producer that
+                // declares only region-scoped outputs byte-identical to the
+                // form it had before declarations existed.
+                if (id.isEmpty() || regionScoped(id)) continue;
+                declared.add(id);
+            }
+            this.declaredOutputPorts =
+                    Collections.unmodifiableSortedSet(declared);
         }
 
         public String relationKey() { return relationKey; }
 
         public String regionId() { return regionId; }
 
-        public String contractHash() { return contractHash; }
+        /**
+         * The non-region-scoped output ports this producer's region declared.
+         *
+         * <p>A communication cut is the case that needs this: static
+         * discovery names a cut port after the exchange site it belongs to
+         * ({@code <exchangeSiteKey>.req.<name>}, {@code .resp},
+         * {@code .live.<carrier>}), not after the region, so the region
+         * identity cannot decide whether such a port is one of its own.  The
+         * declaration can, and it admits exactly the declared ids.</p>
+         */
+        public SortedSet<String> declaredOutputPorts() {
+            return declaredOutputPorts;
+        }
 
+        /**
+         * Relation identity only.  A declaration is a static fact about the
+         * region, not a distinguishing part of the relation: two contracts of
+         * one relation cannot legitimately disagree about it, and one of them
+         * may simply have been decoded from a wire that carried no cut port.
+         */
         boolean sameAs(Producer other) {
             return other != null
                     && relationKey.equals(other.relationKey)
-                    && regionId.equals(other.regionId)
-                    && contractHash.equals(other.contractHash);
+                    && regionId.equals(other.regionId);
         }
 
-        void requireOutputPort(String portId) {
-            String prefix = regionId + ".out.";
-            if (!portId.startsWith(prefix)
-                    || portId.length() == prefix.length()) {
-                throw new IllegalArgumentException(
-                        "output port is outside producer region: " + portId);
+        Producer withDeclaredOutputPorts(Collection<String> ports) {
+            TreeSet<String> union = new TreeSet<>(declaredOutputPorts);
+            if (ports != null) {
+                for (String port : ports) {
+                    String id = trim(port);
+                    if (!id.isEmpty() && !regionScoped(id)) union.add(id);
+                }
             }
+            return union.equals(declaredOutputPorts) ? this
+                    : new Producer(relationKey, regionId, union);
+        }
+
+        private boolean regionScoped(String portId) {
+            String prefix = regionId + ".out.";
+            return portId.startsWith(prefix)
+                    && portId.length() > prefix.length();
+        }
+
+        /**
+         * A member port is admitted when the region minted it
+         * ({@code <regionId>.out.<id>}) or when the region declared it by
+         * name.  Anything else is outside this producer and still throws:
+         * membership is exact, never a prefix or a shape.
+         */
+        void requireOutputPort(String portId) {
+            String id = trim(portId);
+            if (regionScoped(id) || declaredOutputPorts.contains(id)) return;
+            throw new IllegalArgumentException(
+                    "output port is outside producer region: " + portId);
         }
 
         JsonObject toJson() {
             JsonObject result = new JsonObject();
             result.addProperty("relationKey", relationKey);
             result.addProperty("regionId", regionId);
-            result.addProperty("contractHash", contractHash);
+            if (!declaredOutputPorts.isEmpty()) {
+                JsonArray declared = new JsonArray();
+                for (String port : declaredOutputPorts) declared.add(port);
+                result.add(DECLARED_OUTPUT_PORTS, declared);
+            }
             return result;
         }
     }

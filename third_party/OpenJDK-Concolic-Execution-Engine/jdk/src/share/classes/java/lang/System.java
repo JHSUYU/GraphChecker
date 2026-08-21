@@ -406,15 +406,9 @@ public final class System {
     public static native void printObjInfo(Object obj);
 
     /**
-     * Start Entry of our concolic execution
-     */
-    public static native long startConcolic();
-
-    /**
      * Starts a named concolic region.  The identifiers are copied into the
      * VM-owned thread context and are returned in the machine-readable region
-     * summary.  This is the preferred entry point for graph-directed replay;
-     * {@link #startConcolic()} remains available for existing clients.
+     * summary.
     */
     public static native long startConcolicRegion(String regionId,
                                                    String taskId);
@@ -423,6 +417,62 @@ public final class System {
      * End of our concolic execution
      */
     public static native long endConcolic();
+
+    /**
+     * Opens an explicit workload session and takes ownership of the VM's
+     * symbolic session for as long as it is held.
+     *
+     * Without one, the symbolic session's lifetime is a function of thread
+     * arrival and departure: the first thread to start a region opens it and
+     * the last one to leave a region closes it, taking the expression arena,
+     * the handoff broker, the shadow heap, the field versions and the event
+     * ledger with it.  A workload that runs several regions, on several
+     * threads, cannot then keep one expression universe across them -- an
+     * expression a finished region exported would name a freed node.
+     *
+     * While a workload session is open, no region exit and no thread detach
+     * closes the session.  Threads still attach and detach independently, each
+     * keeping its own shadow stack, locals, PC, branch events and nested
+     * region frames; the difference is only that their departure no longer
+     * ends the shared universe.
+     *
+     * The calling thread does not join the session and gets no symbolic
+     * execution state.  It may start its own regions separately, and it may
+     * finish and even exit while the workload session stays open.
+     *
+     * @return the positive session id now owned, which every region of this
+     *         workload reports as {@code sessionId}; or a negative status:
+     *         {@code -1} a workload session is already open (no second
+     *         reference was taken), {@code -4} a previous session is still
+     *         tearing down and the caller should retry
+     */
+    public static native long openWorkloadSession();
+
+    /**
+     * Releases the workload session and tears the symbolic session down.
+     *
+     * Refuses while any Java thread is still attached, including the caller
+     * when it is inside a region of its own: a member owns live shadow slots
+     * and expressions in the arena that close would free.  Closing when
+     * nothing is open, and closing a second time, both report "not open" and
+     * change nothing, so this is safe to call from a finally block.
+     *
+     * @return {@code 0} when the session was closed; or a negative status:
+     *         {@code -2} no workload session is open, {@code -3} refused
+     *         because Java threads are still attached -- see
+     *         {@code sessionMembers} in {@link #getWorkloadSessionStatus()} --
+     *         {@code -4} a teardown is already running
+     */
+    public static native long closeWorkloadSession();
+
+    /**
+     * Returns one consistent JSON snapshot of the session's identity and
+     * ownership: {@code sessionId}, {@code sessionMembers} (attached Java
+     * threads, which never counts the workload owner), {@code sessionOpen},
+     * {@code workloadSessionOpen}, {@code sessionState}, and the calling
+     * thread's own {@code attached} / {@code threadContextId}.
+     */
+    public static native String getWorkloadSessionStatus();
 
     public static native String getPathCondition();
 
@@ -484,6 +534,234 @@ public final class System {
             Object container, Object[] keys, Object[] values, int kind);
 
     /**
+     * Publishes the symbolic expression currently attached to one exact
+     * instance field and returns an opaque handle for it.  The field is
+     * addressed exactly as in {@link #symbolizeExactField}.
+     *
+     * <p>During an explicitly owned workload session, an unselected
+     * transport thread may instead forward an expression already stored in
+     * the session shadow heap.  That form records the handoff but creates no
+     * thread context, stack shadow or path condition.
+     *
+     * <p>The handle is a token, never a VM address.  It is valid only inside
+     * the session that issued it; session close reclaims it.  A positive
+     * result is a handle; a negative result is a handoff status code, the
+     * same vocabulary {@link #attachExpression} returns.
+     */
+    public static native long exportExpression(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor);
+
+    /**
+     * Attaches an already-exported expression to an existing value, addressed
+     * as one exact instance field.  Unlike every {@code symbolize*} method,
+     * this mints no new symbol: the target location comes to denote the
+     * exported expression, so later reads of it compose onto that expression
+     * directly.  Boxed primitives are attached through their declared value
+     * field, for example {@code ("java.lang.Integer", "value", "I")}.
+     *
+     * <p>The handle must still belong to the current session and the target
+     * field must have the exported leaf's type descriptor.
+     * A live handle already names the expression, so nothing else is agreed
+     * on afterwards. Communication provenance belongs to the application
+     * trace rather than this VM data-plane API.
+     *
+     * <p>One exported expression may be attached at several explicit
+     * receivers.  Each successful attach records its own {@code VALUE_HANDOFF}
+     * edge joining the exact export and attach events, and nothing is
+     * tallied.
+     *
+     * <p>Returns the positive VM export event id joined by the resulting
+     * {@code VALUE_HANDOFF} edge, or a negative status naming the handoff
+     * gap. A rejected attach leaves the target unchanged.
+     */
+    public static native long attachExpression(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, long handle);
+
+    /**
+     * Serializes the half-open path-condition index range
+     * {@code [startIndex, endIndex)} of the calling thread: its conditions
+     * and their conjunction.
+     *
+     * <p>This is a delta, not a prefix: a branch taken before the range is
+     * excluded and one taken inside it is included.  Endpoints outside the
+     * recorded sequence are clamped.  A selected branch hook reads back the
+     * exact predicate its recorded condition indices name this way.
+     *
+     * <p>Asking for a range never disturbs the whole-thread conjunction that
+     * shared-state publishing uses as its path guard.
+     */
+    public static native String getConcolicPathConditionRange(int startIndex,
+                                                              int endIndex);
+
+    /**
+     * Selects one shared location as a symbolic carrier, so that every later
+     * write to it publishes a version and every later read of it resolves to
+     * an exact writer or to an explicitly guarded choice.
+     *
+     * Nothing is versioned until it is selected.  The field access hooks fire
+     * on every field of every shadowed object, so versioning everything would
+     * charge a bounded analysis for state it never asks about; selection is
+     * what keeps the cost proportional to the question.
+     *
+     * {@code owner} is the receiver for an instance field, or the declaring
+     * class's {@code Class} object for a static one.  Selecting also records
+     * an INITIAL version holding the value the location has right now, so the
+     * state a read observes before any tracked write is an ordinary candidate
+     * rather than a hole.
+     *
+     * @return a positive INITIAL field-version id, {@code 0} if the location
+     *         was already selected, or a negative refusal code
+     */
+    public static native long selectSharedFieldCarrier(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor);
+
+    /**
+     * Returns the current task's retained version for one selected primitive
+     * or reference field. This is a pure lookup: it creates no symbolic
+     * shadow, event, carrier, INITIAL version or expression.
+     *
+     * @return a positive fieldVersionId, or a negative refusal code
+     */
+    public static native long getCurrentSharedFieldVersion(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor);
+
+    /**
+     * Arms one destination field's next real {@code getfield}/{@code getstatic}
+     * to consume the named producer version and record an exact
+     * {@code FIELD_READ_FROM} with reason {@code PLANNED_PRODUCER_STATE}.
+     * The producer and destination descriptors must match exactly; primitives
+     * must replay the same concrete value, while references preserve exact
+     * nullness without requiring deserialized objects to share identity.
+     *
+     * <p>The destination is not selected as a carrier and receives no local
+     * INITIAL version. A refused call has no symbolic side effects. This is
+     * concrete selected-edge provenance, not a new symbolic discovery root.
+     *
+     * @return the positive admitted fieldVersionId, or a negative refusal code
+     */
+    public static native long admitSharedFieldVersion(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, long fieldVersionId, String selectedEdgeId);
+
+    /**
+     * Selects one element of a fixed-shape array as a symbolic carrier.
+     * Element identity is the (array, index) slot, which is stable for the
+     * array's life; a resizable collection has no such slot and is not
+     * selectable here.
+     *
+     * @return a positive INITIAL field-version id, {@code 0} if the element
+     *         was already selected, or a negative refusal code
+     */
+    public static native long selectSharedElementCarrier(
+            Object array, int index);
+
+    /**
+     * Selects one supported {@code Map}'s whole state as a symbolic carrier,
+     * so that every later selected mutation of it publishes an immutable state
+     * version and every later {@code get}/{@code containsKey} on it resolves
+     * to an exact writer or to an explicitly guarded choice.
+     *
+     * A resizable collection has no stable per-member slot -- its members move
+     * under insertion and removal -- so {@link #selectSharedElementCarrier}'s
+     * (array, index) addressing does not apply to one. What a map does have is
+     * one immutable state per mutation, and that is what is versioned: the
+     * arm of writer {@code W} is {@code read(stateAfter(W), key)}, so
+     * selecting a writer changes what the reader observes rather than only
+     * which writer is named. Two writers therefore stay distinct even when the
+     * value they stored is concretely equal.
+     *
+     * Selecting also roots the map's symbolic state and records an INITIAL
+     * version holding it, so the state a query observes before any tracked
+     * mutation is an ordinary candidate rather than a hole. The map and every
+     * view of it ({@code keySet}, {@code values}, {@code entrySet} and their
+     * iterators) are one location.
+     *
+     * @return a positive INITIAL version id, {@code 0} if the map was already
+     *         selected, or a negative refusal code
+     */
+    public static native long selectSharedMapCarrier(Object map);
+
+    /**
+     * Returns the retained STATE version whose expression is the selected
+     * map's current state and whose writer is the current task. This is a pure
+     * lookup: it creates no shadow, state, INITIAL version, event or read.
+     *
+     * @return a positive fieldVersionId, or a negative refusal code
+     */
+    public static native long getCurrentSharedMapVersion(Object map);
+
+    /**
+     * Installs one retained producer STATE version as a destination map's
+     * current symbolic state and records an exact planned FIELD_READ_FROM.
+     * The producer is named only by its session-local version id; no producer
+     * Java object identity is transferred. A refused call does not create a
+     * destination shadow or INITIAL version.
+     *
+     * @return the positive planned read event id, or a negative refusal code
+     */
+    public static native long admitSharedMapVersion(
+            Object map, long fieldVersionId, String selectedEdgeId);
+
+    /**
+     * Serializes the versions published for one selected field, together with
+     * whether the writer set is still complete and how each read of it was
+     * resolved.  A location that was never selected reports no versions.
+     */
+    public static native String getSharedFieldVersions(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor);
+
+    /** {@link #getSharedFieldVersions} for one selected array element. */
+    public static native String getSharedElementVersions(
+            Object array, int index);
+
+    /**
+     * {@link #getSharedFieldVersions} for one selected map's whole state.
+     *
+     * The same envelope and the same {@code versions[]} / {@code reads[]}
+     * schema: a state version's {@code expression} is simply the container
+     * relation the mutation produced, and its {@code versionKind} reads as
+     * {@code STATE_PUT}, {@code STATE_REMOVE}, {@code STATE_CLEAR},
+     * {@code STATE_REMOVE_AT} or {@code STATE_CLEAR_VIEW}. The location's
+     * {@code locationKind} is {@code MAP_STATE}.
+     */
+    public static native String getSharedMapVersions(Object map);
+
+    /**
+     * Serializes the session's event-order ledger: every recorded monitor,
+     * volatile, thread-lifecycle and atomic action, in one event-id space.
+     *
+     * The ledger records only while at least one carrier is selected.  The
+     * order domain exists to decide provenance for selected shared state, and
+     * monitorenter is far too hot a bytecode to pay for an answer nobody
+     * asked for.
+     */
+    public static native String getEventLedger();
+
+    /**
+     * Offers one candidate order edge to the session's event-order domain.
+     *
+     * The domain already holds every observed edge -- program order, field
+     * read-from, synchronization, value handoff and region -- in one relation
+     * over one event-id space.  A candidate is admitted only if the relation
+     * stays acyclic; a cyclic candidate is refused, because a cyclic order
+     * describes no execution at all.
+     *
+     * Accepting a candidate does not order anything else.  The relation stays
+     * a partial order, and there is deliberately no way to ask it for a total
+     * schedule.
+     *
+     * @return {@code 0} when the edge was admitted, or a negative refusal
+     *         code, of which {@code -4} is "this edge would close a cycle"
+     */
+    public static native int proposeEventOrder(long beforeEventId,
+                                               long afterEventId);
+
+    /**
      * Returns the active region metadata and path condition without ending
      * concolic execution.
      */
@@ -541,31 +819,6 @@ public final class System {
      */
     public static native void symbolizeMethod(Object holder_name, Object callee_name);
 
-    /**
-     * record statement-object pair
-     */
-    public static native void recordStmtObj(Object stmt, Object obj);
-
-    /**
-     * record statement-object pair
-     */
-    public static native void recordPersistentObj(Object obj);
-
-    public static String weBridgeAnalysis(ClassLoader classLoader) {
-    /** TODO: currently JVM is unable to call Class.forName inside java.lang.System.
-      *   this is due to implementation specific restrictions of openjdk 8. Consider
-      *   relax the restriction.
-      */
-//         String className = new Exception().getStackTrace()[1].getClassName();
-//         try {
-//           weBridgeAnalysis0(Class.forName(className).getClassLoader());
-//         } catch (ClassNotFoundException e) {
-//           throw new RuntimeException(e);
-//         }
-        return weBridgeAnalysis0(classLoader);
-    }
-
-    private static native String weBridgeAnalysis0(ClassLoader classLoader);
     /**
      * Copies an array from the specified source array, beginning at the
      * specified position, to the specified position of the destination array.

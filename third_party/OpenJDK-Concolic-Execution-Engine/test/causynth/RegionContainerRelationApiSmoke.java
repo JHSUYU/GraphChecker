@@ -73,8 +73,14 @@ public final class RegionContainerRelationApiSmoke {
                 "queue relation");
         require(mapRelation.contains("\"operation\":\"REMOVE_AT\""),
                 mapRelation);
+        // The region summary is deliberately sparse: the VM stopped
+        // serializing the accumulated expression DAG at region exit, so the
+        // container relations asserted above travel through the expression
+        // API and the summary states only which authority published them.
         String summary = System.finishConcolicRegion();
-        require(summary.contains("ContainerRelation"), summary);
+        require(summary.contains(
+                "\"pathConditionAuthority\":"
+                        + "\"VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1\""), summary);
         System.out.println("CAUSYNTH_REGION_CONTAINER_RELATION_API_SMOKE_OK");
     }
 

@@ -2,13 +2,9 @@
 
 #include "concolic/methodSymbolizer.hpp"
 #include "concolic/concolicMngr.hpp"
+#include "runtime/atomic.inline.hpp"
 #include "concolic/exp/methodExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
-#include "concolic/jdbc/reference/symbolicConnection.hpp"
-#include "concolic/jdbc/reference/symbolicPersister.hpp"
-#include "concolic/jdbc/reference/symbolicResultSet.hpp"
-#include "concolic/jdbc/reference/symbolicStatement.hpp"
-#include "concolic/reference/symbolicEmailValidator.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/reference/symbolicStringUtils.hpp"
@@ -17,47 +13,42 @@
 #include "concolic/reference/symbolicList.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
-#include "concolic/reference/symbolicTimestamp.hpp"
-#include "concolic/reference/symbolicDate.hpp"
 #include "concolic/reference/symbolicMiscObjects.h"
 #include "concolic/reference/symbolicAtomic.hpp"
 #include "concolic/reference/internal/symbolicUnsafe.hpp"
-#include "concolic/jdbc/reference/symbolicHibernateKey.hpp"
-#include "concolic/jdbc/reference/symbolicHibernateMethod.hpp"
-#include "concolic/reference/symbolicHttpServletRequest.hpp"
-#include "concolic/reference/symbolicNDFunc.hpp"
 #include "memory/resourceArea.hpp"
 #include "runtime/thread.hpp"
 #include "runtime/signature.hpp"
 #include "utilities/exceptions.hpp"
 #include "utilities/ostream.hpp"
 
-MethodSymbolizer::MethodSymbolizer() : _symbolizing_method(false), _has_callbacks(false) {
+MethodSymbolizer::MethodSymbolizer() : _symbolizing_method(false) {
   init_helper_methods();
-  handling_methods.clear();
 }
 
 void MethodSymbolizer::init_helper_methods() {
   SymString::init_register_class(this);
   SymStrBuilder::init_register_class(this);
-  SymEmailValidator::init_register_class(this);
   SymStrUtils::init_register_class(this);
-  SymConn::init_register_class(this);
-  SymStmt::init_register_class(this);
-  SymResSet::init_register_class(this);
   SymMap::init_register_class(this);
   SymSet::init_register_class(this);
   SymList::init_register_class(this);
   SymBigDecimal::init_register_class(this);
-  SymTimestamp::init_register_class(this);
-  SymbolicDate::init_register_class(this);
   SymbolicAtomic::init_register_class(this);
-//  SymHibernateKey::init_register_class(this);
-//  SymHibernateMethod::init_register_class(this);
   SymbolicUnsafe::init_register_class(this);
-//  SymbolicHttpServletRequest::init_register_class(this);
-  SymbolicNDFunc::init_register_class(this);
   SymbolicMiscObjects::init_register_class(this);
+
+  // A log statement may inspect a symbolic application value, but its
+  // formatting, encoding and output are observational side effects.  Letting
+  // those implementation bodies execute concolically caused one symbolic
+  // keyId to generate thousands of MessageFormatter/UTF-8 array constraints
+  // and eventually truncate the bounded auxiliary-PC envelope.  Suppress the
+  // logging implementation as one concrete subtree; business code before and
+  // after the call remains fully concolic.
+  add_prefix_disabled_class("org/slf4j/");
+  add_prefix_disabled_class("org/apache/log4j/");
+  add_prefix_disabled_class("org/apache/commons/logging/");
+  add_prefix_disabled_class("java/util/logging/");
 }
 
 void MethodSymbolizer::add_invoke_helper_methods(const std::string class_name,
@@ -148,18 +139,15 @@ bool MethodSymbolizer::intercepts(Method *callee_method) {
     }
   }
   if (boxes_a_primitive(holder)) return true;
-  const std::set<std::string> &persisted = SymPersister::targets();
-  for (std::set<std::string>::const_iterator persister = persisted.begin();
-       persister != persisted.end(); ++persister) {
-    if (names(holder, *persister)) return true;
-  }
   // Only the prefix registry matches on a substring rather than the whole
   // name, so it is the one test that needs the name as a string.  It is
   // empty unless something registered a prefix, and then the conversion is
   // that registration's own cost.
-  if (_classes_prefix_to_symbolize.empty()) return false;
+  if (_classes_prefix_to_symbolize.empty()
+      && _classes_prefix_to_disable.empty()) return false;
   ResourceMark rm;
   std::string holder_name(holder->as_C_string());
+  if (disabled_class(holder_name)) return true;
   for (size_t index = 0; index < _classes_prefix_to_symbolize.size();
        ++index) {
     if (holder_name.find(_classes_prefix_to_symbolize[index])
@@ -201,20 +189,20 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
       this->get_sym_methods(_handle.get_callee_holder_name());
   BasicType basicType = primitive_target(_handle.get_callee_holder_name());
   const std::string& callee_holder_name = _handle.get_callee_holder_name();
+  const bool disabled = disabled_class(callee_holder_name);
 
-  if (basicType != T_ILLEGAL) {
+  if (disabled) {
+    // Do not prepare symbolic parameters.  Merely entering the method with
+    // its body muted and clearing its eventual result severs this
+    // observation-only subtree from the workload expression graph.
+    need_symbolize = true;
+  } else if (basicType != T_ILLEGAL) {
     need_symbolize = primitive_invoke_method_helper(_handle, basicType);
   } else if (_invoke_helper_methods.find(callee_holder_name) != _invoke_helper_methods.end()) {
     need_symbolize = _invoke_helper_methods[callee_holder_name](_handle);
 //    if (need_symbolize) {
 //      tty->print_cr("symbolizing method: %s.%s", callee_holder_name.c_str(), _handle.get_callee_name().c_str());
 //    }
-  } else if (SymPersister::target(_handle.get_callee_holder_name())) {
-    need_symbolize = false;
-    bool need_handling = SymPersister::invoke_method_helper(_handle);
-    if (need_handling) {
-      handling_methods.push_back(_handle);
-    }
   } else if (sym_methods != NULL &&
              sym_methods->find(_handle.get_callee_name()) !=
              sym_methods->end()) {
@@ -260,7 +248,12 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
     BasicType basicType = primitive_target(_handle.get_callee_holder_name());
     const std::string& callee_holder_name = _handle.get_callee_holder_name();
 
-    if (basicType != T_ILLEGAL) {
+    if (disabled_class(callee_holder_name)) {
+      // An observation sink returns a concrete value.  In particular, never
+      // manufacture a MethodExpression that would reconnect a formatted log
+      // string to its symbolic application argument.
+      exp = NULL;
+    } else if (basicType != T_ILLEGAL) {
       exp = primitive_finish_method_helper(_handle, basicType);
     } else if (_finish_helper_methods.find(callee_holder_name) != _finish_helper_methods.end()) {
       exp = _finish_helper_methods[callee_holder_name](_handle);
@@ -282,25 +275,6 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
     }
     this->_handle.reset();
     this->set_symbolizing_method(false);
-  }
-}
-
-// only for those are not symbolized method
-bool MethodSymbolizer::has_handling_methods() {
-  return !handling_methods.empty();
-}
-
-void MethodSymbolizer::finish_handling_method(ZeroFrame *caller_frame) {
-  guarantee(has_handling_methods(), "should be");
-  MethodSymbolizerHandle &handle = handling_methods.back();
-  if (caller_frame == handle.get_caller_frame()) {
-    Expression *exp;
-    if (SymPersister::target(handle.get_callee_holder_name())) {
-      exp = SymPersister::finish_method_helper(_handle);
-    } else {
-//      ShouldNotReachHere();
-    }
-    handling_methods.pop_back();
   }
 }
 
@@ -454,42 +428,32 @@ void MethodSymbolizer::add_prefix_symbolic_class(const std::string class_name) {
   _classes_prefix_to_symbolize.push_back(class_name);
 }
 
-bool MethodSymbolizer::has_callback() const {
-  return _has_callbacks;
+void MethodSymbolizer::add_prefix_disabled_class(
+    const std::string class_name) {
+  _classes_prefix_to_disable.push_back(class_name);
 }
 
-void MethodSymbolizer::set_has_callback(bool has_callback) {
-  _has_callbacks = has_callback;
-}
-
-void MethodSymbolizer::method_exit(ZeroFrame *caller_frame) {
-  if (caller_frame != _handle.get_caller_frame()) {
-    return;
+bool MethodSymbolizer::disabled_class(const std::string &class_name) const {
+  for (size_t index = 0; index < _classes_prefix_to_disable.size(); ++index) {
+    const std::string &prefix = _classes_prefix_to_disable[index];
+    if (class_name.size() >= prefix.size()
+        && class_name.compare(0, prefix.size(), prefix) == 0) {
+      return true;
+    }
   }
-
-  const std::string &callee_holder_name = _handle.get_callee_holder_name();
-  if (_method_exit_callback_methods.find(callee_holder_name) ==
-      _method_exit_callback_methods.end()) {
-    return;
-  }
-
-  _method_exit_callback_methods[callee_holder_name](_handle);
-  _handle.reset();
+  return false;
 }
 
-void MethodSymbolizer::add_method_exit_callback(const std::string class_name,
-                                                void (*method_exit_callback)(MethodSymbolizerHandle &)) {
-  _method_exit_callback_methods[class_name] = method_exit_callback;
-}
-
-sym_rid_t MethodReturnSymbolExp::sym_method_count = 0;
+volatile intptr_t MethodReturnSymbolExp::sym_method_count = 0;
 
 MethodReturnSymbolExp::MethodReturnSymbolExp(BasicType type) {
-  stringStream ss(str_buf, BUF_SIZE);
+  char buf[BUF_SIZE];
+  stringStream ss(buf, BUF_SIZE);
   _type = type2char(type);
   set_head(ss, 'M', type);
-  ss.print("return%lu", sym_method_count++);
-  this->finalize(ss.size());
+  ss.print("return%lu", (ulong) Atomic::add_ptr(
+      (intptr_t) 1, &sym_method_count) - 1);
+  this->finalize(buf, ss.size());
 }
 
 #endif

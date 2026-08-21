@@ -321,22 +321,6 @@ public final class UnreachableParityContainerThreeThreadWorkload {
             this.channelIdentityValid = channelIdentityValid;
         }
 
-        public Boolean getOddInput() {
-            return oddInput;
-        }
-
-        public Boolean getEvenInput() {
-            return evenInput;
-        }
-
-        public int getOddValue() {
-            return oddValue;
-        }
-
-        public int getEvenValue() {
-            return evenValue;
-        }
-
         public Throwable getFailure() {
             return failure;
         }
@@ -359,10 +343,6 @@ public final class UnreachableParityContainerThreeThreadWorkload {
 
         public boolean isConsumerStartedAfterProducersTerminated() {
             return consumerStartedAfterProducersTerminated;
-        }
-
-        public boolean isChannelIdentityValid() {
-            return channelIdentityValid;
         }
 
         public String toJson() {

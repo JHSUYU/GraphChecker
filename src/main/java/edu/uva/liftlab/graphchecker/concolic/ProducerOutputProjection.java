@@ -10,7 +10,6 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -35,7 +34,6 @@ public final class ProducerOutputProjection {
         require("regionId");
         require("relationKey");
         require("goalId");
-        require("pathSeedKey");
         outputPorts = strings(encoded, "outputPorts");
         edgeIds = strings(encoded, "edgeIds");
         if (outputPorts.isEmpty() || edgeIds.isEmpty()) {
@@ -46,7 +44,7 @@ public final class ProducerOutputProjection {
 
     public static ProducerOutputProjection create(
             String campaignId, String regionId, String relationKey,
-            String goalId, String pathSeedKey, Set<String> outputPorts,
+            String goalId, Set<String> outputPorts,
             Set<String> edgeIds) {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -57,8 +55,6 @@ public final class ProducerOutputProjection {
         result.addProperty("relationKey", required(relationKey,
                 "relationKey"));
         result.addProperty("goalId", required(goalId, "goalId"));
-        result.addProperty("pathSeedKey", required(pathSeedKey,
-                "pathSeedKey"));
         result.add("outputPorts", encode(outputPorts, "outputPorts"));
         result.add("edgeIds", encode(edgeIds, "edgeIds"));
         return new ProducerOutputProjection(result);
@@ -86,9 +82,7 @@ public final class ProducerOutputProjection {
                 goal.plan().regionId())
                 || !string(encoded, "relationKey").equals(
                 goal.plan().relationKey())
-                || !string(encoded, "goalId").equals(goal.goalId())
-                || !string(encoded, "pathSeedKey").equals(
-                firstNonBlank(goal.pathSeedKey(), goal.goalId()))) {
+                || !string(encoded, "goalId").equals(goal.goalId())) {
             throw new IllegalArgumentException(
                     "producer projection does not match selected goal");
         }

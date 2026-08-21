@@ -5,8 +5,10 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -15,26 +17,22 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Numeric identifiers produced here are evidence inside one concrete
  * trace; they are deliberately not replay identities.  A {@link SourceRef}
  * is the explicit stable exception: it names a logical node/application and
- * lifecycle epoch.  A local owner partitions node/service-local state, a lane
- * preserves same-thread program order, and a span identifies one root
- * activation.  Soot-inserted call hooks capture parent context at thread/task
- * submission.  RPC hooks add a remote parent without changing the application
- * payload.</p>
+ * lifecycle epoch.  Node/service-local state is partitioned by that source
+ * alone; a lane preserves same-thread program order, and a span identifies
+ * one root activation.  Soot-inserted call hooks capture parent context at
+ * thread/task submission.  RPC hooks add a remote parent without changing the
+ * application payload.</p>
  */
 final class RuntimeTraceContext {
     private static final Object LOCK = new Object();
     private static final AtomicLong IDS = new AtomicLong(1L);
-    private static final IdentityHashMap<Object, Long> OWNERS =
-            new IdentityHashMap<>();
     private static final IdentityHashMap<Object, SourceRef> SOURCE_ALIASES =
             new IdentityHashMap<>();
     private static final Map<String, SourceRef> SOURCES_BY_KEY =
             new LinkedHashMap<>();
-    private static final Map<String, Long> SOURCE_OWNER_IDS =
-            new LinkedHashMap<>();
     private static final IdentityHashMap<Object, Seed> ASYNC_SEEDS =
             new IdentityHashMap<>();
-    private static final Map<String, Deque<Seed>> RPC_SENDS =
+    private static final Map<String, Seed> RPC_SENDS =
             new LinkedHashMap<>();
     private static final Map<String, Long> REQUEST_OCCURRENCES =
             new LinkedHashMap<>();
@@ -53,17 +51,6 @@ final class RuntimeTraceContext {
             };
 
     private RuntimeTraceContext() {
-    }
-
-    static long registerOwner(Object owner, String label) {
-        if (owner == null) return 0L;
-        synchronized (LOCK) {
-            Long existing = OWNERS.get(owner);
-            if (existing != null) return existing;
-            long id = nextId();
-            OWNERS.put(owner, id);
-            return id;
-        }
     }
 
     /** Binds a stable node/application source to a runtime anchor object. */
@@ -129,10 +116,8 @@ final class RuntimeTraceContext {
             throw new IllegalArgumentException("request source is required");
         }
         SourceRef source;
-        long ownerId;
         synchronized (LOCK) {
             source = canonicalSourceLocked(requestedSource);
-            ownerId = sourceOwnerIdLocked(source);
         }
         State state = CURRENT.get();
         long requestId = nextId();
@@ -149,21 +134,19 @@ final class RuntimeTraceContext {
                 + "#" + requestOccurrence;
         Frame activeFrame = state.frames.peek();
         state.requests.push(new RequestFrame(requestId, source,
-                state.ownerId, state.source, activeFrame,
-                activeFrame == null ? 0L : activeFrame.ownerId,
+                state.source, activeFrame,
                 activeFrame == null ? null : activeFrame.source,
                 state.requestId, state.requestKey, state.requestApi));
-        state.ownerId = ownerId;
         state.source = source;
         state.requestId = requestId;
         state.requestKey = requestKey;
         state.requestApi = normalizedApi;
         if (activeFrame != null) {
-            activeFrame.ownerId = ownerId;
             activeFrame.source = source;
         }
         recordSourceEvent(SourceEventKind.REQUEST_BEGIN, source, null,
                 requestId, state.view());
+        publishCausalSource(state);
         return requestId;
     }
 
@@ -178,14 +161,12 @@ final class RuntimeTraceContext {
         recordSourceEvent(SourceEventKind.REQUEST_END, request.source, null,
                 requestId, state.view());
         state.requests.pop();
-        state.ownerId = request.previousOwnerId;
         state.source = request.previousSource;
         state.requestId = request.previousRequestId;
         state.requestKey = request.previousRequestKey;
         state.requestApi = request.previousRequestApi;
         if (request.activeFrame != null
                 && state.frames.peek() == request.activeFrame) {
-            request.activeFrame.ownerId = request.previousFrameOwnerId;
             request.activeFrame.source = request.previousFrameSource;
         }
     }
@@ -219,13 +200,13 @@ final class RuntimeTraceContext {
         return next;
     }
 
-    /** Captures the current owner/span for a Thread, Runnable, or Callable. */
+    /** Captures the current source/span for a Thread, Runnable, or Callable. */
     static void captureAsync(Object carrier) {
         if (carrier == null) return;
         State state = CURRENT.get();
         View view = state.view();
         synchronized (LOCK) {
-            ASYNC_SEEDS.put(carrier, new Seed(view.ownerId, view.spanId,
+            ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestId, view.requestKey,
                     view.requestApi));
         }
@@ -237,28 +218,34 @@ final class RuntimeTraceContext {
         Seed seed = takeSeed(Thread.currentThread());
         if (seed == null) seed = takeSeed(receiver);
 
-        SourceRef source = seed == null ? null : seed.source;
-        if (source == null) source = sourceFor(receiver);
+        // The receiver's own registration first, and only then anything
+        // ambient.  A node binds its receivers to itself at start-up
+        // (registerSource/registerSourceAlias), so this is the application
+        // stating which logical source the activation belongs to.  The async
+        // seed below it is the source of whoever *submitted* the thread, and
+        // an in-process cluster submits every node's threads from the driver
+        // - so preferring the seed attributed every DataNode activation to
+        // the driver, which is what made a producer and its target land on
+        // different owners and epochs and left the delivery of one exchange
+        // recorded by two occurrences of one source.  Nothing here searches:
+        // an alias is an identity binding the application made, and a
+        // receiver bound to two sources is already refused at registration
+        // by requireUnchangedAliasLocked rather than resolved by choosing.
+        SourceRef source = sourceFor(receiver);
+        boolean receiverAttributed = source != null;
+        if (source == null && seed != null) source = seed.source;
         if (source == null) source = state.pendingRemoteSource;
         if (source == null) source = state.source;
-
-        long ownerId = seed == null ? state.ownerId : seed.ownerId;
+        // A receiver that named no source of its own keeps the ambient
+        // stamp, which is the only answer available while the trace is being
+        // written.  Whether that stamp survives is decided after the trace is
+        // read: the receiver's own registration, wherever in the run it
+        // arrives, carries the recorded object identity and re-attributes
+        // these frames to it.
         long requestId = seed == null ? state.requestId : seed.requestId;
         String requestKey = seed == null ? state.requestKey : seed.requestKey;
         String requestApi = seed == null ? state.requestApi : seed.requestApi;
-        if (source != null) {
-            synchronized (LOCK) {
-                ownerId = sourceOwnerIdLocked(source);
-            }
-        }
         long parentSpanId = seed == null ? state.currentSpan() : seed.parentSpanId;
-        if (source == null && receiver != null && seed == null
-                && (ownerId == 0L || ownerId == state.fallbackOwnerId)) {
-            ownerId = registerOwner(receiver, receiver.getClass().getName());
-        }
-        if (ownerId == 0L) {
-            ownerId = state.fallbackOwnerId;
-        }
         if (seed != null || state.laneId == 0L) {
             state.laneId = nextId();
         }
@@ -268,14 +255,14 @@ final class RuntimeTraceContext {
         // the actual handler root starts.
         long remoteParentSpanId = state.pendingRemoteParentSpanId;
         Frame frame = new Frame(spanId, parentSpanId, remoteParentSpanId,
-                state.ownerId, ownerId, state.source, source,
+                state.source, source,
                 state.requestId, state.requestKey, state.requestApi);
-        state.ownerId = ownerId;
         state.source = source;
         state.requestId = requestId;
         state.requestKey = requestKey;
         state.requestApi = requestApi;
         state.frames.push(frame);
+        publishCausalSource(state);
         return state.view();
     }
 
@@ -284,7 +271,6 @@ final class RuntimeTraceContext {
         Frame frame = state.frames.peek();
         if (frame == null || frame.spanId != spanId) return;
         state.frames.pop();
-        state.ownerId = frame.previousOwnerId;
         state.source = frame.previousSource;
         state.requestId = frame.previousRequestId;
         state.requestKey = frame.previousRequestKey;
@@ -301,48 +287,51 @@ final class RuntimeTraceContext {
 
     /**
      * Registers an RPC endpoint.  SEND stores the caller span; RECEIVE binds
-     * the matching caller as remote parent and may establish the local owner.
+     * the matching caller as remote parent and may establish the local source.
+     *
+     * <p>The application supplies an exchange id and half, so one key names
+     * one transport leg.  The seed is consequently an exact one-shot mapping,
+     * not a FIFO guessed from payload equality or arrival order.</p>
      */
     static View rpc(String direction, String transport, String correlationId,
-                    Object localOwner) {
+                    String half, Object localOwner) {
         State state = CURRENT.get();
         SourceRef localSource = sourceFor(localOwner);
-        if (localOwner != null) {
-            if (localSource == null) {
-                state.ownerId = registerOwner(localOwner,
-                        localOwner.getClass().getName());
-            } else {
-                synchronized (LOCK) {
-                    state.ownerId = sourceOwnerIdLocked(localSource);
-                }
-            }
+        // A short-lived transport object is commonly unregistered.  It says
+        // nothing about ownership and must not erase the source already
+        // established by the enclosing request/receiver.  Only an explicit
+        // application registration is authority to replace that context.
+        if (localSource != null) {
             state.source = localSource;
             Frame frame = state.frames.peek();
             if (frame != null) {
-                frame.ownerId = state.ownerId;
                 frame.source = localSource;
             }
         }
-        String key = safe(transport) + "\n" + safe(correlationId);
+        String key = safe(transport) + "\n" + safe(correlationId) + "\n"
+                + safe(half);
         if ("SEND".equalsIgnoreCase(safe(direction))) {
             View view = state.view();
             synchronized (LOCK) {
-                RPC_SENDS.computeIfAbsent(key, ignored -> new ArrayDeque<>())
-                        .addLast(new Seed(view.ownerId, view.spanId,
-                                view.source, view.requestId,
-                                view.requestKey, view.requestApi));
+                RPC_SENDS.put(key, new Seed(view.spanId,
+                        view.source, view.requestId,
+                        view.requestKey, view.requestApi));
             }
+            // The exact local endpoint is also the source of the active
+            // producer occurrence.  RECEIVE publishes this below, but SEND
+            // used to return first: a root whose receiver is a short-lived
+            // transport object could then export every demanded value and
+            // still be rejected as source-unattributed.  Publish the source
+            // resolved from the real local owner before returning; this is
+            // attribution only and does not pair or move an expression.
+            publishCausalSource(state);
             return view;
         }
         if ("RECEIVE".equalsIgnoreCase(safe(direction))) {
             state.pendingRemoteSource = localSource;
             Seed remote = null;
             synchronized (LOCK) {
-                Deque<Seed> parents = RPC_SENDS.get(key);
-                if (parents != null) {
-                    remote = parents.pollFirst();
-                    if (parents.isEmpty()) RPC_SENDS.remove(key);
-                }
+                remote = RPC_SENDS.remove(key);
             }
             if (remote != null) {
                 state.pendingRemoteParentSpanId = remote.parentSpanId;
@@ -355,15 +344,31 @@ final class RuntimeTraceContext {
                 }
             }
         }
+        publishCausalSource(state);
         return state.view();
+    }
+
+    /**
+     * Hands the thread's freshly established source to the occurrence running
+     * on it.
+     *
+     * <p>The source is the stable half of a replay address, and an
+     * application establishes it inside its own entry method - a thread-entry
+     * root is entered before its source exists.  A replay therefore cannot
+     * read it at the region entry hook and has to be told when it appears.
+     * A service that never opens a scope on these threads is attributed from
+     * its receiver's registration instead.</p>
+     */
+    private static void publishCausalSource(State state) {
+        View view = state.view();
+        ConcolicRegionRuntime.observeCausalSource(
+                view.source == null ? "" : view.source.key());
     }
 
     static void resetForTests() {
         synchronized (LOCK) {
-            OWNERS.clear();
             SOURCE_ALIASES.clear();
             SOURCES_BY_KEY.clear();
-            SOURCE_OWNER_IDS.clear();
             ASYNC_SEEDS.clear();
             RPC_SENDS.clear();
             REQUEST_OCCURRENCES.clear();
@@ -400,7 +405,41 @@ final class RuntimeTraceContext {
 
     private static void bindSourceLocked(Object alias, SourceRef source) {
         SOURCE_ALIASES.put(alias, source);
-        OWNERS.put(alias, sourceOwnerIdLocked(source));
+    }
+
+    /**
+     * Whether this run registered the same logical source as {@code sourceKey}.
+     *
+     * <p>The epoch is a lifecycle number minted independently by each fresh
+     * replay.  It remains useful within one trace, but comparing its numeric
+     * value with the seed would reject the same NameNode/DataNode role merely
+     * because startup order changed.</p>
+     */
+    static boolean sourceIdentityRegistered(String sourceKey) {
+        if (sourceKey == null || sourceKey.isEmpty()) return false;
+        synchronized (LOCK) {
+            for (String registered : SOURCES_BY_KEY.keySet()) {
+                if (sameSourceIdentity(sourceKey, registered)) return true;
+            }
+            return false;
+        }
+    }
+
+    /** Same logical source across independently minted replay epochs. */
+    static boolean sameSourceIdentity(String left, String right) {
+        String leftIdentity = sourceIdentity(left);
+        return !leftIdentity.isEmpty()
+                && leftIdentity.equals(sourceIdentity(right));
+    }
+
+    private static String sourceIdentity(String sourceKey) {
+        String value = sourceKey == null ? "" : sourceKey.trim();
+        int marker = value.lastIndexOf("#epoch");
+        if (marker <= 0 || marker + 6 >= value.length()) return value;
+        for (int i = marker + 6; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) return value;
+        }
+        return value.substring(0, marker);
     }
 
     private static void requireUnchangedAliasLocked(Object alias,
@@ -410,14 +449,6 @@ final class RuntimeTraceContext {
             throw new IllegalArgumentException(
                     "source alias is already bound to " + existing.key());
         }
-    }
-
-    private static long sourceOwnerIdLocked(SourceRef source) {
-        Long existing = SOURCE_OWNER_IDS.get(source.key());
-        if (existing != null) return existing;
-        long ownerId = nextId();
-        SOURCE_OWNER_IDS.put(source.key(), ownerId);
-        return ownerId;
     }
 
     private static void recordSourceEvent(SourceEventKind kind,
@@ -433,15 +464,13 @@ final class RuntimeTraceContext {
     }
 
     private static State initialState() {
-        long laneId = nextId();
-        return new State(laneId, nextId());
+        return new State(nextId());
     }
 
     private static State inheritedState(State parent) {
         State child = initialState();
         if (parent == null) return child;
         View inherited = parent.view();
-        child.ownerId = inherited.ownerId;
         child.source = inherited.source;
         child.requestId = inherited.requestId;
         child.requestKey = inherited.requestKey;
@@ -458,7 +487,6 @@ final class RuntimeTraceContext {
     }
 
     static final class View {
-        final long ownerId;
         final long laneId;
         final long spanId;
         final long parentSpanId;
@@ -468,11 +496,10 @@ final class RuntimeTraceContext {
         final String requestKey;
         final String requestApi;
 
-        private View(long ownerId, long laneId, long spanId,
+        private View(long laneId, long spanId,
                      long parentSpanId, long remoteParentSpanId,
                      SourceRef source, long requestId,
                      String requestKey, String requestApi) {
-            this.ownerId = ownerId;
             this.laneId = laneId;
             this.spanId = spanId;
             this.parentSpanId = parentSpanId;
@@ -486,8 +513,6 @@ final class RuntimeTraceContext {
 
     private static final class State {
         private long laneId;
-        private final long fallbackOwnerId;
-        private long ownerId;
         private SourceRef source;
         private SourceRef pendingRemoteSource;
         private long pendingRemoteParentSpanId;
@@ -497,10 +522,8 @@ final class RuntimeTraceContext {
         private final Deque<Frame> frames = new ArrayDeque<>();
         private final Deque<RequestFrame> requests = new ArrayDeque<>();
 
-        private State(long laneId, long fallbackOwnerId) {
+        private State(long laneId) {
             this.laneId = laneId;
-            this.fallbackOwnerId = fallbackOwnerId;
-            this.ownerId = fallbackOwnerId;
         }
 
         private long currentSpan() {
@@ -510,7 +533,7 @@ final class RuntimeTraceContext {
 
         private View view() {
             Frame frame = frames.peek();
-            return new View(frame == null ? ownerId : frame.ownerId,
+            return new View(
                     laneId, frame == null ? 0L : frame.spanId,
                     frame == null ? 0L : frame.parentSpanId,
                     frame == null ? pendingRemoteParentSpanId
@@ -524,8 +547,6 @@ final class RuntimeTraceContext {
         private final long spanId;
         private final long parentSpanId;
         private long remoteParentSpanId;
-        private final long previousOwnerId;
-        private long ownerId;
         private final SourceRef previousSource;
         private SourceRef source;
         private final long previousRequestId;
@@ -533,15 +554,12 @@ final class RuntimeTraceContext {
         private final String previousRequestApi;
 
         private Frame(long spanId, long parentSpanId,
-                      long remoteParentSpanId, long previousOwnerId,
-                      long ownerId, SourceRef previousSource,
+                      long remoteParentSpanId, SourceRef previousSource,
                       SourceRef source, long previousRequestId,
                       String previousRequestKey, String previousRequestApi) {
             this.spanId = spanId;
             this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
-            this.previousOwnerId = previousOwnerId;
-            this.ownerId = ownerId;
             this.previousSource = previousSource;
             this.source = source;
             this.previousRequestId = previousRequestId;
@@ -551,16 +569,14 @@ final class RuntimeTraceContext {
     }
 
     private static final class Seed {
-        private final long ownerId;
         private final long parentSpanId;
         private final SourceRef source;
         private final long requestId;
         private final String requestKey;
         private final String requestApi;
 
-        private Seed(long ownerId, long parentSpanId, SourceRef source,
+        private Seed(long parentSpanId, SourceRef source,
                      long requestId, String requestKey, String requestApi) {
-            this.ownerId = ownerId;
             this.parentSpanId = parentSpanId;
             this.source = source;
             this.requestId = requestId;
@@ -572,29 +588,23 @@ final class RuntimeTraceContext {
     private static final class RequestFrame {
         private final long requestId;
         private final SourceRef source;
-        private final long previousOwnerId;
         private final SourceRef previousSource;
         private final Frame activeFrame;
-        private final long previousFrameOwnerId;
         private final SourceRef previousFrameSource;
         private final long previousRequestId;
         private final String previousRequestKey;
         private final String previousRequestApi;
 
         private RequestFrame(long requestId, SourceRef source,
-                             long previousOwnerId,
                              SourceRef previousSource, Frame activeFrame,
-                             long previousFrameOwnerId,
                              SourceRef previousFrameSource,
                              long previousRequestId,
                              String previousRequestKey,
                              String previousRequestApi) {
             this.requestId = requestId;
             this.source = source;
-            this.previousOwnerId = previousOwnerId;
             this.previousSource = previousSource;
             this.activeFrame = activeFrame;
-            this.previousFrameOwnerId = previousFrameOwnerId;
             this.previousFrameSource = previousFrameSource;
             this.previousRequestId = previousRequestId;
             this.previousRequestKey = safe(previousRequestKey);

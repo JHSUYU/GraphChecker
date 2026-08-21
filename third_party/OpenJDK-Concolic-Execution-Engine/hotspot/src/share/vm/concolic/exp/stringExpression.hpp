@@ -18,7 +18,6 @@
 class OpStrExpression : public Expression {
     std::string _name;
     exp_list_t _param_list;
-    char *_param_cache;
     bool _is_not;
     bool _is_boolean;
 
@@ -27,7 +26,6 @@ public:
     OpStrExpression(const std::string &method, exp_list_t &param_list);
     OpStrExpression(const std::string &method, exp_list_t &param_list, bool is_not);
     OpStrExpression(const std::string &method, Expression* exp);
-    ~OpStrExpression();
 
 public:
     void print();

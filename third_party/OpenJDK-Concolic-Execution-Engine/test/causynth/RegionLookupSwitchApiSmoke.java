@@ -11,19 +11,18 @@ public final class RegionLookupSwitchApiSmoke {
     public static void main(String[] args) {
         Trace selected = execute(7, "lookup_selected");
         require(selected.result == 17, selected.summary);
-        require(selected.summary.contains("\"_op\":\"==\"")
-                        && selected.summary.contains("Y_I_7"),
-                selected.summary);
+        require(selected.path.contains("\"_op\":\"==\"")
+                        && selected.path.contains("Y_I_7"), selected.path);
         requireExactEvent(selected.events, "LOOKUP.lookup_selected", true,
                 1);
 
         Trace defaultArm = execute(8, "lookup_default");
         require(defaultArm.result == 19, defaultArm.summary);
-        require(count(defaultArm.summary, "\"_op\":\"!=\"") == 3
-                        && defaultArm.summary.contains("Y_I_-100")
-                        && defaultArm.summary.contains("Y_I_7")
-                        && defaultArm.summary.contains("Y_I_1000"),
-                defaultArm.summary);
+        require(count(defaultArm.path, "\"_op\":\"!=\"") == 3
+                        && defaultArm.path.contains("Y_I_-100")
+                        && defaultArm.path.contains("Y_I_7")
+                        && defaultArm.path.contains("Y_I_1000"),
+                defaultArm.path);
         requireExactEvent(defaultArm.events, "LOOKUP.lookup_default", false,
                 3);
         System.out.println("CAUSYNTH_REGION_LOOKUP_SWITCH_API_SMOKE_OK");
@@ -52,10 +51,15 @@ public final class RegionLookupSwitchApiSmoke {
                 break;
         }
         require(event > 0L, "branch marker rejected");
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String events = System.getConcolicBranchEvents();
         String summary = System.finishConcolicRegion();
-        require(summary.contains(symbol), summary);
-        return new Trace(result, summary, events);
+        require(summary.contains(
+                "\"pathConditionAuthority\":"
+                        + "\"VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1\""),
+                summary);
+        return new Trace(result, summary, events, path);
     }
 
     private static void requireExactEvent(String events, String site,
@@ -87,11 +91,13 @@ public final class RegionLookupSwitchApiSmoke {
         final int result;
         final String summary;
         final String events;
+        final String path;
 
-        Trace(int result, String summary, String events) {
+        Trace(int result, String summary, String events, String path) {
             this.result = result;
             this.summary = summary;
             this.events = events;
+            this.path = path;
         }
     }
 }

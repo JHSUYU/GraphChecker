@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -280,7 +283,7 @@ public final class JavaPrimitiveSmtSemantics {
     static String primitiveCast(String value, String sourceJavaType,
                                 String targetJavaType) {
         String source = primitiveDescriptor(sourceJavaType);
-        String target = primitiveTargetDescriptor(targetJavaType, source);
+        String target = primitiveDescriptor(targetJavaType);
         if (value == null || !primitiveNumericDescriptor(source)
                 || !primitiveNumericDescriptor(target)) {
             return null;
@@ -314,11 +317,6 @@ public final class JavaPrimitiveSmtSemantics {
         String type = javaType == null ? ""
                 : javaType.trim().replace('.', '/');
         return javaTypeDescriptor(type);
-    }
-
-    static String primitiveTargetDescriptor(String javaType,
-                                            String sourceDescriptor) {
-        return primitiveDescriptor(javaType);
     }
 
     static boolean primitiveNumericDescriptor(String descriptor) {
@@ -455,6 +453,127 @@ public final class JavaPrimitiveSmtSemantics {
         }
         throw new IllegalArgumentException(
                 "cannot wrap an ambiguous integral expression");
+    }
+
+    /** Exact Java two's-complement lowering for integral bitwise operators. */
+    static String bitwise(String operator, String left, String right,
+                          IntegralWidth width) {
+        BigInteger constant = integerLiteral(right);
+        String variable = left;
+        if (constant == null) {
+            constant = integerLiteral(left);
+            variable = right;
+        }
+        if (constant != null) {
+            return constantBitwise(operator, variable, constant, width);
+        }
+        String smtOperator;
+        if ("&".equals(operator)) smtOperator = "bvand";
+        else if ("|".equals(operator)) smtOperator = "bvor";
+        else if ("^".equals(operator)) smtOperator = "bvxor";
+        else throw new IllegalArgumentException(
+                    "not a Java integral bitwise operator: " + operator);
+        int bits = bits(width);
+        return wrap("(bv2int (" + smtOperator + " ((_ int2bv " + bits
+                + ") " + left + ") ((_ int2bv " + bits + ") "
+                + right + ")))", width);
+    }
+
+    /** Exact Java shift lowering, including the JVM shift-distance mask. */
+    static String shift(String operator, String left, String right,
+                        IntegralWidth width) {
+        BigInteger constant = integerLiteral(right);
+        if (constant != null) {
+            int bits = bits(width);
+            int distance = constant.mod(BigInteger.valueOf(bits)).intValue();
+            BigInteger factor = BigInteger.ONE.shiftLeft(distance);
+            if ("<<".equals(operator)) {
+                return wrap("(* " + left + " " + factor + ")", width);
+            }
+            if (">>".equals(operator)) {
+                return wrap("(div " + left + " " + factor + ")", width);
+            }
+            if (">>>".equals(operator)) {
+                BigInteger modulus = BigInteger.ONE.shiftLeft(bits);
+                return wrap("(div (mod " + left + " " + modulus + ") "
+                        + factor + ")", width);
+            }
+        }
+        String smtOperator;
+        if ("<<".equals(operator)) smtOperator = "bvshl";
+        else if (">>".equals(operator)) smtOperator = "bvashr";
+        else if (">>>".equals(operator)) smtOperator = "bvlshr";
+        else throw new IllegalArgumentException(
+                    "not a Java integral shift operator: " + operator);
+        int bits = bits(width);
+        return wrap("(bv2int (" + smtOperator + " ((_ int2bv " + bits
+                + ") " + left + ") ((_ int2bv " + bits + ") (mod "
+                + right + " " + bits + "))))", width);
+    }
+
+    /** Exact Java integral complement. */
+    static String complement(String operand, IntegralWidth width) {
+        int bits = bits(width);
+        return wrap("(bv2int (bvnot ((_ int2bv " + bits + ") "
+                + operand + ")))", width);
+    }
+
+    private static int bits(IntegralWidth width) {
+        if (width == IntegralWidth.JAVA_INT) return 32;
+        if (width == IntegralWidth.JAVA_LONG) return 64;
+        throw new IllegalArgumentException(
+                "cannot lower an ambiguous integral bit operation");
+    }
+
+    private static String constantBitwise(String operator, String variable,
+                                          BigInteger rawMask,
+                                          IntegralWidth width) {
+        int bits = bits(width);
+        BigInteger modulus = BigInteger.ONE.shiftLeft(bits);
+        BigInteger mask = rawMask.mod(modulus);
+        String unsigned = "(mod " + variable + " " + modulus + ")";
+        List<String> selectedBits = new ArrayList<>();
+        for (int bit = 0; bit < bits; bit++) {
+            if (!mask.testBit(bit)) continue;
+            BigInteger factor = BigInteger.ONE.shiftLeft(bit);
+            selectedBits.add("(* (mod (div " + unsigned + " " + factor
+                    + ") 2) " + factor + ")");
+        }
+        String intersection;
+        if (selectedBits.isEmpty()) intersection = "0";
+        else if (selectedBits.size() == 1) intersection = selectedBits.get(0);
+        else intersection = "(+ " + String.join(" ", selectedBits) + ")";
+        String expression;
+        if ("&".equals(operator)) expression = intersection;
+        else if ("|".equals(operator)) {
+            expression = "(- (+ " + unsigned + " " + mask + ") "
+                    + intersection + ")";
+        } else if ("^".equals(operator)) {
+            expression = "(- (+ " + unsigned + " " + mask + ") (* 2 "
+                    + intersection + "))";
+        } else {
+            throw new IllegalArgumentException(
+                    "not a Java integral bitwise operator: " + operator);
+        }
+        return wrap(expression, width);
+    }
+
+    private static BigInteger integerLiteral(String expression) {
+        if (expression == null) return null;
+        String value = expression.trim();
+        try {
+            return new BigInteger(value);
+        } catch (NumberFormatException ignored) {
+            if (value.startsWith("(- ") && value.endsWith(")")) {
+                try {
+                    return new BigInteger(value.substring(3,
+                            value.length() - 1).trim()).negate();
+                } catch (NumberFormatException alsoNotLiteral) {
+                    return null;
+                }
+            }
+            return null;
+        }
     }
 
     private static String normalize(String javaType) {

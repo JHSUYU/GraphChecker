@@ -1,12 +1,15 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CallArgumentOutputCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ExactHeapOutputCapture;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CommunicationEffectCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
+import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
@@ -38,9 +41,11 @@ import soot.UnitBox;
 import soot.Value;
 import soot.ValueBox;
 import soot.VoidType;
+import soot.PrimType;
 import soot.jimple.AssignStmt;
 import soot.jimple.ArrayRef;
 import soot.jimple.Constant;
+import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
 import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
@@ -51,6 +56,7 @@ import soot.jimple.InvokeExpr;
 import soot.jimple.Jimple;
 import soot.jimple.LongConstant;
 import soot.jimple.NullConstant;
+import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.ReturnVoidStmt;
 import soot.jimple.SpecialInvokeExpr;
@@ -58,12 +64,16 @@ import soot.jimple.StaticFieldRef;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
 import soot.jimple.SwitchStmt;
+import soot.jimple.ThisRef;
+import soot.jimple.ThrowStmt;
 import soot.tagkit.Tag;
 import soot.toolkits.graph.BriefUnitGraph;
-import soot.toolkits.graph.MHGDominatorsFinder;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -177,11 +187,21 @@ public final class CausynthPipeline {
         Set<String> skippedClasses = traceSkipClasses();
         int skippedMethods = 0;
         for (String signature : result.traceMethods) {
+            SootMethod method;
             try {
-                SootMethod method = Scene.v().getMethod(signature);
-                if (method == null || !method.isConcrete()) {
-                    continue;
-                }
+                method = Scene.v().getMethod(signature);
+            } catch (RuntimeException exception) {
+                throw new IllegalStateException("REGION_STATE method is "
+                        + "outside production application scope: "
+                        + signature, exception);
+            }
+            if (method == null || !method.isConcrete()
+                    || !method.getDeclaringClass().isApplicationClass()) {
+                throw new IllegalStateException("REGION_STATE method is "
+                        + "outside production application scope: "
+                        + signature);
+            }
+            try {
                 if (isTraceSkippedClass(method.getDeclaringClass().getName(),
                         skippedClasses)) {
                     skippedMethods++;
@@ -226,20 +246,82 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Region discovery records only the balanced activation tree.
+     * The methods the skeleton pass exists to watch.
+     *
+     * <p>Pass 1 answers one question: which of the candidate regions the
+     * static analysis just planned actually activate. That makes the
+     * instrumentation set the candidate set. Every row the region planner
+     * keeps is a row whose method belongs to the region it is binding - it
+     * discards the rest before looking at anchors - so a method in the slice
+     * but in no candidate region can only produce rows nobody reads, at the
+     * price of running the recorder inside it. Envelope nesting survives the
+     * narrowing because the recorder derives a parent from the enclosing
+     * <em>instrumented</em> frame: dropping intermediate methods shortens the
+     * chain and preserves every ancestor-descendant pair that remains.</p>
+     *
+     * <p>The annotated target method is added last and unconditionally. It is
+     * the one method the run exists to observe, and whether some candidate
+     * region happens to enclose it is a property of how far the planner's
+     * forward closure reached, not of whether the pass should report that the
+     * target executed. On this checkout no candidate region contains it, and
+     * without this the pass would run the workload all the way through the
+     * target and record nothing about it.</p>
      */
-    private void instrumentLiteRuntimeTrace(StaticProgram result) {
-        Set<String> selectedMethods = new LinkedHashSet<>(
-                result.traceMethods);
-        HookCatalog refs = HookCatalog.trace();
-        Set<String> skippedClasses = traceSkipClasses();
-        Set<String> instrumented = new LinkedHashSet<>();
-        int instrumentedMethods = 0;
-        int skippedMethods = 0;
-        for (String signature : result.traceMethods) {
-            if (!selectedMethods.contains(signature)) {
+    static Set<String> skeletonCandidateMethods(StaticProgram result) {
+        Set<String> candidates = new LinkedHashSet<>();
+        for (Map<String, Object> region : result.regions) {
+            Object methods = region.get("methods");
+            if (!(methods instanceof Collection)) {
                 continue;
             }
+            for (Object method : (Collection<?>) methods) {
+                candidates.add(String.valueOf(method));
+            }
+        }
+        candidates.retainAll(new LinkedHashSet<>(result.traceMethods));
+        Object target = result.targetResolved.get("method");
+        if (target != null && !String.valueOf(target).trim().isEmpty()) {
+            candidates.add(String.valueOf(target));
+        }
+        return candidates;
+    }
+
+    /**
+     * Region discovery records only the balanced activation tree, plus the
+     * annotated target method's exceptional exit.
+     *
+     * <p>An envelope is balanced by popping the thread-local activation, and
+     * for every method but one that is all the skeleton pass needs: the
+     * planner rebuilds nesting from {@code callId}/{@code parentCallId} on the
+     * entry rows, so a silent pop costs it nothing. The annotated target is
+     * the exception. Whether the run reached the target's throw is the one
+     * question this pass exists to answer for the launcher, and a silent pop
+     * cannot answer it - it leaves a run in which the exception escaped the
+     * target twelve times indistinguishable from one in which the method
+     * returned normally every time. So the target, and only the target, gets
+     * the row-writing exceptional-exit hook.</p>
+     *
+     * <p>That difference is deliberate and is recorded as such in
+     * {@code target_resolved.json}: with {@code skeletonTargetThrowRecorded}
+     * true, the absence of a {@code METHOD_EXIT_THROW} row for the target is
+     * an observation; the absence of one for any other instrumented method is
+     * not, because none is ever written. Normal exits stay silent everywhere,
+     * the target included, so the entry-row counts this pass has always
+     * produced do not move.</p>
+     */
+    private void instrumentLiteRuntimeTrace(StaticProgram result) {
+        Set<String> selectedMethods = skeletonCandidateMethods(result);
+        if (selectedMethods.isEmpty()) {
+            LOG.warn("No candidate region selected a method to instrument; "
+                    + "the REGION_SKELETON pass will bind no activation");
+        }
+        HookCatalog refs = HookCatalog.trace();
+        Set<String> skippedClasses = traceSkipClasses();
+        String annotatedTarget = annotatedTargetMethod(result);
+        boolean targetThrowRecorded = false;
+        int instrumentedMethods = 0;
+        int skippedMethods = 0;
+        for (String signature : selectedMethods) {
             try {
                 SootMethod method = Scene.v().getMethod(signature);
                 if (method == null || !method.isConcrete()) {
@@ -266,106 +348,460 @@ public final class CausynthPipeline {
                     } catch (RuntimeException ignored) {
                     }
                 }
+                boolean recordThrow = !annotatedTarget.isEmpty()
+                        && annotatedTarget.equals(signature);
                 instrumentLiteMethod(
                         body, method, originalUnits,
-                        insertionPoint, lowerBound, receiver, refs);
+                        insertionPoint, lowerBound, receiver, refs,
+                        recordThrow);
+                targetThrowRecorded |= recordThrow;
                 instrumentedMethods++;
-                instrumented.add(signature);
             } catch (RuntimeException exception) {
                 LOG.debug("Skipping skeleton trace instrumentation for {}",
                         signature, exception);
             }
         }
-        LOG.info("Instrumented {} methods for REGION_SKELETON trace "
-                        + "({} skipped)",
-                instrumentedMethods, skippedMethods);
+        // The flag travels with the discovery artifacts so a later reader of
+        // targetThrowRecords knows whether a zero is an observation.
+        result.targetResolved.put("skeletonTargetThrowRecorded",
+                targetThrowRecorded);
+        LOG.info("Instrumented {} of {} candidate methods for REGION_SKELETON "
+                        + "trace ({} skipped) out of a {}-method static slice "
+                        + "and {} candidate regions",
+                instrumentedMethods, selectedMethods.size(), skippedMethods,
+                result.traceMethods.size(), result.regions.size());
+        if (targetThrowRecorded) {
+            LOG.info("Exceptional exit is recorded for the annotated target "
+                    + "{} only; every other instrumented method still pops "
+                    + "its activation without a row", annotatedTarget);
+        } else {
+            LOG.warn("No exceptional-exit row will be written for the "
+                    + "annotated target {}; a run in which the target throws "
+                    + "will be indistinguishable from one in which it does "
+                    + "not", annotatedTarget.isEmpty()
+                    ? "<unresolved>" : annotatedTarget);
+        }
     }
 
     /**
-     * Inserts region hooks at the roots selected by the runtime activation
-     * plan. Concolic instrumentation without that plan is not executable.
+     * The annotated target's Soot signature, or {@code ""} when absent.
+     *
+     * <p>Read exactly as {@link #skeletonCandidateMethods} reads it, so the
+     * signature compared here is the one that entered the instrumented set.</p>
+     */
+    private static String annotatedTargetMethod(StaticProgram result) {
+        Object method = result.targetResolved.get("method");
+        if (method == null || String.valueOf(method).trim().isEmpty()) {
+            return "";
+        }
+        return String.valueOf(method);
+    }
+
+    /**
+     * The campaign's one deduplicated instrumentation envelope.
+     *
+     * <p>README section 1 states it per task as
+     *
+     * <pre>
+     * mandatory target / region / RPC / SASL anchors
+     *   UNION
+     * (static target slice INTERSECT seed-executed sites
+     *                      INTERSECT current output closure)
+     *   UNION
+     * exact alternative branch/writer/loop sites named by this task
+     * </pre>
+     *
+     * <p>The first and third terms are the plan's anchors and its named
+     * branch/materialization sites. The middle term is not recomputed here:
+     * the scheduler already intersected the static slice with the seed trace
+     * and the output closure when it wrote the task's execution
+     * scope, and re-deriving it from the Scene would be a second analysis
+     * framework. This class unions those per-task envelopes, deduplicates
+     * them, and hands each hook family one method set to rewrite.</p>
+     *
+     * <p>It also owns original-unit tagging before any body is rewritten.</p>
+     */
+    private final class CampaignEnvelope {
+        private final List<InstrumentationPlan> campaign;
+        private final Set<String> methods = new LinkedHashSet<>();
+        private final Set<String> loopBoundMethods = new LinkedHashSet<>();
+        private final Set<String> fixedCountLoopSites =
+                new LinkedHashSet<>();
+        /**
+         * The closure a field write may be recorded in. It stays the union of
+         * the tasks' own execution scopes rather than the whole envelope: a
+         * write hook mints a writer, and a writer the relation did not ask
+         * for is not a cheaper envelope, it is a different model.
+         */
+        private final Set<String> writerMethods = new LinkedHashSet<>();
+        private final ConcolicMaterializationSelection materializations =
+                new ConcolicMaterializationSelection();
+        private final ConcolicBranchSelection branches =
+                new ConcolicBranchSelection();
+        // Keyed by the plan itself, not by its root method: a campaign may
+        // hold several tasks rooted at one method - a path flip is exactly
+        // that - and each keeps its own replay entry and engine arm.
+        private final Map<InstrumentationPlan, SootMethod> replayEntries =
+                new IdentityHashMap<>();
+        private LoopBoundPolicy loopBound;
+        private int boundedBackedges;
+        private int associativeReadSites;
+        private int unselectedAssociativeReads;
+        private int fieldMaterializationSites;
+        private int scannedBodies;
+        private final Map<String, Integer> emittedHooks =
+                new LinkedHashMap<>();
+        private final Set<String> rewrittenMethods = new LinkedHashSet<>();
+
+        private CampaignEnvelope(List<InstrumentationPlan> campaign) {
+            this.campaign = campaign;
+            for (InstrumentationPlan plan : campaign) {
+                materializations.mergeFrom(plan.materializations());
+                branches.mergeFrom(plan.branches());
+                methods.addAll(plan.envelopeMethods());
+                writerMethods.addAll(plan.instrumentationMethods());
+                Set<String> bounded = new LinkedHashSet<>(
+                        plan.instrumentationMethods());
+                SootMethod replayEntry = declaredReplayEntry(plan);
+                replayEntries.put(plan, replayEntry);
+                // The logical region remains rooted at the plan's root.  The
+                // replay entry is only the finite activation at which the VM
+                // starts recording, so its loops are still part of the
+                // bounded execution semantics.
+                bounded.add(replayEntry.getSignature());
+                methods.add(replayEntry.getSignature());
+                writerMethods.add(replayEntry.getSignature());
+                loopBoundMethods.addAll(bounded);
+                fixedCountLoopSites.addAll(plan.fixedCountLoopSites());
+                if (loopBound != null && !loopBound.identity()
+                        .equals(plan.loopBound().identity())) {
+                    // One union tree installs one policy on every shared
+                    // method.  Equal campaign maxima are insufficient: two
+                    // tasks may still declare different K_L for one loop.
+                    throw new IllegalStateException(
+                            "CAMPAIGN_LOOP_BOUND_CONFLICT: "
+                                    + loopBound.identity()
+                                    + " and "
+                                    + plan.loopBound().identity());
+                }
+                loopBound = plan.loopBound();
+            }
+        }
+
+        private SootMethod declaredReplayEntry(InstrumentationPlan plan) {
+            try {
+                return Scene.v().getMethod(plan.rootMethod());
+            } catch (RuntimeException missing) {
+                throw new IllegalStateException(
+                        "Selected concolic root is unavailable: "
+                                + plan.rootMethod(), missing);
+            }
+        }
+
+        /**
+         * Freezes original unit indices for every body the campaign may
+         * rewrite, before the first rewrite moves one.
+         */
+        private void tagSelectedBodies() {
+            Set<String> tagged = new LinkedHashSet<>(methods);
+            tagged.addAll(loopBoundMethods);
+            for (String signature : tagged) {
+                try {
+                    SootMethod method = Scene.v().getMethod(signature);
+                    if (method != null && method.isConcrete()) {
+                        tagOriginalUnits(snapshotUnits(
+                                method.retrieveActiveBody()));
+                    }
+                } catch (RuntimeException ignored) {
+                    // Unresolvable bodies are dropped by every later pass too.
+                }
+            }
+        }
+
+        /**
+         * Bounds the campaign's loops once.
+         *
+         * <p>Every task in a schedule carries the same {@code K_L}, which the
+         * constructor has already checked, so the union may be bounded in one
+         * pass. Per task it installed one set of backedge hooks per plan row
+         * on every method two tasks shared, and the runtime refuses a hook
+         * whose declared bound is not the admitted activation's.</p>
+         */
+        private void boundSelectedLoops() {
+            if (loopBound == null) {
+                return;
+            }
+            boundedBackedges = instrumentConcolicLoopBounds(
+                    loopBoundMethods, loopBound, fixedCountLoopSites);
+            LOG.info("Bounded {} slice backedge(s) across {} selected "
+                            + "method(s)",
+                    boundedBackedges, loopBoundMethods.size());
+        }
+
+        private SootMethod replayEntry(InstrumentationPlan plan) {
+            return replayEntries.get(plan);
+        }
+
+        private boolean needsAssociativeReadSite() {
+            for (InstrumentationPlan plan : campaign) {
+                if (plan.dynamicAssociativeTarget()) return true;
+            }
+            return false;
+        }
+
+        /**
+         * Counts the hooks that are actually in the program now.
+         *
+         * <p>Deliberately measured from the rewritten bodies rather than from
+         * the plan: the plan states what should have been instrumented, and
+         * the question this answers is what was. Only bodies Soot already
+         * holds are read, so this walks what the pass touched and does not
+         * reintroduce the full-application body retrieval it removed.</p>
+         */
+        private void countEmittedHooks() {
+            Set<String> reachable = new LinkedHashSet<>(methods);
+            reachable.addAll(loopBoundMethods);
+            for (String signature : reachable) {
+                final SootMethod method;
+                try {
+                    method = Scene.v().getMethod(signature);
+                } catch (RuntimeException missing) {
+                    continue;
+                }
+                if (method == null || !method.hasActiveBody()) continue;
+                boolean rewritten = false;
+                for (Unit unit : method.getActiveBody().getUnits()) {
+                    if (!(unit instanceof Stmt)
+                            || !((Stmt) unit).containsInvokeExpr()) {
+                        continue;
+                    }
+                    SootMethodRef ref = ((Stmt) unit).getInvokeExpr()
+                            .getMethodRef();
+                    if (!CONCOLIC_REGION_RUNTIME_CLASS.equals(
+                            ref.declaringClass().getName())) {
+                        continue;
+                    }
+                    String hook = ref.name();
+                    Integer seen = emittedHooks.get(hook);
+                    emittedHooks.put(hook, seen == null ? 1 : seen + 1);
+                    if (!"pauseObservation".equals(hook)
+                            && !"resumeObservation".equals(hook)) {
+                        rewritten = true;
+                    }
+                }
+                if (rewritten) {
+                    rewrittenMethods.add(signature);
+                }
+            }
+        }
+
+        /**
+         * States what was rewritten, and states it as a static count.
+         *
+         * <p>A trace sequence number is an event count: it says how many
+         * times instrumented code ran, not how much code was instrumented.
+         * The two were read as one number while diagnosing a replay that
+         * never left {@code waitActive()}, so they are reported apart here -
+         * unique rewritten methods and unique hook sites, both static.</p>
+         */
+        private void report() {
+            countEmittedHooks();
+            LOG.info("Concolic campaign rewrote {} unique method(s) at {} "
+                            + "hook site(s): {}", rewrittenMethods.size(),
+                    emittedSiteCount(), emittedHooks);
+            LOG.info("Concolic campaign envelope: {} task(s); {} selected "
+                            + "method(s), of which {} were scanned; "
+                            + "static site counts: {} branch, "
+                            + "{} local materialization, "
+                            + "{} declared field over {} read site(s), "
+                            + "{} method argument, "
+                            + "{} accessor call, {} associative read; "
+                            + "{} bounded backedge(s). These are unique rewritten "
+                            + "methods/sites, not dynamic trace events.",
+                    campaign.size(), methods.size(), scannedBodies,
+                    branches.siteCount(),
+                    materializations.localSiteCount(),
+                    materializations.fieldCount(), fieldMaterializationSites,
+                    materializations.methodArgumentCount(),
+                    materializations.accessorCalls().size(),
+                    associativeReadSites, boundedBackedges);
+            if (materializations.fieldCount() > 0
+                    && fieldMaterializationSites == 0
+                    && materializations.accessorCalls().isEmpty()) {
+                LOG.warn("{}: {} declared field(s) have no read site inside "
+                                + "the campaign envelope",
+                        GAP_FIELD_MATERIALIZATION_SITE_ABSENT,
+                        materializations.fieldCount());
+            }
+            if (unselectedAssociativeReads > 0) {
+                LOG.info("{}: {} associative read(s) inside the envelope are "
+                                + "not selected sites and were left alone",
+                        GAP_ASSOCIATIVE_READ_SITE_UNSELECTED,
+                        unselectedAssociativeReads);
+            }
+            if (associativeReadSites == 0 && needsAssociativeReadSite()) {
+                LOG.warn("{}: a task selects a value by associative access "
+                                + "ordinal, but no exact selected method and "
+                                + "unit names a Map read to apply it at",
+                        GAP_ASSOCIATIVE_READ_SITE_UNDECLARED);
+            }
+            String report = firstNonBlank(System.getProperty(
+                    "causynth.concolic.envelope.report"));
+            if (report == null) {
+                return;
+            }
+            try {
+                Path path = Paths.get(report).toAbsolutePath().normalize();
+                if (path.getParent() != null) {
+                    Files.createDirectories(path.getParent());
+                }
+                Files.write(path, Collections.singletonList(
+                        envelopeReportJson()), StandardCharsets.UTF_8);
+            } catch (IOException failure) {
+                LOG.warn("Could not write the envelope report to {}", report,
+                        failure);
+            }
+        }
+
+        /**
+         * Hook sites, not counting the observation bracket: a pause/resume
+         * pair belongs to the site it brackets and is not one of its own.
+         */
+        private int emittedSiteCount() {
+            int sites = 0;
+            for (Map.Entry<String, Integer> hook : emittedHooks.entrySet()) {
+                if (!"pauseObservation".equals(hook.getKey())
+                        && !"resumeObservation".equals(hook.getKey())) {
+                    sites += hook.getValue();
+                }
+            }
+            return sites;
+        }
+
+        private String envelopeReportJson() {
+            JsonObject json = new JsonObject();
+            json.addProperty("kind", "CONCOLIC_INSTRUMENTATION_ENVELOPE");
+            json.addProperty("tasks", campaign.size());
+            json.addProperty("selectedMethods", methods.size());
+            json.addProperty("scannedMethods", scannedBodies);
+            // Unique rewritten methods and hook sites, counted from the
+            // rewritten bodies.  A trace sequence number is an event count
+            // and answers a different question; these two are static.
+            json.addProperty("uniqueRewrittenMethods",
+                    rewrittenMethods.size());
+            JsonObject hooks = new JsonObject();
+            for (Map.Entry<String, Integer> hook : emittedHooks.entrySet()) {
+                hooks.addProperty(hook.getKey(), hook.getValue());
+            }
+            json.addProperty("uniqueRewrittenSites", emittedSiteCount());
+            json.add("emittedHooks", hooks);
+            json.addProperty("branchSites", branches.siteCount());
+            json.addProperty("localMaterializationSites",
+                    materializations.localSiteCount());
+            json.addProperty("declaredFields",
+                    materializations.fieldCount());
+            json.addProperty("methodArgumentSlots",
+                    materializations.methodArgumentCount());
+            json.addProperty("accessorCallSites",
+                    materializations.accessorCalls().size());
+            json.addProperty("fieldMaterializationSites",
+                    fieldMaterializationSites);
+            json.addProperty("associativeReadSites", associativeReadSites);
+            json.addProperty("unselectedAssociativeReads",
+                    unselectedAssociativeReads);
+            json.addProperty("boundedBackedges", boundedBackedges);
+            return json.toString();
+        }
+    }
+
+    /**
+     * An associative read inside the envelope that no task named as an exact
+     * site. It is left alone; naming it is what a later task widens.
+     */
+    static final String GAP_ASSOCIATIVE_READ_SITE_UNSELECTED =
+            "ASSOCIATIVE_READ_SITE_UNSELECTED";
+
+    /**
+     * A task whose solver model selects by associative access ordinal but
+     * whose plan names no exact read site to apply it at.
+     */
+    static final String GAP_ASSOCIATIVE_READ_SITE_UNDECLARED =
+            "ASSOCIATIVE_READ_SITE_UNDECLARED";
+
+    /**
+     * A declared field whose reads all lie outside the campaign envelope.
+     * Narrowing the scan to the envelope is what makes this visible; the
+     * widening that answers it belongs to a later task's plan.
+     */
+    static final String GAP_FIELD_MATERIALIZATION_SITE_ABSENT =
+            "FIELD_MATERIALIZATION_SITE_ABSENT";
+
+    /**
+     * Rewrites the campaign's one deduplicated instrumentation envelope.
+     *
+     * <p>README section 1: the envelope is the union of the per-task
+     * envelopes, deduplicated, and each selected site is rewritten once. The
+     * pass this replaced walked every application method once per plan row
+     * and inserted the same hook again for each of them, which is how a
+     * three-thread fixture stayed fast while an HDFS startup - the same
+     * rewrite applied to a `HashMap`-intensive program - did not.</p>
+     *
+     * <p>Only the region root and its output captures are per task, because
+     * those hooks name a task's own root and bindings.
+     * Every other evidence hook carries a site and no task id: the runtime
+     * decides it by which activation is admitted, so one rewrite serves the
+     * whole campaign.</p>
      */
     private void instrumentConcolicRegions() {
+        instrumentConcolicCampaign(ConcolicInstrumentationSelections
+                .instrumentationCampaignFromEnvironment());
+    }
+
+    /** Rewrites one campaign's envelope; see {@link #instrumentConcolicRegions}. */
+    void instrumentConcolicCampaign(List<InstrumentationPlan> campaign) {
         HookCatalog refs = HookCatalog.concolic();
-        InstrumentationPlan plan = ConcolicInstrumentationSelections
-                .instrumentationPlanFromEnvironment();
-        ConcolicBranchSelection branchSelection = plan.branches();
-        ConcolicMaterializationSelection materializationSelection =
-                plan.materializations();
+        CampaignEnvelope envelope = new CampaignEnvelope(campaign);
+        envelope.tagSelectedBodies();
+        envelope.boundSelectedLoops();
+        for (InstrumentationPlan plan : campaign) {
+            instrumentConcolicRegion(plan, refs, envelope);
+        }
+        instrumentConcolicCommunicationHandoffs(campaign, refs);
+        instrumentConcolicAccessorCallContexts(envelope.materializations,
+                refs);
+        instrumentConcolicMethodArguments(envelope.materializations, refs);
+        instrumentConcolicFieldWrites(envelope.writerMethods,
+                envelope.materializations, refs);
+        instrumentConcolicMaterializations(envelope, refs);
+        instrumentConcolicBranches(envelope.branches, refs);
+        envelope.report();
+    }
+
+    /**
+     * Inserts region hooks at the roots selected by one campaign task's
+     * runtime activation plan. Concolic instrumentation without that plan is
+     * not executable.
+     */
+    private void instrumentConcolicRegion(InstrumentationPlan plan,
+                                          HookCatalog refs,
+                                          CampaignEnvelope envelope) {
         List<RootedOutputCapture> outputCaptureSelection =
                 plan.outputCaptures();
         List<CallArgumentOutputCapture> callArgumentOutputs =
                 plan.callArgumentOutputs();
+        List<CommunicationEffectCapture> communicationEffects =
+                plan.communicationEffects();
         List<ExactHeapOutputCapture> exactHeapOutputs =
                 plan.exactHeapOutputs();
         String outputCaptureReceiverClass = plan.receiverClass();
         String signature = plan.rootMethod();
-        Set<String> instrumentationMethods =
-                new LinkedHashSet<>(plan.instrumentationMethods());
-        final SootMethod logicalRoot;
-        try {
-            logicalRoot = Scene.v().getMethod(signature);
-        } catch (RuntimeException missing) {
-            throw new IllegalStateException(
-                    "Selected concolic root is unavailable: " + signature,
-                    missing);
-        }
-        SootMethod replayEntry = plan.replayAnchorAllowed()
-                ? selectConcolicReplayEntry(logicalRoot,
-                plan.replayAnchorMethods()) : logicalRoot;
+        SootMethod replayEntry = envelope.replayEntry(plan);
         String replayEntrySignature = replayEntry.getSignature();
-        // The logical region remains rooted at signature.  The replay entry
-        // is only the finite activation at which the VM starts recording, so
-        // its loops are still part of the bounded execution semantics.
-        instrumentationMethods.add(replayEntrySignature);
-        Set<String> taggedMethods = new LinkedHashSet<>(branchSelection.methods());
-        taggedMethods.addAll(materializationSelection.localMethods());
-        taggedMethods.addAll(materializationSelection.methodArgumentMethods());
-        taggedMethods.addAll(materializationSelection.accessorCallerMethods());
-        taggedMethods.addAll(instrumentationMethods);
-        for (ExactHeapOutputCapture capture : exactHeapOutputs) {
-            taggedMethods.add(capture.method());
-        }
-        Stmt preTargetReplayArm = selectPreTargetReplayArmCall(
-                replayEntry, plan.targetMethod(), taggedMethods,
-                plan.outputRelation(), plan.replayAnchorAllowed());
-        Stmt delayedReplayArm = preTargetReplayArm == null
-                ? selectDelayedReplayArmCall(
-                replayEntry, plan.targetMethod(), taggedMethods,
-                plan.outputRelation(), plan.replayAnchorAllowed()) : null;
-        for (String methodSignature : taggedMethods) {
-            try {
-                SootMethod method = Scene.v().getMethod(methodSignature);
-                if (method != null && method.isConcrete()) {
-                    tagOriginalUnits(snapshotUnits(method.retrieveActiveBody()));
-                }
-            } catch (RuntimeException ignored) {
-            }
-        }
-        int boundedBackedges = instrumentConcolicLoopBounds(
-                instrumentationMethods, plan.loopBound());
-        Set<String> replayPathMethods = replayPathLoopMethods(
-                instrumentationMethods);
-        for (String methodSignature : replayPathMethods) {
-            try {
-                SootMethod method = Scene.v().getMethod(methodSignature);
-                if (method != null && method.isConcrete()) {
-                    tagOriginalUnits(snapshotUnits(
-                            method.retrieveActiveBody()));
-                }
-            } catch (RuntimeException ignored) {
-                // Unresolvable bodies are dropped by the bounding pass too.
-            }
-        }
-        int replayPathBodies = instrumentConcolicLoopBounds(
-                replayPathMethods, plan.loopBound(), true);
-        LOG.info("Bounded {} slice backedge(s) and {} replay-path loop "
-                        + "body edge(s) across {} replay-path method(s)",
-                boundedBackedges, replayPathBodies, replayPathMethods.size());
         // Exact mutation captures must be installed before root-exit hooks.
         // When the definition method is the root itself, this guarantees the
         // completed mutation state is emitted while its region is still active.
         instrumentConcolicExactHeapOutputs(exactHeapOutputs, refs);
+        instrumentConcolicCommunicationEffects(communicationEffects, refs);
         try {
             SootMethod method = replayEntry;
             if (method == null || !method.isConcrete()) {
@@ -397,22 +833,6 @@ public final class CausynthPipeline {
                     LongConstant.v(0L));
             entry.add(tokenInitialization);
             List<Unit> activation = entry;
-            Unit delayedInactive = null;
-            if (preTargetReplayArm != null || delayedReplayArm != null) {
-                Local attempted = newTraceLocal(body, IntType.v(),
-                        "$causynthRegionAttempted");
-                entry.add(Jimple.v().newAssignStmt(attempted,
-                        IntConstant.v(0)));
-                activation = new ArrayList<>();
-                delayedInactive = Jimple.v().newNopStmt();
-                activation.add(Jimple.v().newIfStmt(
-                        Jimple.v().newNeExpr(attempted,
-                                IntConstant.v(0)), delayedInactive));
-                // One engine acquisition attempt per replay activation.  A
-                // throwing target never reaches this assignment or the arm.
-                activation.add(Jimple.v().newAssignStmt(attempted,
-                        IntConstant.v(1)));
-            }
             ArrayType objectArrayType = ArrayType.v(
                     RefType.v("java.lang.Object"), 1);
             Local rootArguments = newTraceLocal(body, objectArrayType,
@@ -438,12 +858,36 @@ public final class CausynthPipeline {
                                 IntConstant.v(index)),
                         objectArg(body, parameter, activation)));
             }
+            // The entry hook decides admission, and that decision is this
+            // bridge's own control flow over the workload's own objects: it
+            // compares the root receiver against null and against a declared
+            // class.  A campaign instruments one entry hook per plan row
+            // naming this root, so on a thread that already carries symbolic
+            // state every later hook re-evaluates those comparisons and, left
+            // unbracketed, appends each one to the workload's path condition -
+            // conditions the program never evaluated, inside whichever
+            // occurrence is open.  Every other evidence hook is bracketed for
+            // exactly this reason; the boundary belongs here, beside them, and
+            // not in the runtime the boundary protects.
+            //
+            // The bracket cannot reach past the hook.  A frame entered while
+            // paused is not tracking and cannot be made tracking afterwards,
+            // so the resume has to stand between the hook and the first
+            // workload bytecode that follows it - which is where it is.  The
+            // region start keeps its own inner pause discipline either way.
+            activation.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
             Unit enterRegion = Jimple.v().newAssignStmt(token,
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.ENTER_REGION_FRAME),
+                            StringConstant.v(plan.instrumentationSelector()),
                             StringConstant.v(signature), receiver,
                             rootArguments));
             activation.add(enterRegion);
+            activation.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION))));
             Unit regionStart = enterRegion;
             for (int index = 0; index < method.getParameterCount(); index++) {
                 Value parameter;
@@ -497,25 +941,7 @@ public final class CausynthPipeline {
                                     refs.ref(Hook.RESUME_OBSERVATION))));
                 }
             }
-            if (preTargetReplayArm == null && delayedReplayArm == null) {
-                insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-            } else {
-                activation.add(delayedInactive);
-                insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-                if (preTargetReplayArm != null) {
-                    // Demanded effects execute inside the exact target call,
-                    // so arm immediately before its unique invocation.  This
-                    // retains those effects without recording the unrelated
-                    // connection/setup prefix of a long-lived service root.
-                    insertBeforeSequence(body, preTargetReplayArm,
-                            activation);
-                } else {
-                    // The arm is on the normal fall-through edge.  If the
-                    // exact target throws, neither attempted nor
-                    // enterRegionFrame runs.
-                    insertAfterSequence(body, delayedReplayArm, activation);
-                }
-            }
+            insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
 
             for (Unit unit : originalUnits) {
                 if (!(unit instanceof Stmt)) {
@@ -527,7 +953,8 @@ public final class CausynthPipeline {
                             token, receiver, outputCaptureReceiverClass,
                             outputCaptureSelection, refs);
                     insertRegionExit(body, stmt, ((ReturnStmt) stmt).getOp(),
-                            signature, refs.ref(Hook.EXIT_REGION_FRAME),
+                            plan.instrumentationSelector(), signature,
+                            refs.ref(Hook.EXIT_REGION_FRAME),
                             refs.ref(Hook.PAUSE_OBSERVATION),
                             refs.ref(Hook.RESUME_OBSERVATION));
                 } else if (stmt instanceof ReturnVoidStmt) {
@@ -535,12 +962,14 @@ public final class CausynthPipeline {
                             token, receiver, outputCaptureReceiverClass,
                             outputCaptureSelection, refs);
                     insertRegionExit(body, stmt, NullConstant.v(),
-                            signature, refs.ref(Hook.EXIT_REGION_FRAME),
+                            plan.instrumentationSelector(), signature,
+                            refs.ref(Hook.EXIT_REGION_FRAME),
                             refs.ref(Hook.PAUSE_OBSERVATION),
                             refs.ref(Hook.RESUME_OBSERVATION));
                 }
             }
-            addRegionThrowHandler(body, regionStart, signature,
+            addRegionThrowHandler(body, regionStart,
+                    plan.instrumentationSelector(), signature,
                     refs.ref(Hook.THROW_REGION_FRAME),
                     refs.ref(Hook.PAUSE_OBSERVATION),
                     refs.ref(Hook.RESUME_OBSERVATION));
@@ -550,331 +979,12 @@ public final class CausynthPipeline {
                             + signature + " at replay entry "
                             + replayEntrySignature, exception);
         }
-        instrumentConcolicAccessorCallContexts(materializationSelection, refs);
         instrumentConcolicCallArgumentOutputs(callArgumentOutputs, refs);
-        instrumentConcolicMethodArguments(materializationSelection, refs);
-        instrumentConcolicFieldWrites(instrumentationMethods,
-                materializationSelection, refs);
-        instrumentConcolicMaterializations(materializationSelection, refs);
-        instrumentConcolicBranches(branchSelection, refs);
         LOG.info("Instrumented symbolic-region root {} at replay entry {} "
-                        + "for concolic replay{}; "
-                        + "bounded {} CFG backedges at {} loop-body "
-                        + "iterations each",
+                        + "for concolic replay; loop bodies bounded at {} "
+                        + "iterations",
                 signature, replayEntrySignature,
-                preTargetReplayArm != null ? " with pre-target engine arm"
-                        : delayedReplayArm == null ? ""
-                        : " with post-target engine arm",
-                boundedBackedges,
                 plan.loopBound().maxBackedgeTraversals());
-    }
-
-    /**
-     * Selects a unique normal-return boundary at which the symbolic engine
-     * may be armed without losing any demanded replay semantics.
-     *
-     * <p>This is deliberately fail-closed.  It applies only to an output
-     * relation with a stable root selector, and only when the explicit task
-     * target is not itself part of the methods that must be replayed.  The
-     * declared target call must occur exactly once in the replay entry.</p>
-     */
-    static Stmt selectDelayedReplayArmCall(
-            SootMethod replayEntry, String targetSignature,
-            Collection<String> replayDemandSignatures,
-            boolean outputRelation, boolean replayAnchorAllowed) {
-        if (!outputRelation || !replayAnchorAllowed
-                || replayEntry == null || !replayEntry.isConcrete()
-                || targetSignature == null
-                || targetSignature.trim().isEmpty()
-                || replayDemandSignatures == null
-                || replayDemandSignatures.contains(targetSignature)
-                || targetReachesReplayDemand(targetSignature,
-                replayDemandSignatures)) {
-            return null;
-        }
-        Body body = activeBody(replayEntry);
-        if (body == null) return null;
-        Stmt selected = uniqueInvocation(body, targetSignature);
-        return selected != null && body.getUnits().getSuccOf(selected) != null
-                ? selected : null;
-    }
-
-    /**
-     * Arms immediately before a unique target whose body contains demanded
-     * replay effects.  This is the causal counterpart of the post-target arm:
-     * it excludes a long concrete prefix without skipping output writes that
-     * occur inside the target call itself.
-     */
-    static Stmt selectPreTargetReplayArmCall(
-            SootMethod replayEntry, String targetSignature,
-            Collection<String> replayDemandSignatures,
-            boolean outputRelation, boolean replayAnchorAllowed) {
-        if (!outputRelation || !replayAnchorAllowed
-                || replayEntry == null || !replayEntry.isConcrete()
-                || targetSignature == null
-                || targetSignature.trim().isEmpty()
-                || replayDemandSignatures == null
-                || !(replayDemandSignatures.contains(targetSignature)
-                || targetReachesReplayDemand(targetSignature,
-                replayDemandSignatures))) {
-            return null;
-        }
-        Body body = activeBody(replayEntry);
-        return body == null ? null : uniqueInvocation(body, targetSignature);
-    }
-
-    private static Body activeBody(SootMethod method) {
-        try {
-            return method.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return null;
-        }
-    }
-
-    private static Stmt uniqueInvocation(Body body, String targetSignature) {
-        Stmt selected = null;
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof Stmt)
-                    || !((Stmt) unit).containsInvokeExpr()
-                    || !targetSignature.equals(((Stmt) unit)
-                    .getInvokeExpr().getMethodRef().getSignature())) {
-                continue;
-            }
-            if (selected != null) return null;
-            selected = (Stmt) unit;
-        }
-        return selected;
-    }
-
-    /**
-     * A target call is not a safe delayed arm when demanded effects execute
-     * inside that call.  Arming after it would silently miss those effects.
-     */
-    private static boolean targetReachesReplayDemand(
-            String targetSignature,
-            Collection<String> replayDemandSignatures) {
-        final SootMethod target;
-        try {
-            target = Scene.v().getMethod(targetSignature);
-        } catch (RuntimeException missing) {
-            return true;
-        }
-        Set<String> remaining = new LinkedHashSet<>(
-                replayDemandSignatures);
-        remaining.remove(targetSignature);
-        if (remaining.isEmpty()) return false;
-        Set<SootMethod> reached = new LinkedHashSet<>();
-        ArrayDeque<SootMethod> pending = new ArrayDeque<>();
-        reached.add(target);
-        pending.add(target);
-        while (!pending.isEmpty() && reached.size() <= 4096) {
-            SootMethod caller = pending.removeFirst();
-            for (SootMethod callee : directApplicationCallees(caller)) {
-                if (!reached.add(callee)) continue;
-                if (remaining.contains(callee.getSignature())) return true;
-                pending.addLast(callee);
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Chooses the nearest same-receiver activation that encloses both the
-     * task target and every demanded output method.
-     *
-     * <p>A thread root such as {@code run()} can spend an unbounded concrete
-     * prefix in connection setup before it reaches the code the task asks the
-     * VM to summarize.  Starting the single symbolic engine at that root lets
-     * an unrelated node monopolize it.  The deepest common caller is the same
-     * logical region activation, but starts after that prefix and still
-     * encloses all demanded effects.  We only move the entry when direct
-     * application-call evidence proves the enclosure and the receiver and
-     * argument shapes are unchanged; otherwise the logical root is retained.
-     */
-    static SootMethod selectConcolicReplayEntry(
-            SootMethod logicalRoot, Collection<String> demandedSignatures) {
-        if (logicalRoot == null || !logicalRoot.isConcrete()
-                || demandedSignatures == null
-                || demandedSignatures.isEmpty()) {
-            return logicalRoot;
-        }
-        Set<SootMethod> demanded = new LinkedHashSet<>();
-        for (String signature : demandedSignatures) {
-            if (signature == null || signature.trim().isEmpty()) continue;
-            try {
-                SootMethod method = Scene.v().getMethod(signature);
-                if (!method.equals(logicalRoot)) demanded.add(method);
-            } catch (RuntimeException missing) {
-                return logicalRoot;
-            }
-        }
-        if (demanded.isEmpty()) return logicalRoot;
-
-        Map<SootMethod, Integer> selfDepth = selfCallDepth(logicalRoot);
-        List<Map.Entry<SootMethod, Integer>> candidates = new ArrayList<>(
-                selfDepth.entrySet());
-        candidates.sort((left, right) -> Integer.compare(
-                right.getValue(), left.getValue()));
-        for (Map.Entry<SootMethod, Integer> entry : candidates) {
-            SootMethod candidate = entry.getKey();
-            if (candidate.equals(logicalRoot)
-                    || !compatibleReplayEntry(logicalRoot, candidate)
-                    || inNontrivialSelfCallCycle(candidate)
-                    || !reachesAllDemanded(candidate, demanded,
-                    logicalRoot)) {
-                continue;
-            }
-            return candidate;
-        }
-        return logicalRoot;
-    }
-
-    /** Receiver-preserving path used only to prove the activation nesting. */
-    private static Map<SootMethod, Integer> selfCallDepth(
-            SootMethod logicalRoot) {
-        Map<SootMethod, Integer> depth = new LinkedHashMap<>();
-        ArrayDeque<SootMethod> pending = new ArrayDeque<>();
-        depth.put(logicalRoot, 0);
-        pending.add(logicalRoot);
-        while (!pending.isEmpty()) {
-            SootMethod caller = pending.removeFirst();
-            int nextDepth = depth.get(caller) + 1;
-            for (SootMethod callee : directSelfCallees(caller)) {
-                if (!compatibleReplayEntry(logicalRoot, callee)
-                        || depth.containsKey(callee)) continue;
-                depth.put(callee, nextDepth);
-                pending.addLast(callee);
-            }
-        }
-        return depth;
-    }
-
-    static boolean compatibleReplayEntry(
-            SootMethod logicalRoot, SootMethod candidate) {
-        return candidate != null && candidate.isConcrete()
-                && !candidate.isConstructor()
-                && !candidate.isStaticInitializer()
-                && logicalRoot.isStatic() == candidate.isStatic()
-                && logicalRoot.getDeclaringClass().equals(
-                candidate.getDeclaringClass())
-                && logicalRoot.getParameterTypes().equals(
-                candidate.getParameterTypes())
-                && logicalRoot.getReturnType().equals(
-                candidate.getReturnType());
-    }
-
-    /** A cyclic helper cannot prove a strictly nested replay boundary. */
-    private static boolean inNontrivialSelfCallCycle(SootMethod candidate) {
-        Set<SootMethod> reached = new LinkedHashSet<>();
-        ArrayDeque<SootMethod> pending = new ArrayDeque<>(
-                directSelfCallees(candidate));
-        while (!pending.isEmpty() && reached.size() <= 4096) {
-            SootMethod method = pending.removeFirst();
-            if (method.equals(candidate)) return true;
-            if (!reached.add(method)) continue;
-            pending.addAll(directSelfCallees(method));
-        }
-        return false;
-    }
-
-    static Set<SootMethod> directApplicationCallees(
-            SootMethod caller) {
-        Set<SootMethod> result = new LinkedHashSet<>();
-        if (caller == null || !caller.isConcrete()) return result;
-        Body body;
-        try {
-            body = caller.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return result;
-        }
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof Stmt)
-                    || !((Stmt) unit).containsInvokeExpr()) continue;
-            try {
-                SootMethodRef reference = ((Stmt) unit).getInvokeExpr()
-                        .getMethodRef();
-                SootMethod callee = reference.declaringClass()
-                        .getMethodUnsafe(reference.getSubSignature());
-                if (callee == null) callee = reference.tryResolve();
-                if (callee != null && callee.isConcrete()
-                        && callee.getDeclaringClass().isApplicationClass()) {
-                    result.add(callee);
-                }
-            } catch (RuntimeException unresolved) {
-                // An unresolved or polymorphic edge cannot prove that moving
-                // the replay entry preserves the demanded enclosure.
-            }
-        }
-        return result;
-    }
-
-    private static Set<SootMethod> directSelfCallees(SootMethod caller) {
-        Set<SootMethod> result = new LinkedHashSet<>();
-        if (caller == null || !caller.isConcrete()) return result;
-        Body body;
-        try {
-            body = caller.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return result;
-        }
-        Local thisLocal = null;
-        if (!caller.isStatic()) {
-            try {
-                thisLocal = body.getThisLocal();
-            } catch (RuntimeException unavailable) {
-                return result;
-            }
-        }
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof Stmt)
-                    || !((Stmt) unit).containsInvokeExpr()) continue;
-            InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
-            boolean sameReceiver = caller.isStatic()
-                    && !(invoke instanceof InstanceInvokeExpr);
-            if (invoke instanceof InstanceInvokeExpr && thisLocal != null) {
-                sameReceiver = ((InstanceInvokeExpr) invoke).getBase()
-                        .equivTo(thisLocal);
-            }
-            if (!sameReceiver) continue;
-            try {
-                SootMethodRef reference = invoke.getMethodRef();
-                SootMethod callee = reference.declaringClass()
-                        .getMethodUnsafe(reference.getSubSignature());
-                if (callee == null) callee = reference.tryResolve();
-                if (callee != null && caller.getDeclaringClass().equals(
-                        callee.getDeclaringClass())) {
-                    result.add(callee);
-                }
-            } catch (RuntimeException unresolved) {
-                // No exact receiver-preserving edge, so no anchor proof.
-            }
-        }
-        return result;
-    }
-
-    private static boolean reachesAllDemanded(
-            SootMethod start, Set<SootMethod> demanded,
-            SootMethod logicalRoot) {
-        Set<SootMethod> remaining = new LinkedHashSet<>(demanded);
-        remaining.remove(start);
-        if (remaining.isEmpty()) return true;
-        Set<SootMethod> reached = new LinkedHashSet<>();
-        ArrayDeque<SootMethod> pending = new ArrayDeque<>();
-        reached.add(start);
-        pending.add(start);
-        while (!pending.isEmpty() && reached.size() <= 4096) {
-            SootMethod method = pending.removeFirst();
-            for (SootMethod callee : directApplicationCallees(method)) {
-                if (callee.equals(logicalRoot) || !reached.add(callee)) {
-                    continue;
-                }
-                if (remaining.remove(callee) && remaining.isEmpty()) {
-                    return true;
-                }
-                pending.addLast(callee);
-            }
-        }
-        return false;
     }
 
     /** Captures the exact value presented at a configured protocol call. */
@@ -945,6 +1055,374 @@ public final class CausynthPipeline {
                             refs.ref(Hook.RESUME_OBSERVATION))));
             insertBeforeSequence(body, selected, before);
         }
+    }
+
+    /** Records a semantic response event at its real normal return. */
+    private void instrumentConcolicCommunicationEffects(
+            Collection<CommunicationEffectCapture> captures,
+            HookCatalog refs) {
+        for (CommunicationEffectCapture capture : captures) {
+            final SootMethod method;
+            try {
+                method = Scene.v().getMethod(capture.method());
+            } catch (RuntimeException missing) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_RETURN_METHOD_UNAVAILABLE: "
+                                + capture.captureBindingId(), missing);
+            }
+            if (method == null || !method.isConcrete()
+                    || method.getReturnType() instanceof VoidType) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_RETURN_METHOD_NOT_CONCRETE: "
+                                + capture.captureBindingId());
+            }
+            Body body = method.retrieveActiveBody();
+            int returns = 0;
+            for (Unit unit : snapshotUnits(body)) {
+                if (!(unit instanceof ReturnStmt)) continue;
+                returns++;
+                List<Unit> before = new ArrayList<>();
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.PAUSE_OBSERVATION))));
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.RECORD_COMMUNICATION_EFFECT),
+                                StringConstant.v(
+                                        capture.captureBindingId()))));
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.RESUME_OBSERVATION))));
+                insertBeforeSequence(body, unit, before);
+            }
+            if (returns == 0) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_RETURN_SITE_UNAVAILABLE: "
+                                + capture.captureBindingId());
+            }
+        }
+    }
+
+
+
+
+
+    /**
+     * Puts the VM's own handoff at every declared communication site of this
+     * campaign.
+     *
+     * <p>README's "Symbolic propagation is the authority": at a real
+     * boundary the sender exports the live expression and the receiver
+     * attaches it, after which the receiver's own arithmetic builds on the
+     * sender's term and the session ledger holds one {@code VALUE_HANDOFF}
+     * edge.  Nothing in this rewrite pairs the two halves; it only puts each
+     * half where the port's own declaration says its value crosses.</p>
+     *
+     * <p>The four sites are the four the static catalog already declares: a
+     * request leaves at the cut argument and arrives at the server entry's
+     * parameter, and a response leaves at that entry's return and arrives as
+     * the cut call's own result.  One site is rewritten once for the whole
+     * campaign, however many tasks declare it.</p>
+     *
+     * <p><b>This pass runs before every other concolic rewrite, and that is
+     * load bearing.</b>  A declared receive port is also an input the entry
+     * materialization mints a fresh root for, and after a successful attach
+     * the receiving local must denote the <em>sender's</em> expression, so
+     * the attach has to be the last writer of that local.  The two receive
+     * sites reach that from opposite directions: the entry-parameter attach
+     * is inserted before the body's first non-identity unit, which is by then
+     * this pass's own first unit, so every later entry rewrite lands ahead of
+     * it; the cut-return attach is inserted after the cut invoke, so every
+     * later rewrite of that unit lands ahead of it too.  Running this pass
+     * later would flip exactly one of the two.  The fresh root itself is not
+     * removed here: {@code attachCommunicationLeaf} retracts it on success,
+     * because a receive the delivery never reached still needs one.</p>
+     */
+    private void instrumentConcolicCommunicationHandoffs(
+            List<InstrumentationPlan> campaign, HookCatalog refs) {
+        Map<String, CommunicationHandoffSpec> sites = new LinkedHashMap<>();
+        for (InstrumentationPlan plan : campaign) {
+            for (CommunicationHandoffSpec site
+                    : plan.communicationHandoffs()) {
+                sites.putIfAbsent(site.exports() + "\n" + site.portId()
+                        + "\n" + site.siteId() + "\n"
+                        + site.argumentIndex(), site);
+            }
+        }
+        for (CommunicationHandoffSpec site : sites.values()) {
+            // Adapter-carried components already invoke the public VM ABI on
+            // their exact storage.  Rewriting the structured parent cut here
+            // would export a different value under the component's port id.
+            if (site.manualCarrier()) continue;
+            SootMethod method;
+            try {
+                method = Scene.v().getMethod(site.method());
+            } catch (RuntimeException missing) {
+                throw new IllegalStateException(
+                        "COMMUNICATION_HANDOFF_METHOD_UNAVAILABLE: "
+                                + site.portId(), missing);
+            }
+            if (method == null || !method.isConcrete()) {
+                throw new IllegalStateException(
+                        "COMMUNICATION_HANDOFF_METHOD_NOT_CONCRETE: "
+                                + site.portId());
+            }
+            Body body = method.retrieveActiveBody();
+            if (site.exportsCutArgument()) {
+                instrumentCutArgumentExport(body, site, refs);
+            } else if (site.exportsEntryReturn()) {
+                instrumentEntryReturnExport(body, method, site, refs);
+            } else if (site.attachesEntryParameter()) {
+                instrumentEntryParameterAttach(body, method, site, refs);
+            } else if (site.attachesCutReturn()) {
+                instrumentCutReturnAttach(body, site, refs);
+            }
+        }
+    }
+
+    /** The unique invoke unit one declared cut site names, or {@code null}. */
+    private static Stmt cutInvoke(Body body, CommunicationHandoffSpec site) {
+        Stmt selected = null;
+        for (Unit unit : snapshotUnits(body)) {
+            if (originalUnitIndex(unit) != site.unitIndex()
+                    || !(unit instanceof Stmt)) {
+                continue;
+            }
+            Stmt statement = (Stmt) unit;
+            if (!statement.containsInvokeExpr()
+                    || !site.declaredCallee().equals(statement
+                    .getInvokeExpr().getMethodRef().getSignature())) {
+                continue;
+            }
+            if (selected != null) {
+                throw new IllegalStateException(
+                        "COMMUNICATION_HANDOFF_CUT_NOT_UNIQUE: "
+                                + site.portId());
+            }
+            selected = statement;
+        }
+        return selected;
+    }
+
+    /** {@code Req_out}: exported one instruction ahead of the cut call. */
+    private void instrumentCutArgumentExport(
+            Body body, CommunicationHandoffSpec site, HookCatalog refs) {
+        Stmt cut = cutInvoke(body, site);
+        if (cut == null) return;
+        InvokeExpr invoke = cut.getInvokeExpr();
+        if (site.argumentIndex() >= invoke.getArgCount()) return;
+        List<Unit> before = new ArrayList<>();
+        addCommunicationLeafExport(body, invoke.getArg(
+                site.argumentIndex()), site, before);
+        insertBeforeSequence(body, cut, before);
+    }
+
+    /** {@code Resp_out}: exported at the server entry's normal return. */
+    private void instrumentEntryReturnExport(
+            Body body, SootMethod method, CommunicationHandoffSpec site,
+            HookCatalog refs) {
+        if (method.getReturnType() instanceof VoidType) return;
+        for (Unit unit : snapshotUnits(body)) {
+            if (!(unit instanceof ReturnStmt)) continue;
+            List<Unit> before = new ArrayList<>();
+            if (site.responsePathCarrier()) {
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                communicationFieldPathRef(
+                                        "exportCommunicationFieldPath"),
+                                StringConstant.v(site.portId()),
+                                ((ReturnStmt) unit).getOp())));
+            } else {
+                addCommunicationLeafExport(body,
+                        ((ReturnStmt) unit).getOp(), site, before);
+            }
+            insertBeforeSequence(body, unit, before);
+        }
+    }
+
+    /**
+     * Presents one value to the broker on a fresh carrier leaf.
+     *
+     * <p>The store is emitted here, in the application's own frame, and that
+     * placement is the whole point: a value's expression propagates into a
+     * field only while the executing frame is symbolically tracked, so a
+     * carrier filled inside GraphChecker's runtime reaches the broker with no
+     * shadow and every export answers
+     * {@code RPC_HANDOFF_NOT_SYMBOLIC}.</p>
+     */
+    private void addCommunicationLeafExport(
+            Body body, Value value, CommunicationHandoffSpec site,
+            List<Unit> units) {
+        String[] leaf = carrierLeaf(value.getType());
+        Local carrier = newCarrierLeaf(body, leaf, value, units);
+        units.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        communicationLeafRef("exportCommunicationLeaf"),
+                        StringConstant.v(site.portId()), carrier,
+                        StringConstant.v(leaf[0]),
+                        StringConstant.v(leaf[1]))));
+    }
+
+    /** Allocates one carrier and stores {@code value} on its typed leaf. */
+    private static Local newCarrierLeaf(Body body, String[] leaf,
+                                        Value value, List<Unit> units) {
+        SootClass owner = carrierClass();
+        RefType type = RefType.v(HANDOFF_LEAF_CARRIER_CLASS);
+        Local carrier = newTraceLocal(body, type, "$causynthHandoffCarrier");
+        units.add(Jimple.v().newAssignStmt(carrier,
+                Jimple.v().newNewExpr(type)));
+        units.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newSpecialInvokeExpr(carrier,
+                        Scene.v().makeMethodRef(owner, "<init>",
+                                Collections.<Type>emptyList(),
+                                VoidType.v(), false))));
+        units.add(Jimple.v().newAssignStmt(
+                Jimple.v().newInstanceFieldRef(carrier,
+                        Scene.v().makeFieldRef(owner, leaf[0],
+                                carrierLeafType(leaf[1]), false)),
+                immediateValue(body, value, units)));
+        return carrier;
+    }
+
+    /** Reads one carrier leaf back into the receiving frame's own value. */
+    private static Unit readCarrierLeaf(Local carrier, String[] leaf,
+                                        Value target) {
+        return Jimple.v().newAssignStmt(target,
+                Jimple.v().newInstanceFieldRef(carrier,
+                        Scene.v().makeFieldRef(carrierClass(), leaf[0],
+                                carrierLeafType(leaf[1]), false)));
+    }
+
+    /** The carrier field and descriptor one Jimple type crosses on. */
+    private static String[] carrierLeaf(Type type) {
+        if (type instanceof BooleanType) return new String[]{"z", "Z"};
+        if (type instanceof ByteType) return new String[]{"b", "B"};
+        if (type instanceof ShortType) return new String[]{"s", "S"};
+        if (type instanceof CharType) return new String[]{"c", "C"};
+        if (type instanceof IntType) return new String[]{"i", "I"};
+        if (type instanceof LongType) return new String[]{"j", "J"};
+        if (type instanceof FloatType) return new String[]{"f", "F"};
+        if (type instanceof DoubleType) return new String[]{"d", "D"};
+        return new String[]{"o", "Ljava/lang/Object;"};
+    }
+
+    private static Type carrierLeafType(String descriptor) {
+        if ("Z".equals(descriptor)) return BooleanType.v();
+        if ("B".equals(descriptor)) return ByteType.v();
+        if ("S".equals(descriptor)) return ShortType.v();
+        if ("C".equals(descriptor)) return CharType.v();
+        if ("I".equals(descriptor)) return IntType.v();
+        if ("J".equals(descriptor)) return LongType.v();
+        if ("F".equals(descriptor)) return FloatType.v();
+        if ("D".equals(descriptor)) return DoubleType.v();
+        return RefType.v("java.lang.Object");
+    }
+
+    private static final String HANDOFF_LEAF_CARRIER_CLASS =
+            CONCOLIC_REGION_RUNTIME_CLASS + "$HandoffLeafCarrier";
+
+    private static SootClass carrierClass() {
+        SootClass carrier = Scene.v().getSootClassUnsafe(
+                HANDOFF_LEAF_CARRIER_CLASS);
+        if (carrier == null) {
+            carrier = new SootClass(HANDOFF_LEAF_CARRIER_CLASS,
+                    Modifier.PUBLIC);
+            carrier.setPhantomClass();
+            Scene.v().addClass(carrier);
+        }
+        return carrier;
+    }
+
+    private static SootMethodRef communicationLeafRef(String name) {
+        Type string = RefType.v("java.lang.String");
+        return Scene.v().makeMethodRef(Scene.v().getSootClass(
+                        CONCOLIC_REGION_RUNTIME_CLASS), name,
+                Arrays.asList(string, RefType.v("java.lang.Object"), string,
+                        string), VoidType.v(), true);
+    }
+
+    private static SootMethodRef communicationFieldPathRef(String name) {
+        return Scene.v().makeMethodRef(Scene.v().getSootClass(
+                        CONCOLIC_REGION_RUNTIME_CLASS), name,
+                Arrays.<Type>asList(RefType.v("java.lang.String"),
+                        RefType.v("java.lang.Object")),
+                VoidType.v(), true);
+    }
+
+    /** {@code Req_in}: attached onto the server entry's own parameter. */
+    private void instrumentEntryParameterAttach(
+            Body body, SootMethod method, CommunicationHandoffSpec site,
+            HookCatalog refs) {
+        if (site.argumentIndex() >= method.getParameterCount()) return;
+        Unit insertionPoint = safeInstrumentationEntry(body, method);
+        Value parameter = body.getParameterLocal(site.argumentIndex());
+        List<Unit> entry = new ArrayList<>();
+        addCommunicationLeafAttach(body, parameter, parameter.getType(),
+                site, entry, refs);
+        insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+    }
+
+    /** {@code Resp_in}: attached onto the value the cut call returned. */
+    private void instrumentCutReturnAttach(
+            Body body, CommunicationHandoffSpec site, HookCatalog refs) {
+        Stmt cut = cutInvoke(body, site);
+        if (cut == null || !(cut instanceof DefinitionStmt)) return;
+        Value returned = ((DefinitionStmt) cut).getLeftOp();
+        if (!(returned instanceof Local)) return;
+        List<Unit> after = new ArrayList<>();
+        if (site.responsePathCarrier()) {
+            after.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            communicationFieldPathRef(
+                                    "attachCommunicationFieldPath"),
+                            StringConstant.v(site.portId()), returned)));
+        } else {
+            addCommunicationLeafAttach(body, returned,
+                    cut.getInvokeExpr().getMethodRef().returnType(), site,
+                    after, refs);
+        }
+        insertAfterSequence(body, cut, after);
+    }
+
+    /**
+     * Replaces {@code target} with the value the VM attached to it.
+     *
+     * <p>The read-back is the point: after a successful attach the carrier
+     * leaf denotes the sender's expression, so assigning it into the
+     * receiving frame's own local is what makes the receiver's later
+     * arithmetic build on that term.  A refused attach hands the same
+     * concrete value straight back, so the program is unchanged either
+     * way.</p>
+     *
+     * <p>Deliberately not wrapped in the observation pause the evidence hooks
+     * use: the boxing, the store and the read-back are exactly the value
+     * moves the VM has to see, and {@code can_do_concolic()} is false inside
+     * a paused subtree.  The runtime mutes its own bookkeeping around
+     * them.</p>
+     */
+    private void addCommunicationLeafAttach(
+            Body body, Value target, Type declaredType,
+            CommunicationHandoffSpec site, List<Unit> units,
+            HookCatalog refs) {
+        Type valueType = target.getType();
+        String[] leaf = carrierLeaf(valueType);
+        Local carrier = newCarrierLeaf(body, leaf, target, units);
+        units.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        communicationLeafRef("attachCommunicationLeaf"),
+                        StringConstant.v(site.portId()), carrier,
+                        StringConstant.v(leaf[0]),
+                        StringConstant.v(leaf[1]))));
+        if (valueType instanceof PrimType
+                || "java.lang.Object".equals(valueType.toString())) {
+            units.add(readCarrierLeaf(carrier, leaf, target));
+            return;
+        }
+        Local attached = newTraceLocal(body, RefType.v("java.lang.Object"),
+                "$causynthHandoffLeaf");
+        units.add(readCarrierLeaf(carrier, leaf, attached));
+        units.add(Jimple.v().newAssignStmt(target,
+                Jimple.v().newCastExpr(attached, valueType)));
     }
 
     /** Captures one exact heap definition at its activation-local site. */
@@ -1107,8 +1585,13 @@ public final class CausynthPipeline {
         if (!(selected instanceof AssignStmt)
                 || !(((AssignStmt) selected).getLeftOp()
                 instanceof InstanceFieldRef)) {
+            // Name the unit that is actually there.  A mismatch here means
+            // the plan's unit index and this body disagree, and which unit
+            // the index landed on is the whole evidence for why.
             throw exactHeapCaptureFailure(capture,
-                    "FIELD_ASSIGNMENT_MISMATCH", null);
+                    "FIELD_ASSIGNMENT_MISMATCH at " + capture.method()
+                            + "#u" + capture.unitIndex() + " which is \""
+                            + selected + "\"", null);
         }
         InstanceFieldRef field = (InstanceFieldRef) ((AssignStmt) selected)
                 .getLeftOp();
@@ -1224,18 +1707,42 @@ public final class CausynthPipeline {
                     continue;
                 }
                 InstanceFieldRef field = (InstanceFieldRef) left;
-                if (!materializations.matches(method.getSignature(),
-                        originalUnitIndex(unit), field.getFieldRef())) {
+                if (!materializations.matchesWriteCarrier(
+                        field.getFieldRef())) {
                     continue;
                 }
+                String declaredField =
+                        CausynthStaticFacts.declaredFieldSignature(
+                                field.getFieldRef());
+                // Before the store, not after it.  A shared location is
+                // versioned only from the moment it is selected, so a carrier
+                // this activation binds after its own write publishes an
+                // initial version holding the value the write already left
+                // and never the write itself.  The selection is the exact
+                // access binding - this store's own base object - so it adds
+                // no search, only the one bytecode of ordering that lets the
+                // putfield below publish the writer's expression.
+                List<Unit> before = new ArrayList<>();
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.PAUSE_OBSERVATION))));
+                Value selectionOwner = objectArg(body, field.getBase(),
+                        before);
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.SELECT_FIELD_WRITE_CARRIER),
+                                selectionOwner,
+                                StringConstant.v(declaredField))));
+                before.add(Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                refs.ref(Hook.RESUME_OBSERVATION))));
+                insertBeforeSequence(body, unit, before);
+
                 List<Unit> after = new ArrayList<>();
                 after.add(Jimple.v().newInvokeStmt(
                         Jimple.v().newStaticInvokeExpr(
                                 refs.ref(Hook.PAUSE_OBSERVATION))));
                 Value owner = objectArg(body, field.getBase(), after);
-                String declaredField =
-                        CausynthStaticFacts.declaredFieldSignature(
-                                field.getFieldRef());
                 after.add(Jimple.v().newInvokeStmt(
                         Jimple.v().newStaticInvokeExpr(
                                 refs.ref(Hook.RECORD_FIELD_WRITE), owner,
@@ -1323,6 +1830,16 @@ public final class CausynthPipeline {
                     LongConstant.v(0L)));
             Value receiver = objectArg(body,
                     ((InstanceInvokeExpr) invocation).getBase(), before);
+            // One bracket over the whole context, not only over the
+            // materialization inside it.  Opening the context is bookkeeping
+            // like every other evidence call: it compares this bridge's own
+            // strings and walks its own stack, and an accessor call site sits
+            // inside the workload's own fragment, so an unbracketed open
+            // states those comparisons as conditions of the fragment that
+            // merely called a getter.
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
             before.add(Jimple.v().newAssignStmt(contextToken,
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.ENTER_ACCESSOR_CALL_CONTEXT),
@@ -1338,9 +1855,6 @@ public final class CausynthPipeline {
             // getter consumes the field.
             before.add(Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
-                            refs.ref(Hook.PAUSE_OBSERVATION))));
-            before.add(Jimple.v().newInvokeStmt(
-                    Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.MATERIALIZE_FIELD),
                             StringConstant.v(target.implementationMethod),
                             IntConstant.v(-1), receiver,
@@ -1351,9 +1865,20 @@ public final class CausynthPipeline {
                             refs.ref(Hook.RESUME_OBSERVATION))));
             insertBeforeSequence(body, selected, before);
 
+            // Closing the context is the same bookkeeping as opening it and
+            // carries the same bracket on both edges.  The normal pause is
+            // also the trap's exclusive end, so the accessor call itself stays
+            // protected while the bracket around its close does not re-enter
+            // the handler that would then leave the pause depth raised.
+            Unit normalPause = Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION)));
             Unit normalExit = Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.EXIT_ACCESSOR_CALL_CONTEXT), contextToken));
+            Unit normalResume = Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION)));
             Unit continuation = Jimple.v().newNopStmt();
             Unit skipHandler = Jimple.v().newGotoStmt(continuation);
             Local caught = newTraceLocal(body,
@@ -1361,184 +1886,234 @@ public final class CausynthPipeline {
                     "$causynthAccessorThrown");
             Unit handler = Jimple.v().newIdentityStmt(caught,
                     Jimple.v().newCaughtExceptionRef());
+            Unit exceptionalPause = Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION)));
             Unit exceptionalExit = Jimple.v().newInvokeStmt(
                     Jimple.v().newStaticInvokeExpr(
                             refs.ref(Hook.EXIT_ACCESSOR_CALL_CONTEXT), contextToken));
+            Unit exceptionalResume = Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION)));
             Unit rethrow = Jimple.v().newThrowStmt(caught);
-            insertAfterSequence(body, selected, Arrays.asList(normalExit,
-                    skipHandler, handler, exceptionalExit, rethrow,
-                    continuation));
+            insertAfterSequence(body, selected, Arrays.asList(normalPause,
+                    normalExit, normalResume, skipHandler, handler,
+                    exceptionalPause, exceptionalExit, exceptionalResume,
+                    rethrow, continuation));
             SootClass throwable = Scene.v().getSootClass(
                     "java.lang.Throwable");
             body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
-                    normalExit, handler));
+                    normalPause, handler));
         }
     }
 
+    /**
+     * Materializes the campaign envelope's selected sites, and only those.
+     *
+     * <p>This pass used to walk every application class once per plan row.
+     * Its associative-read branch wrapped every {@code Map.get} it passed,
+     * selected or not, so an HDFS startup ran the hook on every hash lookup
+     * {@code MiniDFSCluster.waitActive()} makes, and the hook's own late
+     * "no region is active" return could not repay that.  The envelope is
+     * what fixed it: the hook is emitted only where the task named an exact
+     * method and unit.</p>
+     *
+     * <p>What is emitted at such a site is the hook call and the argument
+     * copies it needs, and nothing else.  The observation mute belongs to
+     * the hook - it takes it after its own region check, so an inactive
+     * thread pays no VM call at all - and a bracket here would only put that
+     * mute back in front of the check.</p>
+     */
     private void instrumentConcolicMaterializations(
-            ConcolicMaterializationSelection selection,
-            HookCatalog refs) {
+            CampaignEnvelope envelope, HookCatalog refs) {
+        ConcolicMaterializationSelection selection = envelope.materializations;
         if (selection.isEmpty()) {
             return;
         }
-        List<SootClass> classes = new ArrayList<>();
-        for (SootClass sootClass : Scene.v().getApplicationClasses()) {
-            classes.add(sootClass);
-        }
-        for (SootClass sootClass : classes) {
-            for (SootMethod method : new ArrayList<>(sootClass.getMethods())) {
-                if (!method.isConcrete()) {
-                    continue;
-                }
-                Body body;
-                try {
-                    body = method.retrieveActiveBody();
-                } catch (RuntimeException ignored) {
-                    continue;
-                }
-                List<Unit> originalUnits = snapshotUnits(body);
-                tagOriginalUnits(originalUnits);
-                Unit safeEntry = safeInstrumentationEntry(body, method);
-                Unit lowerBound = method.isConstructor() ? safeEntry : null;
-                if (method.isConstructor() && lowerBound == null) {
-                    continue;
-                }
-                boolean instrumentationSafe = lowerBound == null;
-                for (Unit unit : originalUnits) {
-                    if (!instrumentationSafe) {
-                        if (unit != lowerBound) {
-                            continue;
-                        }
-                        instrumentationSafe = true;
-                    }
-                    if (!(unit instanceof Stmt)) {
+        for (String signature : envelope.methods) {
+            final SootMethod method;
+            try {
+                method = Scene.v().getMethod(signature);
+            } catch (RuntimeException missing) {
+                continue;
+            }
+            if (method == null || !method.isConcrete()) {
+                continue;
+            }
+            Body body;
+            try {
+                body = method.retrieveActiveBody();
+            } catch (RuntimeException ignored) {
+                continue;
+            }
+            envelope.scannedBodies++;
+            List<Unit> originalUnits = snapshotUnits(body);
+            tagOriginalUnits(originalUnits);
+            Unit safeEntry = safeInstrumentationEntry(body, method);
+            Unit lowerBound = method.isConstructor() ? safeEntry : null;
+            if (method.isConstructor() && lowerBound == null) {
+                continue;
+            }
+            boolean instrumentationSafe = lowerBound == null;
+            for (Unit unit : originalUnits) {
+                if (!instrumentationSafe) {
+                    if (unit != lowerBound) {
                         continue;
                     }
-                    Stmt stmt = (Stmt) unit;
-                    int unitIndex = originalUnitIndex(unit);
-                    Set<FieldRef> fields = Collections.newSetFromMap(
-                            new IdentityHashMap<FieldRef, Boolean>());
-                    if (stmt instanceof AssignStmt
-                            && ((AssignStmt) stmt).getRightOp()
-                            instanceof FieldRef) {
-                        fields.add((FieldRef) ((AssignStmt) stmt)
-                                .getRightOp());
+                    instrumentationSafe = true;
+                }
+                if (!(unit instanceof Stmt)) {
+                    continue;
+                }
+                Stmt stmt = (Stmt) unit;
+                int unitIndex = originalUnitIndex(unit);
+                Set<FieldRef> fields = Collections.newSetFromMap(
+                        new IdentityHashMap<FieldRef, Boolean>());
+                if (stmt instanceof AssignStmt
+                        && ((AssignStmt) stmt).getRightOp()
+                        instanceof FieldRef) {
+                    fields.add((FieldRef) ((AssignStmt) stmt)
+                            .getRightOp());
+                }
+                for (ValueBox box : stmt.getUseBoxes()) {
+                    if (box.getValue() instanceof FieldRef) {
+                        fields.add((FieldRef) box.getValue());
                     }
-                    for (ValueBox box : stmt.getUseBoxes()) {
-                        if (box.getValue() instanceof FieldRef) {
-                            fields.add((FieldRef) box.getValue());
-                        }
+                }
+                for (FieldRef field : fields) {
+                    SootFieldRef fieldRef = field.getFieldRef();
+                    SootField declared =
+                            CausynthStaticFacts.declaredField(fieldRef);
+                    String declaredSignature =
+                            CausynthStaticFacts.declaredFieldSignature(
+                                    fieldRef);
+                    String declaredName = declared == null
+                            ? fieldRef.name() : declared.getName();
+                    if (!selection.matches(method.getSignature(),
+                            unitIndex, fieldRef)) {
+                        continue;
                     }
-                    for (FieldRef field : fields) {
-                        SootFieldRef fieldRef = field.getFieldRef();
-                        SootField declared =
-                                CausynthStaticFacts.declaredField(fieldRef);
-                        String declaredSignature =
-                                CausynthStaticFacts.declaredFieldSignature(
-                                        fieldRef);
-                        String declaredName = declared == null
-                                ? fieldRef.name() : declared.getName();
-                        if (!selection.matches(method.getSignature(),
-                                unitIndex, fieldRef)) {
-                            continue;
-                        }
-                        if (field instanceof StaticFieldRef) {
-                            instrumentConsumedStaticPrimitiveFieldRead(body,
-                                    method, stmt, unitIndex,
-                                    (StaticFieldRef) field, refs);
-                            continue;
-                        }
-                        if (!(field instanceof InstanceFieldRef)) {
-                            throw new IllegalStateException(
-                                    "UNKNOWN_FIELD_MATERIALIZATION_UNSUPPORTED: "
-                                            + declaredSignature
-                                            + " at " + method.getSignature()
-                                            + "#u" + unitIndex);
-                        }
-                        InstanceFieldRef instanceField =
-                                (InstanceFieldRef) field;
-                        List<Unit> before = new ArrayList<>();
-                        before.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.PAUSE_OBSERVATION))));
-                        Value owner = objectArg(body, instanceField.getBase(),
-                                before);
-                        before.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.MATERIALIZE_FIELD),
-                                        StringConstant.v(method.getSignature()),
-                                        IntConstant.v(unitIndex), owner,
-                                        StringConstant.v(declaredSignature),
-                                        StringConstant.v(declaredName))));
-                        before.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.RESUME_OBSERVATION))));
-                        insertBeforeSequence(body, stmt, before);
+                    envelope.fieldMaterializationSites++;
+                    if (field instanceof StaticFieldRef) {
+                        instrumentConsumedStaticPrimitiveFieldRead(body,
+                                method, stmt, unitIndex,
+                                (StaticFieldRef) field, refs);
+                        continue;
                     }
+                    if (!(field instanceof InstanceFieldRef)) {
+                        throw new IllegalStateException(
+                                "UNKNOWN_FIELD_MATERIALIZATION_UNSUPPORTED: "
+                                        + declaredSignature
+                                        + " at " + method.getSignature()
+                                        + "#u" + unitIndex);
+                    }
+                    InstanceFieldRef instanceField =
+                            (InstanceFieldRef) field;
+                    List<Unit> before = new ArrayList<>();
+                    before.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.PAUSE_OBSERVATION))));
+                    Value owner = objectArg(body, instanceField.getBase(),
+                            before);
+                    before.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.MATERIALIZE_FIELD),
+                                    StringConstant.v(method.getSignature()),
+                                    IntConstant.v(unitIndex), owner,
+                                    StringConstant.v(declaredSignature),
+                                    StringConstant.v(declaredName))));
+                    before.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.RESUME_OBSERVATION))));
+                    insertBeforeSequence(body, stmt, before);
+                }
 
-                    InvokeExpr invoke = stmt.containsInvokeExpr()
-                            ? stmt.getInvokeExpr() : null;
-                    if (associativeReadInvoke(invoke)) {
-                        InstanceInvokeExpr read = (InstanceInvokeExpr) invoke;
+                InvokeExpr invoke = stmt.containsInvokeExpr()
+                        ? stmt.getInvokeExpr() : null;
+                // The first gate. This hook takes only the container and
+                // the key, so unlike every other materialization it
+                // carries no site of its own and cannot be admitted by
+                // one at runtime: whatever the plan did not name here is
+                // simply not addressable later. It is therefore emitted
+                // only where the task named an exact method and unit.
+                // A read the plan did not name is a coverage gap with a
+                // name, not permission to wrap every Map.get.
+                if (associativeReadInvoke(invoke)) {
+                    if (!selection.selectedSite(signature, unitIndex)) {
+                        envelope.unselectedAssociativeReads++;
+                        LOG.debug("{}: {}#u{}",
+                                GAP_ASSOCIATIVE_READ_SITE_UNSELECTED,
+                                signature, unitIndex);
+                    } else {
+                        envelope.associativeReadSites++;
+                        InstanceInvokeExpr read =
+                                (InstanceInvokeExpr) invoke;
+                        // No pause/resume bracket: the hook owns its own
+                        // mute now, and it takes it only after the
+                        // thread-local region check has admitted the call.
+                        // Bracketing here would put that mute back in front
+                        // of the check, which is what made an inactive hook
+                        // pay two reflective calls into the VM gate on every
+                        // hash lookup.  Nothing between the argument copies
+                        // and the hook needs muting: objectArg never boxes -
+                        // it answers NullConstant for a primitive and a
+                        // plain Jimple copy for a reference - so the only
+                        // observable work here is the hook's own, which it
+                        // mutes itself.
                         List<Unit> before = new ArrayList<>();
-                        before.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.PAUSE_OBSERVATION))));
                         Value container = objectArg(body, read.getBase(),
                                 before);
-                        Value key = objectArg(body, read.getArg(0), before);
+                        Value key = objectArg(body, read.getArg(0),
+                                before);
                         before.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.MATERIALIZE_ASSOCIATIVE_READ),
+                                Jimple.v().newStaticInvokeExpr(refs.ref(
+                                        Hook.MATERIALIZE_ASSOCIATIVE_READ),
                                         container, key)));
-                        before.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.RESUME_OBSERVATION))));
                         insertBeforeSequence(body, stmt, before);
                     }
+                }
 
-                    if (!(stmt instanceof AssignStmt)) {
-                        continue;
-                    }
-                    Value left = ((AssignStmt) stmt).getLeftOp();
-                    if (!(left instanceof Local)
-                            || !selection.matches(method.getSignature(),
-                            ((Local) left).getName(), unitIndex)) {
-                        continue;
-                    }
-                    Local local = (Local) left;
-                    List<Unit> after = new ArrayList<>();
-                    if (local.getType() instanceof RefType
-                            || local.getType() instanceof ArrayType) {
-                        Local modeled = newTraceLocal(body,
-                                RefType.v("java.lang.Object"),
-                                "$causynthReferenceModel");
-                        after.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.PAUSE_OBSERVATION))));
-                        after.add(Jimple.v().newAssignStmt(modeled,
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.MATERIALIZE_REFERENCE),
-                                        StringConstant.v(method.getSignature()),
-                                        IntConstant.v(unitIndex),
-                                        StringConstant.v(local.getName()),
-                                        local)));
-                        after.add(Jimple.v().newInvokeStmt(
-                                Jimple.v().newStaticInvokeExpr(
-                                        refs.ref(Hook.RESUME_OBSERVATION))));
-                        after.add(Jimple.v().newAssignStmt(local,
-                                Jimple.v().newCastExpr(modeled,
-                                        local.getType())));
-                    } else {
-                        addPrimitiveMaterialization(body, method, unitIndex,
-                                local, after,
-                                refs.ref(Hook.MATERIALIZE_PRIMITIVE),
-                                refs.ref(Hook.PAUSE_OBSERVATION),
-                                refs.ref(Hook.RESUME_OBSERVATION));
-                    }
-                    if (!after.isEmpty()) {
-                        insertAfterSequence(body, stmt, after);
-                    }
+                if (!(stmt instanceof AssignStmt)) {
+                    continue;
+                }
+                Value left = ((AssignStmt) stmt).getLeftOp();
+                if (!(left instanceof Local)
+                        || !selection.matches(method.getSignature(),
+                        ((Local) left).getName(), unitIndex)) {
+                    continue;
+                }
+                Local local = (Local) left;
+                List<Unit> after = new ArrayList<>();
+                if (local.getType() instanceof RefType
+                        || local.getType() instanceof ArrayType) {
+                    Local modeled = newTraceLocal(body,
+                            RefType.v("java.lang.Object"),
+                            "$causynthReferenceModel");
+                    after.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.PAUSE_OBSERVATION))));
+                    after.add(Jimple.v().newAssignStmt(modeled,
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.MATERIALIZE_REFERENCE),
+                                    StringConstant.v(method.getSignature()),
+                                    IntConstant.v(unitIndex),
+                                    StringConstant.v(local.getName()),
+                                    local)));
+                    after.add(Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(
+                                    refs.ref(Hook.RESUME_OBSERVATION))));
+                    after.add(Jimple.v().newAssignStmt(local,
+                            Jimple.v().newCastExpr(modeled,
+                                    local.getType())));
+                } else {
+                    addPrimitiveMaterialization(body, method, unitIndex,
+                            local, after,
+                            refs.ref(Hook.MATERIALIZE_PRIMITIVE),
+                            refs.ref(Hook.PAUSE_OBSERVATION),
+                            refs.ref(Hook.RESUME_OBSERVATION));
+                }
+                if (!after.isEmpty()) {
+                    insertAfterSequence(body, stmt, after);
                 }
             }
         }
@@ -1946,77 +2521,35 @@ public final class CausynthPipeline {
      */
     int instrumentConcolicLoopBounds(
             Set<String> methods, LoopBoundPolicy policy) {
-        return instrumentConcolicLoopBounds(methods, policy, false);
+        return instrumentConcolicLoopBounds(methods, policy,
+                Collections.<String>emptySet());
     }
 
     /**
-     * The methods whose loops carry the replay between the region root and
-     * the calls the task's slice is stated over.
+     * Bounds the loops of one selected method set.
      *
-     * <p>A long-lived root does not reach its slice once and stop: it spins a
-     * service loop that re-enters the same code every turn, and that loop
-     * lives in a sibling method of the root - not in the slice, and so not in
-     * any set the bounded semantics already instruments.  Taking the declaring
-     * classes of the methods the task does name is a static over-approximation
-     * of that path which needs no call graph, stays inside the code the
-     * activation owns, and cannot depend on any application's naming.</p>
-     */
-    private static Set<String> replayPathLoopMethods(Set<String> bounded) {
-        Set<SootClass> owners = new LinkedHashSet<>();
-        for (String methodSignature : bounded) {
-            try {
-                SootMethod method = Scene.v().getMethod(methodSignature);
-                if (method != null) owners.add(method.getDeclaringClass());
-            } catch (RuntimeException ignored) {
-                // A method the bounding pass cannot resolve owns no class
-                // this pass could expand either.
-            }
-        }
-        Set<String> expanded = new LinkedHashSet<>();
-        for (SootClass owner : owners) {
-            for (SootMethod candidate : new ArrayList<>(owner.getMethods())) {
-                // A constructor's loop may precede the initialization that
-                // makes a hook legal to insert, and the bounded pass already
-                // rejects that case for the methods it owns.  Leaving them to
-                // it keeps this expansion from failing a whole campaign over
-                // a method the replay never runs a loop in.
-                if (candidate.isConstructor()
-                        || candidate.isStaticInitializer()
-                        || !candidate.isConcrete()
-                        || bounded.contains(candidate.getSignature())) {
-                    continue;
-                }
-                expanded.add(candidate.getSignature());
-            }
-        }
-        return expanded;
-    }
-
-    /**
-     * Bounds the loops of one method set.
-     *
-     * <p>With {@code resourceOnly}, each loop body is charged to the replay
-     * resource cap and nothing else.  This is what a replay-path method
-     * outside the task's bounded slice gets: its loops are not part of the
-     * path space the solver reasons about, so they must not spend the unroll
-     * budget, but the work they do decides whether the replay can finish at
-     * all and therefore has to be accounted for somewhere.</p>
+     * <p>Every loop of a method comes from that method's one
+     * {@link CfgLoopControl.LoopCfg}, which is also what the static analyzer
+     * and the region planner prove iteration guards on.  Cycles a body has
+     * only over trap edges are not loops of that model and carry no bound;
+     * they are counted and reported under
+     * {@link CfgLoopControl#GAP_EXCEPTION_CYCLE_UNBOUNDED}.</p>
      */
     int instrumentConcolicLoopBounds(
             Set<String> methods, LoopBoundPolicy policy,
-            boolean resourceOnly) {
+            Set<String> fixedCountLoopSites) {
         if (policy == null) {
             throw new IllegalArgumentException("loop bound policy is required");
         }
         HookCatalog hooks = HookCatalog.concolic();
         SootMethodRef replayBody = hooks.ref(Hook.CHECK_REPLAY_LOOP_BODY);
-        SootMethodRef checkBackedge = resourceOnly ? replayBody
-                : hooks.ref(Hook.CHECK_LOOP_BACKEDGE);
-        SootMethodRef recordBackedge = resourceOnly ? replayBody
-                : hooks.ref(Hook.RECORD_LOOP_BACKEDGE);
-        SootMethodRef checkBodyEntry = resourceOnly ? replayBody
-                : hooks.ref(Hook.CHECK_LOOP_BODY_ENTRY);
+        SootMethodRef recordCardinality =
+                hooks.ref(Hook.RECORD_LOOP_CARDINALITY);
+        SootMethodRef completeCardinality =
+                hooks.ref(Hook.COMPLETE_LOOP_CARDINALITY);
+        SootMethodRef checkBackedge = hooks.ref(Hook.CHECK_LOOP_BACKEDGE);
         int instrumented = 0;
+        int exceptionCycles = 0;
         for (String methodSignature : methods) {
             final SootMethod method;
             try {
@@ -2030,17 +2563,24 @@ public final class CausynthPipeline {
             Body body = method.retrieveActiveBody();
             List<Unit> original = snapshotUnits(body);
             tagOriginalUnits(original);
-            BriefUnitGraph graph = new BriefUnitGraph(body);
-            MHGDominatorsFinder<Unit> dominators =
-                    new MHGDominatorsFinder<>(graph);
+            // One loop-CFG decision per method, taken here and handed to
+            // every consumer below: backedge discovery, natural-loop
+            // grouping, the continuation-guard search, and the loop-control
+            // guards the static analyzer proves.  A trapped method's loops
+            // are proved with its trap edges, so a loop containing a caught
+            // operation is discovered on exactly the graph it is
+            // instrumented from.
+            CfgLoopControl.LoopCfg loopCfg =
+                    CfgLoopControl.loopCfg(body, new BriefUnitGraph(body));
+            exceptionCycles += loopCfg.exceptionCycles();
             List<CfgBackedge> backedges = new ArrayList<>();
             for (Unit source : original) {
                 int sourceIndex = originalUnitIndex(source);
                 if (sourceIndex < 0) continue;
-                for (Unit target : graph.getSuccsOf(source)) {
+                for (Unit target : loopCfg.succsOf(source)) {
                     int targetIndex = originalUnitIndex(target);
                     if (targetIndex >= 0
-                            && dominators.isDominatedBy(source, target)) {
+                            && loopCfg.isDominatedBy(source, target)) {
                         backedges.add(new CfgBackedge(source, sourceIndex,
                                 target, targetIndex));
                     }
@@ -2051,8 +2591,40 @@ public final class CausynthPipeline {
             Unit safeEntry = safeInstrumentationEntry(body, method);
             for (CfgNaturalLoop loop : loops) {
                 List<CfgEdge> continuations = continuationEdges(
-                        body, graph, dominators, original, loop);
+                        body, loopCfg, original, loop);
                 String loopId = loop.identity(method);
+                boolean fixedCount = naturalLoopHasSite(
+                        method, loop, continuations,
+                                fixedCountLoopSites);
+                Set<Unit> loopMembers = naturalLoopMembers(loopCfg, loop);
+                List<CfgEdge> loopExits = fixedCount
+                        ? loopExitEdges(loopCfg, loopMembers)
+                        : Collections.<CfgEdge>emptyList();
+                List<Unit> loopTerminals = fixedCount
+                        ? loopTerminalUnits(loopCfg, loopMembers)
+                        : Collections.<Unit>emptyList();
+                if (fixedCount) {
+                    List<Unit> guards = new ArrayList<>();
+                    for (CfgEdge edge : loopExits) guards.add(edge.source);
+                    AssignStmt authority = CfgLoopControl
+                            .arrayLengthAuthority(body, guards);
+                    if (authority == null
+                            || !(authority.getLeftOp() instanceof Local)) {
+                        throw new IllegalStateException(
+                                "FIXED_COUNT_LOOP_CARDINALITY_UNADDRESSABLE: "
+                                        + loopId);
+                    }
+                    Unit observation = Jimple.v().newInvokeStmt(
+                            Jimple.v().newStaticInvokeExpr(recordCardinality,
+                                    StringConstant.v(loopId),
+                                    (Local) authority.getLeftOp()));
+                    body.getUnits().insertAfter(observation, authority);
+                }
+                boolean resourceLoop = fixedCount;
+                int loopBodyBound = resourceLoop
+                        ? policy.maxBackedgeTraversals()
+                        : naturalLoopBodyBound(
+                                method, loop, continuations, policy);
                 for (CfgBackedge backedge : loop.backedges) {
                     if (method.isConstructor()
                             && (safeEntry == null || !unitAtOrAfter(
@@ -2065,47 +2637,126 @@ public final class CausynthPipeline {
                     boolean entersBody = removeEdge(continuations,
                             backedge.source, backedge.target);
                     List<LoopEdgeHook> edgeHooks = new ArrayList<>();
-                    if (resourceOnly) {
+                    if (resourceLoop) {
                         // One charge per body entered.  The latch hooks exist
                         // to separate a guarded return to the header from the
                         // transfer into the next body; the resource cap counts
                         // bodies, so only the body-entering edge is charged.
                         // It counts them per loop, and so is given the loop.
                         if (!entersBody) continue;
-                        edgeHooks.add(new LoopEdgeHook(checkBodyEntry, loopId));
+                        edgeHooks.add(new LoopEdgeHook(replayBody, loopId));
                     } else {
+                        // This latch executes after one complete body. Cutting
+                        // its Kth transfer therefore retains exactly K body
+                        // effects even when the selected region is inactive
+                        // at the enclosing loop's next header.
                         edgeHooks.add(new LoopEdgeHook(
-                                !loop.hasContinuationGuard
-                                        ? checkBackedge : recordBackedge,
-                                loopId));
-                        if (entersBody) {
-                            edgeHooks.add(new LoopEdgeHook(checkBodyEntry,
-                                    bodyEntryLoopId(loopId,
-                                            backedge.source)));
-                        }
+                                checkBackedge, loopId));
                     }
                     splitCfgEdge(body, method, backedge.source,
                             backedge.target, loopId,
-                            policy.maxBackedgeTraversals(), edgeHooks);
+                            loopBodyBound, edgeHooks);
                     instrumented++;
                 }
                 for (CfgEdge continuation : continuations) {
+                    if (!resourceLoop) continue;
                     splitCfgEdge(body, method, continuation.source,
                             continuation.target, loopId,
-                            policy.maxBackedgeTraversals(),
+                            loopBodyBound,
                             Collections.singletonList(new LoopEdgeHook(
-                                    checkBodyEntry, resourceOnly ? loopId
-                                            : bodyEntryLoopId(loopId,
-                                            continuation.source))));
+                                    replayBody, loopId)));
                     // In bounded mode the return value counts the backedges
                     // this pass split, which a continuation edge is not.  The
                     // resource pass charges bodies, so for it a continuation
                     // is exactly what was instrumented.
-                    if (resourceOnly) instrumented++;
+                    instrumented++;
+                }
+                if (fixedCount) {
+                    for (CfgEdge exit : loopExits) {
+                        splitStringHookEdge(body, method, exit.source,
+                                exit.target, loopId, completeCardinality);
+                    }
+                    for (Unit terminal : loopTerminals) {
+                        body.getUnits().insertBefore(
+                                Jimple.v().newInvokeStmt(
+                                        Jimple.v().newStaticInvokeExpr(
+                                                completeCardinality,
+                                                StringConstant.v(loopId))),
+                                terminal);
+                    }
                 }
             }
         }
+        if (exceptionCycles > 0) {
+            // Named, not silent: a cycle that exists only over trap edges
+            // carries no iteration bound, because no bound can be installed
+            // on an abrupt transfer out of a protected range.
+            LOG.warn("{}: {} trap-edge cycle(s) across {} method(s) carry no "
+                            + "iteration bound",
+                    CfgLoopControl.GAP_EXCEPTION_CYCLE_UNBOUNDED,
+                    exceptionCycles, methods.size());
+        }
         return instrumented;
+    }
+
+    private static boolean naturalLoopHasSite(
+            SootMethod method, CfgNaturalLoop loop,
+            List<CfgEdge> continuations, Set<String> selectedSites) {
+        if (selectedSites == null || selectedSites.isEmpty()) return false;
+        Set<String> controlSites = naturalLoopControlSites(
+                method, loop, continuations);
+        for (String site : controlSites) {
+            if (selectedSites.contains(site)) return true;
+        }
+        return false;
+    }
+
+    /** Resolves one natural loop's declared K_L from its actual CFG guards. */
+    private static int naturalLoopBodyBound(
+            SootMethod method, CfgNaturalLoop loop,
+            List<CfgEdge> continuations, LoopBoundPolicy policy) {
+        Set<String> controlSites = new LinkedHashSet<>();
+        controlSites.addAll(naturalLoopControlSites(
+                method, loop, continuations));
+        Integer declared = null;
+        String declaredSite = "";
+        for (String site : controlSites) {
+            Integer candidate = policy.declaredBounds().get(site);
+            if (candidate == null) continue;
+            if (declared != null && !declared.equals(candidate)) {
+                throw new IllegalStateException(
+                        "BOUNDED_LOOP_BODY_BOUND_DISAGREES: loop "
+                                + loop.identity(method) + " declares K_L="
+                                + declared + " at " + declaredSite
+                                + " and K_L=" + candidate + " at " + site);
+            }
+            declared = candidate;
+            declaredSite = site;
+        }
+        return declared == null ? policy.defaultBackedgeTraversals()
+                : declared.intValue();
+    }
+
+    private static Set<String> naturalLoopControlSites(
+            SootMethod method, CfgNaturalLoop loop,
+            List<CfgEdge> continuations) {
+        Set<String> controlSites = new LinkedHashSet<>();
+        addLoopControlSite(controlSites, method, loop.header);
+        for (CfgBackedge backedge : loop.backedges) {
+            addLoopControlSite(controlSites, method, backedge.source);
+        }
+        for (CfgEdge continuation : continuations) {
+            addLoopControlSite(controlSites, method, continuation.source);
+        }
+        return controlSites;
+    }
+
+    private static void addLoopControlSite(
+            Set<String> sites, SootMethod method, Unit unit) {
+        int index = originalUnitIndex(unit);
+        if (index >= 0) {
+            sites.add(method.getSignature() + "#u" + index);
+        }
     }
 
     private static List<CfgNaturalLoop> groupNaturalLoops(
@@ -2129,69 +2780,83 @@ public final class CausynthPipeline {
         return loops;
     }
 
-    private static List<CfgEdge> continuationEdges(
-            Body body, BriefUnitGraph graph,
-            MHGDominatorsFinder<Unit> dominators, List<Unit> original,
-            CfgNaturalLoop loop) {
-        Set<Unit> members = naturalLoopMembers(graph, loop);
-        List<CfgEdge> result = continuationEdgesFrom(
-                body, loop.header, members);
-        if (!result.isEmpty()) {
-            loop.hasContinuationGuard = true;
-            return result;
-        }
-        // A do-while guard is itself a conditional backedge.
-        result = new ArrayList<>();
-        for (CfgBackedge backedge : loop.backedges) {
-            result.addAll(continuationEdgesFrom(
-                    body, backedge.source, members));
-        }
-        if (!result.isEmpty()) {
-            loop.hasContinuationGuard = true;
-            return deduplicateEdges(result);
-        }
-        // Jimple often places hasNext() evaluation immediately before the
-        // actual IfStmt, so the dominance header is not itself the guard.
-        // Select the first loop-exit branch that dominates every latch.
-        for (Unit candidate : original) {
-            if (!members.contains(candidate)) continue;
-            boolean dominatesEveryLatch = true;
-            for (CfgBackedge backedge : loop.backedges) {
-                if (!dominators.isDominatedBy(
-                        backedge.source, candidate)) {
-                    dominatesEveryLatch = false;
-                    break;
-                }
-            }
-            if (!dominatesEveryLatch) continue;
-            result = continuationEdgesFrom(body, candidate, members);
-            if (!result.isEmpty()) {
-                loop.hasContinuationGuard = true;
-                return deduplicateEdges(result);
-            }
-        }
-        return Collections.emptyList();
-    }
-
     private static Set<Unit> naturalLoopMembers(
-            BriefUnitGraph graph, CfgNaturalLoop loop) {
+            CfgLoopControl.LoopCfg loopCfg, CfgNaturalLoop loop) {
         Set<Unit> members = Collections.newSetFromMap(
                 new IdentityHashMap<Unit, Boolean>());
-        members.add(loop.header);
-        List<Unit> work = new ArrayList<>();
         for (CfgBackedge backedge : loop.backedges) {
-            if (members.add(backedge.source)) work.add(backedge.source);
+            members.addAll(loopCfg.naturalLoop(loop.header,
+                    Collections.singletonList(backedge.source)));
         }
-        for (int index = 0; index < work.size(); index++) {
-            Unit current = work.get(index);
-            for (Unit predecessor : graph.getPredsOf(current)) {
-                if (members.add(predecessor)
-                        && predecessor != loop.header) {
-                    work.add(predecessor);
+        return members;
+    }
+
+    /** Normal transfers ending one dynamic natural-loop invocation. */
+    private static List<CfgEdge> loopExitEdges(
+            CfgLoopControl.LoopCfg loopCfg, Set<Unit> members) {
+        List<CfgEdge> exits = new ArrayList<>();
+        for (Unit source : members) {
+            for (Unit target : loopCfg.succsOf(source)) {
+                if (!members.contains(target)) {
+                    exits.add(new CfgEdge(source, target));
                 }
             }
         }
-        return members;
+        return deduplicateEdges(exits);
+    }
+
+    /** Abrupt method terminals inside a loop have no normal exit edge. */
+    private static List<Unit> loopTerminalUnits(
+            CfgLoopControl.LoopCfg loopCfg, Set<Unit> members) {
+        List<Unit> terminals = new ArrayList<>();
+        for (Unit unit : members) {
+            if (loopCfg.succsOf(unit).isEmpty()
+                    && (unit instanceof ReturnStmt
+                    || unit instanceof ReturnVoidStmt
+                    || unit instanceof ThrowStmt)) {
+                terminals.add(unit);
+            }
+        }
+        return terminals;
+    }
+
+    private static List<CfgEdge> continuationEdges(
+            Body body, CfgLoopControl.LoopCfg loopCfg, List<Unit> original,
+            CfgNaturalLoop loop) {
+        List<CfgEdge> result = new ArrayList<>();
+        for (CfgBackedge backedge : loop.backedges) {
+            // CfgLoopControl proves iteration guards per dominance-proved
+            // latch.  Keep the instrumentation on that exact same natural
+            // loop.  Unioning the members of several latch paths first can
+            // pull each path's exit into another path's loop and erase every
+            // real guard; a later internal conditional then looks like the
+            // only exit and is incorrectly charged as the body entry.
+            Set<Unit> members = loopCfg.naturalLoop(loop.header,
+                    Collections.singletonList(backedge.source));
+            List<CfgEdge> latchEdges = continuationEdgesFrom(
+                    body, loop.header, members);
+            if (latchEdges.isEmpty()) {
+                // The dominance header is often the expression immediately
+                // before the IfStmt.  The first exiting branch that dominates
+                // this latch is its continuation decision.  A do-while is
+                // covered as well: its conditional latch dominates itself.
+                for (Unit candidate : original) {
+                    if (!members.contains(candidate)
+                            || !loopCfg.isDominatedBy(
+                            backedge.source, candidate)) {
+                        continue;
+                    }
+                    latchEdges = continuationEdgesFrom(
+                            body, candidate, members);
+                    if (!latchEdges.isEmpty()) break;
+                }
+            }
+            if (latchEdges.isEmpty()) {
+                return Collections.emptyList();
+            }
+            result.addAll(latchEdges);
+        }
+        return deduplicateEdges(result);
     }
 
     private static List<CfgEdge> continuationEdgesFrom(
@@ -2240,17 +2905,6 @@ public final class CausynthPipeline {
             }
         }
         return removed;
-    }
-
-    /**
-     * Names the guard whose decision enters this body, so the replay charges
-     * the unroll bound on evidence about this loop's own continuation instead
-     * of whichever branch happened to be decided last.  An edge whose source
-     * has no original identity names none, and the replay then charges it.
-     */
-    private static String bodyEntryLoopId(String loopId, Unit guard) {
-        int guardIndex = originalUnitIndex(guard);
-        return guardIndex < 0 ? loopId : loopId + "@guard:u" + guardIndex;
     }
 
     /** A loop hook and the edge identity that hook is handed. */
@@ -2305,6 +2959,33 @@ public final class CausynthPipeline {
         }
     }
 
+    /** Splits one normal edge with a single-string, non-throwing hook. */
+    private static void splitStringHookEdge(
+            Body body, SootMethod method, Unit source, Unit target,
+            String loopId, SootMethodRef hookRef) {
+        List<UnitBox> matchingTargets = new ArrayList<>();
+        for (UnitBox targetBox : source.getUnitBoxes()) {
+            if (targetBox.getUnit() == target) matchingTargets.add(targetBox);
+        }
+        boolean fallThrough = source.fallsThrough()
+                && body.getUnits().getSuccOf(source) == target;
+        if (matchingTargets.isEmpty() && !fallThrough) {
+            throw new IllegalStateException(
+                    "Could not split CFG loop exit " + loopId
+                            + " in " + method.getSignature());
+        }
+        Unit hook = Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(hookRef,
+                        StringConstant.v(loopId)));
+        Unit transfer = Jimple.v().newGotoStmt(target);
+        body.getUnits().add(hook);
+        body.getUnits().add(transfer);
+        for (UnitBox targetBox : matchingTargets) targetBox.setUnit(hook);
+        if (fallThrough) {
+            body.getUnits().insertAfter(Jimple.v().newGotoStmt(hook), source);
+        }
+    }
+
     private static final class CfgEdge {
         private final Unit source;
         private final Unit target;
@@ -2319,7 +3000,6 @@ public final class CausynthPipeline {
         private final Unit header;
         private final int headerIndex;
         private final List<CfgBackedge> backedges = new ArrayList<>();
-        private boolean hasContinuationGuard;
 
         private CfgNaturalLoop(Unit header, int headerIndex) {
             this.header = header;
@@ -2587,7 +3267,7 @@ public final class CausynthPipeline {
     }
 
     private void insertRegionExit(Body body, Stmt returnUnit, Value returnValue,
-                                  String rootMethod,
+                                  String taskId, String rootMethod,
                                   SootMethodRef exitRef,
                                   SootMethodRef pauseObservation,
                                   SootMethodRef resumeObservation) {
@@ -2600,7 +3280,8 @@ public final class CausynthPipeline {
                 Jimple.v().newStaticInvokeExpr(pauseObservation)));
         Value primitiveValue = primitiveValueString(body, returnValue, units);
         units.add(Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                exitRef, StringConstant.v(rootMethod), objectValue,
+                exitRef, StringConstant.v(taskId),
+                StringConstant.v(rootMethod), objectValue,
                 primitiveValue)));
         units.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(resumeObservation)));
@@ -2662,10 +3343,19 @@ public final class CausynthPipeline {
         return false;
     }
 
+    /**
+     * Wraps one method in a balanced skeleton envelope.
+     *
+     * <p>{@code recordExceptionalExit} selects which exceptional-exit hook the
+     * catch-all handler calls. Both hooks pop the same thread-local
+     * activation and close the same call sites; they differ only in whether
+     * the pop is also written to the trace, so turning it on for a method does
+     * not change how that method's envelope nests.</p>
+     */
     private Local instrumentLiteMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
-            HookCatalog refs) {
+            HookCatalog refs, boolean recordExceptionalExit) {
         Local callId = newTraceLocal(body, LongType.v(),
                 "$causynthLiteCallId");
         List<Unit> entry = new ArrayList<>();
@@ -2693,7 +3383,9 @@ public final class CausynthPipeline {
             }
         }
         addActiveThrowHandler(body, insertionPoint,
-                refs.ref(Hook.THROW_ACTIVE_METHOD_LITE));
+                refs.ref(recordExceptionalExit
+                        ? Hook.THROW_ACTIVE_METHOD
+                        : Hook.THROW_ACTIVE_METHOD_LITE));
         return callId;
     }
 
@@ -2938,6 +3630,19 @@ public final class CausynthPipeline {
         insertBeforeSequence(body, returnUnit, units);
     }
 
+    /**
+     * Appends a method-wide catch-all that reports the exceptional exit and
+     * rethrows.
+     *
+     * <p>The trap is appended, never prepended, and the order is the whole
+     * correctness argument for a throw inside {@code synchronized}. javac
+     * compiles a synchronized statement into an inner {@code any} handler that
+     * releases the monitor and rethrows; the JVM takes the first exception
+     * table entry whose range covers the throw, so an appended catch-all lets
+     * that inner handler run first and then catches its rethrow, which is
+     * still inside the appended range. Prepending would preempt the monitor
+     * release and leak the lock.</p>
+     */
     private void addActiveThrowHandler(Body body, Unit start,
                                        SootMethodRef throwRef) {
         if (start == null) {
@@ -2964,7 +3669,7 @@ public final class CausynthPipeline {
      * frame stack from a verifier-independent string constant.
      */
     private void addRegionThrowHandler(Body body, Unit start,
-                                       String rootMethod,
+                                       String taskId, String rootMethod,
                                        SootMethodRef throwRef,
                                        SootMethodRef pauseObservation,
                                        SootMethodRef resumeObservation) {
@@ -2979,7 +3684,8 @@ public final class CausynthPipeline {
         Unit pause = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 pauseObservation));
         Unit record = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
-                throwRef, StringConstant.v(rootMethod), caught));
+                throwRef, StringConstant.v(taskId),
+                StringConstant.v(rootMethod), caught));
         Unit resume = Jimple.v().newInvokeStmt(Jimple.v().newStaticInvokeExpr(
                 resumeObservation));
         Unit rethrow = Jimple.v().newThrowStmt(caught);
@@ -3427,9 +4133,11 @@ public final class CausynthPipeline {
         MATERIALIZE_STATIC_PRIMITIVE_FIELD,
         MATERIALIZE_FIELD,
         MATERIALIZE_ASSOCIATIVE_READ,
+        SELECT_FIELD_WRITE_CARRIER,
         RECORD_FIELD_WRITE,
         RECORD_REGION_EXIT_FIELD_OUTPUT,
         RECORD_CALL_ARGUMENT_OUTPUT,
+        RECORD_COMMUNICATION_EFFECT,
         BEGIN_MUTATION_METHOD_STATE_OUTPUT,
         PREPARE_ATOMIC_MUTATION_STATE_OUTPUT,
         RECORD_MUTATION_STATE_OUTPUT,
@@ -3444,9 +4152,9 @@ public final class CausynthPipeline {
         RESOLVE_BRANCH,
         RESOLVE_SWITCH_BRANCH,
         CHECK_LOOP_BACKEDGE,
-        RECORD_LOOP_BACKEDGE,
-        CHECK_LOOP_BODY_ENTRY,
         CHECK_REPLAY_LOOP_BODY,
+        RECORD_LOOP_CARDINALITY,
+        COMPLETE_LOOP_CARDINALITY,
         EXIT_REGION_FRAME,
         THROW_REGION_FRAME
     }
@@ -3525,7 +4233,8 @@ public final class CausynthPipeline {
             }
             return new HookCatalog()
                     .add(Hook.ENTER_REGION_FRAME, runtime, "enterRegionFrame",
-                            LongType.v(), string, object, ArrayType.v(object, 1))
+                            LongType.v(), string, string, object,
+                            ArrayType.v(object, 1))
                     .add(Hook.ENTER_ACCESSOR_CALL_CONTEXT, runtime,
                             "enterAccessorCallContext", LongType.v(), string,
                             IntType.v(), string, string, object)
@@ -3558,6 +4267,9 @@ public final class CausynthPipeline {
                     .add(Hook.MATERIALIZE_ASSOCIATIVE_READ, runtime,
                             "materializeAssociativeRead", VoidType.v(),
                             object, object)
+                    .add(Hook.SELECT_FIELD_WRITE_CARRIER, runtime,
+                            "selectFieldWriteCarrier", VoidType.v(), object,
+                            string)
                     .add(Hook.RECORD_FIELD_WRITE, runtime,
                             "recordFieldWrite", VoidType.v(), object, string)
                     .add(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT, runtime,
@@ -3566,6 +4278,9 @@ public final class CausynthPipeline {
                     .add(Hook.RECORD_CALL_ARGUMENT_OUTPUT, runtime,
                             "recordCallArgumentOutput", VoidType.v(),
                             string, object)
+                    .add(Hook.RECORD_COMMUNICATION_EFFECT, runtime,
+                            "recordCommunicationEffect", VoidType.v(),
+                            string)
                     .add(Hook.BEGIN_MUTATION_METHOD_STATE_OUTPUT, runtime,
                             "beginMutationMethodStateOutput", VoidType.v(),
                             string)
@@ -3605,19 +4320,18 @@ public final class CausynthPipeline {
                     .add(Hook.CHECK_LOOP_BACKEDGE, runtime,
                             "checkLoopBackedge", VoidType.v(), string,
                             IntType.v())
-                    .add(Hook.RECORD_LOOP_BACKEDGE, runtime,
-                            "recordLoopBackedge", VoidType.v(), string,
-                            IntType.v())
-                    .add(Hook.CHECK_LOOP_BODY_ENTRY, runtime,
-                            "checkLoopBodyEntry", VoidType.v(), string,
-                            IntType.v())
                     .add(Hook.CHECK_REPLAY_LOOP_BODY, runtime,
                             "checkReplayLoopBody", VoidType.v(), string,
                             IntType.v())
+                    .add(Hook.RECORD_LOOP_CARDINALITY, runtime,
+                            "recordLoopCardinality", VoidType.v(), string,
+                            IntType.v())
+                    .add(Hook.COMPLETE_LOOP_CARDINALITY, runtime,
+                            "completeLoopCardinality", VoidType.v(), string)
                     .add(Hook.EXIT_REGION_FRAME, runtime, "exitRegionFrame",
-                            VoidType.v(), string, object, string)
+                            VoidType.v(), string, string, object, string)
                     .add(Hook.THROW_REGION_FRAME, runtime, "throwRegionFrame",
-                            VoidType.v(), string,
+                            VoidType.v(), string, string,
                             RefType.v("java.lang.Throwable"));
         }
     }
@@ -3708,10 +4422,8 @@ public final class CausynthPipeline {
 
 
     private static boolean concolicInstrumentationEnabled() {
-        return Boolean.parseBoolean(firstNonBlank(
-                System.getProperty("causynth.instrument.concolic"),
-                System.getenv("CAUSYNTH_INSTRUMENT_CONCOLIC"),
-                "false"));
+        return ConcolicInstrumentationSelections
+                .instrumentationRequested();
     }
 
 }

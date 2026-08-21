@@ -86,8 +86,9 @@ public final class BooleanReachConditionExtractor {
         JsonObject report = new JsonObject();
         report.addProperty("schemaVersion", 3);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
-        report.addProperty("trustState", firstNonBlank(
-                string(manifest, "trustState"), "CANDIDATE_ONLY"));
+        boolean recordedModelComplete =
+                bool(manifest, "recordedModelComplete", false);
+        report.addProperty("recordedModelComplete", recordedModelComplete);
 
         List<String> gaps = new ArrayList<>();
         validateCompositionAuthority(manifest, gaps);
@@ -96,8 +97,7 @@ public final class BooleanReachConditionExtractor {
         }
 
         PortCatalog ports = PortCatalog.from(regions);
-        Discovery discovery = discover(composedSmt,
-                suppliedInputs(manifest), ports,
+        Discovery discovery = discover(composedSmt, ports,
                 PortOccurrenceCatalog.from(manifest));
         List<RootInput> inputs = discovery.rootInputs;
         JsonObject roots = new JsonObject();
@@ -182,10 +182,11 @@ public final class BooleanReachConditionExtractor {
         // exactly the SAT rows.  A second "base implies DNF" solver call only
         // rechecks that exhaustive table and adds no admission evidence.
         boolean complete = solverErrors == 0;
-        boolean observedUnderapproximation =
-                "OBSERVED_PATH_UNDERAPPROX".equals(
-                        string(manifest, "trustState"))
-                && !bool(manifest, "pathSetComplete", true);
+        // Best-effort branch replay never proves that all program paths were
+        // explored.  A satisfying selected case is still a bounded witness;
+        // only an open recorded read-from model makes an unsatisfiable answer
+        // inconclusive.
+        boolean observedUnderapproximation = !recordedModelComplete;
         String reachability = !complete
                 ? "UNKNOWN" : !satisfyingValuations.isEmpty()
                 ? "REACHABLE" : observedUnderapproximation
@@ -283,19 +284,19 @@ public final class BooleanReachConditionExtractor {
 
     private static void validateCompositionAuthority(
             JsonObject manifest, List<String> gaps) {
+        // What this stage needs is a composition that produced a usable
+        // model: the Composer's own artifact, and its own "CANDIDATE_READY".
+        // An under-approximate model is still one - its formula is the run's
+        // evidence, and the only thing its openness forbids is reading UNSAT
+        // as unreachability, which the reach condition states.  Whether the
+        // model may be accepted as the milestone artifact is finalStatus, and
+        // it is decided by the Composer alone; re-deriving an eligibility of
+        // our own out of its members is the second gate README forbids.
         boolean commonManifest = manifest != null
                 && integer(manifest, "schemaVersion", -1) == 2
                 && "CONCOLIC_COMPOSED_SMT".equals(string(manifest, "kind"));
-        boolean closedCandidate = "CANDIDATE_ONLY".equals(
-                string(manifest, "trustState"));
-        boolean observedCandidate = "OBSERVED_PATH_UNDERAPPROX".equals(
-                string(manifest, "trustState"))
-                && "EXISTENTIAL_OBSERVED_PATHS".equals(
-                string(manifest, "compositionMode"))
-                && !bool(manifest, "pathSetComplete", true);
         if (!commonManifest
-                || !"CANDIDATE_READY".equals(string(manifest, "state"))
-                || !(closedCandidate || observedCandidate)) {
+                || !"CANDIDATE_READY".equals(string(manifest, "state"))) {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
         JsonElement occurrences = manifest == null ? null
@@ -305,9 +306,7 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    private static Discovery discover(String smt,
-                                      Set<String> upstreamSupplied,
-                                      PortCatalog ports,
+    private static Discovery discover(String smt, PortCatalog ports,
                                       PortOccurrenceCatalog occurrences) {
         List<RootInput> roots = new ArrayList<>();
         List<RootInput> domainInputs = new ArrayList<>();
@@ -324,7 +323,7 @@ public final class BooleanReachConditionExtractor {
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
             if (encoding == null
                     || !encoding.occurrenceSort.equals(occurrence.sort)) {
-                if (!upstreamSupplied.contains(port.id)) {
+                if (!occurrence.supplied) {
                     undecoded.add(port.id);
                 }
                 continue;
@@ -333,7 +332,7 @@ public final class BooleanReachConditionExtractor {
                     occurrence.portTerm, occurrence.solverTerm,
                     occurrence.nullnessSolverTerm, encoding);
             if (!declared) {
-                if (!upstreamSupplied.contains(port.id)) {
+                if (!occurrence.supplied) {
                     undecoded.add(port.id);
                 }
                 continue;
@@ -343,11 +342,11 @@ public final class BooleanReachConditionExtractor {
                         occurrence.occurrenceId, occurrence.solverTerm,
                         "");
                 domainInputs.add(input);
-                if (upstreamSupplied.contains(port.id)) {
+                if (occurrence.supplied) {
                     continue;
                 }
                 roots.add(input);
-            } else if (upstreamSupplied.contains(port.id)) {
+            } else if (occurrence.supplied) {
                 continue;
             } else {
                 scalarRoots.add(new RootInput(port,
@@ -391,16 +390,6 @@ public final class BooleanReachConditionExtractor {
                 + valueConstructor + " " + solverTerm + "))")
                 || smt.contains("(= (" + valueConstructor + " "
                 + solverTerm + ") " + portTerm + ")");
-    }
-
-    private static Set<String> suppliedInputs(JsonObject manifest) {
-        Set<String> result = new LinkedHashSet<>();
-        for (JsonElement element : array(manifest, "suppliedInputs")) {
-            if (!element.isJsonPrimitive()) continue;
-            String input = firstNonBlank(element.getAsString());
-            if (!input.isEmpty()) result.add(input);
-        }
-        return result;
     }
 
     private static String valuationQuery(String base,
@@ -882,7 +871,8 @@ public final class BooleanReachConditionExtractor {
                         string(row, "sort"),
                         string(row, "portTerm"),
                         string(row, "solverTerm"),
-                        string(row, "nullnessSolverTerm"));
+                        string(row, "nullnessSolverTerm"),
+                        bool(row, "supplied", false));
                 if (occurrence.complete()) {
                     result.occurrences.add(occurrence);
                 }
@@ -907,11 +897,13 @@ public final class BooleanReachConditionExtractor {
         private final String portTerm;
         private final String solverTerm;
         private final String nullnessSolverTerm;
+        private final boolean supplied;
 
         private PortOccurrenceInfo(String portId, String occurrenceId,
                                    String sort, String portTerm,
                                    String solverTerm,
-                                   String nullnessSolverTerm) {
+                                   String nullnessSolverTerm,
+                                   boolean supplied) {
             this.portId = firstNonBlank(portId);
             this.occurrenceId = firstNonBlank(occurrenceId);
             this.sort = firstNonBlank(sort);
@@ -919,6 +911,7 @@ public final class BooleanReachConditionExtractor {
             this.solverTerm = firstNonBlank(solverTerm);
             this.nullnessSolverTerm =
                     firstNonBlank(nullnessSolverTerm);
+            this.supplied = supplied;
         }
 
         private boolean complete() {

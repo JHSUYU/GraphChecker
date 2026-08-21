@@ -61,9 +61,12 @@ public final class InitialContainerObservation {
             return null;
         }
         JsonArray arguments = JsonFields.array(expression, "arguments");
-        JsonObject selector = arguments.size() == 1
-                && concreteScalar(arguments.get(0))
+        JsonObject selectorExpression = arguments.size() == 1
+                && arguments.get(0).isJsonObject()
                 ? arguments.get(0).getAsJsonObject() : null;
+        JsonObject selector = selectorExpression != null
+                && concreteScalar(selectorExpression)
+                ? selectorExpression : null;
         Integer index = ("INDEXED".equals(shape)
                 || !iterationProjection.isEmpty()) && selector != null
                 ? concreteIndex(selector) : null;
@@ -73,7 +76,8 @@ public final class InitialContainerObservation {
             selector = null;
         }
         return new Read(shape, symbol, inputPort, index, selector,
-                iterationProjection, string(expression, "_java_type"));
+                selectorExpression, iterationProjection,
+                string(expression, "_java_type"));
     }
 
     /**
@@ -144,7 +148,12 @@ public final class InitialContainerObservation {
             }
             String operation = string(relation, "operation");
             if ("STATE".equals(operation)) return relation;
+            boolean associativeMutation = "ASSOCIATIVE".equals(shape)
+                    && ("PUT".equals(operation)
+                    || "REMOVE".equals(operation)
+                    || "REMOVE_AT".equals(operation));
             if (!"ITERATOR".equals(operation)
+                    && !associativeMutation
                     && !(allowView && ("KEY_VIEW".equals(operation)
                     || "VALUE_VIEW".equals(operation)))) {
                 return new JsonObject();
@@ -340,17 +349,21 @@ public final class InitialContainerObservation {
         final String inputPort;
         final Integer index;
         final JsonObject selector;
+        final JsonObject selectorExpression;
         final String iterationProjection;
         final String javaType;
 
         private Read(String shape, String stateSymbol, String inputPort,
                      Integer index, JsonObject selector,
+                     JsonObject selectorExpression,
                      String iterationProjection, String javaType) {
             this.shape = shape;
             this.stateSymbol = stateSymbol;
             this.inputPort = inputPort;
             this.index = index;
             this.selector = selector == null ? null : selector.deepCopy();
+            this.selectorExpression = selectorExpression == null ? null
+                    : selectorExpression.deepCopy();
             this.iterationProjection = iterationProjection;
             this.javaType = javaType;
         }
@@ -361,13 +374,26 @@ public final class InitialContainerObservation {
                     ? index != null : selector != null;
         }
 
+        /**
+         * A selected associative read need not replay the old concrete key.
+         * The runtime can materialize the value at the same access ordinal,
+         * leaving the replay's own key and Map semantics intact.
+         */
+        boolean dynamicAssociativeSelector() {
+            return "ASSOCIATIVE".equals(shape)
+                    && iterationProjection.isEmpty()
+                    && selector == null && selectorExpression != null;
+        }
+
         String selectorIdentity() {
             return "INDEXED".equals(shape)
                     ? String.valueOf(index)
                     : !iterationProjection.isEmpty()
                     ? "ITERATION:" + iterationProjection + ":" + index
-                    : selector == null ? ""
-                    : CanonicalJson.render(selector);
+                    : selector != null ? CanonicalJson.render(selector)
+                    : selectorExpression == null ? ""
+                    : "ACCESS:" + ArtifactIO.sha256(
+                    CanonicalJson.render(selectorExpression));
         }
 
         String keyJavaType() {

@@ -68,19 +68,22 @@ public final class RegionOutputContainerSnapshotApiSmoke {
                                 Integer.valueOf(31)}, 3),
                 "array snapshot rejected");
 
-        require(relation(map, "\"operation\":\"PUT\"", true),
-                "map relation");
-        require(relation(trackedMap, "\"operation\":\"PUT\"", true),
+        require(relation(map, "\"operation\":\"PUT\""),
+                "map relation: " + System.getSymbolicExpression(map));
+        require(System.getSymbolicExpression(map).contains(
+                        "\"operation\":\"SNAPSHOT_BASE\""),
+                "map snapshot base missing");
+        require(relation(trackedMap, "\"operation\":\"PUT\""),
                 "tracked map relation");
-        require(relation(list, "\"operation\":\"APPEND\"", true),
+        require(relation(list, "\"operation\":\"APPEND\""),
                 "list relation");
-        require(relation(linkedList, "\"operation\":\"APPEND\"", true),
+        require(relation(linkedList, "\"operation\":\"APPEND\""),
                 "linked-list relation");
-        require(relation(treeMap, "\"operation\":\"PUT\"", true),
+        require(relation(treeMap, "\"operation\":\"PUT\""),
                 "tree-map relation");
-        require(relation(set, "\"operation\":\"PUT\"", true),
+        require(relation(set, "\"operation\":\"PUT\""),
                 "set relation");
-        require(relation(array, "\"operation\":\"WRITE\"", false),
+        require(relation(array, "\"operation\":\"WRITE\""),
                 "array relation");
 
         String summary = System.finishConcolicRegion();
@@ -89,12 +92,9 @@ public final class RegionOutputContainerSnapshotApiSmoke {
                 "CAUSYNTH_REGION_OUTPUT_CONTAINER_SNAPSHOT_API_SMOKE_OK");
     }
 
-    private static boolean relation(
-            Object value, String operation, boolean clear) {
+    private static boolean relation(Object value, String operation) {
         String expression = System.getSymbolicExpression(value);
         return expression.contains("\"kind\":\"CONTAINER_RELATION\"")
-                && (!clear
-                || expression.contains("\"operation\":\"CLEAR\""))
                 && expression.contains(operation);
     }
 

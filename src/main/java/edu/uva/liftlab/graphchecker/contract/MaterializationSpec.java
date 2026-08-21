@@ -57,60 +57,11 @@ public final class MaterializationSpec {
                 Collections.<String>emptyList(), "", -1, "", "");
     }
 
-    public static MaterializationSpec accessorReturn(
-            String javaType, String field, List<String> path,
-            String callerMethod, int unitIndex,
-            String declaredCallee, String implementationMethod) {
-        return accessorReturn(javaType, field, field, path, callerMethod,
-                unitIndex, declaredCallee, implementationMethod);
-    }
-
     /**
-     * Materializes one demanded leaf below the object returned by an exact
-     * accessor call.  The root and leaf declarations stay separate so a
-     * transported reference is never mistaken for the symbolic value.
+     * Region artifacts keep accessor identity in the port's canonical flat
+     * fields, and that is the only representation any producer writes.
      */
-    public static MaterializationSpec accessorReturn(
-            String javaType, String rootField, String leafField,
-            List<String> path, String callerMethod, int unitIndex,
-            String declaredCallee, String implementationMethod) {
-        return new MaterializationSpec(Kind.ACCESSOR_RETURN, javaType,
-                rootField, leafField, path, callerMethod, unitIndex,
-                declaredCallee,
-                implementationMethod);
-    }
-
     public static MaterializationSpec decode(JsonObject port) {
-        JsonElement encoded = port == null ? null
-                : port.get("materialization");
-        if (encoded == null) return decodeFlatAccessor(port);
-        if (!encoded.isJsonObject()) {
-            throw new IllegalArgumentException(
-                    "materialization must be an object");
-        }
-        JsonObject json = encoded.getAsJsonObject();
-        Kind kind;
-        try {
-            kind = Kind.valueOf(text(json, "kind"));
-        } catch (IllegalArgumentException ignored) {
-            throw new IllegalArgumentException(
-                    "unsupported materialization kind");
-        }
-        return new MaterializationSpec(kind, text(json, "javaType"),
-                text(json, "rootField"), text(json, "leafField"),
-                FieldPathSpec.stringArray(json, "path"),
-                text(json, "method"), integer(json, "unitIndex", -1),
-                text(json, "declaredCallee"),
-                text(json, "implementationMethod"));
-    }
-
-    /**
-     * New region artifacts keep accessor identity in the port's canonical
-     * flat fields.  Accept that representation without requiring a second,
-     * byte-for-byte duplicate materialization object.  The nested decoder
-     * above remains for existing artifacts.
-     */
-    private static MaterializationSpec decodeFlatAccessor(JsonObject port) {
         if (!"ACCESSOR_RETURN".equals(text(port, "sourceKind"))) {
             return none();
         }
@@ -128,8 +79,9 @@ public final class MaterializationSpec {
                 || path.isEmpty() || javaType.isEmpty()) {
             return none();
         }
-        return accessorReturn(javaType, field, path, method, unitIndex,
-                declaredCallee, implementation);
+        return new MaterializationSpec(Kind.ACCESSOR_RETURN, javaType,
+                field, field, path, method, unitIndex, declaredCallee,
+                implementation);
     }
 
     /** Java type of the value bound to the logical input port. */

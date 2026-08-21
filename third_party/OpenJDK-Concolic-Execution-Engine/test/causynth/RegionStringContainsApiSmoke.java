@@ -113,22 +113,24 @@ public final class RegionStringContainsApiSmoke {
         require(count(events, "\"conditionCount\":1") == 6, events);
         require(count(events, "\"conditionCount\":0") == 1, events);
 
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String summary = System.finishConcolicRegion();
         require(summary.contains("\"regionId\":\"REGION.string-contains\""),
                 summary);
-        require(summary.contains("string_contains_text"), summary);
-        require(count(summary, "\"_name\":\"contains\"") == 8, summary);
-        require(summary.contains("\"_is_not\":false"), summary);
-        require(!summary.contains("\"_is_not\":true"), summary);
-        require(summary.contains("\"_op\":\"&&\""), summary);
-        require(summary.contains("\"_java_type\":\"Z\",\"_exp\":\"Y_Z_0\""),
-                summary);
-        require(summary.contains("\"_java_type\":\"Z\",\"_exp\":\"Y_Z_1\""),
-                summary);
-        require(summary.contains("Y_L'String'_needle"), summary);
-        require(summary.contains("Y_L'String'_absent"), summary);
-        require(summary.contains("Y_L'String'_omega"), summary);
-        require(!summary.contains("Y_L'String'_ignored"), summary);
+        require(path.contains("string_contains_text"), path);
+        require(count(path, "\"_name\":\"contains\"") == 8, path);
+        require(path.contains("\"_is_not\":false"), path);
+        require(!path.contains("\"_is_not\":true"), path);
+        require(path.contains("\"_op\":\"&&\""), path);
+        require(path.contains("\"_java_type\":\"Z\",\"_exp\":\"Y_Z_0\""),
+                path);
+        require(path.contains("\"_java_type\":\"Z\",\"_exp\":\"Y_Z_1\""),
+                path);
+        require(path.contains("Y_L'String'_needle"), path);
+        require(path.contains("Y_L'String'_absent"), path);
+        require(path.contains("Y_L'String'_omega"), path);
+        require(!path.contains("Y_L'String'_ignored"), path);
         if (Boolean.getBoolean("causynth.smoke.dump")) {
             System.out.println(summary);
         }
@@ -176,12 +178,13 @@ public final class RegionStringContainsApiSmoke {
         require(noCondition(events, "STRING.INTERNED.FIELD.PEER", 1),
                 events);
 
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String summary = System.finishConcolicRegion();
-        require(summary.contains("interned_field_text"), summary);
-        require(count(summary, "\"_name\":\"contains\"") == 1,
-                summary);
-        require(summary.contains("Y_L'String'_ready"), summary);
-        require(!summary.contains("\"_is_not\":true"), summary);
+        require(path.contains("interned_field_text"), path);
+        require(count(path, "\"_name\":\"contains\"") == 1, path);
+        require(path.contains("Y_L'String'_ready"), path);
+        require(!path.contains("\"_is_not\":true"), path);
         require(input.text == peerAlias,
                 "symbolizeField changed interned String identity");
     }
@@ -211,12 +214,13 @@ public final class RegionStringContainsApiSmoke {
         require(exactCondition(events, "STRING.INTERNED.LOCAL", 1),
                 events);
 
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String summary = System.finishConcolicRegion();
-        require(summary.contains("interned_local_text"), summary);
-        require(count(summary, "\"_name\":\"contains\"") == 1,
-                summary);
-        require(summary.contains("Y_L'String'_ready"), summary);
-        require(!summary.contains("\"_is_not\":true"), summary);
+        require(path.contains("interned_local_text"), path);
+        require(count(path, "\"_name\":\"contains\"") == 1, path);
+        require(path.contains("Y_L'String'_ready"), path);
+        require(!path.contains("\"_is_not\":true"), path);
         require(local == peerAlias,
                 "symbolize changed interned String identity");
     }
@@ -260,12 +264,13 @@ public final class RegionStringContainsApiSmoke {
                 events);
         require(noCondition(events, "STRING.INTERN.LITERAL", 1), events);
 
+        String path = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         String summary = System.finishConcolicRegion();
-        require(summary.contains("string_intern_source_text"), summary);
-        require(count(summary, "\"_name\":\"contains\"") == 1,
-                summary);
-        require(summary.contains("Y_L'String'_ready"), summary);
-        require(!summary.contains("\"_name\":\"intern\""), summary);
+        require(path.contains("string_intern_source_text"), path);
+        require(count(path, "\"_name\":\"contains\"") == 1, path);
+        require(path.contains("Y_L'String'_ready"), path);
+        require(!path.contains("\"_name\":\"intern\""), path);
         require(canonical == canonicalLiteral,
                 "concolic propagation changed intern identity");
     }

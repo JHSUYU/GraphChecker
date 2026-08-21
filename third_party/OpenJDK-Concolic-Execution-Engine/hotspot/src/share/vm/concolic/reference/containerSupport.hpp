@@ -4,6 +4,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/exp/expression.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 #include "oops/oop.inline.hpp"
 #include <string>
 
@@ -59,6 +60,69 @@ std::string measurement(Expression *length, Expression *state);
 // so the category alone is indistinguishable from a dozen other causes.
 std::string unsupported(const char *category,
                         MethodSymbolizerHandle &handle);
+
+// ---- selected whole-container state ---------------------------------------
+//
+// A resizable container has no stable per-member slot, so its members are not
+// separately addressable.  Its *state* is: the container algebra already makes
+// every mutation produce one immutable state expression, and that is what a
+// selected container publishes a version of.  Everything below is the bridge
+// between that algebra and the generic version store, and it lives here rather
+// than in the store because the store must not learn what PUT means.
+//
+// Each of these is a no-op on a container nobody selected, and the first thing
+// each of them does is the store's own one-counter early-out, so an unselected
+// workload keeps exactly its old cost.
+
+// Where this container's whole state lives, or an invalid location when it
+// has no shadow.  A view answers its owner's location: one logical container
+// is one location.  Allocates nothing.
+SharedFieldVersions::Location state_location(oop container);
+
+// Publishes `new_state` as the immutable state this mutation produced.
+// `operation` names the mutation (PUT, REMOVE, CLEAR, ...) and is what the
+// ledger event and the evidence report call this write.  Returns the new
+// version id, or 0 when the container is not a selected carrier.
+//
+// The caller must already have installed `new_state` as the container's
+// current state: a version is published for a mutation that happened, and the
+// pairing is one-to-one.
+jlong publish_state(oop container, Expression *new_state,
+                    const char *operation);
+
+// Records that a mutation this engine does not model has run on a selected
+// container, so every later read of it keeps an honest rf_unknown arm.
+// `reason` names the gap in the ledger.  Returns true when a selected
+// location was marked, i.e. when there was a claim to keep honest.
+bool mark_state_gap(oop container, const char *reason);
+
+/** One query bound to the state it may have observed. */
+struct StateQuery {
+  // NULL when the container is not a selected carrier, in which case the
+  // caller keeps whatever answer it already had.
+  Expression *expression;
+  // True when one writer was proven, so the observation may still be tied to
+  // the concrete value the run returned.  False for a guarded choice: tying an
+  // undecided disjunction to one concrete value would let concrete equality
+  // pick the writer, which is the guess this whole mechanism exists to avoid.
+  bool exact;
+  StateQuery() : expression(NULL), exact(false) {}
+};
+
+/**
+ * Resolves one query of a selected container against its state versions.
+ *
+ * The decision -- program order, happens-before, retention, and the
+ * Resolution/ReadReason vocabulary -- is the generic store's, unchanged.  What
+ * is built here is only the value: the arm of candidate W is
+ * `operation(W.state, arguments)`, never W's state itself, because selecting a
+ * writer has to change what the reader observes and not merely which state is
+ * named.  A guarded answer keeps the unconditional rf_unknown arm, typed with
+ * the query's own result type.
+ */
+StateQuery query_state(oop container, const char *shape,
+                       const char *operation, const exp_list_t &arguments,
+                       BasicType result_type, const std::string &java_type);
 }
 
 #endif  // ENABLE_CONCOLIC

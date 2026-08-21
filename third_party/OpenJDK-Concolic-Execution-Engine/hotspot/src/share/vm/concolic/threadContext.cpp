@@ -4,55 +4,22 @@
 #include "concolic/exp/expression.hpp"
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/fieldTraverser.hpp"
-#include "concolic/jdbc/reference/symbolicResultSet.hpp"
-#include "concolic/jdbc/reference/symbolicStatement.hpp"
+#include "concolic/globalSymbolicSession.hpp"
+#include "concolic/sessionSymbolicHeap.hpp"
 #include "concolic/reference/symbolicObject.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
-#include "concolic/reference/symbolicTimestamp.hpp"
-#include "concolic/reference/symbolicDate.hpp"
-#include "concolic/jdbc/reference/symbolicHibernateKey.hpp"
 #include "utilities/vmError.hpp"
 #include "utilities/exceptions.hpp"
 #include "concolic/reference/symbolicNDFunc.hpp"
 #include "classfile/javaClasses.hpp"
 #include "runtime/osThread.hpp"
-#include "runtime/safepoint.hpp"
-#include "runtime/vm_operations.hpp"
-#include "runtime/vmThread.hpp"
-
-// An object closure to reset symbolic ids
-class RestoreSymbolicClosure : public ObjectClosure {
-public:
-  void do_object(oop o) {
-    if (o != NULL) {
-      o->set_sym_rid(NULL_SYM_RID);
-    }
-  }
-};
-
-// Clearing the oop header extension requires a stable heap.  MiniDFSCluster
-// keeps many mutator threads alive while a captured region finishes, so a raw
-// safe_object_iterate from that Java thread can race allocation or GC.  Run
-// the cleanup as a blocking VM operation instead.
-class VM_RestoreConcolicSymbolicIds : public VM_Operation {
-public:
-  virtual VMOp_Type type() const { return VMOp_Dummy; }
-
-  virtual void doit() {
-    assert(SafepointSynchronize::is_at_safepoint(),
-           "concolic oop cleanup requires a safepoint");
-    RestoreSymbolicClosure closure;
-    CollectedHeap* heap = Universe::heap();
-    heap->ensure_parsability(false);
-    heap->safe_object_iterate(&closure);
-  }
-};
+#include <cstdio>
 
 ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
-    : _thread(jt), _s_stack(jt), _sym_rid_counter(), _sym_tmp_id_counter(),
+    : _thread(jt), _s_stack(jt),
       _path_condition_enabled(true), _path_condition_admitted(true),
       _path_condition_pause_depth(0),
       _aborted(false),
@@ -61,14 +28,150 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
           ? 0 : java_lang_Thread::thread_id(jt->threadObj())),
       _owner_os_thread_id(jt == NULL || jt->osthread() == NULL
           ? 0 : (jlong) jt->osthread()->thread_id()),
-      _branch_sequence(0), _pending_branch_active(false),
+      _branch_sequence(0), _clock_step(0), _last_event_id(0),
+      _pending_branch_active(false),
       _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
       _pending_branch_occurrence(0) {
-  init_sym_rid_counter();
-  init_sym_tmp_id_counter();
+  guarantee(GlobalSymbolicSession::is_open(),
+            "a thread context requires an open symbolic session");
+}
 
-  Expression::init_gc_helper();
-  SymbolExpression::init_single_instances();
+jlong ThreadContext::tick_clock() {
+  ++_clock_step;
+  _clock.observe(_context_id, _clock_step);
+  return _clock_step;
+}
+
+Expression *ThreadContext::path_guard() {
+  return _branch_path_condition.conjunction();
+}
+
+void ThreadContext::push_region(const char *region_id, const char *task_id) {
+  RegionFrame frame;
+  frame.region_id = region_id == NULL ? "" : region_id;
+  frame.task_id = task_id == NULL ? "" : task_id;
+  _region_stack.push_back(frame);
+}
+
+int ThreadContext::pop_region() {
+  if (!_region_stack.empty()) {
+    _region_stack.pop_back();
+  }
+  return (int) _region_stack.size();
+}
+
+const std::string &ThreadContext::get_region_id() const {
+  static const std::string NO_REGION;
+  return _region_stack.empty() ? NO_REGION : _region_stack.back().region_id;
+}
+
+const std::string &ThreadContext::get_task_id() const {
+  static const std::string NO_TASK;
+  return _region_stack.empty() ? NO_TASK : _region_stack.back().task_id;
+}
+
+void ThreadContext::set_region_enter_event(jlong event_id) {
+  if (_region_stack.empty()) return;
+  _region_stack.back().enter_event_id = event_id;
+}
+
+jlong ThreadContext::region_enter_event() const {
+  return _region_stack.empty() ? 0 : _region_stack.back().enter_event_id;
+}
+
+std::string ThreadContext::get_path_condition_range(int start, int end) {
+  using namespace rapidjson;
+  const int watermark = _path_condition.size();
+  if (start < 0) start = 0;
+  if (end > watermark) end = watermark;
+  if (end < start) end = start;
+
+  StringBuffer buffer;
+  Writer<StringBuffer> writer(buffer);
+  writer.StartObject();
+  writer.Key("schemaVersion");
+  writer.Int(1);
+  writer.Key("kind");
+  writer.String("CONCOLIC_PATH_CONDITION_RANGE");
+  writer.Key("active");
+  writer.Bool(!_aborted);
+  writer.Key("aborted");
+  writer.Bool(_aborted);
+  writer.Key("abortReason");
+  writer.String(_abort_reason.c_str());
+  writer.Key("contextId");
+  writer.Int64(_context_id);
+  writer.Key("ownerJavaThreadId");
+  writer.Int64(_owner_java_thread_id);
+  writer.Key("startIndex");
+  writer.Int(start);
+  writer.Key("endIndex");
+  writer.Int(end);
+  writer.Key("pathConditionWatermark");
+  writer.Int(watermark);
+  writer.Key("conditionCount");
+  writer.Int(end - start);
+  writer.Key("conditions");
+  _path_condition.serialize_range(writer, start, end);
+  // Where this window's conjunction is, rather than a second copy of it.
+  //
+  // The fold used to be inlined here as `conjunction`, and it is by
+  // construction the left fold of `conditions` in the order they appear:
+  // both walk exactly the recorded conditions of [startIndex, endIndex), in
+  // index order, and the fold combines them with `&&` associating to the
+  // left.  Inlining it therefore restated every condition of the window a
+  // second time in the same document -- measured at 3,291,838 of 6,591,143
+  // characters for one whole-thread window, with 277 `&&` nodes -- and built
+  // one op_land node per condition to do it.
+  //
+  // Nothing is dropped and nothing is sampled: `conditions` is the complete
+  // window and `conditionCount` its exact length, so a reader that wants the
+  // guard folds what it already has, and an empty window folds to the empty
+  // conjunction -- which denotes `true` and needs no node.
+  writer.Key("conjunctionInline");
+  writer.Bool(false);
+  writer.Key("conjunctionSource");
+  writer.String("conditions[0,conditionCount) folded left with &&");
+  writer.Key("conjunctionAuthority");
+  writer.String("VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1");
+  writer.Key("authority");
+  writer.String("VM_THREAD_PATH_CONDITION_RANGE_V1");
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetLength());
+}
+
+std::string ThreadContext::get_auxiliary_path_conditions() {
+  using namespace rapidjson;
+  StringBuffer buffer;
+  Writer<StringBuffer> writer(buffer);
+  writer.StartObject();
+  writer.Key("schemaVersion");
+  writer.Int(1);
+  writer.Key("kind");
+  writer.String("CONCOLIC_AUXILIARY_PATH_CONDITION");
+  writer.Key("active");
+  writer.Bool(!_aborted);
+  writer.Key("aborted");
+  writer.Bool(_aborted);
+  writer.Key("abortReason");
+  writer.String(_abort_reason.c_str());
+  writer.Key("pathConditionWatermark");
+  writer.Int(_path_condition.size());
+  writer.Key("conditionCount");
+  writer.Int((int)_auxiliary_path_condition_indices.size());
+  writer.Key("pathConditionIndices");
+  writer.StartArray();
+  for (size_t index = 0;
+       index < _auxiliary_path_condition_indices.size(); ++index) {
+    writer.Int(_auxiliary_path_condition_indices[index]);
+  }
+  writer.EndArray();
+  writer.Key("conditions");
+  _auxiliary_path_condition.serialize(writer);
+  writer.Key("authority");
+  writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetLength());
 }
 
 void ThreadContext::abort_symbolic_execution(const char *reason) {
@@ -147,13 +250,23 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
   // Throwable construction branches) are unrelated to the marked site.
   if (_pending_branch_active
       && _s_stack.is_current_frame(_pending_branch_owner_frame)) {
+    // The full path condition above keeps every solver fact.  The writer
+    // guard is a distinct channel: only a branch marker owned by this frame
+    // proves that these predicates selected control flow in the region.
+    for (size_t index = 0; index < expressions.size(); ++index) {
+      if (expressions[index] != NULL) {
+        _branch_path_condition.add(expressions[index]);
+      }
+    }
     BranchEvent event;
     event.event_id = _pending_branch_event_id;
     event.context_id = _context_id;
     event.owner_java_thread_id = _owner_java_thread_id;
     event.owner_os_thread_id = _owner_os_thread_id;
-    event.region_id = _region_id;
-    event.task_id = _task_id;
+    // The innermost region at the moment the branch executed.  A region that
+    // has since been popped keeps the events it labelled.
+    event.region_id = get_region_id();
+    event.task_id = get_task_id();
     event.site_id = _pending_branch_site_id;
     event.occurrence = _pending_branch_occurrence;
     event.outcome = outcome;
@@ -188,9 +301,11 @@ std::string ThreadContext::get_branch_events() const {
   writer.Key("ownerOsThreadId");
   writer.Int64(_owner_os_thread_id);
   writer.Key("regionId");
-  writer.String(_region_id.c_str());
+  writer.String(get_region_id().c_str());
   writer.Key("taskId");
-  writer.String(_task_id.c_str());
+  writer.String(get_task_id().c_str());
+  writer.Key("regionDepth");
+  writer.Int(region_depth());
   writer.Key("events");
   writer.StartArray();
   for (size_t index = 0; index < _branch_events.size(); ++index) {
@@ -237,388 +352,121 @@ std::string ThreadContext::get_branch_events() const {
 }
 
 ThreadContext::~ThreadContext() {
-  for (ContainerStateStore::iterator state = _container_states.begin();
-       state != _container_states.end(); ++state) {
-    Expression::gc(state->second);
-  }
-  _container_states.clear();
-
-  // DetachedObjectStore does not own its SymInstance values.  Release its GC
-  // roots before deleting the instances from SymStore so no stale oop can be
-  // resolved during the remaining teardown.
-  DetachedObjectStore::iterator detached_it;
-  for (detached_it = _detached_object_store.begin();
-       detached_it != _detached_object_store.end(); ++detached_it) {
-    guarantee(detached_it->second != NULL,
-              "Detached symbolic object should not be null");
-    JNIHandles::destroy_global(detached_it->first);
-  }
-  _detached_object_store.clear();
-
-  for (SymStore::iterator iter = _sym_refs.begin(); iter != _sym_refs.end();
-       ++iter) {
-    guarantee(iter->second != NULL, "Sym instance should not be null");
-    delete iter->second;
-  }
-  _sym_refs.clear();
-
-  int size = _sym_tmp_exps.size();
-  for (int i = 1; i != size; ++i) {
-    Expression::gc(_sym_tmp_exps[i]);
-  }
-  _sym_tmp_exps.clear();
+  // Only this thread's own execution state is released here.  Object shadows,
+  // detached identities and container states belong to the session and must
+  // survive one thread finishing its region.
   _path_condition.gc();
-  SymbolicNDFunc::gc();
+  _branch_path_condition.gc();
+  _auxiliary_path_condition.gc();
+}
 
-  VM_RestoreConcolicSymbolicIds restore;
-  VMThread::execute(&restore);
+// ---------------------------------------------------------------------------
+// Shadow-heap forwarders
+//
+// Object shadows, detached identities and container states describe objects,
+// not threads, so the session owns them (sessionSymbolicHeap.hpp).  These
+// forwarders keep the thread context as the single entry point every existing
+// call site already uses, which is what lets those call sites reach a shared
+// heap without being rewritten.
+// ---------------------------------------------------------------------------
 
-  Expression::finalize_dangling_objects();
-  SymStmt::resetGlobalCounter();
+SessionSymbolicHeap &ThreadContext::heap() const {
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  guarantee(heap != NULL, "the symbolic session owning this context is closed");
+  return *heap;
 }
 
 Expression *ThreadContext::track_container(
     oop container, const char *shape, const std::string &prefix) {
-  if (container == NULL || shape == NULL || prefix.empty()) return NULL;
-  Expression *existing = find_container_state(container);
-  if (existing != NULL) return existing;
-
-  if (container->is_array()) {
-    SymArr *array = get_or_alloc_sym_array((arrayOop)container);
-    if (array == NULL) return NULL;
-    array->set_ref_exp(new FieldSymbolExp(
-        array->get_sym_rid(), prefix, T_ARRAY));
-  } else {
-    SymInstance *instance = get_or_alloc_sym_inst(container);
-    if (instance == NULL) return NULL;
-    instance->set_ref_exp(new FieldSymbolExp(
-        instance->get_sym_rid(), prefix, T_OBJECT));
-  }
-  return container_state(container, shape);
+  return heap().track_container(container, shape, prefix);
 }
 
-Expression *ThreadContext::container_state(oop container,
-                                           const char *shape) {
-  if (container == NULL) return NULL;
-  sym_rid_t id;
-  Expression *identity;
-  SymArr *array = NULL;
-  if (container->is_array()) {
-    array = get_or_alloc_sym_array((arrayOop)container);
-    if (array == NULL) return NULL;
-    id = array->get_sym_rid();
-    identity = array->get_ref_exp();
-    if (identity == NULL) {
-      identity = new ArraySymbolExp(id, array->get_version(), T_OBJECT);
-    }
-  } else {
-    SymInstance *instance = get_or_alloc_sym_inst(container);
-    if (instance == NULL) return NULL;
-    id = instance->get_sym_rid();
-    identity = instance->get_or_create_ref_exp(container);
-  }
-  ContainerOwnerStore::const_iterator owner = _container_owners.find(id);
-  if (owner != _container_owners.end()) id = owner->second;
-  ContainerStateStore::iterator existing = _container_states.find(id);
-  if (existing != _container_states.end()) return existing->second;
-  if (owner != _container_owners.end()) return NULL;
+Expression *ThreadContext::container_state(oop container, const char *shape) {
+  return heap().container_state(container, shape);
+}
 
-  exp_list_t state_arguments;
-  if (container->is_array()) {
-    Expression *declared_length = array->get_length_exp();
-    state_arguments.push_back(declared_length == NULL
-        ? (Expression *)new ConExpression(
-            (jint)((arrayOop)container)->length())
-        : declared_length);
-  }
-  Expression *state = new ContainerExpression(shape, "STATE",
-      identity, state_arguments);
-  state->inc_ref();
-  _container_states[id] = state;
-  return state;
+sym_rid_t ThreadContext::canonical_container_id(oop container) const {
+  return heap().canonical_container_id(container);
 }
 
 Expression *ThreadContext::find_container_state(oop container) const {
-  if (container == NULL) return NULL;
-  sym_rid_t id = NULL_SYM_RID;
-  if (container->is_array()) {
-    if (!container->is_symbolic()) return NULL;
-    id = container->get_sym_rid();
-  } else {
-    SymInstance *instance = find_sym_inst(container);
-    if (instance == NULL) return NULL;
-    id = instance->get_sym_rid();
-  }
-  ContainerOwnerStore::const_iterator owner = _container_owners.find(id);
-  if (owner != _container_owners.end()) id = owner->second;
-  ContainerStateStore::const_iterator state = _container_states.find(id);
-  return state == _container_states.end() ? NULL : state->second;
+  return heap().find_container_state(container);
 }
 
 void ThreadContext::set_container_state(oop container, Expression *state) {
-  if (container == NULL || state == NULL) return;
-  sym_rid_t id;
-  if (container->is_array()) {
-    SymArr *array = get_or_alloc_sym_array((arrayOop)container);
-    if (array == NULL) return;
-    id = array->get_sym_rid();
-  } else {
-    SymInstance *instance = get_or_alloc_sym_inst(container);
-    if (instance == NULL) return;
-    id = instance->get_sym_rid();
-  }
-  ContainerOwnerStore::const_iterator owner = _container_owners.find(id);
-  if (owner != _container_owners.end()) id = owner->second;
-  ContainerStateStore::iterator existing = _container_states.find(id);
-  if (existing != _container_states.end()) {
-    Expression::gc(existing->second);
-    existing->second = state;
-  } else {
-    _container_states[id] = state;
-  }
-  state->inc_ref();
+  heap().set_container_state(container, state);
+}
+
+bool ThreadContext::admit_container_state(
+    oop container, sym_rid_t evidence_owner, Expression *state) {
+  return heap().admit_container_state(container, evidence_owner, state);
+}
+
+Expression *ThreadContext::find_admitted_container_state(
+    oop container) const {
+  return heap().find_admitted_container_state(container);
 }
 
 void ThreadContext::write_array_element(arrayOop array, int index,
                                         Expression *expression) {
-  if (array == NULL || expression == NULL || index < 0
-      || index >= array->length()) return;
-  SymArr *symbolic = get_or_alloc_sym_array(array);
-  if (symbolic == NULL) return;
-  exp_list_t arguments;
-  arguments.push_back(new ConExpression((jint)index));
-  arguments.push_back(expression);
-  Expression *next = new ContainerExpression(
-      "INDEXED", "WRITE", container_state(array, "INDEXED"), arguments);
-  set_container_state(array, next);
-  symbolic->store();
+  heap().write_array_element(array, index, expression);
 }
 
 void ThreadContext::alias_container(oop derived, oop owner) {
-  if (derived == NULL || owner == NULL || derived->is_array()
-      || owner->is_array()) return;
-  SymInstance *derived_instance = get_or_alloc_sym_inst(derived);
-  SymInstance *owner_instance = get_or_alloc_sym_inst(owner);
-  if (derived_instance == NULL || owner_instance == NULL) return;
-  sym_rid_t owner_id = owner_instance->get_sym_rid();
-  ContainerOwnerStore::const_iterator canonical =
-      _container_owners.find(owner_id);
-  if (canonical != _container_owners.end()) owner_id = canonical->second;
-  _container_owners[derived_instance->get_sym_rid()] = owner_id;
+  heap().alias_container(derived, owner);
 }
 
 int ThreadContext::next_container_position(oop cursor) {
-  if (cursor == NULL || cursor->is_array()) return -1;
-  SymInstance *instance = get_or_alloc_sym_inst(cursor);
-  if (instance == NULL) return -1;
-  sym_rid_t id = instance->get_sym_rid();
-  int position = _container_positions[id];
-  _container_positions[id] = position + 1;
-  return position;
+  return heap().next_container_position(cursor);
 }
 
 int ThreadContext::current_container_position(oop cursor) {
-  if (cursor == NULL || cursor->is_array()) return 0;
-  SymInstance *instance = get_or_alloc_sym_inst(cursor);
-  if (instance == NULL) return 0;
-  return _container_positions[instance->get_sym_rid()];
+  return heap().current_container_position(cursor);
 }
 
 int ThreadContext::current_container_index(oop cursor) {
-  if (cursor == NULL || cursor->is_array()) return 0;
-  SymInstance *instance = get_or_alloc_sym_inst(cursor);
-  if (instance == NULL) return 0;
-  sym_rid_t id = instance->get_sym_rid();
-  return _container_positions[id] - _container_removals[id];
+  return heap().current_container_index(cursor);
 }
 
 int ThreadContext::next_container_removal_position(oop cursor) {
-  if (cursor == NULL || cursor->is_array()) return -1;
-  SymInstance *instance = get_or_alloc_sym_inst(cursor);
-  if (instance == NULL) return -1;
-  sym_rid_t id = instance->get_sym_rid();
-  int traversal_position = _container_positions[id];
-  int removed = _container_removals[id];
-  if (traversal_position <= 0) return -1;
-  _container_removals[id] = removed + 1;
-  return traversal_position - 1 - removed;
+  return heap().next_container_removal_position(cursor);
 }
 
 SymInstance *ThreadContext::get_or_alloc_sym_inst(oop obj) {
-  if (obj == NULL) return NULL;
-  SymInstance *existing = find_sym_inst(obj);
-  return existing == NULL ? this->alloc_sym_inst(obj) : existing;
+  return heap().get_or_alloc_sym_inst(obj);
 }
 
 SymInstance *ThreadContext::alloc_sym_inst(oop obj) {
-  if (obj == NULL || obj->is_array()) return NULL;
-  SymInstance *existing = find_sym_inst(obj);
-  if (existing != NULL) return existing;
-
-  sym_rid_t sym_rid = get_next_sym_rid();
-  SymInstance *sym_inst = NULL;
-  ResourceMark rm;
-
-  Symbol *klass_symbol = obj->klass()->name();
-  if (klass_symbol == NULL) {
-    guarantee(false, "unexpected null class");
-    sym_inst = new SymResSet(sym_rid);
-    obj->set_sym_rid(sym_rid);
-    this->set_sym_ref(sym_rid, sym_inst);
-//  _allocated_objs.insert(obj);
-    return sym_inst;
-  }
-  std::string class_name(klass_symbol->as_C_string());
-//  tty->print_cr("alloc_sym_inst for %s", klass_symbol->as_C_string());
-
-  bool detached_from_oop_header = requires_detached_object_shadow(obj);
-  if (klass_symbol->equals(SymString::TYPE_NAME)) {
-    if (detached_from_oop_header) {
-      // Intern-table entries are VM-global and may be concurrently shared by
-      // unrelated Java code.  Never write this context's sym_rid into that
-      // shared oop.  A ThreadContext-local, GC-stable shadow gives the value a
-      // symbolic identity without changing Java reference/content semantics.
-    }
-    sym_inst = new SymString(sym_rid);
-  } else if (klass_symbol->equals(SymStrBuilder::TYPE_NAME)) {
-    sym_inst = new SymStrBuilder(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<jchar>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jchar>(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<jboolean>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jboolean>(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<jbyte>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jbyte>(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<jint>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jint>(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<jshort>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jshort>(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<jlong>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jlong>(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<jfloat>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jfloat>(sym_rid);
-  } else if (klass_symbol->equals(SymPrimitive<double>::TYPE_NAME)) {
-    sym_inst = new SymPrimitive<jdouble>(sym_rid);
-  } else if (klass_symbol->equals(SymBigDecimal::TYPE_NAME)) {
-    sym_inst = new SymBigDecimal(sym_rid, obj);
-  } else if (klass_symbol->equals(SymTimestamp::TYPE_NAME)) {
-    sym_inst = new SymTimestamp(sym_rid, obj);
-  } else if (klass_symbol->equals(SymbolicDate::TYPE_NAME)) {
-    sym_inst = new SymbolicDate(sym_rid, obj);
-  } else if (SymStmt::target(class_name)) {
-    sym_inst = new SymStmt(sym_rid);
-  } else if (SymResSet::target(class_name)) {
-    sym_inst = new SymResSet(sym_rid);
-  }
-//  else if (SymHibernateKey::target(class_name)) {
-//    sym_inst = new SymHibernateKey(sym_rid);
-//  }
-  else {
-    sym_inst = new SymObj(sym_rid);
-  }
-
-  if (sym_inst == NULL) {
-    tty->print_cr("Warning: failed to allocate symbolic object shadow");
-    return NULL;
-  }
-
-  if (detached_from_oop_header) {
-    Handle stable_oop(_thread, obj);
-    jobject stable_handle = JNIHandles::make_global(stable_oop);
-    if (stable_handle == NULL) {
-      // Do not publish a partial shadow.  Callers treat NULL as an
-      // unsupported symbolic value and continue with concrete semantics.
-      delete sym_inst;
-      tty->print_cr("Warning: failed to retain interned String shadow");
-      return NULL;
-    }
-    this->set_sym_ref(sym_rid, sym_inst);
-    _detached_object_store.insert(
-        std::make_pair(stable_handle, sym_inst));
-    return sym_inst;
-  }
-
-  obj->set_sym_rid(sym_rid);
-  this->set_sym_ref(sym_rid, sym_inst);
-//  _allocated_objs.insert(obj);
-  return sym_inst;
+  return heap().alloc_sym_inst(obj);
 }
 
 SymInstance *ThreadContext::get_sym_inst(sym_rid_t sym_rid) {
-  SymInstance *ret = (SymInstance *) _sym_refs[sym_rid];
-  /**
-   * When this assertion is broken,
-   * it means that the target object is not initialized with NULL_SYM_RID
-   */
-  guarantee(ret != NULL, "Unexpected null symbolic object. The object might not properly symbolized.");
-  return ret;
+  return heap().get_sym_inst(sym_rid);
 }
 
 SymInstance *ThreadContext::find_sym_inst(oop obj) const {
-  if (obj == NULL || obj->is_array()) return NULL;
-  if (obj->is_symbolic()) {
-    SymStore::const_iterator found = _sym_refs.find(obj->get_sym_rid());
-    if (found != _sym_refs.end()) {
-      return static_cast<SymInstance *>(found->second);
-    }
-  }
-  for (DetachedObjectStore::const_iterator found =
-           _detached_object_store.begin();
-       found != _detached_object_store.end(); ++found) {
-    if (JNIHandles::resolve(found->first) == obj) return found->second;
-  }
-  return NULL;
+  return heap().find_sym_inst(obj);
 }
 
 bool ThreadContext::requires_detached_object_shadow(oop obj) const {
-  if (obj == NULL || obj->is_array() || obj->klass() == NULL
-      || obj->klass()->name() == NULL) {
-    return false;
-  }
-  // Keep this policy in ThreadContext so bytecode producers do not need to
-  // know which VM-managed objects are unsafe to annotate in their oop header.
-  return obj->klass()->name()->equals(SymString::TYPE_NAME)
-      && OopUtils::is_java_string_interned(obj);
+  return heap().requires_detached_object_shadow(obj);
 }
 
 SymArr *ThreadContext::get_or_alloc_sym_array(arrayOop array,
                                               Expression *length_exp) {
-  if (array->is_symbolic()) {
-    return this->get_sym_array(array->get_sym_rid());
-  } else {
-    return this->alloc_sym_array(array, length_exp);
-  }
+  return heap().get_or_alloc_sym_array(array, length_exp);
 }
 
 SymArr *ThreadContext::alloc_sym_array(arrayOop array, Expression *length_exp) {
-  sym_rid_t sym_rid = get_next_sym_rid();
-  array->set_sym_rid(sym_rid);
-
-  // if (length_exp == NULL) {
-  //   length_exp = new ConExpression(array->length());
-  // }
-
-  SymArr *sym_arr = new SymArr(sym_rid, length_exp);
-  this->set_sym_ref(sym_rid, sym_arr);
-
-//  _allocated_objs.insert(array);
-  return sym_arr;
+  return heap().alloc_sym_array(array, length_exp);
 }
 
 SymArr *ThreadContext::get_sym_array(sym_rid_t sym_rid) {
-  SymArr *ret = (SymArr *) _sym_refs[sym_rid];
-  /**
-   * When this assertion is broken,
-   * it means that the target object is not initialized with NULL_SYM_RID
-   */
-  assert(ret != NULL, "null sym obj?");
-  return ret;
+  return heap().get_sym_array(sym_rid);
 }
 
 SymArr *ThreadContext::find_sym_array(arrayOop array_obj) const {
-  if (array_obj == NULL || !array_obj->is_symbolic()) return NULL;
-  SymStore::const_iterator found = _sym_refs.find(array_obj->get_sym_rid());
-  if (found == _sym_refs.end()) return NULL;
-  return static_cast<SymArr *>(found->second);
+  return heap().find_sym_array(array_obj);
 }
 
 void ThreadContext::symbolize_recursive(oop obj) {
@@ -699,26 +547,12 @@ void ThreadContext::symbolize_exact_field(
   if (instance != NULL) instance->mark_semantic_expression();
 }
 
-sym_tmp_id_t ThreadContext::get_next_sym_tmp_id(Expression *sym_exp) {
-  sym_rid_t sym_tmp_id = _sym_tmp_id_counter++;
-  sym_exp->inc_ref();
-  _sym_tmp_exps.push_back(sym_exp);
-  assert(_sym_tmp_exps.size() == sym_tmp_id + 1, "sanity check");
-  assert(sym_tmp_id < MAX_SYM_RID, "sym_tmp_id limitted");
-  return sym_tmp_id;
-}
-
-void ThreadContext::detach_tmp_exp(sym_tmp_id_t sym_tmp_id) {
-  Expression *exp = _sym_tmp_exps[sym_tmp_id];
-  if (exp) {
-    exp->dec_ref();
-  }
-  _sym_tmp_exps[sym_tmp_id] = NULL;
-}
-
 std::string ThreadContext::get_current_code_pos() {
+  // Stack-local, not static: several attached threads reach this from
+  // record_branch_conditions at the same time, and one process-global buffer
+  // would let them interleave each other's code positions.
   static const int SIZE = 1024;
-  static char buf[SIZE];
+  char buf[SIZE];
 
   stringStream ss(buf, SIZE);
 
@@ -755,8 +589,9 @@ static void print_method_name_and_line(const ZeroFrame *zero_frame, stringStream
 }
 
 std::string ThreadContext::get_code_pos_for_first(const std::string &str) {
+  // Stack-local for the same reason as get_current_code_pos above.
   static const int SIZE = 2048;
-  static char buf[SIZE];
+  char buf[SIZE];
 
   stringStream ss(buf, SIZE);
 
@@ -795,34 +630,18 @@ std::string ThreadContext::get_code_pos_for_first(const std::string &str) {
 }
 
 void ThreadContext::print() {
-//  for (SymStore::iterator sym_iter = _sym_refs.begin();
-//       sym_iter != _sym_refs.end(); ++sym_iter) {
-//    tty->print_cr("- sym_inst[%lu]:", sym_iter->first);
-//    sym_iter->second->print();
-//  }
-
-//  int size = _sym_tmp_exps.size();
-//  for (int i = 1; i < size; ++i) {
-//    Expression *sym_exp = _sym_tmp_exps[i];
-//    if (sym_exp) {
-//      tty->print_cr("<< sym_tmp_exp[%d]:", i);
-//      sym_exp->print_cr();
-//    }
-//  }
-  _jdbc_mngr.print();
-
   _path_condition.print();
 }
 
 void ThreadContext::print_stack_trace() {
-  static char buf[O_BUFLEN];
+  char buf[O_BUFLEN];
   VMError::print_stack_trace(tty, _thread, buf, sizeof(buf));
 //  this->get_shadow_stack().print();
 }
 
 void ThreadContext::memory_leak_check() {
-  tty->print_cr("Checking memory leaks for Expression, %lu remains...",
-                Expression::total_count);
+  tty->print_cr("Session holds %lu expressions...",
+                (unsigned long) GlobalSymbolicSession::expression_count());
 }
 
 PathCondition &ThreadContext::get_path_condition() {

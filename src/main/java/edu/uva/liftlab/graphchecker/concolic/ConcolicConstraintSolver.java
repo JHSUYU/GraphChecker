@@ -80,6 +80,7 @@ public final class ConcolicConstraintSolver {
                 replayControlSymbols, actions,
                 referencesComparedWithNull(branchConstraints));
         encoder.bindSparseContainerBoundaries();
+        encoder.bindRecordedReadCut(query.recordedReadCut);
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
         record.add("unsupported", strings(encoder.unsupported));
@@ -100,10 +101,14 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        if (hasMaterializationGap(encoder, targetSymbols, actions, true)) {
+        Set<String> unresolvedTargetSymbols = unresolvedMaterializations(
+                encoder, targetSymbols, actions, true);
+        if (!unresolvedTargetSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS");
+            record.add("unresolvedTargetSymbols",
+                    strings(unresolvedTargetSymbols));
             return new Result(record, smt, new JsonArray(),
                     replayContract);
         }
@@ -145,8 +150,21 @@ public final class ConcolicConstraintSolver {
         }
 
         Map<String, String> values = parseGetValues(output.stdout);
+        // Which writer the model chose is part of the model, not a footnote
+        // to it: without reading the selectors back, a replay could not know
+        // which read-from arm it is supposed to confirm.
+        SelectedReadCut readCut = SelectedReadCut.of(query.recordedReadCut,
+                values);
+        if (!readCut.isEmpty()) {
+            record.add("selectedReadCut", readCut.toJson());
+        }
+        // A flip changes only the inputs that control its target predicate.
+        // Prefix-only inputs keep the source execution's concrete values;
+        // projecting arbitrary solver values for them can satisfy an
+        // unconstrained environment placeholder (for example time == 0) yet
+        // immediately contradict the same prefix in the real replay.
         ModelProjection projection = modelAssignments(encoder, values,
-                actions, replayControlSymbols, referenceDomains);
+                actions, targetControlledSymbols, referenceDomains);
         ModelProjection containerProjection =
                 sparseContainerAssignments(values, containerBoundaries,
                         referenceDomains,
@@ -169,7 +187,7 @@ public final class ConcolicConstraintSolver {
         } else {
             record.addProperty("status", "SAT_MODEL_READY");
         }
-        return new Result(record, smt, assignments, replayContract);
+        return new Result(record, smt, assignments, replayContract, readCut);
     }
 
     public static final class Result {
@@ -177,14 +195,25 @@ public final class ConcolicConstraintSolver {
         public final String smtLib;
         public final JsonArray modelAssignments;
         final BranchReplayContract replayContract;
+        /** The read-from arms this model selected, if it selected any. */
+        final SelectedReadCut readCut;
 
         private Result(JsonObject record, String smtLib,
                        JsonArray modelAssignments,
                        BranchReplayContract replayContract) {
+            this(record, smtLib, modelAssignments, replayContract,
+                    SelectedReadCut.none());
+        }
+
+        private Result(JsonObject record, String smtLib,
+                       JsonArray modelAssignments,
+                       BranchReplayContract replayContract,
+                       SelectedReadCut readCut) {
             this.record = record;
             this.smtLib = smtLib;
             this.modelAssignments = modelAssignments;
             this.replayContract = replayContract;
+            this.readCut = readCut;
         }
     }
 
@@ -292,6 +321,26 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term containerTerm(JsonObject expression, String origin) {
+            SparseContainerBoundary dynamic = containerBoundaries
+                    .dynamicAssociativeBoundary(expression);
+            if (dynamic != null) {
+                Sort sort = sortOfJava(dynamic.javaType);
+                if (sort != Sort.INT && sort != Sort.BOOL
+                        && sort != Sort.REF) {
+                    unsupported.add(origin
+                            + ":UNSUPPORTED_DYNAMIC_CONTAINER_READ_SORT:"
+                            + sort);
+                    return null;
+                }
+                String name = "container_access__"
+                        + sha256(dynamic.identity()).substring(0, 16);
+                declarations.put(name, sort);
+                Term term = new Term(name, sort,
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                dynamic.javaType));
+                containerBoundaries.record(dynamic, term);
+                return term;
+            }
             ContainerSmtCodec.Term result = ContainerSmtCodec.term(
                     expression, containerHost(origin));
             containerBoundaries.record(expression, result);
@@ -594,6 +643,9 @@ public final class ConcolicConstraintSolver {
                 }
                 if (regionInput(raw)) controlledSymbols.add(raw);
                 constrainIntegralInput(name, javaType, sort);
+                if (fixedNonNullPlaceholder(raw, sort)) {
+                    assertions.add("(not (= " + name + " nullRef))");
+                }
             } else {
                 if (symbolNames.sort != sort) {
                     unsupported.add("SYMBOL_SORT_CONFLICT:" + raw + ":"
@@ -614,6 +666,67 @@ public final class ConcolicConstraintSolver {
 
         private SymbolNames names(String raw) {
             return names.get(raw);
+        }
+
+        /**
+         * Declares the recorded read cut this query carries.
+         *
+         * <p>The positions and the selectors are the recorded session's own
+         * variables and cannot collide with a port or symbol term. Adding them
+         * can never turn a satisfiable query unsatisfiable: the recorded order
+         * is acyclic, so the positions always have an assignment, and the
+         * unknown-writer arm of every choice carries no order constraint at
+         * all. What they add is the one thing the model could not otherwise
+         * report - which writer the solver picked.</p>
+         */
+        private void bindRecordedReadCut(JsonObject payload) {
+            if (!RecordedSessionModel.isQueryPayload(payload)) return;
+            for (JsonElement element : array(payload, "positions")) {
+                JsonObject position = element.getAsJsonObject();
+                String name = string(position, "name");
+                int bound = integer(position, "bound", 0);
+                if (name.isEmpty() || bound <= 0) continue;
+                declarations.put(name, Sort.INT);
+                assertions.add("(and (<= 0 " + name + ") (< " + name + " "
+                        + bound + "))");
+            }
+            for (JsonElement element : array(payload, "selectors")) {
+                String selector = element.getAsString();
+                if (selector.isEmpty()) continue;
+                declarations.put(selector, Sort.BOOL);
+                // Without the selector in the model, the solve reports a
+                // choice nobody can read back.
+                additionalModelNames.add(selector);
+            }
+            // README section 6's event-existence Booleans.  Declared, and
+            // deliberately not added to the model read-back: they are facts
+            // the recorded session already decided, so a solver assignment
+            // for them would be a second answer to a question the run
+            // answered.
+            for (JsonElement element : array(payload, "existenceSymbols")) {
+                String symbol = element.getAsString();
+                if (!symbol.isEmpty()) declarations.put(symbol, Sort.BOOL);
+            }
+            // README READ-1's other half.  The recorded model gates each
+            // read's exactly-one choice on that read existing and leaves the
+            // Boolean to whoever knows which cases contain the load.  This
+            // query is stated over one observed target path, and every read
+            // in its slice is a load that path performed, so the answer here
+            // is that they exist - asserted by name rather than left free,
+            // which would let a model report no chosen arm for a read the
+            // run watched.
+            for (JsonElement element : array(payload, "readChoices")) {
+                if (!element.isJsonObject()) continue;
+                String symbol = string(element.getAsJsonObject(),
+                        "existenceSymbol");
+                if (symbol.isEmpty()) continue;
+                declarations.put(symbol, Sort.BOOL);
+                assertions.add(symbol);
+            }
+            for (JsonElement element : array(payload, "assertions")) {
+                String term = string(element.getAsJsonObject(), "term");
+                if (!term.isEmpty()) assertions.add(term);
+            }
         }
 
         private void constrainIntegralInput(String name,
@@ -711,9 +824,9 @@ public final class ConcolicConstraintSolver {
                     firstNonBlank(string(expression, "sourceJavaType"),
                             expressionJavaType(sourceExpression)));
             String targetType = JavaPrimitiveSmtSemantics
-                    .primitiveTargetDescriptor(firstNonBlank(
+                    .primitiveDescriptor(firstNonBlank(
                             string(expression, "targetJavaType"),
-                            string(expression, "_java_type")), sourceType);
+                            string(expression, "_java_type")));
             Sort sourceSort = castSort(sourceType);
             Sort targetSort = castSort(targetType);
             boolean primitivePair = JavaPrimitiveSmtSemantics
@@ -763,6 +876,13 @@ public final class ConcolicConstraintSolver {
                     unsupported.add(origin
                             + ":AMBIGUOUS_JAVA_INTEGRAL_UNARY_WIDTH");
                     return null;
+                }
+                if ("~".equals(operator) && operand != null
+                        && operand.sort == Sort.INT
+                        && operand.integralWidth != IntegralWidth.NONE) {
+                    return new Term(JavaPrimitiveSmtSemantics.complement(
+                            operand.text, operand.integralWidth), Sort.INT,
+                            operand.integralWidth);
                 }
                 unsupported.add(origin + ":NON_NUMERIC_OR_UNKNOWN_UNARY:"
                         + firstNonBlank(operator, "MISSING"));
@@ -891,6 +1011,36 @@ public final class ConcolicConstraintSolver {
                 }
                 return new Term("(" + comparison + " " + left.text + " "
                         + right.text + ")", Sort.BOOL);
+            }
+            if (bitwiseOperator(operator)) {
+                if (left.sort != Sort.INT || right.sort != Sort.INT) {
+                    unsupported.add(origin + ":NON_INTEGRAL_BITWISE");
+                    return null;
+                }
+                IntegralWidth width = JavaPrimitiveSmtSemantics.promote(
+                        left.integralWidth, right.integralWidth);
+                if (width == IntegralWidth.NONE) {
+                    unsupported.add(origin
+                            + ":AMBIGUOUS_JAVA_INTEGRAL_BITWISE_WIDTH:"
+                            + operator + ":" + left.integralWidth + ":"
+                            + right.integralWidth);
+                    return null;
+                }
+                return new Term(JavaPrimitiveSmtSemantics.bitwise(operator,
+                        left.text, right.text, width), Sort.INT, width);
+            }
+            if (shiftOperator(operator)) {
+                if (left.sort != Sort.INT || right.sort != Sort.INT
+                        || left.integralWidth == IntegralWidth.NONE) {
+                    unsupported.add(origin
+                            + ":AMBIGUOUS_JAVA_INTEGRAL_SHIFT:"
+                            + operator + ":" + left.integralWidth + ":"
+                            + right.integralWidth);
+                    return null;
+                }
+                return new Term(JavaPrimitiveSmtSemantics.shift(operator,
+                        left.text, right.text, left.integralWidth), Sort.INT,
+                        left.integralWidth);
             }
             if (arithmeticOperator(operator)) {
                 if (!numeric(left.sort) || !numeric(right.sort)) {
@@ -1661,6 +1811,10 @@ public final class ConcolicConstraintSolver {
         private String finish() {
             StringBuilder result = new StringBuilder();
             result.append("(set-option :produce-models true)\n");
+            // Z3's default arithmetic engine can spend minutes branching on
+            // exact Java mod/div identities introduced by constant masks.
+            // Solver 2 decides the same bounded integer formulas directly.
+            result.append("(set-option :smt.arith.solver 2)\n");
             result.append("(set-logic ALL)\n");
             result.append("(declare-sort Ref 0)\n");
             result.append("(declare-const nullRef Ref)\n");
@@ -2086,9 +2240,11 @@ public final class ConcolicConstraintSolver {
                     InitialContainerObservation.initialRead(object);
             if (read != null) {
                 if (!read.concreteSelector()) {
-                    if (discover) gaps.add(read.shape + ":"
+                    if (discover && !read.dynamicAssociativeSelector()) {
+                        gaps.add(read.shape + ":"
                             + read.stateSymbol
                             + ":NON_CONCRETE_SELECTOR");
+                    }
                 } else {
                     String identity = boundaryIdentity(read);
                     SparseContainerBoundary existing =
@@ -2160,9 +2316,15 @@ public final class ConcolicConstraintSolver {
             InitialContainerObservation.Read read =
                     InitialContainerObservation.initialRead(
                             readElement.getAsJsonObject());
-            if (read == null || !read.concreteSelector()) return;
-            SparseContainerBoundary boundary = boundaries.get(
-                    boundaryIdentity(read));
+            if (read == null || !read.concreteSelector()
+                    && !read.dynamicAssociativeSelector()) return;
+            String identity = boundaryIdentity(read);
+            SparseContainerBoundary boundary = boundaries.get(identity);
+            if (boundary == null && read.dynamicAssociativeSelector()
+                    && retainFailureRelevantCell(read)) {
+                boundary = new SparseContainerBoundary(read);
+                boundaries.put(identity, boundary);
+            }
             if (boundary != null) boundary.nullCompared = true;
         }
 
@@ -2176,6 +2338,7 @@ public final class ConcolicConstraintSolver {
             InitialContainerObservation.Read read =
                     InitialContainerObservation.initialRead(expression);
             if (read == null || !read.concreteSelector()
+                    && !read.dynamicAssociativeSelector()
                     || encoded == null) {
                 return;
             }
@@ -2191,6 +2354,10 @@ public final class ConcolicConstraintSolver {
             }
             Term term = new Term(encoded.text, sort,
                     encoded.integralWidth);
+            record(boundary, term);
+        }
+
+        private void record(SparseContainerBoundary boundary, Term term) {
             if (boundary.term == null) {
                 boundary.term = term;
             } else if (boundary.term.sort != term.sort
@@ -2198,6 +2365,19 @@ public final class ConcolicConstraintSolver {
                 gaps.add(boundary.identity()
                         + ":INCONSISTENT_ENCODED_READ");
             }
+        }
+
+        private SparseContainerBoundary dynamicAssociativeBoundary(
+                JsonObject expression) {
+            InitialContainerObservation.Read read =
+                    InitialContainerObservation.initialRead(expression);
+            if (read == null || !read.dynamicAssociativeSelector()) {
+                return null;
+            }
+            SparseContainerBoundary boundary = boundaries.get(
+                    boundaryIdentity(read));
+            return boundary != null && boundary.nullCompared
+                    ? boundary : null;
         }
 
         private static String boundaryIdentity(
@@ -2365,13 +2545,20 @@ public final class ConcolicConstraintSolver {
         private final String queryKey;
         private final BranchReplayContract replayContract;
         private final SolverPathContext pathContext;
+        /**
+         * The recorded guarded reads this query may select among, or the
+         * empty object when the session recorded none that reach it.
+         */
+        private final JsonObject recordedReadCut;
 
         private PathQuery(String queryKey,
                           BranchReplayContract replayContract,
-                          SolverPathContext pathContext) {
+                          SolverPathContext pathContext,
+                          JsonObject recordedReadCut) {
             this.queryKey = queryKey;
             this.replayContract = replayContract;
             this.pathContext = pathContext;
+            this.recordedReadCut = recordedReadCut;
         }
 
         private static PathQuery decode(JsonObject task) throws IOException {
@@ -2386,12 +2573,20 @@ public final class ConcolicConstraintSolver {
                 throw new IOException(
                         "canonical path task requires SHA-256 queryKey");
             }
+            JsonObject readCut = object(task,
+                    RecordedSessionModel.QUERY_FIELD);
+            if (readCut.size() > 0
+                    && !RecordedSessionModel.isQueryPayload(readCut)) {
+                throw new IOException(
+                        "canonical path task carries an unadmitted recorded "
+                                + "read cut");
+            }
             try {
                 return new PathQuery(queryKey,
                         BranchReplayContract.fromJson(
                         requiredObject(task, "replayContract")),
                         SolverPathContext.fromJson(requiredObject(task,
-                                "solverPathContext")));
+                                "solverPathContext")), readCut);
             } catch (IllegalArgumentException malformed) {
                 throw new IOException("invalid canonical path task: "
                         + malformed.getMessage(), malformed);
@@ -2476,16 +2671,29 @@ public final class ConcolicConstraintSolver {
     private static boolean hasMaterializationGap(
             Encoder encoder, Set<String> symbols, List<JsonObject> actions,
             boolean requireRegionInput) {
+        return !unresolvedMaterializations(encoder, symbols, actions,
+                requireRegionInput).isEmpty();
+    }
+
+    private static Set<String> unresolvedMaterializations(
+            Encoder encoder, Set<String> symbols, List<JsonObject> actions,
+            boolean requireRegionInput) {
+        Set<String> unresolved = new LinkedHashSet<>();
         for (String symbol : symbols) {
             if ("N".equals(symbol) || "V".equals(symbol)) continue;
+            SymbolNames names = encoder.names(symbol);
+            if (names != null
+                    && fixedNonNullPlaceholder(symbol, names.sort)) {
+                continue;
+            }
             if ((requireRegionInput && !regionInput(symbol))
-                    || encoder.names(symbol) == null
+                    || names == null
                     || materializationResolution(symbol, actions,
-                    encoder.names(symbol).sort) == null) {
-                return true;
+                    names.sort) == null) {
+                unresolved.add(symbol);
             }
         }
-        return false;
+        return unresolved;
     }
 
     /**
@@ -2792,6 +3000,16 @@ public final class ConcolicConstraintSolver {
                         + "[A-Za-z0-9-]+.*");
     }
 
+    /**
+     * A VM {@code PlaceHolderSymbolExp} is created from an already allocated
+     * object and names only its runtime class.  It is therefore fixed support
+     * state, not a writable replay input; the only identity fact carried by
+     * this compact IR is that the referenced object is non-null.
+     */
+    private static boolean fixedNonNullPlaceholder(String raw, Sort sort) {
+        return sort == Sort.REF && raw != null && raw.startsWith("P_L");
+    }
+
     private static Sort sortOfJava(String javaType) {
         String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 javaType);
@@ -2831,6 +3049,16 @@ public final class ConcolicConstraintSolver {
         return "+".equals(operator) || "-".equals(operator)
                 || "*".equals(operator) || "@".equals(operator)
                 || "/".equals(operator) || "%".equals(operator);
+    }
+
+    private static boolean bitwiseOperator(String operator) {
+        return "&".equals(operator) || "|".equals(operator)
+                || "^".equals(operator);
+    }
+
+    private static boolean shiftOperator(String operator) {
+        return "<<".equals(operator) || ">>".equals(operator)
+                || ">>>".equals(operator);
     }
 
     private static Sort castSort(String descriptor) {

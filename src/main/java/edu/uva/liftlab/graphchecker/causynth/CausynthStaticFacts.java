@@ -10,9 +10,6 @@ import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
 import soot.jimple.InstanceFieldRef;
 import soot.jimple.Stmt;
-import soot.tagkit.LineNumberTag;
-import soot.tagkit.SourceLineNumberTag;
-import soot.tagkit.Tag;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -62,15 +59,15 @@ final class CausynthStaticFacts {
     static final class FieldWrite {
         final String method;
         final String field;
-        final Fact fact;
+        final int unitIndex;
         final String kind;
         final List<String> sources;
 
-        FieldWrite(String method, String field, Fact fact, String kind,
+        FieldWrite(String method, String field, int unitIndex, String kind,
                    List<String> sources) {
             this.method = method;
             this.field = field;
-            this.fact = fact;
+            this.unitIndex = unitIndex;
             this.kind = kind;
             this.sources = sources;
         }
@@ -79,15 +76,15 @@ final class CausynthStaticFacts {
     static final class ConstructorCallsite {
         final String method;
         final String constructor;
-        final Fact fact;
+        final int unitIndex;
         final String receiver;
         final List<String> actuals;
 
-        ConstructorCallsite(String method, String constructor, Fact fact,
+        ConstructorCallsite(String method, String constructor, int unitIndex,
                             String receiver, List<String> actuals) {
             this.method = method;
             this.constructor = constructor;
-            this.fact = fact;
+            this.unitIndex = unitIndex;
             this.receiver = receiver;
             this.actuals = actuals;
         }
@@ -96,20 +93,17 @@ final class CausynthStaticFacts {
     static final class MethodCallsite {
         final String method;
         final String callee;
-        final Fact fact;
+        final int unitIndex;
         final String receiver;
         final List<String> actuals;
-        final List<String> defs;
 
-        MethodCallsite(String method, String callee, Fact fact,
-                       String receiver, List<String> actuals,
-                       List<String> defs) {
+        MethodCallsite(String method, String callee, int unitIndex,
+                       String receiver, List<String> actuals) {
             this.method = method;
             this.callee = callee;
-            this.fact = fact;
+            this.unitIndex = unitIndex;
             this.receiver = receiver;
             this.actuals = actuals;
-            this.defs = defs;
         }
     }
 
@@ -146,14 +140,12 @@ final class CausynthStaticFacts {
         final Unit unit;
         final String method;
         final int unitIndex;
-        final int line;
         final String unitText;
         final List<String> defs;
         final List<String> uses;
         final List<String> fieldDefs;
         final List<String> fieldUses;
         final List<InstanceFieldAccess> instanceFieldDefs;
-        final List<InstanceFieldAccess> instanceFieldUses;
         final ArrayAccess arrayDef;
         final ArrayAccess arrayUse;
         final String invoke;
@@ -165,14 +157,12 @@ final class CausynthStaticFacts {
             this.unit = unit;
             this.method = method;
             this.unitIndex = unitIndex;
-            this.line = lineOf(unit);
             this.unitText = unit.toString();
             this.defs = valueStrings(unit.getDefBoxes());
             this.uses = valueStrings(unit.getUseBoxes());
             this.fieldDefs = fieldRefs(unit.getDefBoxes());
             this.fieldUses = fieldRefs(unit.getUseBoxes());
             this.instanceFieldDefs = instanceFieldRefs(unit.getDefBoxes());
-            this.instanceFieldUses = instanceFieldRefs(unit.getUseBoxes());
             DefinitionStmt definition = unit instanceof DefinitionStmt
                     ? (DefinitionStmt) unit : null;
             this.arrayDef = definition == null
@@ -242,19 +232,7 @@ final class CausynthStaticFacts {
             }
             ArrayRef ref = (ArrayRef) value;
             return new ArrayAccess(ref.getBase().toString(),
-                    ref.getIndex().toString(), ref.getType().toString());
-        }
-
-        private static int lineOf(Unit unit) {
-            for (Tag tag : unit.getTags()) {
-                if (tag instanceof SourceLineNumberTag) {
-                    return ((SourceLineNumberTag) tag).getStartLineNumber();
-                }
-                if (tag instanceof LineNumberTag) {
-                    return ((LineNumberTag) tag).getLineNumber();
-                }
-            }
-            return unit.getJavaSourceStartLineNumber();
+                    ref.getIndex().toString());
         }
     }
 
@@ -272,12 +250,10 @@ final class CausynthStaticFacts {
     static final class ArrayAccess {
         final String base;
         final String index;
-        final String elementType;
 
-        ArrayAccess(String base, String index, String elementType) {
+        ArrayAccess(String base, String index) {
             this.base = base;
             this.index = index;
-            this.elementType = elementType;
         }
     }
 

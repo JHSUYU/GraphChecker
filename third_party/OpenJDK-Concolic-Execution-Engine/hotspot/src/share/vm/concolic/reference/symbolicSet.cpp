@@ -48,6 +48,10 @@ bool SymSet::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   if (ContainerSupport::claims_state(handle)
       && !ContainerSupport::follows_callee_body(callee_name)) {
+    // See the same line in symbolicMap.cpp: the abort ends this thread, the
+    // mark keeps every other reader of a selected container honest.
+    ContainerSupport::mark_state_gap(
+        handle.get_param<oop>(0), "ASSOCIATIVE_OPERATION_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
         "ASSOCIATIVE_OPERATION_UNSUPPORTED", handle).c_str());
   }
@@ -75,6 +79,7 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "ASSOCIATIVE", "PUT", state, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, "ADD");
     Expression *result = new OpSymExpression(
         present, new ConExpression((jboolean)false), op_eq);
     ContainerSupport::constrain_result(handle, result);
@@ -86,6 +91,7 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "ASSOCIATIVE", "REMOVE", state, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, "REMOVE");
     ContainerSupport::constrain_result(handle, present);
     return present;
   }
@@ -93,6 +99,7 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "ASSOCIATIVE", "CLEAR", state, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, "CLEAR");
     return NULL;
   }
   const char *operation = method == "contains" ? "CONTAINS"

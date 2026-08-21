@@ -6,6 +6,9 @@ JDK_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 GRAPH_CHECKER_ROOT=${GRAPH_CHECKER_ROOT:-$(cd "$JDK_ROOT/../.." && pwd)}
 
 CONF=${CONF:-linux-x86_64-normal-zero-release}
+# The OpenJDK top-level makefile rejects receiving both CONF and SPEC.  CONF is
+# only this wrapper's configuration selector; the exact spec is passed below.
+export -n CONF 2>/dev/null || true
 JOBS=${JOBS:-4}
 LOG=${LOG:-info}
 FULL_JDK=${FULL_JDK:-false}
@@ -173,6 +176,7 @@ cd "$JDK_ROOT"
 
 if [[ ! -f "$SPEC_FILE" ]]; then
   if ! bash ./configure \
+    --with-conf-name="$CONF" \
     "CC=$CC_BIN" \
     "CXX=$CXX_BIN" \
     "BUILD_CC=$CC_BIN" \
@@ -183,8 +187,8 @@ if [[ ! -f "$SPEC_FILE" ]]; then
     --with-jvm-variants=zero \
     --with-debug-level=release \
     --with-native-debug-symbols=none \
-    --with-extra-cflags="-DENABLE_CONCOLIC -DONELINE -DCONCOLIC_JDBC -DENABLE_WEBRIDGE" \
-    --with-extra-cxxflags="-DENABLE_CONCOLIC -DONELINE -DCONCOLIC_JDBC -DENABLE_WEBRIDGE"; then
+    --with-extra-cflags="-DENABLE_CONCOLIC -DONELINE" \
+    --with-extra-cxxflags="-DENABLE_CONCOLIC -DONELINE"; then
     die "OpenJDK configure failed. A fresh full image needs all native JDK build dependencies (including freetype and CUPS headers); provide them via an existing toolchain/container and rerun. No system packages were installed."
   fi
 fi
@@ -198,11 +202,17 @@ MAKE_ARGS=(
   "LOG=$LOG"
   "CC=$CC_BIN"
   "CXX=$CXX_BIN"
+  "CPP=$CC_BIN -E"
+  "AS=$CC_BIN -c"
   "LD=$CC_BIN"
+  "LDEXE=$CC_BIN"
+  "LDCXX=$CC_BIN"
   "BUILD_CC=$CC_BIN"
   "BUILD_CXX=$CXX_BIN"
+  "BUILD_LD=$CC_BIN"
   "HOSTCC=$CC_BIN"
   "HOSTCXX=$CXX_BIN"
+  "HOTSPOT_LD=$CC_BIN"
   "LIBFFI_CFLAGS=$FFI_CFLAGS"
   "LIBFFI_LIBS=$FFI_LIBS"
   "MAKE=$MAKE_BIN -R -I $JDK_ROOT/make/common"

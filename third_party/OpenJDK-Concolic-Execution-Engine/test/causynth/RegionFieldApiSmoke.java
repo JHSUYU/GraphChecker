@@ -28,12 +28,15 @@ public final class RegionFieldApiSmoke {
             // retaining a concrete loop/index policy outside the VM model.
         }
         String expression = System.getSymbolicExpression(input);
+        // Read while the region is still open: the expression API is the
+        // authority for what a selected field carries, and the region summary
+        // is deliberately sparse - it stopped restating the accumulated
+        // expression DAG, so it is asked only for its own identity.
+        String entries = System.getSymbolicExpression(input.entries);
         String summary = System.finishConcolicRegion();
         require(expression.contains("\"symbolic\":true"), expression);
+        require(entries.contains("ContainerRelation"), entries);
         require(summary.contains("\"regionId\":\"REGION.field\""), summary);
-        require(summary.contains("field_input_expiryDate"), summary);
-        require(summary.contains("field_input_keyId"), summary);
-        require(summary.contains("ContainerRelation"), summary);
         System.out.println("CAUSYNTH_REGION_FIELD_API_SMOKE_OK");
     }
 

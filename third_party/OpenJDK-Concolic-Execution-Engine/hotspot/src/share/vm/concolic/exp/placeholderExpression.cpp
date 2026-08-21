@@ -3,24 +3,22 @@
 //
 
 #include "placeholderExpression.hpp"
-#ifdef ENABLE_WEBRIDGE
+#include "runtime/atomic.inline.hpp"
 #include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
 #define SSTR( x ) static_cast< std::ostringstream & >( \
         ( std::ostringstream() << std::dec << x ) ).str()
 
-std::map<PlaceholderExpression::Function, int> PlaceholderExpression::functionInvCounter;
+volatile intptr_t PlaceholderExpression::occurrence_counters[
+    PlaceholderExpression::number_of_placeholder_functions] = { 0 };
 
-PlaceholderExpression::PlaceholderExpression(PlaceholderExpression::Function type) : _type(type), _count(0) {
-  if (functionInvCounter.find(type) == functionInvCounter.end()) {
-    functionInvCounter[type] = 0;
-  }
-
-  functionInvCounter[type]++;
-  _count = functionInvCounter[type];
+PlaceholderExpression::PlaceholderExpression(PlaceholderExpression::Function type)
+    : _type(type), _count(0) {
+  guarantee(type >= 0 && type < number_of_placeholder_functions,
+            "unknown placeholder function");
+  _count = (int) Atomic::add_ptr((intptr_t) 1, &occurrence_counters[type]);
 }
-
 void PlaceholderExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   writer.Key("_type");
   writer.String("PlaceholderExpression");
@@ -62,5 +60,3 @@ std::string PlaceholderExpression::get_name() {
   name += SSTR("_" << _count);
   return name;
 }
-
-#endif

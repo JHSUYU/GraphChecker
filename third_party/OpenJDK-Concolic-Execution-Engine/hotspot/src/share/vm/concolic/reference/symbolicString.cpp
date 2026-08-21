@@ -95,10 +95,7 @@ SymString::SymString(sym_rid_t sym_rid)
   this->clear_semantic_expression();
 }
 
-SymString::~SymString() {
-  Expression::gc(_exp);
-  Expression::gc(_ref_exp);
-}
+SymString::~SymString() {}
 
 void SymString::print() {
   tty->print_cr("SymString: ");
@@ -174,10 +171,6 @@ int SymString::prepare_param_helper(MethodSymbolizerHandle &handle,
       }
     }
   } else if (type == T_ARRAY) {
-    tty->print_cr("record string method having a array param: ");
-    handle.get_callee_method()->print_name(tty);
-    tty->cr();
-
     arrayOop arr_obj = handle.get_param<arrayOop>(locals_offset);
     exp = ConcolicMngr::ctx->container_state(arr_obj, "INDEXED");
   } else {
@@ -248,8 +241,6 @@ Expression *SymString::finish_method_helper(MethodSymbolizerHandle &handle) {
         if (result != NULL) {
           symbolize_split_elements(handle, result);
         }
-      } else {
-        tty->print_cr("[Warning] Array result type not handled by method String.%s", callee_name.c_str());
       }
       break;
     case T_BOOLEAN: {

@@ -2,13 +2,17 @@
 
 #include "concolic/concolicMngr.hpp"
 #include "classfile/vmSymbols.hpp"
+#include "concolic/eventLedger.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/exp/containerExpression.hpp"
+#include "concolic/exp/readFromExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicString.hpp"
+
+#include <stdio.h>
 
 const char *ContainerSupport::shape(oop value) {
   if (value == NULL) return NULL;
@@ -117,7 +121,154 @@ std::string ContainerSupport::unsupported(const char *category,
   reason += handle.get_callee_holder_name();
   reason += ".";
   reason += handle.get_callee_name();
+  Method *callee = handle.get_callee_method();
+  if (callee != NULL && callee->signature() != NULL) {
+    reason += callee->signature()->as_C_string();
+  }
   return reason;
+}
+
+// ---------------------------------------------------------------------------
+// Selected whole-container state.
+// ---------------------------------------------------------------------------
+
+SharedFieldVersions::Location ContainerSupport::state_location(oop container) {
+  SharedFieldVersions::Location location;
+  if (container == NULL || ConcolicMngr::ctx == NULL) return location;
+  sym_rid_t owner = ConcolicMngr::ctx->canonical_container_id(container);
+  if (owner == NULL_SYM_RID) return location;
+  return SharedFieldVersions::Location(
+      owner, SharedFieldVersions::SLOT_WHOLE_STATE,
+      SharedFieldVersions::LOC_MAP_STATE);
+}
+
+jlong ContainerSupport::publish_state(oop container, Expression *new_state,
+                                      const char *operation) {
+  // The store's own relaxed counter first: with nothing selected anywhere
+  // there is no provenance question, and this is on the path of every tracked
+  // container mutation the workload performs.
+  if (new_state == NULL || !SharedFieldVersions::has_carriers()) return 0;
+  SharedFieldVersions::Location location = state_location(container);
+  if (!location.is_valid() || !SharedFieldVersions::is_carrier(location)) {
+    return 0;
+  }
+  // The publishing task already names the merged local path case.  Copying
+  // the complete PC into every PUT/REMOVE version is both redundant and
+  // prohibitively large in service loops; the Composer binds read-from arms
+  // to that task's case selector instead.
+  // FP_NONE: a whole state has no comparable concrete fingerprint, so no later
+  // read can rule this writer out by value -- and two writers that installed
+  // equal states stay two candidates.
+  return SharedFieldVersions::publish(
+      location, new_state, NULL, SharedFieldVersions::Fingerprint(), false,
+      SharedFieldVersions::VERSION_STATE, operation);
+}
+
+bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
+  if (!SharedFieldVersions::has_carriers()) return false;
+  SharedFieldVersions::Location location = state_location(container);
+  if (!SharedFieldVersions::mark_writer_set_incomplete(location)) return false;
+  if (EventLedger::is_recording()) {
+    ConcolicMngr::ctx->tick_clock();
+    EventLedger::record(EventLedger::EVENT_FIELD_WRITE, location.owner,
+                        location.slot,
+                        reason == NULL ? "UNMODELED_MUTATION" : reason);
+  }
+  return true;
+}
+
+ContainerSupport::StateQuery ContainerSupport::query_state(
+    oop container, const char *shape, const char *operation,
+    const exp_list_t &arguments, BasicType result_type,
+    const std::string &java_type) {
+  StateQuery answer;
+  if (operation == NULL) return answer;
+  const std::string type_name = java_type.empty()
+      ? std::string(1, type2char(result_type)) : java_type;
+
+  // A planned input has already taken one exact read from its selected
+  // producer version.  Query its local admitted state directly: resolving the
+  // producer location again would replace that selection with a guarded choice
+  // over every historical producer version.
+  Expression *admitted = ConcolicMngr::ctx == NULL ? NULL
+      : ConcolicMngr::ctx->find_admitted_container_state(container);
+  if (admitted != NULL) {
+    answer.expression = new ContainerExpression(
+        shape, operation, admitted, arguments, result_type, type_name);
+    answer.exact = true;
+    return answer;
+  }
+
+  if (!SharedFieldVersions::has_carriers()) return answer;
+  SharedFieldVersions::Location location = state_location(container);
+  if (!location.is_valid() || !SharedFieldVersions::is_carrier(location)) {
+    return answer;
+  }
+
+  // FP_NONE.  The concrete value this query returned is a fact about one
+  // member, not about the whole state a writer installed, so it cannot rule a
+  // writer out here.  Passing no fingerprint says exactly that instead of
+  // pretending to a comparison the evidence does not support.
+  SharedFieldVersions::ReadPlan plan;
+  if (!SharedFieldVersions::plan_read(
+          location, SharedFieldVersions::Fingerprint(), &plan)) {
+    return answer;
+  }
+
+  if (plan.resolution == SharedFieldVersions::RESOLVE_EXACT) {
+    for (size_t index = 0; index < plan.candidates.size(); ++index) {
+      if (plan.candidates[index].version_id != plan.chosen_version_id) {
+        continue;
+      }
+      answer.expression = new ContainerExpression(
+          shape, operation, plan.candidates[index].value, arguments,
+          result_type, type_name);
+      answer.exact = true;
+    }
+    return answer;
+  }
+
+  std::vector<ReadFromExpression::Candidate> arms;
+  for (size_t index = 0; index < plan.candidates.size(); ++index) {
+    const SharedFieldVersions::Version &version = plan.candidates[index];
+    ReadFromExpression::Candidate arm;
+    char selector[32];
+    int length = snprintf(selector, sizeof(selector), "rf%d", (int) index + 1);
+    arm.selector = std::string(selector, length < 0 ? 0 : length);
+    arm.field_version_id = version.version_id;
+    arm.writer_context_id = version.writer_context_id;
+    arm.writer_java_thread_id = version.writer_java_thread_id;
+    arm.region_id = version.region_id;
+    arm.task_id = version.task_id;
+    arm.volatile_write = version.volatile_write;
+    // The query applied to that writer's state, not the state.  This is the
+    // whole difference between a scalar arm and a container arm: two writers
+    // that installed different states give two different answers here even
+    // when the member they wrote happens to be equal.
+    arm.value = new ContainerExpression(shape, operation, version.value,
+                                        arguments, result_type, type_name);
+    arm.path_guard = version.path_guard;
+    for (size_t other = 0; other < plan.candidates.size(); ++other) {
+      if (other == index) continue;
+      arm.competing_version_ids.push_back(plan.candidates[other].version_id);
+    }
+    arms.push_back(arm);
+  }
+  // Unconditional, as everywhere: without it the disjunction would assert that
+  // this run observed every writer of this container.
+  ReadFromExpression::Candidate unknown;
+  unknown.selector = "rf_unknown";
+  unknown.unknown = true;
+  unknown.value = new UnknownWriterSymbolExp(
+      location.owner, location.slot, plan.read_event_id, result_type);
+  arms.push_back(unknown);
+
+  answer.expression = new ReadFromExpression(
+      arms, type_name, plan.read_event_id, location.owner, location.slot,
+      SharedFieldVersions::location_kind_name(location.kind),
+      SharedFieldVersions::read_reason_name(plan.reason),
+      plan.writer_set_complete);
+  return answer;
 }
 
 Expression *ContainerSupport::concrete_value(oop value) {

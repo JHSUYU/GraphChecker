@@ -4,9 +4,16 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import soot.ArrayType;
+import soot.PrimType;
+import soot.RefType;
+import soot.Scene;
+import soot.SootClass;
+import soot.SootField;
 import soot.SootMethod;
+import soot.Type;
 import soot.VoidType;
-import edu.uva.liftlab.graphchecker.contract.ProtocolBoundaryScalarConfig;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -26,6 +33,13 @@ import java.util.Set;
  * Explicit protocol-layer call bridges.  These rows describe remote or
  * transport-mediated value flow; they are never inferred from class names or
  * Java implementation relationships.
+ *
+ * <p>The rows are the static admission catalog for communication cuts.  They
+ * declare endpoints and typed request/response correspondence; they never
+ * identify a dynamic delivery.  Runtime exchange/attempt identity and VM
+ * expression handoff remain the only authority for pairing two occurrences.
+ * This deliberately avoids both extremes: scanning every protocol in a large
+ * framework and guessing a delivery later from payload or call order.</p>
  */
 final class ConfiguredProtocolStubs {
     private final Map<String, List<ProtocolStubMapping>> byClient;
@@ -56,8 +70,6 @@ final class ConfiguredProtocolStubs {
         if (!Files.isRegularFile(path)) {
             throw new IOException("Protocol stub mapping not found: " + path);
         }
-        ProtocolBoundaryScalarConfig.read(path);
-
         Map<String, List<ProtocolStubMapping>> byClient =
                 new LinkedHashMap<>();
         Map<String, List<ProtocolStubMapping>> byServer =
@@ -89,14 +101,6 @@ final class ConfiguredProtocolStubs {
                 }
                 byClient.computeIfAbsent(mapping.clientStub,
                         ignored -> new ArrayList<>()).add(mapping);
-                for (ProtocolStubMapping existing : byServer.getOrDefault(
-                        mapping.serverStub, Collections.emptyList())) {
-                    if (existing.serverContext != mapping.serverContext) {
-                        throw new IOException("Conflicting serverContext for "
-                                + mapping.serverStub + " at " + path + ":"
-                                + lineNumber);
-                    }
-                }
                 byServer.computeIfAbsent(mapping.serverStub,
                         ignored -> new ArrayList<>()).add(mapping);
                 clientOwners.add(mapping.clientOwner);
@@ -119,36 +123,11 @@ final class ConfiguredProtocolStubs {
         return mappings;
     }
 
-    boolean isExecutionEntryServerStub(String method) {
-        if (method == null) {
-            return false;
-        }
-        for (ProtocolStubMapping mapping : sources(method)) {
-            if (mapping.serverContext
-                    == ProtocolServerContext.EXECUTION_ENTRY) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    boolean isNestedCallServerStub(String method) {
-        if (method == null) {
-            return false;
-        }
-        for (ProtocolStubMapping mapping : sources(method)) {
-            if (mapping.serverContext == ProtocolServerContext.NESTED_CALL) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     boolean isClientOwner(String owner) {
         return clientOwners.contains(owner);
     }
 
-    private static ConfiguredProtocolStubs empty() {
+    static ConfiguredProtocolStubs empty() {
         return new ConfiguredProtocolStubs(new LinkedHashMap<>(),
                 new LinkedHashMap<>(), new LinkedHashSet<>(),
                 Collections.emptyList());
@@ -156,6 +135,17 @@ final class ConfiguredProtocolStubs {
 
     private static ProtocolStubMapping parse(JsonObject row,
                                              Map<String, SootMethod> methods) {
+        if (!row.has("schemaVersion")
+                || row.get("schemaVersion").getAsInt() != 2
+                || !"PROTOCOL_STUB_MAPPING".equals(string(row, "kind"))) {
+            throw new IllegalArgumentException("protocol mapping requires "
+                    + "schemaVersion 2 and kind PROTOCOL_STUB_MAPPING");
+        }
+        String id = string(row, "id");
+        if (id.isEmpty()) {
+            throw new IllegalArgumentException("protocol mapping requires "
+                    + "an explicit stable id");
+        }
         String clientStub = string(row, "clientStub");
         String serverStub = string(row, "serverStub");
         SootMethod client = methods.get(clientStub);
@@ -197,27 +187,172 @@ final class ConfiguredProtocolStubs {
             throw new IllegalArgumentException(
                     "mapped response types differ");
         }
-        String id = string(row, "id");
-        if (id.isEmpty()) {
-            id = clientStub + " -> " + serverStub;
-        }
-        String encodedServerContext = string(row, "serverContext");
-        ProtocolServerContext serverContext;
-        if (encodedServerContext.isEmpty()) {
-            serverContext = ProtocolServerContext.EXECUTION_ENTRY;
-        } else {
-            try {
-                serverContext = ProtocolServerContext.valueOf(
-                        encodedServerContext);
-            } catch (IllegalArgumentException invalid) {
-                throw new IllegalArgumentException("serverContext must be "
-                        + "EXECUTION_ENTRY or NESTED_CALL: "
-                        + encodedServerContext, invalid);
-            }
-        }
+        List<ResponseComponentMapping> responseComponents =
+                responseComponents(row, response, client.getReturnType(),
+                        methods);
         return new ProtocolStubMapping(id, string(row, "transport"),
                 clientStub, serverStub, client.getDeclaringClass().getName(),
-                request, response, serverContext);
+                request, response, responseComponents);
+    }
+
+    /**
+     * Validates configured response accessors once and lowers them to exact
+     * field declarations.  Runtime consumes only that lowered path and never
+     * invokes application getters.
+     */
+    private static List<ResponseComponentMapping> responseComponents(
+            JsonObject row, boolean response, Type responseType,
+            Map<String, SootMethod> methods) {
+        JsonElement encoded = row.get("responseComponents");
+        if (encoded == null || encoded.isJsonNull()) {
+            return Collections.emptyList();
+        }
+        if (!response || !encoded.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "responseComponents require a declared response");
+        }
+        List<ResponseComponentMapping> result = new ArrayList<>();
+        Set<String> names = new LinkedHashSet<>();
+        Set<List<String>> paths = new LinkedHashSet<>();
+        for (JsonElement element : encoded.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                throw new IllegalArgumentException(
+                        "response component must be an object");
+            }
+            JsonObject component = element.getAsJsonObject();
+            String name = string(component, "name");
+            JsonElement pathElement = component.get("path");
+            if (name.isEmpty() || name.indexOf('.') >= 0
+                    || name.indexOf('/') >= 0 || pathElement == null
+                    || !pathElement.isJsonArray()
+                    || pathElement.getAsJsonArray().size() == 0) {
+                throw new IllegalArgumentException(
+                        "response component requires a stable name and path");
+            }
+            Type current = responseType;
+            List<ResponsePathStep> path = new ArrayList<>();
+            for (JsonElement stepElement : pathElement.getAsJsonArray()) {
+                if (!stepElement.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "response component path step must be an object");
+                }
+                JsonObject step = stepElement.getAsJsonObject();
+                String getter = string(step, "getter");
+                String fieldSignature = string(step, "field");
+                String arrayElementType = string(step,
+                        "uniqueArrayElementType");
+                int choices = (getter.isEmpty() ? 0 : 1)
+                        + (fieldSignature.isEmpty() ? 0 : 1)
+                        + (arrayElementType.isEmpty() ? 0 : 1);
+                if (choices != 1) {
+                    throw new IllegalArgumentException(
+                            "response path step requires exactly one field, "
+                                    + "getter, or uniqueArrayElementType");
+                }
+                if (!arrayElementType.isEmpty()) {
+                    if (!(current instanceof ArrayType)) {
+                        throw new IllegalArgumentException(
+                                "response array element selector follows a "
+                                        + "non-array type: " + current);
+                    }
+                    SootClass selected = Scene.v().getSootClassUnsafe(
+                            arrayElementType);
+                    Type declaredElement =
+                            ((ArrayType) current).getElementType();
+                    if (selected == null || !compatibleArrayElement(
+                            declaredElement, selected)) {
+                        throw new IllegalArgumentException(
+                                "response array element type is incompatible: "
+                                        + arrayElementType + " in " + current);
+                    }
+                    path.add(ResponsePathStep.uniqueArrayElement(
+                            arrayElementType));
+                    current = selected.getType();
+                    continue;
+                }
+                SootField field;
+                if (!getter.isEmpty()) {
+                    SootMethod method = methods.get(getter);
+                    field = StructuralFieldAccessorProof.exactField(method);
+                    if (field == null || !compatibleOwner(current,
+                            method.getDeclaringClass())) {
+                        throw new IllegalArgumentException(
+                                "response getter is not one structural field "
+                                        + "access: " + getter);
+                    }
+                } else {
+                    field = exactField(fieldSignature);
+                    if (field == null) {
+                        throw new IllegalArgumentException(
+                                "response field did not resolve exactly: "
+                                        + fieldSignature);
+                    }
+                }
+                if (!compatibleOwner(current,
+                        field.getDeclaringClass())) {
+                    throw new IllegalArgumentException(
+                            "response field path owner/type mismatch: "
+                                    + field.getSignature());
+                }
+                path.add(ResponsePathStep.field(field.getSignature()));
+                current = field.getType();
+            }
+            ResponsePathStep terminal = path.get(path.size() - 1);
+            FieldPathSpec.DeclaredField leaf = FieldPathSpec.declaredField(
+                    terminal.declaration);
+            if (current instanceof VoidType || leaf == null
+                    || !name.equals(leaf.name())) {
+                throw new IllegalArgumentException(
+                        "response component must name its exact terminal "
+                                + "leaf: " + name);
+            }
+            List<String> identity = new ArrayList<>();
+            for (ResponsePathStep step : path) identity.add(step.identity());
+            if (!names.add(name) || !paths.add(identity)) {
+                throw new IllegalArgumentException(
+                        "response component names and paths must be unique: "
+                                + name);
+            }
+            result.add(new ResponseComponentMapping(name,
+                    current.toString(), path));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    private static boolean compatibleOwner(Type current, SootClass owner) {
+        if (!(current instanceof RefType) || owner == null) return false;
+        if (current.toString().equals(owner.getName())) return true;
+        try {
+            return Scene.v().getOrMakeFastHierarchy().canStoreType(
+                    current, owner.getType());
+        } catch (RuntimeException unavailableHierarchy) {
+            return false;
+        }
+    }
+
+    private static boolean compatibleArrayElement(Type declared,
+                                                   SootClass selected) {
+        if (!(declared instanceof RefType) || selected == null) return false;
+        if (declared.toString().equals(selected.getName())) return true;
+        try {
+            return Scene.v().getOrMakeFastHierarchy().canStoreType(
+                    selected.getType(), declared);
+        } catch (RuntimeException unavailableHierarchy) {
+            return false;
+        }
+    }
+
+    private static SootField exactField(String signature) {
+        FieldPathSpec.DeclaredField declared =
+                FieldPathSpec.declaredField(signature);
+        if (declared == null) return null;
+        SootClass owner = Scene.v().getSootClassUnsafe(declared.owner());
+        if (owner == null) return null;
+        for (SootField field : owner.getFields()) {
+            if (declared.signature().equals(field.getSignature())
+                    && !field.isStatic()) return field;
+        }
+        return null;
     }
 
     private static ProtocolPortMapping port(
@@ -257,11 +392,6 @@ final class ConfiguredProtocolStubs {
     }
 }
 
-enum ProtocolServerContext {
-    EXECUTION_ENTRY,
-    NESTED_CALL
-}
-
 final class ProtocolStubMapping {
     final String id;
     final String transport;
@@ -270,13 +400,13 @@ final class ProtocolStubMapping {
     final String clientOwner;
     final List<ProtocolPortMapping> request;
     final boolean response;
-    final ProtocolServerContext serverContext;
+    final List<ResponseComponentMapping> responseComponents;
 
     ProtocolStubMapping(String id, String transport, String clientStub,
                         String serverStub, String clientOwner,
                         List<ProtocolPortMapping> request,
                         boolean response,
-                        ProtocolServerContext serverContext) {
+                        List<ResponseComponentMapping> responseComponents) {
         this.id = id;
         this.transport = transport;
         this.clientStub = clientStub;
@@ -285,7 +415,68 @@ final class ProtocolStubMapping {
         this.request = Collections.unmodifiableList(
                 new ArrayList<>(request));
         this.response = response;
-        this.serverContext = serverContext;
+        this.responseComponents = Collections.unmodifiableList(
+                new ArrayList<>(responseComponents));
+    }
+}
+
+final class ResponseComponentMapping {
+    final String name;
+    final String javaType;
+    final List<ResponsePathStep> path;
+
+    ResponseComponentMapping(String name, String javaType,
+                             List<ResponsePathStep> path) {
+        this.name = name;
+        this.javaType = javaType;
+        this.path = Collections.unmodifiableList(new ArrayList<>(path));
+    }
+}
+
+/** One fully lowered response navigation step. */
+final class ResponsePathStep {
+    static final String FIELD = "FIELD";
+    static final String UNIQUE_ARRAY_ELEMENT = "UNIQUE_ARRAY_ELEMENT";
+
+    final String kind;
+    final String declaration;
+    final String elementType;
+
+    private ResponsePathStep(String kind, String declaration,
+                             String elementType) {
+        this.kind = kind;
+        this.declaration = declaration;
+        this.elementType = elementType;
+    }
+
+    static ResponsePathStep field(String declaration) {
+        return new ResponsePathStep(FIELD, declaration, "");
+    }
+
+    static ResponsePathStep uniqueArrayElement(String elementType) {
+        return new ResponsePathStep(UNIQUE_ARRAY_ELEMENT, "", elementType);
+    }
+
+    Map<String, Object> row() {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("kind", kind);
+        if (!declaration.isEmpty()) row.put("declaration", declaration);
+        if (!elementType.isEmpty()) row.put("elementType", elementType);
+        return row;
+    }
+
+    String identity() {
+        return kind + ":" + (declaration.isEmpty()
+                ? elementType : declaration);
+    }
+
+    String leafSegment() {
+        if (FIELD.equals(kind)) {
+            FieldPathSpec.DeclaredField field =
+                    FieldPathSpec.declaredField(declaration);
+            return field == null ? "" : field.name();
+        }
+        return "[" + elementType + "]";
     }
 }
 

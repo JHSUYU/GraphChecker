@@ -41,10 +41,6 @@ public final class ThreeThreadRpcScenarioWorkload {
             this.directoryName = directoryName;
         }
 
-        public String getDirectoryName() {
-            return directoryName;
-        }
-
         public static Variant parse(String value) {
             if (value == null || value.trim().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -590,10 +586,6 @@ public final class ThreeThreadRpcScenarioWorkload {
             this.producerConcurrencyObserved = producerConcurrencyObserved;
             this.consumerStartedAfterProducerThreadsTerminated =
                     consumerStartedAfterProducerThreadsTerminated;
-        }
-
-        public Variant getVariant() {
-            return variant;
         }
 
         public Boolean getB1() {

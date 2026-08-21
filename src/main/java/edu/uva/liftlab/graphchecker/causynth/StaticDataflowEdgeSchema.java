@@ -21,7 +21,6 @@ final class StaticDataflowEdgeSchema {
         if (normalizedKind.contains("seed")) return "SEED";
         if (normalizedKind.contains("guard")) return "GUARD";
         if (normalizedKind.contains("throw")) return "EXCEPTION";
-        if (normalizedKind.contains("rpc")) return "PROTOCOL_TRANSFER";
         if (normalizedKind.contains("dispatch")) return "DYNAMIC_DISPATCH";
         // The explicit fault marker is a modeled call-return boundary.  Its
         // result must participate in the ordinary backward value slice just
@@ -99,17 +98,13 @@ final class StaticDataflowEdgeSchema {
 
     private static boolean mapOperation(String text, String operation) {
         String marker = operation + "(";
-        boolean namedMap = text.contains(" map." + marker)
-                || text.contains(" allkeys." + marker)
-                || text.contains(" keymap." + marker)
-                || text.contains(" cache." + marker);
         boolean mapOwner = text.contains("<java.util.map:")
                 || text.contains("<java.util.hashmap:")
                 || text.contains("<java.util.linkedhashmap:")
                 || text.contains("<java.util.treemap:")
                 || text.contains("<java.util.concurrent.concurrentmap:")
                 || text.contains("<java.util.concurrent.concurrenthashmap:");
-        return namedMap || mapOwner && (text.contains(" " + marker)
+        return mapOwner && (text.contains(" " + marker)
                 || text.contains("." + marker));
     }
 

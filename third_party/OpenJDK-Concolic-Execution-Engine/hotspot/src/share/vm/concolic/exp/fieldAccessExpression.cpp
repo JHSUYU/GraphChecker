@@ -12,12 +12,9 @@ FieldAccessExpression::FieldAccessExpression(
       _java_type(java_type.empty()
                      ? std::string(1, type2char(type))
                      : java_type) {
-  if (_owner != NULL) _owner->inc_ref();
 }
 
-FieldAccessExpression::~FieldAccessExpression() {
-  Expression::gc(_owner);
-}
+FieldAccessExpression::~FieldAccessExpression() {}
 
 void FieldAccessExpression::print() {
   tty->print("(field %s@%d ", _owner_class.c_str(), _field_offset);

@@ -53,6 +53,11 @@ public final class ConcolicPathFlipPlanner {
         List<JsonObject> records = arguments.records == null
                 ? Collections.<JsonObject>emptyList()
                 : ArtifactIO.readJsonl(arguments.records);
+        // The importer's own delta.  Absent means "no classification was
+        // supplied"; an empty file means "classified, nothing changed".
+        List<JsonObject> topologyDelta = arguments.topologyDelta == null
+                ? Collections.<JsonObject>emptyList()
+                : ArtifactIO.readJsonl(arguments.topologyDelta);
 
         List<JsonObject> executionTasks = filterExecutionTasks(
                 allExecutionTasks,
@@ -62,7 +67,8 @@ public final class ConcolicPathFlipPlanner {
         List<JsonObject> summaries = filterSummaries(allSummaries,
                 taskById, arguments.regionId, arguments.goalId);
         RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                summaries, executionTasks, records, arguments.pathBounds);
+                summaries, executionTasks, records, arguments.pathBounds,
+                topologyDelta);
         Collections.sort(result.tasks, Comparator.comparing(
                 task -> string(task, "queryKey")));
         return result;
@@ -74,9 +80,6 @@ public final class ConcolicPathFlipPlanner {
                 "region_path_worklist.jsonl"), result.tasks);
         ArtifactIO.replaceJsonl(directory.resolve(
                 "merged_region_summaries.jsonl"), result.relations);
-        ArtifactIO.replaceJsonl(directory.resolve(
-                "observed_region_summaries.jsonl"),
-                result.observedRelations);
         ArtifactIO.replace(directory.resolve("region_path_manifest.json"),
                 PRETTY.toJson(result.manifest) + System.lineSeparator());
     }
@@ -117,18 +120,20 @@ public final class ConcolicPathFlipPlanner {
         private final Path summaries;
         private final Path executionTasks;
         private final Path records;
+        private final Path topologyDelta;
         private final Path outputDirectory;
         private final RegionPathWorklist.Bounds pathBounds;
         private final String regionId;
         private final String goalId;
 
         private Arguments(Path summaries, Path executionTasks, Path records,
-                          Path outputDirectory,
+                          Path topologyDelta, Path outputDirectory,
                           RegionPathWorklist.Bounds pathBounds,
                           String regionId, String goalId) {
             this.summaries = summaries;
             this.executionTasks = executionTasks;
             this.records = records;
+            this.topologyDelta = topologyDelta;
             this.outputDirectory = outputDirectory;
             this.pathBounds = pathBounds;
             this.regionId = regionId;
@@ -149,6 +154,8 @@ public final class ConcolicPathFlipPlanner {
             Path executionTasks = required(values, "task-plan");
             Path output = required(values, "output-dir");
             Path records = optionalPath(values.get("records"));
+            Path topologyDelta = optionalPath(
+                    values.get("topology-delta"));
             RegionPathWorklist.Bounds defaults =
                     RegionPathWorklist.Bounds.defaults();
             RegionPathWorklist.Bounds bounds =
@@ -159,7 +166,8 @@ public final class ConcolicPathFlipPlanner {
                                     defaults.maxFlipsPerPath),
                             intValue(values, "max-tasks",
                                     defaults.maxTasks));
-            return new Arguments(summaries, executionTasks, records, output,
+            return new Arguments(summaries, executionTasks, records,
+                    topologyDelta, output,
                     bounds, value(values, "region-id"),
                     requiredValue(values, "goal-id"));
         }

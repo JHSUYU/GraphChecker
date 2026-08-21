@@ -4,13 +4,27 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
+import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
+import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
+import edu.uva.liftlab.graphchecker.concolic.RpcExpressionHandoff;
+import edu.uva.liftlab.graphchecker.concolic.SelectedReadCut;
+import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.concolic.SparseReadCutGate;
+import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
+import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
@@ -19,12 +33,14 @@ import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.io.StringReader;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -40,13 +56,19 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
@@ -86,53 +108,133 @@ public final class ConcolicRegionRuntime {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final Object CONFIG_LOCK = new Object();
     private static final Object WRITE_LOCK = new Object();
-    /** Guarded by {@link #ENGINE_LOCK}. */
+    /**
+     * Guards the process-exit barrier alone.  Symbolic execution is no longer
+     * serialized: with a workload session open, several campaign tasks may be
+     * live on different threads at the same time.
+     */
+    private static final Object PUBLICATION_LOCK = new Object();
+    private static final AtomicLong PUBLICATION_THREAD_COUNTER =
+            new AtomicLong();
+    /**
+     * JSON decoding and durable result publication must not hold an RPC
+     * handler after its VM-owned read-outs are complete.  The campaign is
+     * bounded, so a small fixed daemon pool with a bounded queue is enough;
+     * daemon threads cannot keep an otherwise finished workload alive, while
+     * {@link #awaitSelectedResultPublications()} remains the explicit durable
+     * publication barrier.
+     */
+    private static final ThreadPoolExecutor RESULT_PUBLICATION_EXECUTOR =
+            new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<Runnable>(128),
+                    new ThreadFactory() {
+                        @Override
+                        public Thread newThread(Runnable runnable) {
+                            Thread thread = new Thread(runnable,
+                                    "causynth-result-publication-"
+                                            + PUBLICATION_THREAD_COUNTER
+                                            .incrementAndGet());
+                            thread.setDaemon(true);
+                            return thread;
+                        }
+                    }, new ThreadPoolExecutor.AbortPolicy());
+    /** Guarded by {@link #PUBLICATION_LOCK}. */
     private static int resultPublicationsInFlight;
+    /**
+     * Selected activations that are live but have not yet registered a
+     * publication.  This is the first half of the process-exit barrier: an
+     * activation becomes live before its region is ACTIVE and stops being
+     * live only once {@link #finish} has registered its publication or the
+     * activation has been abandoned.  Without it the barrier would open in
+     * the interval between the two.  Guarded by {@link #PUBLICATION_LOCK}.
+     */
+    private static int liveSelectedRegions;
     private static final AtomicLong TOKEN_COUNTER = new AtomicLong();
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
             new AtomicLong();
-    private static final AtomicBoolean ENGINE_BUSY = new AtomicBoolean();
-    private static final Object ENGINE_LOCK = new Object();
     /**
-     * How long a region root waits for a concurrent activation to release the
-     * single symbolic engine before it gives up.  Zero disables waiting.
+     * Monotonic ordinal of one recorded-evidence read-out batch.
+     *
+     * <p>It is the only recency answer this layer publishes. A bounded VM
+     * store evicts its oldest entries, so "the snapshot with more rows" is not
+     * "the later snapshot", and a consumer that ranked read-outs by size would
+     * routinely keep the stale one. The counter is process-wide and shared by
+     * every activation, so two batches are always comparable.</p>
      */
-    static final String ENGINE_WAIT_PROPERTY =
-            "causynth.concolic.engine.wait.millis";
+    private static final AtomicLong EVIDENCE_SNAPSHOTS = new AtomicLong();
     static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
             "causynth.concolic.halt.after.selected.result";
-    static final long DEFAULT_ENGINE_WAIT_MILLIS = 60_000L;
-    static final String ENGINE_BUSY_TIMEOUT =
-            "ENGINE_BUSY_TIMEOUT: another concolic region held the symbolic "
-                    + "engine for the whole wait budget";
-    static final String ENGINE_BUSY_INTERRUPTED =
-            "ENGINE_BUSY_INTERRUPTED: waiting for the symbolic engine was "
-                    + "interrupted";
     /**
-     * Why an activation never published a region result.  A skip that never
-     * got the engine and a skip that ran and contradicted its recording are
-     * different findings, and collapsing them makes a scheduling artifact
+     * Why an activation never published a region result.  A skip that was
+     * never admitted and a skip that ran and contradicted its recording are
+     * different findings, and collapsing them makes a plan artifact
      * indistinguishable from an infeasible path.
      */
-    static final String SKIP_ENGINE_UNAVAILABLE = "ENGINE_UNAVAILABLE";
     static final String SKIP_NOT_STARTED = "NOT_STARTED";
     static final String SKIP_REPLAY_PREFIX_UNMATCHED =
             "REPLAY_PREFIX_UNMATCHED";
     static final String SKIP_SEED_OUTCOME_CONFLICT = "SEED_OUTCOME_CONFLICT";
-    static final String SKIP_INCOMPLETE_OUTPUT_RELATION =
-            "INCOMPLETE_OUTPUT_RELATION";
     /**
-     * Candidate order for the single symbolic engine.  A recorded entry value
-     * is compared value-wise, which cannot decide whether an activation walks
-     * the recorded path, so it only ranks candidates; the recorded branch
-     * prefix is the sole judgement that refuses one.
+     * A candidate ran to its terminal and was not the occurrence its plan row
+     * addressed: it ran on another source, or inside another request scope.
+     *
+     * <p>Not a failure of the occurrence and not a coverage gap.  It is the
+     * ordinary answer of an address that names a cause rather than a
+     * position: the run held an activation of the same root that this plan
+     * row did not mean, so the address stays open for the next one.</p>
      */
-    static final int ENTRY_STATE_RANK_MATCHES = 0;
-    static final int ENTRY_STATE_RANK_UNDECIDED = 1;
-    static final int ENTRY_STATE_RANK_MISMATCH = 2;
-    private static final int ENTRY_STATE_RANKS = 3;
-    /** Waiting candidates per rank; guarded by {@link #ENGINE_LOCK}. */
-    private static final int[] ENGINE_WAITING = new int[ENTRY_STATE_RANKS];
+    static final String SKIP_OCCURRENCE_ANCHOR_UNMATCHED =
+            "OCCURRENCE_ANCHOR_UNMATCHED";
+    /**
+     * A target candidate ran to its terminal without reaching the target
+     * event its plan row declared.
+     *
+     * <p>Not a failure and not a coverage gap: it is the ordinary answer of
+     * an address that several activations of one region on one source can
+     * satisfy.  The address stays open for the next candidate.</p>
+     */
+    static final String SKIP_TARGET_EVENT_NOT_REACHED =
+            "TARGET_EVENT_NOT_REACHED";
+    /**
+     * The source this occurrence is anchored on never existed in this run.
+     *
+     * <p>A refusal and a coverage statement are different findings and this
+     * separates them.  {@link #SKIP_OCCURRENCE_ANCHOR_UNMATCHED} says the
+     * activation belongs to another owner - the address worked and rejected
+     * it.  This says no activation could have matched, because the anchored
+     * logical source and lifecycle epoch were never registered here at all:
+     * the replay is a narrower envelope than the recording, typically because
+     * it did not reach a restart that the recording did.  Collapsing the two
+     * would hide that, and the epoch cannot be dropped from the address to
+     * avoid it - post-rotation state is the phenomenon, so equating epochs
+     * would erase what the model exists to express.</p>
+     */
+    static final String SKIP_ANCHOR_SOURCE_NEVER_EXISTED =
+            "ANCHOR_EPOCH_NOT_REACHED";
+    /**
+     * The region root was still running when the workload ended, so this
+     * occurrence never reached {@code NORMAL}, {@code THROW} or a bounded
+     * {@code CUT}.
+     *
+     * <p>A coarse occurrence ends at its own terminal, so an activation that
+     * has none has published nothing and never will.  Naming it per task is
+     * the difference between a campaign that fails closed on one occurrence
+     * and a campaign that waits for a service thread forever.</p>
+     */
+    static final String SKIP_TERMINAL_NEVER_REACHED =
+            "TERMINAL_NEVER_REACHED";
+    /**
+     * How long the process-exit barrier waits for a live activation that is
+     * making no instrumented progress.
+     *
+     * <p>Not a task budget and not a semantic bound: the barrier runs after
+     * the workload's own control flow has ended, so every activation still
+     * live belongs to a thread the workload does not wait for.  The wait is
+     * restarted by any publication or by any loop body those activations
+     * still charge, so it is only ever spent on an occurrence that is doing
+     * nothing at all.</p>
+     */
+    private static final long TERMINAL_GRACE_MILLIS = 30_000L;
     /**
      * Emits one line per replay milestone to stderr. Long-lived roots make a
      * stalled activation indistinguishable from a slow one; this trace names
@@ -164,6 +266,8 @@ public final class ConcolicRegionRuntime {
             "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
     private static volatile Configuration configuration;
     private static volatile EngineApi engineApi;
+    /** Session this JVM opened for its workload, or zero when it opened none. */
+    private static volatile long workloadSessionId;
 
     private ConcolicRegionRuntime() {
     }
@@ -204,6 +308,33 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Mutes this layer's own bookkeeping for the duration of one evidence
+     * call, and must be paired with {@link #endBookkeeping()} in a finally.
+     *
+     * <p>Every evidence entry point below - handoff, selected boundary, shared-state
+     * selection and read-out - is entered through this pair.  It has to be:
+     * this layer reflects, parses JSON, builds strings and walks collections
+     * holding the very objects the workload symbolized, and an unmuted call
+     * records hundreds of conditions of GraphChecker's own control flow into
+     * the workload's path condition and mints session expressions for
+     * GraphChecker's own strings.  That is not merely noise - the summary
+     * would claim conditions the program never evaluated, and a writer's path
+     * guard would be conjoined with its observer's.</p>
+     *
+     * <p>The mute spans the native call as well, which is safe: every VM
+     * operation this layer invokes is an explicit one, admitted by an active
+     * context rather than by an unpaused one.</p>
+     */
+    private static void beginBookkeeping() {
+        pauseObservation();
+    }
+
+    /** Ends the muted subtree {@link #beginBookkeeping()} opened. */
+    private static void endBookkeeping() {
+        resumeObservation();
+    }
+
+    /**
      * Accounts for one attempted traversal of an instrumented normal CFG
      * backedge. Calls outside the selected active region are deliberately a
      * no-op. All map and policy operations execute while VM path-condition
@@ -212,10 +343,10 @@ public final class ConcolicRegionRuntime {
      *
      * <p>The fixed bound allows exactly {@code K} loop-body iterations. The
      * first body precedes any backedge, so only attempts {@code 1..K-1} may
-     * complete. Backedge attempt {@code K}, made after body {@code K}, throws
-     * a dedicated {@link Error} before body {@code K+1} can begin. The root
-     * catch-all records it as a path cut rather than fabricating a normal loop
-     * exit.</p>
+     * complete. Backedge attempt {@code K}, made after body {@code K}, closes
+     * symbolic observation before body {@code K+1}. The application loop then
+     * continues concretely: a modeling bound must not terminate a service
+     * thread in the workload.</p>
      */
     public static void checkLoopBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
@@ -229,10 +360,9 @@ public final class ConcolicRegionRuntime {
             api.pausePathCondition();
             paused = true;
             String edge = safe(backedgeId);
-            int runtimeMax = active.activation.loopBound
-                    .maxBackedgeTraversals();
-            if (edge.isEmpty()
-                    || instrumentedMaxTraversals != runtimeMax) {
+            int runtimeMax = instrumentedMaxTraversals;
+            if (edge.isEmpty() || !loopBoundMatchesPlan(
+                    active, edge, runtimeMax)) {
                 cut = active.loopBoundCut(edge, runtimeMax, 0L,
                         "INSTRUMENTATION_POLICY_MISMATCH");
             } else {
@@ -245,7 +375,7 @@ public final class ConcolicRegionRuntime {
             }
         } catch (Throwable failure) {
             cut = active.loopBoundCut(safe(backedgeId),
-                    active.activation.loopBound.maxBackedgeTraversals(),
+                    instrumentedMaxTraversals,
                     0L, "BOUND_HOOK_FAILURE:" + rootCause(failure));
         } finally {
             if (paused) {
@@ -257,73 +387,13 @@ public final class ConcolicRegionRuntime {
                                     + rootCause(failure));
                     if (cut == null) {
                         cut = active.loopBoundCut(safe(backedgeId),
-                                active.activation.loopBound
-                                        .maxBackedgeTraversals(),
+                                instrumentedMaxTraversals,
                                 0L, "BOUND_HOOK_RESUME_FAILURE");
                     }
                 }
             }
         }
-        // A loop cut is the end of this bounded execution path, even if
-        // application code catches Error/Throwable above the loop.
-        throwCut(active, cut);
-    }
-
-    /**
-     * Records a guarded loop's completed latch transfer without cutting at
-     * the header.  The separate body-entry hook can then let a false header
-     * guard exit normally after exactly {@code K} bodies, while rejecting a
-     * true guard before body {@code K+1} starts.
-     */
-    public static void recordLoopBackedge(
-            String loopId, int instrumentedMaxTraversals) {
-        ActiveRegion active = activeRegion();
-        if (active == null) return;
-
-        EngineApi api = engine();
-        boolean paused = false;
-        LoopBoundCut cut = null;
-        try {
-            api.pausePathCondition();
-            paused = true;
-            String loop = safe(loopId);
-            int runtimeMax = active.activation.loopBound
-                    .maxBackedgeTraversals();
-            if (loop.isEmpty()
-                    || instrumentedMaxTraversals != runtimeMax) {
-                cut = active.loopBoundCut(loop, runtimeMax, 0L,
-                        "INSTRUMENTATION_POLICY_MISMATCH");
-            } else {
-                String budgetLoop = active.loopBudgetKey(loop);
-                long completed = active.loopBackedges
-                        .recordGuardedTraversal(budgetLoop);
-                if (completed > runtimeMax) {
-                    cut = active.loopBoundCut(loop, runtimeMax, completed,
-                            "LOOP_BODY_ENTRY_HOOK_MISSING");
-                }
-            }
-        } catch (Throwable failure) {
-            cut = active.loopBoundCut(safe(loopId),
-                    active.activation.loopBound.maxBackedgeTraversals(),
-                    0L, "BOUND_HOOK_FAILURE:" + rootCause(failure));
-        } finally {
-            if (paused) {
-                try {
-                    api.resumePathCondition();
-                } catch (Throwable failure) {
-                    active.addUnresolvedOnce(
-                            "loop-bound path-condition resume failed: "
-                                    + rootCause(failure));
-                    if (cut == null) {
-                        cut = active.loopBoundCut(safe(loopId),
-                                active.activation.loopBound
-                                        .maxBackedgeTraversals(),
-                                0L, "BOUND_HOOK_RESUME_FAILURE");
-                    }
-                }
-            }
-        }
-        throwCut(active, cut);
+        endAtCut(active, cut);
     }
 
     /**
@@ -347,9 +417,7 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            // This cap counts bodies per loop, so a body-entry edge that also
-            // names its guard still spends one ledger.
-            String loop = loopIdentity(loopId);
+            String loop = safe(loopId);
             if (loop.isEmpty() || instrumentedMaxTraversals
                     != active.activation.loopBound.maxBackedgeTraversals()) {
                 // The class was instrumented under a different policy, so its
@@ -376,86 +444,64 @@ public final class ConcolicRegionRuntime {
                 }
             }
         }
-        throwCut(active, cut);
+        endAtCut(active, cut);
     }
 
-    /** Rejects only a transition that would enter body {@code K+1}. */
-    public static void checkLoopBodyEntry(
-            String loopId, int instrumentedMaxTraversals) {
+    /**
+     * Records the exact array length supplying one fixed-count loop
+     * invocation. Repeated guard evaluations in the same invocation must
+     * observe the same value; a disagreement is retained as a coverage gap,
+     * never rewritten into a condition-loop prefix.
+     */
+    public static void recordLoopCardinality(
+            String loopId, int cardinality) {
         ActiveRegion active = activeRegion();
         if (active == null) return;
-
-        EngineApi api = engine();
-        boolean paused = false;
-        LoopBoundCut cut = null;
-        ReplayLoopResourceCut resourceCut = null;
+        beginBookkeeping();
         try {
-            api.pausePathCondition();
-            paused = true;
-            // The edge names the loop it belongs to and the guard that
-            // decides this body; the ledger is the loop's alone.
-            String loop = loopIdentity(loopId);
-            String guardSite = bodyEntryGuardSite(loopId);
-            String budgetLoop = active.loopBudgetKey(loop);
-            int runtimeMax = active.activation.loopBound
-                    .maxBackedgeTraversals();
-            diag("LOOP_BODY_ENTRY", loop + " guard=" + guardSite
-                    + " charged=" + active.loopBackedges.completed(
-                    budgetLoop));
-            // Every body spends the replay resource cap, whatever the unroll
-            // bound then decides about this one.
-            resourceCut = active.chargeLoopBody(loop);
-            if (loop.isEmpty()
-                    || instrumentedMaxTraversals != runtimeMax) {
-                cut = active.loopBoundCut(loop, runtimeMax, 0L,
-                        "INSTRUMENTATION_POLICY_MISMATCH");
-            } else if (active.enteredBodyOnConcreteGuard(loop, guardSite)) {
-                // The unroll bound exists to cap path explosion, which only a
-                // symbolically decided continuation can cause.  How often a
-                // fully concrete guard repeats is data this replay observes,
-                // not a branch it chooses, so it must not spend the budget
-                // the symbolic loops in the same activation need.  The
-                // symbolic surface stays capped by the container snapshot
-                // capacity, and the latch already charged this traversal.
-                active.loopBackedges.releaseTraversal(budgetLoop);
-            } else if (!active.loopBackedges.canEnterBody(budgetLoop)) {
-                cut = active.loopBoundCut(loop, runtimeMax,
-                        (long) active.loopBackedges.completed(budgetLoop)
-                                + 1L,
-                        "MAX_LOOP_BODY_ITERATIONS_REACHED");
-            }
-        } catch (Throwable failure) {
-            cut = active.loopBoundCut(safe(loopId),
-                    active.activation.loopBound.maxBackedgeTraversals(),
-                    0L, "BOUND_HOOK_FAILURE:" + rootCause(failure));
+            active.recordLoopCardinality(safe(loopId), cardinality);
         } finally {
-            if (paused) {
-                try {
-                    api.resumePathCondition();
-                } catch (Throwable failure) {
-                    active.addUnresolvedOnce(
-                            "loop-bound path-condition resume failed: "
-                                    + rootCause(failure));
-                    if (cut == null) {
-                        cut = active.loopBoundCut(safe(loopId),
-                                active.activation.loopBound
-                                        .maxBackedgeTraversals(),
-                                0L, "BOUND_HOOK_RESUME_FAILURE");
-                    }
-                }
-            }
+            endBookkeeping();
         }
-        // The resource cap outranks the unroll bound: a replay that cannot be
-        // carried far enough has no bounded path left to report.
-        throwCut(active, resourceCut);
-        throwCut(active, cut);
     }
 
-    /** Publishing any cut ends the region as CUT before it is rethrown. */
-    private static void throwCut(ActiveRegion active, Error cut) {
+    /** Ends the current dynamic occurrence of one fixed-count loop. */
+    public static void completeLoopCardinality(String loopId) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return;
+        beginBookkeeping();
+        try {
+            active.completeLoopCardinality(safe(loopId));
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
+     * Confirms that a loop hook was emitted from this task plan.
+     *
+     * <p>The immutable class tree already carries the selected K_L.  When
+     * the hook names a declared guard, the task must state exactly that same
+     * value; otherwise a stale tree is refused.  A latch with no declaration
+     * may carry the bound resolved from another guard of the same natural
+     * loop, so it is only checked against the plan's admitted range.</p>
+     */
+    private static boolean loopBoundMatchesPlan(
+            ActiveRegion active, String encodedLoopId, int bound) {
+        return active.activation.loopBound.acceptsInstrumentedBound(
+                encodedLoopId, bound);
+    }
+
+    /**
+     * Publishes the bounded prefix and detaches symbolic observation.
+     *
+     * <p>No tool exception enters the application. The remaining iterations
+     * execute normally with no active symbolic region; the emitted relation
+     * still ends at {@code CUT}.</p>
+     */
+    private static void endAtCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
-        finish(active.token, "CUT", "", null);
-        throw cut;
+        finishRootInvocation(active.token, "CUT", "", null);
     }
 
     /**
@@ -537,119 +583,368 @@ public final class ConcolicRegionRuntime {
     }
 
     static void resetForTests() {
-        synchronized (CONFIG_LOCK) {
-            configuration = null;
-            engineApi = null;
-        }
-        ACTIVE.clear();
-        CURRENT_TOKEN.remove();
-        ROOT_INVOCATION_FRAMES.remove();
-        CURRENT_ACCESSOR_CALL_CONTEXT.remove();
-        synchronized (ENGINE_LOCK) {
-            resultPublicationsInFlight = 0;
-            ENGINE_LOCK.notifyAll();
-        }
-        releaseSymbolicEngine();
-    }
-
-    /**
-     * Waits until every selected activation already publishing a result has
-     * either durably closed its JSONL record or reported a write failure.
-     * Process launchers call this before forcibly terminating leaked system
-     * threads; otherwise a concurrent {@link #finish} can be killed between
-     * writing a large JSON object and its closing brace/newline.
-     */
-    public static void awaitSelectedResultPublications() {
+        // A publication owns the configuration and test hooks that were live
+        // when it was queued.  Never clear or replace those objects while a
+        // daemon publisher can still observe them.  Live activations are not
+        // waited here: reset is also the recovery path for a test whose setup
+        // failed after entering a region but before reaching its terminal.
         boolean interrupted = false;
-        synchronized (ENGINE_LOCK) {
-            // ENGINE_BUSY covers the narrow interval after a selected
-            // activation is ACTIVE but before finish registers publication.
-            // Once finish releases the engine, the publication counter keeps
-            // the barrier closed through the durable append.
-            while (ENGINE_BUSY.get() || resultPublicationsInFlight > 0) {
+        synchronized (PUBLICATION_LOCK) {
+            while (resultPublicationsInFlight > 0) {
                 try {
-                    ENGINE_LOCK.wait();
+                    PUBLICATION_LOCK.wait();
                 } catch (InterruptedException ignored) {
                     interrupted = true;
                 }
             }
         }
+        synchronized (CONFIG_LOCK) {
+            configuration = null;
+            engineApi = null;
+            workloadSessionId = 0L;
+        }
+        ACTIVE.clear();
+        CURRENT_TOKEN.remove();
+        ROOT_INVOCATION_FRAMES.remove();
+        CURRENT_ACCESSOR_CALL_CONTEXT.remove();
+        OUTBOUND_LEAVES.remove();
+        INBOUND_LEAVES.remove();
+        INBOUND_RESPONSE_PRODUCER_ARM.remove();
+        beforePublicationDecodeForTests = null;
+        synchronized (EXCHANGE_LOCK) {
+            IN_FLIGHT_LEAVES.clear();
+            IN_FLIGHT_RESPONSE_PRODUCER_ARMS.clear();
+        }
+        synchronized (PUBLICATION_LOCK) {
+            if (resultPublicationsInFlight != 0) {
+                throw new IllegalStateException(
+                        "selected result publication survived test reset");
+            }
+            liveSelectedRegions = 0;
+            PUBLICATION_LOCK.notifyAll();
+        }
         if (interrupted) Thread.currentThread().interrupt();
     }
 
+    /**
+     * Waits until every selected activation that is live or already
+     * publishing a result has either durably closed its JSONL record or
+     * reported a write failure.  Process launchers call this before forcibly
+     * terminating leaked system threads; otherwise a concurrent
+     * {@link #finish} can be killed between writing a large JSON object and
+     * its closing brace/newline.
+     */
+    public static void awaitSelectedResultPublications() {
+        boolean interrupted = false;
+        List<ActiveRegion> stranded = new ArrayList<>();
+        synchronized (PUBLICATION_LOCK) {
+            // The live-region count covers the interval after a selected
+            // activation is ACTIVE but before finish registers publication.
+            // Once finish has registered it, the publication counter keeps
+            // the barrier closed through the durable append.
+            long progress = liveRegionProgress();
+            long deadline = System.nanoTime()
+                    + TERMINAL_GRACE_MILLIS * 1_000_000L;
+            while (liveSelectedRegions > 0
+                    || resultPublicationsInFlight > 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0L) {
+                    // Nothing published and no body ran for the whole grace.
+                    // A durable append in flight is always waited out: it is
+                    // finite and its region has already reached its terminal.
+                    if (resultPublicationsInFlight == 0) {
+                        stranded.addAll(ACTIVE.values());
+                    }
+                    // An activation counted live but not yet ACTIVE is a few
+                    // instructions from being one; there is nothing to name
+                    // and the barrier keeps covering that window.
+                    if (!stranded.isEmpty()) break;
+                    remaining = TERMINAL_GRACE_MILLIS * 1_000_000L;
+                    deadline = System.nanoTime() + remaining;
+                }
+                int live = liveSelectedRegions;
+                int publishing = resultPublicationsInFlight;
+                try {
+                    PUBLICATION_LOCK.wait(remaining / 1_000_000L,
+                            (int) (remaining % 1_000_000L));
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+                long observed = liveRegionProgress();
+                if (observed != progress || live != liveSelectedRegions
+                        || publishing != resultPublicationsInFlight) {
+                    progress = observed;
+                    deadline = System.nanoTime()
+                            + TERMINAL_GRACE_MILLIS * 1_000_000L;
+                }
+            }
+        }
+        // Outside the barrier lock: each of these appends a durable row.
+        for (ActiveRegion active : stranded) {
+            strandWithoutTerminal(active);
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    /** Instrumented loop bodies every live activation has charged so far. */
+    private static long liveRegionProgress() {
+        long charged = 0L;
+        for (ActiveRegion active : ACTIVE.values()) {
+            charged += active.chargedLoopBodies;
+        }
+        return charged;
+    }
+
+    /**
+     * Names one activation whose root never reached a terminal.
+     *
+     * <p>The VM is deliberately untouched.  The root's thread is still
+     * running and still owns that symbolic context; detaching it from here
+     * would take the path condition away from a thread that is using it, and
+     * a summary read out from another thread would not be this occurrence's.
+     * What this publishes is the exact statement that matters: the task ran,
+     * it never terminated, and it has no relation to import.</p>
+     */
+    private static void strandWithoutTerminal(ActiveRegion active) {
+        if (!active.finished.compareAndSet(false, true)) return;
+        active.abandoned = true;
+        ACTIVE.remove(active.token, active);
+        endLiveSelectedRegion();
+        JsonObject evidence = new JsonObject();
+        evidence.addProperty("runtimeThread", active.thread.getName());
+        evidence.addProperty("runtimeThreadState",
+                active.thread.getState().name());
+        evidence.addProperty("chargedLoopBodies", active.chargedLoopBodies);
+        // A count, not the rows: the root's thread still owns that list, and
+        // half a relation with no terminal is not evidence of one anyway.
+        evidence.addProperty("outputCaptureCount",
+                active.outputCaptures.size());
+        writeSkipped(active.activation, SKIP_TERMINAL_NEVER_REACHED,
+                "the region root was still running "
+                        + TERMINAL_GRACE_MILLIS
+                        + "ms after the workload ended and charged no loop "
+                        + "body in that time, so this occurrence reached no "
+                        + "NORMAL, THROW or bounded CUT terminal",
+                evidence);
+    }
+
+    /**
+     * Marks one selected activation live.  It is called before the region can
+     * become ACTIVE, so no window exists in which a started activation is
+     * invisible to the process-exit barrier.
+     */
+    static void beginLiveSelectedRegion() {
+        synchronized (PUBLICATION_LOCK) {
+            liveSelectedRegions++;
+            PUBLICATION_LOCK.notifyAll();
+        }
+    }
+
+    /**
+     * Marks one selected activation no longer live.  Every path that ends an
+     * activation -- refusal, start failure, abandonment, or a finished
+     * result -- calls this exactly once, and the result paths call it only
+     * after {@link #beginSelectedResultPublication} has taken over.
+     */
+    static void endLiveSelectedRegion() {
+        synchronized (PUBLICATION_LOCK) {
+            if (liveSelectedRegions <= 0) {
+                throw new IllegalStateException(
+                        "live selected region underflow");
+            }
+            liveSelectedRegions--;
+            PUBLICATION_LOCK.notifyAll();
+        }
+    }
+
     static void beginSelectedResultPublication() {
-        synchronized (ENGINE_LOCK) {
+        synchronized (PUBLICATION_LOCK) {
             resultPublicationsInFlight++;
-            ENGINE_LOCK.notifyAll();
+            PUBLICATION_LOCK.notifyAll();
         }
     }
 
     static void endSelectedResultPublication() {
-        synchronized (ENGINE_LOCK) {
+        synchronized (PUBLICATION_LOCK) {
             if (resultPublicationsInFlight <= 0) {
                 throw new IllegalStateException(
                         "selected result publication underflow");
             }
             resultPublicationsInFlight--;
-            ENGINE_LOCK.notifyAll();
+            PUBLICATION_LOCK.notifyAll();
         }
     }
 
-    /** Test seam for the bounded symbolic-engine reservation. */
-    static String reserveSymbolicEngineForTests() {
-        return reserveSymbolicEngine(ENTRY_STATE_RANK_UNDECIDED);
+    /**
+     * Opens the workload-wide symbolic session that outlives every individual
+     * region in this JVM.
+     *
+     * <p>The workload owns this lifetime, not a region: with the session open
+     * a region exit no longer tears down the expression arena, broker,
+     * symbolic heap, field versions, or event ledger, so an expression a
+     * producer exported survives that producer's thread and region until the
+     * workload ends.  Opening does not attach the caller; a thread gains
+     * symbolic state only by entering a region.</p>
+     *
+     * <p>It is a no-op when no concolic campaign is configured, and a no-op on
+     * a JDK without the natives -- an ordinary JDK must keep running the same
+     * workloads, and an activation there already names the missing API.</p>
+     *
+     * @return an empty string on success, otherwise a named diagnostic
+     */
+    public static String openWorkloadSession() {
+        if (configuration().tasks.isEmpty()) return "";
+        EngineApi api = engine();
+        if (!api.workloadSessionAvailable()) return "";
+        final long status;
+        try {
+            status = api.openWorkloadSession();
+        } catch (Throwable failure) {
+            return "WORKLOAD_SESSION_OPEN_FAILED: " + rootCause(failure);
+        }
+        if (status <= 0L) {
+            return "WORKLOAD_SESSION_OPEN_REFUSED: "
+                    + workloadSessionStatusName(status) + " "
+                    + api.workloadSessionStatus();
+        }
+        workloadSessionId = status;
+        return "";
     }
 
-    /** Test seam for the ranked reservation. */
-    static String reserveSymbolicEngineForTests(int entryStateRank) {
-        return reserveSymbolicEngine(entryStateRank);
+    /**
+     * Closes the session opened by {@link #openWorkloadSession}.
+     *
+     * <p>A close is refused while threads remain attached, and the session
+     * stays usable when that happens.  That outcome is reported by name: a
+     * workload that leaked a live region has lost the guarantee that the
+     * session tore down exactly once, and silence would hide it.</p>
+     *
+     * @return an empty string on success or when nothing was opened,
+     *         otherwise a named diagnostic
+     */
+    public static String closeWorkloadSession() {
+        // Closing the workload is the general durability boundary, regardless
+        // of which launcher owns it.  Publication threads use no VM context,
+        // but they are daemon threads and may otherwise be stopped after this
+        // method returns with a result still only in memory.
+        awaitSelectedResultPublications();
+        long sessionId = workloadSessionId;
+        if (sessionId == 0L) return "";
+        EngineApi api = engine();
+        final long status;
+        try {
+            status = api.closeWorkloadSession();
+        } catch (Throwable failure) {
+            return "WORKLOAD_SESSION_CLOSE_FAILED: " + rootCause(failure);
+        }
+        if (status != 0L) {
+            return "WORKLOAD_SESSION_CLOSE_REFUSED: "
+                    + workloadSessionStatusName(status)
+                    + " sessionId=" + sessionId + " "
+                    + api.workloadSessionStatus();
+        }
+        workloadSessionId = 0L;
+        return "";
     }
 
-    /** Test seam releasing the reservation taken above. */
-    static void releaseSymbolicEngineForTests() {
-        releaseSymbolicEngine();
+    /** One JSON snapshot of the VM session, or {@code ""} when absent. */
+    public static String workloadSessionStatus() {
+        return engine().workloadSessionStatus();
+    }
+
+    private static String workloadSessionStatusName(long status) {
+        if (status == 0L) return "OK";
+        if (status == -1L) return "ALREADY_OPEN";
+        if (status == -2L) return "NOT_OPEN";
+        if (status == -3L) return "MEMBERS_REMAIN";
+        if (status == -4L) return "CLOSING";
+        return "UNNAMED_STATUS(" + status + ")";
     }
 
     /**
      * Called at a statically selected same-thread region root with its actual
      * reference arguments.  Primitive parameter slots are null.
      */
-    public static long enterRegion(String rootMethod, Object receiver,
-                                   Object[] rootArguments) {
-        Configuration config = configuration();
-        if (config.task == null || rootMethod == null) {
-            return 0L;
-        }
-        RuntimeTask activation = config.select(rootMethod, receiver,
-                rootArguments);
-        if (activation == null) {
-            return 0L;
-        }
-        return startSymbolicRegion(activation, receiver,
-                activation.observedEntryStateRank(receiver));
+    public static long enterRegion(String instrumentationSelector,
+                                   String rootMethod,
+                                   Object receiver, Object[] rootArguments) {
+        ActiveRegion active = admitRegion(instrumentationSelector, rootMethod,
+                receiver, rootArguments);
+        return active == null ? 0L : active.token;
     }
 
-    private static long startSymbolicRegion(RuntimeTask activation,
-                                            Object receiver,
-                                            int entryStateRank) {
-        String contention = reserveSymbolicEngine(entryStateRank);
-        if (!contention.isEmpty()) {
-            writeSkipped(activation, SKIP_ENGINE_UNAVAILABLE, contention);
-            return 0L;
+    /**
+     * Admits the one planned occurrence this root invocation will execute.
+     *
+     * @return the started occurrence, or {@code null} when nothing was
+     *         admitted or it could not be started
+     */
+    private static ActiveRegion admitRegion(
+            String instrumentationSelector, String rootMethod, Object receiver,
+            Object[] rootArguments) {
+        Configuration config = configuration();
+        if (config.tasks.isEmpty() || rootMethod == null) {
+            return null;
         }
+        RuntimeTask admitted = selectTask(config, instrumentationSelector,
+                rootMethod, receiver, rootArguments);
+        return admitted == null ? null
+                : startSymbolicRegion(admitted, receiver);
+    }
 
+    /**
+     * Decides which planned occurrence this root invocation admits, muted.
+     *
+     * <p>The decision itself is this bridge's own control flow over the
+     * workload's own objects: {@code RootContextSelector.matches} compares the
+     * root receiver against {@code null} and against a declared class, and a
+     * campaign instruments one entry hook per plan row, so every later hook on
+     * a thread that already holds a selected symbolic object evaluates that
+     * comparison again.  Unmuted, each evaluation appended a condition of
+     * GraphChecker's own to the workload's path condition, and the occurrence
+     * summary would state a branch the program never took.  The first
+     * two conditions of the first full RPC-slice campaign were exactly this.
+     *
+     * <p>The mute cannot extend into {@link #startSymbolicRegion}: Zero
+     * decides whether a newly entered Java frame may propagate symbolic state
+     * when that frame is pushed, so the region start owns its own pause
+     * discipline and must not inherit one.</p>
+     */
+    private static RuntimeTask selectTask(Configuration config,
+                                          String instrumentationSelector,
+                                          String rootMethod,
+                                          Object receiver,
+                                          Object[] rootArguments) {
+        beginBookkeeping();
+        try {
+            return config.select(instrumentationSelector, rootMethod, receiver,
+                    rootArguments);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
+     * Starts one planned region occurrence.  A task owns one VM region, one
+     * path condition and one result row; symbolic values cross RPC boundaries
+     * through the VM handoff broker rather than by sharing a Java activation.
+     */
+    private static ActiveRegion startSymbolicRegion(
+            RuntimeTask admitted, Object receiver) {
+        beginLiveSelectedRegion();
         EngineApi api = engine();
         if (!api.available()) {
-            releaseSymbolicEngine();
-            writeSkipped(activation, SKIP_NOT_STARTED,
+            writeSkipped(admitted, SKIP_NOT_STARTED,
                     "custom concolic System API is unavailable");
-            return 0L;
+            configuration().releaseCandidate(admitted);
+            endLiveSelectedRegion();
+            return null;
         }
         boolean engineStarted = false;
         boolean pathConditionPaused = false;
-        long token = 0L;
+        ActiveRegion active = null;
         try {
-            api.start(activation.regionId, activation.taskId);
+            api.start(admitted.regionId, admitted.taskId);
             engineStarted = true;
             // Region setup performs reflection, collection lookups and
             // JSON-safe bookkeeping. Explicit native symbolize calls
@@ -661,26 +956,42 @@ public final class ConcolicRegionRuntime {
             // selected input is reached.
             api.pausePathCondition();
             pathConditionPaused = true;
-            token = TOKEN_COUNTER.incrementAndGet();
-            ActiveRegion active = new ActiveRegion(token, activation, receiver,
-                    Thread.currentThread());
-            ACTIVE.put(token, active);
-            CURRENT_TOKEN.set(token);
-            active.entrySetup = true;
-            symbolizeReceiverFields(active, api);
-            active.entrySetup = false;
-            diag("REGION_START", "token=" + token
-                    + " region=" + safe(activation.regionId));
+            active = new ActiveRegion(TOKEN_COUNTER.incrementAndGet(),
+                    admitted, receiver, Thread.currentThread());
+            ACTIVE.put(active.token, active);
+            CURRENT_TOKEN.set(active.token);
+            // A delivery can establish the causal request immediately before
+            // the selected handler entry.  Snapshot that already-current
+            // context now; later SEND/RECEIVE events continue to add context
+            // through observeCausalSource.
+            RuntimeTraceContext.View context = RuntimeTraceContext.current();
+            SourceRef receiverSource = RuntimeTraceContext.sourceFor(receiver);
+            if (receiverSource != null) {
+                observeCausalSource(receiverSource.key());
+            } else if (context.source != null
+                    && RuntimeTraceContext.sameSourceIdentity(
+                    admitted.sourceKey, context.source.key())) {
+                observeCausalSource(context.source.key());
+            } else {
+                // The exact task selector is the only source authority when a
+                // long-lived receiver has no alias of its own.  An inherited
+                // submitter context (the in-process test driver is the common
+                // case) is not evidence that this receiver belongs to that
+                // submitter and must not poison terminal attribution.
+                observeCausalSource(admitted.sourceKey);
+            }
+            prepare(active);
+            diag("REGION_START", "token=" + active.token
+                    + " task=" + safe(admitted.taskId)
+                    + " source=" + safe(admitted.sourceKey)
+                    + " region=" + safe(admitted.regionId));
             api.resumePathCondition();
             pathConditionPaused = false;
-            return token;
+            return active;
         } catch (Throwable throwable) {
-            if (token != 0L) {
-                ACTIVE.remove(token);
-                Long current = CURRENT_TOKEN.get();
-                if (current != null && current == token) {
-                    CURRENT_TOKEN.remove();
-                }
+            if (active != null) {
+                ACTIVE.remove(active.token);
+                CURRENT_TOKEN.remove();
             }
             if (engineStarted) {
                 if (pathConditionPaused) {
@@ -694,116 +1005,67 @@ public final class ConcolicRegionRuntime {
                 }
                 api.cleanupAfterFailure();
             }
-            releaseSymbolicEngine();
-            writeSkipped(activation, SKIP_NOT_STARTED,
+            writeSkipped(admitted, SKIP_NOT_STARTED,
                     "engine start failed: " + rootCause(throwable));
-            return 0L;
+            configuration().releaseCandidate(admitted);
+            endLiveSelectedRegion();
+            return null;
+        }
+    }
+
+    /** Performs the declared entry setup for one selected occurrence. */
+    private static void prepare(ActiveRegion active) {
+        if (active.prepared) return;
+        active.prepared = true;
+        active.entrySetup = true;
+        try {
+            symbolizeReceiverFields(active, engine());
+        } finally {
+            active.entrySetup = false;
+        }
+        selectDeclaredSharedCarriers(active);
+        for (JsonObject gate : active.activation.readCutGates) {
+            installReadCutGate(gate);
         }
     }
 
     /**
      * Instrumentation-facing root entry.  A zero-token placeholder is pushed
-     * before {@link #enterRegion(String, Object, Object[])} starts the engine,
+     * before {@link #enterRegion(String, String, Object, Object[])} starts the
+     * engine,
      * then filled without another allocation.  If entry fails, that exact
      * placeholder remains for the injected exceptional or original-handler
      * cleanup path; this prevents a caught same-root entry failure from
      * exposing an enclosing frame.  Token zero is likewise retained after a
      * successful unselected entry as its exact ownership marker.
      */
-    public static long enterRegionFrame(String rootMethod, Object receiver,
+    public static long enterRegionFrame(String instrumentationSelector,
+                                        String rootMethod,
+                                        Object receiver,
                                         Object[] rootArguments) {
         Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
-        RootInvocationFrame frame = new RootInvocationFrame(rootMethod, 0L);
+        // Several hooks for one selected root may appear in nested replay
+        // helpers. Count the outer root once and leave an exact token-zero
+        // frame for the nested hook's own exit cleanup.
+        for (RootInvocationFrame existing : frames) {
+            if (sameSelector(existing.instrumentationSelector,
+                    instrumentationSelector)) {
+                frames.push(new RootInvocationFrame(instrumentationSelector,
+                        rootMethod, 0L));
+                return 0L;
+            }
+        }
+        RootInvocationFrame frame = new RootInvocationFrame(
+                instrumentationSelector, rootMethod, 0L);
         frames.push(frame);
-        long token = enterRegion(rootMethod, receiver, rootArguments);
+        long token = enterRegion(instrumentationSelector, rootMethod, receiver,
+                rootArguments);
         frame.token = token;
         return token;
     }
 
-    /**
-     * Reserves the single symbolic engine for this activation, waiting for a
-     * bounded budget when a concurrent activation already holds it.
-     *
-     * <p>A workload reaches one region root from several threads, and which
-     * of those activations first grabs the engine is decided by scheduling.
-     * Discarding a losing activation outright throws away the only evidence
-     * the task may ever get, because the winner can still turn out to
-     * contradict the recording and emit nothing.  Waiting lets the losers
-     * compete in turn.</p>
-     *
-     * <p>The wait is bounded on purpose: an activation that holds the engine
-     * may itself be blocked on progress only the waiting thread can make, and
-     * an unbounded wait would deadlock the workload.  The timeout is
-     * therefore a named skip reason rather than a silent retry.</p>
-     *
-     * <p>{@code entryStateRank} orders candidates that are waiting at the
-     * same time: an activation whose recorded entry values agree goes before
-     * one whose evidence decides nothing, which goes before one that
-     * disagrees.  Rank never rejects a candidate, so the last candidate left
-     * is always admitted; only the recorded branch prefix refuses one.</p>
-     *
-     * @return an empty string once reserved, otherwise the skip reason.
-     */
-    private static String reserveSymbolicEngine(int entryStateRank) {
-        int rank = Math.max(0, Math.min(ENTRY_STATE_RANKS - 1,
-                entryStateRank));
-        long deadline = System.currentTimeMillis() + engineWaitMillis();
-        synchronized (ENGINE_LOCK) {
-            ENGINE_WAITING[rank]++;
-            try {
-                while (true) {
-                    if (!ENGINE_BUSY.get() && !betterCandidateWaiting(rank)) {
-                        ENGINE_BUSY.set(true);
-                        return "";
-                    }
-                    long remaining = deadline - System.currentTimeMillis();
-                    if (remaining <= 0L) return ENGINE_BUSY_TIMEOUT;
-                    try {
-                        ENGINE_LOCK.wait(remaining);
-                    } catch (InterruptedException interrupted) {
-                        // Thread roots are commonly interrupted during
-                        // shutdown.  Preserve that signal for the workload
-                        // instead of silently consuming it inside
-                        // instrumentation.
-                        Thread.currentThread().interrupt();
-                        return ENGINE_BUSY_INTERRUPTED;
-                    }
-                }
-            } finally {
-                ENGINE_WAITING[rank]--;
-                // A candidate that stops waiting -- because it won, gave up or
-                // was interrupted -- may be the only reason a worse-ranked one
-                // is still deferring.
-                ENGINE_LOCK.notifyAll();
-            }
-        }
-    }
-
-    /** Guarded by {@link #ENGINE_LOCK}. */
-    private static boolean betterCandidateWaiting(int rank) {
-        for (int better = 0; better < rank; better++) {
-            if (ENGINE_WAITING[better] > 0) return true;
-        }
-        return false;
-    }
-
-    private static void releaseSymbolicEngine() {
-        synchronized (ENGINE_LOCK) {
-            ENGINE_BUSY.set(false);
-            ENGINE_LOCK.notifyAll();
-        }
-    }
-
-    /** Wait budget for the single symbolic engine, in milliseconds. */
-    static long engineWaitMillis() {
-        String configured = safe(System.getProperty(
-                ENGINE_WAIT_PROPERTY)).trim();
-        if (configured.isEmpty()) return DEFAULT_ENGINE_WAIT_MILLIS;
-        try {
-            return Math.max(0L, Long.parseLong(configured));
-        } catch (NumberFormatException malformed) {
-            return DEFAULT_ENGINE_WAIT_MILLIS;
-        }
+    private static boolean sameSelector(String left, String right) {
+        return left == null ? right == null : left.equals(right);
     }
 
     /** Called once per Java argument immediately after {@link #enterRegion}. */
@@ -1111,6 +1373,8 @@ public final class ConcolicRegionRuntime {
         if (active == null || owner == null) return;
         int occurrence = active.nextFieldMaterializationOccurrence(
                 method, unitIndex);
+        selectAccessOwnerSharedCarriers(active, owner, fieldSignature, true,
+                method, unitIndex, occurrence);
         // An accessor can be an exact causal slot without being a new
         // symbolic live-in.  In particular, a field written earlier in this
         // same region already carries its symbolic expression and must not be
@@ -1119,7 +1383,9 @@ public final class ConcolicRegionRuntime {
         for (SymbolizeAction action : active.activation.declaredSymbolize) {
             if (action.matchesField(method, unitIndex, owner,
                     fieldSignature, fieldName)
-                    && action.acceptsDirectFieldOccurrence(occurrence)) {
+                    && action.acceptsDirectFieldOccurrence(occurrence)
+                    && !active.plannedProducerPrerequisitePending(
+                    action.symbol)) {
                 active.observedInputSlots.add(action.symbol);
             }
         }
@@ -1231,6 +1497,19 @@ public final class ConcolicRegionRuntime {
                     continue;
                 }
                 Object value = exactField.get(leafOwner);
+                if (action.observedFieldReceiverRoot()
+                        && "BOUNDED_CONTAINER_STATE".equals(
+                        action.symbolicDemand)
+                        && value instanceof Map<?, ?>) {
+                    // The runtime trace selected this exact access site and
+                    // supplied the actual declaring-field receiver.  Select
+                    // the map itself now, before the following get/put/remove
+                    // executes.  No object search or value matching occurs.
+                    selectSharedMapCarrier(value,
+                            exactField.getDeclaringClass().getName(),
+                            exactField.getName(), javaTypeDescriptor(
+                            exactField.getType().getTypeName()));
+                }
                 if (materializedContainer != null) {
                     if (value != materializedContainer) {
                         active.addUnresolvedOnce(action.symbol
@@ -1241,13 +1520,13 @@ public final class ConcolicRegionRuntime {
                     requireTrackedContainer(api, materializedContainer,
                             action.symbol);
                     ensurePathRecordingStarted(active);
-                    active.recordSymbolizedObject(action.symbol,
+                    active.recordSymbolizedInputPort(action.symbol,
                             materializedContainer);
                 } else if (value != null && value != MissingValue.INSTANCE
                         && containerValue(value)) {
                     requireTrackedContainer(api, value, action.symbol);
                     ensurePathRecordingStarted(active);
-                    active.recordSymbolizedObject(action.symbol, value);
+                    active.recordSymbolizedInputPort(action.symbol, value);
                 } else {
                     api.symbolizeExactField(leafOwner,
                             exactFieldSignature(exactField),
@@ -1287,12 +1566,39 @@ public final class ConcolicRegionRuntime {
      * execution, rather than to the concrete key observed in an earlier run.
      * The container identity and access ordinal form the replay selector; the
      * key and map cardinality remain concrete workload state.
+     *
+     * <p>This hook mutes itself, in the shape {@link #checkLoopBackedge} uses:
+     * the thread-local region check happens first and returns before any
+     * engine call, and only an admitted call pays the pause/resume pair.  The
+     * pipeline currently brackets the call site with
+     * {@code pauseObservation()} / {@code resumeObservation()}, so an
+     * inactive hook paid two reflective invokes into a native gate before
+     * reaching the {@code activeRegion() == null} return above - and HDFS
+     * startup is {@code HashMap}-intensive, so it paid them in hot startup
+     * code.  With the mute owned here, that bracket is redundant and can be
+     * dropped from the emitter (CausynthPipeline.java:2346-2373).  It must not
+     * be dropped before this half lands: without a mute, the map lookups,
+     * string building and container write below would record this layer's own
+     * control flow into the workload's path condition.</p>
      */
     public static void materializeAssociativeRead(Object container,
                                                   Object key) {
+        // Before the mute, deliberately.  A thread with no admitted region has
+        // no model to apply, and the pause it would take is a reflective call
+        // into the VM that the answer never needed.
         ActiveRegion active = activeRegion();
         if (active == null || !(container instanceof Map<?, ?>)) return;
-        String inputSymbol = active.symbolizedObjectPort(container);
+        beginBookkeeping();
+        try {
+            materializeAssociativeReadObserved(active, container, key);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static void materializeAssociativeReadObserved(
+            ActiveRegion active, Object container, Object key) {
+        String inputSymbol = active.symbolizedInputPort(container);
         if (inputSymbol.isEmpty()) return;
         int occurrence = active.nextAssociativeAccessOccurrence(inputSymbol);
         ModelAssignment selected = null;
@@ -1324,12 +1630,138 @@ public final class ConcolicRegionRuntime {
         active.recordModelAssignment(selected);
     }
 
+    /**
+     * Selects a declared access-owner carrier on the object a selected field
+     * store is about to write, before the store executes.
+     *
+     * <p>A location publishes versions only from the moment it is selected,
+     * and the VM refuses a selection once the slot exists.  Binding this shape
+     * at reads alone therefore made every writer publish nothing: the reader's
+     * selection created the store, its {@code INITIAL} version held the
+     * already-written concrete value, and the producer's symbolic expression
+     * had no version to live in.  Selecting here is the same exact-access
+     * binding as at a read - the declaring object is the one this store
+     * touches, never a searched-for same-named receiver - taken one bytecode
+     * earlier, so the store's own {@code putfield} publishes the writer's
+     * expression as a {@code WRITE} version over a pre-write initial.</p>
+     */
+    public static void selectFieldWriteCarrier(Object owner,
+                                               String fieldSignature) {
+        ActiveRegion active = activeRegion();
+        if (active == null || owner == null) return;
+        selectAccessOwnerSharedCarriers(active, owner, fieldSignature, false,
+                "", -1, -1);
+    }
+
+    /**
+     * Records a stable logical source a live occurrence just entered.
+     *
+     * <p>Called by {@link RuntimeTraceContext} whenever a thread establishes
+     * its logical source, which an application does inside its own entry
+     * method rather than before it.  This is one of the two ways an
+     * occurrence is attributed; the other is the source registered for its
+     * own receiver, which is what a long-lived service that never opens a
+     * request scope on these threads relies on.  Only GraphChecker's own
+     * strings are compared, so this needs no observation mute of its own.</p>
+     */
+    static void observeCausalSource(String sourceKey) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return;
+        if (sourceKey != null && !sourceKey.isEmpty()) {
+            active.observedSourceKeys.add(sourceKey);
+        }
+    }
+
     public static void recordFieldWrite(Object owner,
                                         String fieldSignature) {
         ActiveRegion active = activeRegion();
         if (active != null) {
             active.writtenFields.add(owner, fieldSignature);
         }
+    }
+
+    /**
+     * Mints one exact source root selected by the current execution task.
+     *
+     * <p>The application calls this at the definition boundary, before the
+     * value is inserted into any selected state.  An undeclared source is a
+     * no-op.  A declared source is materialized once, on the exact field, and
+     * its VM expression is recorded as the cross-case identity authority.</p>
+     */
+    public static boolean symbolizeConfiguredSourceField(
+            String sourceId, Object owner, String fieldSignature) {
+        ActiveRegion active = activeRegion();
+        if (active == null || owner == null) return false;
+        RuntimeTask.SourceField source = active.activation.sourceFields.get(
+                safe(sourceId));
+        if (source == null) return false;
+        if (!source.fieldSignature.equals(safe(fieldSignature))) {
+            active.addUnresolvedOnce(source.sourceId
+                    + ": configured source field differs from runtime hook");
+            return false;
+        }
+        int claim = active.claimSymbolicSource(source.sourceId, owner);
+        if (claim < 0) return false;
+        // The caller performs a concrete-equivalent Map re-key only for the
+        // first successful materialization.  Re-entering the hook for the
+        // same owner must not append another mutation sequence.
+        if (claim == 0) return false;
+        beginBookkeeping();
+        try {
+            Field field = declaredInstanceField(owner,
+                    source.fieldSignature);
+            if (field == null || !field.getType().isPrimitive()) {
+                throw new IllegalStateException(
+                        "configured source is not an exact primitive field");
+            }
+            String symbol = configuredSourceSymbol(
+                    active.activation.occurrenceId, source.sourceId);
+            EngineApi api = engine();
+            api.symbolizeExactField(owner,
+                    exactFieldSignature(field), symbol);
+            ensurePathRecordingStarted(active);
+            Object value = field.get(owner);
+            JsonElement expression = engineExpression(api.fieldExpression(
+                    owner, field.getDeclaringClass().getName(),
+                    field.getName(), javaTypeDescriptor(
+                            field.getType().getTypeName()),
+                    value));
+            JsonObject evidence = SymbolicSourceEvidence.event(
+                    source.sourceId, active.activation.occurrenceId,
+                    source.fieldSignature, expression);
+            active.recordSymbolicSource(source.sourceId, evidence);
+            active.symbolized.add("SOURCE:" + source.sourceId);
+            return true;
+        } catch (Throwable failure) {
+            active.releaseSymbolicSourceClaim(source.sourceId, owner);
+            active.addUnresolvedOnce(source.sourceId
+                    + ": exact symbolic source materialization failed: "
+                    + rootCause(failure));
+            return false;
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /** Stable VM name shared by every materialization of one exact source. */
+    private static String configuredSourceSymbol(
+            String sourceOccurrenceId, String sourceId) {
+        return "SRC."
+                + edu.uva.liftlab.graphchecker.concolic.CanonicalJson
+                .sha256(safe(sourceOccurrenceId) + "\n" + safe(sourceId));
+    }
+
+    /** Names a source-side invariant failure without changing the workload. */
+    public static void rejectConfiguredSourceField(
+            String sourceId, String detail) {
+        ActiveRegion active = activeRegion();
+        if (active == null
+                || !active.activation.sourceFields.containsKey(
+                safe(sourceId))) {
+            return;
+        }
+        active.addUnresolvedOnce(safe(sourceId)
+                + ": CONFIGURED_SYMBOLIC_SOURCE_REJECTED: " + safe(detail));
     }
 
 
@@ -1386,7 +1818,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         int occurrence = active.nextOutputCaptureOccurrence(request);
-        if (!withinBoundedOutputWindow(occurrence)) return;
+        if (!active.boundedOutputVersionSlot(request, occurrence)) return;
 
         recordRegionExitFieldOutput(active, request, fieldOwner, fieldValue,
                 occurrence);
@@ -1402,7 +1834,7 @@ public final class ConcolicRegionRuntime {
         if (request == null || !request.capturesCallArgument()
                 || !active.captureEligible(request)) return;
         int occurrence = active.nextOutputCaptureOccurrence(request);
-        if (!withinBoundedOutputWindow(occurrence)) return;
+        if (!active.boundedOutputVersionSlot(request, occurrence)) return;
 
         JsonObject row = new JsonObject();
         row.addProperty("captureBindingId", request.captureBindingId());
@@ -1430,7 +1862,23 @@ public final class ConcolicRegionRuntime {
         } finally {
             active.outputCaptures.add(row);
         }
-        finishAtExactOutputBoundary(active);
+    }
+
+    /** Records that a declared communication response site was reached. */
+    public static void recordCommunicationEffect(String captureBindingId) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return;
+        OutputCaptureSpec request = active.activation.outputCapture(
+                captureBindingId);
+        if (request == null || !request.capturesCommunicationEffect()
+                || !active.captureEligible(request)) return;
+        int occurrence = active.nextOutputCaptureOccurrence(request);
+        if (!active.boundedOutputVersionSlot(request, occurrence)) return;
+
+        JsonObject row = outputCaptureRow(request, occurrence);
+        row.addProperty("interactionKind", "COMMUNICATION_EFFECT");
+        row.addProperty("authority", "INSTRUMENTED_INTERACTION_SITE_V1");
+        active.outputCaptures.add(row);
     }
 
     /**
@@ -1505,7 +1953,9 @@ public final class ConcolicRegionRuntime {
         if (index == null) return;
         diag("MUTATION_SITE", safe(captureBindingId)
                 + " occ=" + index.selection + " version=" + index.version);
-        if (!withinBoundedOutputWindow(index.selection)) return;
+        if (!active.boundedOutputVersionSlot(request, index.version)) {
+            return;
+        }
 
         active.deferMutationStateOutput(request, container, index);
     }
@@ -1545,6 +1995,22 @@ public final class ConcolicRegionRuntime {
                         "custom VM returned no mutation-state expression");
             }
             row.add("expression", expression);
+            if (configuration().selectedMapProducer(active.activation,
+                    request.outputPort())) {
+                if (!(pending.container instanceof Map)) {
+                    throw new IllegalStateException(
+                            "selected Map producer output is not a Map: "
+                                    + request.outputPort());
+                }
+                long versionId = api.currentSharedMapVersion(
+                        pending.container);
+                String failure = active.stageMapVersion(
+                        request.outputPort(), versionId);
+                if (!failure.isEmpty()) {
+                    active.addUnresolvedOnce(failure);
+                    throw new IllegalStateException(failure);
+                }
+            }
         } catch (Throwable throwable) {
             active.addGuardedOutputCaptureFailure(
                     request.captureBindingId(),
@@ -1553,8 +2019,36 @@ public final class ConcolicRegionRuntime {
                     + rootCause(throwable));
         } finally {
             active.outputCaptures.add(row);
+            finishAtCompletedStateInteraction(active, request);
         }
-        finishAtExactOutputBoundary(active);
+    }
+
+    /**
+     * Closes a state-producing replay at its last selected interaction.
+     *
+     * <p>The region template may be a long-lived service function, but a
+     * selected mutation/field-write output is an event boundary.  Keeping the
+     * VM attached until the service thread returns records unrelated loop
+     * turns and can perturb the distributed system itself.  Call arguments
+     * and communication effects deliberately do not use this terminal: their
+     * expression still has to cross the VM handoff broker before the sender
+     * may detach.</p>
+     */
+    private static void finishAtCompletedStateInteraction(
+            ActiveRegion active, OutputCaptureSpec request) {
+        if (active == null || request == null
+                || !(request.capturesMutationState()
+                || request.capturesFieldWriteState())
+                || !active.demandedOutputRelationComplete()) {
+            return;
+        }
+        try {
+            finish(active.token, "NORMAL", "", null);
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce(
+                    "state interaction terminal failed: "
+                            + rootCause(failure));
+        }
     }
 
     /** Captures one direct instance-field definition at the exact putfield. */
@@ -1567,7 +2061,7 @@ public final class ConcolicRegionRuntime {
         if (request == null || !request.capturesFieldWriteState()
                 || !active.captureEligible(request)) return;
         int occurrence = active.nextOutputCaptureOccurrence(request);
-        if (!withinBoundedOutputWindow(occurrence)) return;
+        if (!active.boundedOutputVersionSlot(request, occurrence)) return;
 
         JsonObject row = outputCaptureRow(request, occurrence);
         try {
@@ -1598,16 +2092,11 @@ public final class ConcolicRegionRuntime {
                         javaTypeDescriptor(field.type()), fieldValue));
             }
             if (expression == null || expression.isJsonNull()) {
-                JsonObject identity = concreteReferenceIdentity(active,
-                        field, fieldValue);
-                if (identity == null) {
-                    throw new IllegalStateException(
-                            "custom VM returned no field-write expression");
-                }
-                row.add("referenceIdentity", identity);
-            } else {
-                row.add("expression", expression);
+                throw new IllegalStateException(
+                        "custom VM returned no field-write expression");
             }
+            row.add("expression", expression);
+            stageSelectedFieldVersion(active, request, fieldOwner, api);
         } catch (Throwable throwable) {
             active.addGuardedOutputCaptureFailure(
                     request.captureBindingId(),
@@ -1616,15 +2105,7 @@ public final class ConcolicRegionRuntime {
                     + rootCause(throwable));
         } finally {
             active.outputCaptures.add(row);
-        }
-        finishAtExactOutputBoundary(active);
-    }
-
-    /** Ends the relation at the first semantic boundary with every output. */
-    private static void finishAtExactOutputBoundary(ActiveRegion active) {
-        if (active != null && !active.finished.get()
-                && active.hasCompleteExactOutputBoundary()) {
-            finish(active.token, "OUTPUT_BOUNDARY", "", null);
+            finishAtCompletedStateInteraction(active, request);
         }
     }
 
@@ -1672,16 +2153,11 @@ public final class ConcolicRegionRuntime {
                         javaTypeDescriptor(declared.type()), fieldValue));
             }
             if (expression == null || expression.isJsonNull()) {
-                JsonObject identity = concreteReferenceIdentity(active,
-                        declared, fieldValue);
-                if (identity == null) {
-                    throw new IllegalStateException("custom VM returned no "
-                            + "normal-exit field expression");
-                }
-                row.add("referenceIdentity", identity);
-            } else {
-                row.add("expression", expression);
+                throw new IllegalStateException("custom VM returned no "
+                        + "normal-exit field expression");
             }
+            row.add("expression", expression);
+            stageSelectedFieldVersion(active, request, fieldOwner, api);
         } catch (Throwable throwable) {
             active.addGuardedOutputCaptureFailure(
                     request.captureBindingId(),
@@ -1693,77 +2169,35 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Names a reference output the VM never symbolised. */
-    static final String CONCRETE_REFERENCE_IDENTITY_AUTHORITY =
-            "CONCRETE_REFERENCE_IDENTITY_RELATION_V1";
-
-    /**
-     * States what a reference-valued write actually related.
-     *
-     * <p>The custom VM has no expression for a reference: there is no value
-     * to constrain, only an object to hand on.  That is still a real
-     * relation — this write says exactly which object the consumer receives —
-     * and the replay knows it exactly, by identity.  Recording it keeps the
-     * producer's output observable for alias passing without inventing a
-     * symbolic value the VM does not have; a composition that needs a scalar
-     * leaf below this reference must find that leaf its own producer or say
-     * so.  Only a reference qualifies: a primitive with no expression is a
-     * genuine capture failure and must stay one.</p>
-     */
-    private static JsonObject concreteReferenceIdentity(
-            ActiveRegion active, DeclaredField field, Object value) {
-        if (active == null || field == null) return null;
-        String descriptor = javaTypeDescriptor(field.type());
-        if (!descriptor.startsWith("L") && !descriptor.startsWith("[")) {
-            return null;
+    /** Stages the native version backing one selected field output port. */
+    private static void stageSelectedFieldVersion(
+            ActiveRegion active, OutputCaptureSpec request,
+            Object fieldOwner, EngineApi api) throws Exception {
+        if (active == null || request == null
+                || !configuration().selectedFieldProducer(
+                active.activation, request.outputPort())) {
+            return;
         }
-        JsonObject identity = new JsonObject();
-        identity.addProperty("authority",
-                CONCRETE_REFERENCE_IDENTITY_AUTHORITY);
-        identity.addProperty("fieldSignature", field.signature());
-        identity.addProperty("javaType", field.type());
-        identity.addProperty("objectId", active.objectToken(value));
-        identity.addProperty("runtimeType", value == null ? ""
-                : value.getClass().getName());
-        return identity;
-    }
-
-    /**
-     * States what a region's own root output related, when it related no
-     * value.
-     *
-     * <p>A demanded output published as the region's return value has no
-     * capture site to hook: there is no write, only the value the activation
-     * hands back.  The VM is asked for it directly, and for a plain object it
-     * answers with an observation carrying no expression — the same answer it
-     * gives for a reference-valued write, and it means the same thing here:
-     * an object was handed on and no value inside it was related.  Recording
-     * the identity keeps that a stated relation instead of an unexplained
-     * empty capture; whether an alias is what this port may publish is the
-     * importer's judgement, because only the closure declares the port's
-     * type.  A value the VM did relate, a boxed primitive it could not, and a
-     * thrown exception all stay outside this: none of them is an object this
-     * activation handed on as its output.</p>
-     */
-    private static JsonObject rootOutputReferenceIdentity(
-            ActiveRegion active, JsonElement observation, Object output) {
-        if (active == null || output == null
-                || output instanceof Throwable
-                || observation == null || !observation.isJsonObject()) {
-            return null;
+        DeclaredField field = FieldPathSpec.declaredField(
+                request.fieldSignature());
+        if (field == null) {
+            throw new IllegalStateException(
+                    "selected field producer output has no exact field: "
+                            + request.outputPort());
         }
-        JsonObject wrapper = observation.getAsJsonObject();
-        JsonElement expression = wrapper.get("expression");
-        if (expression != null && !expression.isJsonNull()) return null;
-        // The VM names a descriptor only for a boxed primitive, whose
-        // missing expression is a genuine capture failure, never an alias.
-        if (!string(wrapper, "javaTypeDescriptor").isEmpty()) return null;
-        JsonObject identity = new JsonObject();
-        identity.addProperty("authority",
-                CONCRETE_REFERENCE_IDENTITY_AUTHORITY);
-        identity.addProperty("objectId", active.objectToken(output));
-        identity.addProperty("runtimeType", output.getClass().getName());
-        return identity;
+        if (!api.sharedFieldProducerAdmissionAvailable()) {
+            throw new IllegalStateException(
+                    "custom VM field producer-state API is unavailable");
+        }
+        long versionId = api.currentSharedFieldVersion(fieldOwner,
+                field.owner(), field.name(),
+                javaTypeDescriptor(field.type()));
+        String failure = active.stageFieldVersion(
+                request.outputPort(), versionId);
+        if (!failure.isEmpty()) {
+            active.addUnresolvedOnce(failure);
+            throw new IllegalStateException(failure);
+        }
     }
 
     private static void addOutputCaptureOccurrence(JsonObject row,
@@ -1777,6 +2211,8 @@ public final class ConcolicRegionRuntime {
     private static boolean exactOutputBoundaryCapture(
             OutputCaptureSpec request) {
         return request != null && (request.capturesCallArgument()
+                || request.capturesCommunicationEffect()
+                || request.capturesHandoffBoundLeaf()
                 || request.capturesFieldWriteState()
                 || request.capturesMutationState());
     }
@@ -1797,40 +2233,26 @@ public final class ConcolicRegionRuntime {
                 string(capture, "captureBindingId"))) {
             return false;
         }
-        if (!observedOutputRelation(capture)) return false;
+        if (request.capturesCommunicationEffect()) {
+            if (!"COMMUNICATION_EFFECT".equals(
+                    string(capture, "interactionKind"))
+                    || !"INSTRUMENTED_INTERACTION_SITE_V1".equals(
+                    string(capture, "authority"))) {
+                return false;
+            }
+        } else if (!observedOutputRelation(capture)) {
+            return false;
+        }
         return !request.occurrenceScoped()
                 || request.outputSiteId().equals(
                 string(capture, "outputSiteId"))
-                && withinBoundedOutputWindow(integer(capture,
-                "outputOccurrence", -1));
+                && integer(capture, "outputOccurrence", -1) >= 1;
     }
 
-    /**
-     * True when the row carries a relation: a symbolic expression, or the
-     * exact runtime identity of a reference the VM never symbolised.
-     */
+    /** True when the row carries an engine-produced symbolic relation. */
     private static boolean observedOutputRelation(JsonObject capture) {
         JsonElement expression = capture.get("expression");
-        if (expression != null && !expression.isJsonNull()) return true;
-        JsonElement identity = capture.get("referenceIdentity");
-        return identity != null && identity.isJsonObject()
-                && CONCRETE_REFERENCE_IDENTITY_AUTHORITY.equals(
-                string(identity.getAsJsonObject(), "authority"));
-    }
-
-    /**
-     * Admits any positive replay-local occurrence of an output site.
-     *
-     * <p>The occurrence counter numbers every activation-local execution of
-     * the capture site, nested calls and multiple loop nests included, so it
-     * is not a loop body counter and the CFG loop bound does not cap it: a
-     * replay whose every loop stays within the bound can still reach one
-     * site more often than the per-loop bound.  The bounded window itself is
-     * enforced by the loop-cut policy; refusing the ordinal here silently
-     * discarded relations the bounded replay legitimately produced.</p>
-     */
-    private static boolean withinBoundedOutputWindow(int occurrence) {
-        return occurrence >= 1;
+        return expression != null && !expression.isJsonNull();
     }
 
     private static boolean completeExactOutputBoundary(
@@ -1911,110 +2333,11 @@ public final class ConcolicRegionRuntime {
         return true;
     }
 
-    /**
-     * True when the decision that entered a loop body was attested to carry
-     * no symbolic expression.
-     *
-     * <p>Only a symbolically decided continuation can explode the path space,
-     * so only such a loop spends the unroll budget; a concrete guard's trip
-     * count is data this replay observes.  The decision that answers for a
-     * body is the one this loop's own guard made, which the instrumentation
-     * names on the edge it split.  When that guard did decide - it is a
-     * branch site of the symbolic slice - it is the only witness accepted,
-     * and a branch inside the body can no longer stand in for it: such an
-     * impostor runs between two body entries and shares the loop's method, so
-     * a concrete one would release a symbolically guarded loop and a symbolic
-     * one charges a loop the replay merely walks.</p>
-     *
-     * <p>A guard outside the slice never decides anything this replay can
-     * see.  No witness for it can be produced, and demanding one would charge
-     * the unroll bound for every concrete walk over recorded data - a cut on
-     * loops the solver was never offered a choice about.  Such a loop keeps
-     * the evidence this replay does have, its own method's attested decision,
-     * exactly as before; naming that guard in the symbolic slice is what
-     * would answer it exactly.  Its work is not unaccounted for either way:
-     * every body it runs is charged to the replay resource cap.</p>
-     */
-    static boolean concreteGuardEnteredBody(
-            String loopId, String guardSiteId, boolean guardDecides,
-            String decisionSiteId, boolean decisionConcrete) {
-        int marker = safe(loopId).indexOf("#loop:");
-        String decision = safe(decisionSiteId);
-        if (!decisionConcrete || marker <= 0 || decision.isEmpty()) {
-            return false;
-        }
-        String guard = safe(guardSiteId);
-        if (guardDecides && !guard.isEmpty()) {
-            // The guard decides this loop, so nothing else answers for it.
-            return decision.equals(guard);
-        }
-        // A guard that has never decided is outside the slice, and no witness
-        // for it exists to demand.  The loop's method is the narrowest scope
-        // its continuation can be attested in at all.
-        return decision.startsWith(loopId.substring(0, marker) + "#u");
-    }
-
-    /** Separates a body-entry edge's loop from the guard that decides it. */
-    private static final String BODY_ENTRY_GUARD_MARKER = "@guard:u";
-
-    /**
-     * The loop whose ledger a body-entry edge spends, which is the identity
-     * the latch hooks of the same loop are given.
-     */
-    static String loopIdentity(String encodedLoopId) {
-        String encoded = safe(encodedLoopId);
-        int marker = encoded.indexOf(BODY_ENTRY_GUARD_MARKER);
-        return marker < 0 ? encoded : encoded.substring(0, marker);
-    }
-
-    /**
-     * The branch site whose decision enters the body, or the empty string
-     * when the instrumentation named none for this edge.
-     */
-    static String bodyEntryGuardSite(String encodedLoopId) {
-        String encoded = safe(encodedLoopId);
-        int marker = encoded.indexOf(BODY_ENTRY_GUARD_MARKER);
-        if (marker < 0) return "";
-        String loop = encoded.substring(0, marker);
-        int loopMarker = loop.indexOf("#loop:");
-        if (loopMarker <= 0) return "";
-        String unitIndex = encoded.substring(
-                marker + BODY_ENTRY_GUARD_MARKER.length());
-        if (unitIndex.isEmpty()) return "";
-        for (int index = 0; index < unitIndex.length(); index++) {
-            char digit = unitIndex.charAt(index);
-            if (digit < '0' || digit > '9') return "";
-        }
-        return loop.substring(0, loopMarker) + "#u" + unitIndex;
-    }
-
-    /**
-     * True when an accessor-return action accepts the activation-local
-     * occurrence the replay just counted for its caller/site/callee stream.
-     * The refined trace and {@link ActiveRegion} use that same stream key;
-     * the helper-bounded ordinal is only a retention-capacity coordinate and
-     * may restart at one for several calls inside this activation.
-     */
-    static boolean acceptsAccessorOccurrenceForTests(
-            JsonObject action, int actualOccurrence) {
-        return new SymbolizeAction(action)
-                .acceptsAccessorOccurrence(actualOccurrence);
-    }
-
-    static boolean acceptsDirectFieldOccurrenceForTests(
-            JsonObject action, int actualOccurrence) {
-        return new SymbolizeAction(action)
-                .acceptsDirectFieldOccurrence(actualOccurrence);
-    }
-
-    static int maxLoopBodiesForTests(JsonObject encodedTask, String loopId) {
-        return new RuntimeTask(ExecutionTask.decode(encodedTask))
-                .maxLoopBodies(loopId);
-    }
-
-    static boolean relationOnlySeedForTests(JsonObject encodedTask) {
-        return new RuntimeTask(ExecutionTask.decode(encodedTask))
-                .relationOnlySeed();
+    /** Test seam for the relation-seed branch-recording fast path. */
+    static boolean relationSeedSkipsBranchForTests(
+            JsonObject encodedTask, String method, int unitIndex) {
+        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
+        return skipsRelationSeedBranch(task, siteId(method, unitIndex));
     }
 
     /** Test seam for exact-output boundary completion without a custom VM. */
@@ -2033,33 +2356,22 @@ public final class ConcolicRegionRuntime {
                 task.outputCaptures(), captures);
     }
 
-    static boolean missingSelectedInputIsUnresolvedForTests(
+    /** Test seam for incomplete-relation capture-binding diagnostics. */
+    static JsonArray missingOutputCaptureBindingIdsForTests(
             JsonObject encodedTask, JsonArray encodedCaptures) {
         RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
         ActiveRegion active = new ActiveRegion(1L, task, null,
                 Thread.currentThread());
         if (encodedCaptures != null) {
             for (JsonElement element : encodedCaptures) {
-                if (!element.isJsonObject()) return true;
+                if (!element.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "output capture row must be an object");
+                }
                 active.outputCaptures.add(element.getAsJsonObject());
             }
         }
-        return active.missingSelectedInputIsUnresolved();
-    }
-
-    static boolean incompleteRelationOnlyBoundaryForTests(
-            JsonObject encodedTask, JsonArray encodedCaptures,
-            String exitKind) {
-        ExecutionTask task = ExecutionTask.decode(encodedTask);
-        List<JsonObject> captures = new ArrayList<>();
-        if (encodedCaptures != null) {
-            for (JsonElement element : encodedCaptures) {
-                if (!element.isJsonObject()) return false;
-                captures.add(element.getAsJsonObject());
-            }
-        }
-        return incompleteRelationOnlyBoundary(new RuntimeTask(task),
-                captures, exitKind);
+        return missingOutputCaptureBindingIds(active);
     }
 
     private static boolean incompleteRelationOnlyBoundary(
@@ -2076,65 +2388,8 @@ public final class ConcolicRegionRuntime {
                 task.outputCaptures, captures);
     }
 
-    /** Test seam for semantic-slot output capture selection. */
-    static boolean outputCaptureEligibleForTests(
-            JsonObject encodedTask, String captureBindingId,
-            JsonArray encodedSymbolized, JsonArray encodedCaptures) {
-        return outputCaptureEligibleForTests(encodedTask, captureBindingId,
-                encodedSymbolized, new JsonArray(), encodedCaptures);
-    }
 
-    static boolean outputCaptureEligibleForTests(
-            JsonObject encodedTask, String captureBindingId,
-            JsonArray encodedSymbolized, JsonArray encodedObserved,
-            JsonArray encodedCaptures) {
-        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
-        ActiveRegion active = new ActiveRegion(1L, task, null,
-                Thread.currentThread());
-        if (encodedSymbolized != null) {
-            for (JsonElement element : encodedSymbolized) {
-                if (!element.isJsonPrimitive()) return false;
-                active.symbolized.add(element.getAsString());
-            }
-        }
-        if (encodedObserved != null) {
-            for (JsonElement element : encodedObserved) {
-                if (!element.isJsonPrimitive()) return false;
-                active.observedInputSlots.add(element.getAsString());
-            }
-        }
-        if (encodedCaptures != null) {
-            for (JsonElement element : encodedCaptures) {
-                if (!element.isJsonObject()) return false;
-                active.outputCaptures.add(element.getAsJsonObject());
-            }
-        }
-        return active.captureEligible(task.outputCapture(captureBindingId));
-    }
 
-    /** Test seam for a trace-grounded primitive output with no inputs. */
-    static JsonObject recordedPrimitiveOutputForTests(
-            JsonObject encodedTask, String captureBindingId) {
-        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
-        return task.recordedPrimitiveOutput(
-                task.outputCapture(captureBindingId));
-    }
-
-    /** Test seam for per-port resource-cut completion. */
-    static boolean resourceCutCapturedOutputForTests(
-            JsonObject encodedTask, JsonArray encodedCaptures) {
-        ExecutionTask task = ExecutionTask.decode(encodedTask);
-        List<JsonObject> captures = new ArrayList<>();
-        if (encodedCaptures != null) {
-            for (JsonElement element : encodedCaptures) {
-                if (!element.isJsonObject()) return false;
-                captures.add(element.getAsJsonObject());
-            }
-        }
-        return anyExactOutputRelation(
-                task.goalKind().capturesOutputRelation(),
-                task.outputCaptures(), captures);
-    }
 
     private static boolean snapshotOutputContainer(
             Object value, EngineApi api)
@@ -2237,10 +2492,2814 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Normal region exit. */
+    /**
+     * Result of one VM symbolic-expression export or attach.
+     *
+     * <p>A successful attach is represented by the VM ledger's
+     * {@code VALUE_HANDOFF} edge. This object carries only the live broker
+     * answer needed by the bridge; failures carry one named gap.</p>
+     */
+    public static final class HandoffResult {
+        private final String stage;
+        private final int status;
+        private final long handle;
+        private final JsonObject record;
+
+        private HandoffResult(String stage, int status, long handle,
+                              JsonObject record) {
+            this.stage = stage;
+            this.status = status;
+            this.handle = handle;
+            this.record = record;
+        }
+
+        public boolean ok() {
+            return status == RpcExpressionHandoff.OK;
+        }
+
+        /** Numeric VM/runtime status; zero is the only success. */
+        public int status() {
+            return status;
+        }
+
+        /** Named reason for a failure; empty for a successful call. */
+        public String reason() {
+            return RpcExpressionHandoff.reason(status);
+        }
+
+        public long handle() {
+            return handle;
+        }
+
+        private long exportEventId() {
+            return ok() ? longInteger(record, "exportEventId", 0L) : 0L;
+        }
+
+        @Override
+        public String toString() {
+            return "HandoffResult[" + stage + " status=" + status
+                    + (ok() ? "" : " " + reason())
+                    + " handle=" + handle + "]";
+        }
+    }
+
+    /**
+     * Exports one exact field through the live VM broker.
+     *
+     * <p>This is the complete reflective ABI used by application adapters.
+     * Protocol provenance stays in their Java trace; it is neither needed nor
+     * accepted here because the returned live handle is the propagation
+     * identity.</p>
+     */
+    public static HandoffResult exportSymbolicLeaf(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        CommunicationHandoffSpec declared = manualCommunicationHandoffSite(
+                declaringClass, fieldName, descriptor, true);
+        return exportSymbolicLeaf(owner, declaringClass, fieldName,
+                descriptor, declared == null ? "" : declared.portId());
+    }
+
+    /**
+     * Attaches one live broker handle to one exact destination field.
+     *
+     * <p>The VM validates handle ownership and destination storage. No
+     * exchange, attempt, direction or leaf annotation is admitted as another
+     * pairing key; successful propagation is the VM's {@code VALUE_HANDOFF}
+     * edge.</p>
+     */
+    public static HandoffResult receiveSymbolicLeaf(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, long handle) {
+        CommunicationHandoffSpec declared = manualCommunicationHandoffSite(
+                declaringClass, fieldName, descriptor, false);
+        if (declared != null) {
+            return attachDeclaredCommunicationExpression(owner,
+                    declaringClass, fieldName, descriptor, handle,
+                    declared);
+        }
+        beginBookkeeping();
+        try {
+            return record(attach(owner, declaringClass, fieldName, descriptor,
+                    handle));
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static HandoffResult exportSymbolicLeaf(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, String declaredPortId) {
+        HandoffResult result;
+        beginBookkeeping();
+        try {
+            result = exportLeaf(owner, declaringClass, fieldName, descriptor,
+                    declaredPortId);
+        } finally {
+            endBookkeeping();
+        }
+        return result;
+    }
+
+    private static HandoffResult exportLeaf(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, String declaredPortId) {
+        String missing = missingFieldMetadata(owner, declaringClass,
+                fieldName, descriptor);
+        if (!missing.isEmpty()) {
+            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L, missing));
+        }
+        EngineApi api = engine();
+        if (!api.expressionHandoffAvailable()) {
+            return record(unavailable(RpcExpressionHandoff.STAGE_EXPORT, 0L,
+                    "this JDK exposes no symbolic expression handoff API"));
+        }
+        long handle;
+        try {
+            handle = api.exportExpression(owner, declaringClass, fieldName,
+                    descriptor);
+        } catch (Throwable throwable) {
+            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
+                    RpcExpressionHandoff.INVOCATION_FAILED, 0L,
+                    rootCause(throwable)));
+        }
+        if (handle <= 0L) {
+            int status = exportStatus(handle);
+            HandoffResult result = failed(
+                    RpcExpressionHandoff.STAGE_EXPORT, status, 0L,
+                    "exportExpression returned " + handle);
+            if (status == RpcExpressionHandoff.NOT_SYMBOLIC) {
+                // This guarded execution has a concrete leaf, not a broken
+                // symbolic handoff.  Preserve its exact VM expression as the
+                // producer case's constant output, but publish no handoff
+                // attestation or VALUE_HANDOFF claim.  A later replay in
+                // which the leaf becomes symbolic will take the success path
+                // below and publish the real VM edge instead.
+                recordHandoffBoundLeafOutput(owner, declaringClass,
+                        fieldName, descriptor, result, declaredPortId);
+                return result;
+            }
+            return record(result);
+        }
+        HandoffResult result = new HandoffResult(
+                RpcExpressionHandoff.STAGE_EXPORT,
+                RpcExpressionHandoff.OK, handle, new JsonObject());
+        record(result);
+        recordHandoffBoundLeafOutput(owner, declaringClass, fieldName,
+                descriptor, result, declaredPortId);
+        return result;
+    }
+
+    /**
+     * Captures an output relation only when this export is the exact
+     * handoff-bound component requested by the task.
+     *
+     * <p>The capture asks the VM for the expression of the exact live field at
+     * the same export which minted the handoff handle.  That expression may
+     * have been created locally or attached by an earlier interaction; a Java
+     * input projection is neither required nor allowed to replace it.</p>
+     *
+     * <p>The exchange is named by the selected occurrence, not by the recorded
+     * exchange id.  {@code exchangeId} is minted by the transport of the
+     * session that produced it - a Hadoop IPC {@code clientId:callId}, a
+     * per-JVM SASL counter - so the plan's id belongs to the discovery
+     * session and never equals the one this replay mints for the same cut.
+     * Comparing them refused every handoff-bound leaf capture ever planned.
+     * README {@code RPC-1}: a stale discovery id produces a gap, never an
+     * equality, so it is not a match key here either.  What identifies the
+     * capture is the declared port the instrumented hook already carries.
+     * Explicit adapters whose local call has no port id use the semantic leaf
+     * name and materialize every bounded candidate as a guarded alternative;
+     * attempt, direction and exchange are provenance, not another matcher.</p>
+     */
+    private static void recordHandoffBoundLeafOutput(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, HandoffResult result, String declaredPortId) {
+        ActiveRegion active = activeRegion();
+        if (active == null) {
+            if (result != null) diag("HANDOFF_CAPTURE_IGNORED",
+                    "no-active-region");
+            return;
+        }
+        if (result == null
+                || !RpcExpressionHandoff.STAGE_EXPORT.equals(result.stage)
+                || !result.ok()
+                && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
+            return;
+        }
+        List<OutputCaptureSpec> requests = handoffBoundLeafCaptures(
+                active, declaredPortId);
+        if (requests.isEmpty()) {
+            diag("HANDOFF_CAPTURE_IGNORED", "task="
+                    + safe(active.activation.taskId)
+                    + " reason=not-declared");
+            return;
+        }
+        for (OutputCaptureSpec request : requests) {
+            recordHandoffBoundLeafOutput(active, owner, declaringClass,
+                    fieldName, descriptor, result, request);
+        }
+    }
+
+    private static void recordHandoffBoundLeafOutput(
+            ActiveRegion active, Object owner, String declaringClass,
+            String fieldName, String descriptor, HandoffResult result,
+            OutputCaptureSpec request) {
+        if (!active.captureEligible(request)) {
+            diag("HANDOFF_CAPTURE_IGNORED", "task="
+                    + safe(active.activation.taskId) + " binding="
+                    + request.captureBindingId()
+                    + " reason=prerequisites-incomplete");
+            return;
+        }
+        int occurrence = active.nextOutputCaptureOccurrence(request);
+        if (!active.boundedOutputVersionSlot(request, occurrence)) {
+            diag("HANDOFF_CAPTURE_IGNORED", "task="
+                    + safe(active.activation.taskId) + " binding="
+                    + request.captureBindingId() + " occurrence="
+                    + occurrence + " reason=outside-bounded-slot");
+            return;
+        }
+
+        JsonObject row = outputCaptureRow(request, occurrence);
+        try {
+            Field field = declaredInstanceField(owner, declaringClass,
+                    fieldName, descriptor);
+            if (field == null) {
+                throw new IllegalStateException(
+                        "exported field differs from planned component");
+            }
+            Object value = field.get(owner);
+            EngineApi api = engine();
+            JsonElement expression;
+            if (containerValue(value)) {
+                // A concrete array/container has no scalar field shadow for
+                // getFieldExpression to return.  Capture the same complete,
+                // fixed-cardinality state used by every other container
+                // output boundary.  Symbolic elements remain symbolic in the
+                // VM snapshot; concrete elements become constants.
+                if (!snapshotOutputContainer(value, api)) {
+                    throw new IllegalStateException(
+                            "exported container has no VM snapshot model");
+                }
+                expression = engineExpression(api.expression(value));
+            } else {
+                expression = engineExpression(api.fieldExpression(
+                        owner, declaringClass, fieldName, descriptor, value));
+            }
+            if (expression == null || expression.isJsonNull()) {
+                throw new IllegalStateException(
+                        "custom VM returned no handoff field expression");
+            }
+            row.add("expression", expression);
+        } catch (Throwable throwable) {
+            active.addGuardedOutputCaptureFailure(
+                    request.captureBindingId(), request.captureBindingId()
+                            + ": handoff-bound output capture failed: "
+                            + rootCause(throwable));
+        } finally {
+            active.outputCaptures.add(row);
+            diag("HANDOFF_CAPTURE", "task="
+                    + safe(active.activation.taskId) + " binding="
+                    + request.captureBindingId() + " occurrence=" + occurrence
+                    + " expression=" + row.has("expression"));
+        }
+    }
+
+    /**
+     * The bounded plan row this occurrence declares for the exported port.
+     * The instrumented call carries that exact static identity; recovering a
+     * candidate from a semantic leaf path would recreate the deleted RPC join.
+     */
+    private static List<OutputCaptureSpec> handoffBoundLeafCaptures(
+            ActiveRegion active, String declaredPortId) {
+        List<OutputCaptureSpec> requests = new ArrayList<>();
+        if (safe(declaredPortId).isEmpty()) return requests;
+        for (OutputCaptureSpec candidate
+                : active.activation.outputCaptures) {
+            if (!candidate.capturesHandoffBoundLeaf()
+                    || !candidate.outputPort().equals(declaredPortId)) {
+                continue;
+            }
+            requests.add(candidate);
+        }
+        return requests;
+    }
+
+    /**
+     * Attaches one receive whose destination this occurrence's plan declares
+     * as a communication port.
+     *
+     * <p>Every successful receive files its evidence here, declared or not.
+     * A leaf an adapter discovered structurally - a protobuf field of a
+     * serialized payload, say - exports and attaches through the same broker
+     * and produces the same {@code VALUE_HANDOFF} edge as a catalog-declared
+     * port does; recording only the declared ones would leave the undeclared
+     * edge in the VM ledger and nowhere in this run's evidence, which is
+     * worse than refusing it, because a refusal is at least a named blocker.
+     * The declared port is passed in rather than looked up: recovering it
+     * from the leaf path here would be the second join protocol
+     * {@code RPC-1} forbids.</p>
+     */
+    private static HandoffResult attachDeclaredCommunicationExpression(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, long handle,
+            CommunicationHandoffSpec declared) {
+        beginBookkeeping();
+        try {
+            HandoffResult result = record(attach(owner, declaringClass,
+                    fieldName, descriptor, handle));
+            if (result.ok()) {
+                recordVmHandoffEvent(declared, result, owner, declaringClass,
+                        fieldName, descriptor);
+            }
+            return result;
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
+     * The one instance field a declared communication port crosses on.
+     *
+     * <p>The broker addresses a leaf by an exact instance field of a concrete
+     * owner, and a cut argument, a cut return and a server-entry parameter
+     * are all locals.  Both sides of one cut therefore present the value on
+     * this carrier, which is what makes the exported and the attached leaf
+     * the same declared sort.  The carrier changes no program value: on a JDK
+     * without the handoff natives the receiver reads back exactly the
+     * concrete value it was handed.</p>
+     */
+    public static final class HandoffLeafCarrier {
+        public boolean z;
+        public byte b;
+        public short s;
+        public char c;
+        public int i;
+        public long j;
+        public float f;
+        public double d;
+        public Object o;
+    }
+
+    private static final String CARRIER_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime"
+                    + "$HandoffLeafCarrier";
+    // ------------------------------------------------------------------
+    // The live exchange channel
+    // ------------------------------------------------------------------
+
+    /**
+     * Broker handles this thread has exported and no transport has carried
+     * away yet, by declared leaf path.
+     */
+    private static final ThreadLocal<Map<String, Long>> OUTBOUND_LEAVES =
+            new ThreadLocal<Map<String, Long>>() {
+                @Override
+                protected Map<String, Long> initialValue() {
+                    return new LinkedHashMap<>();
+                }
+            };
+    /** Leaves one declared exchange leg is carrying, by that leg's key. */
+    private static final Map<String, ArrivedLeaves> IN_FLIGHT_LEAVES =
+            new LinkedHashMap<>();
+    /**
+     * Exact producer admissions armed by selected callers, indexed only by
+     * the live request exchange that can consume them.
+     */
+    private static final Map<String, ResponseProducerArm>
+            IN_FLIGHT_RESPONSE_PRODUCER_ARMS = new LinkedHashMap<>();
+    private static final Object EXCHANGE_LOCK = new Object();
+    /** The leaves the last delivery handed to this thread. */
+    private static final ThreadLocal<ArrivedLeaves> INBOUND_LEAVES =
+            new ThreadLocal<>();
+    /** The exact response producer task authorized by this request delivery. */
+    private static final ThreadLocal<ResponseProducerArm>
+            INBOUND_RESPONSE_PRODUCER_ARM = new ThreadLocal<>();
+
+    /** One delivery's live leaves. */
+    private static final class ArrivedLeaves {
+        private final Map<String, Long> byLeafPath;
+
+        private ArrivedLeaves(Map<String, Long> byLeafPath) {
+            this.byLeafPath = byLeafPath;
+        }
+    }
+
+    /**
+     * One caller-selected response producer admission.  This is scheduling
+     * authority only: it names the already-planned producer task and carries
+     * no value, payload identity or expression.  The VM handle transported by
+     * {@link #IN_FLIGHT_LEAVES} remains the only value authority.
+     */
+    private static final class ResponseProducerArm {
+        private final String producerTaskId;
+        private final Set<String> portIds;
+        private final String failure;
+
+        private ResponseProducerArm(String producerTaskId,
+                                    Set<String> portIds, String failure) {
+            this.producerTaskId = safe(producerTaskId);
+            this.portIds = Collections.unmodifiableSet(
+                    new LinkedHashSet<>(portIds));
+            this.failure = safe(failure);
+        }
+
+        private boolean valid() {
+            return !producerTaskId.isEmpty() && failure.isEmpty()
+                    && !portIds.isEmpty();
+        }
+
+        private boolean authorizes(RuntimeTask task) {
+            return valid() && task != null
+                    && producerTaskId.equals(task.taskId)
+                    && !task.responseExportPortIds.isEmpty()
+                    && portIds.containsAll(task.responseExportPortIds);
+        }
+    }
+
+    /**
+     * One exact planner-selected producer-state transfer for a shared Map.
+     *
+     * <p>The task/port/edge triple is scheduling authority only.  The native
+     * version id published later is the value authority; no Java object,
+     * concrete Map contents, or "latest writer" guess crosses occurrences.
+     * A nonempty failure is deliberately retained so an upstream-bound Map
+     * can fail closed without falling back to a fresh local INITIAL.</p>
+     */
+    private static final class PlannedMapAdmission {
+        private final String inputPort;
+        private final String selectedEdgeId;
+        private final String producerTaskId;
+        private final String producerOutputPort;
+        private final String failure;
+
+        private PlannedMapAdmission(String inputPort, String selectedEdgeId,
+                                    String producerTaskId,
+                                    String producerOutputPort,
+                                    String failure) {
+            this.inputPort = safe(inputPort);
+            this.selectedEdgeId = safe(selectedEdgeId);
+            this.producerTaskId = safe(producerTaskId);
+            this.producerOutputPort = safe(producerOutputPort);
+            this.failure = safe(failure);
+        }
+
+        private boolean required() {
+            return !inputPort.isEmpty();
+        }
+
+        private boolean valid() {
+            return required() && failure.isEmpty()
+                    && !selectedEdgeId.isEmpty()
+                    && !producerTaskId.isEmpty()
+                    && !producerOutputPort.isEmpty();
+        }
+
+        private String registryKey() {
+            return producerTaskId + "\n" + producerOutputPort;
+        }
+    }
+
+    /** Exact scheduled producer version for one concrete scalar/reference field. */
+    private static final class PlannedFieldAdmission {
+        private final String inputPort;
+        private final String selectedEdgeId;
+        private final String producerTaskId;
+        private final String producerOutputPort;
+        /** Exact configured primitive leaves carried by this reference. */
+        private final List<PlannedSourceAlias> sourceAliases;
+        private final String failure;
+
+        private PlannedFieldAdmission(String inputPort,
+                                      String selectedEdgeId,
+                                      String producerTaskId,
+                                      String producerOutputPort,
+                                      List<PlannedSourceAlias> sourceAliases,
+                                      String failure) {
+            this.inputPort = safe(inputPort);
+            this.selectedEdgeId = safe(selectedEdgeId);
+            this.producerTaskId = safe(producerTaskId);
+            this.producerOutputPort = safe(producerOutputPort);
+            this.sourceAliases = sourceAliases == null
+                    ? Collections.emptyList()
+                    : Collections.unmodifiableList(new ArrayList<>(
+                    sourceAliases));
+            this.failure = safe(failure);
+        }
+
+        private boolean valid() {
+            return !inputPort.isEmpty() && failure.isEmpty()
+                    && !selectedEdgeId.isEmpty()
+                    && !producerTaskId.isEmpty()
+                    && !producerOutputPort.isEmpty();
+        }
+
+        private String registryKey() {
+            return producerTaskId + "\n" + producerOutputPort;
+        }
+    }
+
+    /** Source identity and exact nested field carried by one output value. */
+    private static final class PlannedSourceAlias {
+        private final String sourceTaskId;
+        private final String sourceId;
+        private final String sourceOccurrenceId;
+        private final String fieldSignature;
+
+        private PlannedSourceAlias(String sourceTaskId, String sourceId,
+                                   String sourceOccurrenceId,
+                                   String fieldSignature) {
+            this.sourceTaskId = safe(sourceTaskId);
+            this.sourceId = safe(sourceId);
+            this.sourceOccurrenceId = safe(sourceOccurrenceId);
+            this.fieldSignature = safe(fieldSignature);
+        }
+
+        private String symbol() {
+            return configuredSourceSymbol(sourceOccurrenceId, sourceId);
+        }
+
+        private String identity() {
+            return sourceOccurrenceId + "\n" + sourceId;
+        }
+    }
+
+    /** Exact primitive leaf reached from one configured response root. */
+    private static final class ResponseFieldPathLeaf {
+        private final Object owner;
+        private final DeclaredField field;
+        private final String descriptor;
+
+        private ResponseFieldPathLeaf(Object owner, DeclaredField field) {
+            this.owner = owner;
+            this.field = field;
+            this.descriptor = javaTypeDescriptor(field.type());
+        }
+    }
+
+    /**
+     * Carries this thread's exported broker handles across one declared
+     * exchange leg, and hands a delivered leg's handles to its receiver.
+     *
+     * <p>This is the ephemeral data-plane transfer the propagation needs: the
+     * transport that moves the message also moves the live handle of the leaf
+     * inside it, addressed by the message's own in-memory exchange context
+     * and by the typed leaf.  It is not a pairing authority - it decides
+     * nothing about which value reached whom.  That is settled by the VM's
+     * attach and its {@code VALUE_HANDOFF} edge, and by nothing else; a leg
+     * that carries no handle produces a named gap at the receiver rather than
+     * a reconstructed one.</p>
+     *
+     * <p>Both buffers are strictly per message, because a leaf that outlives
+     * its own message would be attached at an unrelated exchange's receiver
+     * and would read exactly like a successful handoff of the wrong sender's
+     * expression.  The send leg is the first instant after the cut export, so
+     * anything still pending when a different leg runs never became a message
+     * and is dropped.  The receive leg is the last instant before the entry
+     * attach, so it <em>replaces</em> this thread's inbound state even when it
+     * carries nothing: a handler that served a message with leaves and then
+     * one without must find nothing, not the previous call's handles.</p>
+     */
+    static void observeExchangeLeg(String direction, String transport,
+                                   String correlationId, String half) {
+        String normalizedDirection = safe(direction);
+        String normalizedHalf = safe(half);
+        String key = exchangeKey(transport, correlationId, normalizedHalf);
+        Map<String, Long> pending = OUTBOUND_LEAVES.get();
+        if ("SEND".equalsIgnoreCase(normalizedDirection)) {
+            if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
+                armResponseProducer(key);
+            } else if ("RESPONSE".equalsIgnoreCase(normalizedHalf)) {
+                INBOUND_RESPONSE_PRODUCER_ARM.remove();
+            }
+            if (pending.isEmpty()) return;
+            ArrivedLeaves carried = new ArrivedLeaves(
+                    new LinkedHashMap<>(pending));
+            pending.clear();
+            synchronized (EXCHANGE_LOCK) {
+                IN_FLIGHT_LEAVES.put(key, carried);
+            }
+            return;
+        }
+        if (!"RECEIVE".equalsIgnoreCase(normalizedDirection)) return;
+        if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
+            ResponseProducerArm arm;
+            synchronized (EXCHANGE_LOCK) {
+                arm = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(key);
+            }
+            if (arm == null) {
+                INBOUND_RESPONSE_PRODUCER_ARM.remove();
+            } else {
+                INBOUND_RESPONSE_PRODUCER_ARM.set(arm);
+            }
+        }
+        pending.clear();
+        ArrivedLeaves arrived;
+        synchronized (EXCHANGE_LOCK) {
+            arrived = IN_FLIGHT_LEAVES.remove(key);
+        }
+        INBOUND_LEAVES.set(arrived);
+    }
+
+    private static String exchangeKey(String transport, String correlationId,
+                                      String half) {
+        return safe(transport) + "\n" + safe(correlationId) + "\n"
+                + safe(half);
+    }
+
+    /** Arms only the unique producer already selected by this caller's task. */
+    private static void armResponseProducer(String exchangeKey) {
+        ActiveRegion caller = activeRegion();
+        if (caller == null
+                || caller.activation.responseAttachPortIds.isEmpty()) {
+            return;
+        }
+        ResponseProducerArm arm = configuration().responseProducerArm(
+                caller.activation);
+        if (!arm.valid()) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    "required response producer admission is not unique: "
+                            + arm.failure));
+            return;
+        }
+        boolean collision;
+        synchronized (EXCHANGE_LOCK) {
+            collision = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.containsKey(
+                    exchangeKey);
+            if (collision) {
+                IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(exchangeKey);
+            } else {
+                IN_FLIGHT_RESPONSE_PRODUCER_ARMS.put(exchangeKey, arm);
+            }
+        }
+        if (collision) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MALFORMED_RESULT, 0L,
+                    "two selected callers armed the same live response "
+                            + "exchange"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Declared communication ports
+    // ------------------------------------------------------------------
+
+    /**
+     * Exports one configured primitive component of the returned response.
+     * The response and intermediate references are used only to locate the
+     * exact live field; no reference identity or expression crosses the cut.
+     */
+    public static void exportCommunicationFieldPath(String portId,
+                                                    Object responseRoot) {
+        CommunicationHandoffSpec site;
+        beginBookkeeping();
+        try {
+            site = communicationHandoffSite(portId, true);
+        } finally {
+            endBookkeeping();
+        }
+        if (site == null || !site.responsePathCarrier()) return;
+        ResponseFieldPathLeaf leaf = responseFieldPathLeaf(responseRoot,
+                site.handoffPath());
+        if (leaf == null) {
+            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
+                    "configured response field path did not resolve: "
+                            + site.portId());
+            return;
+        }
+        // The native broker deliberately performs a pure lookup for a
+        // container state: it must never turn an arbitrary response object
+        // into a symbolic root.  Establish the same bounded, fixed-shape
+        // snapshot used by output capture before asking the broker to mint
+        // the live handle.  Doing this after export produced a
+        // ContainerRelation in the result but no VALUE_HANDOFF at the cut.
+        try {
+            Object value = readExactField(leaf.owner,
+                    leaf.field.signature());
+            if (value == MissingValue.INSTANCE) {
+                throw new IllegalStateException(
+                        "configured response leaf is unavailable");
+            }
+            if (containerValue(value)
+                    && !snapshotOutputContainer(value, engine())) {
+                throw new IllegalStateException(
+                        "configured response container has no bounded "
+                                + "snapshot model");
+            }
+        } catch (Throwable failure) {
+            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
+                    "configured response field path could not prepare its "
+                            + "container state: " + rootCause(failure));
+            return;
+        }
+        HandoffResult result = exportSymbolicLeaf(leaf.owner,
+                leaf.field.owner(), leaf.field.name(), leaf.descriptor,
+                site.portId());
+        // The custom VM exports exact concrete primitives as typed ConstExpr
+        // handles.  An old VM returning NOT_SYMBOLIC cannot establish a
+        // VALUE_HANDOFF and is deliberately not represented by a zero token.
+        if (!result.ok()) return;
+        boolean collision;
+        beginBookkeeping();
+        try {
+            Map<String, Long> pending = OUTBOUND_LEAVES.get();
+            collision = pending.containsKey(site.leafPath());
+            if (!collision) {
+                pending.put(site.leafPath(), Long.valueOf(result.handle()));
+            }
+        } finally {
+            endBookkeeping();
+        }
+        if (collision) {
+            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
+                    "response field path already has a pending handle: "
+                            + site.leafPath());
+        }
+    }
+
+    /** Attaches one carried handle to the reconstructed response's leaf. */
+    public static void attachCommunicationFieldPath(String portId,
+                                                    Object responseRoot) {
+        CommunicationHandoffSpec site;
+        ArrivedLeaves arrived;
+        long handle;
+        beginBookkeeping();
+        try {
+            site = communicationHandoffSite(portId, false);
+            arrived = INBOUND_LEAVES.get();
+            Long carried = site == null || arrived == null ? null
+                    : arrived.byLeafPath.remove(site.leafPath());
+            handle = carried == null ? 0L : carried.longValue();
+        } finally {
+            endBookkeeping();
+        }
+        if (site == null || !site.responsePathCarrier()) return;
+        if (handle <= 0L) {
+            ActiveRegion active = activeRegion();
+            if (active != null
+                    && active.responseHandoffSatisfied(site.portId())) {
+                // This bounded case already attached the selected response
+                // component.  A long-lived caller may execute the same
+                // static RPC hook again before its outer service loop reaches
+                // K_L; those later concrete exchanges are outside this
+                // task's selected interaction and are not missing inputs.
+                return;
+            }
+            deferRequiredResponseHandoffHandleGap(site);
+            return;
+        }
+        ResponseFieldPathLeaf leaf = responseFieldPathLeaf(responseRoot,
+                site.handoffPath());
+        if (leaf == null) {
+            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_ATTACH,
+                    "configured response field path did not resolve: "
+                            + site.portId());
+            return;
+        }
+        attachDeclaredCommunicationExpression(leaf.owner,
+                leaf.field.owner(), leaf.field.name(), leaf.descriptor,
+                handle, site);
+    }
+
+    private static ResponseFieldPathLeaf responseFieldPathLeaf(
+            Object root,
+            List<CommunicationHandoffSpec.PathStep> path) {
+        if (root == null || path == null || path.isEmpty()) {
+            return null;
+        }
+        Object owner = root;
+        for (int index = 0; index < path.size(); index++) {
+            CommunicationHandoffSpec.PathStep step = path.get(index);
+            if (step.field()) {
+                if (index + 1 == path.size()) {
+                    DeclaredField leaf = FieldPathSpec.declaredField(
+                            step.declaration());
+                    if (leaf == null || declaredInstanceField(owner,
+                            leaf.signature()) == null) return null;
+                    return new ResponseFieldPathLeaf(owner, leaf);
+                }
+                owner = readExactField(owner, step.declaration());
+            } else if (step.uniqueArrayElement()) {
+                owner = uniqueArrayElement(owner, step.elementType());
+            } else {
+                return null;
+            }
+            if (owner == null || owner == MissingValue.INSTANCE) return null;
+        }
+        return null;
+    }
+
+    /** Returns the sole exact-class element of one fixed runtime array. */
+    private static Object uniqueArrayElement(Object value,
+                                             String binaryClassName) {
+        if (value == null || !value.getClass().isArray()
+                || safe(binaryClassName).isEmpty()) return null;
+        Object selected = null;
+        int length = Array.getLength(value);
+        for (int index = 0; index < length; index++) {
+            Object element = Array.get(value, index);
+            if (element == null || !binaryClassName.equals(
+                    element.getClass().getName())) continue;
+            if (selected != null) return null;
+            selected = element;
+        }
+        return selected;
+    }
+
+    private static void recordFieldPathHandoffFailure(String stage,
+                                                      String detail) {
+        beginBookkeeping();
+        try {
+            record(failed(stage, RpcExpressionHandoff.MISSING_METADATA,
+                    0L, detail));
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /** A selected attach site executed, but its message carried no VM handle. */
+    private static void recordRequiredHandoffHandleGap(
+            CommunicationHandoffSpec site, boolean concreteMarker) {
+        int status = concreteMarker ? RpcExpressionHandoff.NOT_SYMBOLIC
+                : RpcExpressionHandoff.UNKNOWN_HANDLE;
+        recordHandoffGap(RpcExpressionHandoff.gap(
+                RpcExpressionHandoff.STAGE_ATTACH, status, 0L,
+                "required communication port carried no live VM handle: "
+                        + site.portId()));
+    }
+
+    /**
+     * Defers a missing selected response leaf until this bounded caller ends.
+     *
+     * <p>A long-lived caller may try several live response exchanges before
+     * the selected producer occurrence reaches its demanded output.  Those
+     * earlier exchanges are search candidates, not independent missing
+     * inputs.  Keep at most one provisional fact per port; a later successful
+     * VM attach retracts it, while terminal read-out publishes it if no
+     * candidate ever supplied a handle.</p>
+     */
+    private static void deferRequiredResponseHandoffHandleGap(
+            CommunicationHandoffSpec site) {
+        JsonObject gap = RpcExpressionHandoff.gap(
+                RpcExpressionHandoff.STAGE_ATTACH,
+                RpcExpressionHandoff.UNKNOWN_HANDLE, 0L,
+                "required communication port carried no live VM handle: "
+                        + site.portId());
+        ActiveRegion active = activeRegion();
+        if (active == null) {
+            recordHandoffGap(gap);
+            return;
+        }
+        active.deferResponseHandoffGap(site.portId(), gap);
+        diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
+    }
+
+    /**
+     * Exports the live expression of one declared communication port.
+     *
+     * <p>Called where the port's own declaration says the value leaves this
+     * occurrence: at the cut argument, or at the server entry's return.  The
+     * value arrives on a {@link HandoffLeafCarrier} the <em>instrumented
+     * frame</em> allocated and stored into, because a broker leaf is an exact
+     * instance field while a cut argument is a local - and because only the
+     * application's own frame propagates a value's expression into a field.
+     * The handle this mints travels with the message; every receiver that
+     * attaches it records its own {@code VALUE_HANDOFF} edge.</p>
+     */
+    public static void exportCommunicationLeaf(String portId, Object carrier,
+                                               String field,
+                                               String descriptor) {
+        CommunicationHandoffSpec site;
+        beginBookkeeping();
+        try {
+            site = communicationHandoffSite(portId, true);
+        } finally {
+            endBookkeeping();
+        }
+        if (site == null || carrier == null) return;
+        HandoffResult result = exportSymbolicLeaf(carrier, CARRIER_CLASS,
+                field, descriptor, site.portId());
+        // A concrete leaf is still a leaf the message carried.  Preserve a
+        // zero marker so the receiver can distinguish it from a declared leaf
+        // that never reached the transport.  Zero is never passed to the VM
+        // attach API and therefore creates no symbolic propagation claim.
+        if (!result.ok()
+                && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
+            return;
+        }
+        beginBookkeeping();
+        try {
+            OUTBOUND_LEAVES.get().put(site.leafPath(),
+                    Long.valueOf(result.ok() ? result.handle() : 0L));
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
+     * Attaches the exported expression of one declared communication port.
+     *
+     * <p>After a successful attach the carrier leaf <em>denotes the sender's
+     * expression</em>; the instrumented frame reads it straight back into its
+     * own local, so the receiver's later arithmetic, branches and exports
+     * build on that term directly.  The reference is recorded against the
+     * declared port the attach landed on together with the VM export event
+     * the ledger relates it to; nothing is paired here.  A delivery that
+     * carried no live handle, or an attach the broker refused, leaves the
+     * carrier holding the concrete value it arrived with, and is named as a
+     * gap.</p>
+     */
+    public static void attachCommunicationLeaf(String portId, Object carrier,
+                                               String field,
+                                               String descriptor) {
+        CommunicationHandoffSpec site;
+        ArrivedLeaves arrived;
+        long handle;
+        boolean leafCarried;
+        beginBookkeeping();
+        try {
+            site = communicationHandoffSite(portId, false);
+            arrived = INBOUND_LEAVES.get();
+            // The instrumented attach site supplies the exact portId.  The
+            // message-local inbound buffer supplies the handle carried by
+            // this delivery.  Repeated wire leaf names such as "resp" at
+            // different call sites therefore need no second matching layer:
+            // the VM attach at this exact site remains the only propagation
+            // authority.
+            // Consumed, not read: one delivered leaf lands on one declared
+            // port of this receiver.  Leaving it in place lets the next call
+            // this thread serves attach the previous call's handle.
+            leafCarried = site != null && arrived != null
+                    && arrived.byLeafPath.containsKey(site.leafPath());
+            Long carried = !leafCarried ? null
+                    : arrived.byLeafPath.remove(site.leafPath());
+            handle = carried == null ? 0L : carried.longValue();
+        } finally {
+            endBookkeeping();
+        }
+        if (site == null) return;
+        if (carrier == null) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, handle,
+                    "required communication port has no carrier: "
+                            + site.portId()));
+            return;
+        }
+        if (handle <= 0L) {
+            recordRequiredHandoffHandleGap(site, leafCarried);
+            return;
+        }
+        attachDeclaredCommunicationExpression(carrier, CARRIER_CLASS, field,
+                descriptor, handle, site);
+    }
+
+    /** The declared site of {@code portId} in this occurrence's plan. */
+    private static CommunicationHandoffSpec communicationHandoffSite(
+            String portId, boolean exporting) {
+        ActiveRegion active = activeRegion();
+        if (active == null || safe(portId).isEmpty()) return null;
+        return active.activation.communicationHandoff(portId, exporting);
+    }
+
+    /** The manual adapter port declared for one exact carrier storage. */
+    private static CommunicationHandoffSpec manualCommunicationHandoffSite(
+            String declaringClass, String fieldName, String descriptor,
+            boolean exporting) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return null;
+        return active.activation.manualCommunicationHandoff(declaringClass,
+                fieldName, descriptor, exporting);
+    }
+
+    /**
+     * Files one case-local reference into the VM's own handoff ledger and the
+     * exact expression now held by the attached destination.
+     *
+     * <p>{@code site} is the declared port this attach landed on, or
+     * {@code null} when no port of this occurrence's plan names the
+     * destination.  An undeclared destination is still recorded - the edge is
+     * the VM's and it exists either way - under the exact field the attach
+     * bound, beside a named gap saying the catalog declares no port for it.
+     * The Composer then takes its {@code COMMUNICATION_LEAF} authority from
+     * the edge and refuses to bind an SMT term to an undeclared port, which
+     * is a blocker with a subject rather than an absence.  The value is read
+     * after attach from the exact destination storage: a container from its
+     * actual referent, every other leaf from its exact field shadow.</p>
+     */
+    private static void recordVmHandoffEvent(CommunicationHandoffSpec site,
+                                             HandoffResult result,
+                                             Object owner,
+                                             String declaringClass,
+                                             String fieldName,
+                                             String descriptor) {
+        ActiveRegion active = activeRegion();
+        if (active == null || site == null) return;
+        long exportEvent = result.exportEventId();
+        if (exportEvent <= 0L) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MALFORMED_RESULT, result.handle(),
+                    "attached leaf named no VM export event"));
+            return;
+        }
+        JsonElement expression;
+        try {
+            Field storage = declaredInstanceField(owner, declaringClass,
+                    fieldName, descriptor);
+            if (storage == null) {
+                recordHandoffGap(RpcExpressionHandoff.gap(
+                        RpcExpressionHandoff.STAGE_ATTACH,
+                        RpcExpressionHandoff.MISSING_METADATA,
+                        result.handle(),
+                        "attached leaf has no exact destination storage"));
+                return;
+            }
+            Object value = storage.get(owner);
+            EngineApi api = engine();
+            expression = containerValue(value)
+                    ? engineExpression(api.expression(value))
+                    : engineExpression(api.fieldExpression(owner,
+                    declaringClass, fieldName, descriptor, value));
+        } catch (Throwable failure) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.INVOCATION_FAILED, result.handle(),
+                    "attached destination expression read-out failed: "
+                            + rootCause(failure)));
+            return;
+        }
+        if (expression == null || expression.isJsonNull()) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MALFORMED_RESULT, result.handle(),
+                    "custom VM returned no attached destination expression"));
+            return;
+        }
+        active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
+                exportEvent, expression));
+        if (site.responsePathCarrier()) {
+            active.markResponseHandoffSatisfied(site.portId());
+        }
+        // The receiving local now denotes the sender's expression, so any
+        // fresh root the entry materialization minted for this same port is
+        // dead code that only a second authority could still read.  README
+        // SMT-1 allows one authority per selected input, and after a
+        // successful attach that authority is this edge.  A port the attach
+        // did not bind keeps its root, which is why this is retraction on
+        // success rather than removal of the materialization.
+        active.symbolized.remove(site.portId());
+    }
+
+    /** Files one handoff gap with the active region, when there is one. */
+    private static void recordHandoffGap(JsonObject gap) {
+        ActiveRegion active = activeRegion();
+        if (active != null) active.rpcHandoffGaps.add(gap);
+        diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
+    }
+
+    private static HandoffResult attach(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, long handle) {
+        String missing = missingFieldMetadata(owner, declaringClass,
+                fieldName, descriptor);
+        if (handle <= 0L) {
+            missing = firstNonBlank(missing,
+                    "attach needs a positive handle");
+        }
+        if (!missing.isEmpty()) {
+            return failed(RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, handle, missing);
+        }
+        EngineApi api = engine();
+        if (!api.expressionHandoffAvailable()) {
+            return unavailable(RpcExpressionHandoff.STAGE_ATTACH, handle,
+                    "this JDK exposes no symbolic expression handoff API");
+        }
+        long exportEventId;
+        try {
+            exportEventId = api.attachExpression(owner, declaringClass,
+                    fieldName, descriptor, handle);
+        } catch (Throwable throwable) {
+            return failed(RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.INVOCATION_FAILED, handle,
+                    rootCause(throwable));
+        }
+        if (exportEventId <= 0L) {
+            int status = exportStatus(exportEventId);
+            return failed(RpcExpressionHandoff.STAGE_ATTACH, status, handle,
+                    "attachExpression returned " + exportEventId);
+        }
+        JsonObject success = new JsonObject();
+        success.addProperty("exportEventId", exportEventId);
+        return new HandoffResult(RpcExpressionHandoff.STAGE_ATTACH,
+                RpcExpressionHandoff.OK, handle, success);
+    }
+
+    private static String missingFieldMetadata(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        if (owner == null) return "handoff leaf has no owner instance";
+        if (firstNonBlank(declaringClass).isEmpty()
+                || firstNonBlank(fieldName).isEmpty()
+                || firstNonBlank(descriptor).isEmpty()) {
+            return "handoff leaf has no exact declaring class, field name "
+                    + "and type descriptor";
+        }
+        return "";
+    }
+
+    /**
+     * Maps a non-positive {@code exportExpression} answer onto a status.  Zero
+     * is neither a handle nor a declared failure, so it is a malformed answer
+     * rather than a quietly ignored export.
+     */
+    private static int exportStatus(long handle) {
+        if (handle == 0L || handle < Integer.MIN_VALUE) {
+            return RpcExpressionHandoff.MALFORMED_RESULT;
+        }
+        return (int) handle;
+    }
+
+    private static HandoffResult unavailable(String stage, long handle,
+                                             String detail) {
+        return failed(stage, RpcExpressionHandoff.API_UNAVAILABLE, handle,
+                detail);
+    }
+
+    private static HandoffResult failed(String stage, int status, long handle,
+                                        String detail) {
+        return new HandoffResult(stage, status, handle,
+                RpcExpressionHandoff.gap(stage, status, handle, detail));
+    }
+
+    /**
+     * Files failed calls with the active region and reports every outcome to
+     * the diagnostic trace. Successful propagation is serialized only by the
+     * VM ledger and its case-local handoff reference.
+     */
+    private static HandoffResult record(HandoffResult result) {
+        ActiveRegion active = activeRegion();
+        if (active != null && !result.ok()) {
+            active.rpcHandoffGaps.add(result.record);
+        }
+        if (!result.ok()) {
+            diag(RpcExpressionHandoff.GAP_KIND, result.toString());
+        }
+        return result;
+    }
+
+    private static final Object RUN_TOTALS_LOCK = new Object();
+    private static boolean runTotalsHookRegistered;
+
+    /**
+     * Registers the one shutdown hook that publishes what only the end of a
+     * run can state.  It is registered on demand rather than at load, so a
+     * run with nothing to state adds no hook.
+     */
+    static void registerRunTotalsHook() {
+        synchronized (RUN_TOTALS_LOCK) {
+            if (runTotalsHookRegistered) return;
+            runTotalsHookRegistered = true;
+            try {
+                Runtime.getRuntime().addShutdownHook(new Thread(
+                        new Runnable() {
+                            @Override
+                            public void run() {
+                                publishRunTotals();
+                            }
+                        }, "concolic-run-totals"));
+            } catch (IllegalStateException shuttingDown) {
+                // A run already shutting down cannot register one.  The
+                // workload's own outcome is never replaced by this.
+            }
+        }
+    }
+
+    /**
+     * Publishes what only the end of a run can state: every selected address
+     * that nothing answered, and this run's handoff aggregates.
+     *
+     * <p>The shutdown hook publishes them, and so does the settled campaign
+     * immediately before it halts - a halt runs no hook.</p>
+     */
+    static void publishRunTotals() {
+        configuration().publishUnansweredAddresses();
+    }
+
+    /**
+     * Outcome of one recorded shared-state evidence call.
+     *
+     * <p>Like a handoff result, it is either an admitted record or exactly one
+     * named gap, never both and never neither.  A selection carries no record
+     * of its own: selecting a carrier states that a question may be asked
+     * later, not that any value has an answer yet.</p>
+     */
+    public static final class SharedStateResult {
+        private final String stage;
+        private final int status;
+        private final String locationKey;
+        private final long initialFieldVersionId;
+        private final JsonObject envelope;
+        private final JsonObject record;
+
+        private SharedStateResult(String stage, int status, String locationKey,
+                                  long initialFieldVersionId,
+                                  JsonObject envelope, JsonObject record) {
+            this.stage = stage;
+            this.status = status;
+            this.locationKey = locationKey;
+            this.initialFieldVersionId = initialFieldVersionId;
+            this.envelope = envelope;
+            this.record = record;
+        }
+
+        public boolean ok() {
+            return status == SharedStateEvidence.OK;
+        }
+
+        public int status() {
+            return status;
+        }
+
+        /** Named reason for a failure; empty for an admitted answer. */
+        public String reason() {
+            return SharedStateEvidence.reason(status);
+        }
+
+        public String stage() {
+            return stage;
+        }
+
+        /** The VM's own (owner, slot, kind) identity; empty before capture. */
+        public String locationKey() {
+            return locationKey;
+        }
+
+        /**
+         * The INITIAL version published by a fresh selection.  Zero means the
+         * location was already selected, which is a success: its INITIAL
+         * version was published by the first selection and still stands.
+         */
+        public long initialFieldVersionId() {
+            return initialFieldVersionId;
+        }
+
+        /** The raw VM envelope; empty when none was returned. */
+        public JsonObject envelope() {
+            return copyJsonTree(envelope);
+        }
+
+        /** Admitted evidence row; empty after a failure or a selection. */
+        public JsonObject record() {
+            return ok() ? copyJsonTree(record) : new JsonObject();
+        }
+
+        /** Named coverage gap for a failure; empty after a success. */
+        public JsonObject gap() {
+            return ok() ? new JsonObject() : copyJsonTree(record);
+        }
+
+        @Override
+        public String toString() {
+            return "SharedStateResult[" + stage + " status=" + status
+                    + (ok() ? "" : " " + reason())
+                    + " location=" + locationKey + "]";
+        }
+    }
+
+    /**
+     * Selects one exact instance or static field as a symbolic carrier, so
+     * every later write to it publishes a version and every later read of it
+     * resolves to an exact writer or to an explicitly guarded choice.
+     *
+     * <p>Selection is what makes the version store affordable, so it is
+     * explicit and bounded: nothing is versioned until a caller names it.  The
+     * location is remembered by the active region, which reads its versions
+     * back at region exit.</p>
+     */
+    public static SharedStateResult selectSharedFieldCarrier(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        beginBookkeeping();
+        try {
+            return selectFieldCarrier(owner, declaringClass, fieldName,
+                    descriptor);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult selectFieldCarrier(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        String missing = missingCarrierMetadata(owner, declaringClass,
+                fieldName, descriptor);
+        if (!missing.isEmpty()) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "", missing),
+                    null, activeRegion());
+        }
+        EngineApi api = engine();
+        if (!api.sharedStateEvidenceAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_SELECT, ""), null,
+                    activeRegion());
+        }
+        long initial;
+        try {
+            initial = api.selectSharedFieldCarrier(owner, declaringClass,
+                    fieldName, descriptor);
+        } catch (Throwable throwable) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    rootCause(throwable)), null, activeRegion());
+        }
+        if (initial < 0L) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    selectStatus(initial), "",
+                    "selectSharedFieldCarrier returned " + initial), null,
+                    activeRegion());
+        }
+        return recordShared(new SharedStateResult(
+                        SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.OK, "", initial, new JsonObject(),
+                        new JsonObject()),
+                SharedCarrier.field(owner, declaringClass, fieldName,
+                        descriptor), activeRegion());
+    }
+
+    /**
+     * Selects one element of a fixed-shape array as a symbolic carrier.  A
+     * resizable collection has no stable slot and is not selectable; it keeps
+     * the container algebra instead.
+     */
+    public static SharedStateResult selectSharedElementCarrier(Object array,
+                                                               int index) {
+        beginBookkeeping();
+        try {
+            return selectElementCarrier(array, index);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult selectElementCarrier(Object array,
+                                                          int index) {
+        if (array == null || index < 0) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "an element carrier needs an array and a "
+                            + "non-negative index"), null, activeRegion());
+        }
+        EngineApi api = engine();
+        if (!api.sharedStateEvidenceAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_SELECT, ""), null,
+                    activeRegion());
+        }
+        long initial;
+        try {
+            initial = api.selectSharedElementCarrier(array, index);
+        } catch (Throwable throwable) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    rootCause(throwable)), null, activeRegion());
+        }
+        if (initial < 0L) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    selectStatus(initial), "",
+                    "selectSharedElementCarrier returned " + initial), null,
+                    activeRegion());
+        }
+        return recordShared(new SharedStateResult(
+                        SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.OK, "", initial, new JsonObject(),
+                        new JsonObject()),
+                SharedCarrier.element(array, index), activeRegion());
+    }
+
+    /**
+     * Selects one map as a symbolic carrier of its own whole state.
+     *
+     * <p>A map has no fixed slot, so it is not selectable as a field or as an
+     * element; what is selected is the map's <em>state</em>, and every later
+     * selected mutation publishes one immutable whole-map version of it while
+     * every later query binds to the state it may have observed. That is the
+     * same contract a scalar carrier has, over a different expression
+     * shape.</p>
+     *
+     * <p>{@code declaringClass}, {@code fieldName} and {@code descriptor} are
+     * the field the map is <em>held in</em>, not the location being selected.
+     * The VM addresses the location by the map's own session identity, which
+     * no second run can name; the declared field is the join a later run can,
+     * so it is recorded here when the caller knows it and left empty when it
+     * does not. Empty costs cross-run pairing and nothing else - the slice
+     * addresses locations by the VM's identity either way.</p>
+     */
+    public static SharedStateResult selectSharedMapCarrier(
+            Object map, String declaringClass, String fieldName,
+            String descriptor) {
+        beginBookkeeping();
+        try {
+            return selectMapCarrier(map, declaringClass, fieldName,
+                    descriptor);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult selectMapCarrier(
+            Object map, String declaringClass, String fieldName,
+            String descriptor) {
+        if (map == null) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "a map carrier needs the map it selects"), null,
+                    activeRegion());
+        }
+        EngineApi api = engine();
+        if (!api.sharedMapEvidenceAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_SELECT, ""), null,
+                    activeRegion());
+        }
+        long initial;
+        try {
+            initial = api.selectSharedMapCarrier(map);
+        } catch (Throwable throwable) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    rootCause(throwable)), null, activeRegion());
+        }
+        if (initial < 0L) {
+            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    selectStatus(initial), "",
+                    "selectSharedMapCarrier returned " + initial), null,
+                    activeRegion());
+        }
+        return recordShared(new SharedStateResult(
+                        SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.OK, "", initial, new JsonObject(),
+                        new JsonObject()),
+                SharedCarrier.map(map, declaringClass, fieldName, descriptor),
+                activeRegion());
+    }
+
+    /**
+     * Admits one destination Map to the exact producer version selected by
+     * the frozen workflow edge.
+     *
+     * <p>This path never falls back to {@link #selectMapCarrier}: failure
+     * before native admission must leave the destination unselected, because
+     * a fresh local INITIAL would be a different value lineage that merely
+     * happens to occupy the same declared field.</p>
+     */
+    private static SharedStateResult admitPlannedSharedMapState(
+            ActiveRegion active, SharedCarrierRequest request, Object map,
+            PlannedMapAdmission admission) {
+        if (active == null || request == null || admission == null
+                || !admission.required()) {
+            return failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "planned Map admission is missing its exact task edge");
+        }
+        if (map == null || map == MissingValue.INSTANCE) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "planned Map input " + admission.inputPort
+                            + " has no concrete destination Map"), null,
+                    active);
+        }
+        if (!admission.valid()) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.NOT_SELECTED, "",
+                    "planned Map input " + admission.inputPort + ": "
+                            + admission.failure), null, active);
+        }
+        Long version = configuration().publishedMapVersion(admission);
+        if (version == null || version.longValue() <= 0L) {
+            String detail = "planned Map producer "
+                    + admission.producerTaskId + " has not published "
+                    + admission.producerOutputPort;
+            active.deferPlannedProducerPrerequisite(
+                    admission.inputPort, detail);
+            // This is a candidate-order miss, not evidence that the frozen
+            // edge is invalid.  A later compatible root may run after the
+            // exact producer commits.  Keep the
+            // destination unselected and the candidate open; if no access
+            // ever succeeds, the terminal candidate gate names one bounded
+            // unanswered occurrence instead of importing a local INITIAL.
+            diag("PLANNED_SHARED_STATE_PREREQUISITE_PENDING", detail);
+            return failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.NOT_SELECTED, "", detail);
+        }
+        active.resolvePlannedProducerPrerequisite(admission.inputPort);
+        EngineApi api = engine();
+        if (!api.sharedMapProducerAdmissionAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_SELECT, ""), null, active);
+        }
+        final long readEventId;
+        try {
+            readEventId = api.admitSharedMapVersion(map,
+                    version.longValue(), admission.selectedEdgeId);
+        } catch (Throwable throwable) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    rootCause(throwable)), null, active);
+        }
+        if (readEventId <= 0L) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    readEventId < 0L ? selectStatus(readEventId)
+                            : SharedStateEvidence.MALFORMED_ENVELOPE, "",
+                    "admitSharedMapVersion returned " + readEventId
+                            + " for " + admission.selectedEdgeId), null,
+                    active);
+        }
+        return recordShared(new SharedStateResult(
+                        SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.OK, "", 0L, new JsonObject(),
+                        new JsonObject()),
+                SharedCarrier.map(map, request.declaringClass,
+                        request.fieldName, request.descriptor), active);
+    }
+
+    /** {@link #selectSharedMapCarrier} with no declared holding field. */
+    public static SharedStateResult selectSharedMapCarrier(Object map) {
+        return selectSharedMapCarrier(map, "", "", "");
+    }
+
+    /**
+     * Reads back the whole-map states published for one selected map,
+     * together with how every query of it was resolved.
+     *
+     * <p>The envelope is the version store's own, unchanged: the same kind,
+     * the same schema version and the same members a field read-out returns,
+     * with {@code MAP_STATE} as the location kind and the reserved
+     * whole-state slot. It is therefore decoded by exactly the code path a
+     * field envelope is, which is the point - fields, elements and maps
+     * differ in the shape of one expression, not in how their evidence is
+     * admitted.</p>
+     */
+    public static SharedStateResult captureSharedMapVersions(Object map) {
+        return captureSharedMapVersions(map, "", "", "", activeRegion());
+    }
+
+    private static SharedStateResult captureSharedMapVersions(
+            Object map, String declaringClass, String fieldName,
+            String descriptor, ActiveRegion active) {
+        beginBookkeeping();
+        try {
+            return captureMapVersions(map, declaringClass, fieldName,
+                    descriptor, active);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult captureMapVersions(
+            Object map, String declaringClass, String fieldName,
+            String descriptor, ActiveRegion active) {
+        if (map == null) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_VERSIONS,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "a map carrier needs the map it selects"), null, active);
+        }
+        EngineApi api = engine();
+        if (!api.sharedMapEvidenceAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_VERSIONS, ""), null, active);
+        }
+        SharedCarrier carrier = SharedCarrier.map(map, declaringClass,
+                fieldName, descriptor);
+        String serialized = memoizedReadOut(carrier.key());
+        if (serialized == null) {
+            try {
+                serialized = memoizeReadOut(carrier.key(),
+                        api.sharedMapVersions(map));
+            } catch (Throwable throwable) {
+                return recordShared(failedShared(
+                        SharedStateEvidence.STAGE_VERSIONS,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        rootCause(throwable)), null, active);
+            }
+        }
+        return recordShared(decodeVersionsEnvelope(serialized, carrier,
+                evidenceIdentity(active)), null, active);
+    }
+
+    /**
+     * Reads back the versions published for one selected field, together with
+     * how every read of it was resolved.
+     */
+    public static SharedStateResult captureSharedFieldVersions(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        return captureSharedFieldVersions(owner, declaringClass, fieldName,
+                descriptor, activeRegion());
+    }
+
+    private static SharedStateResult captureSharedFieldVersions(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, ActiveRegion active) {
+        beginBookkeeping();
+        try {
+            return captureFieldVersions(owner, declaringClass, fieldName,
+                    descriptor, active);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult captureFieldVersions(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor, ActiveRegion active) {
+        String missing = missingCarrierMetadata(owner, declaringClass,
+                fieldName, descriptor);
+        if (!missing.isEmpty()) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_VERSIONS,
+                    SharedStateEvidence.MISSING_METADATA, "", missing), null,
+                    active);
+        }
+        EngineApi api = engine();
+        if (!api.sharedStateEvidenceAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_VERSIONS, ""), null, active);
+        }
+        SharedCarrier carrier = SharedCarrier.field(owner, declaringClass,
+                fieldName, descriptor);
+        String serialized = memoizedReadOut(carrier.key());
+        if (serialized == null) {
+            try {
+                serialized = memoizeReadOut(carrier.key(),
+                        api.sharedFieldVersions(owner, declaringClass,
+                                fieldName, descriptor));
+            } catch (Throwable throwable) {
+                return recordShared(failedShared(
+                        SharedStateEvidence.STAGE_VERSIONS,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        rootCause(throwable)), null, active);
+            }
+        }
+        return recordShared(decodeVersionsEnvelope(serialized, carrier,
+                evidenceIdentity(active)), null, active);
+    }
+
+    /** {@link #captureSharedFieldVersions} for one selected array element. */
+    public static SharedStateResult captureSharedElementVersions(
+            Object array, int index) {
+        return captureSharedElementVersions(array, index, activeRegion());
+    }
+
+    private static SharedStateResult captureSharedElementVersions(
+            Object array, int index, ActiveRegion active) {
+        beginBookkeeping();
+        try {
+            return captureElementVersions(array, index, active);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult captureElementVersions(
+            Object array, int index, ActiveRegion active) {
+        if (array == null || index < 0) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_VERSIONS,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "an element carrier needs an array and a "
+                            + "non-negative index"), null, active);
+        }
+        EngineApi api = engine();
+        if (!api.sharedStateEvidenceAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_VERSIONS, ""), null, active);
+        }
+        SharedCarrier carrier = SharedCarrier.element(array, index);
+        String serialized = memoizedReadOut(carrier.key());
+        if (serialized == null) {
+            try {
+                serialized = memoizeReadOut(carrier.key(),
+                        api.sharedElementVersions(array, index));
+            } catch (Throwable throwable) {
+                return recordShared(failedShared(
+                        SharedStateEvidence.STAGE_VERSIONS,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        rootCause(throwable)), null, active);
+            }
+        }
+        return recordShared(decodeVersionsEnvelope(serialized, carrier,
+                evidenceIdentity(active)), null, active);
+    }
+
+    /**
+     * Reads back the session's one event-order ledger.
+     *
+     * <p>The ledger spans the whole session, not this region, and it is the
+     * single order domain every channel contributes to.  It is captured
+     * before the region's symbolic context is torn down, because a closed
+     * session has none.</p>
+     */
+    public static SharedStateResult captureSessionEventLedger() {
+        return captureSessionEventLedger(activeRegion());
+    }
+
+    private static SharedStateResult captureSessionEventLedger(
+            ActiveRegion active) {
+        beginBookkeeping();
+        try {
+            return captureEventLedger(active);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult captureEventLedger(ActiveRegion active) {
+        EngineApi api = engine();
+        if (!api.sharedStateEvidenceAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_LEDGER, ""), null, active);
+        }
+        String serialized = memoizedReadOut(LEDGER_READ_OUT_KEY);
+        if (serialized == null) {
+            try {
+                serialized = memoizeReadOut(LEDGER_READ_OUT_KEY,
+                        api.eventLedger());
+            } catch (Throwable throwable) {
+                return recordShared(failedShared(
+                        SharedStateEvidence.STAGE_LEDGER,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        rootCause(throwable)), null, active);
+            }
+        }
+        return recordShared(decodeLedgerEnvelope(serialized,
+                evidenceIdentity(active)), null, active);
+    }
+
+    /**
+     * Raw VM read-outs already taken while closing the selected occurrence on
+     * this thread, keyed by the location they answer for.
+     *
+     * <p>Several evidence builders may ask for the same selected carrier.
+     * These are not cheap payloads -
+     * a version's {@code pathGuard} is the whole-thread conjunction at the
+     * moment it was published, so a versions envelope is already
+     * O(versions x path condition) - and each copy is serialized in the VM and
+     * then decoded from UTF-8 by the interpreter on the way back.</p>
+     *
+     * <p>This memoizes the <em>bytes</em>, never the record.  The scope is one
+     * {@link #closeOccurrence} pass on one
+     * thread, opened and closed explicitly: the VM's version list grows while
+     * a region runs, and an answer that outlived the close would be a stale
+     * one served for a live location.  It is a memo of one query, not a match
+     * by call order or payload equality - the key is the location.</p>
+     */
+    private static final ThreadLocal<Map<String, String>> READ_OUT_MEMO =
+            new ThreadLocal<Map<String, String>>();
+
+    /** Cache key for the session ledger, which names no single location. */
+    private static final String LEDGER_READ_OUT_KEY = "SESSION_EVENT_LEDGER";
+
+    // Package-private rather than private: the scope discipline below - open,
+    // memoize, close, and never answer outside a scope - is what keeps a stale
+    // read-out from being served for a live location, and the test in this
+    // package drives it directly.
+
+    /** Opens the memo for one activation close. */
+    static void beginReadOutMemo() {
+        READ_OUT_MEMO.set(new HashMap<String, String>());
+    }
+
+    /** Closes it.  Nothing survives the close that took the read-outs. */
+    static void endReadOutMemo() {
+        READ_OUT_MEMO.remove();
+    }
+
+    /** The bytes already read for {@code key} in this close, or null. */
+    static String memoizedReadOut(String key) {
+        Map<String, String> memo = READ_OUT_MEMO.get();
+        return memo == null ? null : memo.get(key);
+    }
+
+    /** Files {@code serialized} under {@code key} and returns it unchanged. */
+    static String memoizeReadOut(String key, String serialized) {
+        Map<String, String> memo = READ_OUT_MEMO.get();
+        if (memo != null && serialized != null) memo.put(key, serialized);
+        return serialized;
+    }
+
+    /**
+     * Reads one VM version envelope.  An envelope for a location that was
+     * never selected is its own named finding: "nobody wrote it" and "nobody
+     * was watching" are opposite answers and only one of them is evidence.
+     */
+    static SharedStateResult decodeVersionsEnvelope(
+            String serialized, SharedCarrier carrier,
+            RecordedEvidenceIdentity identity) {
+        return decodeVersionsEnvelope(serialized, carrier, identity,
+                activeRegion());
+    }
+
+    /** Decodes one read-out for the exact activation that captured it. */
+    private static SharedStateResult decodeVersionsEnvelope(
+            String serialized, SharedCarrier carrier,
+            RecordedEvidenceIdentity identity, ActiveRegion active) {
+        JsonElement parsed = parseJson(serialized);
+        if (!parsed.isJsonObject()) {
+            return failedShared(SharedStateEvidence.STAGE_VERSIONS,
+                    SharedStateEvidence.MALFORMED_ENVELOPE, "",
+                    "version read-out returned no JSON object");
+        }
+        JsonObject envelope = parsed.getAsJsonObject();
+        String fault = SharedStateEvidence.versionsFault(envelope);
+        if (!fault.isEmpty()) {
+            boolean unselected = SharedStateEvidence.VERSIONS_ENVELOPE_KIND
+                    .equals(string(envelope, "kind"))
+                    && !bool(envelope, "selected", false);
+            int status = unselected ? SharedStateEvidence.NOT_SELECTED
+                    : SharedStateEvidence
+                    .expressionSerializationTruncationFault(fault)
+                    ? SharedStateEvidence.EXPRESSION_SERIALIZATION_TRUNCATED
+                    : SharedStateEvidence.MALFORMED_ENVELOPE;
+            return failedShared(SharedStateEvidence.STAGE_VERSIONS,
+                    status,
+                    SharedStateEvidence.locationKey(envelope), fault);
+        }
+        // The VM writes an unguarded write's guard as JSON null, which no
+        // tree copy preserves. Make it explicit only after admission: a
+        // serializer-truncated tree is refused without rewriting evidence
+        // that cannot be used.
+        SharedStateEvidence.normalizeGuards(envelope);
+        String locationKey = SharedStateEvidence.locationKey(envelope);
+        JsonObject record = SharedStateEvidence.versionsRecord(locationKey,
+                envelope, identity);
+        if (carrier != null) {
+            // The VM addresses a location by its own session identity; the
+            // slice and the composer address one by its declared Java field.
+            // Only this call site holds both, so the join is recorded here
+            // rather than reconstructed by matching values later.
+            record.add("carrier", carrier.toJson());
+        }
+        // Publication can run after the owner thread has left ACTIVE.  Its
+        // explicit activation is the only authority for repeated instances;
+        // never fall back to the publication thread's empty ThreadLocal.
+        addActivationIdentity(object(record, "envelope"), active);
+        return new SharedStateResult(SharedStateEvidence.STAGE_VERSIONS,
+                SharedStateEvidence.OK, locationKey, 0L, envelope, record);
+    }
+
+    /**
+     * Gives every write and read in one envelope the activation address the
+     * rest of the pipeline joins on.
+     *
+     * <p>The VM stamps a write with the {@code taskId} of the context that
+     * published it and a read with its {@code regionId}. Neither is a
+     * cross-run address: a task id means nothing without the plan that minted
+     * it, and a static region is shared by every concurrent activation of it.
+     * This process holds that plan, so it resolves both here - a write
+     * exactly, through its own task, and a read through the activation that
+     * is running when the read is read out.</p>
+     *
+     * <p>The reader address used to be "the campaign's one activation of that
+     * region", an implicit root-call fallback which silently dropped reader
+     * attribution whenever several occurrences shared a template. The replacement is
+     * the identity the running region already carries - the same fields
+     * {@link #evidenceIdentity} stamps - and a read that no active region owns
+     * is marked by name rather than left unaddressed, because "nobody was
+     * running" and "the row was never considered" are different findings.</p>
+     */
+    private static void addActivationIdentity(JsonObject envelope) {
+        addActivationIdentity(envelope, activeRegion());
+    }
+
+    private static void addActivationIdentity(JsonObject envelope,
+                                              ActiveRegion active) {
+        Configuration config = configuration();
+        for (JsonElement element : array(envelope, "versions")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject version = element.getAsJsonObject();
+            RuntimeTask writer = config.taskById(
+                    string(version, "taskId"));
+            if (writer == null) continue;
+            version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
+                    writer.sourceKey);
+            version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
+                    writer.occurrenceId);
+        }
+        for (JsonElement element : array(envelope, "reads")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject read = element.getAsJsonObject();
+            if (active == null) {
+                read.addProperty(READER_AUTHORITY_FIELD,
+                        READER_OUTSIDE_SELECTED_REGION);
+                continue;
+            }
+            RuntimeTask reader = active.activation;
+            // The VM addresses a read by its static region.  Only an active
+            // region can say which activation of that region performed it,
+            // and a read whose region is not the running one is a read this
+            // activation did not perform: it is marked, never attributed.
+            if (!reader.regionId.equals(string(read, "regionId"))) {
+                read.addProperty(READER_AUTHORITY_FIELD,
+                        READER_FOREIGN_REGION);
+                continue;
+            }
+            read.addProperty(SharedStateEvidence.READER_SOURCE_KEY,
+                    reader.sourceKey);
+            read.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
+                    reader.occurrenceId);
+            read.addProperty(READER_AUTHORITY_FIELD,
+                    READER_ACTIVE_REGION_AUTHORITY);
+        }
+    }
+
+    /** Member naming where one read's activation address came from. */
+    static final String READER_AUTHORITY_FIELD = "readerAuthority";
+    /** Authority of a reader address taken from the running activation. */
+    static final String READER_ACTIVE_REGION_AUTHORITY =
+            "ACTIVE_REGION_READER_IDENTITY_V1";
+    /** Marker for a read read out while no selected region was running. */
+    static final String READER_OUTSIDE_SELECTED_REGION =
+            "READER_OUTSIDE_SELECTED_REGION";
+    /** Marker for a read whose static region is not the running one. */
+    static final String READER_FOREIGN_REGION =
+            "READER_REGION_NOT_ACTIVE_ACTIVATION";
+
+    /**
+     * The identity every record of one read-out batch is stamped with.
+     *
+     * <p>An activation outside any campaign task has none of these
+     * identities, so it produces an unstamped record, which the admission
+     * layer then refuses by name. That is deliberate: evidence whose observer
+     * cannot be named is exactly what the stamp exists to keep out.</p>
+     */
+    private static RecordedEvidenceIdentity evidenceIdentity(
+            ActiveRegion active) {
+        if (active == null) return null;
+        return RecordedEvidenceIdentity.of(
+                RecordedEvidenceIdentity.declaredRunId(),
+                sessionIdentity(active), active.activation.taskId,
+                active.activation.occurrenceId,
+                active.activation.sourceKey, active.evidenceSnapshot());
+    }
+
+    /**
+     * The symbolic session lifetime one activation's evidence belongs to.
+     *
+     * <p>A region that runs without a workload session still belongs to a
+     * session - the VM opens a region-scoped lifetime for it - but this
+     * process never learned that lifetime's id, so the activation's own token
+     * names it. The two forms are kept distinguishable on purpose: records of
+     * one workload session share the first, and records of two region
+     * lifetimes never share the second.</p>
+     */
+    private static String sessionIdentity(ActiveRegion active) {
+        long session = workloadSessionId;
+        return session != 0L ? "workload#" + session
+                : "region#" + active.token;
+    }
+
+    /**
+     * Offers one compiled read-cut gate to the running activation.
+     *
+     * <p>The gate is admitted, recorded and left to observe. It is
+     * deliberately <em>not</em> a wait: distributed replay only observes the
+     * selected read and reports that the model's proposed order was not
+     * enforced.</p>
+     *
+     * <p>What is enforced here are the invariants. A row that is not a gate
+     * this authority compiled, that claims to write a program field, to
+     * replace an RPC return value, or whose placement contradicts the selected
+     * access is refused with its own named reason and becomes a gate gap in
+     * the region result. Nothing is dropped silently.</p>
+     */
+    public static ReadCutGateResult installReadCutGate(JsonObject gate) {
+        ActiveRegion active = activeRegion();
+        // The row is judged before its context: whether a gate may be
+        // installed at all is a property of the gate, and answering "no active
+        // region" to one that would write a program field reports the lesser
+        // finding and hides the greater.
+        String unsafe = SparseReadCutGate.unsafeGateReason(gate);
+        if (!unsafe.isEmpty()) {
+            return recordReadCut(new ReadCutGateResult(
+                    SparseReadCutGate.refusal(unsafe, gate,
+                            "the offered gate was not installed"), false),
+                    active);
+        }
+        if (active == null) {
+            return recordReadCut(new ReadCutGateResult(
+                    SparseReadCutGate.refusal(READ_CUT_NO_ACTIVE_REGION, gate,
+                            "a read-cut gate was offered outside any region "
+                                    + "activation"), false), null);
+        }
+        JsonObject installation = copyJsonTree(gate);
+        installation.addProperty("installedAs",
+                SelectedReadCut.OBSERVE_AND_CONFIRM);
+        installation.addProperty("parked", false);
+        installation.addProperty("wroteProgramField", false);
+        installation.addProperty("replacedRpcReturnValue", false);
+        return recordReadCut(new ReadCutGateResult(installation, true),
+                active);
+    }
+
+    /**
+     * Installs one concrete field read from the exact scheduled producer
+     * version.  Unlike ordinary carrier selection this path never creates a
+     * destination INITIAL: failure leaves the field unselected and records a
+     * named provenance gap.
+     */
+    private static SharedStateResult admitPlannedSharedFieldState(
+            ActiveRegion active, SharedCarrierRequest request, Object owner,
+            PlannedFieldAdmission admission) {
+        if (active == null || request == null || admission == null) {
+            return failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "planned field admission is missing its exact task edge");
+        }
+        if (owner == null || owner == MissingValue.INSTANCE) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    "planned field input " + admission.inputPort
+                            + " has no concrete destination owner"), null,
+                    active);
+        }
+        if (!admission.valid()) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.NOT_SELECTED, "",
+                    "planned field input " + admission.inputPort + ": "
+                            + admission.failure), null, active);
+        }
+        Long version = configuration().publishedFieldVersion(admission);
+        if (version == null || version.longValue() <= 0L) {
+            String detail = "planned field producer "
+                    + admission.producerTaskId + " has not published "
+                    + admission.producerOutputPort;
+            active.deferPlannedProducerPrerequisite(
+                    admission.inputPort, detail);
+            // As for Map state above, absence from the campaign registry is
+            // provisional while other selected occurrences are live.  It is
+            // neither permission to use the concrete destination nor a
+            // durable shared-state gap for this candidate.
+            diag("PLANNED_SHARED_STATE_PREREQUISITE_PENDING", detail);
+            return failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.NOT_SELECTED, "", detail);
+        }
+        active.resolvePlannedProducerPrerequisite(admission.inputPort);
+        EngineApi api = engine();
+        if (!api.sharedFieldProducerAdmissionAvailable()) {
+            return recordShared(unavailableShared(
+                    SharedStateEvidence.STAGE_SELECT, ""), null, active);
+        }
+        final long readEventId;
+        try {
+            readEventId = api.admitSharedFieldVersion(owner,
+                    request.declaringClass, request.fieldName,
+                    request.descriptor, version.longValue(),
+                    admission.selectedEdgeId);
+        } catch (Throwable throwable) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    rootCause(throwable)), null, active);
+        }
+        if (readEventId <= 0L) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    readEventId < 0L ? selectStatus(readEventId)
+                            : SharedStateEvidence.MALFORMED_ENVELOPE, "",
+                    "admitSharedFieldVersion returned " + readEventId
+                            + " for " + admission.selectedEdgeId), null,
+                    active);
+        }
+        String sourceFailure = installPlannedNestedSourceAliases(active,
+                request, owner, admission, api);
+        if (!sourceFailure.isEmpty()) {
+            return recordShared(failedShared(
+                    SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    sourceFailure), null, active);
+        }
+        return recordShared(new SharedStateResult(
+                        SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.OK, "", 0L, new JsonObject(),
+                        new JsonObject()),
+                SharedCarrier.field(owner, request.declaringClass,
+                        request.fieldName, request.descriptor), active);
+    }
+
+    /**
+     * Restores exact configured primitive source leaves on a transferred
+     * reference value.
+     *
+     * <p>The reference admission above is the authority that this concrete
+     * destination denotes the selected producer value.  Only after that
+     * succeeds may a source declaration attached to that producer output be
+     * materialized on the referenced object.  The VM name is the producer's
+     * original occurrence/source identity, so this creates no second input
+     * and performs no concrete-value or object-identity join.</p>
+     */
+    private static String installPlannedNestedSourceAliases(
+            ActiveRegion active, SharedCarrierRequest request, Object owner,
+            PlannedFieldAdmission admission, EngineApi api) {
+        if (admission.sourceAliases.isEmpty()) return "";
+        Field carried = declaredInstanceField(owner, request.declaringClass,
+                request.fieldName, request.descriptor);
+        if (carried == null) {
+            return "planned source alias has no exact carried field for "
+                    + admission.inputPort;
+        }
+
+        final Object referent;
+        try {
+            referent = carried.get(owner);
+        } catch (Throwable failure) {
+            return "planned source alias cannot read carried field: "
+                    + rootCause(failure);
+        }
+        if (referent == null || referent == MissingValue.INSTANCE
+                || carried.getType().isPrimitive()) {
+            return "planned source alias requires a non-null reference for "
+                    + admission.inputPort;
+        }
+
+        List<Field> sourceFields = new ArrayList<>();
+        for (PlannedSourceAlias alias : admission.sourceAliases) {
+            Field sourceField = declaredInstanceField(referent,
+                    alias.fieldSignature);
+            if (sourceField == null || !sourceField.getType().isPrimitive()) {
+                return "planned source alias " + alias.sourceId
+                        + " is not an exact primitive field on the carried "
+                        + "reference";
+            }
+            sourceFields.add(sourceField);
+        }
+
+        for (int index = 0; index < admission.sourceAliases.size(); index++) {
+            PlannedSourceAlias alias = admission.sourceAliases.get(index);
+            Field sourceField = sourceFields.get(index);
+            try {
+                String published = configuration().publishedSourceSymbol(
+                        admission, alias);
+                if (published.isEmpty()) {
+                    return "planned source alias " + alias.sourceId
+                            + " has no accepted producer VM symbol";
+                }
+                String prefix = alias.symbol();
+                api.symbolizeExactField(referent,
+                        exactFieldSignature(sourceField), prefix);
+                ensurePathRecordingStarted(active);
+                Object value = sourceField.get(referent);
+                JsonElement expression = engineExpression(
+                        api.fieldExpression(referent,
+                                sourceField.getDeclaringClass().getName(),
+                                sourceField.getName(), javaTypeDescriptor(
+                                        sourceField.getType().getTypeName()),
+                                value));
+                JsonObject verified = SymbolicSourceEvidence.event(
+                        alias.sourceId, alias.sourceOccurrenceId,
+                        alias.fieldSignature, expression);
+                if (!published.equals(string(verified, "rawSymbol"))) {
+                    return "planned source alias " + alias.sourceId
+                            + " produced a different VM symbol";
+                }
+            } catch (Throwable failure) {
+                return "planned source alias " + alias.sourceId
+                        + " failed: " + rootCause(failure);
+            }
+        }
+        return "";
+    }
+
+    /** A read-cut gate was offered where no activation could carry it. */
+    public static final String READ_CUT_NO_ACTIVE_REGION =
+            "GATE_NO_ACTIVE_REGION";
+    /** The selected order is observed and confirmed, never scheduled. */
+    public static final String READ_CUT_ORDER_NOT_ENFORCED =
+            "GATE_ORDER_NOT_ENFORCED";
+
+    /**
+     * Files one gate outcome with the active region.
+     *
+     * <p>An installed gate carries its own coverage fact: the run observes and
+     * confirms the selected read, and does not enforce its order. Recording
+     * that beside the installation is what keeps a confirmed read from being
+     * read as an enforced one.</p>
+     */
+    private static ReadCutGateResult recordReadCut(ReadCutGateResult result,
+                                                   ActiveRegion active) {
+        if (active != null) {
+            if (result.installed) {
+                active.readCutGates.add(result.record);
+                active.readCutGaps.add(SparseReadCutGate.refusal(
+                        READ_CUT_ORDER_NOT_ENFORCED, result.record,
+                        "the gate observes and confirms the selected read; "
+                                + "no wait was installed"));
+            } else {
+                active.readCutGaps.add(result.record);
+            }
+        }
+        diag(result.installed ? "READ_CUT_GATE" : SparseReadCutGate.GAP_KIND,
+                result.toString());
+        return result;
+    }
+
+    /**
+     * Outcome of one read-cut gate installation: either an admitted
+     * observation-only gate or exactly one named refusal.
+     */
+    public static final class ReadCutGateResult {
+        private final JsonObject record;
+        private final boolean installed;
+
+        private ReadCutGateResult(JsonObject record, boolean installed) {
+            this.record = record;
+            this.installed = installed;
+        }
+
+        /** Whether the gate was admitted as an observation. */
+        public boolean installed() {
+            return installed;
+        }
+
+        /** Named reason for a refusal; empty for an admitted gate. */
+        public String reason() {
+            return installed ? "" : string(record, "reason");
+        }
+
+        /** The admitted installation; empty after a refusal. */
+        public JsonObject record() {
+            return installed ? copyJsonTree(record) : new JsonObject();
+        }
+
+        /** Named coverage gap for a refusal; empty after an admission. */
+        public JsonObject gap() {
+            return installed ? new JsonObject() : copyJsonTree(record);
+        }
+
+        @Override
+        public String toString() {
+            return "ReadCutGateResult[" + (installed ? "OBSERVING "
+                    + string(record, "gateId") : reason()) + "]";
+        }
+    }
+
+    /** Reads one VM ledger envelope. */
+    static SharedStateResult decodeLedgerEnvelope(
+            String serialized, RecordedEvidenceIdentity identity) {
+        JsonElement parsed = parseJson(serialized);
+        if (!parsed.isJsonObject()) {
+            return failedShared(SharedStateEvidence.STAGE_LEDGER,
+                    SharedStateEvidence.MALFORMED_ENVELOPE, "",
+                    "event ledger read-out returned no JSON object");
+        }
+        JsonObject envelope = parsed.getAsJsonObject();
+        String fault = SharedStateEvidence.ledgerFault(envelope);
+        if (!fault.isEmpty()) {
+            return failedShared(SharedStateEvidence.STAGE_LEDGER,
+                    SharedStateEvidence.MALFORMED_ENVELOPE, "", fault);
+        }
+        return new SharedStateResult(SharedStateEvidence.STAGE_LEDGER,
+                SharedStateEvidence.OK, "", 0L, envelope,
+                SharedStateEvidence.ledgerRecord(envelope, identity));
+    }
+
+    /**
+     * One shared location a task asked this activation to select.
+     *
+     * <p>The declaration is deliberately thin: a field named by its declaring
+     * class, name and descriptor, or an array element named by its index,
+     * both reached by the same {@code fieldPath} from the region receiver
+     * that a symbolize action already uses - an empty path meaning the
+     * receiver itself. Nothing here searches for a plausible owner: a
+     * declaration that does not resolve becomes a named gap, because
+     * selecting the wrong location would record provenance for a field the
+     * target never reads.</p>
+     */
+    static final class SharedCarrierRequest {
+        private final String declaringClass;
+        private final String fieldName;
+        private final String descriptor;
+        private final String sourceKind;
+        private final int index;
+        private final boolean element;
+        private final boolean mapState;
+        private final List<String> fieldPath = new ArrayList<>();
+
+        SharedCarrierRequest(JsonObject declaration) {
+            this.declaringClass = string(declaration, "declaringClass");
+            this.fieldName = string(declaration, "fieldName");
+            this.descriptor = string(declaration, "descriptor");
+            this.sourceKind = string(declaration, "sourceKind");
+            this.index = integer(declaration, "index", -1);
+            this.element = "ARRAY_ELEMENT".equals(
+                    string(declaration, "kind"));
+            this.mapState = SharedStateEvidence.LOCATION_KIND_MAP_STATE
+                    .equals(string(declaration, "kind"));
+            for (JsonElement segment : array(declaration, "fieldPath")) {
+                if (segment.isJsonPrimitive()) {
+                    fieldPath.add(safe(segment.getAsString()));
+                }
+            }
+        }
+
+        /** How this declaration reads back in a gap. */
+        String describe() {
+            return (element ? "element " + index
+                    : (mapState ? "map state of " : "")
+                    + declaringClass + "#" + fieldName + ":" + descriptor)
+                    + " via receiver path " + fieldPath;
+        }
+
+        /**
+         * The object the selection is made on, reached from {@code receiver},
+         * or {@link MissingValue#INSTANCE} when the path does not resolve.
+         *
+         * <p>A field carrier selects on the object that <em>declares</em> the
+         * field, which is the owner of the path's last segment; an element
+         * carrier selects on the array, and a map carrier on the map, both of
+         * which are that segment's value.</p>
+         */
+        Object resolveOwner(Object receiver) {
+            if (fieldPath.isEmpty()) return receiver;
+            return element || mapState
+                    ? resolveFieldPathValue(receiver, fieldPath)
+                    : resolveFieldPathLeafOwner(receiver, fieldPath);
+        }
+
+        boolean accessOwnerBound() {
+            return "ACTIVATION_FIELD_RECEIVER".equals(sourceKind);
+        }
+
+        boolean matchesAccess(String fieldSignature) {
+            // Cheapest test first: this hook now stands at every selected
+            // field write as well as every selected read, and parsing a
+            // signature for a carrier that is not access-bound would be work
+            // done per store for nothing.
+            if (!accessOwnerBound()) return false;
+            DeclaredField field = FieldPathSpec.declaredField(
+                    fieldSignature);
+            return field != null
+                    && declaringClass.equals(field.owner())
+                    && fieldName.equals(field.name())
+                    && (descriptor.isEmpty() || descriptor.equals(
+                    javaTypeDescriptor(field.type())));
+        }
+
+        String fieldKey() {
+            return RecordedReadFrom.fieldKey(declaringClass, fieldName);
+        }
+
+        SharedStateResult selectAtAccess(ActiveRegion active, Object owner,
+                                         String fieldSignature) {
+            if (mapState) {
+                Object map = readExactField(owner, fieldSignature);
+                PlannedMapAdmission admission = active == null ? null
+                        : active.activation.mapAdmission(fieldSignature);
+                if (admission != null) {
+                    return admitPlannedSharedMapState(active, this, map,
+                            admission);
+                }
+                return selectSharedMapCarrier(map, declaringClass,
+                        fieldName, descriptor);
+            }
+            PlannedFieldAdmission admission = active == null ? null
+                    : active.activation.fieldAdmission(fieldSignature);
+            if (admission != null) {
+                return admitPlannedSharedFieldState(active, this, owner,
+                        admission);
+            }
+            return selectSharedFieldCarrier(owner, declaringClass,
+                    fieldName, descriptor);
+        }
+
+        /** Selects this carrier for {@code active}, or names why it cannot. */
+        SharedStateResult select(ActiveRegion active) {
+            Object owner = resolveOwner(active.receiver);
+            if (owner == MissingValue.INSTANCE) {
+                return recordShared(failedShared(
+                        SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.MISSING_METADATA, "",
+                        "declared carrier owner is unreachable from the "
+                                + "region receiver: " + describe()), null,
+                        active);
+            }
+            if (element) return selectSharedElementCarrier(owner, index);
+            if (mapState) {
+                return selectSharedMapCarrier(owner, declaringClass,
+                        fieldName, descriptor);
+            }
+            return selectSharedFieldCarrier(owner, declaringClass, fieldName,
+                    descriptor);
+        }
+    }
+
+    /**
+     * Selects every carrier this activation's task declared.
+     *
+     * <p>This runs at region entry, before the region's own work, for the
+     * same reason a read-cut gate is offered there: a location becomes
+     * versioned only from the moment it is selected, so a selection made after
+     * the first write would record a store that is missing exactly the write
+     * the reader took. A task that declares none selects none - the absent
+     * list is not an invitation to pick a carrier for it.</p>
+     */
+    private static void selectDeclaredSharedCarriers(ActiveRegion active) {
+        for (SharedCarrierRequest request
+                : active.activation.sharedCarriers) {
+            // This binding is resolved by the exact instrumented field
+            // access, where the actual declaring object is available.  The
+            // activation receiver may be an outer service-loop object and is
+            // never substituted for it.
+            if (request.accessOwnerBound()) continue;
+            try {
+                request.select(active);
+            } catch (Throwable throwable) {
+                recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        request.describe() + ": " + rootCause(throwable)),
+                        null, active);
+            }
+        }
+    }
+
+    /** Selects a demanded carrier on its exact field-access owner once. */
+    private static void selectAccessOwnerSharedCarriers(
+            ActiveRegion active, Object owner, String fieldSignature,
+            boolean allowPlannedAdmission, String method, int unitIndex,
+            int occurrence) {
+        for (SharedCarrierRequest request
+                : active.activation.sharedCarriers) {
+            if (!request.matchesAccess(fieldSignature)) continue;
+            if (!allowPlannedAdmission
+                    && (request.mapState
+                    && active.activation.mapAdmission(fieldSignature) != null
+                    || !request.mapState && !request.element
+                    && active.activation.fieldAdmission(fieldSignature)
+                    != null)) {
+                // An upstream-bound location is admitted only at its
+                // selected read. Selecting it at an earlier putfield would
+                // mint/consume a local INITIAL before exact producer-state
+                // admission can install the scheduled version.
+                continue;
+            }
+            String key = request.declaringClass + "#" + request.fieldName
+                    + "@" + System.identityHashCode(owner);
+            if (!active.accessOwnerCarrierSelections.add(key)) continue;
+            PlannedMapAdmission mapAdmission = request.mapState
+                    ? active.activation.mapAdmission(fieldSignature) : null;
+            PlannedFieldAdmission fieldAdmission = !request.mapState
+                    && !request.element
+                    ? active.activation.fieldAdmission(fieldSignature) : null;
+            String plannedInputPort = mapAdmission != null
+                    ? mapAdmission.inputPort : fieldAdmission == null
+                    ? "" : fieldAdmission.inputPort;
+            if (allowPlannedAdmission && !plannedInputPort.isEmpty()
+                    && !active.activation.matchesPlannedInputAccess(
+                    plannedInputPort, method, unitIndex, owner,
+                    fieldSignature, occurrence)) {
+                // Producer-state admission is for the exact selected read,
+                // not merely another read of the same field in the same
+                // long-lived root.  A later compatible root starts a fresh
+                // occurrence counter and may retry; a later access here may
+                // not silently replace the recorded one.
+                active.accessOwnerCarrierSelections.remove(key);
+                continue;
+            }
+            try {
+                request.selectAtAccess(active, owner, fieldSignature);
+            } catch (Throwable throwable) {
+                recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        request.describe() + ": " + rootCause(throwable)),
+                        null, active);
+            }
+        }
+    }
+
+    /** One location this activation selected as a symbolic carrier. */
+    static final class SharedCarrier {
+        /** Selection shapes, which is the only thing a carrier varies in. */
+        static final String SHAPE_FIELD = "FIELD";
+        static final String SHAPE_ELEMENT = "ELEMENT";
+        static final String SHAPE_MAP = "MAP";
+
+        private final Object owner;
+        private final String declaringClass;
+        private final String fieldName;
+        private final String descriptor;
+        private final int index;
+        private final String shape;
+
+        private SharedCarrier(Object owner, String declaringClass,
+                              String fieldName, String descriptor, int index,
+                              String shape) {
+            this.owner = owner;
+            this.declaringClass = declaringClass;
+            this.fieldName = fieldName;
+            this.descriptor = descriptor;
+            this.index = index;
+            this.shape = shape;
+        }
+
+        static SharedCarrier field(Object owner, String declaringClass,
+                                   String fieldName, String descriptor) {
+            return new SharedCarrier(owner, safe(declaringClass),
+                    safe(fieldName), safe(descriptor), -1, SHAPE_FIELD);
+        }
+
+        static SharedCarrier element(Object array, int index) {
+            return new SharedCarrier(array, "", "", "", index, SHAPE_ELEMENT);
+        }
+
+        /**
+         * One map selected as the carrier of its own whole state. The
+         * declared field is the one holding the map, and is optional: it is
+         * the cross-run join, not the location.
+         */
+        static SharedCarrier map(Object map, String declaringClass,
+                                 String fieldName, String descriptor) {
+            return new SharedCarrier(map, safe(declaringClass),
+                    safe(fieldName), safe(descriptor), -1, SHAPE_MAP);
+        }
+
+        boolean mapState() {
+            return SHAPE_MAP.equals(shape);
+        }
+
+        /** Activation-local dedupe key; never a cross-run address. */
+        String key() {
+            return shape + "/" + System.identityHashCode(owner) + "/"
+                    + declaringClass + "#" + fieldName + ":" + descriptor
+                    + "@" + index;
+        }
+
+        JsonObject toJson() {
+            JsonObject carrier = new JsonObject();
+            carrier.addProperty("kind", SHAPE_ELEMENT.equals(shape)
+                    ? "ARRAY_ELEMENT"
+                    : SHAPE_MAP.equals(shape)
+                    ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
+                    : "DECLARED_FIELD");
+            carrier.addProperty("declaringClass", declaringClass);
+            carrier.addProperty("fieldName", fieldName);
+            carrier.addProperty("descriptor", descriptor);
+            carrier.addProperty("index", index);
+            // The receiver's trace identity, so a version row names its own
+            // location across sessions instead of borrowing a name from an
+            // edge in the same summary. The VM addresses a location by a
+            // per-session rid, and a summary carrying no edge has nothing to
+            // borrow from; this is the identity that outlives the session.
+            // 0 when the trace never recorded this object, which leaves the
+            // row honestly unnameable rather than merging it with another.
+            carrier.addProperty("receiverObjectId",
+                    CausynthTraceRecorder.recordedObjectId(owner));
+            if (!SHAPE_ELEMENT.equals(shape) && !declaringClass.isEmpty()
+                    && !fieldName.isEmpty()) {
+                carrier.addProperty("fieldKey",
+                        declaringClass + "#" + fieldName + ":" + descriptor);
+            }
+            return carrier;
+        }
+
+        /** Native read-out only; JSON decoding belongs to publication. */
+        String rawVersions(EngineApi api) throws Exception {
+            if (SHAPE_ELEMENT.equals(shape)) {
+                return api.sharedElementVersions(owner, index);
+            }
+            if (SHAPE_MAP.equals(shape)) {
+                return api.sharedMapVersions(owner);
+            }
+            return api.sharedFieldVersions(owner, declaringClass, fieldName,
+                    descriptor);
+        }
+
+    }
+
+    private static String missingCarrierMetadata(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        if (owner == null) return "shared carrier has no owner";
+        return firstNonBlank(declaringClass).isEmpty()
+                || firstNonBlank(fieldName).isEmpty()
+                || firstNonBlank(descriptor).isEmpty()
+                ? "shared carrier has no exact declaring class, field name "
+                + "and type descriptor" : "";
+    }
+
+    /**
+     * Maps a negative carrier-selection answer onto a status.  A value outside
+     * the int range is a malformed answer rather than an undeclared refusal.
+     */
+    private static int selectStatus(long answer) {
+        return answer < Integer.MIN_VALUE
+                ? SharedStateEvidence.MALFORMED_ENVELOPE : (int) answer;
+    }
+
+    private static SharedStateResult unavailableShared(String stage,
+                                                       String locationKey) {
+        return failedShared(stage, SharedStateEvidence.API_UNAVAILABLE,
+                locationKey,
+                "this JDK exposes no recorded shared-state evidence API");
+    }
+
+    private static SharedStateResult failedShared(String stage, int status,
+                                                  String locationKey,
+                                                  String detail) {
+        return new SharedStateResult(stage, status, safe(locationKey), 0L,
+                new JsonObject(), SharedStateEvidence.gap(stage, status,
+                locationKey, detail));
+    }
+
+    /**
+     * Files one shared-state outcome with the active region.  A refusal is
+     * kept as a named gap; an admitted record replaces the previous answer for
+     * the same location, because the later read-out of one location is the
+     * more complete one, not a second finding.
+     */
+    private static SharedStateResult recordShared(SharedStateResult result,
+                                                  SharedCarrier carrier,
+                                                  ActiveRegion active) {
+        fileShared(result, carrier, active);
+        diag(result.ok() ? "SHARED_STATE" : SharedStateEvidence.GAP_KIND,
+                result.toString());
+        return result;
+    }
+
+    /** Files an already-decoded outcome without touching the closed VM. */
+    private static void fileShared(SharedStateResult result,
+                                   SharedCarrier carrier,
+                                   ActiveRegion active) {
+        if (active != null) {
+            if (!result.ok()) {
+                active.sharedStateGaps.add(result.record);
+            } else if (carrier != null) {
+                active.sharedCarriers.put(carrier.key(), carrier);
+            } else if (SharedStateEvidence.STAGE_LEDGER.equals(
+                    result.stage)) {
+                active.sessionEventLedger = result.record;
+            } else if (!result.locationKey.isEmpty()) {
+                active.sharedStateRecords.put(result.locationKey,
+                        result.record);
+            }
+        }
+    }
+
+    /**
+     * Captures every native shared-state envelope while the owner thread still
+     * owns the VM context.  It deliberately does not parse JSON: the returned
+     * strings are the VM's exact bytes and can outlive the region safely.
+     *
+     * <p>Carriers and the ledger remain gated apart.  An RPC-only activation
+     * has no carrier, but still needs the workload event ledger that orders
+     * its handoff.  Failures are retained beside raw read-outs and become the
+     * same named gaps during asynchronous assembly.</p>
+     */
+    private static RawSharedStateReadOut captureRecordedSharedStateRaw(
+            ActiveRegion active, EngineApi api,
+            RecordedEvidenceIdentity identity) {
+        List<RawSharedCarrierReadOut> carriers = new ArrayList<>();
+        for (SharedCarrier carrier
+                : new ArrayList<>(active.sharedCarriers.values())) {
+            try {
+                if (carrier.mapState()
+                        ? !api.sharedMapEvidenceAvailable()
+                        : !api.sharedStateEvidenceAvailable()) {
+                    carriers.add(RawSharedCarrierReadOut.failure(carrier,
+                            unavailableShared(
+                                    SharedStateEvidence.STAGE_VERSIONS, "")));
+                    continue;
+                }
+                String serialized = memoizedReadOut(carrier.key());
+                if (serialized == null) {
+                    serialized = memoizeReadOut(carrier.key(),
+                            carrier.rawVersions(api));
+                }
+                carriers.add(RawSharedCarrierReadOut.success(carrier,
+                        serialized));
+            } catch (Throwable throwable) {
+                carriers.add(RawSharedCarrierReadOut.failure(carrier,
+                        failedShared(SharedStateEvidence.STAGE_VERSIONS,
+                                SharedStateEvidence.INVOCATION_FAILED, "",
+                                rootCause(throwable))));
+            }
+        }
+
+        String ledger = null;
+        SharedStateResult ledgerFailure = null;
+        if (!api.sharedStateEvidenceAvailable()) {
+            ledgerFailure = unavailableShared(
+                    SharedStateEvidence.STAGE_LEDGER, "");
+        } else {
+            try {
+                ledger = memoizedReadOut(LEDGER_READ_OUT_KEY);
+                if (ledger == null) {
+                    ledger = memoizeReadOut(LEDGER_READ_OUT_KEY,
+                            api.eventLedger());
+                }
+            } catch (Throwable throwable) {
+                ledgerFailure = failedShared(
+                        SharedStateEvidence.STAGE_LEDGER,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        rootCause(throwable));
+            }
+        }
+        return new RawSharedStateReadOut(carriers, ledger, ledgerFailure,
+                identity);
+    }
+
+    /** Decodes and files raw envelopes after the VM context is closed. */
+    private static void assembleRecordedSharedState(
+            ActiveRegion active, RawSharedStateReadOut raw) {
+        if (raw == null) return;
+        for (RawSharedCarrierReadOut carrier : raw.carriers) {
+            SharedStateResult decoded = carrier.failure;
+            if (decoded == null) {
+                try {
+                    decoded = decodeVersionsEnvelope(carrier.serialized,
+                            carrier.carrier, raw.identity, active);
+                } catch (Throwable throwable) {
+                    decoded = failedShared(
+                            SharedStateEvidence.STAGE_VERSIONS,
+                            SharedStateEvidence.MALFORMED_ENVELOPE, "",
+                            rootCause(throwable));
+                }
+            }
+            fileShared(decoded, null, active);
+        }
+        SharedStateResult ledger = raw.ledgerFailure;
+        if (ledger == null) {
+            try {
+                ledger = decodeLedgerEnvelope(raw.ledger, raw.identity);
+            } catch (Throwable throwable) {
+                ledger = failedShared(SharedStateEvidence.STAGE_LEDGER,
+                        SharedStateEvidence.MALFORMED_ENVELOPE, "",
+                        rootCause(throwable));
+            }
+        }
+        fileShared(ledger, null, active);
+    }
+
+    /** One carrier's exact VM envelope, or the failure that replaced it. */
+    private static final class RawSharedCarrierReadOut {
+        private final SharedCarrier carrier;
+        private final String serialized;
+        private final SharedStateResult failure;
+
+        private RawSharedCarrierReadOut(SharedCarrier carrier,
+                                         String serialized,
+                                         SharedStateResult failure) {
+            this.carrier = carrier;
+            this.serialized = serialized;
+            this.failure = failure;
+        }
+
+        private static RawSharedCarrierReadOut success(
+                SharedCarrier carrier, String serialized) {
+            return new RawSharedCarrierReadOut(carrier, serialized, null);
+        }
+
+        private static RawSharedCarrierReadOut failure(
+                SharedCarrier carrier, SharedStateResult failure) {
+            return new RawSharedCarrierReadOut(carrier, null, failure);
+        }
+    }
+
+    /** Raw shared-state batch frozen before one VM region is finished. */
+    private static final class RawSharedStateReadOut {
+        private final List<RawSharedCarrierReadOut> carriers;
+        private final String ledger;
+        private final SharedStateResult ledgerFailure;
+        private final RecordedEvidenceIdentity identity;
+
+        private RawSharedStateReadOut(
+                List<RawSharedCarrierReadOut> carriers, String ledger,
+                SharedStateResult ledgerFailure,
+                RecordedEvidenceIdentity identity) {
+            this.carriers = carriers;
+            this.ledger = ledger;
+            this.ledgerFailure = ledgerFailure;
+            this.identity = identity;
+        }
+    }
+
+    /** Normal exit of the selected region occurrence. */
     public static void exitRegion(long token, Object returnValue,
                                   String primitiveValue) {
-        finish(token, "NORMAL", "", returnValue);
+        finishRootInvocation(token, "NORMAL", "", returnValue);
     }
 
     /**
@@ -2249,10 +5308,13 @@ public final class ConcolicRegionRuntime {
      * normal program return into an exception (or let the synthetic catch-all
      * pop an enclosing frame a second time).
      */
-    public static void exitRegionFrame(String rootMethod, Object returnValue,
+    public static void exitRegionFrame(String instrumentationSelector,
+                                       String rootMethod,
+                                       Object returnValue,
                                        String primitiveValue) {
         try {
-            RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            RootInvocationFrame frame = popRootInvocationFrame(
+                    instrumentationSelector, rootMethod);
             if (frame != null && frame.token != 0L) {
                 exitRegion(frame.token, returnValue, primitiveValue);
             }
@@ -2263,7 +5325,7 @@ public final class ConcolicRegionRuntime {
 
     /** Exceptional region exit. */
     public static void throwRegion(long token, Throwable throwable) {
-        finish(token, "THROW",
+        finishRootInvocation(token, "THROW",
                 throwable == null ? "" : throwable.getClass().getName(),
                 throwable);
     }
@@ -2273,13 +5335,15 @@ public final class ConcolicRegionRuntime {
      * The original throwable is rethrown by injected bytecode; consequently
      * every runtime failure is swallowed here so it cannot replace it.
      */
-    public static void throwRegionFrame(String rootMethod,
+    public static void throwRegionFrame(String instrumentationSelector,
+                                        String rootMethod,
                                         Throwable throwable) {
         try {
-            RootInvocationFrame frame = popRootInvocationFrame(rootMethod);
+            RootInvocationFrame frame = popRootInvocationFrame(
+                    instrumentationSelector, rootMethod);
             if (frame != null && frame.token != 0L) {
                 if ("CUT".equals(exceptionalExitKind(throwable))) {
-                    finish(frame.token, "CUT", "", throwable);
+                    finishRootInvocation(frame.token, "CUT", "", throwable);
                 } else {
                     throwRegion(frame.token, throwable);
                 }
@@ -2294,16 +5358,17 @@ public final class ConcolicRegionRuntime {
     }
 
     private static RootInvocationFrame popRootInvocationFrame(
-            String rootMethod) {
+            String instrumentationSelector, String rootMethod) {
         Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
         RootInvocationFrame frame = frames.peek();
         if (frame == null) {
             ROOT_INVOCATION_FRAMES.remove();
             return null;
         }
-        boolean matches = rootMethod == null
-                ? frame.rootMethod == null
-                : rootMethod.equals(frame.rootMethod);
+        boolean matches = sameSelector(frame.instrumentationSelector,
+                instrumentationSelector)
+                && (rootMethod == null ? frame.rootMethod == null
+                : rootMethod.equals(frame.rootMethod));
         if (!matches) {
             // Never guess ownership.  In particular, do not expose or close
             // an outer selected frame when instrumentation is malformed.
@@ -2317,10 +5382,14 @@ public final class ConcolicRegionRuntime {
     }
 
     private static final class RootInvocationFrame {
+        private final String instrumentationSelector;
         private final String rootMethod;
         private long token;
 
-        private RootInvocationFrame(String rootMethod, long token) {
+        private RootInvocationFrame(String instrumentationSelector,
+                                    String rootMethod,
+                                    long token) {
+            this.instrumentationSelector = instrumentationSelector;
             this.rootMethod = rootMethod;
             this.token = token;
         }
@@ -2356,11 +5425,14 @@ public final class ConcolicRegionRuntime {
                                         boolean observedOutcome) {
         ActiveRegion active = activeRegion();
         if (active == null) return observedOutcome;
-        if (active.activation.relationOnlySeed()) {
+        String branchSite = siteId(method, unitIndex);
+        if (skipsRelationSeedBranch(active.activation, branchSite)) {
             // A producer seed exports the relation observed at its semantic
             // output boundary.  Reading the whole accumulated path condition
-            // at every branch is redundant (and quadratic on system traces):
-            // the output hooks already capture the symbolic relation.
+            // at every incidental branch is redundant (and quadratic on
+            // system traces). An explicitly selected EXPLORE branch is part
+            // of that relation's requested closure and must retain its exact
+            // VM-owned condition so the importer can schedule its flip.
             active.takePreparedBranch(preparedHandle);
             return observedOutcome;
         }
@@ -2369,12 +5441,21 @@ public final class ConcolicRegionRuntime {
             // path condition may be read. The branch did execute, though, and
             // a recorded site is attested by execution, not by solvability.
             try {
-                active.recordConcreteBranchWitness(method, unitIndex,
-                        observedOutcome);
-                // No input has been materialized yet, so nothing this region
-                // decides can carry a symbolic expression.
-                active.noteBranchDecision(method, unitIndex, true);
-                finishAtExactOutputBoundary(active);
+                if (active.activation.declaresBranch(branchSite)) {
+                    // A site the frozen plan declares is addressable evidence
+                    // whether or not it was solvable here: its occurrence is
+                    // what {@code (loopSiteId, i)} and a flip obligation are
+                    // stated over.  The thin witness below carries no
+                    // occurrence by design and is deduplicated by
+                    // (site, outcome), so a declared site recorded only that
+                    // way is unaddressable forever - and no later stage can
+                    // recover the ordinal without inventing one.
+                    active.recordDeclaredConcreteBranch(method, unitIndex,
+                            observedOutcome);
+                } else {
+                    active.recordConcreteBranchWitness(method, unitIndex,
+                            observedOutcome);
+                }
             } catch (Throwable ignored) {
                 // Observation must never alter the workload's own outcome.
             }
@@ -2392,7 +5473,6 @@ public final class ConcolicRegionRuntime {
         }
         EngineApi api = engine();
         boolean paused = false;
-        boolean stopAfterBranch = false;
         boolean replayContradicted = false;
         try {
             api.pausePathCondition();
@@ -2404,14 +5484,15 @@ public final class ConcolicRegionRuntime {
                     siteId(method, unitIndex), prepared.occurrence,
                     observedOutcome);
             replayContradicted = active.replayPrefixContradicted();
-            // The contract may have just been consumed, which is the other
-            // half of a replay's boundary; the witness hook above ran before
-            // this branch reached the contract and could not see it.
-            finishAtExactOutputBoundary(active);
-            stopAfterBranch = solverWitness
-                    && replayTargetMatched
-                    && active.activation.stopAfterBranch(
-                    siteId(method, unitIndex), prepared.occurrence);
+            if (solverWitness && replayTargetMatched
+                    && active.activation.targetBranch(
+                    siteId(method, unitIndex), prepared.occurrence)) {
+                // Reaching the target is a fact of this case, never a reason
+                // to stop recording it: the RPC, state and throw effects the
+                // occurrence still owes all happen after this branch.
+                active.recordTargetReach(siteId(method, unitIndex),
+                        prepared.occurrence, observedOutcome);
+            }
             return observedOutcome;
         } catch (Throwable throwable) {
             active.addUnresolvedOnce("branch/PC exact-event observation "
@@ -2419,15 +5500,34 @@ public final class ConcolicRegionRuntime {
             return observedOutcome;
         } finally {
             if (paused) resumePathCondition(active, api);
-            if (stopAfterBranch) {
-                finish(active.token, "TARGET_REACHED", "", null);
-            } else if (replayContradicted) {
+            if (replayContradicted) {
                 // Release the engine here rather than at this activation's own
                 // return: the branch that just executed already decided that
                 // nothing publishable can follow.
                 finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "", null);
             }
         }
+    }
+
+    /**
+     * Whether a relation-only seed may pass this branch without recording it.
+     *
+     * <p>The economy is real - reading the whole accumulated path condition at
+     * every incidental branch is quadratic on system traces - but the test has
+     * to be "did the plan ask for this site", not "did the plan ask to explore
+     * it".  A declared {@code PATH_ASSUMPTION} site is part of the relation's
+     * requested closure exactly as much as a declared {@code EXPLORE} one: it
+     * is what says which guarded case the relation published.  Skipping it
+     * dropped the site before anything could record it, so the occurrence's
+     * own declared branches arrived empty and the delta could only report
+     * {@code PLANNED_BRANCH_EVENT_NOT_OBSERVED} for a site that did execute.
+     * Declared sites are the frozen plan's own small set, so admitting all of
+     * them keeps the bound the skip was introduced for.</p>
+     */
+    private static boolean skipsRelationSeedBranch(
+            RuntimeTask task, String siteId) {
+        return task != null && task.relationOnlySeed()
+                && !task.declaresBranch(siteId);
     }
 
     /**
@@ -2496,7 +5596,15 @@ public final class ConcolicRegionRuntime {
         }
         String siteId = safe(method) + "#u" + unitIndex;
         int baseline = active.lastPathConditionSize;
-        boolean noVmCondition = vmEventHasNoConditions(api, vmEventId);
+        // One read of the event stream, used by both questions asked of it.
+        // Reading it twice cost a second full serialization and decode of every
+        // event this thread has ever recorded, and left a window - closed only
+        // by the paused recorder - in which the two answers could disagree.
+        JsonElement events = parseJson(api.branchEvents());
+        List<Integer> eventConditionIndices =
+                vmEventConditionIndices(events, vmEventId);
+        boolean noVmCondition = eventConditionIndices != null
+                && eventConditionIndices.isEmpty();
         PathConditionElements conditions;
         int rawPathConditionSize;
         int attestationBaseline;
@@ -2507,21 +5615,36 @@ public final class ConcolicRegionRuntime {
             conditions = PathConditionElements.EMPTY;
             rawPathConditionSize = baseline;
             attestationBaseline = 0;
-        } else {
-            diag("PC_READ_BEGIN", siteId + " occ=" + occurrence);
-            String raw = api.pathCondition();
+        } else if (contiguousConditionIndices(eventConditionIndices)) {
+            int firstCondition = eventConditionIndices.get(0);
+            int lastCondition = eventConditionIndices.get(
+                    eventConditionIndices.size() - 1);
+            diag("PC_READ_BEGIN", siteId + " occ=" + occurrence
+                    + " range=[" + firstCondition + ","
+                    + (lastCondition + 1) + ")");
+            PathConditionRead read = readPathConditionRange(api,
+                    firstCondition, lastCondition + 1);
             diag("PC_READ_END", siteId + " occ=" + occurrence
-                    + " chars=" + (raw == null ? -1 : raw.length()));
-            conditions = PathConditionElements.of(raw);
+                    + " chars=" + read.chars + " source=" + read.source);
+            conditions = read.conditions;
             rawPathConditionSize = conditions.size();
             attestationBaseline = baseline;
             diag("PC_PARSED", siteId + " occ=" + occurrence
                     + " conditions=" + rawPathConditionSize
                     + " mode=" + conditions.mode());
+        } else {
+            // The exact event stream is the only authority on which path
+            // conditions belong to this branch.  If it cannot name one
+            // contiguous window, leave a mapping gap instead of serializing
+            // the whole accumulated PC.  The latter is both expensive and
+            // cannot repair a malformed ownership attestation.
+            conditions = PathConditionElements.EMPTY;
+            rawPathConditionSize = baseline;
+            attestationBaseline = baseline;
         }
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
-                occurrence, conditions, attestationBaseline);
+                occurrence, conditions, attestationBaseline, null, events);
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
@@ -2571,26 +5694,60 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = rawPathConditionSize;
         active.branchMappings.add(mapping);
-        // A decision the VM attested owns no path condition carried no
-        // symbolic expression.  Anything less than an attestation leaves the
-        // question open, and an open question must be charged.
-        active.noteBranchDecision(method, unitIndex, vmAttestation.valid
-                && vmAttestation.conditionIndices.isEmpty());
         if (mapping.has("witness") || mapping.has("concreteObservation")) {
             // A marker without either authority carries no decision into the
             // summary, so it must not attest a recorded outcome either.
             active.witnessOutcome(siteId, observedOutcome);
-            // This may be the last demanded branch-replay site, which is half
-            // of the boundary condition; the captures alone never re-check it.
-            finishAtExactOutputBoundary(active);
         }
         return vmAttestation.valid && conditionIndex >= 0;
     }
 
-    private static boolean vmEventHasNoConditions(
-            EngineApi api, long eventId) throws Exception {
-        JsonElement parsed = parseJson(api.branchEvents());
-        if (!parsed.isJsonObject()) return false;
+    /** One branch hook's exact, VM-owned condition window. */
+    private static final class PathConditionRead {
+        private final PathConditionElements conditions;
+        private final int chars;
+        private final String source;
+
+        private PathConditionRead(PathConditionElements conditions, int chars,
+                                  String source) {
+            this.conditions = conditions;
+            this.chars = chars;
+            this.source = source;
+        }
+    }
+
+    /**
+     * Reads only the absolute indices named by an exact VM branch event.
+     * Failure is a local mapping gap; it never falls back to exporting the
+     * thread's accumulated path condition.
+     */
+    private static PathConditionRead readPathConditionRange(
+            EngineApi api, int start, int end) throws Exception {
+        if (!api.pathConditionRangeAvailable() || start < 0
+                || end <= start) {
+            return new PathConditionRead(PathConditionElements.EMPTY, -1,
+                    "EXACT_RANGE_UNAVAILABLE");
+        }
+        String windowed;
+        try {
+            windowed = api.pathConditionRange(start, end);
+        } catch (Throwable refused) {
+            windowed = null;
+        }
+        PathConditionElements exact =
+                PathConditionElements.window(windowed, start);
+        if (exact == null) {
+            return new PathConditionRead(PathConditionElements.EMPTY,
+                    windowed == null ? -1 : windowed.length(),
+                    "EXACT_RANGE_REFUSED");
+        }
+        return new PathConditionRead(exact, windowed.length(),
+                "EXACT_EVENT_RANGE");
+    }
+
+    private static List<Integer> vmEventConditionIndices(
+            JsonElement parsed, long eventId) {
+        if (!parsed.isJsonObject()) return null;
         JsonObject selected = null;
         int matches = 0;
         for (JsonElement candidate : array(
@@ -2602,9 +5759,31 @@ public final class ConcolicRegionRuntime {
                 matches++;
             }
         }
-        return matches == 1 && selected != null
-                && integer(selected, "conditionCount", -1) == 0
-                && array(selected, "conditionIndices").size() == 0;
+        if (matches != 1 || selected == null) return null;
+        JsonArray raw = array(selected, "conditionIndices");
+        if (integer(selected, "conditionCount", -1) != raw.size()) {
+            return null;
+        }
+        List<Integer> indices = new ArrayList<>();
+        for (JsonElement value : raw) {
+            try {
+                indices.add(value.getAsInt());
+            } catch (RuntimeException malformed) {
+                return null;
+            }
+        }
+        return indices;
+    }
+
+    private static boolean contiguousConditionIndices(List<Integer> indices) {
+        if (indices == null || indices.isEmpty()) return false;
+        int expected = indices.get(0);
+        if (expected < 0) return false;
+        for (Integer index : indices) {
+            if (index == null || index != expected) return false;
+            expected++;
+        }
+        return true;
     }
 
     private static JsonObject branchPredicateMetadata(
@@ -2622,12 +5801,31 @@ public final class ConcolicRegionRuntime {
             String expression, int occurrence, SwitchExpectation expected,
             long vmEventId) throws Exception {
         String siteId = safe(method) + "#u" + unitIndex;
-        PathConditionElements conditions = PathConditionElements.of(
-                api.pathCondition());
         int baseline = active.lastPathConditionSize;
+        JsonElement events = parseJson(api.branchEvents());
+        List<Integer> eventConditionIndices =
+                vmEventConditionIndices(events, vmEventId);
+        PathConditionRead read;
+        if (eventConditionIndices != null
+                && eventConditionIndices.isEmpty()) {
+            read = new PathConditionRead(PathConditionElements.EMPTY, 0,
+                    "CONDITIONLESS_EVENT");
+        } else if (contiguousConditionIndices(eventConditionIndices)) {
+            int firstCondition = eventConditionIndices.get(0);
+            int lastCondition = eventConditionIndices.get(
+                    eventConditionIndices.size() - 1);
+            read = readPathConditionRange(api, firstCondition,
+                    lastCondition + 1);
+        } else {
+            read = new PathConditionRead(PathConditionElements.EMPTY, -1,
+                    "EXACT_RANGE_UNAVAILABLE");
+        }
+        diag("PC_READ_END", siteId + " occ=" + occurrence
+                + " chars=" + read.chars + " source=" + read.source);
+        PathConditionElements conditions = read.conditions;
         VmBranchEventAttestation attestation = attestVmBranchEvent(api,
                 active, siteId, expression, expected.caseArm(), vmEventId,
-                occurrence, conditions, baseline, expected);
+                occurrence, conditions, baseline, expected, events);
         List<Integer> conditionIndices = attestation.valid
                 ? attestation.conditionIndices
                 : Collections.<Integer>emptyList();
@@ -2668,30 +5866,35 @@ public final class ConcolicRegionRuntime {
         return mapping;
     }
 
-    private static VmBranchEventAttestation attestVmBranchEvent(
-            EngineApi api, ActiveRegion active, String siteId,
-            String expression, boolean observedOutcome, long eventId,
-            int occurrence, PathConditionElements conditions, int baseline) {
-        return attestVmBranchEvent(api, active, siteId, expression,
-                observedOutcome, eventId, occurrence, conditions, baseline,
-                null);
-    }
-
+    /**
+     * @param readEvents the caller's own read of the exact event stream, or
+     *                   {@code null} to read it here.  A caller that has
+     *                   already asked the stream a question about this event
+     *                   passes what it read: a second read costs a full
+     *                   serialization and decode of every event the thread has
+     *                   recorded, and would let the two answers be taken from
+     *                   two different observations of it.
+     */
     private static VmBranchEventAttestation attestVmBranchEvent(
             EngineApi api, ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
             int occurrence, PathConditionElements conditions, int baseline,
-            SwitchExpectation switchExpectation) {
+            SwitchExpectation switchExpectation, JsonElement readEvents) {
         if (eventId <= 0L) {
             return VmBranchEventAttestation.invalid(
                     "marker returned a non-positive event id");
         }
         final JsonElement parsed;
-        try {
-            parsed = parseJson(api.branchEvents());
-        } catch (Throwable throwable) {
-            return VmBranchEventAttestation.invalid(
-                    "event stream is not readable: " + rootCause(throwable));
+        if (readEvents != null) {
+            parsed = readEvents;
+        } else {
+            try {
+                parsed = parseJson(api.branchEvents());
+            } catch (Throwable throwable) {
+                return VmBranchEventAttestation.invalid(
+                        "event stream is not readable: "
+                                + rootCause(throwable));
+            }
         }
         if (!parsed.isJsonObject()) {
             return VmBranchEventAttestation.invalid(
@@ -2933,180 +6136,390 @@ public final class ConcolicRegionRuntime {
         return key == expectedKey ? left.toString() : "";
     }
 
-    /**
-     * Ends an activation whose completed evidence already contradicts its
-     * recording, giving the single symbolic engine back before constructing a
-     * summary that the runtime must discard.
-     *
-     * <p>A replay-prefix contradiction is final at the deciding branch.  A
-     * seed-outcome contradiction is checked only once the selected bounded
-     * activation finishes, because a later visit to the same site may still
-     * witness the recorded outcome.  At either final boundary, retaining the
-     * engine for summary construction can cost a sibling activation its whole
-     * wait budget for a result that cannot be published.</p>
-     */
-    private static void abandonActivation(
-            ActiveRegion active, long token, String skipKind, String reason) {
-        try {
-            cleanupContradictedActivation(token);
-        } finally {
-            releaseSymbolicEngine();
-        }
+    /** Marks one selected occurrence unusable before its VM close. */
+    private static void abandonOccurrence(
+            ActiveRegion active, String skipKind, String reason) {
+        active.abandoned = true;
+        endLiveSelectedRegion();
         writeSkipped(active.activation, skipKind, reason);
     }
 
-    /**
-     * Rejects an incomplete relation root while preserving the exact partial
-     * evidence needed to distinguish a wrong root from a wrong boundary.
-     */
+    /** Releases an incomplete candidate so a later invocation can answer. */
     private static void abandonIncompleteRelation(
-            ActiveRegion active, long token, String reason) {
-        try {
-            cleanupContradictedActivation(token);
-        } finally {
-            releaseSymbolicEngine();
-        }
-        JsonObject evidence = new JsonObject();
-        evidence.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
-        evidence.add("outputCaptures", GSON.toJsonTree(
-                active.outputCaptures));
+            ActiveRegion active, String reason) {
+        // A candidate that did not reach all output leaves is search state,
+        // not a second model result. Publishing every attempt made the
+        // importer retain durable coverage gaps even when a later invocation
+        // of the same task produced the complete relation. The run-end hook
+        // emits one task-level unanswered-address gap if none ever succeeds.
+        active.activation.noteUnaddressedCandidate(reason);
+        active.abandoned = true;
+        endLiveSelectedRegion();
+    }
+
+    private static JsonArray missingOutputCaptureBindingIds(
+            ActiveRegion active) {
         JsonArray missing = new JsonArray();
         for (OutputCaptureSpec request : active.activation.outputCaptures) {
-            if (!active.hasSuccessfulOutputCapture(request)) {
+            // A filed row proves that the requested hook ran even when its
+            // expression read-out failed.  Such a row still cannot complete
+            // the relation boundary, but the binding itself is not missing.
+            if (!active.hasOutputCapture(request.captureBindingId())) {
                 missing.add(request.captureBindingId());
             }
         }
-        evidence.add("missingOutputCaptureBindingIds", missing);
-        evidence.addProperty("runtimeThread", active.thread.getName());
-        evidence.addProperty("runtimeReceiverClass",
-                active.receiver == null ? ""
-                        : active.receiver.getClass().getName());
-        writeSkipped(active.activation, SKIP_INCOMPLETE_OUTPUT_RELATION,
-                reason, evidence);
+        return missing;
     }
 
-    private static void cleanupContradictedActivation(long token) {
-        try {
-            engine().cleanupAfterFailure();
-        } finally {
-            Long current = CURRENT_TOKEN.get();
-            if (current != null && current == token) {
-                CURRENT_TOKEN.remove();
-            }
-        }
-    }
-
-    /** Actions on the two sides of a completed seed's final admission gate. */
-    interface CompletedSeedResultActions {
-        void cleanupRejectedSeed();
-
-        void publishRejectedSeed(String conflict);
-
-        void buildAcceptedResult();
-    }
-
-    /**
-     * Applies the seed-outcome judgement at a completed activation boundary.
-     * The rejected side owns engine release here, before the accepted side's
-     * potentially large result construction can be entered.
-     */
-    static void completeSeedResultAtBoundary(
-            Map<String, Set<Boolean>> recorded,
-            Map<String, Set<Boolean>> witnessed,
-            CompletedSeedResultActions actions) {
-        String conflict = seedOutcomeConflict(recorded, witnessed);
-        if (conflict.isEmpty()) {
-            actions.buildAcceptedResult();
-            return;
-        }
-        try {
-            actions.cleanupRejectedSeed();
-        } finally {
-            try {
-                releaseSymbolicEngine();
-            } finally {
-                // Cleanup is best effort.  Even if it fails, leave durable
-                // evidence that this completed activation was intentionally
-                // rejected rather than silently losing the selected result.
-                actions.publishRejectedSeed(conflict);
-            }
-        }
-    }
-
+    /** Ends one selected occurrence at its declared boundary. */
     private static void finish(long token, String exitKind,
                                String exceptionType, Object output) {
         ActiveRegion active = ownerRegion(token);
-        if (active == null || !active.finished.compareAndSet(false, true)
-                || !ACTIVE.remove(token, active)) {
+        if (active == null) return;
+        finishOccurrence(active, exitKind, exceptionType, output);
+    }
+
+    /** Root-invocation exit for whichever activation owns {@code token}. */
+    private static void finishRootInvocation(long token, String exitKind,
+                                             String exceptionType,
+                                             Object output) {
+        ActiveRegion active = ownerRegion(token);
+        if (active == null) return;
+        if ("NORMAL".equals(exitKind)
+                && active.deferResponseTerminal(exitKind,
+                exceptionType, output)) {
             return;
         }
+        finishOccurrence(active, exitKind, exceptionType, output);
+    }
+
+    /**
+     * Completes a server occurrence after its transport adapter exported the
+     * returned response object while the occurrence's VM context was live.
+     *
+     * <p>The handler's Java return precedes serialization, so closing at the
+     * injected return hook destroys the expressions the transport is about to
+     * export.  A task that declares an entry-return RESPONSE handoff therefore
+     * parks only its terminal; the adapter calls this method after walking the
+     * real response leaves.  No identity is paired here and no value moves in
+     * Java: the VM export/attach broker remains the sole propagation
+     * authority.</p>
+     *
+     * @return {@code true} when this thread completed a parked response
+     *         terminal, otherwise {@code false}
+     */
+    public static boolean completeResponseHandoff() {
+        ActiveRegion active = activeRegion();
+        if (active == null) return false;
+        DeferredTerminal terminal = active.takeResponseTerminal();
+        if (terminal == null) return false;
+        finishOccurrence(active, terminal.exitKind,
+                terminal.exceptionType, terminal.output);
+        return true;
+    }
+
+    private static void finishOccurrence(ActiveRegion active, String exitKind,
+                                         String exceptionType, Object output) {
+        if (!active.finished.compareAndSet(false, true)) return;
         beginSelectedResultPublication();
+        boolean publicationDeferred = false;
+        // Judgement and publication are bookkeeping, not workload control
+        // flow, so they remain muted until this occurrence's VM context is
+        // closed.
+        beginBookkeeping();
         try {
-        // Exact call-site traps normally close every accessor scope first.
-        // Region cleanup is the final fail-closed boundary for malformed or
-        // externally interrupted control flow.
-        clearAccessorCallContexts(token);
-        diag("REGION_FINISH", "token=" + token + " exit=" + safe(exitKind)
-                + " captures=" + active.outputCaptures.size());
+            try {
+                // Exact call-site traps normally close every accessor scope
+                // first.  Region cleanup is the final fail-closed boundary
+                // for malformed or externally interrupted control flow.
+                clearAccessorCallContexts(active.token);
+                diag("REGION_FINISH", "token=" + active.token
+                        + " task=" + safe(active.activation.taskId)
+                        + " source=" + active.attributedSourceKeys()
+                        + " exit=" + safe(exitKind) + " captures="
+                        + active.outputCaptures.size());
+                active.exitKind = safe(exitKind);
+                active.exceptionType = safe(exceptionType);
+                active.exitOutput = output;
+                judgeFinishedOccurrence(active);
+                if (!active.abandoned) {
+                    String publicationFailure = configuration()
+                            .commitSelectedVersions(active);
+                    if (!publicationFailure.isEmpty()) {
+                        // A producer version is visible to a consumer only
+                        // after this occurrence has passed every anchor,
+                        // replay-prefix and output-completeness gate.  A
+                        // conflict is retained in this result as an explicit
+                        // unresolved relation.  Map and scalar/reference
+                        // versions are validated together before either kind
+                        // is installed in the campaign registry.
+                        active.addUnresolvedOnce(publicationFailure);
+                    }
+                }
+            } finally {
+                publicationDeferred = closeOccurrence(active);
+            }
+        } finally {
+            endBookkeeping();
+            if (!publicationDeferred) endSelectedResultPublication();
+        }
+    }
+
+    /**
+     * Applies the admission gates a finished occurrence must pass before its
+     * relation may be built.  An occurrence that fails one is abandoned with its
+     * own named skip and contributes no result row.
+     */
+    private static void judgeFinishedOccurrence(ActiveRegion active) {
+        // First, because it is the only gate that asks whether this
+        // activation is the addressed occurrence at all.  A candidate that is
+        // not cannot contradict a prefix or a seed outcome it was never meant
+        // to satisfy, and naming it as a contradiction would report a wrong
+        // path where the run merely held another activation of the same root.
+        String unaddressed =
+                active.activation.rootContextSelector.unconfirmed(
+                        active.attributedSourceKeys());
+        if (!unaddressed.isEmpty()) {
+            // A candidate that is not the addressed occurrence is the
+            // candidate loop working, not a finding, so it is released
+            // without a durable row.  Mid-run neither half of the reason is
+            // decidable either: an anchored source that is unregistered now
+            // may be registered later in the same run - a node restart is
+            // exactly that - and a run that published "never registered in
+            // this run" before its own restart contradicted itself once per
+            // rejected candidate.  The address is stated once, after the
+            // run, and only if nothing ever answered it.
+            active.activation.noteUnaddressedCandidate(unaddressed);
+            active.abandoned = true;
+            endLiveSelectedRegion();
+            return;
+        }
+        if (active.hasPendingPlannedProducerPrerequisites()) {
+            // A concrete read before its exact selected writer commits is a
+            // candidate-order miss.  It cannot authorize a local concrete
+            // fallback, and it is not yet proof that the frozen edge is
+            // absent.  Release this candidate; a later compatible activation
+            // may observe the same declared access after publication.  If no
+            // activation does, the run-end unanswered-address row is the one
+            // durable bounded gap.
+            abandonIncompleteRelation(active,
+                    active.pendingPlannedProducerPrerequisiteReason());
+            return;
+        }
+        // A target address that several activations of one region on one
+        // source answer is separated by the only thing that distinguishes
+        // them: whether this activation reached the declared target event.
+        // One that did not has not answered the address, so it releases it
+        // by name and the next candidate is tried - which is what README
+        // OCC-1 means by treating each target occurrence as a candidate.
+        // Publishing it instead would let the first activation claim an
+        // address it did not answer and make every later one ambiguous.
+        if (active.activation.declaresTargetBranch()
+                && active.targetReach == null) {
+            abandonOccurrence(active, SKIP_TARGET_EVENT_NOT_REACHED,
+                    "activation did not reach the declared target event "
+                            + active.activation.targetBranchLabel());
+            return;
+        }
         if (active.replayPrefixContradicted()) {
-            abandonActivation(active, token,
-                    SKIP_REPLAY_PREFIX_UNMATCHED,
+            abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
                     "activation contradicts the recorded replay prefix: "
                             + active.replayProgress.failure());
             return;
         }
         if (incompleteRelationOnlyBoundary(active.activation,
-                active.outputCaptures, exitKind)) {
-            abandonIncompleteRelation(active, token,
+                active.outputCaptures, active.exitKind)) {
+            abandonIncompleteRelation(active,
                     "compatible root ended before every demanded semantic "
                             + "output boundary was observed");
             return;
         }
-        // Replay tasks retain their existing admission path.  Seed-outcome
-        // evidence is a completion gate only for non-replay seed tasks.
+        // Replay progress is frozen at this terminal.  An unfinished prefix is
+        // a recoverable candidate miss, so release it before output building or
+        // raw shared-state serialization can hold the owner while later
+        // compatible instances pass.  A contradiction remains the stronger
+        // finding above and keeps its existing priority.
         if (active.activation.replayContract != null) {
-            buildAndPublishResult(active, token, exitKind,
-                    exceptionType, output);
+            if (!active.replayProgress.complete()) {
+                abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
+                        "no compatible activation matched replay prefix: "
+                                + active.replayProgress.failure());
+            }
             return;
         }
-        // The activation is now finished and removed from ACTIVE, so its
-        // witnessed outcome set cannot widen any further.  The completion
-        // gate owns the reject-or-build order and releases a rejected seed
-        // before the accepted side can enter large summary construction.
-        completeSeedResultAtBoundary(active.activation.seedOutcomes,
-                active.witnessedOutcomes,
-                new CompletedSeedResultActions() {
-                    @Override
-                    public void cleanupRejectedSeed() {
-                        cleanupContradictedActivation(token);
-                    }
+        // The occurrence has stopped running, so its witnessed outcome set
+        // cannot widen any further.
+        String conflict = seedOutcomeConflict(active.activation.seedOutcomes,
+                active.witnessedOutcomes);
+        if (!conflict.isEmpty()) {
+            abandonOccurrence(active, SKIP_SEED_OUTCOME_CONFLICT,
+                    "activation contradicts a recorded seed outcome: "
+                            + conflict);
+        }
+    }
 
-                    @Override
-                    public void publishRejectedSeed(String conflict) {
-                        writeSkipped(active.activation,
-                                SKIP_SEED_OUTCOME_CONFLICT,
-                                "activation contradicts a recorded seed "
-                                        + "outcome: " + conflict);
+    /**
+     * Reads one occurrence and closes its VM region on the owner thread, then
+     * transfers JSON decoding and durable publication to the daemon pool.
+     *
+     * @return true only when the publication executor owns the in-flight
+     *         publication counter
+     */
+    private static boolean closeOccurrence(ActiveRegion active) {
+        if (!active.beginClose()) return false;
+        EngineApi api = engine();
+        boolean engineFinished = false;
+        String rawEngineSummary = null;
+        RawSharedStateReadOut rawSharedState = null;
+        JsonObject result = null;
+        try {
+            // Everything below is observational bookkeeping.  Pause PC
+            // recording before any null checks, Gson work, or string building
+            // can reuse a symbolic value and manufacture a false condition.
+            api.pausePathCondition();
+            beginReadOutMemo();
+            try {
+                // A response port is judged over the whole bounded caller,
+                // not over each producer candidate it tried.  Finalize the
+                // provisional miss even for an abandoned close so no state
+                // can survive this ActiveRegion; abandoned candidates still
+                // publish no relation row by the existing rule below.
+                active.flushPendingResponseHandoffGaps();
+                if (!active.abandoned) {
+                    result = new JsonObject();
+                    // One ordinal names every row assembled for this close.
+                    // Freeze it before output building, but read shared state
+                    // only afterwards: output capture can publish the final
+                    // field/container version that the raw envelope must see.
+                    active.beginEvidenceSnapshot();
+                    RecordedEvidenceIdentity identity =
+                            evidenceIdentity(active);
+                    try {
+                        buildCompletedResult(result, active, identity);
+                    } catch (Throwable throwable) {
+                        result.addProperty("engineSummaryError",
+                                rootCause(throwable));
                     }
+                    try {
+                        rawSharedState = captureRecordedSharedStateRaw(active,
+                                api, identity);
+                    } catch (Throwable throwable) {
+                        active.sharedStateGaps.add(SharedStateEvidence.gap(
+                                SharedStateEvidence.STAGE_VERSIONS,
+                                SharedStateEvidence.INVOCATION_FAILED, "",
+                                rootCause(throwable)));
+                    }
+                }
+            } finally {
+                endReadOutMemo();
+            }
+            String summary = api.finish();
+            engineFinished = true;
+            if (jsonObjectEnvelope(summary)) {
+                // The VM already serialized this large object.  Keep it raw
+                // and splice it into the JSONL record below; parsing and then
+                // re-serializing it under the interpreter is needlessly
+                // quadratic for real system paths.
+                rawEngineSummary = summary;
+            } else if (result != null) {
+                result.addProperty("engineSummaryError",
+                        "VM summary is not a JSON object");
+            }
+        } catch (Throwable throwable) {
+            if (result != null) {
+                result.addProperty("engineSummaryError", rootCause(throwable));
+            }
+        } finally {
+            if (!engineFinished) {
+                api.cleanupAfterFailure();
+            }
+            ACTIVE.remove(active.token, active);
+            CURRENT_TOKEN.remove();
+            if (!active.abandoned) endLiveSelectedRegion();
+        }
+        if (result == null) {
+            configuration().releaseCandidate(active.activation);
+            return false;
+        }
+        if (!result.has("event")) {
+            addResultIdentity(result, active, active.exitKind,
+                    active.exceptionType);
+        }
+        return submitCompletedResultPublication(active, result,
+                rawEngineSummary, rawSharedState);
+    }
 
-                    @Override
-                    public void buildAcceptedResult() {
-                        buildAndPublishResult(active, token, exitKind,
-                                exceptionType, output);
-                    }
-                });
+    /** Test-only gate run immediately before asynchronous JSON decoding. */
+    private static volatile Runnable beforePublicationDecodeForTests;
+
+    static void setBeforePublicationDecodeForTests(Runnable gate) {
+        beforePublicationDecodeForTests = gate;
+    }
+
+    /** Transfers one completed native read-out to the bounded daemon pool. */
+    private static boolean submitCompletedResultPublication(
+            final ActiveRegion active, final JsonObject result,
+            final String rawEngineSummary,
+            final RawSharedStateReadOut rawSharedState) {
+        try {
+            RESULT_PUBLICATION_EXECUTOR.execute(new Runnable() {
+                @Override
+                public void run() {
+                    publishCompletedResult(active, result, rawEngineSummary,
+                            rawSharedState);
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException rejected) {
+            // Never run a large decode on the RPC owner as a rejection
+            // fallback.  The candidate remains explicitly unanswered and the
+            // campaign receives the same failing contribution as a durable
+            // append failure.
+            diagAfterVmClose("RESULT_PUBLICATION_REJECTED",
+                    rootCause(rejected));
+            configuration().releaseCandidate(active.activation);
+            haltWhenCampaignSettled(active.activation.taskId, 2);
+            return false;
+        }
+    }
+
+    /** Decodes, assembles, appends, and settles one already-closed region. */
+    private static void publishCompletedResult(
+            ActiveRegion active, JsonObject result,
+            String rawEngineSummary, RawSharedStateReadOut rawSharedState) {
+        try {
+            Runnable gate = beforePublicationDecodeForTests;
+            if (gate != null) gate.run();
+            assembleRecordedSharedState(active, rawSharedState);
+            addRecordedSharedStateToResult(result, active,
+                    rawSharedState == null ? evidenceIdentity(active)
+                            : rawSharedState.identity);
+            boolean written = appendResult(result, rawEngineSummary);
+            if (written) {
+                configuration().claimOccurrence(active.activation);
+            } else {
+                configuration().releaseCandidate(active.activation);
+            }
+            haltWhenCampaignSettled(active.activation.taskId,
+                    written ? 0 : 2);
+        } catch (Throwable failure) {
+            // An asynchronous failure must not leave the task permanently
+            // candidateLive.  No partial result is claimed.
+            diagAfterVmClose("RESULT_PUBLICATION_FAILED",
+                    rootCause(failure));
+            configuration().releaseCandidate(active.activation);
+            haltWhenCampaignSettled(active.activation.taskId, 2);
         } finally {
             endSelectedResultPublication();
         }
     }
 
-    private static void buildAndPublishResult(
-            ActiveRegion active, long token, String exitKind,
-            String exceptionType, Object output) {
-        JsonObject result = new JsonObject();
+    /** Builds one occurrence result before the VM summary is spliced in. */
+    private static void buildCompletedResult(
+            JsonObject result, ActiveRegion active,
+            RecordedEvidenceIdentity identity) {
         EngineApi api = engine();
-        boolean engineFinished = false;
-        String rawEngineSummary = null;
+        String exitKind = active.exitKind;
         // A loop-bound cut is itself the end of the bounded path.  A replay
         // resource cut normally means the activation answered nothing, but
         // an output-relation task may already have published demanded ports
@@ -3123,81 +6536,50 @@ public final class ConcolicRegionRuntime {
                 || boundedResourceOutputExit;
         String completedExitKind = boundedOutputExit
                 ? "BOUNDED" : exitKind;
-        try {
-            // Everything below is observational bookkeeping.  Pause PC
-            // recording before any null checks, Gson work, or string building
-            // can reuse a symbolic value and manufacture a false condition.
-            api.pausePathCondition();
-            if (active.missingSelectedInputIsUnresolved()) {
-                active.addUnresolvedOnce(
-                        "NO_SELECTED_INPUT_MATERIALIZED");
-            }
-            if ("NORMAL".equals(completedExitKind)
-                    || "BOUNDED".equals(completedExitKind)
-                    && !boundedResourceOutputExit) {
-                captureTrackedFieldOutputs(active);
-            }
-            populateCompletedResult(result, active, completedExitKind,
-                    exceptionType, output);
-            if (!"CUT".equals(completedExitKind)
-                    && !"BOUNDED".equals(completedExitKind)
-                    && !"OUTPUT_BOUNDARY".equals(completedExitKind)) {
-                try {
-                    String expression = api.expression(output);
-                    JsonElement observation = parseJson(expression);
-                    result.add("rootOutputExpression", observation);
-                    JsonObject identity = rootOutputReferenceIdentity(
-                            active, observation, output);
-                    if (identity != null) {
-                        result.add("rootOutputReferenceIdentity", identity);
-                    }
-                } catch (Throwable throwable) {
-                    result.addProperty("outputExpressionError",
-                            rootCause(throwable));
-                }
-            }
-            String summary = api.finish();
-            engineFinished = true;
-            if (jsonObjectEnvelope(summary)) {
-                // The VM already serialized this large object.  Keep it raw
-                // and splice it into the JSONL record below; parsing and then
-                // re-serializing it under the interpreter is needlessly
-                // quadratic for real system paths.
-                rawEngineSummary = summary;
-            } else {
-                result.addProperty("engineSummaryError",
-                        "VM summary is not a JSON object");
-            }
-        } catch (Throwable throwable) {
-            result.addProperty("engineSummaryError", rootCause(throwable));
-        } finally {
-            if (!engineFinished) {
-                api.cleanupAfterFailure();
-            }
-            Long current = CURRENT_TOKEN.get();
-            if (current != null && current == token) {
-                CURRENT_TOKEN.remove();
-            }
-            releaseSymbolicEngine();
+        if (active.missingSelectedInputIsUnresolved()) {
+            active.addUnresolvedOnce("NO_SELECTED_INPUT_MATERIALIZED");
         }
-        // If isolation failed before metadata construction, add the minimum
-        // identity only after cleanup has removed the symbolic VM context.
-        if (!result.has("event")) {
-            addResultIdentity(result, active, exitKind, exceptionType);
+        if ("NORMAL".equals(completedExitKind)
+                || "BOUNDED".equals(completedExitKind)
+                && !boundedResourceOutputExit) {
+            captureTrackedFieldOutputs(active);
         }
-        if (active.activation.replayContract != null
-                && !active.replayProgress.complete()) {
-            writeSkipped(active.activation, SKIP_REPLAY_PREFIX_UNMATCHED,
-                    "no compatible activation matched replay prefix: "
-                            + active.replayProgress.failure());
-            return;
+        populateCompletedResult(result, active, completedExitKind,
+                active.exceptionType, active.exitOutput, identity);
+        if (!"CUT".equals(completedExitKind)
+                && !"BOUNDED".equals(completedExitKind)) {
+            try {
+                String expression = api.expression(active.exitOutput);
+                JsonElement observation = parseJson(expression);
+                result.add("rootOutputExpression", observation);
+            } catch (Throwable throwable) {
+                result.addProperty("outputExpressionError",
+                        rootCause(throwable));
+            }
         }
-        boolean written = appendResult(result, rawEngineSummary);
-        if (Boolean.getBoolean(HALT_AFTER_SELECTED_RESULT_PROPERTY)) {
-            // A concolic replay is an isolated worker.  Long-running system
-            // tests need not finish after the selected bounded activation has
-            // durably emitted its VM summary.
-            Runtime.getRuntime().halt(written ? 0 : 2);
+    }
+
+    /**
+     * Ends the workload once every campaign task has reached a terminal
+     * outcome, when the caller asked for that.
+     *
+     * <p>A concolic replay is an isolated worker, so a long-running system
+     * test need not run on after its selected results exist.  Under a
+     * campaign the trigger is deliberately the <em>last</em> task and not the
+     * first: halting after the first publication would kill the sibling tasks
+     * that are still live on other threads, which is precisely the evidence a
+     * campaign exists to collect.  The status is the worst contribution any
+     * task made, so a one-task campaign keeps the previous truth table
+     * exactly.</p>
+     */
+    private static void haltWhenCampaignSettled(String taskId, int status) {
+        int campaignStatus = configuration().settle(taskId, status);
+        if (campaignStatus >= 0 && Boolean.getBoolean(
+                HALT_AFTER_SELECTED_RESULT_PROPERTY)) {
+            // A halt runs no shutdown hook, so the run's totals are
+            // published here or never.
+            publishRunTotals();
+            Runtime.getRuntime().halt(campaignStatus);
         }
     }
 
@@ -3231,16 +6613,39 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             int occurrence = active.nextOutputCaptureOccurrence(request);
-            if (withinBoundedOutputWindow(occurrence)) {
+            if (active.boundedOutputVersionSlot(request, occurrence)) {
                 recordRegionExitFieldOutput(active, request, owner, value,
                         occurrence);
             }
         }
     }
 
+    /**
+     * Copies {@code rows} with the identity stamp applied to each.
+     *
+     * <p>A record already stamped at capture keeps that stamp: it names the
+     * batch the read-out really happened in, which is the point of the
+     * ordinal, and overwriting it here would replace an observation with the
+     * moment it was serialized.</p>
+     */
+    private static JsonArray stamped(List<JsonObject> rows,
+                                     RecordedEvidenceIdentity identity) {
+        JsonArray stamped = new JsonArray();
+        for (JsonObject row : rows) {
+            JsonObject copy = copyJsonTree(row);
+            if (identity != null
+                    && !RecordedEvidenceIdentity.stamped(copy)) {
+                identity.stamp(copy);
+            }
+            stamped.add(copy);
+        }
+        return stamped;
+    }
+
     private static void populateCompletedResult(
             JsonObject result, ActiveRegion active, String exitKind,
-            String exceptionType, Object output) {
+            String exceptionType, Object output,
+            RecordedEvidenceIdentity identity) {
         addResultIdentity(result, active, exitKind, exceptionType);
         if (output instanceof Throwable && !"CUT".equals(exitKind)) {
             result.add("exceptionChain", exceptionChain((Throwable) output));
@@ -3256,15 +6661,87 @@ public final class ConcolicRegionRuntime {
                 active.loopBackedges.toJson());
         result.add("replayLoopBodies",
                 active.loopBackedges.bodiesToJson());
+        if (!active.loopCardinalities.isEmpty()) {
+            result.add(LoopBoundPolicy.LOOP_CARDINALITIES,
+                    GSON.toJsonTree(active.loopCardinalities));
+        }
+        if (!active.loopCardinalityGaps.isEmpty()) {
+            result.add(LoopBoundPolicy.LOOP_CARDINALITY_GAPS,
+                    GSON.toJsonTree(active.loopCardinalityGaps));
+        }
         active.validateRegionExitFieldCaptures(exitKind);
+        active.validateConfiguredSymbolicSources();
+        active.nameUnreachedTargetBranch();
+        if (active.targetReach != null) {
+            result.add("targetReach", active.targetReach);
+        }
         result.add("unresolvedInputs", GSON.toJsonTree(active.unresolved));
         result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
+        SymbolicSourceEvidence.writeTo(result,
+                new ArrayList<>(active.symbolicSources.values()));
         result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
         if (!active.concreteBranchWitnesses.isEmpty()) {
             result.add("concreteBranchWitnesses",
                     GSON.toJsonTree(active.concreteBranchWitnesses));
         }
         result.add("outputCaptures", GSON.toJsonTree(active.outputCaptures));
+        // Every evidence row this activation publishes names the run, the
+        // session, the activation, and the read-out batch it came from.  A
+        // consumer that had to infer any of those - and the only material it
+        // could infer them from is row counts and arrival order - would be
+        // guessing about exactly the identities the composition binds on.
+        VmHandoffEvidence.writeTo(result, active.vmHandoffEvents);
+        if (!active.rpcHandoffGaps.isEmpty()) {
+            result.add("rpcHandoffGaps",
+                    stamped(active.rpcHandoffGaps, identity));
+        }
+        if (!active.readCutGates.isEmpty()) {
+            result.add("readCutGates",
+                    GSON.toJsonTree(active.readCutGates));
+        }
+        if (!active.readCutGaps.isEmpty()) {
+            result.add("readCutGaps", GSON.toJsonTree(active.readCutGaps));
+        }
+    }
+
+    /** Adds decoded shared-state evidence to an otherwise complete result. */
+    private static void addRecordedSharedStateToResult(
+            JsonObject result, ActiveRegion active,
+            RecordedEvidenceIdentity identity) {
+        if (!active.sharedStateRecords.isEmpty()) {
+            // Map states travel in this same member, and deliberately: the
+            // importer admits a MAP_STATE location through the code path a
+            // field location takes, so publishing them in a second member
+            // would be the first step towards a second admission rule.
+            result.add("sharedFieldVersions", stamped(
+                    new ArrayList<>(active.sharedStateRecords.values()),
+                    identity));
+        }
+        JsonArray mapCarriers = selectedMapCarriers(active);
+        if (mapCarriers.size() > 0) {
+            // Which maps this activation selected, beside the evidence they
+            // produced.  A carrier that selected and published nothing is
+            // still a fact about the run - it says the location was watched -
+            // and it is the one fact the versions member cannot state.
+            result.add("sharedMapCarriers", mapCarriers);
+        }
+        if (active.sessionEventLedger != null) {
+            result.add("sessionEventLedger",
+                    copyJsonTree(active.sessionEventLedger));
+        }
+        if (!active.sharedStateGaps.isEmpty()) {
+            result.add("sharedStateGaps",
+                    stamped(active.sharedStateGaps, identity));
+        }
+    }
+
+    /** The maps this activation selected as whole-state carriers. */
+    private static JsonArray selectedMapCarriers(ActiveRegion active) {
+        JsonArray carriers = new JsonArray();
+        for (SharedCarrier carrier : active.sharedCarriers.values()) {
+            if (carrier.mapState()) carriers.add(carrier.toJson());
+        }
+        return carriers;
     }
 
     private static void addResultIdentity(
@@ -3319,7 +6796,7 @@ public final class ConcolicRegionRuntime {
                     return;
                 }
                 ensurePathRecordingStarted(active);
-                active.recordSymbolizedObject(action.symbol, value);
+                active.recordSymbolizedInputPort(action.symbol, value);
                 active.symbolized.add(action.symbol);
             } else {
                 api.symbolizeExactField(owner,
@@ -3784,6 +7261,20 @@ public final class ConcolicRegionRuntime {
                 || value instanceof Float || value instanceof Double;
     }
 
+    /**
+     * The value at the end of {@code path}, starting from {@code root}.
+     *
+     * <p>{@link #resolveFieldPathLeafOwner} stops one segment short, because
+     * its callers symbolize the leaf field and need the object that declares
+     * it. A carrier declaration that names an array needs the array itself,
+     * which is the value of that same last segment.</p>
+     */
+    static Object resolveFieldPathValue(Object root, List<String> path) {
+        Object owner = resolveFieldPathLeafOwner(root, path);
+        if (owner == null || owner == MissingValue.INSTANCE) return owner;
+        return readPathSegment(owner, safe(path.get(path.size() - 1)).trim());
+    }
+
     static Object resolveFieldPathLeafOwner(Object root, List<String> path) {
         if (root == null || path == null || path.isEmpty()) {
             return MissingValue.INSTANCE;
@@ -3833,13 +7324,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private enum EntryStateVerdict { MATCHES, DIFFERS, UNDECIDED }
-
-    private static boolean referenceTypeDescriptor(String descriptor) {
-        String value = safe(descriptor);
-        return value.startsWith("L") || value.startsWith("[");
-    }
-
     private static String joinFieldPath(List<String> path) {
         if (path == null || path.isEmpty()) {
             return "";
@@ -3876,7 +7360,7 @@ public final class ConcolicRegionRuntime {
             ensurePathRecordingStarted(active);
             active.symbolized.add(action.symbol);
             if (value != null && !liveArray) {
-                active.recordSymbolizedObject(action.symbol, value);
+                active.recordSymbolizedInputPort(action.symbol, value);
             }
         } catch (Throwable throwable) {
             active.unresolved.add(action.symbol + ": symbolize failed: "
@@ -3914,7 +7398,7 @@ public final class ConcolicRegionRuntime {
             requireTrackedContainer(api, value, action.symbol);
         }
         active.observedInputSlots.add(action.symbol);
-        active.recordSymbolizedObject(action.symbol, value);
+        active.recordSymbolizedInputPort(action.symbol, value);
         return false;
     }
 
@@ -3979,6 +7463,33 @@ public final class ConcolicRegionRuntime {
             }
         }
         return null;
+    }
+
+    /** Exact live field named by a VM handoff export. */
+    private static Field declaredInstanceField(
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        if (owner == null || safe(declaringClass).isEmpty()
+                || safe(fieldName).isEmpty() || safe(descriptor).isEmpty()) {
+            return null;
+        }
+        Class<?> type = owner.getClass();
+        while (type != null && !declaringClass.equals(type.getName())) {
+            type = type.getSuperclass();
+        }
+        if (type == null) return null;
+        try {
+            Field field = type.getDeclaredField(fieldName);
+            if (Modifier.isStatic(field.getModifiers())
+                    || !descriptor.equals(javaTypeDescriptor(
+                    field.getType().getTypeName()))) {
+                return null;
+            }
+            if (!field.isAccessible()) field.setAccessible(true);
+            return field;
+        } catch (Throwable unavailable) {
+            return null;
+        }
     }
 
     private static String exactFieldSignature(Field field) {
@@ -4328,10 +7839,10 @@ public final class ConcolicRegionRuntime {
 
     /**
      * Records that an activation published nothing, and why.  {@code skipKind}
-     * is the machine-readable half: a skip that never obtained the engine is
-     * a scheduling outcome, while a skip that ran and contradicted its
-     * recording is a finding about the path, and a reader that cannot tell
-     * them apart reports one as the other.
+     * is the machine-readable half: a skip that was never admitted is a plan
+     * outcome, while a skip that ran and contradicted its recording is a
+     * finding about the path, and a reader that cannot tell them apart
+     * reports one as the other.
      */
     private static void writeSkipped(RuntimeTask activation, String skipKind,
                                      String reason) {
@@ -4355,21 +7866,22 @@ public final class ConcolicRegionRuntime {
         boolean written = appendResult(result);
         int haltStatus = terminalSelectedSkipHaltStatus(skipKind, reason,
                 written);
-        if (haltStatus >= 0 && Boolean.getBoolean(
-                HALT_AFTER_SELECTED_RESULT_PROPERTY)) {
-            // A durable terminal skip is not a successful replay result.
-            // Exit promptly but nonzero so the caller records the abandoned
-            // replay instead of running the rest of a long-lived workload.
-            Runtime.getRuntime().halt(haltStatus);
+        if (haltStatus >= 0) {
+            // A durable terminal skip is not a successful replay result.  It
+            // settles this task nonzero; the workload still ends only once
+            // every campaign task has settled.
+            haltWhenCampaignSettled(activation.taskId, haltStatus);
         }
     }
 
+    /**
+     * The halt-status contribution of a skip that ends its task, or -1 when
+     * the task may still publish.
+     */
     static int terminalSelectedSkipHaltStatus(
             String skipKind, String reason, boolean written) {
-        // A busy timeout belongs to a losing concurrent activation.  The
-        // activation that owns the engine may still be producing the one
-        // selected result, so halting here would kill valid evidence.  Keep
-        // the skip as a scheduling diagnostic and let the owner finish.
+        // A replay-prefix mismatch is not terminal: a later compatible
+        // activation of the same task may still match the recorded prefix.
         boolean terminal = SKIP_NOT_STARTED.equals(skipKind)
                 && safe(reason).startsWith(
                 "custom concolic System API is unavailable");
@@ -4492,6 +8004,21 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /** Diagnostic for daemon publication, where no VM context may be called. */
+    private static void diagAfterVmClose(String event, String detail) {
+        if (!diagnosticsEnabled()) return;
+        try {
+            System.err.println("CAUSYNTH-DIAG|"
+                    + System.currentTimeMillis() + "|t"
+                    + Thread.currentThread().getId() + "|heapMB"
+                    + (Runtime.getRuntime().totalMemory()
+                    - Runtime.getRuntime().freeMemory()) / 1048576L + "|"
+                    + safe(event) + "|" + safe(detail));
+        } catch (Throwable ignored) {
+            // Diagnostics never fail publication.
+        }
+    }
+
     /**
      * Indexed access to a serialized path condition without materializing
      * every element.
@@ -4509,30 +8036,52 @@ public final class ConcolicRegionRuntime {
      * values; anything else - a non-array document, an unterminated string, a
      * lenient extension - is handed to the tree parser, so a document this
      * scanner does not understand is read exactly as it was before.</p>
+     *
+     * <p>Elements are addressed by their <em>absolute</em> index in the
+     * thread's one append-only path condition, which is the index an exact VM
+     * branch event names.  A whole-document read starts that numbering at 0; a
+     * window read of {@code [base, windowEnd)} starts it at {@code base} and
+     * refuses every index outside its own window rather than shifting one.
+     * {@link #size()} always answers the same question either way - how many
+     * conditions the thread has accumulated - so a caller that only needs the
+     * suffix does not have to know which reader answered.</p>
      */
     static final class PathConditionElements {
         static final PathConditionElements EMPTY =
                 new PathConditionElements(new JsonArray());
         private static final String SCAN_MODE = "SCAN";
         private static final String TREE_MODE = "TREE";
+        private static final String WINDOW_MODE = "WINDOW_SCAN";
 
         private final String raw;
         private final int[] bounds;
         private final JsonArray tree;
+        /** Absolute index of element 0, and the exclusive end of the window. */
+        private final int base;
+        private final int windowEnd;
+        /** Conditions the thread has accumulated, window or not. */
         private final int size;
+        private final boolean windowed;
 
         private PathConditionElements(String raw, int[] bounds) {
-            this.raw = raw;
-            this.bounds = bounds;
-            this.tree = null;
-            this.size = bounds.length / 2;
+            this(raw, bounds, null, 0, bounds.length / 2, bounds.length / 2,
+                    false);
         }
 
         private PathConditionElements(JsonArray tree) {
-            this.raw = null;
-            this.bounds = null;
+            this(null, null, tree, 0, tree.size(), tree.size(), false);
+        }
+
+        private PathConditionElements(String raw, int[] bounds, JsonArray tree,
+                                      int base, int windowEnd, int size,
+                                      boolean windowed) {
+            this.raw = raw;
+            this.bounds = bounds;
             this.tree = tree;
-            this.size = tree.size();
+            this.base = base;
+            this.windowEnd = windowEnd;
+            this.size = size;
+            this.windowed = windowed;
         }
 
         /**
@@ -4541,7 +8090,9 @@ public final class ConcolicRegionRuntime {
          * reported for it before.
          */
         static PathConditionElements of(String raw) {
-            int[] bounds = scanElements(raw);
+            if (raw == null) return EMPTY;
+            char[] document = raw.toCharArray();
+            int[] bounds = scanElements(document, 0, document.length);
             if (bounds != null) return new PathConditionElements(raw, bounds);
             JsonElement parsed = parseJson(raw);
             return parsed.isJsonArray()
@@ -4549,40 +8100,86 @@ public final class ConcolicRegionRuntime {
                     : EMPTY;
         }
 
+        /**
+         * Reads one {@code CONCOLIC_PATH_CONDITION_RANGE} envelope as the
+         * conditions at absolute indices {@code [startIndex, endIndex)}.
+         *
+         * <p>{@code null} means "this envelope cannot be read as that window
+         * with certainty" - a malformed document, a window that does not start
+         * where the caller asked, or an element count that disagrees with the
+         * indices the VM stamped.  A caller that gets {@code null} must read
+         * the whole path condition instead; it must never treat a window it
+         * could not verify as the accumulated condition list, because the
+         * absolute index an exact branch event names would then address the
+         * wrong element.</p>
+         */
+        static PathConditionElements window(String envelope, int expectedStart) {
+            if (envelope == null) return null;
+            char[] document = envelope.toCharArray();
+            int[] members = members(document, WINDOW_MEMBERS);
+            if (members == null) return null;
+            int start = integerMember(document, members, 0, -1);
+            int end = integerMember(document, members, 1, -1);
+            int watermark = integerMember(document, members, 2, -1);
+            int declaredCount = integerMember(document, members, 3, -1);
+            if (start != expectedStart || end < start || watermark < 0) {
+                return null;
+            }
+            if (members[8] < 0) return null;
+            int[] bounds = scanElements(document, members[8], members[9]);
+            if (bounds == null) return null;
+            int count = bounds.length / 2;
+            // The window's own indices are the authority on what it holds.  A
+            // count that disagrees with them means an element the VM did not
+            // serialize, and an absolute index would then be off by however
+            // many of those there were.
+            if (count != end - start || declaredCount != count) return null;
+            return new PathConditionElements(envelope, bounds, null, start,
+                    end, watermark, true);
+        }
+
+        /** Conditions the thread has accumulated, not just this window's. */
         int size() {
             return size;
         }
 
         JsonElement get(int index) {
-            if (index < 0 || index >= size) {
+            if (index < base || index >= windowEnd) {
                 throw new IndexOutOfBoundsException(
-                        "path condition index " + index + " of " + size);
+                        "path condition index " + index + " outside ["
+                                + base + "," + windowEnd + ") of " + size);
             }
-            if (tree != null) return tree.get(index);
+            int offset = index - base;
+            if (tree != null) return tree.get(offset);
             return parseJson(raw.substring(
-                    bounds[2 * index], bounds[2 * index + 1]));
+                    bounds[2 * offset], bounds[2 * offset + 1]));
         }
 
         /** Which reader answered, for the replay's own diagnostics. */
         String mode() {
+            if (windowed) return WINDOW_MODE;
             return tree == null ? SCAN_MODE : TREE_MODE;
         }
 
+        /** The members {@link #window} needs, in the order it reads them. */
+        private static final String[] WINDOW_MEMBERS = {
+                "startIndex", "endIndex", "pathConditionWatermark",
+                "conditionCount", "conditions"};
+
         /**
-         * Bounds of every element of a JSON array, or {@code null} when the
-         * document is not one this scanner can split with certainty.
+         * Bounds of every element of the JSON array occupying
+         * {@code [from, to)}, or {@code null} when that region is not one this
+         * scanner can split with certainty.
          */
-        private static int[] scanElements(String raw) {
-            if (raw == null) return null;
-            // One copy the scan can index directly.  A replay VM interprets
-            // every bytecode, and a bounds-checked accessor call per character
-            // of a document this size is most of the work otherwise.
-            char[] document = raw.toCharArray();
-            int length = document.length;
-            int index = skipWhitespace(document, 0);
-            if (index >= length || document[index] != '[') return null;
+        private static int[] scanElements(char[] document, int from, int to) {
+            if (document == null || from < 0 || to > document.length
+                    || from >= to) {
+                return null;
+            }
+            int index = skipWhitespace(document, from);
+            if (index >= to || document[index] != '[') return null;
             index = skipWhitespace(document, index + 1);
-            if (index >= length) return null;
+            if (index >= to) return null;
             int[] bounds = new int[64];
             int count = 0;
             if (document[index] == ']') {
@@ -4591,7 +8188,7 @@ public final class ConcolicRegionRuntime {
                 while (true) {
                     if (!valueStart(document[index])) return null;
                     int end = skipValue(document, index);
-                    if (end <= index) return null;
+                    if (end <= index || end > to) return null;
                     if (2 * count == bounds.length) {
                         bounds = Arrays.copyOf(bounds, 2 * bounds.length);
                     }
@@ -4599,7 +8196,7 @@ public final class ConcolicRegionRuntime {
                     bounds[2 * count + 1] = end;
                     count++;
                     index = skipWhitespace(document, end);
-                    if (index >= length) return null;
+                    if (index >= to) return null;
                     char delimiter = document[index];
                     if (delimiter == ']') {
                         index++;
@@ -4607,11 +8204,96 @@ public final class ConcolicRegionRuntime {
                     }
                     if (delimiter != ',') return null;
                     index = skipWhitespace(document, index + 1);
-                    if (index >= length) return null;
+                    if (index >= to) return null;
                 }
             }
-            return skipWhitespace(document, index) == length
+            return skipWhitespace(document, index) == to
                     ? Arrays.copyOf(bounds, 2 * count) : null;
+        }
+
+        /**
+         * Bounds of the named members of one JSON object, walked once at the
+         * top level, or {@code null} when the document is not one object of
+         * complete members.
+         *
+         * <p>The keys are matched where a key may appear and nowhere else.
+         * Searching the text for a quoted name would find one inside a
+         * serialized expression - a recorded bytecode position is a string the
+         * VM copied from the program - and would then read a value belonging
+         * to a condition as if it were the envelope's.</p>
+         *
+         * @return two slots per requested name, {@code -1} when absent
+         */
+        private static int[] members(char[] document, String[] names) {
+            int[] found = new int[2 * names.length];
+            Arrays.fill(found, -1);
+            int length = document.length;
+            int index = skipWhitespace(document, 0);
+            if (index >= length || document[index] != '{') return null;
+            index = skipWhitespace(document, index + 1);
+            if (index >= length) return null;
+            if (document[index] == '}') return found;
+            while (true) {
+                if (document[index] != '"') return null;
+                int keyEnd = skipString(document, index);
+                if (keyEnd < 0) return null;
+                int nameStart = index + 1;
+                int nameEnd = keyEnd - 1;
+                index = skipWhitespace(document, keyEnd);
+                if (index >= length || document[index] != ':') return null;
+                int valueStart = skipWhitespace(document, index + 1);
+                if (valueStart >= length || !valueStart(document[valueStart])) {
+                    return null;
+                }
+                int valueEnd = skipValue(document, valueStart);
+                if (valueEnd <= valueStart) return null;
+                for (int slot = 0; slot < names.length; slot++) {
+                    if (found[2 * slot] >= 0
+                            || !nameEquals(document, nameStart, nameEnd,
+                            names[slot])) {
+                        continue;
+                    }
+                    found[2 * slot] = valueStart;
+                    found[2 * slot + 1] = valueEnd;
+                }
+                index = skipWhitespace(document, valueEnd);
+                if (index >= length) return null;
+                if (document[index] == '}') return found;
+                if (document[index] != ',') return null;
+                index = skipWhitespace(document, index + 1);
+                if (index >= length) return null;
+            }
+        }
+
+        /** Whether an unescaped member key spells {@code name}. */
+        private static boolean nameEquals(char[] document, int from, int to,
+                                          String name) {
+            if (to - from != name.length()) return false;
+            for (int offset = 0; offset < name.length(); offset++) {
+                if (document[from + offset] != name.charAt(offset)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** One member read as a plain JSON integer, or {@code fallback}. */
+        private static int integerMember(char[] document, int[] members,
+                                         int slot, int fallback) {
+            int from = members[2 * slot];
+            int to = members[2 * slot + 1];
+            if (from < 0 || to <= from) return fallback;
+            boolean negative = document[from] == '-';
+            int index = negative ? from + 1 : from;
+            if (index >= to) return fallback;
+            long value = 0L;
+            for (; index < to; index++) {
+                char digit = document[index];
+                if (digit < '0' || digit > '9') return fallback;
+                value = value * 10L + (digit - '0');
+                if (value > Integer.MAX_VALUE) return fallback;
+            }
+            return (int) (negative ? -value : value);
         }
 
         /** The characters a strict JSON value may begin with. */
@@ -4722,7 +8404,7 @@ public final class ConcolicRegionRuntime {
         return value == null ? "" : value;
     }
 
-    private enum MissingValue { INSTANCE }
+    enum MissingValue { INSTANCE }
 
     private enum UnsupportedReplayValue { INSTANCE }
 
@@ -4987,6 +8669,7 @@ public final class ConcolicRegionRuntime {
     /** One nested invocation of a method that owns a selected mutator. */
     static final class MutationMethodScope {
         private int observed;
+        private int versionOrdinal;
         private PendingMutationCapture pending;
         private boolean ambiguousContainer;
         private Object atomicPreparedReceiver;
@@ -4997,8 +8680,8 @@ public final class ConcolicRegionRuntime {
         /**
          * A mutation relation denotes the container state at the definition
          * invocation's normal exit.  Repeating the selected mutator on the
-         * same receiver is therefore the ordinary fold (addKeys puts every
-         * key in one invocation) and keeps the first mutation as the anchor.
+         * same receiver is therefore the ordinary fold (one invocation adds
+         * every element) and keeps the first mutation as the anchor.
          * Only a second, different receiver makes the exit snapshot
          * ambiguous, and that poisons the whole invocation rather than
          * letting a later mutation re-anchor it.
@@ -5024,9 +8707,6 @@ public final class ConcolicRegionRuntime {
             return true;
         }
 
-        PendingMutationCapture pendingForTests() {
-            return pending;
-        }
     }
 
     private static final class ActiveRegion {
@@ -5035,7 +8715,103 @@ public final class ConcolicRegionRuntime {
         private final Object receiver;
         private final Thread thread;
         private final AtomicBoolean finished = new AtomicBoolean();
+        private boolean prepared;
+        /**
+         * The declared target branch event this occurrence decided, or
+         * {@code null} while it has not decided one.
+         *
+         * <p>Reaching the target is evidence the case carries to its own
+         * terminal, not a terminal of its own: a handler observes the target
+         * inside itself and still owes the response its caller attaches, and
+         * a case that ended at the observation lost every effect after it.
+         * </p>
+         */
+        private JsonObject targetReach;
+        /** Terminal outcome, frozen when the occurrence stops running. */
+        private boolean abandoned;
+        private boolean closed;
+        /** Normal handler return parked until response serialization ends. */
+        private DeferredTerminal responseTerminal;
+        /**
+         * Loop bodies this activation has charged.  Written only by its own
+         * root thread and read by the process-exit barrier as the one cheap
+         * proof that a still-live occurrence is executing rather than stuck.
+         */
+        private volatile long chargedLoopBodies;
+        /**
+         * The stable causal context this candidate observed while it was
+         * live: the logical sources it ran on and the external request scopes
+         * it ran inside.
+         *
+         * <p>Both are established by the application <em>inside</em> its own
+         * entry method - a thread-entry root is entered before its source is
+         * registered, and a handler receives the sender's scope later still -
+         * so neither can be read at the entry hook.  Recording them as they
+         * happen is what lets the finish gate say whether this activation is
+         * the occurrence its plan row addressed.</p>
+         */
+        private final Set<String> observedSourceKeys = new LinkedHashSet<>();
+        /**
+         * Every stable source this occurrence can be attributed to by the
+         * application's own registration.
+         *
+         * <p>Two kinds of evidence, both produced by the replay itself.  The
+         * first is what the thread's trace context published while this
+         * occurrence was live - a workload that opens a request scope or
+         * records an RPC leg names its source that way.  The second is the
+         * source registered <em>for this occurrence's own receiver</em>, and
+         * it is the one that matters for a long-lived service: a node binds
+         * its receiver to its source once at start-up
+         * ({@code registerSource}/{@code registerSourceAlias}) and never
+         * opens a request scope on the threads that later run the selected
+         * region.  That binding is ordinary application code, so it happens
+         * in every replay; nothing about it depends on the discovery session
+         * recurring.</p>
+         *
+         * <p>Reading it here rather than at entry is deliberate: a receiver
+         * built during start-up is older than the source declaration that
+         * names it, so the alias may be flushed after this region began.</p>
+         */
+        private Set<String> attributedSourceKeys() {
+            Set<String> keys = new LinkedHashSet<>(observedSourceKeys);
+            SourceRef registered = RuntimeTraceContext.sourceFor(receiver);
+            if (registered != null) keys.add(registered.key());
+            return keys;
+        }
+
+        private synchronized boolean beginClose() {
+            if (closed) return false;
+            closed = true;
+            return true;
+        }
+
+        private synchronized boolean deferResponseTerminal(
+                String exitKind, String exceptionType, Object output) {
+            if (!activation.exportsResponseHandoff) return false;
+            if (responseTerminal != null) {
+                throw new IllegalStateException(
+                        "response terminal already deferred");
+            }
+            responseTerminal = new DeferredTerminal(exitKind,
+                    exceptionType, output);
+            return true;
+        }
+
+        private synchronized DeferredTerminal takeResponseTerminal() {
+            DeferredTerminal terminal = responseTerminal;
+            responseTerminal = null;
+            return terminal;
+        }
+        private String exitKind = "";
+        private String exceptionType = "";
+        private Object exitOutput;
         private final List<String> symbolized = new ArrayList<>();
+        /** Exact configured source roots materialized by this activation. */
+        private final Map<String, JsonObject> symbolicSources =
+                new LinkedHashMap<>();
+        /** Object identity prevents one source id from naming two fields. */
+        private final Map<String, Object> symbolicSourceOwners =
+                new LinkedHashMap<>();
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
@@ -5049,6 +8825,135 @@ public final class ConcolicRegionRuntime {
         private final List<JsonObject> concreteBranchWitnesses =
                 new ArrayList<>();
         private final List<JsonObject> outputCaptures = new ArrayList<>();
+        /**
+         * Map versions produced by this candidate but not yet visible to a
+         * consumer.  They are committed only after the occurrence passes its
+         * terminal admission gates; an abandoned candidate therefore cannot
+         * leak a native state handle into a later accepted consumer.
+         */
+        private final Map<String, Long> stagedMapVersions =
+                new LinkedHashMap<>();
+        /** Scalar/reference versions staged until this producer is accepted. */
+        private final Map<String, Long> stagedFieldVersions =
+                new LinkedHashMap<>();
+        /**
+         * Case-local references into the VM's own handoff ledger: the
+         * declared port an attach landed on and the export event the
+         * {@code VALUE_HANDOFF} edge relates it to.
+         */
+        private final List<JsonObject> vmHandoffEvents = new ArrayList<>();
+        /** Response component ports already attached in this bounded case. */
+        private final Set<String> satisfiedResponseHandoffPorts =
+                new LinkedHashSet<>();
+        /**
+         * Provisional handle misses while searching repeated response
+         * candidates.  Bounded by declared response port, never by the
+         * number of concrete exchanges a long-lived caller executes.
+         */
+        private final Map<String, JsonObject> pendingResponseHandoffGaps =
+                new LinkedHashMap<>();
+        private final List<JsonObject> rpcHandoffGaps = new ArrayList<>();
+
+        private synchronized void deferResponseHandoffGap(
+                String portId, JsonObject gap) {
+            String port = safe(portId);
+            if (port.isEmpty() || satisfiedResponseHandoffPorts.contains(
+                    port)) return;
+            if (!pendingResponseHandoffGaps.containsKey(port)) {
+                pendingResponseHandoffGaps.put(port, gap);
+            }
+        }
+
+        private synchronized void markResponseHandoffSatisfied(
+                String portId) {
+            String port = safe(portId);
+            if (port.isEmpty()) return;
+            satisfiedResponseHandoffPorts.add(port);
+            pendingResponseHandoffGaps.remove(port);
+        }
+
+        private synchronized boolean responseHandoffSatisfied(
+                String portId) {
+            return !safe(portId).isEmpty()
+                    && satisfiedResponseHandoffPorts.contains(portId);
+        }
+
+        private synchronized void flushPendingResponseHandoffGaps() {
+            for (Map.Entry<String, JsonObject> entry
+                    : pendingResponseHandoffGaps.entrySet()) {
+                if (!satisfiedResponseHandoffPorts.contains(entry.getKey())) {
+                    rpcHandoffGaps.add(entry.getValue());
+                }
+            }
+            pendingResponseHandoffGaps.clear();
+        }
+        /**
+         * Shared locations this activation selected as symbolic carriers, and
+         * the evidence read back from them.  A record is keyed by the VM's own
+         * location identity so a second read-out of one location replaces the
+         * first rather than doubling it; a gap is appended, because two
+         * refusals are two facts about the run.
+         */
+        private final Map<String, SharedCarrier> sharedCarriers =
+                new LinkedHashMap<>();
+        /** Exact access-owner carrier declarations already selected here. */
+        private final Set<String> accessOwnerCarrierSelections =
+                new LinkedHashSet<>();
+        /**
+         * Exact upstream inputs observed before their selected producer had
+         * committed a version.
+         *
+         * <p>This is candidate-local search state, not a shared-state gap.
+         * One entry per declared input bounds repeated polling in a
+         * long-lived root.  A successful later admission removes it; a
+         * terminal with entries releases the candidate so another compatible
+         * activation can answer the same causal address.</p>
+         */
+        private final Map<String, String> pendingPlannedProducerPrerequisites =
+                new LinkedHashMap<>();
+        private final Map<String, JsonObject> sharedStateRecords =
+                new LinkedHashMap<>();
+        private final List<JsonObject> sharedStateGaps = new ArrayList<>();
+
+        private synchronized void deferPlannedProducerPrerequisite(
+                String inputPort, String detail) {
+            String port = safe(inputPort);
+            if (port.isEmpty()) return;
+            pendingPlannedProducerPrerequisites.putIfAbsent(port,
+                    safe(detail));
+        }
+
+        private synchronized void resolvePlannedProducerPrerequisite(
+                String inputPort) {
+            pendingPlannedProducerPrerequisites.remove(safe(inputPort));
+        }
+
+        private synchronized boolean plannedProducerPrerequisitePending(
+                String inputPort) {
+            return pendingPlannedProducerPrerequisites.containsKey(
+                    safe(inputPort));
+        }
+
+        private synchronized boolean hasPendingPlannedProducerPrerequisites() {
+            return !pendingPlannedProducerPrerequisites.isEmpty();
+        }
+
+        private synchronized String pendingPlannedProducerPrerequisiteReason() {
+            return "exact planned input producer was not yet committed: "
+                    + new LinkedHashMap<>(
+                    pendingPlannedProducerPrerequisites);
+        }
+        /**
+         * Read-cut gates this activation admitted as observations, and the
+         * named gaps of the ones it refused.  They are kept apart for the same
+         * reason successful evidence is kept apart from a gap: one may become
+         * a confirmed read-from, the other never may.
+         */
+        private final List<JsonObject> readCutGates = new ArrayList<>();
+        private final List<JsonObject> readCutGaps = new ArrayList<>();
+        private JsonObject sessionEventLedger;
+        /** Read-out batch every record of this activation is stamped with. */
+        private long evidenceSnapshot;
         private final Set<String> materialized = new LinkedHashSet<>();
         private final Set<String> observedInputSlots =
                 new LinkedHashSet<>();
@@ -5076,16 +8981,25 @@ public final class ConcolicRegionRuntime {
                 mutationMethodScopes = new LinkedHashMap<>();
         private final Deque<Long> loopBudgetScopes = new ArrayDeque<>();
         private final LoopBackedgeBudget loopBackedges;
+        /** Current fixed-count invocation by runtime natural-loop id. */
+        private final Map<String, DynamicLoopCardinality>
+                activeLoopCardinalities = new LinkedHashMap<>();
+        /** Next occurrence ordinal by runtime natural-loop id. */
+        private final Map<String, Integer> loopCardinalityOccurrences =
+                new LinkedHashMap<>();
+        /** Exact N for every dynamic fixed-count invocation in this path. */
+        private final List<JsonObject> loopCardinalities = new ArrayList<>();
+        /** Ambiguous/malformed cardinality observations remain coverage. */
+        private final List<JsonObject> loopCardinalityGaps =
+                new ArrayList<>();
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
-        private final IdentityHashMap<Object, Long> objectTokens =
-                new IdentityHashMap<>();
+        private final IdentityHashMap<Object, String>
+                symbolizedInputPorts = new IdentityHashMap<>();
         private final IdentityHashMap<Object, Map<String, Object>>
                 referenceAliasSnapshots = new IdentityHashMap<>();
         private final ReplayFieldWrites writtenFields =
                 new ReplayFieldWrites();
-        private final Map<Long, String> symbolizedObjectPorts =
-                new LinkedHashMap<>();
         private final Map<String, Object> fieldAccessOwners =
                 new LinkedHashMap<>();
         private final Set<String> ambiguousFieldAccessOwners =
@@ -5093,11 +9007,7 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> associativeAccessOccurrences =
                 new LinkedHashMap<>();
         private final ReplayProgress replayProgress;
-        private final Set<String> decidedSites = new LinkedHashSet<>();
-        private String lastDecisionSite = "";
-        private boolean lastDecisionConcrete;
         private int replayCaptureWatermark = -1;
-        private long nextObjectToken = 1L;
         private long preparedBranchSequence;
         private long loopBudgetScopeSequence;
         private int lastPathConditionSize;
@@ -5130,6 +9040,7 @@ public final class ConcolicRegionRuntime {
          */
         private ReplayLoopResourceCut chargeLoopBody(String loopId) {
             int maxBodies = activation.maxLoopBodies(loopId);
+            chargedLoopBodies++;
             long entered = loopBackedges.recordBody(loopId);
             if (entered <= maxBodies) return null;
             ReplayLoopResourceCut cut = new ReplayLoopResourceCut(
@@ -5138,6 +9049,65 @@ public final class ConcolicRegionRuntime {
                 replayResourceCut = cut.toJson();
             }
             return cut;
+        }
+
+        private synchronized void recordLoopCardinality(
+                String loopId, int cardinality) {
+            if (loopId.isEmpty() || cardinality < 0) {
+                loopCardinalityGap(
+                        LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS,
+                        loopId, 0,
+                        "fixed-count array observation has no valid loop id "
+                                + "or non-negative cardinality");
+                return;
+            }
+            DynamicLoopCardinality current =
+                    activeLoopCardinalities.get(loopId);
+            if (current == null) {
+                int occurrence = loopCardinalityOccurrences
+                        .getOrDefault(loopId, 0) + 1;
+                loopCardinalityOccurrences.put(loopId, occurrence);
+                current = new DynamicLoopCardinality(
+                        occurrence, cardinality);
+                activeLoopCardinalities.put(loopId, current);
+                JsonObject row = new JsonObject();
+                row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, loopId);
+                row.addProperty(LoopBoundPolicy.DYNAMIC_OCCURRENCE,
+                        occurrence);
+                row.addProperty(LoopBoundPolicy.LOOP_CARDINALITY,
+                        cardinality);
+                row.addProperty("cardinalityAuthority",
+                        LoopBoundPolicy.PATH_CARDINALITY_AUTHORITY);
+                loopCardinalities.add(row);
+                return;
+            }
+            if (current.cardinality != cardinality) {
+                loopCardinalityGap(
+                        LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS,
+                        loopId, current.occurrence,
+                        "one dynamic fixed-count occurrence observed N="
+                                + current.cardinality + " and N="
+                                + cardinality);
+            }
+        }
+
+        private synchronized void completeLoopCardinality(String loopId) {
+            if (!loopId.isEmpty()) activeLoopCardinalities.remove(loopId);
+        }
+
+        private void loopCardinalityGap(String reason, String loopId,
+                                        int occurrence, String detail) {
+            JsonObject row = new JsonObject();
+            row.addProperty("kind", "LOOP_CARDINALITY_COVERAGE_GAP");
+            row.addProperty("authority", "RUNTIME_LOOP_CARDINALITY_GAP_V1");
+            row.addProperty("reason", reason);
+            row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, loopId);
+            if (occurrence > 0) {
+                row.addProperty(LoopBoundPolicy.DYNAMIC_OCCURRENCE,
+                        occurrence);
+            }
+            row.addProperty("detail", detail);
+            loopCardinalityGaps.add(row);
         }
 
         /**
@@ -5207,6 +9177,33 @@ public final class ConcolicRegionRuntime {
          * contract, and bounding this ledger by the instrumented slice keeps
          * a long concrete prefix from exhausting the replay heap.</p>
          */
+        /**
+         * Records a declared branch site that executed before the symbolic
+         * gate opened.
+         *
+         * <p>Emitted as an ordinary {@code branchMappings} row so the site
+         * keeps its activation-local occurrence, and carrying a
+         * {@code concreteObservation} rather than a {@code witness} so it can
+         * never be mistaken for a symbolic decision: there was no VM event and
+         * no path condition, and the row says exactly that.  This is the same
+         * shape the symbolic path publishes when the VM attests that a
+         * declared branch contributed no condition.</p>
+         */
+        private void recordDeclaredConcreteBranch(
+                String method, int unitIndex, boolean outcome) {
+            String site = siteId(method, unitIndex);
+            int occurrence = nextBranchOccurrence(site);
+            JsonObject mapping = branchMapping(method, unitIndex, occurrence);
+            mapping.addProperty("rawPathConditionSize", 0);
+            mapping.addProperty("rawPathConditionBaseline", 0);
+            mapping.add("concreteObservation",
+                    ExactConcreteBranchObservation.attested(site,
+                            safe(method), unitIndex, occurrence, outcome)
+                            .toJson());
+            branchMappings.add(mapping);
+            witnessOutcome(site, outcome);
+        }
+
         private void recordConcreteBranchWitness(
                 String method, int unitIndex, boolean outcome) {
             String site = siteId(method, unitIndex);
@@ -5258,35 +9255,6 @@ public final class ConcolicRegionRuntime {
         private boolean replayPrefixContradicted() {
             return activation.replayContract != null
                     && replayProgress.failed();
-        }
-
-        /**
-         * Records how the branch that just executed was decided, so the loop
-         * hooks can tell a symbolically chosen continuation from a concrete
-         * one.  The site is kept, not merely the method: only the branch that
-         * decides a loop's continuation says anything about that loop's
-         * guard, and the body of the loop holds branches of the same method.
-         */
-        private void noteBranchDecision(
-                String method, int unitIndex, boolean concrete) {
-            lastDecisionSite = siteId(method, unitIndex);
-            lastDecisionConcrete = concrete;
-            decidedSites.add(lastDecisionSite);
-        }
-
-        /**
-         * True when this loop's own guard decided this body and was attested
-         * to carry no symbolic expression.  An unattested, missing, or
-         * foreign decision answers nothing and is charged to the budget.
-         */
-        private boolean enteredBodyOnConcreteGuard(
-                String loopId, String guardSiteId) {
-            boolean concrete = concreteGuardEnteredBody(loopId, guardSiteId,
-                    decidedSites.contains(safe(guardSiteId)),
-                    lastDecisionSite, lastDecisionConcrete);
-            lastDecisionSite = "";
-            lastDecisionConcrete = false;
-            return concrete;
         }
 
         private int nextLocalMaterializationOccurrence(
@@ -5356,11 +9324,17 @@ public final class ConcolicRegionRuntime {
                         + "invocation scope");
                 return null;
             }
-            // The boundary-wide count orders this port's versions; it is never
-            // replay identity, which stays the path seed.
-            int version = outputCaptureOccurrences.observe(
-                    request.captureBindingId(), request.outputSiteId());
-            return new MutationCaptureIndex(++scope.observed, version);
+            // One completed definition invocation publishes one state
+            // version. All container operations inside that invocation (for
+            // example a fixed array/for walk performing several puts) fold
+            // into that version and must not spend extra bounded slots. A
+            // later invocation reached by replay receives the next version.
+            if (scope.versionOrdinal == 0) {
+                scope.versionOrdinal = outputCaptureOccurrences.observe(
+                        request.captureBindingId(), request.outputSiteId());
+            }
+            return new MutationCaptureIndex(++scope.observed,
+                    scope.versionOrdinal);
         }
 
         private void deferMutationStateOutput(
@@ -5479,16 +9453,13 @@ public final class ConcolicRegionRuntime {
         }
 
         private void validateRegionExitFieldCaptures(String exitKind) {
-            boolean outputBoundary = "OUTPUT_BOUNDARY".equals(exitKind)
-                    && activation.capturesOutputRelation
-                    && hasCompleteExactOutputBoundary();
-            if ("OUTPUT_BOUNDARY".equals(exitKind) && !outputBoundary) {
-                addUnresolvedOnce("INCOMPLETE_EXACT_OUTPUT_BOUNDARY");
-            }
             boolean normal = "NORMAL".equals(exitKind)
                     || activation.capturesOutputRelation
-                    && ("BOUNDED".equals(exitKind) || outputBoundary);
+                    && "BOUNDED".equals(exitKind);
             for (OutputCaptureSpec request : activation.outputCaptures) {
+                String observedUnit = request.definitionInvocationScoped()
+                        ? "definition invocation(s)"
+                        : "hook occurrence(s)";
                 int matches = 0;
                 for (JsonObject capture : outputCaptures) {
                     if (successfulExactOutputCapture(request, capture)) {
@@ -5507,11 +9478,27 @@ public final class ConcolicRegionRuntime {
                             + ": bounded replay produced no output relation; "
                             + "observed " + outputCaptureOccurrences.observed(
                             request.captureBindingId(), request.outputSiteId())
-                            + " hook occurrence(s) and captured " + matches);
+                            + " " + observedUnit + " and captured " + matches);
                 } else if (!normal && matches != 0) {
                     addUnresolvedOnce(request.captureBindingId()
                             + ": field output captured on " + exitKind
                             + " exit");
+                }
+                // The size of the bound this site actually needed, stated
+                // once now that the count is final.  The refusal itself was
+                // published per-occurrence and cannot carry this: it is asked
+                // while the site is still executing, so every number it could
+                // quote is a lower bound.  Both halves in one row let a
+                // reader size the real bound instead of rediscovering it.
+                int observed = outputCaptureOccurrences.observed(
+                        request.captureBindingId(), request.outputSiteId());
+                int capacity = activation.loopBound.maxBackedgeTraversals();
+                if (observed > capacity) {
+                    addUnresolvedOnce(request.captureBindingId()
+                            + ": bounded output version capacity " + capacity
+                            + " held " + matches + " of " + observed
+                            + " observed " + observedUnit + " at "
+                            + request.outputSiteId());
                 }
             }
             if (!normal) outputCaptures.clear();
@@ -5527,49 +9514,71 @@ public final class ConcolicRegionRuntime {
             return false;
         }
 
+        /**
+         * Whether this execution of a declared output site may produce a
+         * relation version.
+         *
+         * <p>The only rule is the capture's own declared prerequisite: its
+         * input ports must already exist, because a hook that runs before
+         * them has nothing to state the relation over.  A successful earlier
+         * occurrence is deliberately <em>not</em> a reason to refuse: a later
+         * execution of the same site is another bounded version of the same
+         * relation, which {@link #nextOutputCaptureOccurrence} ordinals and
+         * the importer exports as one version set.  Refusing it made the
+         * later heartbeat, rotation or reissue of a long-lived occurrence
+         * look exactly like a site that never ran again.</p>
+         */
         private boolean captureEligible(OutputCaptureSpec request) {
-            if (request == null || hasSuccessfulOutputCapture(request)) {
-                return false;
-            }
+            if (request == null) return false;
             return activation.capturePrerequisitesSatisfied(
                     request.captureBindingId(), symbolized,
                     observedInputSlots);
         }
 
-        private boolean hasSuccessfulOutputCapture(
-                OutputCaptureSpec request) {
-            for (JsonObject capture : outputCaptures) {
-                if (successfulExactOutputCapture(request, capture)) {
-                    return true;
-                }
-            }
+        /**
+         * Whether the counted occurrence still has a bounded version slot.
+         *
+         * <p>Every execution is counted before this is asked, so the observed
+         * count stays true whatever the answer is.  The capacity is the
+         * activation's own declared executor limit - the largest {@code K_L}
+         * the campaign declared - because that is how many bounded slots its
+         * model holds; the occurrence ordinal itself counts nested calls and
+         * every loop nest, so it is not a loop body index.  README's resource
+         * rule applies to the versions past it: they are named once per port
+         * and never silently absent.</p>
+         */
+        private boolean boundedOutputVersionSlot(
+                OutputCaptureSpec request, int occurrence) {
+            int capacity = activation.loopBound.maxBackedgeTraversals();
+            if (occurrence >= 1 && occurrence <= capacity) return true;
+            // Deliberately without the observed count.  This fires on every
+            // occurrence past the capacity, and addUnresolvedOnce dedupes on
+            // the exact string, so a running count here would publish one row
+            // per excess occurrence - each carrying a number that is only a
+            // lower bound at the moment it was taken.  The total is stated
+            // once, at the terminal, by validateRegionExitFieldCaptures.
+            addUnresolvedOnce(request.captureBindingId()
+                    + ": bounded output version capacity " + capacity
+                    + " reached at " + request.outputSiteId()
+                    + "; later occurrences are counted, not captured");
             return false;
         }
 
-        private boolean hasCompleteExactOutputBoundary() {
-            // A replay contract is consumed one hook after the branch it
-            // demands is witnessed, so a window that closes on the witness
-            // alone discards the very decision the flip was solved for.
-            if (!replayProgress.complete()) return false;
-            // A flip is asked what its decision does to the relation, so the
-            // versions captured before that decision cannot answer it.
+        /**
+         * Whether every demanded output relation of this occurrence produced
+         * at least one admitted version by now.
+         *
+         * <p>A flip is asked what its decision does to the relation, so the
+         * versions captured before that decision cannot answer it.</p>
+         */
+        private boolean demandedOutputRelationComplete() {
             List<JsonObject> captures = replayCaptureWatermark < 0
                     ? outputCaptures
                     : outputCaptures.subList(replayCaptureWatermark,
                     outputCaptures.size());
-            boolean sites = activation.relationOnlySeed()
-                    || demandedBranchSitesObserved(
-                    activation.branchPolicies.keySet(),
-                    witnessedOutcomes.keySet());
-            boolean relation = completeExactOutputBoundary(
+            return completeExactOutputBoundary(
                     activation.capturesOutputRelation,
                     activation.outputCaptures, captures);
-            diag("BOUNDARY_CHECK", "sites=" + sites
-                    + " relation=" + relation
-                    + " watermark=" + replayCaptureWatermark
-                    + " captures=" + outputCaptures.size()
-                    + " eligible=" + captures.size());
-            return sites && relation;
         }
 
         /**
@@ -5582,7 +9591,44 @@ public final class ConcolicRegionRuntime {
             return !activation.symbolize.isEmpty()
                     && !pathRecordingStarted
                     && !(activation.relationOnlySeed()
-                    && hasCompleteExactOutputBoundary());
+                    && demandedOutputRelationComplete());
+        }
+
+        /**
+         * Names a declared target branch event this occurrence never decided.
+         *
+         * <p>The occurrence ran to its own terminal, so the demand cannot be
+         * met later; an unmet demand is a gap with a subject rather than a
+         * summary that simply carries no target.</p>
+         */
+        private void nameUnreachedTargetBranch() {
+            if (targetReach != null || !activation.declaresTargetBranch()) {
+                return;
+            }
+            addUnresolvedOnce("TARGET_BRANCH_NOT_REACHED: "
+                    + activation.targetBranchLabel()
+                    + " was not decided before this occurrence ended at "
+                    + safe(exitKind));
+        }
+
+        /**
+         * Records the declared target branch event this occurrence decided.
+         *
+         * <p>Only the first decision of the declared event is the target the
+         * plan selected; a later occurrence of the same site is another
+         * event, and overwriting would rename the reach after it.</p>
+         */
+        private void recordTargetReach(String siteId, int occurrence,
+                                       boolean outcome) {
+            if (targetReach != null) return;
+            JsonObject reach = new JsonObject();
+            reach.addProperty("kind", "TARGET_REACH_EVENT");
+            reach.addProperty("siteId", safe(siteId));
+            reach.addProperty("occurrence", occurrence);
+            reach.addProperty("outcome", outcome);
+            targetReach = reach;
+            diag("TARGET_REACHED", "token=" + token + " site=" + safe(siteId)
+                    + "#" + occurrence);
         }
 
         private void recordFieldAccessOwner(String symbol, Object owner) {
@@ -5610,6 +9656,115 @@ public final class ConcolicRegionRuntime {
             }
         }
 
+        /** 1=new claim, 0=idempotent same owner, -1=conflict. */
+        private synchronized int claimSymbolicSource(
+                String sourceId, Object owner) {
+            Object prior = symbolicSourceOwners.get(sourceId);
+            if (prior == owner) return 0;
+            if (prior != null) {
+                addUnresolvedOnce(sourceId
+                        + ": one configured source reached two owners");
+                return -1;
+            }
+            symbolicSourceOwners.put(sourceId, owner);
+            return 1;
+        }
+
+        private synchronized void recordSymbolicSource(
+                String sourceId, JsonObject evidence) {
+            JsonObject prior = symbolicSources.putIfAbsent(sourceId,
+                    evidence.deepCopy());
+            if (prior != null && !prior.equals(evidence)) {
+                addUnresolvedOnce(sourceId
+                        + ": configured source produced conflicting "
+                        + "expressions");
+            }
+        }
+
+        /** Exact raw VM names staged by this candidate's source hooks. */
+        private synchronized Map<String, String> stagedSourceSymbols() {
+            Map<String, String> result = new LinkedHashMap<>();
+            for (Map.Entry<String, JsonObject> entry
+                    : symbolicSources.entrySet()) {
+                String raw = string(entry.getValue(), "rawSymbol");
+                if (!raw.isEmpty()) result.put(entry.getKey(), raw);
+            }
+            return result;
+        }
+
+        private synchronized void releaseSymbolicSourceClaim(
+                String sourceId, Object owner) {
+            if (!symbolicSources.containsKey(sourceId)
+                    && symbolicSourceOwners.get(sourceId) == owner) {
+                symbolicSourceOwners.remove(sourceId);
+            }
+        }
+
+        private synchronized void validateConfiguredSymbolicSources() {
+            for (String sourceId : activation.sourceFields.keySet()) {
+                if (!symbolicSources.containsKey(sourceId)) {
+                    addUnresolvedOnce(sourceId
+                            + ": CONFIGURED_SYMBOLIC_SOURCE_NOT_MATERIALIZED");
+                }
+            }
+        }
+
+        private synchronized String stageMapVersion(
+                String outputPort, long versionId) {
+            String port = safe(outputPort);
+            if (port.isEmpty() || versionId <= 0L) {
+                return "selected Map producer returned no exact current "
+                        + "version for " + port;
+            }
+            Long prior = stagedMapVersions.putIfAbsent(port, versionId);
+            if (prior != null && prior.longValue() != versionId) {
+                return "selected Map producer captured conflicting versions "
+                        + prior + " and " + versionId + " for " + port;
+            }
+            return "";
+        }
+
+        private synchronized Map<String, Long> stagedMapVersions() {
+            return new LinkedHashMap<>(stagedMapVersions);
+        }
+
+        private synchronized String stageFieldVersion(
+                String outputPort, long versionId) {
+            String port = safe(outputPort);
+            if (port.isEmpty() || versionId <= 0L) {
+                return "selected field producer returned no exact current "
+                        + "version for " + port;
+            }
+            Long prior = stagedFieldVersions.putIfAbsent(port, versionId);
+            if (prior != null && prior.longValue() != versionId) {
+                return "selected field producer captured conflicting "
+                        + "versions " + prior + " and " + versionId
+                        + " for " + port;
+            }
+            return "";
+        }
+
+        private synchronized Map<String, Long> stagedFieldVersions() {
+            return new LinkedHashMap<>(stagedFieldVersions);
+        }
+
+        /**
+         * The read-out batch this activation's evidence belongs to, allocated
+         * on first use so a capture outside the exit batch still gets its own
+         * comparable ordinal rather than borrowing a later one.
+         */
+        private long evidenceSnapshot() {
+            if (evidenceSnapshot == 0L) {
+                evidenceSnapshot = EVIDENCE_SNAPSHOTS.incrementAndGet();
+            }
+            return evidenceSnapshot;
+        }
+
+        /** Opens a fresh batch for the read-out that is about to happen. */
+        private void beginEvidenceSnapshot() {
+            evidenceSnapshot = EVIDENCE_SNAPSHOTS.incrementAndGet();
+        }
+
         /**
          * Holds one occurrence's capture failure without yet calling it a
          * gap.  A bounded replay observes the site several times, and a
@@ -5631,26 +9786,15 @@ public final class ConcolicRegionRuntime {
             if (!failures.contains(value)) failures.add(value);
         }
 
-        private long objectToken(Object value) {
-            if (value == null) return 0L;
-            Long existing = objectTokens.get(value);
-            if (existing != null) return existing;
-            long token = nextObjectToken++;
-            objectTokens.put(value, token);
-            return token;
-        }
-
-        private void recordSymbolizedObject(String symbol, Object value) {
-            long objectToken = objectToken(value);
-            String previous = symbolizedObjectPorts.get(objectToken);
-            symbolizedObjectPorts.put(objectToken, previous == null
+        private void recordSymbolizedInputPort(String symbol, Object value) {
+            if (value == null) return;
+            String previous = symbolizedInputPorts.get(value);
+            symbolizedInputPorts.put(value, previous == null
                     || previous.equals(symbol) ? symbol : "");
         }
 
-        private String symbolizedObjectPort(Object value) {
-            Long token = value == null ? null : objectTokens.get(value);
-            if (token == null) return "";
-            return safe(symbolizedObjectPorts.get(token));
+        private String symbolizedInputPort(Object value) {
+            return value == null ? "" : safe(symbolizedInputPorts.get(value));
         }
 
         private int nextAssociativeAccessOccurrence(String inputSymbol) {
@@ -5768,6 +9912,17 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /** Active identity of one dynamic fixed-count loop invocation. */
+    private static final class DynamicLoopCardinality {
+        private final int occurrence;
+        private final int cardinality;
+
+        private DynamicLoopCardinality(int occurrence, int cardinality) {
+            this.occurrence = occurrence;
+            this.cardinality = cardinality;
+        }
+    }
+
     /** Per-activation, per-CFG-edge completed traversal accounting. */
     static final class LoopBackedgeBudget {
         private static final String SCOPE_SEPARATOR = "\u0000definition:";
@@ -5796,29 +9951,6 @@ public final class ConcolicRegionRuntime {
             return attempted;
         }
 
-        /**
-         * Returns the traversal the latch charged for a body the header then
-         * entered on a concrete guard.  The latch runs before that guard is
-         * decided, so it cannot know which budget the transfer belongs to.
-         */
-        void releaseTraversal(String loopId) {
-            int completed = traversals.getOrDefault(loopId, 0);
-            if (completed > 0) traversals.put(loopId, completed - 1);
-        }
-
-        long recordGuardedTraversal(String loopId) {
-            int completed = traversals.getOrDefault(loopId, 0);
-            long next = (long) completed + 1L;
-            if (next <= maxTraversals) {
-                traversals.put(loopId, (int) next);
-            }
-            return next;
-        }
-
-        boolean canEnterBody(String loopId) {
-            return completed(loopId) < maxTraversals;
-        }
-
         int completed(String loopId) {
             return traversals.getOrDefault(loopId, 0);
         }
@@ -5837,10 +9969,11 @@ public final class ConcolicRegionRuntime {
          * Counts one body of this loop against the replay resource cap and
          * returns the body number just entered.
          *
-         * <p>Separate from {@link #traversals}: that ledger is the unroll
-         * bound, which only a symbolically decided continuation spends.  This
-         * one is spent by every body, so a concrete walk and an uninstrumented
-         * service loop are both accounted for.</p>
+         * <p>Separate from {@link #traversals}: that ledger belongs only to
+         * declared condition-controlled loops and enforces their exact K_L.
+         * This resource ledger is also spent by fixed-count array loops and
+         * replay-path service loops, so work outside the symbolic loop space
+         * remains finite without changing its semantics.</p>
          */
         long recordBody(String loopId) {
             long entered = (long) bodies.getOrDefault(loopId, 0) + 1L;
@@ -5996,12 +10129,12 @@ public final class ConcolicRegionRuntime {
         private final String intraRegionSourceOutputPort;
         private final String intraRegionReadFromAuthority;
         private final String symbolicDemand;
+        private final String rootKind;
         private final List<String> fieldPath;
         private final String javaType;
-        private final boolean observedEntryState;
-        private final boolean observedNullLeaf;
-        private final boolean observedReferenceLeaf;
         private final String observedPrimitiveValue;
+        /** Whether the frozen task selected this action as a solver root. */
+        private final boolean symbolic;
         private final Set<Integer> definitionUnitIndices =
                 new LinkedHashSet<>();
         private final Map<String, String> leafFieldSignaturesByPath =
@@ -6055,6 +10188,7 @@ public final class ConcolicRegionRuntime {
             this.intraRegionReadFromAuthority = string(json,
                     "intraRegionReadFromAuthority");
             this.symbolicDemand = string(json, "symbolicDemand");
+            this.rootKind = string(json, "rootKind");
             String explicitLeafSignature = string(json,
                     "leafFieldSignature");
             this.fieldPaths = new ArrayList<>(
@@ -6108,57 +10242,15 @@ public final class ConcolicRegionRuntime {
                 leafFieldSignaturesByPath.put(joinFieldPath(
                         this.fieldPath), explicitLeafSignature);
             }
-            this.observedEntryState = json.has("observed")
-                    && bool(json, "observed", false);
             this.observedPrimitiveValue = string(json, "primitiveValue");
-            DeclaredField entryLeaf = FieldPathSpec.declaredField(
-                    leafFieldSignaturesByPath.get(
-                            joinFieldPath(this.fieldPath)));
-            this.observedReferenceLeaf = entryLeaf != null
-                    && referenceTypeDescriptor(javaTypeDescriptor(
-                    entryLeaf.type()));
-            this.observedNullLeaf = json.has("valueObjectId")
-                    && !json.get("valueObjectId").isJsonNull()
-                    && integer(json, "valueObjectId", -1) == 0;
+            this.symbolic = InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                    string(json, "mode"));
         }
 
         private boolean intraRegionComposedInput() {
             return !intraRegionSourceOutputPort.isEmpty()
                     && "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1".equals(
                     intraRegionReadFromAuthority);
-        }
-
-        /**
-         * Returns whether this activation's live entry state agrees with the
-         * value this occurrence was observed to read.  Only a leaf that the
-         * evidence can actually decide participates; an unresolvable hop
-         * leaves the activation eligible rather than silently rejecting it.
-         */
-        private EntryStateVerdict observedEntryStateVerdict(Object receiver) {
-            if (!observedEntryState || !"RECEIVER_FIELD".equals(location)
-                    || fieldPath.isEmpty()) {
-                return EntryStateVerdict.UNDECIDED;
-            }
-            Object owner = receiver;
-            for (int hop = 0; hop < fieldPath.size(); hop++) {
-                String signature = leafFieldSignaturesByPath.get(
-                        joinFieldPath(fieldPath.subList(0, hop + 1)));
-                if (owner == null || signature == null) {
-                    return EntryStateVerdict.UNDECIDED;
-                }
-                owner = readExactField(owner, signature);
-                if (owner == MissingValue.INSTANCE) {
-                    return EntryStateVerdict.UNDECIDED;
-                }
-            }
-            if (!observedPrimitiveValue.isEmpty()) {
-                return observedPrimitiveValue.equals(String.valueOf(owner))
-                        ? EntryStateVerdict.MATCHES
-                        : EntryStateVerdict.DIFFERS;
-            }
-            if (!observedReferenceLeaf) return EntryStateVerdict.UNDECIDED;
-            return observedNullLeaf == (owner == null)
-                    ? EntryStateVerdict.MATCHES : EntryStateVerdict.DIFFERS;
         }
 
         private boolean declaresArrayInput(List<String> actualPath) {
@@ -6187,6 +10279,10 @@ public final class ConcolicRegionRuntime {
         private boolean declaresReferenceInput() {
             String descriptor = javaTypeDescriptor(javaType);
             return descriptor.startsWith("L") || descriptor.startsWith("[");
+        }
+
+        private boolean observedFieldReceiverRoot() {
+            return "OBSERVED_FIELD_RECEIVER".equals(rootKind);
         }
 
         private boolean matchesLocal(String actualMethod,
@@ -6365,11 +10461,11 @@ public final class ConcolicRegionRuntime {
             }
             // A path rooted at a method return/local may not carry a
             // statically known access owner.  Matching such an action by the
-            // leaf name alone aliases unrelated same-named fields (for
-            // example ExportedBlockKeys.allKeys and
-            // BlockTokenSecretManager.allKeys).  Only an explicit owner or an
-            // exact declared-field signature is authoritative enough to
-            // symbolize a concrete field access.
+            // leaf name alone aliases unrelated fields that happen to share a
+            // name across two declaring types, which is common where one type
+            // carries a transferable copy of another's state.  Only an
+            // explicit owner or an exact declared-field signature is
+            // authoritative enough to symbolize a concrete field access.
             return !accessOwnerClass.isEmpty()
                     || !safe(signature).isEmpty()
                     && cell.contains(safe(signature));
@@ -6591,28 +10687,41 @@ public final class ConcolicRegionRuntime {
     }
 
 
+    /**
+     * The replay address of one planned occurrence.
+     *
+     * <p>Two halves, decided at two different moments because that is when
+     * each becomes knowable.  The <em>root predicate</em> - region root
+     * method, receiver runtime class and thread context - is decidable at the
+     * entry hook and admits a <em>candidate</em>.  The <em>causal anchor</em>
+     * is the stable logical source established by the application. A fresh
+     * replay may mint a different lifecycle epoch, so the epoch is not
+     * identity. A configured API name is an optional entry predicate only
+     * for a local root that begins inside that scope; remote handlers and
+     * long-lived service continuations omit it from their selector.</p>
+     *
+     * <p>There is no invocation ordinal in either half.  An ordinal addresses
+     * a position in a sequence of activations, so a replay whose flipped
+     * branch adds or removes an earlier activation of the same root silently
+     * re-points the selector at a different occurrence.  Every component here
+     * is a name both the recording and the replay state for themselves.</p>
+     */
     private static final class RootContextSelector {
         private final boolean receiverScoped;
         private final String receiverRuntimeClass;
         private final String threadName;
-        private final boolean sourceRequired;
         private final String sourceKey;
-        private final String requestKey;
-        private final int occurrenceIndex;
+        private final String requestApi;
 
         private RootContextSelector(boolean receiverScoped,
                                     String receiverRuntimeClass,
-                                    String threadName,
-                                    boolean sourceRequired,
-                                    String sourceKey, String requestKey,
-                                    int occurrenceIndex) {
+                                    String threadName, String sourceKey,
+                                    String requestApi) {
             this.receiverScoped = receiverScoped;
             this.receiverRuntimeClass = safe(receiverRuntimeClass);
             this.threadName = stableReplayThreadContext(threadName);
-            this.sourceRequired = sourceRequired;
             this.sourceKey = safe(sourceKey);
-            this.requestKey = safe(requestKey);
-            this.occurrenceIndex = occurrenceIndex;
+            this.requestApi = safe(requestApi);
         }
 
         private static RootContextSelector from(JsonObject selector) {
@@ -6621,43 +10730,85 @@ public final class ConcolicRegionRuntime {
             String receiverClass = string(selector, "receiverClass");
             String thread = selector.has("thread")
                     ? string(selector, "thread") : "";
-            String sourceKey = string(selector, "sourceKey");
-            boolean sourceRequired = bool(selector, "sourceRequired",
-                    false);
-            String requestKey = string(selector, "requestKey");
-            int occurrenceIndex = integer(selector, "occurrenceIndex", 1);
+            JsonObject anchor = object(selector, "causalAnchor");
+            String sourceKey = string(anchor, "sourceKey");
+            String requestApi = string(anchor, "requestApi");
             if (!global && (receiverClass.isEmpty()
                     || !receiverClass.equals(receiverClass.trim())
                     || !"RECEIVER_CONTEXT".equals(kind)
                     || selector.has("thread") && (thread.isEmpty()
                     || !thread.equals(thread.trim())))
-                    || sourceRequired && sourceKey.isEmpty()
-                    || occurrenceIndex <= 0) {
+                    || sourceKey.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "rootSelector requires a positive occurrence and an "
-                                + "exact source/receiver context");
+                        "rootSelector requires an exact receiver context and "
+                                + "a causal anchor naming its source");
             }
             return new RootContextSelector(!global, receiverClass, thread,
-                    sourceRequired, sourceKey, requestKey, occurrenceIndex);
+                    sourceKey, requestApi);
         }
 
+        /** Whether this root invocation is a candidate for the occurrence. */
         private boolean matches(Object receiver, String actualThreadName) {
-            if (sourceRequired) {
-                RuntimeTraceContext.View current =
-                        RuntimeTraceContext.current();
-                if (current.source == null
-                        || !sourceKey.equals(current.source.key())
-                        || !requestKey.isEmpty()
-                        && !requestKey.equals(current.requestKey)) {
-                    return false;
-                }
-            }
             if (!receiverScoped) return true;
             return receiver != null
                     && receiverRuntimeClass.equals(receiver.getClass().getName())
                     && (threadName.isEmpty()
                     || threadName.equals(stableReplayThreadContext(
                     actualThreadName)));
+        }
+
+        /** Whether the root entered the explicitly selected local scope. */
+        private boolean matchesRequestApi(String actualRequestApi) {
+            return requestApi.isEmpty()
+                    || requestApi.equals(safe(actualRequestApi));
+        }
+
+        /**
+         * Why the candidate that just ran is not the addressed occurrence, or
+         * {@code ""} when it is.
+         *
+         * <p>The logical source must be the declared one: an unregistered
+         * workload declares the unregistered source and observes none, which
+         * is the same answer stated from both ends rather than a default
+         * standing in for a missing one.</p>
+         */
+        private String unconfirmed(Set<String> attributedSourceKeys) {
+            if (attributedSourceKeys.isEmpty()) {
+                if (!OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                        sourceKey)) {
+                    return "occurrence is attributed to no registered trace "
+                            + "source, but its anchor names " + sourceKey;
+                }
+                return "";
+            }
+            boolean sameSource = false;
+            for (String attributed : attributedSourceKeys) {
+                if (RuntimeTraceContext.sameSourceIdentity(
+                        sourceKey, attributed)) {
+                    sameSource = true;
+                    break;
+                }
+            }
+            if (!sameSource) {
+                return "occurrence ran on " + attributedSourceKeys
+                        + ", but its anchor names " + sourceKey;
+            }
+            return "";
+        }
+
+        /** This address on one line, for a named gap. */
+        private String describe() {
+            return requestApi.isEmpty()
+                    ? sourceKey : sourceKey + "/requestApi=" + requestApi;
+        }
+
+        /**
+         * Whether the anchored source was never registered in this run, which
+         * makes the address unsatisfiable here rather than merely unmatched.
+         */
+        private boolean anchorSourceNeverExisted() {
+            return !OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(sourceKey)
+                    && !RuntimeTraceContext.sourceIdentityRegistered(sourceKey);
         }
 
         private static String stableReplayThreadContext(String value) {
@@ -6870,7 +11021,26 @@ public final class ConcolicRegionRuntime {
 
     private static final class RuntimeTask {
         private final String taskId;
+        private final String instrumentationSelector;
         private final String regionId;
+        /**
+         * The activation this task is.  The VM knows a write's task and a
+         * read's region and nothing else about who performed them; these two
+         * are what turn either into the address the pipeline joins on.
+         */
+        private final String sourceKey;
+        private final String occurrenceId;
+        /**
+         * The recorded root call this occurrence ran in.
+         *
+         * <p>It is <b>not</b> {@link #occurrenceId}.  An {@code activationId}
+         * is {@code ACT.<uuid>}, minted per recorded root call; an
+         * {@code occurrenceId} is
+         * {@code <sourceKey>/region/<regionId>#<n>}, minted per observed
+         * activation of one region on one source.  They never compare
+         * equal.</p>
+         */
+        private final String activationId;
         private final String rootMethod;
         private final RootContextSelector rootContextSelector;
         private final RootArgumentSelector rootArgumentSelector;
@@ -6890,8 +11060,82 @@ public final class ConcolicRegionRuntime {
         private final Set<String> executionScopeMethods;
         private final BranchReplayContract replayContract;
         private final Map<String, Set<Boolean>> seedOutcomes;
-        private final String stopAfterBranchSite;
-        private final int stopAfterBranchOccurrence;
+        /** The declared target branch event of a target-reach task. */
+        private final String targetBranchSite;
+        private final int targetBranchOccurrence;
+        /**
+         * Declared communication ports this occurrence hands to the VM, by
+         * port id.  An export site sends the port's live expression across
+         * the cut; an attach site takes it.
+         */
+        private final Map<String, CommunicationHandoffSpec>
+                communicationHandoffs = new LinkedHashMap<>();
+        /** Explicit source fields this output relation is required to mint. */
+        private final Map<String, SourceField> sourceFields =
+                new LinkedHashMap<>();
+        /** Response leaves this caller must attach after its selected cut. */
+        private final Set<String> responseAttachPortIds =
+                new LinkedHashSet<>();
+        /** Response leaves this server occurrence exports at normal return. */
+        private final Set<String> responseExportPortIds =
+                new LinkedHashSet<>();
+        /**
+         * Planner-selected producer occurrence of each response attach port.
+         * This is admission provenance, never a runtime value join.
+         */
+        private final Map<String, String> responseProducerOccurrenceByPort =
+                new LinkedHashMap<>();
+        /** Manual adapter sites indexed only by their exact VM storage. */
+        private final Map<String, CommunicationHandoffSpec>
+                manualCommunicationHandoffs = new LinkedHashMap<>();
+        /** Whether serialization must run before this server root closes. */
+        private final boolean exportsResponseHandoff;
+        /** Read-cut gates the solver selected for this replay, if any. */
+        private final List<JsonObject> readCutGates = new ArrayList<>();
+        /** Shared locations this task selects as carriers at region entry. */
+        private final List<SharedCarrierRequest> sharedCarriers =
+                new ArrayList<>();
+        /** Frozen runtime bindings used to resolve exact Map producers. */
+        private final JsonArray edgeBindings;
+        /** Exact producer member edges, indexed by published output port. */
+        private final Map<String, Set<String>> outputCausalEdgesByPort =
+                new LinkedHashMap<>();
+        /** Exact output cell owned by each published output port. */
+        private final Map<String, String> outputCellByPort =
+                new LinkedHashMap<>();
+        /** Failure-slice inputs of each output member. */
+        private final Map<String, Set<String>> outputInputsByPort =
+                new LinkedHashMap<>();
+        /** Configured source identities propagated through selected edges. */
+        private final Map<String, LinkedHashMap<String, PlannedSourceAlias>>
+                sourceAliasesByOutputPort = new LinkedHashMap<>();
+        /** Source identities arriving at exact selected input ports. */
+        private final Map<String, LinkedHashMap<String, PlannedSourceAlias>>
+                sourceAliasesByInputPort = new LinkedHashMap<>();
+        /** One upstream Map admission per exact access-field declaration. */
+        private final Map<String, PlannedMapAdmission> mapAdmissions =
+                new LinkedHashMap<>();
+        /** Exact concrete field producer admission by access signature. */
+        private final Map<String, PlannedFieldAdmission> fieldAdmissions =
+                new LinkedHashMap<>();
+        /**
+         * Activations that ran as candidates for this address and were not
+         * the addressed occurrence, and every distinct reason they were not.
+         *
+         * <p>Held rather than published: whether the address went unanswered
+         * is a property of the whole run, and each rejection on its own says
+         * only that the loop moved on to the next candidate.</p>
+         *
+         * <p>Every reason, not the last one.  Keeping only the last made the
+         * run state that four candidates ran and describe one of them, which
+         * is precisely the question a reader asks next - the four differ by
+         * owner, or by epoch, or by request scope, and one sample cannot
+         * say which.  Distinct reasons are bounded by the ways an address
+         * can miss, not by the number of activations.</p>
+         */
+        private int unaddressedCandidates;
+        private final Set<String> unaddressedReasons = new LinkedHashSet<>();
+
         private RuntimeTask(ExecutionTask task) {
             if (!task.executable()) {
                 throw new IllegalArgumentException(
@@ -6899,7 +11143,14 @@ public final class ConcolicRegionRuntime {
             }
             JsonObject rootSelector = task.rootSelector();
             this.taskId = task.taskId();
+            this.instrumentationSelector = task.instrumentationSelector();
             this.regionId = task.regionId();
+            this.sourceKey = task.sourceKey();
+            this.occurrenceId = task.occurrenceId();
+            this.activationId = firstNonBlank(
+                    string(task.json(), "activationId"),
+                    string(object(task.json(), "traceEvidence"),
+                            "activationId"));
             this.rootMethod = task.rootMethod();
             this.rootContextSelector = RootContextSelector.from(rootSelector);
             this.rootArgumentSelector = RootArgumentSelector.from(
@@ -6907,6 +11158,7 @@ public final class ConcolicRegionRuntime {
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
             boolean explicitFaultInput = false;
+            boolean responseHandoff = false;
             this.branchPolicies = new LinkedHashMap<>();
             this.seedOutcomes = new LinkedHashMap<>();
             this.loopBound = task.loopBound();
@@ -6917,9 +11169,33 @@ public final class ConcolicRegionRuntime {
             this.capturePrerequisites = new LinkedHashMap<>();
             this.recordedPrimitiveOutputs = new LinkedHashMap<>();
             this.executionScopeMethods = new LinkedHashSet<>();
+            this.edgeBindings = task.edgeBindings().deepCopy();
+            Set<String> selectedOutputCells = new LinkedHashSet<>();
             if (task.outputClosure() != null) {
                 this.executionScopeMethods.addAll(
                         task.outputClosure().executionScope().methods());
+                for (OutputClosureContract.Member member
+                        : task.outputClosure().members()) {
+                    selectedOutputCells.add(member.cell());
+                    Set<String> memberEdges = new LinkedHashSet<>();
+                    for (JsonElement edge : array(member.slice(),
+                            "causalEdgeIds")) {
+                        if (edge.isJsonPrimitive()) {
+                            memberEdges.add(safe(edge.getAsString()));
+                        }
+                    }
+                    outputCausalEdgesByPort.put(member.portId(),
+                            memberEdges);
+                    outputCellByPort.put(member.portId(), member.cell());
+                    Set<String> memberInputs = new LinkedHashSet<>();
+                    for (JsonElement input : array(member.slice(),
+                            "inputPorts")) {
+                        if (input.isJsonPrimitive()) {
+                            memberInputs.add(safe(input.getAsString()));
+                        }
+                    }
+                    outputInputsByPort.put(member.portId(), memberInputs);
+                }
             }
             JsonElement encodedReplay = task.replayContract();
             if (encodedReplay == null) {
@@ -6931,10 +11207,9 @@ public final class ConcolicRegionRuntime {
                 this.replayContract = BranchReplayContract.fromJson(
                         encodedReplay.getAsJsonObject());
             }
-            JsonObject stopAfterBranch = object(task.json(),
-                    "stopAfterBranch");
-            this.stopAfterBranchSite = string(stopAfterBranch, "siteId");
-            this.stopAfterBranchOccurrence = integer(stopAfterBranch,
+            JsonObject targetBranch = object(task.json(), "targetBranch");
+            this.targetBranchSite = string(targetBranch, "siteId");
+            this.targetBranchOccurrence = integer(targetBranch,
                     "occurrence", -1);
             for (JsonElement element : task.inputActions().all()) {
                 JsonObject encoded = element.getAsJsonObject();
@@ -6951,7 +11226,6 @@ public final class ConcolicRegionRuntime {
             this.hasExplicitFaultInput = explicitFaultInput;
             indexCapturePrerequisites(task.outputClosure());
             boolean seedTask = this.replayContract == null
-                    && !task.pathSeedKey().isEmpty()
                     && !relationOnlySeed();
             for (JsonElement element : task.branches()) {
                 JsonObject branch = element.getAsJsonObject();
@@ -6977,6 +11251,302 @@ public final class ConcolicRegionRuntime {
             for (OutputCaptureSpec request : task.outputCaptures()) {
                 outputCaptures.add(request);
             }
+            for (CommunicationHandoffSpec site
+                    : task.communicationHandoffs()) {
+                responseHandoff |= site.exportsEntryReturn()
+                        && "RESPONSE".equals(site.direction());
+                if (site.attachesCutReturn()
+                        && "RESPONSE".equals(site.direction())) {
+                    responseAttachPortIds.add(site.portId());
+                }
+                if (site.exportsEntryReturn()
+                        && "RESPONSE".equals(site.direction())) {
+                    responseExportPortIds.add(site.portId());
+                }
+                // A region that holds both sides of a cut declares the same
+                // port twice, once per role, and each role has its own site.
+                // Two sites of one role would be two answers to one
+                // question, and are refused rather than resolved by order.
+                if (communicationHandoffs.put(handoffKey(site.portId(),
+                        site.exports()), site) != null) {
+                    throw new IllegalArgumentException(
+                            "communication port declares two handoff sites "
+                            + "in " + taskId + ": " + site.portId());
+                }
+                if (site.manualCarrier()
+                        && manualCommunicationHandoffs.put(
+                        handoffCarrierKey(site.carrierClass(),
+                                site.carrierField(),
+                                site.carrierDescriptor(), site.exports()),
+                        site) != null) {
+                    throw new IllegalArgumentException(
+                            "communication handoff declares two ports for "
+                                    + "one manual carrier in " + taskId
+                                    + ": " + site.siteId());
+                }
+            }
+            for (JsonElement element : array(task.json(),
+                    SymbolicSourceEvidence.TASK_FIELD)) {
+                if (!element.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            SymbolicSourceEvidence.TASK_FIELD
+                                    + " entries must be objects");
+                }
+                SourceField source = SourceField.from(
+                        element.getAsJsonObject());
+                if (!selectedOutputCells.containsAll(
+                        source.requiredOutputFieldSignatures)) {
+                    throw new IllegalArgumentException(
+                            "configured symbolic source requires output "
+                                    + "outside this task closure: "
+                                    + source.sourceId);
+                }
+                if (sourceFields.put(source.sourceId, source) != null) {
+                    throw new IllegalArgumentException(
+                            "task declares one symbolic source twice: "
+                                    + source.sourceId);
+                }
+            }
+            indexResponseProducerOccurrences(edgeBindings);
+            this.exportsResponseHandoff = responseHandoff;
+            // Gates travel with the task because the arm they enforce was
+            // chosen by the solver for this replay and no other.  They are
+            // carried unparsed: the concolic layer owns their admission, and
+            // this side must not decide a gate is safe by rebuilding it.
+            for (JsonElement element : array(
+                    SelectedReadCut.planOf(task.json()), "gates")) {
+                if (element.isJsonObject()) {
+                    readCutGates.add(element.getAsJsonObject().deepCopy());
+                }
+            }
+            for (JsonElement element : task.sharedCarriers()) {
+                if (element.isJsonObject()) {
+                    sharedCarriers.add(new SharedCarrierRequest(
+                            element.getAsJsonObject()));
+                }
+            }
+        }
+
+        private static final class SourceField {
+            private final String sourceId;
+            private final String fieldSignature;
+            private final Set<String> requiredOutputFieldSignatures;
+
+            private SourceField(String sourceId, String fieldSignature,
+                                Set<String> requiredOutputFieldSignatures) {
+                this.sourceId = sourceId;
+                this.fieldSignature = fieldSignature;
+                this.requiredOutputFieldSignatures =
+                        Collections.unmodifiableSet(new LinkedHashSet<>(
+                                requiredOutputFieldSignatures));
+            }
+
+            private static SourceField from(JsonObject row) {
+                String sourceId = string(row, "sourceId");
+                String field = string(row, "fieldSignature");
+                Set<String> outputs = new LinkedHashSet<>();
+                String output = string(row,
+                        "requiredOutputFieldSignature");
+                if (!output.isEmpty()) outputs.add(output);
+                for (JsonElement element : array(row,
+                        "requiredOutputFieldSignatures")) {
+                    if (!element.isJsonPrimitive()
+                            || safe(element.getAsString()).isEmpty()
+                            || !outputs.add(element.getAsString())) {
+                        throw new IllegalArgumentException(
+                                "malformed configured symbolic source outputs");
+                    }
+                }
+                if (!SymbolicSourceEvidence.DECLARATION_AUTHORITY.equals(
+                        string(row, "authority"))
+                        || sourceId.isEmpty() || field.isEmpty()
+                        || outputs.isEmpty()
+                        || (!output.isEmpty()
+                        && row.has("requiredOutputFieldSignatures"))) {
+                    throw new IllegalArgumentException(
+                            "malformed configured symbolic source field");
+                }
+                return new SourceField(sourceId, field, outputs);
+            }
+        }
+
+        private boolean publishesSelectedEdge(String outputPort,
+                                              String edgeId) {
+            Set<String> edges = outputCausalEdgesByPort.get(
+                    safe(outputPort));
+            return edges != null && edges.contains(safe(edgeId));
+        }
+
+        /** Seeds this task's source aliases at their declared output ports. */
+        private void initializeConfiguredSourceAliases() {
+            for (Map.Entry<String, String> output
+                    : outputCellByPort.entrySet()) {
+                for (SourceField source : sourceFields.values()) {
+                    if (source.requiredOutputFieldSignatures.contains(
+                            output.getValue())) {
+                        addSourceAliasToOutput(output.getKey(),
+                                new PlannedSourceAlias(taskId,
+                                        source.sourceId, occurrenceId,
+                                        source.fieldSignature));
+                    }
+                }
+            }
+        }
+
+        /** Adds one identity to an output, refusing conflicting declarations. */
+        private boolean addSourceAliasToOutput(
+                String outputPort, PlannedSourceAlias alias) {
+            if (alias == null || safe(outputPort).isEmpty()) return false;
+            LinkedHashMap<String, PlannedSourceAlias> aliases =
+                    sourceAliasesByOutputPort.computeIfAbsent(
+                            safe(outputPort), ignored -> new LinkedHashMap<>());
+            PlannedSourceAlias prior = aliases.putIfAbsent(alias.identity(),
+                    alias);
+            if (prior != null
+                    && (!prior.sourceTaskId.equals(alias.sourceTaskId)
+                    || !prior.fieldSignature.equals(alias.fieldSignature))) {
+                throw new IllegalArgumentException(
+                        "configured source identity has conflicting origins: "
+                                + alias.identity());
+            }
+            return prior == null;
+        }
+
+        private boolean addSourceAliasToInput(
+                String inputPort, PlannedSourceAlias alias) {
+            if (alias == null || safe(inputPort).isEmpty()) return false;
+            LinkedHashMap<String, PlannedSourceAlias> aliases =
+                    sourceAliasesByInputPort.computeIfAbsent(
+                            safe(inputPort), ignored -> new LinkedHashMap<>());
+            PlannedSourceAlias prior = aliases.putIfAbsent(alias.identity(),
+                    alias);
+            if (prior != null
+                    && (!prior.sourceTaskId.equals(alias.sourceTaskId)
+                    || !prior.fieldSignature.equals(alias.fieldSignature))) {
+                throw new IllegalArgumentException(
+                        "configured source identity has conflicting inputs: "
+                                + alias.identity());
+            }
+            return prior == null;
+        }
+
+        /** Configured source leaves whose value is carried by this output. */
+        private List<PlannedSourceAlias> sourceAliasesForOutputPort(
+                String outputPort) {
+            Map<String, PlannedSourceAlias> aliases =
+                    sourceAliasesByOutputPort.get(safe(outputPort));
+            if (aliases == null || aliases.isEmpty()) {
+                return Collections.emptyList();
+            }
+            return new ArrayList<>(aliases.values());
+        }
+
+        private PlannedMapAdmission mapAdmission(
+                String accessFieldSignature) {
+            return mapAdmissions.get(safe(accessFieldSignature));
+        }
+
+        private PlannedFieldAdmission fieldAdmission(
+                String accessFieldSignature) {
+            return fieldAdmissions.get(safe(accessFieldSignature));
+        }
+
+        /** Whether this hook is the exact declared access of one admission. */
+        private boolean matchesPlannedInputAccess(
+                String inputPort, String method, int unitIndex, Object owner,
+                String fieldSignature, int occurrence) {
+            if (safe(inputPort).isEmpty() || occurrence < 1) return false;
+            DeclaredField field = FieldPathSpec.declaredField(fieldSignature);
+            if (field == null) return false;
+            for (SymbolizeAction action : declaredSymbolize) {
+                if (inputPort.equals(action.symbol)
+                        && action.matchesField(method, unitIndex, owner,
+                        fieldSignature, field.name())
+                        && action.acceptsDirectFieldOccurrence(occurrence)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** The declared handoff site of one communication port role. */
+        private CommunicationHandoffSpec communicationHandoff(
+                String portId, boolean exporting) {
+            return communicationHandoffs.get(handoffKey(portId, exporting));
+        }
+
+        private CommunicationHandoffSpec manualCommunicationHandoff(
+                String declaringClass, String fieldName, String descriptor,
+                boolean exporting) {
+            return manualCommunicationHandoffs.get(handoffCarrierKey(
+                    declaringClass, fieldName, descriptor, exporting));
+        }
+
+        /**
+         * Resolves each selected response input to its planner-authored
+         * producer occurrence.  Several evidence rows may repeat that answer,
+         * but two different occurrences are an ambiguous admission and are
+         * rejected while loading the task.
+         */
+        private void indexResponseProducerOccurrences(JsonArray bindings) {
+            for (String portId : responseAttachPortIds) {
+                String producerOccurrence = "";
+                for (JsonElement element : bindings) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (!portId.equals(string(binding, "toInputPort"))) {
+                        continue;
+                    }
+                    String candidate = string(binding, "fromOccurrenceId");
+                    if (candidate.isEmpty()) continue;
+                    if (!producerOccurrence.isEmpty()
+                            && !producerOccurrence.equals(candidate)) {
+                        throw new IllegalArgumentException(
+                                "response handoff port has two producer "
+                                        + "occurrences in " + taskId + ": "
+                                        + portId);
+                    }
+                    producerOccurrence = candidate;
+                }
+                if (!producerOccurrence.isEmpty()) {
+                    responseProducerOccurrenceByPort.put(portId,
+                            producerOccurrence);
+                }
+            }
+        }
+
+        private static String handoffKey(String portId, boolean exporting) {
+            return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);
+        }
+
+        private static String handoffCarrierKey(String declaringClass,
+                                                String fieldName,
+                                                String descriptor,
+                                                boolean exporting) {
+            return (exporting ? "EXPORT\n" : "ATTACH\n")
+                    + safe(declaringClass) + "\n" + safe(fieldName) + "\n"
+                    + safe(descriptor);
+        }
+
+        /**
+         * Records that one candidate ran and was not this address, keeping
+         * the last reason for the run's single statement about it.
+         */
+        private synchronized void noteUnaddressedCandidate(String reason) {
+            unaddressedCandidates++;
+            unaddressedReasons.add(safe(reason));
+            registerRunTotalsHook();
+        }
+
+        /** The run's one statement about an address nothing answered. */
+        private synchronized String unansweredAddress() {
+            boolean neverExisted = rootContextSelector
+                    .anchorSourceNeverExisted();
+            return unaddressedCandidates + " compatible activation(s) did "
+                    + "not answer the addressed occurrence; "
+                    + unaddressedReasons + (neverExisted
+                    ? "; " + rootContextSelector.describe()
+                    + " was never registered in this run" : "");
         }
 
         private boolean relationOnlySeed() {
@@ -7174,10 +11744,26 @@ public final class ConcolicRegionRuntime {
             return validBranchPolicy(policy) ? policy : "EXPLORE";
         }
 
-        private boolean stopAfterBranch(String siteId, int occurrence) {
-            return !stopAfterBranchSite.isEmpty()
-                    && stopAfterBranchSite.equals(safe(siteId))
-                    && stopAfterBranchOccurrence == occurrence;
+        /** Whether the frozen plan declares a policy for this branch site. */
+        private boolean declaresBranch(String siteId) {
+            return branchPolicies.containsKey(safe(siteId));
+        }
+
+        /** Whether this branch event is the target this task selected. */
+        private boolean targetBranch(String siteId, int occurrence) {
+            return !targetBranchSite.isEmpty()
+                    && targetBranchSite.equals(safe(siteId))
+                    && targetBranchOccurrence == occurrence;
+        }
+
+        /** Whether this task selected a target branch event at all. */
+        private boolean declaresTargetBranch() {
+            return !targetBranchSite.isEmpty();
+        }
+
+        /** The declared target branch event, for a named coverage gap. */
+        private String targetBranchLabel() {
+            return targetBranchSite + "#" + targetBranchOccurrence;
         }
 
         private static boolean validBranchPolicy(String policy) {
@@ -7205,48 +11791,796 @@ public final class ConcolicRegionRuntime {
             return match;
         }
 
-        private int observedEntryStateRank(Object receiver) {
-            return ConcolicRegionRuntime.observedEntryStateRank(
-                    declaredSymbolize, receiver);
-        }
-
     }
 
-    private static final class Configuration {
-        private final Path resultFile;
-        private final RuntimeTask task;
-        private int compatibleRootCount;
+    private static final class DeferredTerminal {
+        private final String exitKind;
+        private final String exceptionType;
+        private final Object output;
 
-        private Configuration(Path resultFile, RuntimeTask task) {
+        private DeferredTerminal(String exitKind, String exceptionType,
+                                 Object output) {
+            this.exitKind = exitKind;
+            this.exceptionType = exceptionType;
+            this.output = output;
+        }
+    }
+
+    /**
+     * The bounded campaign this JVM executes.
+     *
+     * <p>A campaign of one is the ordinary single-task run; nothing about it
+     * is special-cased.  Every task keeps its own compatible-root counter, so
+     * several tasks selected by different source/occurrence predicates can be
+     * active on different threads at the same time.</p>
+     */
+    private static final class Configuration {
+        /**
+         * How many tasks one campaign may contain.  A campaign has to be
+         * bounded to be a campaign: the runtime instruments and admits every
+         * row, so an unbounded plan is a runaway workload rather than an
+         * experiment, and it is refused by name instead of being started.
+         */
+        static final String MAX_TASKS_PROPERTY =
+                "causynth.concolic.campaign.max.tasks";
+        static final int DEFAULT_MAX_TASKS = 64;
+
+        private final Path resultFile;
+        private final List<RuntimeTask> tasks;
+        /**
+         * Tasks whose occurrence is running as a candidate right now, and
+         * tasks whose candidate confirmed its anchor and published.
+         *
+         * <p>Positionally aligned with {@link #tasks}.  Together they turn
+         * admission into what README {@code OCC-1} asks for: every compatible
+         * root invocation is a candidate for the address, one at a time, until
+         * one of them is the addressed occurrence.  A candidate that is not
+         * ends by name and leaves the address open for the next; a further
+         * candidate for an address already answered is ambiguity, and is also
+         * published by name rather than quietly claiming the address twice.
+         * </p>
+         */
+        private final boolean[] candidateLive;
+        private final boolean[] occurrenceClaimed;
+        /** Halt-status contribution of each task that has settled. */
+        private final Map<String, Integer> settled = new LinkedHashMap<>();
+        /** Exact Map versions published by selected producer output slots. */
+        private final Map<String, Long> publishedMapVersions =
+                new ConcurrentHashMap<>();
+        /** Accepted scalar/reference producer versions by task/output port. */
+        private final Map<String, Long> publishedFieldVersions =
+                new ConcurrentHashMap<>();
+        /** Accepted configured source roots by producer task/source id. */
+        private final Map<String, String> publishedSourceSymbols =
+                new ConcurrentHashMap<>();
+        private boolean unansweredAddressesPublished;
+
+        private Configuration(Path resultFile, List<RuntimeTask> tasks) {
             this.resultFile = resultFile;
-            this.task = task;
+            this.tasks = Collections.unmodifiableList(tasks);
+            this.candidateLive = new boolean[tasks.size()];
+            this.occurrenceClaimed = new boolean[tasks.size()];
+            indexConfiguredSourceAliases();
+            indexPlannedMapAdmissions();
+            indexPlannedFieldAdmissions();
         }
 
-        private synchronized RuntimeTask select(String rootMethod,
-                                     Object receiver,
-                                     Object[] rootArguments) {
-            if (!compatibleRoot(task.rootMethod, rootMethod,
-                    task.rootContextSelector, task.rootArgumentSelector,
-                    receiver, rootArguments,
-                    Thread.currentThread().getName())) {
-                return null;
+        /**
+         * Propagates configured source identities through the frozen selected
+         * task graph.  This is metadata flow only: runtime values still move
+         * exclusively through VM field-version admission or VM handoff.
+         */
+        private void indexConfiguredSourceAliases() {
+            for (RuntimeTask task : tasks) {
+                task.initializeConfiguredSourceAliases();
             }
-            compatibleRootCount++;
-            return compatibleRootCount
-                    == task.rootContextSelector.occurrenceIndex ? task : null;
+            boolean changed;
+            do {
+                changed = false;
+                for (RuntimeTask consumer : tasks) {
+                    for (JsonElement element : consumer.edgeBindings) {
+                        if (!element.isJsonObject()) continue;
+                        JsonObject binding = element.getAsJsonObject();
+                        String edgeId = string(binding, "edgeId");
+                        String producerOccurrence = string(binding,
+                                "fromOccurrenceId");
+                        String outputPort = string(binding,
+                                "fromOutputPort");
+                        String inputPort = string(binding, "toInputPort");
+                        if (edgeId.isEmpty() || producerOccurrence.isEmpty()
+                                || outputPort.isEmpty()
+                                || inputPort.isEmpty()) {
+                            continue;
+                        }
+                        for (RuntimeTask producer : tasks) {
+                            if (!producerOccurrence.equals(
+                                    producer.occurrenceId)
+                                    || !producer.publishesSelectedEdge(
+                                    outputPort, edgeId)) {
+                                continue;
+                            }
+                            for (PlannedSourceAlias alias
+                                    : producer.sourceAliasesForOutputPort(
+                                    outputPort)) {
+                                changed |= consumer.addSourceAliasToInput(
+                                        inputPort, alias);
+                            }
+                        }
+                    }
+                }
+                for (RuntimeTask task : tasks) {
+                    for (Map.Entry<String, Set<String>> output
+                            : task.outputInputsByPort.entrySet()) {
+                        for (String inputPort : output.getValue()) {
+                            Map<String, PlannedSourceAlias> aliases =
+                                    task.sourceAliasesByInputPort.get(
+                                            inputPort);
+                            if (aliases == null) continue;
+                            for (PlannedSourceAlias alias
+                                    : aliases.values()) {
+                                changed |= task.addSourceAliasToOutput(
+                                        output.getKey(), alias);
+                            }
+                        }
+                    }
+                }
+            } while (changed);
+        }
+
+        /**
+         * Resolves an upstream-bound Map input only through a producer member
+         * selected by the same frozen edge id.  Occurrence and output port
+         * alone are insufficient because one occurrence may be projected
+         * into several phase tasks; the member's causal edge chooses the
+         * phase without consulting runtime values.
+         */
+        private void indexPlannedMapAdmissions() {
+            for (RuntimeTask consumer : tasks) {
+                for (SharedCarrierRequest request
+                        : consumer.sharedCarriers) {
+                    if (!request.mapState || !request.accessOwnerBound()) {
+                        continue;
+                    }
+                    Set<String> inputPorts = new LinkedHashSet<>();
+                    Set<String> symbolicInputPorts = new LinkedHashSet<>();
+                    for (SymbolizeAction action
+                            : consumer.declaredSymbolize) {
+                        if (request.matchesAccess(
+                                action.accessFieldSignature)
+                                && !action.symbol.isEmpty()) {
+                            inputPorts.add(action.symbol);
+                            if (action.symbolic) {
+                                symbolicInputPorts.add(action.symbol);
+                            }
+                        }
+                    }
+                    if (inputPorts.isEmpty()) continue;
+
+                    List<PlannedMapAdmission> selected = new ArrayList<>();
+                    boolean hasUpstreamCandidate = false;
+                    for (JsonElement element : consumer.edgeBindings) {
+                        if (!element.isJsonObject()) continue;
+                        JsonObject binding = element.getAsJsonObject();
+                        String inputPort = string(binding, "toInputPort");
+                        if (!inputPorts.contains(inputPort)
+                                || !request.fieldKey().equals(
+                                string(binding,
+                                        RecordedReadFrom.EDGE_FIELD))) {
+                            continue;
+                        }
+                        hasUpstreamCandidate = true;
+                        String edgeId = string(binding, "edgeId");
+                        String producerOccurrence = string(binding,
+                                "fromOccurrenceId");
+                        String outputPort = string(binding,
+                                "fromOutputPort");
+                        if (edgeId.isEmpty() || producerOccurrence.isEmpty()
+                                || outputPort.isEmpty()) {
+                            continue;
+                        }
+                        for (RuntimeTask producer : tasks) {
+                            if (!producerOccurrence.equals(
+                                    producer.occurrenceId)
+                                    || !producer.publishesSelectedEdge(
+                                    outputPort, edgeId)) {
+                                continue;
+                            }
+                            selected.add(new PlannedMapAdmission(inputPort,
+                                    edgeId, producer.taskId, outputPort, ""));
+                        }
+                    }
+                    if (!hasUpstreamCandidate) continue;
+
+                    // A concrete observation may carry broad candidate RF
+                    // rows that are useful to the planner but are not part
+                    // of this task's selected output relation.  Requiring a
+                    // producer for such a row creates a local carrier/gap for
+                    // an input the solver never requested.  A concrete Map
+                    // is admitted only when an exact scheduled producer
+                    // member owns its causal edge; an explicitly SYMBOLIC
+                    // Map still fails closed when its producer is missing.
+                    if (selected.isEmpty()
+                            && symbolicInputPorts.isEmpty()) {
+                        continue;
+                    }
+
+                    PlannedMapAdmission admission;
+                    if (selected.size() == 1) {
+                        admission = selected.get(0);
+                    } else {
+                        admission = new PlannedMapAdmission(
+                                inputPorts.size() == 1
+                                        ? inputPorts.iterator().next()
+                                        : String.join(",", inputPorts),
+                                "", "", "",
+                                selected.isEmpty()
+                                        ? "no campaign producer member owns "
+                                        + "the selected Map input edge"
+                                        : "multiple campaign producer members "
+                                        + "own the selected Map input edge");
+                    }
+                    Set<String> accessFields = new LinkedHashSet<>();
+                    for (SymbolizeAction action
+                            : consumer.declaredSymbolize) {
+                        if (inputPorts.contains(action.symbol)
+                                && request.matchesAccess(
+                                action.accessFieldSignature)
+                                && !action.accessFieldSignature.isEmpty()) {
+                            accessFields.add(action.accessFieldSignature);
+                        }
+                    }
+                    if (accessFields.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "upstream Map input has no exact declared "
+                                        + "access field in "
+                                        + consumer.taskId);
+                    }
+                    for (String access : accessFields) {
+                        PlannedMapAdmission prior =
+                                consumer.mapAdmissions.put(access, admission);
+                        if (prior != null) {
+                            throw new IllegalArgumentException(
+                                    "two Map carrier declarations resolve "
+                                            + "the same access field in "
+                                            + consumer.taskId + ": "
+                                            + access);
+                        }
+                    }
+                }
+            }
+        }
+
+        /**
+         * Resolves concrete scalar/reference inputs only when one scheduled
+         * producer member owns the exact incoming edge.  Explicit symbolic
+         * roots remain discovery variables and are never overwritten by a
+         * recorded producer constant; broad concrete candidate edges with no
+         * selected producer create no carrier and no gap.
+         */
+        private void indexPlannedFieldAdmissions() {
+            for (RuntimeTask consumer : tasks) {
+                for (SharedCarrierRequest request
+                        : consumer.sharedCarriers) {
+                    if (request.mapState || request.element
+                            || !request.accessOwnerBound()) {
+                        continue;
+                    }
+                    Set<String> inputPorts = new LinkedHashSet<>();
+                    Map<String, String> accessByPort = new LinkedHashMap<>();
+                    for (SymbolizeAction action
+                            : consumer.declaredSymbolize) {
+                        if (!action.symbolic
+                                && request.matchesAccess(
+                                action.accessFieldSignature)
+                                && !action.symbol.isEmpty()
+                                && !action.accessFieldSignature.isEmpty()) {
+                            inputPorts.add(action.symbol);
+                            accessByPort.put(action.symbol,
+                                    action.accessFieldSignature);
+                        }
+                    }
+                    if (inputPorts.isEmpty()) continue;
+
+                    Map<String, PlannedFieldAdmission> selectedByKey =
+                            new LinkedHashMap<>();
+                    for (JsonElement element : consumer.edgeBindings) {
+                        if (!element.isJsonObject()) continue;
+                        JsonObject binding = element.getAsJsonObject();
+                        String inputPort = string(binding, "toInputPort");
+                        if (!inputPorts.contains(inputPort)
+                                || !request.fieldKey().equals(string(binding,
+                                RecordedReadFrom.EDGE_FIELD))) {
+                            continue;
+                        }
+                        String edgeId = string(binding, "edgeId");
+                        String producerOccurrence = string(binding,
+                                "fromOccurrenceId");
+                        String outputPort = string(binding,
+                                "fromOutputPort");
+                        if (edgeId.isEmpty() || producerOccurrence.isEmpty()
+                                || outputPort.isEmpty()) {
+                            continue;
+                        }
+                        for (RuntimeTask producer : tasks) {
+                            if (!producerOccurrence.equals(
+                                    producer.occurrenceId)
+                                    || !producer.publishesSelectedEdge(
+                                    outputPort, edgeId)) {
+                                continue;
+                            }
+                            PlannedFieldAdmission admission =
+                                    new PlannedFieldAdmission(inputPort,
+                                            edgeId, producer.taskId,
+                                            outputPort,
+                                            producer.sourceAliasesForOutputPort(
+                                                    outputPort), "");
+                            selectedByKey.put(admission.registryKey() + "\n"
+                                    + edgeId + "\n" + inputPort, admission);
+                        }
+                    }
+                    if (selectedByKey.isEmpty()) continue;
+
+                    PlannedFieldAdmission admission;
+                    if (selectedByKey.size() == 1) {
+                        admission = selectedByKey.values().iterator().next();
+                    } else {
+                        admission = new PlannedFieldAdmission(
+                                String.join(",", inputPorts), "", "", "",
+                                Collections.emptyList(),
+                                "multiple campaign producer members own the "
+                                        + "selected field input edge");
+                    }
+                    for (String inputPort : inputPorts) {
+                        String access = accessByPort.get(inputPort);
+                        if (access == null || access.isEmpty()) continue;
+                        PlannedFieldAdmission prior =
+                                consumer.fieldAdmissions.put(access,
+                                        admission);
+                        if (prior != null) {
+                            throw new IllegalArgumentException(
+                                    "two field carrier declarations resolve "
+                                            + "the same access field in "
+                                            + consumer.taskId + ": "
+                                            + access);
+                        }
+                    }
+                }
+            }
+        }
+
+        private boolean selectedMapProducer(RuntimeTask producer,
+                                            String outputPort) {
+            if (producer == null || safe(outputPort).isEmpty()) return false;
+            String key = producer.taskId + "\n" + safe(outputPort);
+            for (RuntimeTask consumer : tasks) {
+                for (PlannedMapAdmission admission
+                        : consumer.mapAdmissions.values()) {
+                    if (admission.valid()
+                            && key.equals(admission.registryKey())) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private boolean selectedFieldProducer(RuntimeTask producer,
+                                              String outputPort) {
+            if (producer == null || safe(outputPort).isEmpty()) return false;
+            String key = producer.taskId + "\n" + safe(outputPort);
+            for (RuntimeTask consumer : tasks) {
+                for (PlannedFieldAdmission admission
+                        : consumer.fieldAdmissions.values()) {
+                    if (admission.valid()
+                            && key.equals(admission.registryKey())) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private boolean selectedSourceProducer(RuntimeTask producer,
+                                               String sourceId) {
+            if (producer == null || safe(sourceId).isEmpty()) return false;
+            for (RuntimeTask consumer : tasks) {
+                for (PlannedFieldAdmission admission
+                        : consumer.fieldAdmissions.values()) {
+                    if (!admission.valid()
+                            || !producer.taskId.equals(
+                            admission.producerTaskId)) {
+                        continue;
+                    }
+                    for (PlannedSourceAlias alias
+                            : admission.sourceAliases) {
+                        if (producer.taskId.equals(alias.sourceTaskId)
+                                && sourceId.equals(alias.sourceId)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        private synchronized String commitMapVersions(ActiveRegion active) {
+            if (active == null || active.abandoned) return "";
+            Map<String, Long> staged = active.stagedMapVersions();
+            String failure = validateMapVersions(active, staged);
+            if (!failure.isEmpty()) return failure;
+            publishMapVersions(active, staged);
+            return "";
+        }
+
+        private String validateMapVersions(ActiveRegion active,
+                                           Map<String, Long> staged) {
+            // Validate the whole candidate before making any port visible;
+            // a multi-output producer must commit atomically.
+            for (Map.Entry<String, Long> entry : staged.entrySet()) {
+                if (!selectedMapProducer(active.activation,
+                        entry.getKey())) continue;
+                if (entry.getValue() == null || entry.getValue() <= 0L) {
+                    return "selected Map producer returned no exact current "
+                            + "version for " + safe(entry.getKey());
+                }
+                String key = active.activation.taskId + "\n"
+                        + safe(entry.getKey());
+                Long prior = publishedMapVersions.get(key);
+                if (prior != null
+                        && prior.longValue() != entry.getValue()) {
+                    return "selected Map producer published conflicting "
+                            + "versions " + prior + " and "
+                            + entry.getValue() + " for "
+                            + safe(entry.getKey());
+                }
+            }
+            return "";
+        }
+
+        private void publishMapVersions(ActiveRegion active,
+                                        Map<String, Long> staged) {
+            for (Map.Entry<String, Long> entry : staged.entrySet()) {
+                if (selectedMapProducer(active.activation,
+                        entry.getKey())) {
+                    publishedMapVersions.put(active.activation.taskId + "\n"
+                            + safe(entry.getKey()), entry.getValue());
+                }
+            }
+        }
+
+        /**
+         * Atomically publishes every selected shared-state version staged by
+         * one accepted producer occurrence.  A mixed Map/field producer must
+         * not expose one half of its state when validation of the other half
+         * fails.
+         */
+        private synchronized String commitSelectedVersions(
+                ActiveRegion active) {
+            if (active == null || active.abandoned) return "";
+            Map<String, Long> maps = active.stagedMapVersions();
+            Map<String, Long> fields = active.stagedFieldVersions();
+            Map<String, String> sources = active.stagedSourceSymbols();
+            String failure = validateMapVersions(active, maps);
+            if (!failure.isEmpty()) return failure;
+            failure = validateFieldVersions(active, fields);
+            if (!failure.isEmpty()) return failure;
+            failure = validateSourceSymbols(active, sources);
+            if (!failure.isEmpty()) return failure;
+            publishMapVersions(active, maps);
+            publishFieldVersions(active, fields);
+            publishSourceSymbols(active, sources);
+            return "";
+        }
+
+        private String validateSourceSymbols(
+                ActiveRegion active, Map<String, String> staged) {
+            for (RuntimeTask.SourceField source
+                    : active.activation.sourceFields.values()) {
+                if (!selectedSourceProducer(active.activation,
+                        source.sourceId)) {
+                    continue;
+                }
+                String raw = staged.get(source.sourceId);
+                if (raw == null || raw.isEmpty()) {
+                    return "selected configured source producer returned no "
+                            + "exact VM symbol for " + source.sourceId;
+                }
+                String key = active.activation.taskId + "\n"
+                        + source.sourceId;
+                String prior = publishedSourceSymbols.get(key);
+                if (prior != null && !prior.equals(raw)) {
+                    return "selected configured source producer published "
+                            + "conflicting VM symbols for " + source.sourceId;
+                }
+            }
+            return "";
+        }
+
+        private void publishSourceSymbols(
+                ActiveRegion active, Map<String, String> staged) {
+            for (RuntimeTask.SourceField source
+                    : active.activation.sourceFields.values()) {
+                if (selectedSourceProducer(active.activation,
+                        source.sourceId)) {
+                    publishedSourceSymbols.put(active.activation.taskId
+                            + "\n" + source.sourceId,
+                            staged.get(source.sourceId));
+                }
+            }
+        }
+
+        private String publishedSourceSymbol(
+                PlannedFieldAdmission admission, PlannedSourceAlias alias) {
+            if (admission == null || !admission.valid() || alias == null) {
+                return "";
+            }
+            return safe(publishedSourceSymbols.get(
+                    alias.sourceTaskId + "\n" + alias.sourceId));
+        }
+
+        private Long publishedMapVersion(PlannedMapAdmission admission) {
+            return admission == null || !admission.valid()
+                    ? null : publishedMapVersions.get(
+                    admission.registryKey());
+        }
+
+        private synchronized String commitFieldVersions(
+                ActiveRegion active) {
+            if (active == null || active.abandoned) return "";
+            Map<String, Long> staged = active.stagedFieldVersions();
+            String failure = validateFieldVersions(active, staged);
+            if (!failure.isEmpty()) return failure;
+            publishFieldVersions(active, staged);
+            return "";
+        }
+
+        private String validateFieldVersions(ActiveRegion active,
+                                             Map<String, Long> staged) {
+            for (Map.Entry<String, Long> entry : staged.entrySet()) {
+                if (!selectedFieldProducer(active.activation,
+                        entry.getKey())) continue;
+                if (entry.getValue() == null || entry.getValue() <= 0L) {
+                    return "selected field producer returned no exact "
+                            + "current version for " + safe(entry.getKey());
+                }
+                String key = active.activation.taskId + "\n"
+                        + safe(entry.getKey());
+                Long prior = publishedFieldVersions.get(key);
+                if (prior != null && prior.longValue()
+                        != entry.getValue().longValue()) {
+                    return "selected field producer published conflicting "
+                            + "versions " + prior + " and "
+                            + entry.getValue() + " for "
+                            + safe(entry.getKey());
+                }
+            }
+            return "";
+        }
+
+        private void publishFieldVersions(ActiveRegion active,
+                                          Map<String, Long> staged) {
+            for (Map.Entry<String, Long> entry : staged.entrySet()) {
+                if (selectedFieldProducer(active.activation,
+                        entry.getKey())) {
+                    publishedFieldVersions.put(active.activation.taskId
+                            + "\n" + safe(entry.getKey()),
+                            entry.getValue());
+                }
+            }
+        }
+
+        private Long publishedFieldVersion(PlannedFieldAdmission admission) {
+            return admission == null || !admission.valid()
+                    ? null : publishedFieldVersions.get(
+                    admission.registryKey());
+        }
+
+        /**
+         * Releases the address of a candidate that ended without being the
+         * occurrence, so the next compatible invocation may try for it.
+         */
+        private synchronized void releaseCandidate(RuntimeTask task) {
+            int index = tasks.indexOf(task);
+            if (index >= 0) candidateLive[index] = false;
+        }
+
+        /**
+         * States every selected address that no activation answered, once
+         * each, now that the run is over and "never registered in this run"
+         * is decidable rather than a snapshot the same run can contradict.
+         */
+        private synchronized void publishUnansweredAddresses() {
+            if (unansweredAddressesPublished) return;
+            unansweredAddressesPublished = true;
+            for (int index = 0; index < tasks.size(); index++) {
+                if (occurrenceClaimed[index]) continue;
+                RuntimeTask task = tasks.get(index);
+                if (task.unaddressedCandidates == 0) continue;
+                writeSkipped(task, task.rootContextSelector
+                                .anchorSourceNeverExisted()
+                                ? SKIP_ANCHOR_SOURCE_NEVER_EXISTED
+                                : SKIP_OCCURRENCE_ANCHOR_UNMATCHED,
+                        task.unansweredAddress());
+            }
+        }
+
+        /** Records that a candidate was the occurrence and published it. */
+        private synchronized void claimOccurrence(RuntimeTask task) {
+            int index = tasks.indexOf(task);
+            if (index < 0) return;
+            candidateLive[index] = false;
+            occurrenceClaimed[index] = true;
+        }
+
+        /** The campaign task with this id, or {@code null}. */
+        private RuntimeTask taskById(String taskId) {
+            if (taskId == null || taskId.isEmpty()) return null;
+            for (RuntimeTask task : tasks) {
+                if (taskId.equals(task.taskId)) return task;
+            }
+            return null;
+        }
+
+        /**
+         * Resolves the caller's selected response ports to one exact producer
+         * task in this campaign.  The occurrence comes from the existing
+         * planner edge; the port proves that task owns the corresponding
+         * response export.  No dynamic exchange or payload value is compared.
+         */
+        private ResponseProducerArm responseProducerArm(RuntimeTask caller) {
+            if (caller == null || caller.responseAttachPortIds.isEmpty()) {
+                return new ResponseProducerArm("",
+                        Collections.<String>emptySet(), "no response attach");
+            }
+            String producerTaskId = "";
+            Set<String> ports = new LinkedHashSet<>();
+            for (String portId : caller.responseAttachPortIds) {
+                String producerOccurrence =
+                        caller.responseProducerOccurrenceByPort.get(portId);
+                if (safe(producerOccurrence).isEmpty()) {
+                    return new ResponseProducerArm("", ports,
+                            "port " + portId
+                                    + " has no selected producer occurrence");
+                }
+                RuntimeTask matched = null;
+                for (RuntimeTask candidate : tasks) {
+                    if (!producerOccurrence.equals(candidate.occurrenceId)
+                            || !candidate.responseExportPortIds.contains(
+                            portId)) {
+                        continue;
+                    }
+                    if (matched != null && matched != candidate) {
+                        return new ResponseProducerArm("", ports,
+                                "port " + portId
+                                        + " resolves to multiple producer "
+                                        + "tasks for " + producerOccurrence);
+                    }
+                    matched = candidate;
+                }
+                if (matched == null) {
+                    return new ResponseProducerArm("", ports,
+                            "port " + portId
+                                    + " has no campaign producer task for "
+                                    + producerOccurrence);
+                }
+                if (!producerTaskId.isEmpty()
+                        && !producerTaskId.equals(matched.taskId)) {
+                    return new ResponseProducerArm("", ports,
+                            "one request would arm response ports from "
+                                    + "multiple producer tasks");
+                }
+                producerTaskId = matched.taskId;
+                ports.add(portId);
+            }
+            return new ResponseProducerArm(producerTaskId, ports, "");
+        }
+
+        /**
+         * Claims at most one open task for this root invocation.  Completed
+         * and currently running tasks are skipped; another compatible task
+         * may therefore run concurrently on another application thread, but
+         * two task rows are never folded into one VM region.
+         */
+        private synchronized RuntimeTask select(String instrumentationSelector,
+                                                String rootMethod,
+                                                Object receiver,
+                                                Object[] rootArguments) {
+            String threadName = Thread.currentThread().getName();
+            // A short-lived Runnable need not be registered as an alias
+            // itself: an exact inherited async/request/RPC context can still
+            // attribute its entry. An explicit receiver registration remains
+            // stronger and may never be overridden by that context.
+            SourceRef registeredReceiverSource =
+                    RuntimeTraceContext.sourceFor(receiver);
+            String requestApi = RuntimeTraceContext.current().requestApi;
+            for (int index = 0; index < tasks.size(); index++) {
+                RuntimeTask task = tasks.get(index);
+                if (!task.instrumentationSelector.equals(
+                        safe(instrumentationSelector))) continue;
+                if (!compatibleRoot(task.rootMethod, rootMethod,
+                        task.rootContextSelector, task.rootArgumentSelector,
+                        receiver, rootArguments, threadName)) {
+                    continue;
+                }
+                ResponseProducerArm responseArm = null;
+                if (task.exportsResponseHandoff) {
+                    responseArm = INBOUND_RESPONSE_PRODUCER_ARM.get();
+                    if (responseArm == null
+                            || !responseArm.authorizes(task)) {
+                        // A response producer is an occurrence selected by its
+                        // active caller, not the first compatible invocation
+                        // of the same server method.
+                        continue;
+                    }
+                }
+                if (!task.rootContextSelector.matchesRequestApi(requestApi)) {
+                    task.noteUnaddressedCandidate(
+                            "matching root entered request API "
+                                    + safe(requestApi) + " instead of "
+                                    + task.rootContextSelector.requestApi);
+                    continue;
+                }
+                // A receiver-scoped task already declares that its owner is
+                // part of the occurrence address. Require exact source
+                // attribution before opening a VM region or materializing an
+                // input: either the receiver's own registration, or the exact
+                // root context already resolved from its async/request/RPC
+                // seed. Starting a source-less or wrong-source candidate and
+                // checking only at terminal pollutes the workload-wide
+                // symbolic session while contributing no usable result.
+                if (task.rootContextSelector.receiverScoped
+                        && registeredReceiverSource != null
+                        && !RuntimeTraceContext.sameSourceIdentity(
+                        task.sourceKey, registeredReceiverSource.key())) {
+                    task.noteUnaddressedCandidate(
+                            "matching root receiver belonged to "
+                            + registeredReceiverSource.key() + " instead of "
+                            + task.sourceKey);
+                    continue;
+                }
+                if (occurrenceClaimed[index] || candidateLive[index]) continue;
+                candidateLive[index] = true;
+                if (responseArm != null) {
+                    // One live request authorizes one producer occurrence.
+                    // The response value itself is still propagated only by
+                    // the VM handle exported later in that occurrence.
+                    INBOUND_RESPONSE_PRODUCER_ARM.remove();
+                }
+                return task;
+            }
+            return null;
+        }
+
+        /**
+         * Records one task's terminal outcome and returns the campaign's halt
+         * status once every task has settled, or {@code -1} while any task can
+         * still produce evidence.  The status is the worst contribution, so a
+         * campaign of one reports exactly what that task reported.
+         */
+        private synchronized int settle(String taskId, int status) {
+            if (tasks.isEmpty()) return -1;
+            Integer previous = settled.get(safe(taskId));
+            if (previous == null) settled.put(safe(taskId), status);
+            if (settled.size() < tasks.size()) return -1;
+            int worst = 0;
+            for (Integer contribution : settled.values()) {
+                worst = Math.max(worst, contribution);
+            }
+            return worst;
         }
 
         private static Configuration load() {
             String planValue = safe(System.getProperty(
                     "causynth.concolic.task.plan")).trim();
-            String selectedTask = safe(System.getProperty(
+            String selectedTasks = safe(System.getProperty(
                     "causynth.concolic.task.id")).trim();
             if (planValue.isEmpty()) {
-                return new Configuration(null, null);
+                return new Configuration(null,
+                        Collections.<RuntimeTask>emptyList());
             }
             String resultValue = safe(System.getProperty(
                     "causynth.concolic.results")).trim();
-            if (selectedTask.isEmpty() || resultValue.isEmpty()) {
+            if (selectedTasks.isEmpty() || resultValue.isEmpty()) {
                 throw new IllegalStateException("Concolic runtime requires "
                         + "task id and result path with a task plan");
             }
@@ -7256,66 +12590,94 @@ public final class ConcolicRegionRuntime {
                 throw new IllegalStateException(
                         "Concolic task plan not found: " + plan);
             }
-            RuntimeTask selected = null;
+            Set<String> selected = campaignTaskIds(selectedTasks);
+            List<RuntimeTask> tasks = new ArrayList<>();
             try (BufferedReader reader = Files.newBufferedReader(plan,
                     StandardCharsets.UTF_8)) {
+                Set<String> taskIds = new LinkedHashSet<>();
+                int maxTasks = maxCampaignTasks();
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (line.trim().isEmpty()) continue;
                     JsonElement parsed = new JsonParser().parse(line);
-                    if (!parsed.isJsonObject() || selected != null) {
-                        throw new IllegalStateException(
-                                "task plan must contain exactly one object");
+                    if (!parsed.isJsonObject()) {
+                        throw new IllegalStateException("malformed plan: "
+                                + "every task plan row must be an object");
                     }
-                    selected = new RuntimeTask(ExecutionTask.decode(
-                            parsed.getAsJsonObject()));
-                    if (!selected.taskId.equals(selectedTask)) {
-                        throw new IllegalStateException(
-                                "task plan contains non-selected task "
-                                        + selected.taskId);
+                    if (tasks.size() == maxTasks) {
+                        throw new IllegalStateException("malformed plan: "
+                                + "campaign exceeds its bound of " + maxTasks
+                                + " tasks");
                     }
+                    ExecutionTask encoded = ExecutionTask.decode(
+                            parsed.getAsJsonObject());
+                    RuntimeTask task = new RuntimeTask(encoded);
+                    if (!taskIds.add(task.taskId)) {
+                        throw new IllegalStateException("malformed plan: "
+                                + "duplicate execution task " + task.taskId);
+                    }
+                    if (!selected.contains(task.taskId)) {
+                        throw new IllegalStateException("malformed plan: "
+                                + "task plan contains unselected task "
+                                + task.taskId);
+                    }
+                    tasks.add(task);
                 }
             } catch (IOException | RuntimeException exception) {
                 throw new IllegalStateException("Causynth rejected "
                         + "task plan " + plan + ": "
                         + exception.getMessage(), exception);
             }
-            if (selected == null) {
-                throw new IllegalStateException("Selected execution task "
-                        + selectedTask + " is absent in " + plan);
+            for (String taskId : selected) {
+                boolean present = false;
+                for (RuntimeTask task : tasks) {
+                    present |= task.taskId.equals(taskId);
+                }
+                if (!present) {
+                    throw new IllegalStateException("Selected execution task "
+                            + taskId + " is absent in " + plan);
+                }
             }
-            return new Configuration(result, selected);
+            return new Configuration(result, tasks);
         }
-    }
 
-    /**
-     * Orders several occurrences of one region template without any global
-     * invocation ordinal.  Two occurrences of the same root differ because
-     * they read different state on entry, and an occurrence whose live entry
-     * values still agree with the recording is the better candidate for the
-     * single engine.
-     *
-     * <p>This is a value-wise comparison -- string equality for primitives,
-     * null against non-null for references -- so it can say which candidate
-     * looks more like the recorded one but not whether a candidate walks the
-     * recorded path.  It therefore ranks and never refuses: the recorded
-     * branch prefix is the only judgement allowed to reject an activation,
-     * and a rejected activation gives the engine back at once.</p>
-     */
-    static int observedEntryStateRank(
-            List<SymbolizeAction> declared, Object receiver) {
-        int rank = ENTRY_STATE_RANK_UNDECIDED;
-        for (SymbolizeAction action : declared) {
-            EntryStateVerdict verdict =
-                    action.observedEntryStateVerdict(receiver);
-            if (verdict == EntryStateVerdict.DIFFERS) {
-                return ENTRY_STATE_RANK_MISMATCH;
+        /**
+         * The selected campaign, in plan order.  One id is the ordinary
+         * single-task run; several are comma-separated.
+         */
+        private static Set<String> campaignTaskIds(String property) {
+            Set<String> ids = new LinkedHashSet<>();
+            for (String value : property.split(",")) {
+                String taskId = safe(value).trim();
+                if (taskId.isEmpty()) continue;
+                if (!ids.add(taskId)) {
+                    throw new IllegalStateException("malformed plan: "
+                            + "duplicate selected execution task " + taskId);
+                }
             }
-            if (verdict == EntryStateVerdict.MATCHES) {
-                rank = ENTRY_STATE_RANK_MATCHES;
+            if (ids.isEmpty()) {
+                throw new IllegalStateException("malformed plan: "
+                        + "no execution task is selected");
+            }
+            return ids;
+        }
+
+        private static int maxCampaignTasks() {
+            String configured = safe(System.getProperty(
+                    MAX_TASKS_PROPERTY)).trim();
+            if (configured.isEmpty()) return DEFAULT_MAX_TASKS;
+            try {
+                int value = Integer.parseInt(configured);
+                if (value <= 0) {
+                    throw new IllegalStateException("malformed plan: "
+                            + MAX_TASKS_PROPERTY + " must be positive");
+                }
+                return value;
+            } catch (NumberFormatException malformed) {
+                throw new IllegalStateException("malformed plan: "
+                        + MAX_TASKS_PROPERTY + " must be a number");
             }
         }
-        return rank;
     }
 
     private static boolean compatibleRoot(
@@ -7329,7 +12691,232 @@ public final class ConcolicRegionRuntime {
         return !arguments.present || arguments.matches(rootArguments);
     }
 
-    /** Test seam for the ordinal-free replay selector. */
+    /** Exact source authority available when the region entry hook runs. */
+    private static SourceRef entrySource(Object receiver) {
+        SourceRef registered = RuntimeTraceContext.sourceFor(receiver);
+        return registered != null
+                ? registered : RuntimeTraceContext.currentSource();
+    }
+
+    /** Test seam for receiver registration versus exact root-context priority. */
+    static boolean exactEntrySourceForTests(Object receiver,
+                                            String expectedSourceKey) {
+        SourceRef source = entrySource(receiver);
+        return source != null && safe(expectedSourceKey).equals(source.key());
+    }
+
+    /** Whether receiver-owned evidence permits the plan's exact source. */
+    static boolean plannedEntrySourceForTests(Object receiver,
+                                              String expectedSourceKey) {
+        SourceRef registered = RuntimeTraceContext.sourceFor(receiver);
+        return registered == null
+                || RuntimeTraceContext.sameSourceIdentity(
+                expectedSourceKey, registered.key());
+    }
+
+
+    /** Test seam listing the configured campaign, in plan order. */
+    static List<String> campaignTaskIdsForTests() {
+        List<String> ids = new ArrayList<>();
+        for (RuntimeTask task : configuration().tasks) {
+            ids.add(task.taskId);
+        }
+        return ids;
+    }
+
+    /** Test seam for the exact Map producer-state task/port/edge resolver. */
+    static String plannedMapAdmissionForTests(
+            String taskId, String accessFieldSignature) {
+        RuntimeTask task = configuration().taskById(taskId);
+        PlannedMapAdmission admission = task == null ? null
+                : task.mapAdmission(accessFieldSignature);
+        if (admission == null) return "NONE";
+        if (!admission.valid()) return "REFUSED:" + admission.failure;
+        return admission.producerTaskId + "\n"
+                + admission.producerOutputPort + "\n"
+                + admission.selectedEdgeId + "\n" + admission.inputPort;
+    }
+
+    /** Test seam for exact scalar/reference producer-state resolution. */
+    static String plannedFieldAdmissionForTests(
+            String taskId, String accessFieldSignature) {
+        RuntimeTask task = configuration().taskById(taskId);
+        PlannedFieldAdmission admission = task == null ? null
+                : task.fieldAdmission(accessFieldSignature);
+        if (admission == null) return "NONE";
+        if (!admission.valid()) return "REFUSED:" + admission.failure;
+        return admission.producerTaskId + "\n"
+                + admission.producerOutputPort + "\n"
+                + admission.selectedEdgeId + "\n" + admission.inputPort;
+    }
+
+    /** Test seam for configured nested-source propagation metadata. */
+    static List<String> plannedFieldSourceAliasesForTests(
+            String taskId, String accessFieldSignature) {
+        RuntimeTask task = configuration().taskById(taskId);
+        PlannedFieldAdmission admission = task == null ? null
+                : task.fieldAdmission(accessFieldSignature);
+        if (admission == null || !admission.valid()) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>();
+        for (PlannedSourceAlias alias : admission.sourceAliases) {
+            result.add(alias.sourceOccurrenceId + "\n" + alias.sourceId
+                    + "\n" + alias.fieldSignature + "\n" + alias.symbol());
+        }
+        return result;
+    }
+
+    /** Test seam for the canonical raw name of one configured source. */
+    static String configuredSourceSymbolForTests(
+            String sourceOccurrenceId, String sourceId) {
+        return configuredSourceSymbol(sourceOccurrenceId, sourceId);
+    }
+
+    /** Test seam for candidate-local staging versus accepted publication. */
+    static String mapVersionLifecycleForTests(
+            String producerTaskId, String outputPort, long versionId,
+            boolean accepted) {
+        Configuration configured = configuration();
+        RuntimeTask producer = configured.taskById(producerTaskId);
+        if (producer == null) return "NO_TASK";
+        ActiveRegion candidate = new ActiveRegion(-1L, producer,
+                new Object(), Thread.currentThread());
+        String failure = candidate.stageMapVersion(outputPort, versionId);
+        if (!failure.isEmpty()) return "REFUSED:" + failure;
+        if (accepted) {
+            failure = configured.commitMapVersions(candidate);
+            if (!failure.isEmpty()) return "REFUSED:" + failure;
+        }
+        Long published = configured.publishedMapVersions.get(
+                producer.taskId + "\n" + safe(outputPort));
+        return published == null ? "ABSENT" : Long.toString(published);
+    }
+
+    /** Test seam for candidate-local scalar/reference version publication. */
+    static String fieldVersionLifecycleForTests(
+            String producerTaskId, String outputPort, long versionId,
+            boolean accepted) {
+        Configuration configured = configuration();
+        RuntimeTask producer = configured.taskById(producerTaskId);
+        if (producer == null) return "NO_TASK";
+        ActiveRegion candidate = new ActiveRegion(-1L, producer,
+                new Object(), Thread.currentThread());
+        String failure = candidate.stageFieldVersion(outputPort, versionId);
+        if (!failure.isEmpty()) return "REFUSED:" + failure;
+        if (accepted) {
+            failure = configured.commitFieldVersions(candidate);
+            if (!failure.isEmpty()) return "REFUSED:" + failure;
+        }
+        Long published = configured.publishedFieldVersions.get(
+                producer.taskId + "\n" + safe(outputPort));
+        return published == null ? "ABSENT" : Long.toString(published);
+    }
+
+    /**
+     * Test seam exercising the real access hook and terminal candidate gate
+     * when an exact concrete field is read before its producer commits.
+     */
+    static String plannedFieldPrerequisiteMissForTests(
+            String taskId, String method, int unitIndex, Object fieldOwner,
+            String fieldSignature, String fieldName) {
+        Configuration configured = configuration();
+        RuntimeTask requested = configured.taskById(taskId);
+        if (requested == null) return "NO_TASK";
+        Object rootReceiver = new Object();
+        RuntimeTask admitted = configured.select(
+                requested.instrumentationSelector, requested.rootMethod,
+                rootReceiver, new Object[0]);
+        if (admitted == null) return "NOT_ADMITTED";
+        beginLiveSelectedRegion();
+        ActiveRegion active = new ActiveRegion(-1L, admitted, rootReceiver,
+                Thread.currentThread());
+        active.observedSourceKeys.add(admitted.sourceKey);
+        ACTIVE.put(active.token, active);
+        CURRENT_TOKEN.set(active.token);
+        boolean pending;
+        int gaps;
+        boolean observed;
+        boolean selectionRetained;
+        boolean pendingAfterLaterAccess;
+        boolean abandoned;
+        boolean retried;
+        try {
+            materializeField(method, unitIndex, fieldOwner,
+                    fieldSignature, fieldName);
+            PlannedFieldAdmission admission = admitted.fieldAdmission(
+                    fieldSignature);
+            String inputPort = admission == null ? ""
+                    : admission.inputPort;
+            pending = active.plannedProducerPrerequisitePending(inputPort);
+            gaps = active.sharedStateGaps.size();
+            observed = active.observedInputSlots.contains(inputPort);
+            selectionRetained = !active.accessOwnerCarrierSelections
+                    .isEmpty();
+            // Even if the producer commits now, occurrence 2 of this field
+            // access is not occurrence 1 from the frozen input action.
+            if (admission != null) {
+                configured.publishedFieldVersions.put(
+                        admission.registryKey(), 73L);
+            }
+            materializeField(method, unitIndex, fieldOwner,
+                    fieldSignature, fieldName);
+            pendingAfterLaterAccess =
+                    active.plannedProducerPrerequisitePending(inputPort);
+            judgeFinishedOccurrence(active);
+            abandoned = active.abandoned;
+        } finally {
+            ACTIVE.remove(active.token, active);
+            CURRENT_TOKEN.remove();
+            if (!active.abandoned) endLiveSelectedRegion();
+            configured.releaseCandidate(admitted);
+        }
+        RuntimeTask retry = configured.select(
+                requested.instrumentationSelector, requested.rootMethod,
+                new Object(), new Object[0]);
+        retried = retry == requested;
+        if (retry != null) configured.releaseCandidate(retry);
+        return "pending=" + pending + ",gaps=" + gaps
+                + ",observed=" + observed + ",selectionRetained="
+                + selectionRetained + ",pendingAfterLaterAccess="
+                + pendingAfterLaterAccess + ",abandoned=" + abandoned
+                + ",retried=" + retried;
+    }
+
+    /** Test seam for exact task-directed admission. */
+    static String admitCampaignTaskForTests(
+            String taskId, String rootMethod, Object receiver,
+            Object[] rootArguments) {
+        RuntimeTask requested = configuration().taskById(taskId);
+        if (requested == null) return "";
+        RuntimeTask admitted = configuration().select(
+                requested.instrumentationSelector, rootMethod, receiver,
+                rootArguments);
+        return admitted == null ? "" : admitted.taskId;
+    }
+
+    /**
+     * Test seam for the campaign completion gate.  Returns the campaign halt
+     * status once every task has settled, otherwise -1.
+     */
+    static int settleCampaignTaskForTests(String taskId, int status) {
+        return configuration().settle(taskId, status);
+    }
+
+    /**
+     * Test seam for the candidate loop: one candidate ran and was not the
+     * addressed occurrence, exactly as a finished activation reports it.
+     */
+    static void noteUnaddressedCandidateForTests(String taskId, String why) {
+        for (RuntimeTask task : configuration().tasks) {
+            if (task.taskId.equals(taskId)) {
+                task.noteUnaddressedCandidate(why);
+            }
+        }
+    }
+
+
+    /** Test seam for the root-predicate half of a replay address. */
     static boolean compatibleRootForTests(
             JsonObject rootSelector, String selectedMethod,
             String actualMethod, Object receiver, Object[] rootArguments,
@@ -7340,7 +12927,21 @@ public final class ConcolicRegionRuntime {
                 rootArguments, threadName);
     }
 
+    /**
+     * Test seam for the causal-anchor half of a replay address: why the
+     * candidate that observed this context is not the addressed occurrence,
+     * or {@code ""} when it is.
+     */
+    static String unconfirmedAnchorForTests(JsonObject rootSelector,
+                                            Set<String> attributedSourceKeys) {
+        return RootContextSelector.from(rootSelector).unconfirmed(
+                attributedSourceKeys);
+    }
+
     private static final class EngineApi {
+        private final Method openWorkloadSession;
+        private final Method closeWorkloadSession;
+        private final Method workloadSessionStatus;
         private final Method startRegion;
         private final Method symbolizeWithPrefix;
         private final Method symbolizeField;
@@ -7357,8 +12958,14 @@ public final class ConcolicRegionRuntime {
         private final Method markBranch;
         private final Method getBranchEvents;
         private final Method cleanupEnd;
+        private final HandoffApi handoff;
+        private final PathConditionApi pathCondition;
+        private final SharedStateApi sharedState;
 
-        private EngineApi(Method startRegion,
+        private EngineApi(Method openWorkloadSession,
+                          Method closeWorkloadSession,
+                          Method workloadSessionStatus,
+                          Method startRegion,
                           Method symbolizeWithPrefix, Method symbolizeField,
                           Method symbolizeExactField,
                           Method observeExactPrimitiveField,
@@ -7370,7 +12977,13 @@ public final class ConcolicRegionRuntime {
                           Method pausePathCondition,
                           Method resumePathCondition,
                           Method markBranch, Method getBranchEvents,
-                          Method cleanupEnd) {
+                          Method cleanupEnd,
+                          HandoffApi handoff,
+                          PathConditionApi pathCondition,
+                          SharedStateApi sharedState) {
+            this.openWorkloadSession = openWorkloadSession;
+            this.closeWorkloadSession = closeWorkloadSession;
+            this.workloadSessionStatus = workloadSessionStatus;
             this.startRegion = startRegion;
             this.symbolizeWithPrefix = symbolizeWithPrefix;
             this.symbolizeField = symbolizeField;
@@ -7387,6 +13000,9 @@ public final class ConcolicRegionRuntime {
             this.markBranch = markBranch;
             this.getBranchEvents = getBranchEvents;
             this.cleanupEnd = cleanupEnd;
+            this.handoff = handoff;
+            this.pathCondition = pathCondition;
+            this.sharedState = sharedState;
         }
 
         private boolean available() {
@@ -7401,6 +13017,41 @@ public final class ConcolicRegionRuntime {
                     && pausePathCondition != null
                     && resumePathCondition != null
                     && cleanupEnd != null;
+        }
+
+        /**
+         * Whether this JDK owns a workload-wide symbolic session.  Open and
+         * close are one capability: a session that can be opened but never
+         * closed would outlive the workload it belongs to.
+         */
+        private boolean workloadSessionAvailable() {
+            return openWorkloadSession != null
+                    && closeWorkloadSession != null;
+        }
+
+        /** Positive session id, or a negative VM status. */
+        private long openWorkloadSession() throws Exception {
+            Object status = openWorkloadSession.invoke(null);
+            return status instanceof Number
+                    ? ((Number) status).longValue() : Long.MIN_VALUE;
+        }
+
+        /** Zero, or a negative VM status. */
+        private long closeWorkloadSession() throws Exception {
+            Object status = closeWorkloadSession.invoke(null);
+            return status instanceof Number
+                    ? ((Number) status).longValue() : Long.MIN_VALUE;
+        }
+
+        /** One JSON snapshot of the session, or {@code ""} when absent. */
+        private String workloadSessionStatus() {
+            if (workloadSessionStatus == null) return "";
+            try {
+                return safe(String.valueOf(
+                        workloadSessionStatus.invoke(null)));
+            } catch (Throwable unavailable) {
+                return "";
+            }
         }
 
         private void start(String regionId, String taskId) throws Exception {
@@ -7523,9 +13174,122 @@ public final class ConcolicRegionRuntime {
             }
         }
 
+        /**
+         * Whether this JDK exposes the complete expression-handoff pair.
+         * A partial set is treated as absent: a handoff that can export but
+         * never attach is not a handoff.
+         */
+        private boolean expressionHandoffAvailable() {
+            return handoff.available();
+        }
+
+        private long exportExpression(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor) throws Exception {
+            return handoff.export(owner, declaringClass, fieldName,
+                    descriptor);
+        }
+
+        private long attachExpression(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor, long handle) throws Exception {
+            return handoff.attach(owner, declaringClass, fieldName,
+                    descriptor, handle);
+        }
+
+        private boolean pathConditionRangeAvailable() {
+            return pathCondition.available();
+        }
+
+        private String pathConditionRange(int startIndex, int endIndex)
+                throws Exception {
+            return pathCondition.range(startIndex, endIndex);
+        }
+
+        private boolean sharedStateEvidenceAvailable() {
+            return sharedState.available();
+        }
+
+        private boolean sharedMapEvidenceAvailable() {
+            return sharedState.mapAvailable();
+        }
+
+        private boolean sharedMapProducerAdmissionAvailable() {
+            return sharedState.mapProducerAdmissionAvailable();
+        }
+
+        private boolean sharedFieldProducerAdmissionAvailable() {
+            return sharedState.fieldProducerAdmissionAvailable();
+        }
+
+        private long selectSharedMapCarrier(Object map) throws Exception {
+            return sharedState.selectMap(map);
+        }
+
+        private String sharedMapVersions(Object map) throws Exception {
+            return sharedState.mapVersions(map);
+        }
+
+        private long currentSharedMapVersion(Object map) throws Exception {
+            return sharedState.currentMapVersion(map);
+        }
+
+        private long admitSharedMapVersion(Object map, long fieldVersionId,
+                                           String selectedEdgeId)
+                throws Exception {
+            return sharedState.admitMapVersion(map, fieldVersionId,
+                    selectedEdgeId);
+        }
+
+        private long currentSharedFieldVersion(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor) throws Exception {
+            return sharedState.currentFieldVersion(owner, declaringClass,
+                    fieldName, descriptor);
+        }
+
+        private long admitSharedFieldVersion(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor, long fieldVersionId,
+                String selectedEdgeId) throws Exception {
+            return sharedState.admitFieldVersion(owner, declaringClass,
+                    fieldName, descriptor, fieldVersionId, selectedEdgeId);
+        }
+
+        private long selectSharedFieldCarrier(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor) throws Exception {
+            return sharedState.selectField(owner, declaringClass, fieldName,
+                    descriptor);
+        }
+
+        private long selectSharedElementCarrier(Object array, int index)
+                throws Exception {
+            return sharedState.selectElement(array, index);
+        }
+
+        private String sharedFieldVersions(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor) throws Exception {
+            return sharedState.fieldVersions(owner, declaringClass, fieldName,
+                    descriptor);
+        }
+
+        private String sharedElementVersions(Object array, int index)
+                throws Exception {
+            return sharedState.elementVersions(array, index);
+        }
+
+        private String eventLedger() throws Exception {
+            return sharedState.eventLedger();
+        }
+
         private static EngineApi load() {
             Class<System> system = System.class;
             return new EngineApi(
+                    method(system, "openWorkloadSession"),
+                    method(system, "closeWorkloadSession"),
+                    method(system, "getWorkloadSessionStatus"),
                     method(system, "startConcolicRegion", String.class, String.class),
                     method(system, "symbolize", Object.class, String.class),
                     method(system, "symbolizeField", Object.class,
@@ -7551,7 +13315,10 @@ public final class ConcolicRegionRuntime {
                     method(system, "markConcolicBranch",
                             String.class, int.class),
                     method(system, "getConcolicBranchEvents"),
-                    method(system, "endConcolic"));
+                    method(system, "endConcolic"),
+                    HandoffApi.load(),
+                    PathConditionApi.load(),
+                    SharedStateApi.load());
         }
 
         private static Method method(Class<?> owner, String name,
@@ -7561,6 +13328,276 @@ public final class ConcolicRegionRuntime {
             } catch (NoSuchMethodException ignored) {
                 return null;
             }
+        }
+    }
+
+    /**
+     * Reflective view of the VM's symbolic expression handoff.
+     *
+     * <p>Only the current typed export/attach pair is bound.  Import,
+     * explicit release and exchange-only compatibility APIs belonged to the
+     * deleted second protocol.  A live handle plus the destination field is
+     * the complete operation; session close owns broker reclamation.</p>
+     */
+    private static final class HandoffApi {
+        private final Method export;
+        private final Method attach;
+
+        private HandoffApi(Method export, Method attach) {
+            this.export = export;
+            this.attach = attach;
+        }
+
+        private boolean available() {
+            return export != null && attach != null;
+        }
+
+        private long export(Object owner, String declaringClass,
+                            String fieldName, String descriptor)
+                throws Exception {
+            if (export == null) {
+                throw new UnsupportedOperationException(
+                        "custom concolic expression-export API is unavailable");
+            }
+            Object handle = export.invoke(null, owner, declaringClass,
+                    fieldName, descriptor);
+            return handle instanceof Number
+                    ? ((Number) handle).longValue() : 0L;
+        }
+
+        private long attach(Object owner, String declaringClass,
+                           String fieldName, String descriptor, long handle)
+                throws Exception {
+            if (attach == null) {
+                throw new UnsupportedOperationException(
+                        "custom concolic expression-attach API is unavailable");
+            }
+            Object answer = attach.invoke(null, owner, declaringClass,
+                    fieldName, descriptor, handle);
+            return answer instanceof Number
+                    ? ((Number) answer).longValue()
+                    : RpcExpressionHandoff.MALFORMED_RESULT;
+        }
+
+        private static HandoffApi load() {
+            Class<System> system = System.class;
+            return new HandoffApi(
+                    EngineApi.method(system, "exportExpression", Object.class,
+                            String.class, String.class, String.class),
+                    EngineApi.method(system, "attachExpression", Object.class,
+                            String.class, String.class, String.class,
+                            long.class));
+        }
+    }
+
+    /**
+     * Reflective view of the VM's path-condition read-back.
+     *
+     * <p>Bound on its own, and deliberately not as one member of a group:
+     * the whole path condition is no longer inlined in the region summary,
+     * so this is the only way a selected branch witness reads back the
+     * predicate its {@code conditionIndices} name.  Grouping it with natives
+     * that no longer exist would report it unavailable and degrade branch
+     * witness capture silently.</p>
+     */
+    private static final class PathConditionApi {
+        private final Method range;
+
+        private PathConditionApi(Method range) {
+            this.range = range;
+        }
+
+        private boolean available() {
+            return range != null;
+        }
+
+        private String range(int startIndex, int endIndex) throws Exception {
+            return String.valueOf(range.invoke(null, startIndex, endIndex));
+        }
+
+        private static PathConditionApi load() {
+            return new PathConditionApi(EngineApi.method(System.class,
+                    "getConcolicPathConditionRange", int.class, int.class));
+        }
+    }
+
+    /**
+     * Reflective view of the VM's recorded shared-state evidence.
+     *
+     * <p>Selection and read-out are one capability, not five: a carrier that
+     * can be selected but whose versions cannot be read back proves nothing,
+     * and a ledger without carriers records nothing.  A partial set is
+     * therefore treated as absent, exactly as the handoff pair is.</p>
+     */
+    private static final class SharedStateApi {
+        private final Method selectField;
+        private final Method selectElement;
+        private final Method selectMap;
+        private final Method fieldVersions;
+        private final Method elementVersions;
+        private final Method mapVersions;
+        private final Method currentMapVersion;
+        private final Method admitMapVersion;
+        private final Method currentFieldVersion;
+        private final Method admitFieldVersion;
+        private final Method eventLedger;
+
+        private SharedStateApi(Method selectField, Method selectElement,
+                               Method selectMap, Method fieldVersions,
+                               Method elementVersions, Method mapVersions,
+                               Method currentMapVersion,
+                               Method admitMapVersion,
+                               Method currentFieldVersion,
+                               Method admitFieldVersion,
+                               Method eventLedger) {
+            this.selectField = selectField;
+            this.selectElement = selectElement;
+            this.selectMap = selectMap;
+            this.fieldVersions = fieldVersions;
+            this.elementVersions = elementVersions;
+            this.mapVersions = mapVersions;
+            this.currentMapVersion = currentMapVersion;
+            this.admitMapVersion = admitMapVersion;
+            this.currentFieldVersion = currentFieldVersion;
+            this.admitFieldVersion = admitFieldVersion;
+            this.eventLedger = eventLedger;
+        }
+
+        private boolean available() {
+            return selectField != null && selectElement != null
+                    && fieldVersions != null && elementVersions != null
+                    && eventLedger != null;
+        }
+
+        /**
+         * Whether this JDK can both select a map carrier and read its
+         * whole-state versions back.
+         *
+         * <p>Asked separately from {@link #available()} rather than folded
+         * into it. Selecting a map and reading it back is one capability, so
+         * a JDK holding half of the pair has none of it - but a JDK holding
+         * neither still has the scalar half, and reporting the whole evidence
+         * API absent for it would turn a missing map carrier into a missing
+         * field carrier.</p>
+         */
+        private boolean mapAvailable() {
+            return available() && selectMap != null && mapVersions != null;
+        }
+
+        private boolean mapProducerAdmissionAvailable() {
+            return mapAvailable() && currentMapVersion != null
+                    && admitMapVersion != null;
+        }
+
+        private boolean fieldProducerAdmissionAvailable() {
+            return available() && currentFieldVersion != null
+                    && admitFieldVersion != null;
+        }
+
+        private long selectField(Object owner, String declaringClass,
+                                 String fieldName, String descriptor)
+                throws Exception {
+            Object version = selectField.invoke(null, owner, declaringClass,
+                    fieldName, descriptor);
+            return version instanceof Number
+                    ? ((Number) version).longValue() : 0L;
+        }
+
+        private long selectElement(Object array, int index) throws Exception {
+            Object version = selectElement.invoke(null, array, index);
+            return version instanceof Number
+                    ? ((Number) version).longValue() : 0L;
+        }
+
+        private long selectMap(Object map) throws Exception {
+            Object version = selectMap.invoke(null, map);
+            return version instanceof Number
+                    ? ((Number) version).longValue() : 0L;
+        }
+
+        private String mapVersions(Object map) throws Exception {
+            return String.valueOf(mapVersions.invoke(null, map));
+        }
+
+        private long currentMapVersion(Object map) throws Exception {
+            Object answer = currentMapVersion.invoke(null, map);
+            return answer instanceof Number
+                    ? ((Number) answer).longValue() : Long.MIN_VALUE;
+        }
+
+        private long admitMapVersion(Object map, long fieldVersionId,
+                                     String selectedEdgeId)
+                throws Exception {
+            Object answer = admitMapVersion.invoke(null, map,
+                    fieldVersionId, selectedEdgeId);
+            return answer instanceof Number
+                    ? ((Number) answer).longValue() : Long.MIN_VALUE;
+        }
+
+        private long currentFieldVersion(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor) throws Exception {
+            Object answer = currentFieldVersion.invoke(null, owner,
+                    declaringClass, fieldName, descriptor);
+            return answer instanceof Number
+                    ? ((Number) answer).longValue() : Long.MIN_VALUE;
+        }
+
+        private long admitFieldVersion(
+                Object owner, String declaringClass, String fieldName,
+                String descriptor, long fieldVersionId,
+                String selectedEdgeId) throws Exception {
+            Object answer = admitFieldVersion.invoke(null, owner,
+                    declaringClass, fieldName, descriptor, fieldVersionId,
+                    selectedEdgeId);
+            return answer instanceof Number
+                    ? ((Number) answer).longValue() : Long.MIN_VALUE;
+        }
+
+        private String fieldVersions(Object owner, String declaringClass,
+                                     String fieldName, String descriptor)
+                throws Exception {
+            return String.valueOf(fieldVersions.invoke(null, owner,
+                    declaringClass, fieldName, descriptor));
+        }
+
+        private String elementVersions(Object array, int index)
+                throws Exception {
+            return String.valueOf(elementVersions.invoke(null, array, index));
+        }
+
+        private String eventLedger() throws Exception {
+            return String.valueOf(eventLedger.invoke(null));
+        }
+
+        private static SharedStateApi load() {
+            Class<System> system = System.class;
+            return new SharedStateApi(
+                    EngineApi.method(system, "selectSharedFieldCarrier",
+                            Object.class, String.class, String.class,
+                            String.class),
+                    EngineApi.method(system, "selectSharedElementCarrier",
+                            Object.class, int.class),
+                    EngineApi.method(system, "selectSharedMapCarrier",
+                            Object.class),
+                    EngineApi.method(system, "getSharedFieldVersions",
+                            Object.class, String.class, String.class,
+                            String.class),
+                    EngineApi.method(system, "getSharedElementVersions",
+                            Object.class, int.class),
+                    EngineApi.method(system, "getSharedMapVersions",
+                            Object.class),
+                    EngineApi.method(system, "getCurrentSharedMapVersion",
+                            Object.class),
+                    EngineApi.method(system, "admitSharedMapVersion",
+                            Object.class, long.class, String.class),
+                    EngineApi.method(system, "getCurrentSharedFieldVersion",
+                            Object.class, String.class, String.class,
+                            String.class),
+                    EngineApi.method(system, "admitSharedFieldVersion",
+                            Object.class, String.class, String.class,
+                            String.class, long.class, String.class),
+                    EngineApi.method(system, "getEventLedger"));
         }
     }
 

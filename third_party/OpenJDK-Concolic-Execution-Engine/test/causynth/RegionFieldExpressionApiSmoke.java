@@ -1,12 +1,20 @@
 /** Exact normal-exit field shadow and concrete-value observations. */
 public final class RegionFieldExpressionApiSmoke {
+    private static volatile int sink;
+
     private static final class Holder {
         String text = "seed";
         int count = 7;
+        boolean selected = true;
+        boolean observed;
         Object nullable = new Object();
 
         int getCount() {
             return count;
+        }
+
+        synchronized boolean isSelected() {
+            return selected;
         }
     }
 
@@ -63,6 +71,16 @@ public final class RegionFieldExpressionApiSmoke {
                 concreteElementInt);
         require(concreteElementInt.contains("\"_exp\":\"Y_I_42\""),
                 concreteElementInt);
+
+        System.symbolizeExactField(
+                holder, Holder.class.getName(), "selected", "Z",
+                "FIELD.selected");
+        holder.observed = holder.isSelected();
+        if (holder.observed) sink++;
+        String getterReturn = System.getSymbolicFieldExpression(
+                holder, Holder.class.getName(), "observed", "Z",
+                Boolean.valueOf(holder.observed));
+        require(getterReturn.contains("FIELD.selected"), getterReturn);
 
         System.symbolizeField(holder, "nullable", "FIELD.nullable");
         holder.nullable = null;
