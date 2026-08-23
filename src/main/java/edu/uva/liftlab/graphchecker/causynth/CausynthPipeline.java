@@ -1369,6 +1369,12 @@ public final class CausynthPipeline {
         if (cut == null || !(cut instanceof DefinitionStmt)) return;
         Value returned = ((DefinitionStmt) cut).getLeftOp();
         if (!(returned instanceof Local)) return;
+        List<Unit> before = new ArrayList<>();
+        before.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        prepareResponseHandoffRef(),
+                        StringConstant.v(site.portId()))));
+        insertBeforeSequence(body, cut, before);
         List<Unit> after = new ArrayList<>();
         if (site.responsePathCarrier()) {
             after.add(Jimple.v().newInvokeStmt(
@@ -1382,6 +1388,16 @@ public final class CausynthPipeline {
                     after, refs);
         }
         insertAfterSequence(body, cut, after);
+    }
+
+    /** Scheduling-only identity for the request issued by one response cut. */
+    private static SootMethodRef prepareResponseHandoffRef() {
+        return Scene.v().makeMethodRef(Scene.v().getSootClass(
+                        CONCOLIC_REGION_RUNTIME_CLASS),
+                "prepareResponseHandoff",
+                Collections.<Type>singletonList(
+                        RefType.v("java.lang.String")),
+                VoidType.v(), true);
     }
 
     /**

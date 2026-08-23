@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
@@ -21,21 +22,28 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /** Exact live-exchange admission of a selected RPC response producer. */
 public class ConcolicRegionRuntimeResponseProducerArmTest {
 
     private static final String CONSUMER_TASK = "TASK.response-consumer";
     private static final String PRODUCER_TASK = "TASK.response-producer";
+    private static final String PRODUCER_TASK_B = "TASK.response-producer-b";
     private static final String CONSUMER_OCCURRENCE =
             "test/client#epoch0/region/CLIENT#1";
     private static final String PRODUCER_OCCURRENCE =
             "test/server#epoch0/region/SERVER#7";
+    private static final String PRODUCER_OCCURRENCE_B =
+            "test/server-b#epoch0/region/SERVER_B#3";
     private static final String CONSUMER_ROOT =
             "<example.Client: void call()>";
     private static final String PRODUCER_ROOT =
             "<example.Server: example.Response serve()>";
+    private static final String PRODUCER_ROOT_B =
+            "<example.Server: example.Response serveB()>";
     private static final String PORT = "XCH.response.resp.keyId";
+    private static final String PORT_B = "XCH.response-b.resp.keyId";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -71,6 +79,7 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 PRODUCER_TASK, PRODUCER_ROOT, new Server(), new Object[0]));
 
         activate(CONSUMER_TASK, 41L);
+        ConcolicRegionRuntime.prepareResponseHandoff(PORT);
         ConcolicRegionRuntime.observeExchangeLeg("SEND", "TEST_RPC",
                 "exchange-selected", "REQUEST");
         clearCurrentToken();
@@ -88,6 +97,26 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         assertEquals(PRODUCER_TASK,
                 ConcolicRegionRuntime.admitCampaignTaskForTests(PRODUCER_TASK,
                         PRODUCER_ROOT, new Server(), new Object[0]));
+    }
+
+    @Test
+    public void eachResponseCutArmsOnlyItsOwnProducer() throws Exception {
+        loadTwoProducerCampaign();
+
+        activate(CONSUMER_TASK, 47L);
+        ConcolicRegionRuntime.prepareResponseHandoff(PORT_B);
+        ConcolicRegionRuntime.observeExchangeLeg("SEND", "TEST_RPC",
+                "exchange-b", "REQUEST");
+        clearCurrentToken();
+        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", "TEST_RPC",
+                "exchange-b", "REQUEST");
+
+        assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
+                PRODUCER_TASK, PRODUCER_ROOT, new Server(), new Object[0]));
+        assertEquals(PRODUCER_TASK_B,
+                ConcolicRegionRuntime.admitCampaignTaskForTests(
+                        PRODUCER_TASK_B, PRODUCER_ROOT_B, new Server(),
+                        new Object[0]));
     }
 
     @Test
@@ -170,6 +199,29 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         assertEquals(1, handoffGaps(second).size());
     }
 
+    @Test
+    public void successfulVmHandoffStartsReceiverBranchRecording()
+            throws Exception {
+        loadCampaign();
+        Object active = activate(CONSUMER_TASK, 48L);
+        assertFalse(pathRecordingStarted(active));
+
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "I");
+        expression.addProperty("_exp", "RPC_VALUE");
+        Method accept = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "acceptVmHandoffExpression", active.getClass(),
+                CommunicationHandoffSpec.class, long.class,
+                JsonElement.class);
+        accept.setAccessible(true);
+        accept.invoke(null, active, communicationHandoff(active), 17L,
+                expression);
+
+        assertTrue(pathRecordingStarted(active));
+        assertEquals(1, vmHandoffs(active).size());
+    }
+
     private void loadCampaign() throws Exception {
         JsonObject consumer = task(CONSUMER_TASK, "CLIENT",
                 CONSUMER_OCCURRENCE, CONSUMER_ROOT, Object.class.getName(),
@@ -197,6 +249,50 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 folder.getRoot().toPath().resolve("results.jsonl").toString());
         assertEquals(2,
                 ConcolicRegionRuntime.campaignTaskIdsForTests().size());
+    }
+
+    private void loadTwoProducerCampaign() throws Exception {
+        JsonObject consumer = task(CONSUMER_TASK, "CLIENT",
+                CONSUMER_OCCURRENCE, CONSUMER_ROOT, Object.class.getName(),
+                handoff(false));
+        consumer.getAsJsonArray(CommunicationHandoffSpec.FIELD).add(
+                handoff(false, PORT_B, PRODUCER_ROOT_B));
+
+        JsonObject producerA = task(PRODUCER_TASK, "SERVER",
+                PRODUCER_OCCURRENCE, PRODUCER_ROOT, Server.class.getName(),
+                handoff(true));
+        JsonArray producerAEdges = new JsonArray();
+        producerAEdges.add(edge(PRODUCER_OCCURRENCE, PORT));
+        producerA.add("edgeBindings", producerAEdges);
+        JsonObject producerB = task(PRODUCER_TASK_B, "SERVER_B",
+                PRODUCER_OCCURRENCE_B, PRODUCER_ROOT_B,
+                Server.class.getName(), handoff(true, PORT_B,
+                        PRODUCER_ROOT_B));
+        JsonArray producerBEdges = new JsonArray();
+        producerBEdges.add(edge(PRODUCER_OCCURRENCE_B, PORT_B));
+        producerB.add("edgeBindings", producerBEdges);
+        Path plan = folder.newFile("two-response-producers.jsonl").toPath();
+        Files.write(plan, (consumer + "\n" + producerA + "\n"
+                + producerB + "\n").getBytes(StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id", CONSUMER_TASK + ","
+                + PRODUCER_TASK + "," + PRODUCER_TASK_B);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve(
+                        "two-producer-results.jsonl").toString());
+        assertEquals(3,
+                ConcolicRegionRuntime.campaignTaskIdsForTests().size());
+    }
+
+    private static JsonObject edge(String producerOccurrence, String port) {
+        JsonObject edge = new JsonObject();
+        edge.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
+        edge.addProperty("direction", "RESPONSE");
+        edge.addProperty("fromOccurrenceId", producerOccurrence);
+        edge.addProperty("fromOutputPort", port);
+        edge.addProperty("toOccurrenceId", CONSUMER_OCCURRENCE);
+        edge.addProperty("toInputPort", port);
+        return edge;
     }
 
     private static JsonObject task(String taskId, String regionId,
@@ -234,13 +330,18 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
     }
 
     private static JsonObject handoff(boolean exporting) {
+        return handoff(exporting, PORT, PRODUCER_ROOT);
+    }
+
+    private static JsonObject handoff(boolean exporting, String port,
+                                      String producerRoot) {
         JsonObject site = new JsonObject();
         site.addProperty("schemaVersion", 2);
         site.addProperty("kind", CommunicationHandoffSpec.KIND);
         site.addProperty("role", exporting
                 ? CommunicationHandoffSpec.ROLE_EXPORT
                 : CommunicationHandoffSpec.ROLE_ATTACH);
-        site.addProperty("portId", PORT);
+        site.addProperty("portId", port);
         site.addProperty("handoffLeafPath", "resp/currentKey/keyId");
         site.addProperty("direction", "RESPONSE");
         site.addProperty("javaType", "int");
@@ -249,7 +350,7 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         site.addProperty("encodingAuthority",
                 "CONFIGURED_RESPONSE_FIELD_PATH_V1");
         site.addProperty("definitionMethod",
-                exporting ? PRODUCER_ROOT : CONSUMER_ROOT);
+                exporting ? producerRoot : CONSUMER_ROOT);
         if (!exporting) {
             site.addProperty("definitionUnitIndex", 8);
             site.addProperty("declaredCallee",
@@ -332,6 +433,33 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 "markResponseHandoffSatisfied", String.class);
         satisfied.setAccessible(true);
         satisfied.invoke(active, PORT);
+    }
+
+    private static CommunicationHandoffSpec communicationHandoff(
+            Object active) throws Exception {
+        Field activation = active.getClass().getDeclaredField("activation");
+        activation.setAccessible(true);
+        Object task = activation.get(active);
+        Method lookup = task.getClass().getDeclaredMethod(
+                "communicationHandoff", String.class, boolean.class);
+        lookup.setAccessible(true);
+        return (CommunicationHandoffSpec) lookup.invoke(task, PORT, false);
+    }
+
+    private static boolean pathRecordingStarted(Object active)
+            throws Exception {
+        Field field = active.getClass().getDeclaredField(
+                "pathRecordingStarted");
+        field.setAccessible(true);
+        return field.getBoolean(active);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<JsonObject> vmHandoffs(Object active)
+            throws Exception {
+        Field field = active.getClass().getDeclaredField("vmHandoffEvents");
+        field.setAccessible(true);
+        return (List<JsonObject>) field.get(active);
     }
 
     private static void flushPendingHandoffGaps(Object active)

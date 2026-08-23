@@ -607,12 +607,10 @@ public final class ConcolicRegionRuntime {
         CURRENT_TOKEN.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
-        OUTBOUND_LEAVES.remove();
-        INBOUND_LEAVES.remove();
+        PENDING_RESPONSE_ATTACH_PORTS.remove();
         INBOUND_RESPONSE_PRODUCER_ARM.remove();
         beforePublicationDecodeForTests = null;
-        synchronized (EXCHANGE_LOCK) {
-            IN_FLIGHT_LEAVES.clear();
+        synchronized (RESPONSE_ARM_LOCK) {
             IN_FLIGHT_RESPONSE_PRODUCER_ARMS.clear();
         }
         synchronized (PUBLICATION_LOCK) {
@@ -2847,51 +2845,33 @@ public final class ConcolicRegionRuntime {
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime"
                     + "$HandoffLeafCarrier";
     // ------------------------------------------------------------------
-    // The live exchange channel
+    // Hadoop RPC-header bridge
     // ------------------------------------------------------------------
 
-    /**
-     * Broker handles this thread has exported and no transport has carried
-     * away yet, by declared leaf path.
-     */
-    private static final ThreadLocal<Map<String, Long>> OUTBOUND_LEAVES =
-            new ThreadLocal<Map<String, Long>>() {
-                @Override
-                protected Map<String, Long> initialValue() {
-                    return new LinkedHashMap<>();
-                }
-            };
-    /** Leaves one declared exchange leg is carrying, by that leg's key. */
-    private static final Map<String, ArrivedLeaves> IN_FLIGHT_LEAVES =
-            new LinkedHashMap<>();
     /**
      * Exact producer admissions armed by selected callers, indexed only by
      * the live request exchange that can consume them.
      */
     private static final Map<String, ResponseProducerArm>
             IN_FLIGHT_RESPONSE_PRODUCER_ARMS = new LinkedHashMap<>();
-    private static final Object EXCHANGE_LOCK = new Object();
-    /** The leaves the last delivery handed to this thread. */
-    private static final ThreadLocal<ArrivedLeaves> INBOUND_LEAVES =
-            new ThreadLocal<>();
+    private static final Object RESPONSE_ARM_LOCK = new Object();
+    /** Exact response ports named immediately before this thread's next cut. */
+    private static final ThreadLocal<Set<String>>
+            PENDING_RESPONSE_ATTACH_PORTS = new ThreadLocal<Set<String>>() {
+                @Override
+                protected Set<String> initialValue() {
+                    return new LinkedHashSet<>();
+                }
+            };
     /** The exact response producer task authorized by this request delivery. */
     private static final ThreadLocal<ResponseProducerArm>
             INBOUND_RESPONSE_PRODUCER_ARM = new ThreadLocal<>();
 
-    /** One delivery's live leaves. */
-    private static final class ArrivedLeaves {
-        private final Map<String, Long> byLeafPath;
-
-        private ArrivedLeaves(Map<String, Long> byLeafPath) {
-            this.byLeafPath = byLeafPath;
-        }
-    }
-
     /**
      * One caller-selected response producer admission.  This is scheduling
      * authority only: it names the already-planned producer task and carries
-     * no value, payload identity or expression.  The VM handle transported by
-     * {@link #IN_FLIGHT_LEAVES} remains the only value authority.
+     * no value, payload identity or expression.  The VM handle transported in
+     * Hadoop's real RPC header remains the only value authority.
      */
     private static final class ResponseProducerArm {
         private final String producerTaskId;
@@ -2916,6 +2896,111 @@ public final class ConcolicRegionRuntime {
                     && producerTaskId.equals(task.taskId)
                     && !task.responseExportPortIds.isEmpty()
                     && portIds.containsAll(task.responseExportPortIds);
+        }
+    }
+
+    /** One leaf read directly from the current Hadoop Call's wire header. */
+    private static final class HeaderHandle {
+        private static final HeaderHandle MISSING =
+                new HeaderHandle(false, 0L);
+        private final boolean present;
+        private final long handle;
+
+        private HeaderHandle(boolean present, long handle) {
+            this.present = present;
+            this.handle = handle;
+        }
+    }
+
+    /**
+     * Optional reflection boundary to Hadoop's RPC-header implementation.
+     *
+     * <p>GraphChecker has no compile-time Hadoop dependency.  Export hands the
+     * opaque broker token immediately to Hadoop, whose next request/response
+     * header serializes it.  Attach asks Hadoop's current {@code Client.Call}
+     * or {@code Server.Call}; there is deliberately no GraphChecker-side
+     * outbound, in-flight, or inbound leaf table.</p>
+     */
+    private static final class RpcHeaderBridge {
+        private static final String CLASS =
+                "org.apache.hadoop.ipc.CausynthRpcWire";
+        private static volatile Binding binding;
+
+        private static boolean stage(String leafPath, long handle) {
+            Binding current = bind();
+            if (!current.usable()) return false;
+            try {
+                Object result = current.stage.invoke(null, leafPath,
+                        Long.valueOf(handle));
+                return result instanceof Boolean
+                        && ((Boolean) result).booleanValue();
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+
+        private static HeaderHandle take(String leafPath) {
+            Binding current = bind();
+            if (!current.usable()) return HeaderHandle.MISSING;
+            try {
+                Object result = current.take.invoke(null, leafPath);
+                if (result == null || !((Boolean) current.present.invoke(
+                        result)).booleanValue()) {
+                    return HeaderHandle.MISSING;
+                }
+                return new HeaderHandle(true, ((Long) current.handle.invoke(
+                        result)).longValue());
+            } catch (Throwable ignored) {
+                return HeaderHandle.MISSING;
+            }
+        }
+
+        private static Binding bind() {
+            Binding current = binding;
+            if (current != null) return current;
+            synchronized (RpcHeaderBridge.class) {
+                current = binding;
+                if (current != null) return current;
+                try {
+                    Class<?> bridge = Class.forName(CLASS);
+                    Method stage = bridge.getMethod("stageExpression",
+                            String.class, long.class);
+                    Method take = bridge.getMethod("takeCurrentExpression",
+                            String.class);
+                    Class<?> result = take.getReturnType();
+                    current = new Binding(stage, take,
+                            result.getMethod("present"),
+                            result.getMethod("handle"));
+                } catch (ReflectiveOperationException | RuntimeException
+                         | LinkageError unavailable) {
+                    current = new Binding();
+                }
+                binding = current;
+                return current;
+            }
+        }
+
+        private static final class Binding {
+            private final Method stage;
+            private final Method take;
+            private final Method present;
+            private final Method handle;
+
+            private Binding() {
+                this(null, null, null, null);
+            }
+
+            private Binding(Method stage, Method take, Method present,
+                            Method handle) {
+                this.stage = stage;
+                this.take = take;
+                this.present = present;
+                this.handle = handle;
+            }
+
+            private boolean usable() {
+                return stage != null && take != null;
+            }
         }
     }
 
@@ -3040,53 +3125,46 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Carries this thread's exported broker handles across one declared
-     * exchange leg, and hands a delivered leg's handles to its receiver.
+     * Names one response port whose cut is about to issue its request.
      *
-     * <p>This is the ephemeral data-plane transfer the propagation needs: the
-     * transport that moves the message also moves the live handle of the leaf
-     * inside it, addressed by the message's own in-memory exchange context
-     * and by the typed leaf.  It is not a pairing authority - it decides
-     * nothing about which value reached whom.  That is settled by the VM's
-     * attach and its {@code VALUE_HANDOFF} edge, and by nothing else; a leg
-     * that carries no handle produces a named gap at the receiver rather than
-     * a reconstructed one.</p>
-     *
-     * <p>Both buffers are strictly per message, because a leaf that outlives
-     * its own message would be attached at an unrelated exchange's receiver
-     * and would read exactly like a successful handoff of the wrong sender's
-     * expression.  The send leg is the first instant after the cut export, so
-     * anything still pending when a different leg runs never became a message
-     * and is dropped.  The receive leg is the last instant before the entry
-     * attach, so it <em>replaces</em> this thread's inbound state even when it
-     * carries nothing: a handler that served a message with leaves and then
-     * one without must find nothing, not the previous call's handles.</p>
+     * <p>This is scheduling metadata only.  It carries no handle or value and
+     * is consumed by the immediately following request-send boundary.  A
+     * call can name several component ports of the same response; the
+     * configuration gate below requires all of them to resolve to the same
+     * already-planned producer task.</p>
      */
+    public static void prepareResponseHandoff(String portId) {
+        ActiveRegion caller = activeRegion();
+        if (caller == null || safe(portId).isEmpty()) return;
+        CommunicationHandoffSpec site =
+                caller.activation.communicationHandoff(portId, false);
+        if (site == null || !"RESPONSE".equalsIgnoreCase(site.direction())) {
+            return;
+        }
+        PENDING_RESPONSE_ATTACH_PORTS.get().add(site.portId());
+    }
+
+    /** Moves only the caller-selected response-producer scheduling arm. */
     static void observeExchangeLeg(String direction, String transport,
                                    String correlationId, String half) {
         String normalizedDirection = safe(direction);
         String normalizedHalf = safe(half);
         String key = exchangeKey(transport, correlationId, normalizedHalf);
-        Map<String, Long> pending = OUTBOUND_LEAVES.get();
         if ("SEND".equalsIgnoreCase(normalizedDirection)) {
             if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
-                armResponseProducer(key);
+                Set<String> ports = new LinkedHashSet<>(
+                        PENDING_RESPONSE_ATTACH_PORTS.get());
+                PENDING_RESPONSE_ATTACH_PORTS.remove();
+                armResponseProducer(key, ports);
             } else if ("RESPONSE".equalsIgnoreCase(normalizedHalf)) {
                 INBOUND_RESPONSE_PRODUCER_ARM.remove();
-            }
-            if (pending.isEmpty()) return;
-            ArrivedLeaves carried = new ArrivedLeaves(
-                    new LinkedHashMap<>(pending));
-            pending.clear();
-            synchronized (EXCHANGE_LOCK) {
-                IN_FLIGHT_LEAVES.put(key, carried);
             }
             return;
         }
         if (!"RECEIVE".equalsIgnoreCase(normalizedDirection)) return;
         if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
             ResponseProducerArm arm;
-            synchronized (EXCHANGE_LOCK) {
+            synchronized (RESPONSE_ARM_LOCK) {
                 arm = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(key);
             }
             if (arm == null) {
@@ -3095,12 +3173,6 @@ public final class ConcolicRegionRuntime {
                 INBOUND_RESPONSE_PRODUCER_ARM.set(arm);
             }
         }
-        pending.clear();
-        ArrivedLeaves arrived;
-        synchronized (EXCHANGE_LOCK) {
-            arrived = IN_FLIGHT_LEAVES.remove(key);
-        }
-        INBOUND_LEAVES.set(arrived);
     }
 
     private static String exchangeKey(String transport, String correlationId,
@@ -3110,14 +3182,15 @@ public final class ConcolicRegionRuntime {
     }
 
     /** Arms only the unique producer already selected by this caller's task. */
-    private static void armResponseProducer(String exchangeKey) {
+    private static void armResponseProducer(String exchangeKey,
+                                            Set<String> responsePorts) {
         ActiveRegion caller = activeRegion();
         if (caller == null
-                || caller.activation.responseAttachPortIds.isEmpty()) {
+                || responsePorts == null || responsePorts.isEmpty()) {
             return;
         }
         ResponseProducerArm arm = configuration().responseProducerArm(
-                caller.activation);
+                caller.activation, responsePorts);
         if (!arm.valid()) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
@@ -3127,7 +3200,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         boolean collision;
-        synchronized (EXCHANGE_LOCK) {
+        synchronized (RESPONSE_ARM_LOCK) {
             collision = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.containsKey(
                     exchangeKey);
             if (collision) {
@@ -3204,20 +3277,9 @@ public final class ConcolicRegionRuntime {
         // handles.  An old VM returning NOT_SYMBOLIC cannot establish a
         // VALUE_HANDOFF and is deliberately not represented by a zero token.
         if (!result.ok()) return;
-        boolean collision;
-        beginBookkeeping();
-        try {
-            Map<String, Long> pending = OUTBOUND_LEAVES.get();
-            collision = pending.containsKey(site.leafPath());
-            if (!collision) {
-                pending.put(site.leafPath(), Long.valueOf(result.handle()));
-            }
-        } finally {
-            endBookkeeping();
-        }
-        if (collision) {
+        if (!RpcHeaderBridge.stage(site.leafPath(), result.handle())) {
             recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
-                    "response field path already has a pending handle: "
+                    "response field path could not enter the RPC header: "
                             + site.leafPath());
         }
     }
@@ -3226,15 +3288,14 @@ public final class ConcolicRegionRuntime {
     public static void attachCommunicationFieldPath(String portId,
                                                     Object responseRoot) {
         CommunicationHandoffSpec site;
-        ArrivedLeaves arrived;
+        HeaderHandle carried;
         long handle;
         beginBookkeeping();
         try {
             site = communicationHandoffSite(portId, false);
-            arrived = INBOUND_LEAVES.get();
-            Long carried = site == null || arrived == null ? null
-                    : arrived.byLeafPath.remove(site.leafPath());
-            handle = carried == null ? 0L : carried.longValue();
+            carried = site == null ? HeaderHandle.MISSING
+                    : RpcHeaderBridge.take(site.leafPath());
+            handle = carried.handle;
         } finally {
             endBookkeeping();
         }
@@ -3392,12 +3453,14 @@ public final class ConcolicRegionRuntime {
                 && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
             return;
         }
-        beginBookkeeping();
-        try {
-            OUTBOUND_LEAVES.get().put(site.leafPath(),
-                    Long.valueOf(result.ok() ? result.handle() : 0L));
-        } finally {
-            endBookkeeping();
+        if (!RpcHeaderBridge.stage(site.leafPath(),
+                result.ok() ? result.handle() : 0L)) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_EXPORT,
+                    RpcExpressionHandoff.MISSING_METADATA,
+                    result.ok() ? result.handle() : 0L,
+                    "communication leaf could not enter the RPC header: "
+                            + site.portId()));
         }
     }
 
@@ -3418,27 +3481,16 @@ public final class ConcolicRegionRuntime {
                                                String field,
                                                String descriptor) {
         CommunicationHandoffSpec site;
-        ArrivedLeaves arrived;
+        HeaderHandle carried;
         long handle;
         boolean leafCarried;
         beginBookkeeping();
         try {
             site = communicationHandoffSite(portId, false);
-            arrived = INBOUND_LEAVES.get();
-            // The instrumented attach site supplies the exact portId.  The
-            // message-local inbound buffer supplies the handle carried by
-            // this delivery.  Repeated wire leaf names such as "resp" at
-            // different call sites therefore need no second matching layer:
-            // the VM attach at this exact site remains the only propagation
-            // authority.
-            // Consumed, not read: one delivered leaf lands on one declared
-            // port of this receiver.  Leaving it in place lets the next call
-            // this thread serves attach the previous call's handle.
-            leafCarried = site != null && arrived != null
-                    && arrived.byLeafPath.containsKey(site.leafPath());
-            Long carried = !leafCarried ? null
-                    : arrived.byLeafPath.remove(site.leafPath());
-            handle = carried == null ? 0L : carried.longValue();
+            carried = site == null ? HeaderHandle.MISSING
+                    : RpcHeaderBridge.take(site.leafPath());
+            leafCarried = carried.present;
+            handle = carried.handle;
         } finally {
             endBookkeeping();
         }
@@ -3541,8 +3593,23 @@ public final class ConcolicRegionRuntime {
                     "custom VM returned no attached destination expression"));
             return;
         }
+        acceptVmHandoffExpression(active, site, exportEvent, expression);
+    }
+
+    /** Commits one fully validated receiver-side handoff to the active case. */
+    private static void acceptVmHandoffExpression(
+            ActiveRegion active, CommunicationHandoffSpec site,
+            long exportEvent, JsonElement expression) {
         active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
                 exportEvent, expression));
+        // A VM-attached expression is an exact selected symbolic input just
+        // as much as one created by a local symbolize hook.  Some receiver
+        // regions intentionally declare every RPC input CONCRETE because the
+        // VALUE_HANDOFF is their sole value authority; without opening this
+        // gate, their later branch hooks execute but are never recorded.
+        // Keep the gate after destination read-out so a missing, rejected or
+        // malformed handle cannot widen symbolic observation.
+        ensurePathRecordingStarted(active);
         if (site.responsePathCarrier()) {
             active.markResponseHandoffSatisfied(site.portId());
         }
@@ -6435,6 +6502,7 @@ public final class ConcolicRegionRuntime {
             }
             ACTIVE.remove(active.token, active);
             CURRENT_TOKEN.remove();
+            PENDING_RESPONSE_ATTACH_PORTS.remove();
             if (!active.abandoned) endLiveSelectedRegion();
         }
         if (result == null) {
@@ -12427,41 +12495,31 @@ public final class ConcolicRegionRuntime {
          * planner edge; the port proves that task owns the corresponding
          * response export.  No dynamic exchange or payload value is compared.
          */
-        private ResponseProducerArm responseProducerArm(RuntimeTask caller) {
-            if (caller == null || caller.responseAttachPortIds.isEmpty()) {
+        private ResponseProducerArm responseProducerArm(
+                RuntimeTask caller, Set<String> requestedPorts) {
+            if (caller == null || requestedPorts == null
+                    || requestedPorts.isEmpty()) {
                 return new ResponseProducerArm("",
                         Collections.<String>emptySet(), "no response attach");
             }
             String producerTaskId = "";
+            RuntimeTask selectedProducer = null;
             Set<String> ports = new LinkedHashSet<>();
-            for (String portId : caller.responseAttachPortIds) {
-                String producerOccurrence =
-                        caller.responseProducerOccurrenceByPort.get(portId);
-                if (safe(producerOccurrence).isEmpty()) {
+            for (String portId : requestedPorts) {
+                if (!caller.responseAttachPortIds.contains(portId)) {
                     return new ResponseProducerArm("", ports,
                             "port " + portId
-                                    + " has no selected producer occurrence");
+                                    + " is not a response attach of caller "
+                                    + caller.taskId);
                 }
-                RuntimeTask matched = null;
-                for (RuntimeTask candidate : tasks) {
-                    if (!producerOccurrence.equals(candidate.occurrenceId)
-                            || !candidate.responseExportPortIds.contains(
-                            portId)) {
-                        continue;
-                    }
-                    if (matched != null && matched != candidate) {
-                        return new ResponseProducerArm("", ports,
-                                "port " + portId
-                                        + " resolves to multiple producer "
-                                        + "tasks for " + producerOccurrence);
-                    }
-                    matched = candidate;
-                }
+                RuntimeTask matched = selectedResponseProducer(caller,
+                        portId);
                 if (matched == null) {
                     return new ResponseProducerArm("", ports,
                             "port " + portId
-                                    + " has no campaign producer task for "
-                                    + producerOccurrence);
+                                    + " has no unique campaign producer "
+                                    + "task for caller "
+                                    + caller.occurrenceId);
                 }
                 if (!producerTaskId.isEmpty()
                         && !producerTaskId.equals(matched.taskId)) {
@@ -12470,9 +12528,58 @@ public final class ConcolicRegionRuntime {
                                     + "multiple producer tasks");
                 }
                 producerTaskId = matched.taskId;
-                ports.add(portId);
+                selectedProducer = matched;
             }
+            if (selectedProducer == null) {
+                return new ResponseProducerArm("", ports,
+                        "no selected response producer");
+            }
+            ports.addAll(selectedProducer.responseExportPortIds);
             return new ResponseProducerArm(producerTaskId, ports, "");
+        }
+
+        /**
+         * Finds the unique frozen producer task for one caller response port.
+         *
+         * <p>The scheduler may store the same RPC binding on the producer
+         * task rather than the consumer task.  Admission therefore searches
+         * the whole bounded campaign, but still requires the exact four
+         * endpoints authored by the runtime plan.  No correlation id,
+         * payload value or call order is reconstructed here.</p>
+         */
+        private RuntimeTask selectedResponseProducer(RuntimeTask caller,
+                                                     String portId) {
+            String localOccurrence = safe(
+                    caller.responseProducerOccurrenceByPort.get(portId));
+            RuntimeTask matched = null;
+            for (RuntimeTask candidate : tasks) {
+                if (!candidate.responseExportPortIds.contains(portId)) {
+                    continue;
+                }
+                boolean selected = !localOccurrence.isEmpty()
+                        && localOccurrence.equals(candidate.occurrenceId);
+                for (JsonElement element : candidate.edgeBindings) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (!"RESPONSE".equalsIgnoreCase(
+                            string(binding, "direction"))
+                            || !candidate.occurrenceId.equals(
+                            string(binding, "fromOccurrenceId"))
+                            || !portId.equals(string(binding,
+                            "fromOutputPort"))
+                            || !caller.occurrenceId.equals(string(binding,
+                            "toOccurrenceId"))
+                            || !portId.equals(string(binding,
+                            "toInputPort"))) {
+                        continue;
+                    }
+                    selected = true;
+                }
+                if (!selected) continue;
+                if (matched != null && matched != candidate) return null;
+                matched = candidate;
+            }
+            return matched;
         }
 
         /**
