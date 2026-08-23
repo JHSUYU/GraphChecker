@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
 
 import java.io.BufferedReader;
@@ -299,6 +300,10 @@ public final class RuntimeSelectedRegionFinalizer {
             // task simply inherited the campaign default instead.
             if (skeleton.get(RETAINED_LOOPS) != null) {
                 region.put(RETAINED_LOOPS, skeleton.get(RETAINED_LOOPS));
+            }
+            if (skeleton.get(StaticSymbolicSourceDeclaration.FIELD) != null) {
+                region.put(StaticSymbolicSourceDeclaration.FIELD,
+                        skeleton.get(StaticSymbolicSourceDeclaration.FIELD));
             }
 
             List<Map<String, Object>> regionGraph = edgesByRegion.getOrDefault(

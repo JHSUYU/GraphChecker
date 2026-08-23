@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
+import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -132,7 +133,8 @@ public final class ConcolicScheduler {
         requireRefinedGraph(refinedGraph);
         DefinitionIndex definitions = DefinitionIndex.from(refinedGraph);
         SymbolicInputSelection symbolicInputs =
-                SymbolicInputSelection.read(arguments.symbolicInputs);
+                SymbolicInputSelection.read(arguments.symbolicInputs,
+                        regions);
 
         Map<String, Region> regionIndex = regionIndex(regions);
         MergePlan mergePlan = buildMergePlan(regionIndex, edges);
@@ -2829,27 +2831,32 @@ public final class ConcolicScheduler {
      * still rejected by composition, so a smaller selection cannot turn into
      * a free SMT variable.</p>
      */
-    private static final class SymbolicInputSelection {
+    static final class SymbolicInputSelection {
         private static final String TASK_FIELD = "symbolicInputSelection";
-        private static final String AUTHORITY =
+        private static final String CONFIGURED_AUTHORITY =
                 "CONFIGURED_REGION_SYMBOLIC_INPUTS_V1";
+        private static final String DISCOVERED_AUTHORITY =
+                "STATIC_SYMBOLIZE_HOOK_SELECTION_V1";
 
         private final boolean configured;
+        private final String authority;
         private final String digest;
         private final Map<String, RegionSelection> regions;
 
-        private SymbolicInputSelection(boolean configured, String digest,
+        private SymbolicInputSelection(boolean configured, String authority,
+                                       String digest,
                                        Map<String, RegionSelection> regions) {
             this.configured = configured;
+            this.authority = safe(authority);
             this.digest = safe(digest);
             this.regions = regions;
         }
 
-        private static SymbolicInputSelection read(Path path)
+        static SymbolicInputSelection read(
+                Path path, List<JsonObject> regionCatalog)
                 throws IOException {
             if (path == null) {
-                return new SymbolicInputSelection(false, "",
-                        Collections.<String, RegionSelection>emptyMap());
+                return discovered(regionCatalog);
             }
             requireFile(path, "symbolic input selection");
             Map<String, RegionSelection> selections = new LinkedHashMap<>();
@@ -2877,11 +2884,65 @@ public final class ConcolicScheduler {
                             element.getAsJsonObject()));
                 }
             }
-            return new SymbolicInputSelection(true,
+            mergeDiscoveredSources(selections, regionCatalog);
+            return new SymbolicInputSelection(true, CONFIGURED_AUTHORITY,
                     ArtifactIO.sha256(path), selections);
         }
 
-        private JsonArray select(String regionId, JsonArray actions) {
+        /**
+         * An explicit source hook is itself the allowlist authority. Ordinary
+         * region inputs stay concrete, and only hook fields that occur in the
+         * selected output slice become symbolic roots.
+         */
+        private static SymbolicInputSelection discovered(
+                List<JsonObject> regionCatalog) throws IOException {
+            Map<String, RegionSelection> selections = new LinkedHashMap<>();
+            mergeDiscoveredSources(selections, regionCatalog);
+            JsonArray identity = new JsonArray();
+            for (JsonObject region : regionCatalog == null
+                    ? Collections.<JsonObject>emptyList() : regionCatalog) {
+                String regionId = string(region, "regionId");
+                for (JsonElement element : array(region,
+                        StaticSymbolicSourceDeclaration.FIELD)) {
+                    if (!element.isJsonObject() || regionId.isEmpty()) {
+                        throw new IOException("static symbolic source has no "
+                                + "declaring region");
+                    }
+                    JsonObject row = element.getAsJsonObject().deepCopy();
+                    row.addProperty("regionId", regionId);
+                    identity.add(row);
+                }
+            }
+            if (selections.isEmpty()) {
+                return new SymbolicInputSelection(false, "", "",
+                        Collections.<String, RegionSelection>emptyMap());
+            }
+            return new SymbolicInputSelection(true, DISCOVERED_AUTHORITY,
+                    CanonicalJson.sha256(identity), selections);
+        }
+
+        private static void mergeDiscoveredSources(
+                Map<String, RegionSelection> selections,
+                List<JsonObject> regionCatalog) throws IOException {
+            for (JsonObject region : regionCatalog == null
+                    ? Collections.<JsonObject>emptyList() : regionCatalog) {
+                String regionId = string(region, "regionId");
+                for (JsonElement element : array(region,
+                        StaticSymbolicSourceDeclaration.FIELD)) {
+                    if (!element.isJsonObject() || regionId.isEmpty()) {
+                        throw new IOException("static symbolic source has no "
+                                + "declaring region");
+                    }
+                    SourceField source = SourceField.fromDiscovered(
+                            element.getAsJsonObject());
+                    selections.computeIfAbsent(regionId,
+                            ignored -> new RegionSelection())
+                            .addDiscoveredSource(source);
+                }
+            }
+        }
+
+        JsonArray select(String regionId, JsonArray actions) {
             if (!configured) return actions.deepCopy();
             JsonArray selected = new JsonArray();
             RegionSelection selection = regions.get(safe(regionId));
@@ -2892,12 +2953,21 @@ public final class ConcolicScheduler {
                 // Every input remains declared because output captures and
                 // concrete topology may use it as an anchor.  The allowlist
                 // controls only whether that input mints a VM symbolic root.
-                if ("SYMBOLIC".equals(string(action, "mode"))
-                        && (selection == null
-                        || !selection.matches(action))) {
-                    retained.addProperty("mode", "CONCRETE");
-                    retained.addProperty("symbolicDemand",
-                            "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
+                if ("SYMBOLIC".equals(string(action, "mode"))) {
+                    if (selection != null
+                            && selection.sourceOwns(action)) {
+                        // The Java hook mints this exact root once. Letting an
+                        // ordinary input selector mint it again would create
+                        // two unrelated symbols for one source field.
+                        retained.addProperty("mode", "CONCRETE");
+                        retained.addProperty("symbolicDemand",
+                                "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
+                    } else if (selection == null
+                            || !selection.matches(action)) {
+                        retained.addProperty("mode", "CONCRETE");
+                        retained.addProperty("symbolicDemand",
+                                "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
+                    }
                 }
                 selected.add(retained);
             }
@@ -2905,11 +2975,12 @@ public final class ConcolicScheduler {
         }
 
         /** Applies the same allowlist before target-first producer closure. */
-        private boolean selectedForDiscovery(
+        boolean selectedForDiscovery(
                 String regionId, JsonObject action) {
             if (!configured) return true;
             RegionSelection selection = regions.get(safe(regionId));
-            return selection != null && selection.matches(action);
+            return selection != null && !selection.sourceOwns(action)
+                    && selection.matches(action);
         }
 
         /** Source-derived outputs augment only an already ranked producer. */
@@ -2929,11 +3000,11 @@ public final class ConcolicScheduler {
             return outputs;
         }
 
-        private void annotate(JsonObject task, JsonArray candidates,
+        void annotate(JsonObject task, JsonArray candidates,
                               JsonArray selected) {
             if (!configured) return;
             JsonObject policy = new JsonObject();
-            policy.addProperty("authority", AUTHORITY);
+            policy.addProperty("authority", authority);
             policy.addProperty("configSha256", digest);
             policy.addProperty("candidateInputCount", candidates.size());
             policy.addProperty("selectedInputCount", selected.size());
@@ -2950,7 +3021,7 @@ public final class ConcolicScheduler {
          * A task in the same region but for an unrelated output phase must
          * not mint the source as a side effect.
          */
-        private void annotateSources(JsonObject task, String regionId,
+        void annotateSources(JsonObject task, String regionId,
                                      OutputClosureContract closure)
                 throws IOException {
             if (!configured || task == null || closure == null) return;
@@ -2970,7 +3041,7 @@ public final class ConcolicScheduler {
         }
 
         /** Every configured source in a scheduled region must be reachable. */
-        private void validateSourceCoverage(List<JsonObject> tasks)
+        void validateSourceCoverage(List<JsonObject> tasks)
                 throws IOException {
             if (!configured) return;
             Set<String> scheduledRegions = new LinkedHashSet<>();
@@ -3069,6 +3140,22 @@ public final class ConcolicScheduler {
                 sources.add(source);
             }
 
+            /** Explicit JSONL output restrictions win over inferred ones. */
+            private void addDiscoveredSource(SourceField source)
+                    throws IOException {
+                for (SourceField prior : sources) {
+                    if (!prior.sourceId.equals(source.sourceId)) continue;
+                    if (!prior.fieldSignature.equals(source.fieldSignature)) {
+                        throw new IOException(
+                                SymbolicSourceEvidence.TASK_FIELD
+                                        + " gives one sourceId two fields: "
+                                        + source.sourceId);
+                    }
+                    return;
+                }
+                sources.add(source);
+            }
+
             private void addAll(Set<String> output, JsonArray values) {
                 for (JsonElement element : values) {
                     if (!element.isJsonPrimitive()) continue;
@@ -3078,15 +3165,28 @@ public final class ConcolicScheduler {
             }
 
             private boolean matches(JsonObject action) {
-                String field = firstNonBlank(
-                        string(action, "accessFieldSignature"),
-                        string(action, "declaredFieldSignature"),
-                        string(action, "leafFieldSignature"));
+                String field = actionField(action);
                 String port = firstNonBlank(string(action, "portId"),
                         string(action, "symbol"));
                 String cell = string(action, "cell");
                 return fields.contains(field) || ports.contains(port)
                         || cells.contains(cell);
+            }
+
+            private boolean sourceOwns(JsonObject action) {
+                String field = actionField(action);
+                if (field.isEmpty()) return false;
+                for (SourceField source : sources) {
+                    if (source.fieldSignature.equals(field)) return true;
+                }
+                return false;
+            }
+
+            private static String actionField(JsonObject action) {
+                return firstNonBlank(
+                        string(action, "accessFieldSignature"),
+                        string(action, "declaredFieldSignature"),
+                        string(action, "leafFieldSignature"));
             }
         }
 
@@ -3097,15 +3197,20 @@ public final class ConcolicScheduler {
             private final String requiredOutputFieldSignature;
             private final Set<String> requiredOutputFieldSignatures =
                     new LinkedHashSet<>();
+            private final boolean inferOutputs;
 
             private SourceField(String sourceId, String fieldSignature,
-                                String requiredOutputFieldSignature) {
+                                String requiredOutputFieldSignature,
+                                boolean inferOutputs) {
                 this.sourceId = sourceId;
                 this.fieldSignature = fieldSignature;
                 this.requiredOutputFieldSignature =
                         requiredOutputFieldSignature;
-                this.requiredOutputFieldSignatures.add(
-                        requiredOutputFieldSignature);
+                this.inferOutputs = inferOutputs;
+                if (!requiredOutputFieldSignature.isEmpty()) {
+                    this.requiredOutputFieldSignatures.add(
+                            requiredOutputFieldSignature);
+                }
             }
 
             private static SourceField from(JsonObject row)
@@ -3121,7 +3226,25 @@ public final class ConcolicScheduler {
                             + " needs sourceId, fieldSignature and "
                             + "requiredOutputFieldSignature");
                 }
-                return new SourceField(sourceId, field, output);
+                return new SourceField(sourceId, field, output, false);
+            }
+
+            private static SourceField fromDiscovered(JsonObject row)
+                    throws IOException {
+                String sourceId = firstNonBlank(string(row, "sourceId"));
+                String field = firstNonBlank(string(row,
+                        "fieldSignature"));
+                if (JsonFields.exactInteger(row, "schemaVersion", -1)
+                        != StaticSymbolicSourceDeclaration.SCHEMA_VERSION
+                        || !StaticSymbolicSourceDeclaration.KIND.equals(
+                        string(row, "kind"))
+                        || !StaticSymbolicSourceDeclaration.AUTHORITY.equals(
+                        string(row, "authority"))
+                        || sourceId.isEmpty() || field.isEmpty()) {
+                    throw new IOException("malformed static symbolic source "
+                            + "declaration");
+                }
+                return new SourceField(sourceId, field, "", true);
             }
 
             private Set<String> matchingOutputs(
@@ -3129,7 +3252,8 @@ public final class ConcolicScheduler {
                 Set<String> matches = new LinkedHashSet<>();
                 for (OutputClosureContract.Member member
                         : closure.members()) {
-                    if (!requiredOutputFieldSignatures.contains(
+                    if (!inferOutputs
+                            && !requiredOutputFieldSignatures.contains(
                             member.cell())) {
                         continue;
                     }

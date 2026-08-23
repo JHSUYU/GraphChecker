@@ -317,16 +317,17 @@ public final class ConcolicSummaryImporter {
         JsonArray mappings = relationOnlySeed && !anyBranchDecision
                 ? new JsonArray()
                 : branchMappings(raw, task, path, issues);
-        String branchReplayMismatch = relationOnlySeed ? ""
-                : branchReplayMismatch(raw, task, mappings);
-        if (!branchReplayMismatch.isEmpty()) {
-            diagnostics.add(diagnostic(raw, index,
-                    "BRANCH_REPLAY_MISMATCH", branchReplayMismatch));
-            return refuse(observation, diagnostics);
-        }
         JsonObject targetReach = admittedTargetReach(raw, index, task,
                 path.expressions, mappings, diagnostics);
         if (targetReach == null) {
+            return refuse(observation, diagnostics);
+        }
+        String branchReplayMismatch = relationOnlySeed ? ""
+                : branchReplayMismatch(raw, task, mappings);
+        if (!branchReplayMismatch.isEmpty()
+                && !reachedRequiredTargetOutcome(task, targetReach)) {
+            diagnostics.add(diagnostic(raw, index,
+                    "BRANCH_REPLAY_MISMATCH", branchReplayMismatch));
             return refuse(observation, diagnostics);
         }
         JsonObject outputs = outputExpressions(raw, task, issues);
@@ -817,9 +818,10 @@ public final class ConcolicSummaryImporter {
      * <p>A successful attach means the receiver holds the sender's own
      * expression; the session ledger relates the two events once, as
      * {@code VALUE_HANDOFF}.  What enters the summary is only the reference
-     * into that ledger - the declared port and the VM export event - and it
-     * enters through the same admission the runtime applied.  A row that
-     * references no export event is dropped and named, never repaired.</p>
+     * into that ledger - the declared port, VM export event, and exact
+     * producer execution carried beside the handle - and it enters through
+     * the same admission the runtime applied. A malformed or incomplete row
+     * is dropped and named, never repaired.</p>
      */
     private static List<JsonObject> vmHandoffEvents(JsonObject raw,
                                                     JsonArray gaps) {
@@ -1321,6 +1323,52 @@ public final class ConcolicSummaryImporter {
             return null;
         }
         return event.toJson();
+    }
+
+    /**
+     * An exact runtime witness of the planner-required target outcome is
+     * stronger than the seed path contract. Upstream producer replay is
+     * specifically allowed to change that seed outcome; otherwise the
+     * failure-producing receiver row would be discarded as a replay mismatch.
+     * The exemption is limited to the selected target site, occurrence and
+     * unique planner-authored required outcome. Other mismatches remain
+     * fail-closed.
+     */
+    private static boolean reachedRequiredTargetOutcome(
+            ExecutionTask task, JsonObject targetReach) {
+        if (!task.goalKind().capturesTargetReach()
+                || targetReach == null || targetReach.size() == 0) {
+            return false;
+        }
+        JsonObject selected = object(task.json(), "targetBranch");
+        String targetSite = string(selected, "siteId");
+        int targetOccurrence = JsonFields.exactInteger(selected,
+                "occurrence", -1);
+        if (targetSite.isEmpty() || targetOccurrence < 1
+                || !targetSite.equals(string(targetReach, "siteId"))
+                || targetOccurrence != JsonFields.exactInteger(
+                targetReach, "occurrence", -1)) {
+            return false;
+        }
+
+        Boolean required = null;
+        for (JsonElement element : task.branches()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!targetSite.equals(string(branch, "siteId"))
+                    || targetOccurrence != JsonFields.exactInteger(
+                    branch, "selectedOccurrence", -1)) {
+                continue;
+            }
+            Boolean candidate = exactBoolean(branch, "requiredOutcome");
+            if (candidate == null
+                    || required != null && required != candidate) {
+                return false;
+            }
+            required = candidate;
+        }
+        Boolean witnessed = exactBoolean(targetReach, "outcome");
+        return required != null && required.equals(witnessed);
     }
 
     private static String replayDetail(String replayId, String issue) {

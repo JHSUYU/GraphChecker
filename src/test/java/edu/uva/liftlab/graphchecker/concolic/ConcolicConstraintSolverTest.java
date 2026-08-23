@@ -127,6 +127,50 @@ public class ConcolicConstraintSolverTest {
     }
 
     @Test
+    public void configuredSourceFieldIsAReplayMaterializationBoundary()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+
+        String occurrence = "test/node#epoch0/region/REGION.source#1";
+        String sourceId = "SOURCE.COMPLEX.VALUE";
+        String field = "<example.Source: long value>";
+        String raw = "M_J_field_" + SymbolicSourceEvidence.engineLabel(
+                occurrence, sourceId) + "_example/Source";
+        JsonObject predicate = binaryExpression(
+                numericSymbol(raw, "J"), ">",
+                numericConstant("J", "100"));
+        JsonObject activation = configuredSourceActivation(
+                occurrence, sourceId, field);
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(predicate), activation, Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(1, result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals(raw, assignment.get("engineSymbol").getAsString());
+        assertEquals("SOURCE:" + sourceId,
+                assignment.get("inputSymbol").getAsString());
+        assertEquals(sourceId,
+                assignment.get("configuredSourceId").getAsString());
+        assertEquals(field, assignment.get(
+                "configuredSourceFieldSignature").getAsString());
+        assertTrue(assignment.get("value").getAsLong() > 100L);
+
+        JsonObject wrongOccurrence = configuredSourceActivation(
+                occurrence + ".other", sourceId, field);
+        ConcolicConstraintSolver.Result refused = solveForTest(
+                task(predicate), wrongOccurrence, Paths.get("z3"),
+                10_000L);
+        assertEquals(refused.record.toString(), "MATERIALIZATION_GAP",
+                refused.record.get("status").getAsString());
+        assertEquals("FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS",
+                refused.record.get("reason").getAsString());
+    }
+
+    @Test
     public void dynamicMapReadUsesItsAccessOrdinalWithoutProjectingTheKey()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -284,6 +328,24 @@ public class ConcolicConstraintSolverTest {
         action.addProperty("mode", "SYMBOLIC");
         materializations.add(action);
         activation.add("inputActions", materializations);
+        return activation;
+    }
+
+    private static JsonObject configuredSourceActivation(
+            String occurrence, String sourceId, String fieldSignature) {
+        JsonObject activation = new JsonObject();
+        activation.addProperty("occurrenceId", occurrence);
+        activation.add("inputActions", new JsonArray());
+        JsonObject source = new JsonObject();
+        source.addProperty("authority",
+                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
+        source.addProperty("sourceId", sourceId);
+        source.addProperty("fieldSignature", fieldSignature);
+        source.addProperty("requiredOutputFieldSignature",
+                "<example.Source: long output>");
+        JsonArray sources = new JsonArray();
+        sources.add(source);
+        activation.add(SymbolicSourceEvidence.TASK_FIELD, sources);
         return activation;
     }
 

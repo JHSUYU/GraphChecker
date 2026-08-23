@@ -207,6 +207,34 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void directlyWitnessedRequiredTargetOutcomeIsAdmitted()
+            throws Exception {
+        String occurrence = "REGION.0@Test#target";
+        JsonObject fatal = fatalQuery(occurrence, new JsonArray());
+        JsonObject path = fatal.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
+                TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT);
+        path.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("outcome", false);
+
+        ConcolicSmtComposer.Result result = composeFatal(occurrence,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false)), fatal, null);
+
+        assertEquals(ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        JsonObject attestation = result.manifest.getAsJsonArray(
+                "targetReachLedger").get(0).getAsJsonObject();
+        assertEquals(TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT,
+                attestation.get("attestationRole").getAsString());
+        assertFalse(attestation.get("outcome").getAsBoolean());
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
+    }
+
+    @Test
     public void recordedSharedStateBecomesOneOrderDomainAndAReadCut()
             throws Exception {
         // Recorded writes, reads and ledger events reach the formula as one
@@ -432,6 +460,7 @@ public class ConcolicSmtComposerTest {
             throws Exception {
         String fatalInstance = "REGION.0@Test#target";
         String consumerInstance = "REGION.1@Test#consumer";
+        String producerInstance = "REGION.1@Test#producer";
         JsonObject firstHop = protocolBinding("EDGE.VMH", consumerInstance,
                 "REGION.1.out.0", fatalInstance, "REGION.0.in.0");
         RelationSummary consumer = summary("VMH", consumerInstance, 10,
@@ -442,8 +471,37 @@ public class ConcolicSmtComposerTest {
                 .getAsJsonArray("cases").get(0).getAsJsonObject();
         JsonArray handoffs = new JsonArray();
         handoffs.add(VmHandoffEvidence.event("REGION.1.in.0", 41L,
-                integer(7)));
+                reference("producer_guard_x", "I"), "TASK.VMHP",
+                producerInstance));
         path.add(VmHandoffEvidence.FIELD, handoffs);
+
+        // This producer is deliberately not in the ordinary lowered edge
+        // closure.  Its exact task/case can only be recovered from the v3
+        // RPC-header provenance carried beside the VM handle.
+        RelationSummary producer = summary("VMHP", producerInstance, 10,
+                Collections.<String>emptyList(),
+                Collections.<JsonObject>emptyList());
+        JsonObject producerRow = producer.toJson();
+        JsonObject producerPath = producerRow.getAsJsonObject(
+                "regionRelation").getAsJsonArray("cases")
+                .get(0).getAsJsonObject();
+        producerPath.getAsJsonObject("guard")
+                .getAsJsonArray("conditions").add(binary(
+                        reference("producer_guard_x", "I"), ">",
+                        integer(0)));
+        JsonObject interaction = new JsonObject();
+        interaction.addProperty("outputSiteId", "COMMUNICATION_EFFECT:test");
+        interaction.addProperty("outputOccurrence", 1);
+        interaction.addProperty("outputVersionOrdinal", 1);
+        interaction.addProperty("replayOccurrence", 1);
+        interaction.addProperty("interactionKind", "COMMUNICATION_EFFECT");
+        interaction.addProperty("authority",
+                "INSTRUMENTED_INTERACTION_SITE_V1");
+        interaction.addProperty("portId", "REGION.1.in.0");
+        JsonArray interactions = new JsonArray();
+        interactions.add(interaction);
+        producerPath.add(RelationSummary.INTERACTION_EVENTS, interactions);
+        producer = RelationSummary.decode(producerRow);
 
         JsonArray ledgerEvents = new JsonArray();
         ledgerEvents.add(RecordedSharedStateFixtures.event(41L,
@@ -463,7 +521,7 @@ public class ConcolicSmtComposerTest {
                                         "REGION.1", 1L))));
 
         ConcolicSmtComposer.Result result = compose(fatalInstance,
-                Collections.singletonList(RelationSummary.decode(row)),
+                Arrays.asList(RelationSummary.decode(row), producer),
                 firstHop);
 
         String owner = RecordedSessionModel.caseOwner("REGION.1",
@@ -473,6 +531,24 @@ public class ConcolicSmtComposerTest {
                 "(=> " + selector + " (= port__REGION_1_in_0__instance__"));
         assertTrue(result.smtLib, result.smtLib.contains(
                 ":named recorded_order__41__42"));
+        String producerGuardLine = "";
+        for (String line : result.smtLib.split("\\R")) {
+            if (line.contains(":named vm_handoff_producer_guard_")) {
+                producerGuardLine = line;
+                break;
+            }
+        }
+        assertFalse(result.smtLib, producerGuardLine.isEmpty());
+        assertTrue(producerGuardLine, producerGuardLine.contains("(> "));
+        assertFalse(producerGuardLine, producerGuardLine.contains("(=> "));
+        if (z3Available()) {
+            int guardStart = producerGuardLine.indexOf("(! ") + 3;
+            int guardEnd = producerGuardLine.lastIndexOf(" :named");
+            String producerGuard = producerGuardLine.substring(
+                    guardStart, guardEnd);
+            assertEquals("unsat", z3(assuming(result.smtLib,
+                    "(not " + producerGuard + ")")));
+        }
         JsonArray bindings = result.manifest.getAsJsonArray(
                 "recordedValueBindings");
         JsonObject vmBinding = null;
@@ -489,8 +565,132 @@ public class ConcolicSmtComposerTest {
                 .startsWith("bind_REGION_1_in_0"));
         assertEquals("recorded_order__41__42",
                 vmBinding.get("orderAssertion").getAsString());
+        assertEquals("TASK.VMHP", vmBinding
+                .get(VmHandoffEvidence.PRODUCER_TASK_ID).getAsString());
+        assertEquals(producerInstance, vmBinding
+                .get(VmHandoffEvidence.PRODUCER_OCCURRENCE_ID).getAsString());
+        assertTrue(vmBinding.get("producerGuardAssertion").getAsString()
+                .startsWith("vm_handoff_producer_guard_"));
         assertFalse(result.smtLib, result.smtLib.contains(
                 "VM_HANDOFF_SOURCE_EQUALITY"));
+
+        JsonObject missingProducerRow = row.deepCopy();
+        missingProducerRow.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject()
+                .getAsJsonArray(VmHandoffEvidence.FIELD).get(0)
+                .getAsJsonObject().addProperty(
+                        VmHandoffEvidence.PRODUCER_TASK_ID, "TASK.MISSING");
+        ConcolicSmtComposer.Result missing = compose(fatalInstance,
+                Arrays.asList(RelationSummary.decode(missingProducerRow),
+                        producer), firstHop);
+        assertEquals(missing.manifest.toString(), "CANDIDATE_WITH_GAPS",
+                missing.manifest.get("state").getAsString());
+        assertTrue(missing.manifest.toString(), missing.manifest.toString()
+                .contains(ConcolicSmtComposer
+                        .HANDOFF_PRODUCER_CASE_MISSING));
+
+        JsonObject ambiguousProducerRow = producer.toJson();
+        JsonArray producerCases = ambiguousProducerRow.getAsJsonObject(
+                "regionRelation").getAsJsonArray("cases");
+        JsonObject duplicate = producerCases.get(0).getAsJsonObject()
+                .deepCopy();
+        duplicate.addProperty("caseId", "CASE.VMHP.DUPLICATE");
+        producerCases.add(duplicate);
+        ConcolicSmtComposer.Result ambiguous = compose(fatalInstance,
+                Arrays.asList(RelationSummary.decode(row),
+                        RelationSummary.decode(ambiguousProducerRow)),
+                firstHop);
+        assertEquals("CANDIDATE_WITH_GAPS",
+                ambiguous.manifest.get("state").getAsString());
+        assertTrue(ambiguous.manifest.toString(), ambiguous.manifest
+                .toString().contains(ConcolicSmtComposer
+                        .HANDOFF_PRODUCER_CASE_AMBIGUOUS));
+    }
+
+    @Test
+    public void independentRpcProducerCasesDoNotShareARawHeapProjection()
+            throws Exception {
+        String targetOccurrence = "REGION.0@Test#target";
+        String producerAOccurrence = "REGION.1@Test#producerA";
+        String producerBOccurrence = "REGION.1@Test#producerB";
+        String portA = "REGION.0.in.0";
+        String portB = "REGION.0.in.1";
+
+        // These summaries came from separate JVM replay executions.  Their
+        // serialized raw owner happens to have the same spelling, but that
+        // does not make their heaps one snapshot.  A global field accessor
+        // would state field(sharedOwner)=1 and field(sharedOwner)=2 and make
+        // the otherwise legal pair of RPC producer paths inconsistent.
+        JsonObject owner = constantReference("SHARED_REPLAY_OWNER",
+                "Lexample/State;");
+        JsonObject field = fieldAccess(owner, "example/State", 24, "J");
+        RelationSummary producerA = summary("PRODUCER_A",
+                producerAOccurrence, integer(1),
+                Collections.<String>emptyList(),
+                Collections.<JsonObject>emptyList());
+        RelationSummary producerB = summary("PRODUCER_B",
+                producerBOccurrence, integer(2),
+                Collections.<String>emptyList(),
+                Collections.<JsonObject>emptyList());
+        producerA = withProducerGuardAndInteraction(producerA,
+                binary(field.deepCopy(), "==", integer(1)), portA);
+        producerB = withProducerGuardAndInteraction(producerB,
+                binary(field.deepCopy(), "==", integer(2)), portB);
+
+        JsonObject fatal = fatalQuery(targetOccurrence, new JsonArray());
+        JsonObject targetPath = fatal.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        targetPath.addProperty(
+                TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
+                TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT);
+        targetPath.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("outcome", false);
+        VmHandoffEvidence.writeTo(fatal, Arrays.asList(
+                VmHandoffEvidence.event(portA, 41L, integer(1),
+                        "TASK.PRODUCER_A", producerAOccurrence),
+                VmHandoffEvidence.event(portB, 51L, integer(2),
+                        "TASK.PRODUCER_B", producerBOccurrence)));
+
+        JsonArray events = new JsonArray();
+        events.add(RecordedSharedStateFixtures.event(41L,
+                "HANDOFF_EXPORT", 101L, "REGION.1"));
+        events.add(RecordedSharedStateFixtures.event(42L,
+                "HANDOFF_ATTACH", 102L, "REGION.0"));
+        events.add(RecordedSharedStateFixtures.event(51L,
+                "HANDOFF_EXPORT", 103L, "REGION.1"));
+        events.add(RecordedSharedStateFixtures.event(52L,
+                "HANDOFF_ATTACH", 104L, "REGION.0"));
+        JsonArray order = new JsonArray();
+        order.add(RecordedSharedStateFixtures.edge(41L, 42L,
+                "VALUE_HANDOFF"));
+        order.add(RecordedSharedStateFixtures.edge(51L, 52L,
+                "VALUE_HANDOFF"));
+        fatal.add(SharedStateEvidence.RECORDED_FIELD,
+                SharedStateEvidence.recorded(
+                        Collections.<JsonObject>emptyList(),
+                        SharedStateEvidence.ledgerRecord(
+                                RecordedSharedStateFixtures.ledgerEnvelope(
+                                        events, order),
+                                RecordedSharedStateFixtures.identity(
+                                        "REGION.0", 1L))));
+
+        JsonObject targetRegion = region("REGION.0", true, false);
+        targetRegion.getAsJsonArray("symbolicInputs")
+                .add(port(portB, true, "int"));
+        ConcolicSmtComposer.Result result = composeFatal(targetOccurrence,
+                Arrays.asList(producerA, producerB),
+                Arrays.asList(targetRegion,
+                        region("REGION.1", false, true)), fatal, null);
+
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertEquals(result.smtLib, 2, occurrences(result.smtLib,
+                "(declare-fun container_field__"));
+        if (z3Available()) {
+            assertEquals(result.smtLib, "sat", z3(result.smtLib));
+        }
     }
 
     @Test
@@ -1683,6 +1883,51 @@ public class ConcolicSmtComposerTest {
         result.addProperty("_java_type", javaType);
         result.addProperty("_exp", symbol);
         return result;
+    }
+
+    private static JsonObject constantReference(String symbol,
+                                                String javaType) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "ConSymbolExp");
+        result.addProperty("_java_type", javaType);
+        result.addProperty("_exp", symbol);
+        return result;
+    }
+
+    private static JsonObject fieldAccess(JsonObject owner,
+                                          String ownerClass,
+                                          int fieldOffset,
+                                          String javaType) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "FieldAccessExpression");
+        result.add("owner", owner.deepCopy());
+        result.addProperty("ownerClass", ownerClass);
+        result.addProperty("fieldOffset", fieldOffset);
+        result.addProperty("_java_type", javaType);
+        return result;
+    }
+
+    private static RelationSummary withProducerGuardAndInteraction(
+            RelationSummary summary, JsonObject condition, String portId) {
+        JsonObject row = summary.toJson();
+        JsonObject path = row.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject();
+        path.getAsJsonObject("guard").getAsJsonArray("conditions")
+                .add(condition);
+        JsonObject interaction = new JsonObject();
+        interaction.addProperty("outputSiteId",
+                "COMMUNICATION_EFFECT:test:" + portId);
+        interaction.addProperty("outputOccurrence", 1);
+        interaction.addProperty("outputVersionOrdinal", 1);
+        interaction.addProperty("replayOccurrence", 1);
+        interaction.addProperty("interactionKind", "COMMUNICATION_EFFECT");
+        interaction.addProperty("authority",
+                "INSTRUMENTED_INTERACTION_SITE_V1");
+        interaction.addProperty("portId", portId);
+        JsonArray interactions = new JsonArray();
+        interactions.add(interaction);
+        path.add(RelationSummary.INTERACTION_EVENTS, interactions);
+        return RelationSummary.decode(row);
     }
 
     private static JsonObject binary(

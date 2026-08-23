@@ -1370,9 +1370,14 @@ campaign_worker_task() {
   local member_task=$5 classes=$6 worker=$7
   local outcome replay_task reason status=0
   local raw="${worker}/concolic_region_results.jsonl"
+  local member_raw="${worker}/member_concolic_region_results.jsonl"
   local session_plan="${worker}/session_execution_task_plan.jsonl"
   local session_raw="${worker}/session_concolic_region_results.jsonl"
+  local import_plan="${worker}/import_execution_task_plan.jsonl"
   local imported="${worker}/concolic_region_summaries.jsonl"
+  local member_imported="${worker}/member_concolic_region_summaries.jsonl"
+  local member_diagnostics="${worker}/member_import_diagnostics.jsonl"
+  local member_delta="${worker}/member_topology_delta.jsonl"
   set +e
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
     --worklist "${worklist}" \
@@ -1411,10 +1416,14 @@ campaign_worker_task() {
   ' "${worker}/execution_task_plan.jsonl")
 
   # A distributed path flip changes one selected member, not the causal
-  # closure that supplies its live RPC/state inputs.  Replay the canonical
+  # closure that supplies its live RPC/state inputs. Replay the canonical
   # selected session with exactly that member replaced by the derived task;
   # a singleton worker plan cannot carry a producer's VM handoff into its
-  # consumer.  The importer below still sees only the flipped member row.
+  # consumer. After the replay member itself is admitted below, retain every
+  # consumer row whose VM handoff names that exact replay task. Those rows are
+  # the runtime certificate that the alternate producer case actually crossed
+  # the RPC cut; keeping only the member would make its alternate output cases
+  # impossible to select during final composition.
   jq -c --arg member "${member_task}" \
     --slurpfile replay "${worker}/execution_task_plan.jsonl" '
       if .taskId == $member then $replay[0] else . end
@@ -1431,13 +1440,19 @@ campaign_worker_task() {
     "$(campaign_task_ids "${session_plan}")" "${classes}" \
     "${session_raw}" "${worker}"
   jq -c --arg task "${replay_task}" 'select(.taskId == $task)' \
-    "${session_raw}" >"${raw}"
-  require_nonempty "path worker member result" "${raw}"
-  raw_concolic_results="${raw}"
+    "${session_raw}" >"${member_raw}"
+  require_nonempty "path worker member result" "${member_raw}"
+
+  # First admit the replay member in isolation. A producer can export before
+  # its occurrence is later rejected by replay-prefix/anchor validation. A
+  # consumer may already have attached that transient handle, so importing the
+  # whole session in one pass could publish a consumer case whose producer case
+  # was refused. The small first pass is the commit gate for all companions.
+  raw_concolic_results="${member_raw}"
   import_task_plan="${worker}/execution_task_plan.jsonl"
-  imported_summaries="${imported}"
-  import_diagnostics="${worker}/import_diagnostics.jsonl"
-  import_topology_delta="${worker}/topology_delta.jsonl"
+  imported_summaries="${member_imported}"
+  import_diagnostics="${member_diagnostics}"
+  import_topology_delta="${member_delta}"
   set +e
   do_import
   status=$?
@@ -1455,9 +1470,13 @@ campaign_worker_task() {
   # already solved because the next stage had no way to say "the replay
   # yielded nothing". Only an importer that published no artifact at all has
   # not spoken, and that is the infrastructure failure, named as itself.
-  if [[ ! -s "${imported}" ]]; then
+  if [[ ! -s "${member_imported}" ]]; then
     [[ -f "${import_diagnostics}" ]] || die \
       "the importer published no diagnostics for ${query_key}; expected ${import_diagnostics}"
+    cp "${member_raw}" "${raw}"
+    cp "${member_diagnostics}" "${worker}/import_diagnostics.jsonl"
+    cp "${member_delta}" "${worker}/topology_delta.jsonl"
+    : >"${imported}"
     reason=$(jq -r -s '
       map([(.code // ""), (.detail // "")]
           | map(select(length > 0)) | join(": "))
@@ -1473,6 +1492,43 @@ campaign_worker_task() {
     campaign_log "flip ${query_key}: replay admitted no case; recorded REPLAY_NOT_ADMITTED"
     return 0
   fi
+
+  # The replay member is durable. Import it together with exactly those live
+  # consumers that attest a schema-v3 handoff from this replay task. Matching
+  # by taskId is safe here because the handle header obtained that id from the
+  # active producer occurrence; port/value identity remains VM-owned.
+  jq -c --arg task "${replay_task}" '
+    select(.taskId == $task
+      or any(.vmHandoffEvents[]?;
+        .producerTaskId == $task))
+  ' "${session_raw}" >"${raw}"
+  require_nonempty "path worker result and handoff companions" "${raw}"
+  jq -c --slurpfile rows "${raw}" '
+    ([ $rows[].taskId ] | unique) as $selected
+    | select(.taskId as $id | $selected | index($id))
+  ' "${session_plan}" >"${import_plan}"
+  jq -e -s --slurpfile rows "${raw}" '
+    ([ $rows[].taskId ] | unique | sort) as $observed
+    | ([ .[].taskId ] | unique | sort) == $observed
+  ' "${import_plan}" >/dev/null \
+    || die "the companion import plan does not exactly cover its result rows"
+
+  raw_concolic_results="${raw}"
+  import_task_plan="${import_plan}"
+  imported_summaries="${imported}"
+  import_diagnostics="${worker}/import_diagnostics.jsonl"
+  import_topology_delta="${worker}/topology_delta.jsonl"
+  set +e
+  do_import
+  status=$?
+  set -e
+  if [[ "${status}" -ne 0 && ! -s "${import_diagnostics}" ]]; then
+    die "the companion importer failed without a semantic diagnostic for ${query_key} (exit ${status})"
+  fi
+  jq -e -s --arg task "${replay_task}" '
+    map(select(.taskId == $task)) | length == 1
+  ' "${imported}" >/dev/null \
+    || die "the committed replay member disappeared during companion import: ${replay_task}"
   # The record states that this obligation was solved, replayed and imported,
   # and which planned task it belongs to. Whether the imported case is
   # admissible is the importer's decision and is already in its artifacts.
@@ -1685,7 +1741,9 @@ campaign_target_reach_query() {
 
 campaign_explore() {
   local iteration_dir=$1
-  local role campaign_id region occurrence goal task
+  local role campaign_id region occurrence goal task target_task=""
+  local target_summaries=""
+  local -a target_summary_inputs=()
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     if [[ ! -s "${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl" ]]; then
       campaign_record_gap "${iteration_dir}" MEMBER_NOT_EXPLORED "${task}" \
@@ -1695,10 +1753,34 @@ campaign_explore() {
     campaign_explore_member "${iteration_dir}" "${role}" "${region}" \
       "${occurrence}" "${goal}" "${task}"
     if [[ "${role}" == "TARGET" ]]; then
-      campaign_target_reach_query "${iteration_dir}" "${task}"
+      target_task=${task}
     fi
   done < <(campaign_index_members \
     "${iteration_dir}/runtime_workflow_schedule_index.json")
+
+  # A producer replay can carry its expression through RPC and make the
+  # already-selected target occurrence take the required outcome.  Those
+  # target companion rows are imported only after the producer member itself
+  # is admitted, and therefore do not exist when the target member is explored
+  # first.  Build the reach query after every member has finished, merging the
+  # accepted companion summaries into the target's observed path set.  The
+  # query builder filters by the exact target region/goal/occurrence; producer
+  # rows in these files cannot become target paths.
+  if [[ -n "${target_task}" ]]; then
+    target_summaries="${iteration_dir}/workers/${target_task}/observed_path_summaries.jsonl"
+    target_summary_inputs=("${target_summaries}")
+    while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+      [[ "${role}" == "TARGET" ]] && continue
+      [[ -s "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl" ]] \
+        || continue
+      target_summary_inputs+=(
+        "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl")
+    done < <(campaign_index_members \
+      "${iteration_dir}/runtime_workflow_schedule_index.json")
+    campaign_json combine summaryId "${target_summaries}" \
+      "${target_summary_inputs[@]}"
+    campaign_target_reach_query "${iteration_dir}" "${target_task}"
+  fi
 }
 
 # Classification is the importer's; this collects the rows it wrote, sorts them

@@ -332,6 +332,26 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void exactRequiredTargetOutcomeOverridesTheSeedOutcome()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        JsonObject selectedBranch = task.getAsJsonArray("branches")
+                .get(0).getAsJsonObject();
+        selectedBranch.addProperty("selectedOccurrence", 1);
+        selectedBranch.addProperty("requiredOutcome", false);
+
+        PathImport imported = importPath("required-target-outcome", task,
+                pathResult(true, false));
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertFalse(summary.getAsJsonObject(
+                PathObservation.TargetReachEvent.FIELD)
+                .get("outcome").getAsBoolean());
+    }
+
+    @Test
     public void selectedExploreWitnessSurvivesARelationOnlySeed()
             throws Exception {
         JsonObject task = pathTask(false);
@@ -458,7 +478,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void vmHandoffV2ExpressionSurvivesSummaryImport()
+    public void vmHandoffV3ExpressionAndProducerSurviveSummaryImport()
             throws Exception {
         // The exact destination expression travels with the VM ledger
         // reference.  Import keeps both case-local and performs no pairing.
@@ -469,7 +489,8 @@ public class ConcolicSummaryImporterTest {
         attachedExpression.addProperty("_type", "Int");
         attachedExpression.addProperty("_value", 17);
         events.add(VmHandoffEvidence.event("XCH.1.req.keyId", 41L,
-                attachedExpression));
+                attachedExpression, "TASK.PRODUCER",
+                "REGION.producer@Test#1"));
         rpcRaw.add(VmHandoffEvidence.FIELD, events);
 
         PathImport handoff = importPath("recorded-handoff", rpcTask, rpcRaw);
@@ -484,26 +505,43 @@ public class ConcolicSummaryImporterTest {
         assertEquals(attachedExpression,
                 VmHandoffEvidence.eventsOf(summary).get(0)
                         .get(VmHandoffEvidence.EXPRESSION));
+        assertEquals("TASK.PRODUCER",
+                VmHandoffEvidence.eventsOf(summary).get(0)
+                        .get(VmHandoffEvidence.PRODUCER_TASK_ID)
+                        .getAsString());
+        assertEquals("REGION.producer@Test#1",
+                VmHandoffEvidence.eventsOf(summary).get(0)
+                        .get(VmHandoffEvidence.PRODUCER_OCCURRENCE_ID)
+                        .getAsString());
     }
 
     @Test
-    public void vmHandoffV2RequiresTheExactAttachedExpression() {
+    public void vmHandoffV3RequiresExpressionAndExactProducer() {
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "Int");
         expression.addProperty("_value", 23);
         JsonObject event = VmHandoffEvidence.event(
-                "XCH.1.req.keyId", 43L, expression);
+                "XCH.1.req.keyId", 43L, expression, "TASK.PRODUCER",
+                "REGION.producer@Test#1");
 
         assertTrue(VmHandoffEvidence.isEvent(event));
-        assertEquals(2, event.get("schemaVersion").getAsInt());
+        assertEquals(3, event.get("schemaVersion").getAsInt());
         assertEquals(expression, event.get(VmHandoffEvidence.EXPRESSION));
 
         JsonObject missingExpression = event.deepCopy();
         missingExpression.remove(VmHandoffEvidence.EXPRESSION);
         assertFalse(VmHandoffEvidence.isEvent(missingExpression));
 
+        JsonObject missingProducer = event.deepCopy();
+        missingProducer.remove(VmHandoffEvidence.PRODUCER_TASK_ID);
+        assertFalse(VmHandoffEvidence.isEvent(missingProducer));
+
+        JsonObject missingOccurrence = event.deepCopy();
+        missingOccurrence.remove(VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
+        assertFalse(VmHandoffEvidence.isEvent(missingOccurrence));
+
         JsonObject legacy = event.deepCopy();
-        legacy.addProperty("schemaVersion", 1);
+        legacy.addProperty("schemaVersion", 2);
         assertFalse(VmHandoffEvidence.isEvent(legacy));
 
         JsonObject truncated = event.deepCopy();

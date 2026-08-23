@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingK
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
@@ -71,6 +72,19 @@ public final class ConcolicConstraintSolver {
                 targetSymbols.addAll(symbols);
             }
         }
+        // Configured sources are writable replay boundaries even though
+        // their stable VM names intentionally are not REGION.in.* ports.
+        // Admit only exact declarations from this task; arbitrary VM symbols
+        // remain fixed support state.
+        for (Set<String> symbols : branchSymbolSets) {
+            for (String raw : symbols) {
+                SymbolNames names = encoder.names(raw);
+                if (names != null && configuredSourceResolution(
+                        raw, activation, names.sort) != null) {
+                    encoder.controlledSymbols.add(raw);
+                }
+            }
+        }
         Set<String> replayControlSymbols = replayControlFrontier(
                 branchSymbolSets);
         replayControlSymbols.retainAll(encoder.controlledSymbols);
@@ -102,7 +116,7 @@ public final class ConcolicConstraintSolver {
         }
 
         Set<String> unresolvedTargetSymbols = unresolvedMaterializations(
-                encoder, targetSymbols, actions, true);
+                encoder, targetSymbols, actions, activation, true);
         if (!unresolvedTargetSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
@@ -118,7 +132,7 @@ public final class ConcolicConstraintSolver {
         targetControlledSymbols.retainAll(encoder.controlledSymbols);
 
         if (hasMaterializationGap(encoder, replayControlSymbols, actions,
-                false)) {
+                activation, false)) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "REPLAY_CONTROL_FRONTIER_IS_NOT_MATERIALIZABLE");
@@ -164,7 +178,8 @@ public final class ConcolicConstraintSolver {
         // unconstrained environment placeholder (for example time == 0) yet
         // immediately contradict the same prefix in the real replay.
         ModelProjection projection = modelAssignments(encoder, values,
-                actions, targetControlledSymbols, referenceDomains);
+                actions, activation, targetControlledSymbols,
+                referenceDomains);
         ModelProjection containerProjection =
                 sparseContainerAssignments(values, containerBoundaries,
                         referenceDomains,
@@ -1984,7 +1999,8 @@ public final class ConcolicConstraintSolver {
 
     private static ModelProjection modelAssignments(
             Encoder encoder, Map<String, String> values,
-            List<JsonObject> actions, Set<String> projectedSymbols,
+            List<JsonObject> actions, JsonObject activation,
+            Set<String> projectedSymbols,
             ReferenceDomains referenceDomains) {
         JsonArray result = new JsonArray();
         Set<String> unresolved = new LinkedHashSet<>(projectedSymbols);
@@ -2011,7 +2027,9 @@ public final class ConcolicConstraintSolver {
                     && !("true".equals(nullValue)
                     || "false".equals(nullValue))) continue;
             ActionMatch match = materializationResolution(raw, actions, sort);
-            if (match == null) continue;
+            ConfiguredSourceMatch source = configuredSourceResolution(
+                    raw, activation, sort);
+            if ((match == null) == (source == null)) continue;
             ReferenceChoice referenceChoice = reference
                     && "false".equals(nullValue)
                     ? referenceDomains.selected(raw, values) : null;
@@ -2033,8 +2051,17 @@ public final class ConcolicConstraintSolver {
             } else if (reference) {
                 assignment.addProperty("modelIsNull", true);
             }
-            assignment.addProperty("inputSymbol", string(match.action,
-                    "symbol"));
+            if (source != null) {
+                assignment.addProperty("inputSymbol",
+                        "SOURCE:" + source.sourceId);
+                assignment.addProperty("configuredSourceId",
+                        source.sourceId);
+                assignment.addProperty("configuredSourceFieldSignature",
+                        source.fieldSignature);
+            } else {
+                assignment.addProperty("inputSymbol", string(match.action,
+                        "symbol"));
+            }
             if (reference) {
                 if ("true".equals(nullValue)) {
                     assignment.addProperty("valueType", "NULL");
@@ -2061,13 +2088,15 @@ public final class ConcolicConstraintSolver {
                 assignment.addProperty("value",
                         SmtModelValueCodec.normalizeScalar(value));
             }
-            List<String> actionPath = stringList(array(match.action,
-                    "fieldPath"));
-            List<String> replayPath = !match.path.isEmpty()
-                    ? match.path : actionPath;
-            if (!replayPath.isEmpty()) {
-                assignment.add("materializationPath",
-                        strings(replayPath));
+            if (match != null) {
+                List<String> actionPath = stringList(array(match.action,
+                        "fieldPath"));
+                List<String> replayPath = !match.path.isEmpty()
+                        ? match.path : actionPath;
+                if (!replayPath.isEmpty()) {
+                    assignment.add("materializationPath",
+                            strings(replayPath));
+                }
             }
             result.add(assignment);
             unresolved.remove(raw);
@@ -2634,6 +2663,47 @@ public final class ConcolicConstraintSolver {
         return bestAction(raw, actions, expectedSort);
     }
 
+    /**
+     * Resolves one VM source root to the exact configured Java field whose
+     * concrete value replay may change before minting that same source root.
+     * This is deliberately separate from ordinary input actions: turning a
+     * configured source into every matching getfield would mint a different
+     * symbol at each access and destroy its cross-case identity.
+     */
+    private static ConfiguredSourceMatch configuredSourceResolution(
+            String raw, JsonObject activation, Sort expectedSort) {
+        String occurrence = string(activation, "occurrenceId");
+        if (raw == null || raw.isEmpty() || occurrence.isEmpty()
+                || expectedSort == null || expectedSort == Sort.UNKNOWN
+                || expectedSort == Sort.REF || expectedSort == Sort.STRING
+                || expectedSort.containerState()) {
+            return null;
+        }
+        ConfiguredSourceMatch selected = null;
+        for (JsonElement element : array(activation,
+                SymbolicSourceEvidence.TASK_FIELD)) {
+            if (!element.isJsonObject()) return null;
+            JsonObject declaration = element.getAsJsonObject();
+            String sourceId = string(declaration, "sourceId");
+            String fieldSignature = string(declaration, "fieldSignature");
+            FieldPathSpec.DeclaredField field =
+                    FieldPathSpec.declaredField(fieldSignature);
+            if (!SymbolicSourceEvidence.DECLARATION_AUTHORITY.equals(
+                    string(declaration, "authority"))
+                    || sourceId.isEmpty() || field == null
+                    || sortOfJava(field.type()) != expectedSort
+                    || !matchesEngineSymbol(raw,
+                    SymbolicSourceEvidence.engineLabel(
+                            occurrence, sourceId))) {
+                continue;
+            }
+            if (selected != null) return null;
+            selected = new ConfiguredSourceMatch(sourceId,
+                    field.signature());
+        }
+        return selected;
+    }
+
     private static List<JsonObject> containerBoundaryActions(
             String raw, List<JsonObject> actions) {
         List<JsonObject> result = new ArrayList<>();
@@ -2670,14 +2740,14 @@ public final class ConcolicConstraintSolver {
 
     private static boolean hasMaterializationGap(
             Encoder encoder, Set<String> symbols, List<JsonObject> actions,
-            boolean requireRegionInput) {
+            JsonObject activation, boolean requireRegionInput) {
         return !unresolvedMaterializations(encoder, symbols, actions,
-                requireRegionInput).isEmpty();
+                activation, requireRegionInput).isEmpty();
     }
 
     private static Set<String> unresolvedMaterializations(
             Encoder encoder, Set<String> symbols, List<JsonObject> actions,
-            boolean requireRegionInput) {
+            JsonObject activation, boolean requireRegionInput) {
         Set<String> unresolved = new LinkedHashSet<>();
         for (String symbol : symbols) {
             if ("N".equals(symbol) || "V".equals(symbol)) continue;
@@ -2686,10 +2756,18 @@ public final class ConcolicConstraintSolver {
                     && fixedNonNullPlaceholder(symbol, names.sort)) {
                 continue;
             }
-            if ((requireRegionInput && !regionInput(symbol))
+            ActionMatch action = names == null ? null
+                    : materializationResolution(symbol, actions,
+                    names.sort);
+            ConfiguredSourceMatch source = names == null ? null
+                    : configuredSourceResolution(symbol, activation,
+                    names.sort);
+            boolean exactConfiguredSource = source != null
+                    && action == null;
+            if ((requireRegionInput && !regionInput(symbol)
+                    && !exactConfiguredSource)
                     || names == null
-                    || materializationResolution(symbol, actions,
-                    names.sort) == null) {
+                    || (action == null) == (source == null)) {
                 unresolved.add(symbol);
             }
         }
@@ -2877,6 +2955,17 @@ public final class ConcolicConstraintSolver {
         private ActionMatch(JsonObject action, List<String> path) {
             this.action = action;
             this.path = new ArrayList<>(path);
+        }
+    }
+
+    private static final class ConfiguredSourceMatch {
+        private final String sourceId;
+        private final String fieldSignature;
+
+        private ConfiguredSourceMatch(String sourceId,
+                                      String fieldSignature) {
+            this.sourceId = sourceId;
+            this.fieldSignature = fieldSignature;
         }
     }
 

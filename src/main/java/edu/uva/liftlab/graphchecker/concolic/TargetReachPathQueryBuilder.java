@@ -32,6 +32,12 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * it need not already have a concrete replay.
  */
 public final class TargetReachPathQueryBuilder {
+    static final String TARGET_ATTESTATION_ROLE =
+            "targetReachAttestationRole";
+    static final String SOURCE_TARGET_REACH_EVENT =
+            "SOURCE_TARGET_REACH_EVENT";
+    static final String REQUIRED_TARGET_REACH_EVENT =
+            "REQUIRED_TARGET_REACH_EVENT";
     private static final Gson JSON = new GsonBuilder()
             .disableHtmlEscaping().create();
 
@@ -146,7 +152,17 @@ public final class TargetReachPathQueryBuilder {
         List<JsonObject> summaries = ArtifactIO.readJsonl(arguments.summaries,
                 "Malformed target summary %1$s:%2$d",
                 "Non-object target summary %1$s:%2$d");
+        // One exact required-outcome execution is already an existential
+        // failure witness. Prefer one deterministic direct witness over the
+        // seed projection and over other direct witnesses. Hoisting several
+        // executions' RPC handoffs into one query would incorrectly require
+        // different producer cases to hold simultaneously at the same
+        // receiver port.
+        JsonObject directWitness = directRequiredWitness(summaries, region,
+                occurrenceId, goalId, targetSite, targetOccurrence,
+                fatalRequiredOutcome);
         for (JsonObject summary : summaries) {
+            if (directWitness != null && summary != directWitness) continue;
             if (!region.equals(string(summary, "regionId"))
                     || !occurrenceId.equals(string(summary,
                     "occurrenceId"))
@@ -173,9 +189,7 @@ public final class TargetReachPathQueryBuilder {
             }
             BranchWitness sourceWitness = targetReplay.source();
             if (!sourceWitness.decisionIdentity().equals(
-                    targetMapping.witness().decisionIdentity())
-                    || sourceWitness.sourceTakenOutcome()
-                    != targetMapping.sourceTakenOutcome()) {
+                    targetMapping.witness().decisionIdentity())) {
                 continue;
             }
             final PathObservation.TargetReachEvent targetReach;
@@ -191,6 +205,11 @@ public final class TargetReachPathQueryBuilder {
                     targetMapping.sourceTakenOutcome())) {
                 continue;
             }
+            boolean sourceAttested = sourceWitness.sourceTakenOutcome()
+                    == targetMapping.sourceTakenOutcome();
+            boolean requiredAttested = fatalRequiredOutcome
+                    == targetMapping.sourceTakenOutcome();
+            if (!sourceAttested && !requiredAttested) continue;
             // No side evidence from an unattested target path enters the
             // query either.  Bindings, shared state and handoff references
             // belong to the same execution as this exact target event.
@@ -203,10 +222,16 @@ public final class TargetReachPathQueryBuilder {
             symbolicSources.addAll(SymbolicSourceEvidence.eventsOf(summary));
 
             JsonObject path = new JsonObject();
-            JsonArray constraints = flippedTargetConstraints(summary,
-                    targetMapping);
+            JsonArray constraints = requiredAttested
+                    ? witnessedTargetConstraints(summary, targetMapping)
+                    : flippedTargetConstraints(summary, targetMapping);
             path.addProperty("fatalBranchConditionAuthority",
-                    "RUNTIME_SOURCE_EVENT_AND_WITNESS_FLIP_V1");
+                    requiredAttested
+                            ? "RUNTIME_REQUIRED_TARGET_EVENT_V1"
+                            : "RUNTIME_SOURCE_EVENT_AND_WITNESS_FLIP_V1");
+            path.addProperty(TARGET_ATTESTATION_ROLE,
+                    requiredAttested ? REQUIRED_TARGET_REACH_EVENT
+                            : SOURCE_TARGET_REACH_EVENT);
             path.add(PathObservation.TargetReachEvent.FIELD,
                     targetReach.toJson());
             path.addProperty("desiredTakenOutcome",
@@ -296,6 +321,49 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("constraintAuthority",
                 "RECORDED_TARGET_PREFIX_V1");
         return result;
+    }
+
+    /** Selects one exact required-outcome target execution by stable key. */
+    private static JsonObject directRequiredWitness(
+            List<JsonObject> summaries, String region, String occurrenceId,
+            String goalId, String targetSite, int targetOccurrence,
+            boolean requiredOutcome) throws IOException {
+        JsonObject selected = null;
+        String selectedKey = null;
+        for (JsonObject summary : summaries) {
+            if (!region.equals(string(summary, "regionId"))
+                    || !occurrenceId.equals(string(summary, "occurrenceId"))
+                    || !goalId.equals(string(summary, "goalId"))
+                    || !ClosureGoalKind.fromTask(summary)
+                    .capturesTargetReach()
+                    || !bool(summary, "relationallyComplete", false)) {
+                continue;
+            }
+            PathObservation observation = PathObservation.decode(
+                    summary, null);
+            if (!observation.branchMappingIssue().isEmpty()) continue;
+            SummaryBranchMapping mapping = targetSiteMapping(observation,
+                    targetSite, targetOccurrence);
+            PathObservation.TargetReachEvent event;
+            try {
+                event = observation.targetReachEvent();
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException("Malformed target reach event: "
+                        + malformed.getMessage(), malformed);
+            }
+            if (mapping == null || !mapping.isWitnessed()
+                    || mapping.sourceTakenOutcome() != requiredOutcome
+                    || event == null || !event.matches(targetSite,
+                    targetOccurrence, requiredOutcome)) {
+                continue;
+            }
+            String key = observation.pathKey();
+            if (selected == null || key.compareTo(selectedKey) < 0) {
+                selected = summary;
+                selectedKey = key;
+            }
+        }
+        return selected;
     }
 
     /**
@@ -507,6 +575,23 @@ public final class TargetReachPathQueryBuilder {
         }
         result.add(BranchPredicateAlgebra.complement(
                 target.witness().sourceSatisfiedPredicate()));
+        return result;
+    }
+
+    /** Keeps the recorded prefix through an already-required target event. */
+    private static JsonArray witnessedTargetConstraints(
+            JsonObject summary, SummaryBranchMapping target) {
+        JsonArray recorded = array(summary, "pathCondition");
+        int targetPosition = target.summaryPcIndex();
+        if (!target.isWitnessed() || targetPosition < 0
+                || targetPosition >= recorded.size()) {
+            throw new IllegalArgumentException(
+                    "target witness is outside the recorded path");
+        }
+        JsonArray result = new JsonArray();
+        for (int index = 0; index <= targetPosition; index++) {
+            result.add(recorded.get(index).deepCopy());
+        }
         return result;
     }
 

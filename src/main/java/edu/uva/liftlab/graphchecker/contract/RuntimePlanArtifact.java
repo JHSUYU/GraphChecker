@@ -305,6 +305,7 @@ public final class RuntimePlanArtifact {
             region.add("symbolicInputs", compactPorts(
                     array(source, "symbolicInputs")));
             region.add("outputs", compactPorts(array(source, "outputs")));
+            copy(region, source, StaticSymbolicSourceDeclaration.FIELD);
             result.add(region);
         }
         return result;

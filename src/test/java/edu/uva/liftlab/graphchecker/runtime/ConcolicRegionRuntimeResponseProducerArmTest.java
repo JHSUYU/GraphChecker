@@ -213,10 +213,10 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         Method accept = ConcolicRegionRuntime.class.getDeclaredMethod(
                 "acceptVmHandoffExpression", active.getClass(),
                 CommunicationHandoffSpec.class, long.class,
-                JsonElement.class);
+                JsonElement.class, String.class, String.class);
         accept.setAccessible(true);
         accept.invoke(null, active, communicationHandoff(active), 17L,
-                expression);
+                expression, PRODUCER_TASK, PRODUCER_OCCURRENCE);
 
         assertTrue(pathRecordingStarted(active));
         assertEquals(1, vmHandoffs(active).size());

@@ -122,21 +122,33 @@ public class TargetReachCutPortTest {
     }
 
     @Test
-    public void theOppositeEventCannotStandInForTheAttestedSourceEvent()
+    public void theRequiredRuntimeEventBecomesADirectTargetWitness()
             throws Exception {
         JsonObject opposite = summary();
-        opposite.getAsJsonArray("branchMappings").get(0)
-                .getAsJsonObject().getAsJsonObject("witness")
+        JsonObject mapping = opposite.getAsJsonArray("branchMappings")
+                .get(0).getAsJsonObject();
+        JsonObject witnessed = oppositePredicate();
+        mapping.getAsJsonObject("witness")
                 .addProperty("sourceTakenOutcome", false);
+        mapping.getAsJsonObject("witness").add(
+                "sourceSatisfiedPredicate", witnessed.deepCopy());
+        opposite.getAsJsonArray("pathCondition").set(0,
+                witnessed.deepCopy());
         opposite.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
                 .addProperty("outcome", false);
-        try {
-            build(CUT_PORT, opposite);
-            fail("the desired outcome is not source attestation");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "no exact source-attested target path"));
-        }
+
+        JsonObject query = build(CUT_PORT, opposite);
+
+        JsonObject path = query.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        assertEquals(false, path.getAsJsonObject(
+                PathObservation.TargetReachEvent.FIELD)
+                .get("outcome").getAsBoolean());
+        assertEquals(TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT,
+                path.get(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE)
+                        .getAsString());
+        assertEquals(">", path.getAsJsonArray("constraints").get(0)
+                .getAsJsonObject().get("_op").getAsString());
     }
 
     private JsonObject build(String inputPort) throws IOException {
@@ -292,5 +304,11 @@ public class TargetReachCutPortTest {
         predicate.addProperty("_op", "<=");
         predicate.add("_right", right);
         return predicate;
+    }
+
+    private static JsonObject oppositePredicate() {
+        JsonObject result = predicate();
+        result.addProperty("_op", ">");
+        return result;
     }
 }

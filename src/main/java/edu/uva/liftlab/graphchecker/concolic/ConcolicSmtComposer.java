@@ -134,6 +134,13 @@ public final class ConcolicSmtComposer {
     /** A handoff whose receiving port the region catalog does not declare. */
     static final String HANDOFF_PORT_UNDECLARED =
             VmHandoffEvidence.PORT_UNDECLARED;
+    static final String HANDOFF_PRODUCER_CASE_MISSING =
+            "HANDOFF_PRODUCER_CASE_MISSING";
+    static final String HANDOFF_PRODUCER_CASE_AMBIGUOUS =
+            "HANDOFF_PRODUCER_CASE_AMBIGUOUS";
+    static final String HANDOFF_PRODUCER_GUARD_MALFORMED =
+            "HANDOFF_PRODUCER_GUARD_MALFORMED";
+    private static final String CASE_REGION_ID = "_caseRegionId";
     /**
      * Declaration conflicts and a selected count beyond K_L refuse final
      * acceptance. Missing path-local count/cardinality evidence remains a
@@ -274,7 +281,9 @@ public final class ConcolicSmtComposer {
         // relation.  All summaries passed to this composition are already the
         // selected campaign scope, so source identity must be registered from
         // that complete evidence set before case-local alpha-renaming.
-        emitter.registerSymbolicSources(caseEvidenceRows(summaries, fatal));
+        List<JsonObject> allCaseEvidenceRows = caseEvidenceRows(
+                summaries, fatal);
+        emitter.registerSymbolicSources(allCaseEvidenceRows);
         List<JsonObject> caseEvidenceRows = caseEvidenceRows(
                 loweredRelations, fatal);
         emitter.registerExactSharedCarrierPorts(
@@ -403,7 +412,7 @@ public final class ConcolicSmtComposer {
         }
         emitter.merge(context);
         emitter.mergeEdgeBindings(resolved.selectedEdges.values());
-        emitter.mergeVmHandoffs(caseEvidenceRows,
+        emitter.mergeVmHandoffs(caseEvidenceRows, allCaseEvidenceRows,
                 loops, recorded);
         emitter.finishRecordedReadExistence();
         emitter.finishFatalAbsenceMutationWitness();
@@ -1025,6 +1034,7 @@ public final class ConcolicSmtComposer {
                 if (!element.isJsonObject()) continue;
                 JsonObject item = element.getAsJsonObject();
                 item.addProperty("toOccurrenceId", relation.occurrenceId());
+                item.addProperty(CASE_REGION_ID, relation.regionId());
                 String owner = RecordedSessionModel.caseOwner(
                         relation.regionId(), relation.occurrenceId(),
                         string(item, "caseId"), index);
@@ -3090,6 +3100,20 @@ public final class ConcolicSmtComposer {
             BranchWitness source = replay.source();
             int occurrence = JsonFields.exactInteger(fatal,
                     "targetOccurrence", -1);
+            String attestationRole = firstNonBlank(string(path,
+                    TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE),
+                    TargetReachPathQueryBuilder.SOURCE_TARGET_REACH_EVENT);
+            boolean sourceAttestation = TargetReachPathQueryBuilder
+                    .SOURCE_TARGET_REACH_EVENT.equals(attestationRole);
+            boolean requiredAttestation = TargetReachPathQueryBuilder
+                    .REQUIRED_TARGET_REACH_EVENT.equals(attestationRole);
+            boolean matchingEvent = sourceAttestation
+                    && event.matches(source.siteId(), source.occurrence(),
+                    source.sourceTakenOutcome())
+                    || requiredAttestation
+                    && exactRequired
+                    && event.matches(string(fatal, "targetSiteId"),
+                    occurrence, required.getAsBoolean());
             if (!exactRequired || !exactDesired
                     || desired.getAsBoolean() != required.getAsBoolean()
                     || required.getAsBoolean()
@@ -3097,16 +3121,14 @@ public final class ConcolicSmtComposer {
                     || !string(fatal, "targetSiteId").equals(
                     source.siteId())
                     || occurrence != source.occurrence()
-                    || !event.matches(source.siteId(), source.occurrence(),
-                    source.sourceTakenOutcome())) {
+                    || !matchingEvent) {
                 unsupported.add("SelectedTargetReachEventMismatch:path:"
                         + pathOrdinal + ":" + event.siteId() + "#"
                         + event.occurrence() + "=" + event.outcome());
                 return;
             }
             JsonObject row = event.toJson();
-            row.addProperty("attestationRole",
-                    "SOURCE_TARGET_REACH_EVENT");
+            row.addProperty("attestationRole", attestationRole);
             row.addProperty("sourceObservedOutcome", event.outcome());
             row.addProperty("desiredTakenOutcome",
                     required.getAsBoolean());
@@ -4134,7 +4156,16 @@ public final class ConcolicSmtComposer {
                                 + javaType);
                         return null;
                     }
-                    String identity = ownerClass + "\u0000" + fieldOffset
+                    // A raw heap reference is meaningful only inside the
+                    // replay case that produced it.  Two producer summaries
+                    // may come from separate JVM executions, where the same
+                    // class/offset denotes two unrelated heaps.  Sharing one
+                    // accessor across those cases accidentally couples their
+                    // path guards.  Explicit composed edges and VM handoffs
+                    // carry cross-case value identity; raw heap projection
+                    // deliberately does not.
+                    String identity = currentSymbolScope + "\u0000"
+                            + ownerClass + "\u0000" + fieldOffset
                             + "\u0000" + javaType;
                     String accessor = "container_field__"
                             + scopeToken(identity);
@@ -6131,6 +6162,7 @@ public final class ConcolicSmtComposer {
          * proposed order.</p>
          */
         private void mergeVmHandoffs(List<JsonObject> caseRows,
+                                     List<JsonObject> producerCaseRows,
                                      BoundedLoopComposition model,
                                      RecordedSessionModel recorded) {
             for (JsonObject owner : caseRows) {
@@ -6177,14 +6209,74 @@ public final class ConcolicSmtComposer {
                                         + " same unversioned receiving port");
                         continue;
                     }
+                    JsonObject producerCase = exactHandoffProducerCase(
+                            entry.getValue().get(0), producerCaseRows,
+                            occurrence, entry.getKey(), model);
+                    if (producerCase == null) continue;
                     emitVmHandoff(entry.getValue().get(0), occurrence,
-                            caseOwner, selector, model, recorded);
+                            caseOwner, selector, producerCase, model,
+                            recorded);
                 }
             }
         }
 
+        /**
+         * Resolves header provenance to one imported producer case that
+         * actually observed the exact exported port.  VM event ids and equal
+         * payloads are deliberately not match keys: both repeat across
+         * independent replay sessions.
+         */
+        private JsonObject exactHandoffProducerCase(
+                JsonObject event, List<JsonObject> producerCaseRows,
+                String consumerOccurrence, String port,
+                BoundedLoopComposition model) {
+            String taskId = string(event,
+                    VmHandoffEvidence.PRODUCER_TASK_ID);
+            String occurrenceId = string(event,
+                    VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
+            List<JsonObject> matches = new ArrayList<>();
+            for (JsonObject candidate : producerCaseRows == null
+                    ? Collections.<JsonObject>emptyList()
+                    : producerCaseRows) {
+                if (!taskId.equals(string(candidate, "sourceTaskId"))
+                        || !occurrenceId.equals(string(candidate,
+                        "toOccurrenceId"))) {
+                    continue;
+                }
+                int observed = 0;
+                for (JsonElement raw : array(candidate,
+                        RelationSummary.INTERACTION_EVENTS)) {
+                    if (raw.isJsonObject() && port.equals(
+                            string(raw.getAsJsonObject(), "portId"))) {
+                        observed++;
+                    }
+                }
+                if (observed == 1) matches.add(candidate);
+            }
+            String subject = consumerOccurrence + ":" + port + ":"
+                    + taskId;
+            if (matches.isEmpty()) {
+                unsupported.add(HANDOFF_PRODUCER_CASE_MISSING + ":"
+                        + subject);
+                model.gap(HANDOFF_PRODUCER_CASE_MISSING, subject,
+                        "the RPC header names no imported producer case "
+                                + "that observed this exact output port");
+                return null;
+            }
+            if (matches.size() != 1) {
+                unsupported.add(HANDOFF_PRODUCER_CASE_AMBIGUOUS + ":"
+                        + subject);
+                model.gap(HANDOFF_PRODUCER_CASE_AMBIGUOUS, subject,
+                        "the RPC header names more than one imported "
+                                + "producer case for this output port");
+                return null;
+            }
+            return matches.get(0);
+        }
+
         private void emitVmHandoff(JsonObject event, String occurrenceId,
                                    String caseOwner, String caseSelector,
+                                   JsonObject producerCase,
                                    BoundedLoopComposition model,
                                    RecordedSessionModel recorded) {
             long exportEvent = longInteger(event, "exportEventId", 0L);
@@ -6224,16 +6316,55 @@ public final class ConcolicSmtComposer {
                 }
                 return;
             }
-            InvocationKey previousInvocation = enterInvocation(
-                    consumer.invocation);
-            String scope = caseOwner.isEmpty()
-                    ? "fatal:" + occurrenceId : caseOwner;
-            String previousScope = enterSymbolScope(scope);
-            String previousGuard = currentGuard;
-            currentGuard = firstNonBlank(caseSelector);
+
+            JsonObject producerGuardIr = object(producerCase, "guard");
+            String producerRegion = string(producerCase, CASE_REGION_ID);
+            String producerOccurrence = string(event,
+                    VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
+            String producerCaseOwner = string(producerCase,
+                    RecordedSessionModel.CASE_OWNER);
+            if (!"PATH_CONDITION".equals(string(producerGuardIr, "kind"))
+                    || producerRegion.isEmpty()
+                    || producerOccurrence.isEmpty()
+                    || producerCaseOwner.isEmpty()) {
+                unsupported.add(HANDOFF_PRODUCER_GUARD_MALFORMED + ":"
+                        + producerOccurrence + ":" + consumerPort);
+                model.gap(HANDOFF_PRODUCER_GUARD_MALFORMED,
+                        producerOccurrence + ":" + consumerPort,
+                        "the exact producer case has no bounded Java path "
+                                + "guard or case scope");
+                return;
+            }
+
+            // The receiver now holds the producer's Expression*. Lower its
+            // raw locals and the Java path that selected it in the exact
+            // producer case scope. The path guard is asserted outright: an
+            // implication alone would leave the receiving port unconstrained
+            // whenever the producer took a different Java path.
+            InvocationKey priorProducerInvocation = enterInvocation(
+                    new InvocationKey(producerRegion,
+                            producerOccurrence));
+            String priorProducerScope = enterSymbolScope(producerCaseOwner);
+            String priorProducerGuard = currentGuard;
+            Term attached;
+            String producerGuardAssertion;
             try {
+                currentGuard = "";
+                List<String> conditions = new ArrayList<>();
+                for (JsonElement condition : array(producerGuardIr,
+                        "conditions")) {
+                    conditions.add(constraint(condition,
+                            "VM handoff producer " + string(event,
+                                    VmHandoffEvidence.PRODUCER_TASK_ID)));
+                }
+                producerGuardAssertion = assertNamed(
+                        "vm_handoff_producer_guard_"
+                                + sha256(string(event,
+                                VmHandoffEvidence.PRODUCER_TASK_ID) + "\n"
+                                + producerOccurrence + "\n" + consumerPort)
+                                .substring(0, 16), and(conditions));
                 int unsupportedBefore = unsupported.size();
-                Term attached = term(event.get(VmHandoffEvidence.EXPRESSION),
+                attached = term(event.get(VmHandoffEvidence.EXPRESSION),
                         portSort(consumer));
                 if (unsupported.size() != unsupportedBefore) {
                     model.gap("HANDOFF_EXPRESSION_UNSUPPORTED",
@@ -6242,6 +6373,22 @@ public final class ConcolicSmtComposer {
                                     + " lowered at the receiving port sort");
                     return;
                 }
+            } finally {
+                currentGuard = priorProducerGuard;
+                restoreSymbolScope(priorProducerScope);
+                restoreInvocation(priorProducerInvocation);
+            }
+            evidence.addProperty("producerCaseOwner", producerCaseOwner);
+            evidence.addProperty("producerGuardAssertion",
+                    producerGuardAssertion);
+            InvocationKey previousInvocation = enterInvocation(
+                    consumer.invocation);
+            String scope = caseOwner.isEmpty()
+                    ? "fatal:" + occurrenceId : caseOwner;
+            String previousScope = enterSymbolScope(scope);
+            String previousGuard = currentGuard;
+            currentGuard = firstNonBlank(caseSelector);
+            try {
                 if (attached.sort == Sort.MAP
                         || attached.sort == Sort.ARRAY_VALUE) {
                     promotePort(consumerPort, attached.sort);

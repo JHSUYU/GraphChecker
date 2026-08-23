@@ -25,9 +25,12 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * the pair once, as {@code VALUE_HANDOFF(exportEvent, attachEvent)}.</p>
  *
  * <p>Each row carries the reference a case needs into that ledger - the
- * declared receiving port and the exact VM export event - together with the
- * exact expression read back from the receiving storage after attach.  It
- * performs no pairing.  There is no export-by-receive search, no
+ * declared receiving port, the exact VM export event, and the producer
+ * task/occurrence transported beside the handle - together with the exact
+ * expression read back from the receiving storage after attach.  The two
+ * producer strings are path-provenance authority, never value authority: only
+ * the broker handle and its VM ledger edge establish the propagated value.
+ * It performs no pairing.  There is no export-by-receive search, no
  * {@code (site, exchange, attempt, direction, leafPath)} tuple to narrow, no
  * delivery ordinal, and no second "attested delivery" proof after the VM's
  * attach already succeeded.  The expression is value evidence from that
@@ -36,7 +39,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  */
 public final class VmHandoffEvidence {
 
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
     /** Kind of one case-local handoff reference. */
     public static final String KIND = "VM_HANDOFF_EVENT";
     /** Authority of one VM-propagated expression. */
@@ -48,6 +51,10 @@ public final class VmHandoffEvidence {
     public static final String FIELD = "vmHandoffEvents";
     /** Exact VM expression read from the receiving storage after attach. */
     public static final String EXPRESSION = "expression";
+    /** Exact producer execution that exported the live handle. */
+    public static final String PRODUCER_TASK_ID = "producerTaskId";
+    public static final String PRODUCER_OCCURRENCE_ID =
+            "producerOccurrenceId";
     /** Kind of the composed value binding one reference is lowered into. */
     public static final String BINDING_KIND = "VM_HANDOFF_VALUE_BINDING";
     /**
@@ -72,15 +79,22 @@ public final class VmHandoffEvidence {
      *                       broker itself reported it on the attach
      * @param exactExpression exact VM expression read from the attached
      *                        destination storage
+     * @param producerTaskId exact accepted producer execution task
+     * @param producerOccurrenceId exact producer region occurrence
      */
     public static JsonObject event(String portId, long exportEventId,
-                                   JsonElement exactExpression) {
+                                   JsonElement exactExpression,
+                                   String producerTaskId,
+                                   String producerOccurrenceId) {
         JsonObject row = new JsonObject();
         row.addProperty("kind", KIND);
         row.addProperty("schemaVersion", SCHEMA_VERSION);
         row.addProperty("authority", AUTHORITY);
         row.addProperty("portId", text(portId));
         row.addProperty("exportEventId", exportEventId);
+        row.addProperty(PRODUCER_TASK_ID, text(producerTaskId));
+        row.addProperty(PRODUCER_OCCURRENCE_ID,
+                text(producerOccurrenceId));
         row.add(EXPRESSION, exactExpression == null ? null
                 : exactExpression.deepCopy());
         return row;
@@ -90,10 +104,10 @@ public final class VmHandoffEvidence {
      * Whether {@code row} is one admissible reference.
      *
      * <p>Admission is exactly "the VM said so": this authority, a declared
-     * port, a real export event the ledger can be asked about, and the exact
-     * expression read from the attached destination.  A row without either
-     * the event id or expression is refused rather than completed from another
-     * field.</p>
+     * port, a real export event the ledger can be asked about, an exact
+     * producer execution, and the exact expression read from the attached
+     * destination.  A row missing any of them is refused rather than
+     * completed from another field.</p>
      */
     public static boolean isEvent(JsonObject row) {
         return row != null
@@ -102,6 +116,8 @@ public final class VmHandoffEvidence {
                 && integer(row, "schemaVersion", -1) == SCHEMA_VERSION
                 && !string(row, "portId").isEmpty()
                 && longInteger(row, "exportEventId", 0L) > 0L
+                && !string(row, PRODUCER_TASK_ID).isEmpty()
+                && !string(row, PRODUCER_OCCURRENCE_ID).isEmpty()
                 && row.has(EXPRESSION)
                 && row.get(EXPRESSION).isJsonObject()
                 && !SharedStateEvidence.containsVmSerializationTruncation(

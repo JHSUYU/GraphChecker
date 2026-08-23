@@ -1712,6 +1712,16 @@ public final class ConcolicRegionRuntime {
                 throw new IllegalStateException(
                         "configured source is not an exact primitive field");
             }
+            ModelAssignment assignment = active.configuredSourceAssignment(
+                    source.sourceId, source.fieldSignature);
+            if (assignment != null) {
+                if (!writeModeledField(owner, source.fieldSignature,
+                        assignment)) {
+                    throw new IllegalStateException(
+                            "configured source model could not be written");
+                }
+                active.recordModelAssignment(assignment);
+            }
             String symbol = configuredSourceSymbol(
                     active.activation.occurrenceId, source.sourceId);
             EngineApi api = engine();
@@ -1744,9 +1754,8 @@ public final class ConcolicRegionRuntime {
     /** Stable VM name shared by every materialization of one exact source. */
     private static String configuredSourceSymbol(
             String sourceOccurrenceId, String sourceId) {
-        return "SRC."
-                + edu.uva.liftlab.graphchecker.concolic.CanonicalJson
-                .sha256(safe(sourceOccurrenceId) + "\n" + safe(sourceId));
+        return SymbolicSourceEvidence.engineLabel(
+                sourceOccurrenceId, sourceId);
     }
 
     /** Names a source-side invariant failure without changing the workload. */
@@ -2573,8 +2582,8 @@ public final class ConcolicRegionRuntime {
                 declaringClass, fieldName, descriptor, false);
         if (declared != null) {
             return attachDeclaredCommunicationExpression(owner,
-                    declaringClass, fieldName, descriptor, handle,
-                    declared);
+                    declaringClass, fieldName, descriptor,
+                    new HeaderHandle(true, handle, "", ""), declared);
         }
         beginBookkeeping();
         try {
@@ -2802,15 +2811,16 @@ public final class ConcolicRegionRuntime {
      */
     private static HandoffResult attachDeclaredCommunicationExpression(
             Object owner, String declaringClass, String fieldName,
-            String descriptor, long handle,
+            String descriptor, HeaderHandle carried,
             CommunicationHandoffSpec declared) {
         beginBookkeeping();
         try {
             HandoffResult result = record(attach(owner, declaringClass,
-                    fieldName, descriptor, handle));
+                    fieldName, descriptor, carried.handle));
             if (result.ok()) {
                 recordVmHandoffEvent(declared, result, owner, declaringClass,
-                        fieldName, descriptor);
+                        fieldName, descriptor, carried.producerTaskId,
+                        carried.producerOccurrenceId);
             }
             return result;
         } finally {
@@ -2902,13 +2912,19 @@ public final class ConcolicRegionRuntime {
     /** One leaf read directly from the current Hadoop Call's wire header. */
     private static final class HeaderHandle {
         private static final HeaderHandle MISSING =
-                new HeaderHandle(false, 0L);
+                new HeaderHandle(false, 0L, "", "");
         private final boolean present;
         private final long handle;
+        private final String producerTaskId;
+        private final String producerOccurrenceId;
 
-        private HeaderHandle(boolean present, long handle) {
+        private HeaderHandle(boolean present, long handle,
+                             String producerTaskId,
+                             String producerOccurrenceId) {
             this.present = present;
             this.handle = handle;
+            this.producerTaskId = safe(producerTaskId);
+            this.producerOccurrenceId = safe(producerOccurrenceId);
         }
     }
 
@@ -2926,12 +2942,15 @@ public final class ConcolicRegionRuntime {
                 "org.apache.hadoop.ipc.CausynthRpcWire";
         private static volatile Binding binding;
 
-        private static boolean stage(String leafPath, long handle) {
+        private static boolean stage(String leafPath, long handle,
+                                     String producerTaskId,
+                                     String producerOccurrenceId) {
             Binding current = bind();
             if (!current.usable()) return false;
             try {
                 Object result = current.stage.invoke(null, leafPath,
-                        Long.valueOf(handle));
+                        Long.valueOf(handle), producerTaskId,
+                        producerOccurrenceId);
                 return result instanceof Boolean
                         && ((Boolean) result).booleanValue();
             } catch (Throwable ignored) {
@@ -2949,7 +2968,9 @@ public final class ConcolicRegionRuntime {
                     return HeaderHandle.MISSING;
                 }
                 return new HeaderHandle(true, ((Long) current.handle.invoke(
-                        result)).longValue());
+                        result)).longValue(),
+                        (String) current.producerTaskId.invoke(result),
+                        (String) current.producerOccurrenceId.invoke(result));
             } catch (Throwable ignored) {
                 return HeaderHandle.MISSING;
             }
@@ -2964,13 +2985,16 @@ public final class ConcolicRegionRuntime {
                 try {
                     Class<?> bridge = Class.forName(CLASS);
                     Method stage = bridge.getMethod("stageExpression",
-                            String.class, long.class);
+                            String.class, long.class, String.class,
+                            String.class);
                     Method take = bridge.getMethod("takeCurrentExpression",
                             String.class);
                     Class<?> result = take.getReturnType();
                     current = new Binding(stage, take,
                             result.getMethod("present"),
-                            result.getMethod("handle"));
+                            result.getMethod("handle"),
+                            result.getMethod("producerTaskId"),
+                            result.getMethod("producerOccurrenceId"));
                 } catch (ReflectiveOperationException | RuntimeException
                          | LinkageError unavailable) {
                     current = new Binding();
@@ -2985,23 +3009,36 @@ public final class ConcolicRegionRuntime {
             private final Method take;
             private final Method present;
             private final Method handle;
+            private final Method producerTaskId;
+            private final Method producerOccurrenceId;
 
             private Binding() {
-                this(null, null, null, null);
+                this(null, null, null, null, null, null);
             }
 
             private Binding(Method stage, Method take, Method present,
-                            Method handle) {
+                            Method handle, Method producerTaskId,
+                            Method producerOccurrenceId) {
                 this.stage = stage;
                 this.take = take;
                 this.present = present;
                 this.handle = handle;
+                this.producerTaskId = producerTaskId;
+                this.producerOccurrenceId = producerOccurrenceId;
             }
 
             private boolean usable() {
                 return stage != null && take != null;
             }
         }
+    }
+
+    /** Stages one VM handle with the exact active producer execution. */
+    private static boolean stageRpcHeaderExpression(String leafPath,
+                                                    long handle) {
+        ActiveRegion active = activeRegion();
+        return active != null && RpcHeaderBridge.stage(leafPath, handle,
+                active.activation.taskId, active.activation.occurrenceId);
     }
 
     /**
@@ -3277,7 +3314,7 @@ public final class ConcolicRegionRuntime {
         // handles.  An old VM returning NOT_SYMBOLIC cannot establish a
         // VALUE_HANDOFF and is deliberately not represented by a zero token.
         if (!result.ok()) return;
-        if (!RpcHeaderBridge.stage(site.leafPath(), result.handle())) {
+        if (!stageRpcHeaderExpression(site.leafPath(), result.handle())) {
             recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
                     "response field path could not enter the RPC header: "
                             + site.leafPath());
@@ -3324,7 +3361,7 @@ public final class ConcolicRegionRuntime {
         }
         attachDeclaredCommunicationExpression(leaf.owner,
                 leaf.field.owner(), leaf.field.name(), leaf.descriptor,
-                handle, site);
+                carried, site);
     }
 
     private static ResponseFieldPathLeaf responseFieldPathLeaf(
@@ -3453,7 +3490,7 @@ public final class ConcolicRegionRuntime {
                 && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
             return;
         }
-        if (!RpcHeaderBridge.stage(site.leafPath(),
+        if (!stageRpcHeaderExpression(site.leafPath(),
                 result.ok() ? result.handle() : 0L)) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_EXPORT,
@@ -3508,7 +3545,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         attachDeclaredCommunicationExpression(carrier, CARRIER_CLASS, field,
-                descriptor, handle, site);
+                descriptor, carried, site);
     }
 
     /** The declared site of {@code portId} in this occurrence's plan. */
@@ -3549,9 +3586,19 @@ public final class ConcolicRegionRuntime {
                                              Object owner,
                                              String declaringClass,
                                              String fieldName,
-                                             String descriptor) {
+                                             String descriptor,
+                                             String producerTaskId,
+                                             String producerOccurrenceId) {
         ActiveRegion active = activeRegion();
         if (active == null || site == null) return;
+        if (safe(producerTaskId).isEmpty()
+                || safe(producerOccurrenceId).isEmpty()) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, result.handle(),
+                    "attached leaf carried no exact producer execution"));
+            return;
+        }
         long exportEvent = result.exportEventId();
         if (exportEvent <= 0L) {
             recordHandoffGap(RpcExpressionHandoff.gap(
@@ -3593,15 +3640,18 @@ public final class ConcolicRegionRuntime {
                     "custom VM returned no attached destination expression"));
             return;
         }
-        acceptVmHandoffExpression(active, site, exportEvent, expression);
+        acceptVmHandoffExpression(active, site, exportEvent, expression,
+                producerTaskId, producerOccurrenceId);
     }
 
     /** Commits one fully validated receiver-side handoff to the active case. */
     private static void acceptVmHandoffExpression(
             ActiveRegion active, CommunicationHandoffSpec site,
-            long exportEvent, JsonElement expression) {
+            long exportEvent, JsonElement expression,
+            String producerTaskId, String producerOccurrenceId) {
         active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
-                exportEvent, expression));
+                exportEvent, expression, producerTaskId,
+                producerOccurrenceId));
         // A VM-attached expression is an exact selected symbolic input just
         // as much as one created by a local symbolize hook.  Some receiver
         // regions intentionally declare every RPC input CONCRETE because the
@@ -6412,6 +6462,15 @@ public final class ConcolicRegionRuntime {
                         "no compatible activation matched replay prefix: "
                                 + active.replayProgress.failure());
             }
+            return;
+        }
+        // A producer path replay can make the canonical target task take its
+        // planned failure branch. That is a direct target witness, not a bad
+        // seed replay. Keep the ordinary seed-outcome gate for every other
+        // deviation; only the exact selected site, occurrence and required
+        // outcome can return here.
+        if (active.activation.reachedRequiredTargetOutcome(
+                active.targetReach)) {
             return;
         }
         // The occurrence has stopped running, so its witnessed outcome set
@@ -9946,6 +10005,26 @@ public final class ConcolicRegionRuntime {
             return selected;
         }
 
+        /** One solver value for one exact configured source hook. */
+        private ModelAssignment configuredSourceAssignment(
+                String sourceId, String fieldSignature) {
+            ModelAssignment selected = null;
+            for (ModelAssignment candidate : activation.modelAssignments) {
+                if (!candidate.matchesConfiguredSource(sourceId,
+                        fieldSignature)
+                        || appliedModelAssignments.contains(candidate.key)) {
+                    continue;
+                }
+                if (selected != null) {
+                    addUnresolvedOnce(sourceId
+                            + ": ambiguous configured source models");
+                    return null;
+                }
+                selected = candidate;
+            }
+            return selected;
+        }
+
         private boolean hasAppliedExactNullReferenceAssignment(
                 SymbolizeAction action) {
             if (action == null || !action.declaresReferenceInput()) {
@@ -10593,6 +10672,8 @@ public final class ConcolicRegionRuntime {
         private final String valueType;
         private final String value;
         private final String referenceSourceInputSymbol;
+        private final String configuredSourceId;
+        private final String configuredSourceFieldSignature;
         private final boolean modelIsNull;
         private final boolean containerTargetPresent;
         private final String containerShape;
@@ -10615,6 +10696,10 @@ public final class ConcolicRegionRuntime {
             this.value = string(json, "value");
             this.referenceSourceInputSymbol = string(json,
                     "referenceSourceInputSymbol");
+            this.configuredSourceId = string(json,
+                    "configuredSourceId");
+            this.configuredSourceFieldSignature = string(json,
+                    "configuredSourceFieldSignature");
             this.modelIsNull = bool(json, "modelIsNull", false);
             JsonElement encodedContainerTarget = json.get("containerTarget");
             this.containerTargetPresent = encodedContainerTarget != null;
@@ -10655,6 +10740,19 @@ public final class ConcolicRegionRuntime {
                     && modelIsNull
                     && ("NULL".equalsIgnoreCase(valueType)
                     || "null".equalsIgnoreCase(value));
+        }
+
+        private boolean configuredSourceAssignment() {
+            return !configuredSourceId.isEmpty()
+                    || !configuredSourceFieldSignature.isEmpty();
+        }
+
+        private boolean matchesConfiguredSource(String sourceId,
+                                                 String fieldSignature) {
+            return configuredSourceId.equals(safe(sourceId))
+                    && configuredSourceFieldSignature.equals(
+                    safe(fieldSignature))
+                    && inputSymbol.equals("SOURCE:" + safe(sourceId));
         }
 
         private boolean referenceAlias() {
@@ -11131,6 +11229,8 @@ public final class ConcolicRegionRuntime {
         /** The declared target branch event of a target-reach task. */
         private final String targetBranchSite;
         private final int targetBranchOccurrence;
+        /** Solver-selected outcome that reaches the annotated failure. */
+        private final boolean targetBranchRequiredOutcome;
         /**
          * Declared communication ports this occurrence hands to the VM, by
          * port id.  An export site sends the port's live expression across
@@ -11279,6 +11379,9 @@ public final class ConcolicRegionRuntime {
             this.targetBranchSite = string(targetBranch, "siteId");
             this.targetBranchOccurrence = integer(targetBranch,
                     "occurrence", -1);
+            this.targetBranchRequiredOutcome = targetRequiredOutcome(
+                    task.branches(), targetBranchSite,
+                    targetBranchOccurrence);
             for (JsonElement element : task.inputActions().all()) {
                 JsonObject encoded = element.getAsJsonObject();
                 explicitFaultInput |=
@@ -11373,6 +11476,23 @@ public final class ConcolicRegionRuntime {
                     throw new IllegalArgumentException(
                             "task declares one symbolic source twice: "
                                     + source.sourceId);
+                }
+            }
+            for (ModelAssignment assignment : modelAssignments) {
+                if (!assignment.configuredSourceAssignment()) continue;
+                SourceField source = sourceFields.get(
+                        assignment.configuredSourceId);
+                if (source == null
+                        || !assignment.configuredSourceFieldSignature.equals(
+                        source.fieldSignature)
+                        || !assignment.matchesConfiguredSource(
+                        source.sourceId, source.fieldSignature)
+                        || assignment.hasContainerTarget()
+                        || assignment.referenceAlias()) {
+                    throw new IllegalArgumentException(
+                            "model assignment names an undeclared or "
+                                    + "unsupported configured source in "
+                                    + taskId + ": " + assignment.key);
                 }
             }
             indexResponseProducerOccurrences(edgeBindings);
@@ -11829,9 +11949,69 @@ public final class ConcolicRegionRuntime {
             return !targetBranchSite.isEmpty();
         }
 
+        /**
+         * Whether this occurrence directly witnessed the selected failure
+         * outcome, rather than merely deviating from its recorded seed path.
+         *
+         * <p>An upstream producer replay can legitimately change the target
+         * task's seed outcome. Rejecting that activation as a seed mismatch
+         * discards the strongest possible certificate: the exact receiver
+         * occurrence consumed the replayed value and reached the planned
+         * failure branch. Only the exact target site/occurrence and its
+         * planner-authored required outcome receive this exemption.</p>
+         */
+        private boolean reachedRequiredTargetOutcome(JsonObject reach) {
+            return declaresTargetBranch()
+                    && reach != null
+                    && targetBranchSite.equals(string(reach, "siteId"))
+                    && targetBranchOccurrence == integer(reach,
+                    "occurrence", -1)
+                    && reach.has("outcome")
+                    && reach.get("outcome").isJsonPrimitive()
+                    && reach.getAsJsonPrimitive("outcome").isBoolean()
+                    && reach.get("outcome").getAsBoolean()
+                    == targetBranchRequiredOutcome;
+        }
+
         /** The declared target branch event, for a named coverage gap. */
         private String targetBranchLabel() {
             return targetBranchSite + "#" + targetBranchOccurrence;
+        }
+
+        private static boolean targetRequiredOutcome(
+                JsonArray branches, String targetSite,
+                int targetOccurrence) {
+            if (safe(targetSite).isEmpty()) return false;
+            Boolean required = null;
+            for (JsonElement element : branches) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!targetSite.equals(string(branch, "siteId"))
+                        || targetOccurrence != integer(branch,
+                        "selectedOccurrence", -1)) {
+                    continue;
+                }
+                JsonElement encoded = branch.get("requiredOutcome");
+                if (encoded == null || !encoded.isJsonPrimitive()
+                        || !encoded.getAsJsonPrimitive().isBoolean()) {
+                    throw new IllegalArgumentException(
+                            "target branch requires a boolean outcome: "
+                                    + targetSite + '#' + targetOccurrence);
+                }
+                boolean candidate = encoded.getAsBoolean();
+                if (required != null && required != candidate) {
+                    throw new IllegalArgumentException(
+                            "ambiguous target required outcome: "
+                                    + targetSite + '#' + targetOccurrence);
+                }
+                required = candidate;
+            }
+            if (required == null) {
+                throw new IllegalArgumentException(
+                        "target branch is absent from the branch catalog: "
+                                + targetSite + '#' + targetOccurrence);
+            }
+            return required;
         }
 
         private static boolean validBranchPolicy(String policy) {

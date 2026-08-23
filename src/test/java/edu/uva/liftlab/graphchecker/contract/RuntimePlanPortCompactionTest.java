@@ -157,6 +157,46 @@ public class RuntimePlanPortCompactionTest {
                 .getAsString());
     }
 
+    @Test
+    public void staticSymbolicSourceDeclarationsSurviveCompaction()
+            throws Exception {
+        JsonObject declaration = new JsonObject();
+        declaration.addProperty("schemaVersion",
+                StaticSymbolicSourceDeclaration.SCHEMA_VERSION);
+        declaration.addProperty("kind",
+                StaticSymbolicSourceDeclaration.KIND);
+        declaration.addProperty("authority",
+                StaticSymbolicSourceDeclaration.AUTHORITY);
+        declaration.addProperty("sourceId", "RPC_COMPARE.VALUE");
+        declaration.addProperty("fieldSignature", "<Node: long value>");
+        declaration.addProperty("declarationMethod",
+                "<Node: void symbolizeInputs()>");
+        declaration.addProperty("declarationUnitIndex", 1);
+        JsonArray declarations = new JsonArray();
+        declarations.add(declaration);
+
+        JsonObject region = new JsonObject();
+        region.addProperty("schemaVersion", 3);
+        region.addProperty("kind", "SYMBOLIC_REGION");
+        region.addProperty("regionId", "REGION.1");
+        region.add("symbolicInputs", new JsonArray());
+        region.add("outputs", new JsonArray());
+        region.add(StaticSymbolicSourceDeclaration.FIELD, declarations);
+
+        String encoded = RuntimePlanArtifact.encode(
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                Collections.singletonList(region));
+        File file = new File(folder.getRoot(), "source-plan.jsonl");
+        Files.write(file.toPath(), encoded.getBytes(StandardCharsets.UTF_8));
+        JsonArray retained = RuntimePlanArtifact.read(file.toPath())
+                .regions().get(0).getAsJsonArray(
+                        StaticSymbolicSourceDeclaration.FIELD);
+
+        assertEquals(1, retained.size());
+        assertEquals(declaration, retained.get(0).getAsJsonObject());
+    }
+
     // ------------------------------------------------------------------
     // Fixture
     // ------------------------------------------------------------------

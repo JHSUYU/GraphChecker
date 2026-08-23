@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.Gson;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
+import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -41,8 +42,12 @@ public class RuntimeSelectedRegionFinalizerTest {
         String root = "<example.Worker: void run()>";
         String field = "<example.Shared: int value>";
         String local = root + "::$value";
+        Map<String, Object> skeletonRow = threadEntrySkeleton(root);
+        skeletonRow.put(StaticSymbolicSourceDeclaration.FIELD,
+                Collections.singletonList(staticSource("SOURCE.VALUE",
+                        field, root, 1)));
         File skeleton = writeRows("thread-entry-skeleton.jsonl",
-                threadEntrySkeleton(root));
+                skeletonRow);
         File refined = writeRows("thread-entry-refined.jsonl",
                 sharedFieldWrite(root, field, Arrays.asList(
                         fieldBinding("REGION.worker", 1, root, 5, field,
@@ -69,6 +74,13 @@ public class RuntimeSelectedRegionFinalizerTest {
                         Collections.<Map<String, Object>>emptyList());
 
         assertEquals(1, result.regions.size());
+        List<Map<String, Object>> retainedSources = rows(result.regions
+                .get(0).get(StaticSymbolicSourceDeclaration.FIELD));
+        assertEquals(1, retainedSources.size());
+        assertEquals("SOURCE.VALUE",
+                retainedSources.get(0).get("sourceId"));
+        assertEquals(field,
+                retainedSources.get(0).get("fieldSignature"));
         // Exactly one activation carries the fatal prefix the target slice is
         // cut against; the producers were never treated as targets.
         assertTrue(consumer.containsKey("fatalPrefixContexts"));
@@ -134,6 +146,20 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertEquals("SHARED_STATE_NOT_SELECTED",
                 leafFlows.get(0).get("readFromProvenanceGap"));
         assertEquals("p", leafFlows.get(0).get("readFromSourceKey"));
+    }
+
+    private static Map<String, Object> staticSource(
+            String sourceId, String field, String method, int unitIndex) {
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("schemaVersion",
+                StaticSymbolicSourceDeclaration.SCHEMA_VERSION);
+        source.put("kind", StaticSymbolicSourceDeclaration.KIND);
+        source.put("authority", StaticSymbolicSourceDeclaration.AUTHORITY);
+        source.put("sourceId", sourceId);
+        source.put("fieldSignature", field);
+        source.put("declarationMethod", method);
+        source.put("declarationUnitIndex", unitIndex);
+        return source;
     }
 
     @Test

@@ -26,6 +26,14 @@ public final class SymbolicSourceEvidence {
     private SymbolicSourceEvidence() {
     }
 
+    /** Stable semantic VM label shared by seed and every source replay. */
+    public static String engineLabel(String sourceOccurrenceId,
+                                     String sourceId) {
+        return "SRC." + CanonicalJson.sha256(
+                required(sourceOccurrenceId, "sourceOccurrenceId") + "\n"
+                        + required(sourceId, "sourceId"));
+    }
+
     public static JsonObject event(String sourceId, String occurrenceId,
                                    String fieldSignature,
                                    JsonElement expression) {

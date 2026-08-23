@@ -147,6 +147,11 @@ public final class CausynthPipeline {
         // activations. REGION.IN/OUT and field paths are deliberately absent.
         SymbolicRegionPlanner.planSelectedSkeleton(result,
                 result.traceMethods);
+        // A shared helper may declare the same logical source fields for
+        // several RPC handlers. Attribute those declarations to the regions
+        // after their communication boundaries are fixed; dynamic trace
+        // identity, not A/B spelling in a source id, distinguishes replays.
+        StaticSymbolicSourceDiscovery.discover(result);
         long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         long instrumentationStart = System.nanoTime();
         instrumentRegionSkeletonTrace(result);
