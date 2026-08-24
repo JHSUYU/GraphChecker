@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -32,6 +33,22 @@ public final class ExecutionTask {
         require(occurrenceId(), "occurrenceId");
         require(relationKey(), "relationKey");
         require(regionId(), "regionId");
+        List<ConfiguredSourcePhaseContract.Occurrence> sourcePhases =
+                ConfiguredSourcePhaseContract.occurrencesOf(
+                        encoded.get(
+                        ConfiguredSourcePhaseContract.PLAN_FIELD));
+        List<String> selectedSourcePhases =
+                ConfiguredSourcePhaseContract.selectedPhaseIdsOf(encoded,
+                        sourcePhases);
+        for (ConfiguredSourcePhaseContract.Occurrence phase : sourcePhases) {
+            if (!occurrenceId().equals(phase.sourceOccurrenceId())) {
+                throw new IllegalArgumentException(
+                        "configured source phase belongs to another "
+                                + "occurrence: " + phase.phaseId());
+            }
+        }
+        validateConfiguredSourceBindings(sourcePhases,
+                selectedSourcePhases);
 
         inputActions = InputActionCatalog.decode(encoded);
         loopBound = LoopBoundPolicy.decode(encoded);
@@ -43,6 +60,74 @@ public final class ExecutionTask {
         if (goalKind().capturesOutputRelation() != (outputClosure != null)) {
             throw new IllegalArgumentException(
                     "execution task goalKind and outputClosure disagree");
+        }
+    }
+
+    /**
+     * A selected phase is an execution obligation, not just a trace marker.
+     * Every selected PUBLISH must materialize one configured field and every
+     * selected CONSUME must resolve one exact selector.  The reverse equality
+     * also rejects task rows that try to materialize an unselected phase.
+     */
+    private void validateConfiguredSourceBindings(
+            List<ConfiguredSourcePhaseContract.Occurrence> catalog,
+            List<String> selectedPhaseIds) {
+        Set<String> selectedPublish = new LinkedHashSet<>();
+        Set<String> selectedConsume = new LinkedHashSet<>();
+        Set<String> selected = new LinkedHashSet<>(selectedPhaseIds);
+        for (ConfiguredSourcePhaseContract.Occurrence phase : catalog) {
+            if (!selected.contains(phase.phaseId())) continue;
+            if (phase.phase()
+                    == ConfiguredSourcePhaseContract.Phase.PUBLISH) {
+                selectedPublish.add(phase.phaseId());
+            } else {
+                selectedConsume.add(phase.phaseId());
+            }
+        }
+
+        Set<String> declaredPublish = new LinkedHashSet<>();
+        JsonArray sourceRows;
+        if (!encoded.has(SymbolicSourceEvidence.TASK_FIELD)) {
+            sourceRows = new JsonArray();
+        } else if (!encoded.get(
+                SymbolicSourceEvidence.TASK_FIELD).isJsonArray()) {
+            throw new IllegalArgumentException(
+                    SymbolicSourceEvidence.TASK_FIELD
+                            + " must be an array");
+        } else {
+            sourceRows = encoded.getAsJsonArray(
+                    SymbolicSourceEvidence.TASK_FIELD);
+        }
+        for (JsonElement element : sourceRows) {
+            if (!element.isJsonObject()
+                    || !element.getAsJsonObject().has("sourcePhaseId")
+                    || !element.getAsJsonObject().get("sourcePhaseId")
+                    .isJsonPrimitive()
+                    || !element.getAsJsonObject().getAsJsonPrimitive(
+                    "sourcePhaseId").isString()) {
+                throw new IllegalArgumentException(
+                        SymbolicSourceEvidence.TASK_FIELD
+                                + " entries require sourcePhaseId");
+            }
+            String phaseId = element.getAsJsonObject()
+                    .get("sourcePhaseId").getAsString().trim();
+            if (phaseId.isEmpty() || !declaredPublish.add(phaseId)) {
+                throw new IllegalArgumentException(
+                        SymbolicSourceEvidence.TASK_FIELD
+                                + " repeats or omits sourcePhaseId");
+            }
+        }
+
+        Set<String> declaredConsume = new LinkedHashSet<>();
+        for (ConfiguredSourceSelectorContract.Selector selector
+                : ConfiguredSourceSelectorContract.decode(encoded)) {
+            declaredConsume.add(selector.consumePhaseId());
+        }
+        if (!selectedPublish.equals(declaredPublish)
+                || !selectedConsume.equals(declaredConsume)) {
+            throw new IllegalArgumentException(
+                    "selected configured source phases do not match exact "
+                            + "PUBLISH/CONSUME task bindings");
         }
     }
 

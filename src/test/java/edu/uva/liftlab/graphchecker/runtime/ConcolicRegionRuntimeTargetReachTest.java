@@ -120,6 +120,7 @@ public class ConcolicRegionRuntimeTargetReachTest {
         selector.addProperty("receiverClass", Object.class.getName());
         JsonObject anchor = new JsonObject();
         anchor.addProperty("sourceKey", SOURCE);
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
         selector.add("causalAnchor", anchor);
         task.add("rootSelector", selector);
         task.add("inputActions", new JsonArray());

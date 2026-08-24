@@ -50,6 +50,10 @@ public class ResponseComponentFrontierTest {
     private static final String SOURCE_OUTPUT = "REGION.R.out.source";
     private static final String SOURCE_INPUT = "REGION.R.in.sourceRoot";
     private static final String SOURCE_CELL = "<Server: int state>";
+    private static final String SOURCE_ROOT_OUTPUT =
+            "REGION.P.out.sourceRoot";
+    private static final String SOURCE_WRITER =
+            "node/source#epoch0/region/REGION.P#1";
 
     /**
      * A heap write may read the concrete parent response even though the VM
@@ -139,6 +143,32 @@ public class ResponseComponentFrontierTest {
         assertEquals(describe(workflow), 3,
                 workflow.producerGroups().size());
         assertTrue(describe(workflow), scheduled(workflow, SELECTED));
+        assertFalse(describe(workflow), scheduled(workflow, UNRELATED));
+        assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
+                COMPONENT, SOURCE_OUTPUT)), outputs(workflow, SELECTED));
+    }
+
+    /** Source-only members participate in predecessor closure before split. */
+    @Test
+    public void configuredSourceOutputClosesItsExactPriorProducer()
+            throws Exception {
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                        consumerRow(), targetRow(),
+                        remoteRow(UNRELATED, UNRELATED_EDGE),
+                        remoteRowWithSourceOutput(true),
+                        stateProducerRow(SOURCE_WRITER, "REGION.P",
+                                SOURCE_ROOT_OUTPUT, SOURCE_EDGE,
+                                SOURCE_INPUT)),
+                        (region, action) -> true,
+                        (region, closure) -> "REGION.R".equals(region)
+                                ? java.util.Collections.singleton(SOURCE_CELL)
+                                : java.util.Collections.emptySet());
+
+        assertEquals(describe(workflow), 4,
+                workflow.producerGroups().size());
+        assertTrue(describe(workflow), scheduled(workflow, SELECTED));
+        assertTrue(describe(workflow), scheduled(workflow, SOURCE_WRITER));
         assertFalse(describe(workflow), scheduled(workflow, UNRELATED));
         assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
                 COMPONENT, SOURCE_OUTPUT)), outputs(workflow, SELECTED));
@@ -252,10 +282,20 @@ public class ResponseComponentFrontierTest {
     }
 
     private static JsonObject remoteRowWithSourceOutput() {
+        return remoteRowWithSourceOutput(false);
+    }
+
+    private static JsonObject remoteRowWithSourceOutput(
+            boolean bindSourcePredecessor) {
         JsonObject row = remoteRow(SELECTED, SELECTED_EDGE);
         JsonObject goal = row.getAsJsonArray("closureGoals").get(0)
                 .getAsJsonObject();
-        goal.getAsJsonArray("symbolize").add(carrierAction(SOURCE_INPUT));
+        goal.getAsJsonArray("symbolize").add(valueAction(SOURCE_INPUT));
+        if (bindSourcePredecessor) {
+            goal.getAsJsonArray("edgeBindings").add(sharedStateEdge(
+                    SOURCE_WRITER, "REGION.P", SOURCE_ROOT_OUTPUT,
+                    SOURCE_EDGE, SOURCE_INPUT));
+        }
         JsonObject closure = goal.getAsJsonObject("outputClosure");
         JsonArray inputs = new JsonArray();
         inputs.add(SOURCE_INPUT);

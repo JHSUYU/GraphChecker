@@ -79,6 +79,9 @@ public final class CanonicalSessionModel {
             "SOURCE_CONTAINS_REGION";
     public static final String REGION_REACHES_TARGET_BRANCH =
             "REGION_REACHES_TARGET_BRANCH";
+    /** A traced delivery used to locate two summaries, not to bind a value. */
+    public static final String TRACE_CONNECTS_REGIONS =
+            "TRACE_CONNECTS_REGIONS";
     // ----- gaps this assembly can raise -----------------------------------
 
     /** An occurrence no selected relation attributes to a source. */
@@ -121,13 +124,15 @@ public final class CanonicalSessionModel {
                                           String fromOccurrenceId,
                                           String toOccurrenceId,
                                           String fromOutputPort,
-                                          String toInputPort) {
+                                          String toInputPort,
+                                          boolean topologyOnly) {
         JsonObject row = new JsonObject();
         row.addProperty("edgeId", edgeId);
         row.addProperty("fromOccurrenceId", fromOccurrenceId);
         row.addProperty("toOccurrenceId", toOccurrenceId);
         row.addProperty("fromOutputPort", fromOutputPort);
         row.addProperty("toInputPort", toInputPort);
+        row.addProperty("topologyOnly", topologyOnly);
         return row;
     }
 
@@ -189,11 +194,16 @@ public final class CanonicalSessionModel {
         if ("RECORDED_EXACT_VALUE_BINDING".equals(kind)) {
             return kind + "\n" + string(row, "edgeId") + "\n"
                     + string(row, "fromOutputPort") + "\n"
-                    + string(row, "toInputPort");
+                    + string(row, "toInputPort") + "\n"
+                    + longInteger(row, "readEventId", 0L) + "\n"
+                    + longInteger(row, "fieldVersionId", 0L) + "\n"
+                    + string(row, "caseGuard");
         }
         if ("RECORDED_GUARDED_READ_PORT_BINDING".equals(kind)) {
             return kind + "\n" + string(row, "edgeId") + "\n"
-                    + string(row, "toInputPort");
+                    + string(row, "toInputPort") + "\n"
+                    + longInteger(row, "readEventId", 0L) + "\n"
+                    + string(row, "caseGuard");
         }
         return kind + "\n" + string(row, "edgeId");
     }
@@ -395,6 +405,32 @@ public final class CanonicalSessionModel {
             structuralEdges.add(row);
         }
 
+        /** Keeps a trace-correlated RPC edge as topology, never value proof. */
+        private void tracedTopology(JsonObject edge) {
+            String from = regionNode(string(edge, "fromOccurrenceId"));
+            String to = regionNode(string(edge, "toOccurrenceId"));
+            if (from.isEmpty() || to.isEmpty()) return;
+            String edgeId = string(edge, "edgeId");
+            String key = TRACE_CONNECTS_REGIONS + "\n" + edgeId + "\n"
+                    + from + "\n" + to;
+            JsonObject row = new JsonObject();
+            row.addProperty("structuralId", identity("structure", key));
+            row.addProperty("edgeKey", key);
+            row.addProperty("kind", TRACE_CONNECTS_REGIONS);
+            row.addProperty("evidenceState", STRUCTURAL);
+            row.addProperty("edgeId", edgeId);
+            row.addProperty("fromNodeId", from);
+            row.addProperty("toNodeId", to);
+            row.addProperty("fromOccurrenceId",
+                    string(edge, "fromOccurrenceId"));
+            row.addProperty("toOccurrenceId",
+                    string(edge, "toOccurrenceId"));
+            row.addProperty("fromOutputPort",
+                    string(edge, "fromOutputPort"));
+            row.addProperty("toInputPort", string(edge, "toInputPort"));
+            structuralEdges.add(row);
+        }
+
         // ----- members ------------------------------------------------
 
         private void relations() {
@@ -543,6 +579,8 @@ public final class CanonicalSessionModel {
                 JsonObject row = new JsonObject();
                 String from;
                 String to;
+                String fromOccurrence = string(raw,
+                        "fromOccurrenceId");
                 if ("RECORDED_READ_FROM_VALUE_BINDING".equals(kind)) {
                     long read = longInteger(raw, "readEventId", 0L);
                     long version = longInteger(raw, "fieldVersionId", 0L);
@@ -574,6 +612,8 @@ public final class CanonicalSessionModel {
                     to = regionNode(string(raw, "toOccurrenceId"));
                     row.addProperty("evidenceState", GUARDED);
                     row.addProperty("readEventId", read);
+                    row.addProperty("caseGuard",
+                            string(raw, "caseGuard"));
                     row.addProperty("locationKey",
                             string(raw, "locationKey"));
                     row.addProperty("toInputPort",
@@ -585,13 +625,26 @@ public final class CanonicalSessionModel {
                     // receiver, and the ledger's own VALUE_HANDOFF edge
                     // relates the two events, so the relation is exact in the
                     // same sense a proved writer is.
-                    from = regionNode(string(raw, "fromOccurrenceId"));
+                    // VM handoff schema v3 deliberately names the exporting
+                    // execution as producerOccurrenceId.  It has no legacy
+                    // fromOccurrenceId because the VM handle, not a trace
+                    // edge, is the value authority.  Normalize that exact
+                    // producer identity for the canonical graph instead of
+                    // dropping its source endpoint.
+                    fromOccurrence = string(raw,
+                            VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
+                    from = regionNode(fromOccurrence);
                     to = regionNode(string(raw, "toOccurrenceId"));
                     row.addProperty("evidenceState", EXACT);
                     for (String member : new String[]{
                             "toInputPort", "orderAssertion", "exportEventId",
+                            "localExportEventId", "caseOwner",
+                            "caseSelector", "producerCaseOwner",
+                            "producerCaseSelector",
                             CommunicationCatalogContract.PORT_ID,
-                            "bindingState"}) {
+                            "bindingState",
+                            VmHandoffEvidence.PRODUCER_TASK_ID,
+                            VmHandoffEvidence.PRODUCER_OCCURRENCE_ID}) {
                         if (raw.has(member)) {
                             row.add(member, raw.get(member).deepCopy());
                         }
@@ -608,6 +661,8 @@ public final class CanonicalSessionModel {
                             longInteger(raw, "fieldVersionId", 0L));
                     row.addProperty("readEventId",
                             longInteger(raw, "readEventId", 0L));
+                    row.addProperty("caseGuard",
+                            string(raw, "caseGuard"));
                     row.addProperty("locationKey",
                             string(raw, "locationKey"));
                     row.addProperty("orderAssertion",
@@ -623,7 +678,7 @@ public final class CanonicalSessionModel {
                 row.addProperty("kind", kind);
                 row.addProperty("edgeId", string(raw, "edgeId"));
                 row.addProperty("fromOccurrenceId",
-                        string(raw, "fromOccurrenceId"));
+                        fromOccurrence);
                 row.addProperty("toOccurrenceId",
                         string(raw, "toOccurrenceId"));
                 row.addProperty("valueAssertion",
@@ -652,6 +707,11 @@ public final class CanonicalSessionModel {
                 String edgeId = element.getAsString();
                 if (edgeId.isEmpty() || bound.contains(edgeId)) continue;
                 JsonObject edge = resolvedEdges.get(edgeId);
+                if (edge == null) continue;
+                if (bool(edge, "topologyOnly", false)) {
+                    tracedTopology(edge);
+                    continue;
+                }
                 JsonObject row = new JsonObject();
                 row.addProperty("kind", "RESOLVED_EDGE_CANDIDATE");
                 row.addProperty("evidenceState", CANDIDATE);
@@ -743,9 +803,8 @@ public final class CanonicalSessionModel {
                     bool(slice, "reachesTarget", false));
             target.addProperty("orderDomainFault",
                     string(recorded, "orderDomainFault"));
-            target.add("fatalPathAssertion", object(object(manifest,
-                    "operandBindingLedger"), "fatalPathAssertion")
-                    .deepCopy());
+            target.add("fatalPathAssertion",
+                    object(manifest, "fatalPathAssertion").deepCopy());
             return target;
         }
 
@@ -759,12 +818,27 @@ public final class CanonicalSessionModel {
             for (JsonElement element : array(manifest, "coverageGaps")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject raw = element.getAsJsonObject();
-                gap("COVERAGE", firstNonBlank(string(raw, "reason"),
-                                string(raw, "divergenceClass"),
-                                string(raw, "kind")),
+                String kind = string(raw, "kind");
+                String reason = string(raw, "reason");
+                boolean reasonIsCode = CoverageDivergence.isDivergence(raw)
+                        || SparseReadCutGate.GAP_KIND.equals(kind)
+                        || RpcExpressionHandoff.GAP_KIND.equals(kind)
+                        || SharedStateEvidence.GAP_KIND.equals(kind)
+                        || SessionTargetSlice.GAP_KIND.equals(kind)
+                        || BoundedLoopComposition.GAP_KIND.equals(kind);
+                gap("COVERAGE", reasonIsCode
+                                ? firstNonBlank(reason, kind)
+                                : firstNonBlank(kind, reason),
                         firstNonBlank(string(raw, "subject"),
-                                string(raw, "locationKey")),
-                        string(raw, "detail"));
+                                string(raw, "queryKey"),
+                                string(raw, "locationKey"),
+                                string(raw, "captureBindingId"),
+                                string(raw, "outputSiteId"),
+                                string(raw, "regionId"),
+                                string(raw, "pathKey")),
+                        reasonIsCode ? string(raw, "detail")
+                                : firstNonBlank(string(raw, "detail"),
+                                reason));
             }
         }
 

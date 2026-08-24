@@ -4,12 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.google.gson.JsonPrimitive;
-import com.google.gson.stream.JsonReader;
-import com.google.gson.stream.JsonToken;
 import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
@@ -23,8 +19,10 @@ import edu.uva.liftlab.graphchecker.concolic.SparseReadCutGate;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
-import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
@@ -33,14 +31,12 @@ import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.io.StringReader;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -94,6 +90,10 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * symbolic thread context.</p>
  */
 public final class ConcolicRegionRuntime {
+    static final String CONFIGURED_SOURCE_PHASE_OBSERVATIONS =
+            "configuredSourcePhaseObservations";
+    static final String CONFIGURED_SOURCE_PHASE_GAPS =
+            "configuredSourcePhaseGaps";
     private static final Pattern DEFAULT_EXECUTOR_THREAD_NAME =
             Pattern.compile("^pool-[0-9]+-thread-([0-9]+)$");
     private static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
@@ -174,6 +174,8 @@ public final class ConcolicRegionRuntime {
     static final String SKIP_REPLAY_PREFIX_UNMATCHED =
             "REPLAY_PREFIX_UNMATCHED";
     static final String SKIP_SEED_OUTCOME_CONFLICT = "SEED_OUTCOME_CONFLICT";
+    static final String SKIP_UNAPPLIED_MODEL_ASSIGNMENT =
+            "UNAPPLIED_MODEL_ASSIGNMENT";
     /**
      * A candidate ran to its terminal and was not the occurrence its plan row
      * addressed: it ran on another source, or inside another request scope.
@@ -268,6 +270,17 @@ public final class ConcolicRegionRuntime {
     private static volatile EngineApi engineApi;
     /** Session this JVM opened for its workload, or zero when it opened none. */
     private static volatile long workloadSessionId;
+    /**
+     * Producer execution carried implicitly by old manual-carrier ABIs that
+     * transport only the VM broker handle.  This is metadata about the
+     * handle, not a second value relay: the expression still lives only in
+     * the VM broker and attach still validates the opaque handle there.
+     */
+    private static final Object MANUAL_HANDOFF_LINEAGE_LOCK = new Object();
+    private static final Map<Long, ManualHandoffLineage>
+            MANUAL_HANDOFF_LINEAGE = new LinkedHashMap<>();
+    /** Workload session whose handles the table above may describe. */
+    private static long manualHandoffLineageSessionId;
 
     private ConcolicRegionRuntime() {
     }
@@ -603,6 +616,7 @@ public final class ConcolicRegionRuntime {
             engineApi = null;
             workloadSessionId = 0L;
         }
+        resetManualHandoffLineageSession(0L);
         ACTIVE.clear();
         CURRENT_TOKEN.remove();
         ROOT_INVOCATION_FRAMES.remove();
@@ -805,6 +819,7 @@ public final class ConcolicRegionRuntime {
                     + workloadSessionStatusName(status) + " "
                     + api.workloadSessionStatus();
         }
+        resetManualHandoffLineageSession(status);
         workloadSessionId = status;
         return "";
     }
@@ -841,6 +856,7 @@ public final class ConcolicRegionRuntime {
                     + " sessionId=" + sessionId + " "
                     + api.workloadSessionStatus();
         }
+        resetManualHandoffLineageSession(0L);
         workloadSessionId = 0L;
         return "";
     }
@@ -1682,23 +1698,33 @@ public final class ConcolicRegionRuntime {
      * Mints one exact source root selected by the current execution task.
      *
      * <p>The application calls this at the definition boundary, before the
-     * value is inserted into any selected state.  An undeclared source is a
-     * no-op.  A declared source is materialized once, on the exact field, and
-     * its VM expression is recorded as the cross-case identity authority.</p>
+     * value is inserted into any selected state.  A known but unselected
+     * catalog phase is a no-op; a hook outside the frozen catalog is a
+     * fail-closed topology gap.  A selected phase is materialized once, on
+     * the exact field, and its VM expression is recorded as the cross-case
+     * identity authority.</p>
      */
     public static boolean symbolizeConfiguredSourceField(
             String sourceId, Object owner, String fieldSignature) {
         ActiveRegion active = activeRegion();
         if (active == null || owner == null) return false;
+        ConfiguredSourcePhaseContract.Occurrence phase =
+                active.observeConfiguredSourcePhase(
+                        ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                        safe(sourceId), safe(fieldSignature));
+        if (phase == null) return false;
         RuntimeTask.SourceField source = active.activation.sourceFields.get(
-                safe(sourceId));
+                phase.phaseId());
+        // The task carries a strict selected subsequence of the complete
+        // replay-call catalog. A known hook outside it is a no-op landmark.
         if (source == null) return false;
-        if (!source.fieldSignature.equals(safe(fieldSignature))) {
-            active.addUnresolvedOnce(source.sourceId
-                    + ": configured source field differs from runtime hook");
+        if (!source.sourceId.equals(safe(sourceId))
+                || !source.fieldSignature.equals(safe(fieldSignature))) {
+            active.addSourcePhaseGap("DECLARATION_MISMATCH", phase,
+                    "selected source row differs from the runtime hook");
             return false;
         }
-        int claim = active.claimSymbolicSource(source.sourceId, owner);
+        int claim = active.claimSymbolicSource(source.sourcePhaseId, owner);
         if (claim < 0) return false;
         // The caller performs a concrete-equivalent Map re-key only for the
         // first successful materialization.  Re-entering the hook for the
@@ -1713,17 +1739,17 @@ public final class ConcolicRegionRuntime {
                         "configured source is not an exact primitive field");
             }
             ModelAssignment assignment = active.configuredSourceAssignment(
-                    source.sourceId, source.fieldSignature);
+                    source.sourcePhaseId, source.sourceId,
+                    source.fieldSignature);
             if (assignment != null) {
                 if (!writeModeledField(owner, source.fieldSignature,
                         assignment)) {
                     throw new IllegalStateException(
                             "configured source model could not be written");
                 }
-                active.recordModelAssignment(assignment);
             }
             String symbol = configuredSourceSymbol(
-                    active.activation.occurrenceId, source.sourceId);
+                    source.sourcePhaseId, source.sourceId);
             EngineApi api = engine();
             api.symbolizeExactField(owner,
                     exactFieldSignature(field), symbol);
@@ -1735,14 +1761,33 @@ public final class ConcolicRegionRuntime {
                             field.getType().getTypeName()),
                     value));
             JsonObject evidence = SymbolicSourceEvidence.event(
-                    source.sourceId, active.activation.occurrenceId,
+                    source.sourcePhaseId, source.sourceId,
+                    active.activation.occurrenceId,
                     source.fieldSignature, expression);
-            active.recordSymbolicSource(source.sourceId, evidence);
-            active.symbolized.add("SOURCE:" + source.sourceId);
+            active.recordSymbolicSource(source.sourcePhaseId, evidence);
+            if (assignment != null) {
+                // A concrete write is not a materialized symbolic input until
+                // the VM has accepted the exact field and returned its
+                // expression.  Keeping this after both calls makes the
+                // terminal unapplied-assignment gate fail closed when either
+                // native operation fails.
+                active.recordModelAssignment(assignment);
+            }
+            if (field.getType() == int.class
+                    && value instanceof Integer
+                    && configuration().selectedSourceValueProducer(
+                    active.activation, source.sourcePhaseId)) {
+                active.stageSourceSelectorValue(source.sourcePhaseId,
+                        source.sourceId,
+                        source.fieldSignature,
+                        string(evidence, "rawSymbol"),
+                        ((Integer) value).intValue());
+            }
+            active.symbolized.add("SOURCE_PHASE:" + source.sourcePhaseId);
             return true;
         } catch (Throwable failure) {
-            active.releaseSymbolicSourceClaim(source.sourceId, owner);
-            active.addUnresolvedOnce(source.sourceId
+            active.releaseSymbolicSourceClaim(source.sourcePhaseId, owner);
+            active.addUnresolvedOnce(source.sourcePhaseId
                     + ": exact symbolic source materialization failed: "
                     + rootCause(failure));
             return false;
@@ -1751,24 +1796,70 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Stable VM name shared by every materialization of one exact source. */
+    /** Stable VM name shared by every replay of one exact source phase. */
     private static String configuredSourceSymbol(
-            String sourceOccurrenceId, String sourceId) {
-        return SymbolicSourceEvidence.engineLabel(
-                sourceOccurrenceId, sourceId);
+            String sourcePhaseId, String sourceId) {
+        return SymbolicSourceEvidence.engineLabelForPhase(
+                sourcePhaseId, sourceId);
+    }
+
+    /** Exact primitive-field symbol minted by the VM for one source hook. */
+    private static String configuredSourceEngineSymbol(
+            String sourcePhaseId, String sourceId,
+            String fieldSignature) {
+        DeclaredField field = FieldPathSpec.declaredField(
+                safe(fieldSignature));
+        if (field == null) return "";
+        String descriptor = javaTypeDescriptor(field.type());
+        if (descriptor.length() != 1
+                || !"ZBCSIJFD".contains(descriptor)) {
+            return "";
+        }
+        return "M_" + descriptor + "_field_"
+                + configuredSourceSymbol(sourcePhaseId, sourceId)
+                + "_" + field.owner().replace('.', '/');
     }
 
     /** Names a source-side invariant failure without changing the workload. */
     public static void rejectConfiguredSourceField(
             String sourceId, String detail) {
         ActiveRegion active = activeRegion();
-        if (active == null
-                || !active.activation.sourceFields.containsKey(
-                safe(sourceId))) {
-            return;
+        if (active == null) return;
+        active.rejectConfiguredSourcePublication(safe(sourceId), safe(detail));
+    }
+
+    /** Returns one exact live configured-source value selected by this task. */
+    public static Integer selectedConfiguredSourceIntValue(String sourceId) {
+        ActiveRegion active = activeRegion();
+        if (active == null) return null;
+        ConfiguredSourcePhaseContract.Occurrence phase =
+                active.observeConfiguredSourcePhase(
+                        ConfiguredSourcePhaseContract.Phase.CONSUME,
+                        safe(sourceId), "");
+        if (phase == null) return null;
+        ConfiguredSourceSelectorContract.Selector selector =
+                active.activation.sourceSelectors.get(phase.phaseId());
+        // As with PUBLISH, an unselected but planned phase only advances the
+        // exact replay ledger.
+        if (selector == null) return null;
+        if (!selector.consumePhaseId().equals(phase.phaseId())
+                || !selector.sourceId().equals(safe(sourceId))) {
+            active.addSourcePhaseGap("DECLARATION_MISMATCH", phase,
+                    "selected selector differs from the runtime hook");
+            return null;
         }
-        active.addUnresolvedOnce(safe(sourceId)
-                + ": CONFIGURED_SYMBOLIC_SOURCE_REJECTED: " + safe(detail));
+        SourceSelectorPublication publication = configuration()
+                .publishedSourceSelector(active.activation, selector);
+        if (publication == null) {
+            active.addUnresolvedOnce(safe(sourceId)
+                    + ": CONFIGURED_SOURCE_SELECTOR_VALUE_NOT_PUBLISHED");
+            return null;
+        }
+        active.recordSourceSelectorEvidence(selector.consumePhaseId(),
+                ConfiguredSourceSelectorContract.evidence(selector,
+                        publication.sourceTaskId,
+                        publication.rawSymbol, publication.value));
+        return publication.value;
     }
 
 
@@ -2340,47 +2431,6 @@ public final class ConcolicRegionRuntime {
         return true;
     }
 
-    /** Test seam for the relation-seed branch-recording fast path. */
-    static boolean relationSeedSkipsBranchForTests(
-            JsonObject encodedTask, String method, int unitIndex) {
-        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
-        return skipsRelationSeedBranch(task, siteId(method, unitIndex));
-    }
-
-    /** Test seam for exact-output boundary completion without a custom VM. */
-    static boolean exactOutputBoundaryReachedForTests(
-            JsonObject encodedTask, JsonArray encodedCaptures) {
-        ExecutionTask task = ExecutionTask.decode(encodedTask);
-        List<JsonObject> captures = new ArrayList<>();
-        if (encodedCaptures != null) {
-            for (JsonElement element : encodedCaptures) {
-                if (!element.isJsonObject()) return false;
-                captures.add(element.getAsJsonObject());
-            }
-        }
-        return completeExactOutputBoundary(
-                task.goalKind().capturesOutputRelation(),
-                task.outputCaptures(), captures);
-    }
-
-    /** Test seam for incomplete-relation capture-binding diagnostics. */
-    static JsonArray missingOutputCaptureBindingIdsForTests(
-            JsonObject encodedTask, JsonArray encodedCaptures) {
-        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(encodedTask));
-        ActiveRegion active = new ActiveRegion(1L, task, null,
-                Thread.currentThread());
-        if (encodedCaptures != null) {
-            for (JsonElement element : encodedCaptures) {
-                if (!element.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "output capture row must be an object");
-                }
-                active.outputCaptures.add(element.getAsJsonObject());
-            }
-        }
-        return missingOutputCaptureBindingIds(active);
-    }
-
     private static boolean incompleteRelationOnlyBoundary(
             RuntimeTask task, List<JsonObject> captures, String exitKind) {
         if (task == null || !"NORMAL".equals(exitKind)
@@ -2554,17 +2604,32 @@ public final class ConcolicRegionRuntime {
      * Exports one exact field through the live VM broker.
      *
      * <p>This is the complete reflective ABI used by application adapters.
-     * Protocol provenance stays in their Java trace; it is neither needed nor
-     * accepted here because the returned live handle is the propagation
-     * identity.</p>
+     * The returned live handle remains the sole value identity.  For adapters
+     * whose frozen wire ABI carries only that {@code long}, the runtime also
+     * remembers which exact task occurrence published the handle so the later
+     * attach can emit complete producer lineage without inventing a second
+     * exchange or value identity.</p>
      */
     public static HandoffResult exportSymbolicLeaf(
             Object owner, String declaringClass, String fieldName,
             String descriptor) {
         CommunicationHandoffSpec declared = manualCommunicationHandoffSite(
                 declaringClass, fieldName, descriptor, true);
-        return exportSymbolicLeaf(owner, declaringClass, fieldName,
-                descriptor, declared == null ? "" : declared.portId());
+        if (declared == null) {
+            beginBookkeeping();
+            try {
+                return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
+                        RpcExpressionHandoff.MISSING_METADATA, 0L,
+                        "manual carrier is not declared by the active task: "
+                                + safe(declaringClass) + "."
+                                + safe(fieldName) + safe(descriptor)));
+            } finally {
+                endBookkeeping();
+            }
+        }
+        HandoffResult result = exportSymbolicLeaf(owner, declaringClass,
+                fieldName, descriptor, declared.portId());
+        return registerManualHandoffLineage(result);
     }
 
     /**
@@ -2580,18 +2645,34 @@ public final class ConcolicRegionRuntime {
             String descriptor, long handle) {
         CommunicationHandoffSpec declared = manualCommunicationHandoffSite(
                 declaringClass, fieldName, descriptor, false);
-        if (declared != null) {
-            return attachDeclaredCommunicationExpression(owner,
-                    declaringClass, fieldName, descriptor,
-                    new HeaderHandle(true, handle, "", ""), declared);
+        if (declared == null) {
+            beginBookkeeping();
+            try {
+                return record(failed(RpcExpressionHandoff.STAGE_ATTACH,
+                        RpcExpressionHandoff.MISSING_METADATA, handle,
+                        "manual carrier is not declared by the active task: "
+                                + safe(declaringClass) + "."
+                                + safe(fieldName) + safe(descriptor)));
+            } finally {
+                endBookkeeping();
+            }
         }
-        beginBookkeeping();
-        try {
-            return record(attach(owner, declaringClass, fieldName, descriptor,
-                    handle));
-        } finally {
-            endBookkeeping();
+        ManualHandoffLineageResolution lineage =
+                resolveManualHandoffLineage(handle);
+        if (!lineage.ok()) {
+            beginBookkeeping();
+            try {
+                return record(failed(RpcExpressionHandoff.STAGE_ATTACH,
+                        lineage.status, handle, lineage.detail));
+            } finally {
+                endBookkeeping();
+            }
         }
+        return attachDeclaredCommunicationExpression(owner,
+                declaringClass, fieldName, descriptor,
+                new HeaderHandle(true, handle,
+                        lineage.lineage.producerTaskId,
+                        lineage.lineage.producerOccurrenceId), declared);
     }
 
     private static HandoffResult exportSymbolicLeaf(
@@ -2909,6 +2990,175 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /**
+     * Exact Java execution which published one opaque VM broker handle.
+     *
+     * <p>The expression and the export event remain exclusively in the VM.
+     * This row supplies only the two Java plan identities which a legacy
+     * manual carrier cannot put beside the handle on the wire.</p>
+     */
+    private static final class ManualHandoffLineage {
+        private final long sessionId;
+        private final long handle;
+        private final String producerTaskId;
+        private final String producerOccurrenceId;
+        private final boolean ambiguous;
+
+        private ManualHandoffLineage(long sessionId, long handle,
+                                     String producerTaskId,
+                                     String producerOccurrenceId,
+                                     boolean ambiguous) {
+            this.sessionId = sessionId;
+            this.handle = handle;
+            this.producerTaskId = safe(producerTaskId);
+            this.producerOccurrenceId = safe(producerOccurrenceId);
+            this.ambiguous = ambiguous;
+        }
+
+        private boolean sameProducer(ManualHandoffLineage other) {
+            return other != null && sessionId == other.sessionId
+                    && handle == other.handle
+                    && producerTaskId.equals(other.producerTaskId)
+                    && producerOccurrenceId.equals(
+                    other.producerOccurrenceId);
+        }
+
+        private ManualHandoffLineage ambiguous() {
+            return new ManualHandoffLineage(sessionId, handle,
+                    producerTaskId, producerOccurrenceId, true);
+        }
+    }
+
+    /** Result of resolving producer metadata before mutating receiver shadow. */
+    private static final class ManualHandoffLineageResolution {
+        private final ManualHandoffLineage lineage;
+        private final int status;
+        private final String detail;
+
+        private ManualHandoffLineageResolution(
+                ManualHandoffLineage lineage, int status, String detail) {
+            this.lineage = lineage;
+            this.status = status;
+            this.detail = safe(detail);
+        }
+
+        private boolean ok() {
+            return status == RpcExpressionHandoff.OK && lineage != null;
+        }
+    }
+
+    /** Starts or tears down the Java metadata half of one VM broker session. */
+    private static void resetManualHandoffLineageSession(long sessionId) {
+        synchronized (MANUAL_HANDOFF_LINEAGE_LOCK) {
+            MANUAL_HANDOFF_LINEAGE.clear();
+            manualHandoffLineageSessionId = sessionId;
+        }
+    }
+
+    /**
+     * Registers producer metadata for a handle returned through the legacy
+     * manual ABI.  Duplicate publication by the same execution is idempotent;
+     * any conflicting claimant poisons that handle for the rest of the
+     * session, so receive can never choose one by map order.
+     */
+    private static HandoffResult registerManualHandoffLineage(
+            HandoffResult result) {
+        if (result == null || !result.ok()) return result;
+        ActiveRegion active = activeRegion();
+        long sessionId = workloadSessionId;
+        if (sessionId <= 0L) {
+            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
+                    RpcExpressionHandoff.NO_ACTIVE_REGION, result.handle(),
+                    "manual handoff lineage requires a workload session"));
+        }
+        if (active == null
+                || safe(active.activation.taskId).isEmpty()
+                || safe(active.activation.occurrenceId).isEmpty()) {
+            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
+                    RpcExpressionHandoff.MISSING_METADATA, result.handle(),
+                    "manual handoff export has no exact producer execution"));
+        }
+        ManualHandoffLineage candidate = new ManualHandoffLineage(sessionId,
+                result.handle(), active.activation.taskId,
+                active.activation.occurrenceId, false);
+        synchronized (MANUAL_HANDOFF_LINEAGE_LOCK) {
+            if (sessionId != workloadSessionId
+                    || manualHandoffLineageSessionId != sessionId) {
+                return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
+                        RpcExpressionHandoff.FOREIGN_HANDLE, result.handle(),
+                        "manual handoff session changed during export"));
+            }
+            ManualHandoffLineage prior = MANUAL_HANDOFF_LINEAGE.get(
+                    result.handle());
+            if (prior == null) {
+                MANUAL_HANDOFF_LINEAGE.put(result.handle(), candidate);
+                return result;
+            }
+            if (!prior.sameProducer(candidate) || prior.ambiguous) {
+                MANUAL_HANDOFF_LINEAGE.put(result.handle(),
+                        prior.ambiguous());
+                return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
+                        RpcExpressionHandoff.MISSING_METADATA,
+                        result.handle(),
+                        "manual handoff handle has ambiguous producer "
+                                + "execution"));
+            }
+            return result;
+        }
+    }
+
+    /**
+     * Resolves one handle to a unique producer in the current workload before
+     * attach changes any receiver shadow.  Unknown, stale and poisoned entries
+     * are named failures; none fall back to blank lineage.
+     */
+    private static ManualHandoffLineageResolution
+            resolveManualHandoffLineage(long handle) {
+        if (handle <= 0L) {
+            return new ManualHandoffLineageResolution(null,
+                    RpcExpressionHandoff.MISSING_METADATA,
+                    "manual handoff receive needs a positive handle");
+        }
+        long sessionId = workloadSessionId;
+        if (sessionId <= 0L) {
+            return new ManualHandoffLineageResolution(null,
+                    RpcExpressionHandoff.NO_ACTIVE_REGION,
+                    "manual handoff lineage has no workload session");
+        }
+        synchronized (MANUAL_HANDOFF_LINEAGE_LOCK) {
+            if (sessionId != workloadSessionId
+                    || manualHandoffLineageSessionId != sessionId) {
+                return new ManualHandoffLineageResolution(null,
+                        RpcExpressionHandoff.FOREIGN_HANDLE,
+                        "manual handoff handle belongs to another session");
+            }
+            ManualHandoffLineage lineage =
+                    MANUAL_HANDOFF_LINEAGE.get(handle);
+            if (lineage == null) {
+                return new ManualHandoffLineageResolution(null,
+                        RpcExpressionHandoff.UNKNOWN_HANDLE,
+                        "manual handoff handle has no producer lineage in "
+                                + "this session");
+            }
+            if (lineage.sessionId != sessionId) {
+                return new ManualHandoffLineageResolution(null,
+                        RpcExpressionHandoff.FOREIGN_HANDLE,
+                        "manual handoff producer lineage belongs to another "
+                                + "session");
+            }
+            if (lineage.ambiguous
+                    || lineage.producerTaskId.isEmpty()
+                    || lineage.producerOccurrenceId.isEmpty()) {
+                return new ManualHandoffLineageResolution(null,
+                        RpcExpressionHandoff.MISSING_METADATA,
+                        "manual handoff handle has ambiguous producer "
+                                + "lineage");
+            }
+            return new ManualHandoffLineageResolution(lineage,
+                    RpcExpressionHandoff.OK, "");
+        }
+    }
+
     /** One leaf read directly from the current Hadoop Call's wire header. */
     private static final class HeaderHandle {
         private static final HeaderHandle MISSING =
@@ -3126,25 +3376,32 @@ public final class ConcolicRegionRuntime {
     /** Source identity and exact nested field carried by one output value. */
     private static final class PlannedSourceAlias {
         private final String sourceTaskId;
+        private final String sourcePhaseId;
         private final String sourceId;
         private final String sourceOccurrenceId;
         private final String fieldSignature;
 
-        private PlannedSourceAlias(String sourceTaskId, String sourceId,
+        private PlannedSourceAlias(String sourceTaskId, String sourcePhaseId,
+                                   String sourceId,
                                    String sourceOccurrenceId,
                                    String fieldSignature) {
             this.sourceTaskId = safe(sourceTaskId);
+            this.sourcePhaseId = safe(sourcePhaseId);
             this.sourceId = safe(sourceId);
             this.sourceOccurrenceId = safe(sourceOccurrenceId);
             this.fieldSignature = safe(fieldSignature);
         }
 
         private String symbol() {
-            return configuredSourceSymbol(sourceOccurrenceId, sourceId);
+            return configuredSourceSymbol(sourcePhaseId, sourceId);
         }
 
         private String identity() {
-            return sourceOccurrenceId + "\n" + sourceId;
+            return sourcePhaseId;
+        }
+
+        private String logicalIdentity() {
+            return sourceId + "\n" + fieldSignature;
         }
     }
 
@@ -4726,7 +4983,7 @@ public final class ConcolicRegionRuntime {
      * destination denotes the selected producer value.  Only after that
      * succeeds may a source declaration attached to that producer output be
      * materialized on the referenced object.  The VM name is the producer's
-     * original occurrence/source identity, so this creates no second input
+     * original phase/source identity, so this creates no second input
      * and performs no concrete-value or object-identity join.</p>
      */
     private static String installPlannedNestedSourceAliases(
@@ -4787,7 +5044,8 @@ public final class ConcolicRegionRuntime {
                                         sourceField.getType().getTypeName()),
                                 value));
                 JsonObject verified = SymbolicSourceEvidence.event(
-                        alias.sourceId, alias.sourceOccurrenceId,
+                        alias.sourcePhaseId, alias.sourceId,
+                        alias.sourceOccurrenceId,
                         alias.fieldSignature, expression);
                 if (!published.equals(string(verified, "rawSymbol"))) {
                     return "planned source alias " + alias.sourceId
@@ -6360,6 +6618,7 @@ public final class ConcolicRegionRuntime {
                 active.exitOutput = output;
                 judgeFinishedOccurrence(active);
                 if (!active.abandoned) {
+                    active.validateConfiguredSourcePhases();
                     String publicationFailure = configuration()
                             .commitSelectedVersions(active);
                     if (!publicationFailure.isEmpty()) {
@@ -6461,6 +6720,17 @@ public final class ConcolicRegionRuntime {
                 abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
                         "no compatible activation matched replay prefix: "
                                 + active.replayProgress.failure());
+                return;
+            }
+            List<String> unapplied = active.unappliedModelAssignmentKeys();
+            if (!unapplied.isEmpty()) {
+                // A completed replay may publish only after every model row
+                // actually changed its exact Java input. Only rows present in
+                // this task are required; configured sources with no model
+                // assignment deliberately retain their baseline values.
+                abandonOccurrence(active, SKIP_UNAPPLIED_MODEL_ASSIGNMENT,
+                        "terminal reached with unapplied model assignment "
+                                + "keys " + unapplied);
             }
             return;
         }
@@ -6806,6 +7076,18 @@ public final class ConcolicRegionRuntime {
         result.add("symbolizedInputs", GSON.toJsonTree(active.symbolized));
         SymbolicSourceEvidence.writeTo(result,
                 new ArrayList<>(active.symbolicSources.values()));
+        if (!active.activation.configuredSourcePhases.isEmpty()) {
+            result.add(CONFIGURED_SOURCE_PHASE_OBSERVATIONS,
+                    GSON.toJsonTree(
+                            active.configuredSourcePhaseObservations));
+            result.add(CONFIGURED_SOURCE_PHASE_GAPS,
+                    GSON.toJsonTree(active.configuredSourcePhaseGaps));
+        }
+        if (!active.sourceSelectorEvidence.isEmpty()) {
+            result.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD,
+                    GSON.toJsonTree(
+                            active.sourceSelectorEvidence.values()));
+        }
         result.add("branchMappings", GSON.toJsonTree(active.branchMappings));
         if (!active.concreteBranchWitnesses.isEmpty()) {
             result.add("concreteBranchWitnesses",
@@ -6996,6 +7278,7 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
         ModelAssignment assignment = active.assignment(action, path);
+        ModelAssignment applied = null;
         Object modeled = concrete;
         if (assignment != null) {
             modeled = coerceModelValue(assignment.valueType,
@@ -7007,7 +7290,7 @@ public final class ConcolicRegionRuntime {
                         + assignment.valueType + "=" + assignment.value);
                 modeled = concrete;
             } else {
-                active.recordModelAssignment(assignment);
+                applied = assignment;
             }
         }
         Object fresh = freshPrimitiveBox(modeled);
@@ -7016,6 +7299,9 @@ public final class ConcolicRegionRuntime {
             api.symbolizeField(fresh, "value", action.symbol);
             ensurePathRecordingStarted(active);
             active.symbolized.add(action.symbol);
+            if (applied != null) {
+                active.recordModelAssignment(applied);
+            }
             return fresh;
         } catch (Throwable throwable) {
             active.unresolved.add(action.symbol
@@ -8936,9 +9222,37 @@ public final class ConcolicRegionRuntime {
         /** Exact configured source roots materialized by this activation. */
         private final Map<String, JsonObject> symbolicSources =
                 new LinkedHashMap<>();
-        /** Object identity prevents one source id from naming two fields. */
+        /** Object identity prevents one source phase from naming two fields. */
         private final Map<String, Object> symbolicSourceOwners =
                 new LinkedHashMap<>();
+        /** Exact selector values consumed by this active task. */
+        private final Map<String, JsonObject> sourceSelectorEvidence =
+                new LinkedHashMap<>();
+        /** Int source values staged until their producer occurrence commits. */
+        private final Map<String, SourceSelectorPublication>
+                stagedSourceSelectorValues = new LinkedHashMap<>();
+        /** Sources whose application invariant failed after VM materialization. */
+        private final Set<String> rejectedSourcePublications =
+                new LinkedHashSet<>();
+        /** Replay ordinal of each exact configured-source hook site. */
+        private final Map<String, Integer> configuredSourcePhaseOrdinals =
+                new LinkedHashMap<>();
+        /** Planned phase ids observed in this replay, independent of roots. */
+        private final Set<String> observedConfiguredSourcePhases =
+                new LinkedHashSet<>();
+        /** Last exact publish materialized for each application source id. */
+        private final Map<String, String> lastMaterializedPublishBySource =
+                new LinkedHashMap<>();
+        /** Ordered, structured replay ledger emitted with the raw result. */
+        private final List<JsonObject> configuredSourcePhaseObservations =
+                new ArrayList<>();
+        /** Structured fail-closed phase replay gaps. */
+        private final List<JsonObject> configuredSourcePhaseGaps =
+                new ArrayList<>();
+        private final Set<String> configuredSourcePhaseGapIdentities =
+                new LinkedHashSet<>();
+        private int nextConfiguredSourcePhase;
+        private boolean configuredSourcePhasesValidated;
         private final List<String> unresolved = new ArrayList<>();
         private final Set<String> unresolvedUnique = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
@@ -9783,29 +10097,209 @@ public final class ConcolicRegionRuntime {
             }
         }
 
+        /**
+         * Consumes one configured-source hook against the frozen phase ledger.
+         * The call-site invocation ids are replay-local evidence only; the
+         * stable match is (kind, static site, per-site ordinal).
+         */
+        private synchronized ConfiguredSourcePhaseContract.Occurrence
+                observeConfiguredSourcePhase(
+                ConfiguredSourcePhaseContract.Phase kind,
+                String sourceId, String runtimeFieldSignature) {
+            CausynthTraceRecorder.ActiveCallSiteContext context =
+                    CausynthTraceRecorder.currentCallSiteContext();
+            String site = context == null ? "" : context.siteId();
+            List<ConfiguredSourcePhaseContract.Occurrence> declaration =
+                    new ArrayList<>();
+            for (ConfiguredSourcePhaseContract.Occurrence candidate
+                    : activation.configuredSourcePhases) {
+                if (candidate.phase() == kind
+                        && candidate.sourceId().equals(safe(sourceId))
+                        && (site.isEmpty() || candidate.siteId().equals(site))) {
+                    declaration.add(candidate);
+                }
+            }
+            String ordinalKey = kind.name() + "\n" + safe(sourceId) + "\n"
+                    + site;
+            int ordinal = site.isEmpty() ? 0
+                    : configuredSourcePhaseOrdinals.merge(ordinalKey, 1,
+                    Integer::sum);
+            // The replay call may start at baseline ordinal #2.  Its first
+            // execution matches the first retained catalog row, not a
+            // renumbered baselineOrdinal==1 identity.
+            ConfiguredSourcePhaseContract.Occurrence matched =
+                    ordinal > 0 && ordinal <= declaration.size()
+                            ? declaration.get(ordinal - 1) : null;
+
+            JsonObject observation = new JsonObject();
+            observation.addProperty("schemaVersion", 1);
+            observation.addProperty("kind",
+                    "CONFIGURED_SOURCE_PHASE_OBSERVATION");
+            observation.addProperty("authority",
+                    "EXACT_ACTIVE_CALL_SITE_REPLAY_V1");
+            observation.addProperty("observationIndex",
+                    configuredSourcePhaseObservations.size() + 1);
+            observation.addProperty("phaseKind", kind.name());
+            observation.addProperty("siteId", site);
+            observation.addProperty("replayOrdinal", ordinal);
+            observation.addProperty("sourceId", safe(sourceId));
+            observation.addProperty("fieldSignature",
+                    matched == null ? safe(runtimeFieldSignature)
+                            : matched.fieldSignature());
+            observation.addProperty("matchedPhaseId",
+                    matched == null ? "" : matched.phaseId());
+            observation.addProperty("ownerCallId",
+                    context == null ? 0L : context.ownerCallId());
+            observation.addProperty("invocationId",
+                    context == null ? 0L : context.invocationId());
+            observation.addProperty("declaredCallee",
+                    context == null ? "" : context.declaredCallee());
+
+            boolean exact = matched != null
+                    && matched.sourceId().equals(safe(sourceId))
+                    && (kind != ConfiguredSourcePhaseContract.Phase.PUBLISH
+                    || matched.fieldSignature().equals(
+                    safe(runtimeFieldSignature)))
+                    && matched.runtimeDeclaredCallee().equals(
+                    context == null ? "" : context.declaredCallee());
+            boolean selected = matched != null
+                    && activation.selectedConfiguredSourcePhaseIdSet
+                    .contains(matched.phaseId());
+            observation.addProperty("selectedPhase", selected);
+            boolean ordered = exact && (!selected
+                    || nextConfiguredSourcePhase
+                    < activation.selectedConfiguredSourcePhaseIds.size()
+                    && activation.selectedConfiguredSourcePhaseIds.get(
+                    nextConfiguredSourcePhase).equals(matched.phaseId()));
+            observation.addProperty("exactMatch", exact);
+            observation.addProperty("orderMatched", ordered);
+            configuredSourcePhaseObservations.add(observation);
+
+            if (context == null) {
+                addSourcePhaseGap("ACTIVE_CALL_SITE_MISSING",
+                        declaration.isEmpty() ? null : declaration.get(0),
+                        kind.name() + " hook for " + safe(sourceId)
+                                + " has no active call-site context");
+                return null;
+            }
+            if (matched == null) {
+                addSourcePhaseGap("EXTRA", null,
+                        kind.name() + " " + site + "#" + ordinal
+                                + " is outside the replay-call catalog");
+                return null;
+            }
+            if (!exact) {
+                addSourcePhaseGap("DECLARATION_MISMATCH", matched,
+                        "runtime source/field/callee differs from the exact "
+                                + "planned phase");
+                return null;
+            }
+            // A known catalog landmark outside the task-selected subsequence
+            // advances the exact-site cursor but mints/consumes no symbol.
+            if (!selected) return null;
+            if (!observedConfiguredSourcePhases.add(matched.phaseId())) {
+                addSourcePhaseGap("EXTRA", matched,
+                        "one planned phase was observed more than once");
+                return null;
+            }
+            if (!ordered) {
+                ConfiguredSourcePhaseContract.Occurrence expected =
+                        nextConfiguredSourcePhase
+                                < activation.selectedConfiguredSourcePhaseIds
+                                .size()
+                                ? activation.configuredSourcePhasesById.get(
+                                activation.selectedConfiguredSourcePhaseIds
+                                        .get(nextConfiguredSourcePhase))
+                                : null;
+                addSourcePhaseGap("REORDERED", matched,
+                        "expected " + (expected == null ? "<end>"
+                                : expected.phaseId()) + " before "
+                                + matched.phaseId());
+            }
+            while (nextConfiguredSourcePhase
+                    < activation.selectedConfiguredSourcePhaseIds.size()
+                    && observedConfiguredSourcePhases.contains(
+                    activation.selectedConfiguredSourcePhaseIds.get(
+                            nextConfiguredSourcePhase))) {
+                nextConfiguredSourcePhase++;
+            }
+            return matched;
+        }
+
+        private synchronized void addSourcePhaseGap(
+                String gapKind,
+                ConfiguredSourcePhaseContract.Occurrence phase,
+                String detail) {
+            String phaseId = phase == null ? "" : phase.phaseId();
+            String identity = safe(gapKind) + "\n" + phaseId + "\n"
+                    + safe(detail);
+            if (!configuredSourcePhaseGapIdentities.add(identity)) return;
+            JsonObject gap = new JsonObject();
+            gap.addProperty("schemaVersion", 1);
+            gap.addProperty("kind", "CONFIGURED_SOURCE_PHASE_GAP");
+            gap.addProperty("authority",
+                    "FAIL_CLOSED_EXACT_PHASE_REPLAY_V1");
+            gap.addProperty("gapKind", safe(gapKind));
+            gap.addProperty("phaseId", phaseId);
+            gap.addProperty("phaseKind",
+                    phase == null ? "" : phase.phase().name());
+            gap.addProperty("siteId",
+                    phase == null ? "" : phase.siteId());
+            gap.addProperty("baselineOrdinal",
+                    phase == null ? 0 : phase.baselineOrdinal());
+            gap.addProperty("sourceId",
+                    phase == null ? "" : phase.sourceId());
+            gap.addProperty("detail", safe(detail));
+            configuredSourcePhaseGaps.add(gap);
+            addUnresolvedOnce("CONFIGURED_SOURCE_PHASE_" + safe(gapKind)
+                    + ": " + (phaseId.isEmpty() ? safe(detail)
+                    : phaseId + ": " + safe(detail)));
+        }
+
+        /** Terminal fail-closed check for planned phases never replayed. */
+        private synchronized void validateConfiguredSourcePhases() {
+            if (configuredSourcePhasesValidated) return;
+            configuredSourcePhasesValidated = true;
+            for (String selectedPhaseId
+                    : activation.selectedConfiguredSourcePhaseIds) {
+                ConfiguredSourcePhaseContract.Occurrence phase =
+                        activation.configuredSourcePhasesById.get(
+                                selectedPhaseId);
+                if (!observedConfiguredSourcePhases.contains(
+                        selectedPhaseId)) {
+                    addSourcePhaseGap("MISSING", phase,
+                            "planned phase was not observed before the "
+                                    + "selected occurrence terminated");
+                }
+            }
+        }
+
         /** 1=new claim, 0=idempotent same owner, -1=conflict. */
         private synchronized int claimSymbolicSource(
-                String sourceId, Object owner) {
-            Object prior = symbolicSourceOwners.get(sourceId);
+                String sourcePhaseId, Object owner) {
+            Object prior = symbolicSourceOwners.get(sourcePhaseId);
             if (prior == owner) return 0;
             if (prior != null) {
-                addUnresolvedOnce(sourceId
-                        + ": one configured source reached two owners");
+                addUnresolvedOnce(sourcePhaseId
+                        + ": one configured source phase reached two owners");
                 return -1;
             }
-            symbolicSourceOwners.put(sourceId, owner);
+            symbolicSourceOwners.put(sourcePhaseId, owner);
             return 1;
         }
 
         private synchronized void recordSymbolicSource(
-                String sourceId, JsonObject evidence) {
-            JsonObject prior = symbolicSources.putIfAbsent(sourceId,
+                String sourcePhaseId, JsonObject evidence) {
+            JsonObject prior = symbolicSources.putIfAbsent(sourcePhaseId,
                     evidence.deepCopy());
             if (prior != null && !prior.equals(evidence)) {
-                addUnresolvedOnce(sourceId
-                        + ": configured source produced conflicting "
+                addUnresolvedOnce(sourcePhaseId
+                        + ": configured source phase produced conflicting "
                         + "expressions");
+                return;
             }
+            lastMaterializedPublishBySource.put(
+                    string(evidence, "sourceId"), sourcePhaseId);
         }
 
         /** Exact raw VM names staged by this candidate's source hooks. */
@@ -9820,19 +10314,78 @@ public final class ConcolicRegionRuntime {
         }
 
         private synchronized void releaseSymbolicSourceClaim(
-                String sourceId, Object owner) {
-            if (!symbolicSources.containsKey(sourceId)
-                    && symbolicSourceOwners.get(sourceId) == owner) {
-                symbolicSourceOwners.remove(sourceId);
+                String sourcePhaseId, Object owner) {
+            if (!symbolicSources.containsKey(sourcePhaseId)
+                    && symbolicSourceOwners.get(sourcePhaseId) == owner) {
+                symbolicSourceOwners.remove(sourcePhaseId);
             }
         }
 
         private synchronized void validateConfiguredSymbolicSources() {
-            for (String sourceId : activation.sourceFields.keySet()) {
-                if (!symbolicSources.containsKey(sourceId)) {
-                    addUnresolvedOnce(sourceId
+            validateConfiguredSourcePhases();
+            for (String sourcePhaseId : activation.sourceFields.keySet()) {
+                if (!symbolicSources.containsKey(sourcePhaseId)) {
+                    addUnresolvedOnce(sourcePhaseId
                             + ": CONFIGURED_SYMBOLIC_SOURCE_NOT_MATERIALIZED");
                 }
+            }
+            for (String consumePhaseId
+                    : activation.sourceSelectors.keySet()) {
+                if (!sourceSelectorEvidence.containsKey(consumePhaseId)) {
+                    addUnresolvedOnce(consumePhaseId
+                            + ": CONFIGURED_SOURCE_SELECTOR_NOT_CONSUMED");
+                }
+            }
+        }
+
+        private synchronized void stageSourceSelectorValue(
+                String producerPhaseId, String sourceId,
+                String fieldSignature, String rawSymbol, int value) {
+            SourceSelectorPublication publication =
+                    new SourceSelectorPublication(activation.taskId,
+                            producerPhaseId, activation.occurrenceId, sourceId,
+                            fieldSignature, rawSymbol, value);
+            SourceSelectorPublication prior =
+                    stagedSourceSelectorValues.putIfAbsent(
+                            publication.identity(), publication);
+            if (prior != null && !prior.sameValue(publication)) {
+                addUnresolvedOnce(producerPhaseId
+                        + ": CONFIGURED_SOURCE_SELECTOR_CONFLICTING_VALUES");
+            }
+        }
+
+        private synchronized Map<String, SourceSelectorPublication>
+                stagedSourceSelectorValues() {
+            return new LinkedHashMap<>(stagedSourceSelectorValues);
+        }
+
+        private synchronized void rejectConfiguredSourcePublication(
+                String sourceId, String detail) {
+            String source = safe(sourceId);
+            String sourcePhaseId = lastMaterializedPublishBySource.get(source);
+            if (sourcePhaseId == null || sourcePhaseId.isEmpty()) {
+                addUnresolvedOnce(source
+                        + ": CONFIGURED_SYMBOLIC_SOURCE_REJECT_WITHOUT_"
+                        + "MATERIALIZED_PHASE: " + safe(detail));
+                return;
+            }
+            rejectedSourcePublications.add(sourcePhaseId);
+            addUnresolvedOnce(sourcePhaseId
+                    + ": CONFIGURED_SYMBOLIC_SOURCE_REJECTED: " + safe(detail));
+        }
+
+        private synchronized boolean sourcePublicationRejected(
+                String sourcePhaseId) {
+            return rejectedSourcePublications.contains(safe(sourcePhaseId));
+        }
+
+        private synchronized void recordSourceSelectorEvidence(
+                String consumePhaseId, JsonObject evidence) {
+            JsonObject prior = sourceSelectorEvidence.putIfAbsent(
+                    safe(consumePhaseId), evidence.deepCopy());
+            if (prior != null && !prior.equals(evidence)) {
+                addUnresolvedOnce(consumePhaseId
+                        + ": CONFIGURED_SOURCE_SELECTOR_EVIDENCE_CONFLICT");
             }
         }
 
@@ -10007,16 +10560,17 @@ public final class ConcolicRegionRuntime {
 
         /** One solver value for one exact configured source hook. */
         private ModelAssignment configuredSourceAssignment(
-                String sourceId, String fieldSignature) {
+                String sourcePhaseId, String sourceId,
+                String fieldSignature) {
             ModelAssignment selected = null;
             for (ModelAssignment candidate : activation.modelAssignments) {
-                if (!candidate.matchesConfiguredSource(sourceId,
-                        fieldSignature)
+                if (!candidate.matchesConfiguredSource(sourcePhaseId,
+                        sourceId, fieldSignature)
                         || appliedModelAssignments.contains(candidate.key)) {
                     continue;
                 }
                 if (selected != null) {
-                    addUnresolvedOnce(sourceId
+                    addUnresolvedOnce(sourcePhaseId
                             + ": ambiguous configured source models");
                     return null;
                 }
@@ -10056,6 +10610,17 @@ public final class ConcolicRegionRuntime {
 
         private void recordModelAssignment(ModelAssignment assignment) {
             appliedModelAssignments.add(assignment.key);
+        }
+
+        /** Solver instructions this occurrence reached terminal without using. */
+        private List<String> unappliedModelAssignmentKeys() {
+            List<String> result = new ArrayList<>();
+            for (ModelAssignment assignment : activation.modelAssignments) {
+                if (!appliedModelAssignments.contains(assignment.key)) {
+                    result.add(assignment.key);
+                }
+            }
+            return result;
         }
     }
 
@@ -10672,6 +11237,7 @@ public final class ConcolicRegionRuntime {
         private final String valueType;
         private final String value;
         private final String referenceSourceInputSymbol;
+        private final String configuredSourcePhaseId;
         private final String configuredSourceId;
         private final String configuredSourceFieldSignature;
         private final boolean modelIsNull;
@@ -10690,12 +11256,14 @@ public final class ConcolicRegionRuntime {
         private final List<String> path = new ArrayList<>();
 
         ModelAssignment(JsonObject json) {
-            this.engineSymbol = string(json, "engineSymbol");
+            this.engineSymbol = firstNonBlank(string(json, "engineSymbol"));
             this.inputSymbol = string(json, "inputSymbol");
             this.valueType = string(json, "valueType");
             this.value = string(json, "value");
             this.referenceSourceInputSymbol = string(json,
                     "referenceSourceInputSymbol");
+            this.configuredSourcePhaseId = string(json,
+                    "configuredSourcePhaseId");
             this.configuredSourceId = string(json,
                     "configuredSourceId");
             this.configuredSourceFieldSignature = string(json,
@@ -10730,8 +11298,7 @@ public final class ConcolicRegionRuntime {
                 }
             }
             this.key = firstNonBlank(string(json, "modelAssignmentKey"),
-                    engineSymbol,
-                    inputSymbol + ":" + joinFieldPath(path));
+                    engineSymbol);
         }
 
         private boolean exactNullReferenceModel(SymbolizeAction action) {
@@ -10743,16 +11310,22 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean configuredSourceAssignment() {
-            return !configuredSourceId.isEmpty()
+            return !configuredSourcePhaseId.isEmpty()
+                    || !configuredSourceId.isEmpty()
                     || !configuredSourceFieldSignature.isEmpty();
         }
 
-        private boolean matchesConfiguredSource(String sourceId,
+        private boolean matchesConfiguredSource(String sourcePhaseId,
+                                                 String sourceId,
                                                  String fieldSignature) {
-            return configuredSourceId.equals(safe(sourceId))
+            return configuredSourcePhaseId.equals(safe(sourcePhaseId))
+                    && configuredSourceId.equals(safe(sourceId))
                     && configuredSourceFieldSignature.equals(
-                    safe(fieldSignature))
-                    && inputSymbol.equals("SOURCE:" + safe(sourceId));
+                            safe(fieldSignature))
+                    && inputSymbol.equals("SOURCE_PHASE:"
+                    + safe(sourcePhaseId))
+                    && engineSymbol.equals(configuredSourceEngineSymbol(
+                    sourcePhaseId, sourceId, fieldSignature));
         }
 
         private boolean referenceAlias() {
@@ -10878,16 +11451,19 @@ public final class ConcolicRegionRuntime {
         private final String threadName;
         private final String sourceKey;
         private final String requestApi;
+        private final boolean registeredSourceAnchor;
 
         private RootContextSelector(boolean receiverScoped,
                                     String receiverRuntimeClass,
                                     String threadName, String sourceKey,
-                                    String requestApi) {
+                                    String requestApi,
+                                    boolean registeredSourceAnchor) {
             this.receiverScoped = receiverScoped;
             this.receiverRuntimeClass = safe(receiverRuntimeClass);
             this.threadName = stableReplayThreadContext(threadName);
             this.sourceKey = safe(sourceKey);
             this.requestApi = safe(requestApi);
+            this.registeredSourceAnchor = registeredSourceAnchor;
         }
 
         private static RootContextSelector from(JsonObject selector) {
@@ -10899,18 +11475,41 @@ public final class ConcolicRegionRuntime {
             JsonObject anchor = object(selector, "causalAnchor");
             String sourceKey = string(anchor, "sourceKey");
             String requestApi = string(anchor, "requestApi");
+            String anchorKind = string(anchor, "kind");
+            boolean registeredSource = RuntimeRegionPlanner
+                    .ANCHOR_REGISTERED_SOURCE.equals(anchorKind);
+            boolean unregisteredSource = RuntimeRegionPlanner
+                    .ANCHOR_UNREGISTERED_SOURCE.equals(anchorKind);
+            boolean sentinelSource = RuntimeRegionPlanner.UNREGISTERED_SOURCE
+                    .key().equals(sourceKey);
             if (!global && (receiverClass.isEmpty()
                     || !receiverClass.equals(receiverClass.trim())
                     || !"RECEIVER_CONTEXT".equals(kind)
                     || selector.has("thread") && (thread.isEmpty()
                     || !thread.equals(thread.trim())))
-                    || sourceKey.isEmpty()) {
+                    || sourceKey.isEmpty()
+                    || !sourceKey.equals(sourceKey.trim())) {
                 throw new IllegalArgumentException(
                         "rootSelector requires an exact receiver context and "
                                 + "a causal anchor naming its source");
             }
+            if (!registeredSource && !unregisteredSource
+                    || unregisteredSource != sentinelSource) {
+                throw new IllegalArgumentException(
+                        "rootSelector causalAnchor.kind must be exactly "
+                                + RuntimeRegionPlanner
+                                .ANCHOR_REGISTERED_SOURCE + " for a named "
+                                + "source or " + RuntimeRegionPlanner
+                                .ANCHOR_UNREGISTERED_SOURCE + " for "
+                                + RuntimeRegionPlanner.UNREGISTERED_SOURCE
+                                .key());
+            }
             return new RootContextSelector(!global, receiverClass, thread,
-                    sourceKey, requestApi);
+                    sourceKey, requestApi, registeredSource);
+        }
+
+        private boolean requiresExactRegisteredReceiver() {
+            return receiverScoped && registeredSourceAnchor;
         }
 
         /** Whether this root invocation is a candidate for the occurrence. */
@@ -11241,6 +11840,18 @@ public final class ConcolicRegionRuntime {
         /** Explicit source fields this output relation is required to mint. */
         private final Map<String, SourceField> sourceFields =
                 new LinkedHashMap<>();
+        /** Live values this task may request from exact source occurrences. */
+        private final Map<String, ConfiguredSourceSelectorContract.Selector>
+                sourceSelectors = new LinkedHashMap<>();
+        /** Exact baseline hook executions, in recorded event order. */
+        private final List<ConfiguredSourcePhaseContract.Occurrence>
+                configuredSourcePhases;
+        /** Task-required ordered subsequence within the replay-call catalog. */
+        private final List<String> selectedConfiguredSourcePhaseIds;
+        private final Set<String> selectedConfiguredSourcePhaseIdSet;
+        /** Strict phase lookup; phase ids never alias source ids. */
+        private final Map<String, ConfiguredSourcePhaseContract.Occurrence>
+                configuredSourcePhasesById = new LinkedHashMap<>();
         /** Response leaves this caller must attach after its selected cut. */
         private final Set<String> responseAttachPortIds =
                 new LinkedHashSet<>();
@@ -11280,6 +11891,9 @@ public final class ConcolicRegionRuntime {
         /** Source identities arriving at exact selected input ports. */
         private final Map<String, LinkedHashMap<String, PlannedSourceAlias>>
                 sourceAliasesByInputPort = new LinkedHashMap<>();
+        /** Logical source versions newly defined at each output phase. */
+        private final Map<String, Set<String>> ownSourceAliasesByOutputPort =
+                new LinkedHashMap<>();
         /** One upstream Map admission per exact access-field declaration. */
         private final Map<String, PlannedMapAdmission> mapAdmissions =
                 new LinkedHashMap<>();
@@ -11321,6 +11935,12 @@ public final class ConcolicRegionRuntime {
                             "activationId"));
             this.rootMethod = task.rootMethod();
             this.rootContextSelector = RootContextSelector.from(rootSelector);
+            if (!this.sourceKey.equals(rootContextSelector.sourceKey)) {
+                throw new IllegalArgumentException(
+                        "rootSelector causal anchor names "
+                                + rootContextSelector.sourceKey
+                                + " instead of task source " + this.sourceKey);
+            }
             this.rootArgumentSelector = RootArgumentSelector.from(
                     rootSelector);
             this.declaredSymbolize = new ArrayList<>();
@@ -11338,6 +11958,46 @@ public final class ConcolicRegionRuntime {
             this.recordedPrimitiveOutputs = new LinkedHashMap<>();
             this.executionScopeMethods = new LinkedHashSet<>();
             this.edgeBindings = task.edgeBindings().deepCopy();
+            List<ConfiguredSourcePhaseContract.Occurrence> decodedPhases =
+                    ConfiguredSourcePhaseContract.occurrencesOf(
+                            task.json().get(
+                                    ConfiguredSourcePhaseContract.PLAN_FIELD));
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : decodedPhases) {
+                if (!occurrenceId.equals(phase.sourceOccurrenceId())
+                        || configuredSourcePhasesById.putIfAbsent(
+                        phase.phaseId(), phase) != null) {
+                    throw new IllegalArgumentException(
+                            "configured source phases are not one strict "
+                                    + "ordered occurrence ledger in " + taskId);
+                }
+            }
+            this.configuredSourcePhases = Collections.unmodifiableList(
+                    new ArrayList<>(decodedPhases));
+            this.selectedConfiguredSourcePhaseIds =
+                    ConfiguredSourcePhaseContract.selectedPhaseIdsOf(
+                            task.json(), decodedPhases);
+            this.selectedConfiguredSourcePhaseIdSet =
+                    Collections.unmodifiableSet(new LinkedHashSet<>(
+                            selectedConfiguredSourcePhaseIds));
+            for (ConfiguredSourceSelectorContract.Selector selector
+                    : ConfiguredSourceSelectorContract.decode(task.json())) {
+                ConfiguredSourcePhaseContract.Occurrence consume =
+                        configuredSourcePhasesById.get(
+                                selector.consumePhaseId());
+                if (consume == null
+                        || consume.phase()
+                        != ConfiguredSourcePhaseContract.Phase.CONSUME
+                        || !selectedConfiguredSourcePhaseIdSet.contains(
+                        consume.phaseId())
+                        || !selector.sourceId().equals(consume.sourceId())
+                        || sourceSelectors.putIfAbsent(
+                        selector.consumePhaseId(), selector) != null) {
+                    throw new IllegalArgumentException(
+                            "configured selector does not name one exact "
+                                    + "consume phase in " + taskId);
+                }
+            }
             Set<String> selectedOutputCells = new LinkedHashSet<>();
             if (task.outputClosure() != null) {
                 this.executionScopeMethods.addAll(
@@ -11406,7 +12066,20 @@ public final class ConcolicRegionRuntime {
                     recordSeedOutcomes(siteId, branch.get("occurrences"));
                 }
             }
-            for (JsonElement element : task.modelAssignments()) {
+            JsonElement encodedAssignments = task.json().get(
+                    "modelAssignments");
+            if (encodedAssignments != null
+                    && !encodedAssignments.isJsonArray()) {
+                throw new IllegalArgumentException(
+                        "modelAssignments must be an array in " + taskId);
+            }
+            JsonArray assignments = encodedAssignments == null
+                    ? new JsonArray() : encodedAssignments.getAsJsonArray();
+            for (JsonElement element : assignments) {
+                if (element == null || !element.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "model assignment must be an object in " + taskId);
+                }
                 modelAssignments.add(new ModelAssignment(
                         element.getAsJsonObject()));
             }
@@ -11465,28 +12138,126 @@ public final class ConcolicRegionRuntime {
                 }
                 SourceField source = SourceField.from(
                         element.getAsJsonObject());
-                if (!selectedOutputCells.containsAll(
+                ConfiguredSourcePhaseContract.Occurrence publish =
+                        configuredSourcePhasesById.get(
+                                source.sourcePhaseId);
+                if (publish == null
+                        || publish.phase()
+                        != ConfiguredSourcePhaseContract.Phase.PUBLISH
+                        || !selectedConfiguredSourcePhaseIdSet.contains(
+                        publish.phaseId())
+                        || !source.sourceId.equals(publish.sourceId())
+                        || !source.fieldSignature.equals(
+                        publish.fieldSignature())) {
+                    throw new IllegalArgumentException(
+                            "configured symbolic source does not name one "
+                                    + "exact publish phase in " + taskId
+                                    + ": " + source.sourcePhaseId);
+                }
+                Set<String> declaredInputPorts = new LinkedHashSet<>();
+                Set<String> relationBoundInputPorts = new LinkedHashSet<>();
+                Map<String, Set<String>> inputFieldsByPort =
+                        new LinkedHashMap<>();
+                for (JsonElement actionElement : task.inputActions().all()) {
+                    JsonObject action = actionElement.getAsJsonObject();
+                    String input = firstNonBlank(string(action, "portId"),
+                            string(action, "symbol"));
+                    if (!input.isEmpty()) declaredInputPorts.add(input);
+                    String actionField = firstNonBlank(
+                            string(action, "accessFieldSignature"),
+                            string(action, "declaredFieldSignature"),
+                            string(action, "leafFieldSignature"));
+                    if (!input.isEmpty() && !actionField.isEmpty()) {
+                        inputFieldsByPort.computeIfAbsent(input,
+                                ignored -> new LinkedHashSet<>()).add(
+                                actionField);
+                    }
+                    if ("EXACT_INCOMING_COMPOSITION".equals(
+                            string(action, "symbolicDemand"))
+                            || !string(action,
+                            "selectedIncomingEdgeId").isEmpty()
+                            || !string(action,
+                            "intraRegionReadFromAuthority").isEmpty()) {
+                        relationBoundInputPorts.add(input);
+                    }
+                }
+                boolean outputSource = !source
+                        .requiredOutputFieldSignatures.isEmpty();
+                boolean targetSource = !source
+                        .requiredTargetInputPorts.isEmpty();
+                boolean exactTargetFields = true;
+                for (String input : source.requiredTargetInputPorts) {
+                    if (!inputFieldsByPort.getOrDefault(input,
+                            Collections.<String>emptySet()).contains(
+                            source.fieldSignature)) {
+                        exactTargetFields = false;
+                    }
+                }
+                if (outputSource && !selectedOutputCells.containsAll(
                         source.requiredOutputFieldSignatures)) {
                     throw new IllegalArgumentException(
                             "configured symbolic source requires output "
                                     + "outside this task closure: "
                                     + source.sourceId);
                 }
-                if (sourceFields.put(source.sourceId, source) != null) {
+                if (targetSource
+                        && (ClosureGoalKind.fromTask(task.json())
+                        != ClosureGoalKind.TARGET_REACH_CLOSURE
+                        || !declaredInputPorts.containsAll(
+                        source.requiredTargetInputPorts)
+                        || !exactTargetFields
+                        || !Collections.disjoint(
+                        source.requiredTargetInputPorts,
+                        relationBoundInputPorts)
+                        || !Collections.disjoint(
+                        source.requiredTargetInputPorts,
+                        responseAttachPortIds))) {
                     throw new IllegalArgumentException(
-                            "task declares one symbolic source twice: "
+                            "configured symbolic source requires a local, "
+                                    + "non-attached target input: "
                                     + source.sourceId);
                 }
+                if (sourceFields.put(source.sourcePhaseId, source) != null) {
+                    throw new IllegalArgumentException(
+                            "task declares one symbolic source phase twice: "
+                                    + source.sourcePhaseId);
+                }
+            }
+            Set<String> selectedPublishPhases = new LinkedHashSet<>();
+            Set<String> selectedConsumePhases = new LinkedHashSet<>();
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : configuredSourcePhases) {
+                if (!selectedConfiguredSourcePhaseIdSet.contains(
+                        phase.phaseId())) {
+                    continue;
+                }
+                if (phase.phase()
+                        == ConfiguredSourcePhaseContract.Phase.PUBLISH) {
+                    selectedPublishPhases.add(phase.phaseId());
+                } else {
+                    selectedConsumePhases.add(phase.phaseId());
+                }
+            }
+            if (!selectedPublishPhases.equals(sourceFields.keySet())
+                    || !selectedConsumePhases.equals(
+                    sourceSelectors.keySet())) {
+                throw new IllegalArgumentException(
+                        "selected configured source phases do not match "
+                                + "runtime materialization/selector bindings "
+                                + "in " + taskId);
             }
             for (ModelAssignment assignment : modelAssignments) {
                 if (!assignment.configuredSourceAssignment()) continue;
                 SourceField source = sourceFields.get(
-                        assignment.configuredSourceId);
+                        assignment.configuredSourcePhaseId);
                 if (source == null
+                        || !assignment.configuredSourceId.equals(
+                        source.sourceId)
                         || !assignment.configuredSourceFieldSignature.equals(
                         source.fieldSignature)
                         || !assignment.matchesConfiguredSource(
-                        source.sourceId, source.fieldSignature)
+                        source.sourcePhaseId, source.sourceId,
+                        source.fieldSignature)
                         || assignment.hasContainerTarget()
                         || assignment.referenceAlias()) {
                     throw new IllegalArgumentException(
@@ -11516,20 +12287,29 @@ public final class ConcolicRegionRuntime {
         }
 
         private static final class SourceField {
+            private final String sourcePhaseId;
             private final String sourceId;
             private final String fieldSignature;
             private final Set<String> requiredOutputFieldSignatures;
+            private final Set<String> requiredTargetInputPorts;
 
-            private SourceField(String sourceId, String fieldSignature,
-                                Set<String> requiredOutputFieldSignatures) {
+            private SourceField(String sourcePhaseId, String sourceId,
+                                String fieldSignature,
+                                Set<String> requiredOutputFieldSignatures,
+                                Set<String> requiredTargetInputPorts) {
+                this.sourcePhaseId = sourcePhaseId;
                 this.sourceId = sourceId;
                 this.fieldSignature = fieldSignature;
                 this.requiredOutputFieldSignatures =
                         Collections.unmodifiableSet(new LinkedHashSet<>(
                                 requiredOutputFieldSignatures));
+                this.requiredTargetInputPorts =
+                        Collections.unmodifiableSet(new LinkedHashSet<>(
+                                requiredTargetInputPorts));
             }
 
             private static SourceField from(JsonObject row) {
+                String sourcePhaseId = string(row, "sourcePhaseId");
                 String sourceId = string(row, "sourceId");
                 String field = string(row, "fieldSignature");
                 Set<String> outputs = new LinkedHashSet<>();
@@ -11545,16 +12325,34 @@ public final class ConcolicRegionRuntime {
                                 "malformed configured symbolic source outputs");
                     }
                 }
+                Set<String> targetInputs = new LinkedHashSet<>();
+                String targetInput = string(row,
+                        "requiredTargetInputPort");
+                if (!targetInput.isEmpty()) targetInputs.add(targetInput);
+                for (JsonElement element : array(row,
+                        "requiredTargetInputPorts")) {
+                    if (!element.isJsonPrimitive()
+                            || safe(element.getAsString()).isEmpty()
+                            || !targetInputs.add(element.getAsString())) {
+                        throw new IllegalArgumentException(
+                                "malformed configured symbolic source target "
+                                        + "inputs");
+                    }
+                }
                 if (!SymbolicSourceEvidence.DECLARATION_AUTHORITY.equals(
                         string(row, "authority"))
-                        || sourceId.isEmpty() || field.isEmpty()
-                        || outputs.isEmpty()
+                        || sourcePhaseId.isEmpty() || sourceId.isEmpty()
+                        || field.isEmpty()
+                        || outputs.isEmpty() == targetInputs.isEmpty()
                         || (!output.isEmpty()
-                        && row.has("requiredOutputFieldSignatures"))) {
+                        && row.has("requiredOutputFieldSignatures"))
+                        || (!targetInput.isEmpty()
+                        && row.has("requiredTargetInputPorts"))) {
                     throw new IllegalArgumentException(
                             "malformed configured symbolic source field");
                 }
-                return new SourceField(sourceId, field, outputs);
+                return new SourceField(sourcePhaseId, sourceId, field, outputs,
+                        targetInputs);
             }
         }
 
@@ -11572,10 +12370,15 @@ public final class ConcolicRegionRuntime {
                 for (SourceField source : sourceFields.values()) {
                     if (source.requiredOutputFieldSignatures.contains(
                             output.getValue())) {
-                        addSourceAliasToOutput(output.getKey(),
-                                new PlannedSourceAlias(taskId,
-                                        source.sourceId, occurrenceId,
-                                        source.fieldSignature));
+                        PlannedSourceAlias alias = new PlannedSourceAlias(
+                                taskId, source.sourcePhaseId,
+                                source.sourceId, occurrenceId,
+                                source.fieldSignature);
+                        ownSourceAliasesByOutputPort.computeIfAbsent(
+                                output.getKey(),
+                                ignored -> new LinkedHashSet<>()).add(
+                                alias.logicalIdentity());
+                        addSourceAliasToOutput(output.getKey(), alias);
                     }
                 }
             }
@@ -11585,6 +12388,12 @@ public final class ConcolicRegionRuntime {
         private boolean addSourceAliasToOutput(
                 String outputPort, PlannedSourceAlias alias) {
             if (alias == null || safe(outputPort).isEmpty()) return false;
+            Set<String> own = ownSourceAliasesByOutputPort.get(
+                    safe(outputPort));
+            if (own != null && own.contains(alias.logicalIdentity())
+                    && !taskId.equals(alias.sourceTaskId)) {
+                return false;
+            }
             LinkedHashMap<String, PlannedSourceAlias> aliases =
                     sourceAliasesByOutputPort.computeIfAbsent(
                             safe(outputPort), ignored -> new LinkedHashMap<>());
@@ -11627,6 +12436,29 @@ public final class ConcolicRegionRuntime {
                 return Collections.emptyList();
             }
             return new ArrayList<>(aliases.values());
+        }
+
+        /** Exact predecessor versions visible before this task's output. */
+        private List<PlannedSourceAlias> sourceAliasesForSelector(
+                ConfiguredSourceSelectorContract.Selector selector) {
+            if (selector == null) return Collections.emptyList();
+            Map<String, PlannedSourceAlias> exact = new LinkedHashMap<>();
+            for (Map<String, PlannedSourceAlias> aliases
+                    : sourceAliasesByInputPort.values()) {
+                for (PlannedSourceAlias alias : aliases.values()) {
+                    if (selector.sourceOccurrenceId().equals(
+                            alias.sourceOccurrenceId)
+                            && selector.producerPhaseId().equals(
+                            alias.sourcePhaseId)
+                            && selector.sourceId().equals(alias.sourceId)
+                            && selector.fieldSignature().equals(
+                            alias.fieldSignature)
+                            && !taskId.equals(alias.sourceTaskId)) {
+                        exact.putIfAbsent(alias.identity(), alias);
+                    }
+                }
+            }
+            return new ArrayList<>(exact.values());
         }
 
         private PlannedMapAdmission mapAdmission(
@@ -12055,6 +12887,60 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * One accepted configured-source value published inside this workload
+     * session for selector-only consumers.
+     *
+     * <p>The key deliberately excludes {@code taskId}: a path replay replaces
+     * the seed producer task id while retaining the exact source occurrence.
+     * The value still records the actual task id so consumer evidence and the
+     * worker companion filter can name the case that produced it.</p>
+     */
+    private static final class SourceSelectorPublication {
+        private final String sourceTaskId;
+        private final String producerPhaseId;
+        private final String sourceOccurrenceId;
+        private final String sourceId;
+        private final String fieldSignature;
+        private final String rawSymbol;
+        private final int value;
+
+        private SourceSelectorPublication(
+                String sourceTaskId, String producerPhaseId,
+                String sourceOccurrenceId,
+                String sourceId, String fieldSignature,
+                String rawSymbol, int value) {
+            this.sourceTaskId = safe(sourceTaskId);
+            this.producerPhaseId = safe(producerPhaseId);
+            this.sourceOccurrenceId = safe(sourceOccurrenceId);
+            this.sourceId = safe(sourceId);
+            this.fieldSignature = safe(fieldSignature);
+            this.rawSymbol = safe(rawSymbol);
+            this.value = value;
+            if (this.sourceTaskId.isEmpty()
+                    || this.producerPhaseId.isEmpty()
+                    || this.sourceOccurrenceId.isEmpty()
+                    || this.sourceId.isEmpty()
+                    || this.fieldSignature.isEmpty()
+                    || this.rawSymbol.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "configured source selector publication is incomplete");
+            }
+        }
+
+        private String identity() {
+            return producerPhaseId;
+        }
+
+        private boolean sameValue(SourceSelectorPublication other) {
+            return other != null
+                    && identity().equals(other.identity())
+                    && sourceTaskId.equals(other.sourceTaskId)
+                    && rawSymbol.equals(other.rawSymbol)
+                    && value == other.value;
+        }
+    }
+
+    /**
      * The bounded campaign this JVM executes.
      *
      * <p>A campaign of one is the ordinary single-task run; nothing about it
@@ -12098,9 +12984,15 @@ public final class ConcolicRegionRuntime {
         /** Accepted scalar/reference producer versions by task/output port. */
         private final Map<String, Long> publishedFieldVersions =
                 new ConcurrentHashMap<>();
-        /** Accepted configured source roots by producer task/source id. */
+        /** Accepted configured source roots by producer task/source phase. */
         private final Map<String, String> publishedSourceSymbols =
                 new ConcurrentHashMap<>();
+        /** Unique current-session producer task for each source selector. */
+        private final Map<String, String> sourceSelectorProducerTasks =
+                new LinkedHashMap<>();
+        /** Accepted live int values, keyed by producer phase id. */
+        private final Map<String, SourceSelectorPublication>
+                publishedSourceSelectorValues = new ConcurrentHashMap<>();
         private boolean unansweredAddressesPublished;
 
         private Configuration(Path resultFile, List<RuntimeTask> tasks) {
@@ -12109,8 +13001,115 @@ public final class ConcolicRegionRuntime {
             this.candidateLive = new boolean[tasks.size()];
             this.occurrenceClaimed = new boolean[tasks.size()];
             indexConfiguredSourceAliases();
+            indexConfiguredSourceSelectors();
             indexPlannedMapAdmissions();
             indexPlannedFieldAdmissions();
+        }
+
+        /** Resolves selector identities after replay task ids are finalized. */
+        private void indexConfiguredSourceSelectors() {
+            for (RuntimeTask consumer : tasks) {
+                for (ConfiguredSourceSelectorContract.Selector selector
+                        : consumer.sourceSelectors.values()) {
+                    List<PlannedSourceAlias> upstream =
+                            consumer.sourceAliasesForSelector(selector);
+                    if (upstream.size() != 1) {
+                        List<String> candidates = new ArrayList<>();
+                        for (PlannedSourceAlias candidate : upstream) {
+                            candidates.add(candidate.sourceTaskId + "@"
+                                    + candidate.sourceOccurrenceId + ":"
+                                    + candidate.sourcePhaseId);
+                        }
+                        Collections.sort(candidates);
+                        throw new IllegalArgumentException(
+                                "configured source selector in "
+                                        + consumer.taskId + "@"
+                                        + consumer.occurrenceId
+                                        + " requires one causal input-edge "
+                                        + "producer for "
+                                        + selector.producerPhaseId()
+                                        + "; found " + upstream.size()
+                                        + " candidates " + candidates);
+                    }
+                    PlannedSourceAlias selected = upstream.get(0);
+                    List<RuntimeTask> matching = new ArrayList<>();
+                    for (RuntimeTask producer : tasks) {
+                        if (!selected.sourceTaskId.equals(producer.taskId)
+                                || !selector.sourceOccurrenceId().equals(
+                                producer.occurrenceId)) {
+                            continue;
+                        }
+                        RuntimeTask.SourceField source =
+                                producer.sourceFields.get(
+                                        selector.producerPhaseId());
+                        if (source != null
+                                && selector.sourceId().equals(source.sourceId)
+                                && selector.fieldSignature().equals(
+                                source.fieldSignature)) {
+                            matching.add(producer);
+                        }
+                    }
+                    if (matching.size() != 1) {
+                        List<String> candidates = new ArrayList<>();
+                        for (RuntimeTask candidate : matching) {
+                            candidates.add(candidate.taskId + "@"
+                                    + candidate.occurrenceId);
+                        }
+                        Collections.sort(candidates);
+                        throw new IllegalArgumentException(
+                                "configured source selector in "
+                                        + consumer.taskId + "@"
+                                        + consumer.occurrenceId + " region "
+                                        + consumer.regionId + " requires one "
+                                        + "current-session producer for "
+                                        + selector.sourceId() + " "
+                                        + selector.fieldSignature()
+                                        + "; found " + matching.size()
+                                        + " candidates " + candidates);
+                    }
+                    String identity = selectorIdentity(selector);
+                    String producerTask = matching.get(0).taskId;
+                    String prior = sourceSelectorProducerTasks.putIfAbsent(
+                            identity, producerTask);
+                    if (prior != null && !prior.equals(producerTask)) {
+                        throw new IllegalArgumentException(
+                                "one configured source selector resolved to "
+                                        + "two producer tasks: "
+                                        + selector.sourceId());
+                    }
+                }
+            }
+        }
+
+        private static String selectorIdentity(
+                ConfiguredSourceSelectorContract.Selector selector) {
+            return selector.producerPhaseId();
+        }
+
+        private boolean selectedSourceValueProducer(
+                RuntimeTask producer, String producerPhaseId) {
+            if (producer == null) return false;
+            return producer.taskId.equals(
+                    sourceSelectorProducerTasks.get(
+                            safe(producerPhaseId)));
+        }
+
+        private SourceSelectorPublication publishedSourceSelector(
+                RuntimeTask consumer,
+                ConfiguredSourceSelectorContract.Selector selector) {
+            if (consumer == null || selector == null
+                    || consumer.sourceSelectors.get(
+                    selector.consumePhaseId())
+                    != selector) {
+                return null;
+            }
+            String identity = selectorIdentity(selector);
+            String producer = sourceSelectorProducerTasks.get(identity);
+            SourceSelectorPublication publication =
+                    publishedSourceSelectorValues.get(identity);
+            return publication != null
+                    && publication.sourceTaskId.equals(producer)
+                    ? publication : null;
         }
 
         /**
@@ -12122,36 +13121,60 @@ public final class ConcolicRegionRuntime {
             for (RuntimeTask task : tasks) {
                 task.initializeConfiguredSourceAliases();
             }
+            Map<String, String> edgeEndpoints = new LinkedHashMap<>();
             boolean changed;
             do {
                 changed = false;
-                for (RuntimeTask consumer : tasks) {
-                    for (JsonElement element : consumer.edgeBindings) {
+                Set<String> seenEdges = new LinkedHashSet<>();
+                for (RuntimeTask edgeOwner : tasks) {
+                    for (JsonElement element : edgeOwner.edgeBindings) {
                         if (!element.isJsonObject()) continue;
                         JsonObject binding = element.getAsJsonObject();
                         String edgeId = string(binding, "edgeId");
                         String producerOccurrence = string(binding,
                                 "fromOccurrenceId");
+                        String consumerOccurrence = string(binding,
+                                "toOccurrenceId");
                         String outputPort = string(binding,
                                 "fromOutputPort");
                         String inputPort = string(binding, "toInputPort");
+                        String edgeKey = edgeId + "\n" + producerOccurrence
+                                + "\n" + outputPort + "\n"
+                                + consumerOccurrence + "\n" + inputPort;
                         if (edgeId.isEmpty() || producerOccurrence.isEmpty()
+                                || consumerOccurrence.isEmpty()
                                 || outputPort.isEmpty()
                                 || inputPort.isEmpty()) {
                             continue;
                         }
-                        for (RuntimeTask producer : tasks) {
-                            if (!producerOccurrence.equals(
-                                    producer.occurrenceId)
-                                    || !producer.publishesSelectedEdge(
-                                    outputPort, edgeId)) {
-                                continue;
-                            }
-                            for (PlannedSourceAlias alias
-                                    : producer.sourceAliasesForOutputPort(
-                                    outputPort)) {
-                                changed |= consumer.addSourceAliasToInput(
-                                        inputPort, alias);
+                        String endpoints = producerOccurrence + "\n"
+                                + outputPort + "\n" + consumerOccurrence
+                                + "\n" + inputPort;
+                        String priorEndpoints = edgeEndpoints.putIfAbsent(
+                                edgeId, endpoints);
+                        if (priorEndpoints != null
+                                && !priorEndpoints.equals(endpoints)) {
+                            throw new IllegalArgumentException(
+                                    "configured source flow edge " + edgeId
+                                            + " has conflicting endpoints");
+                        }
+                        if (!seenEdges.add(edgeKey)) continue;
+                        for (RuntimeTask consumer : tasks) {
+                            if (!consumerOccurrence.equals(
+                                    consumer.occurrenceId)) continue;
+                            for (RuntimeTask producer : tasks) {
+                                if (!producerOccurrence.equals(
+                                        producer.occurrenceId)
+                                        || !producer.publishesSelectedEdge(
+                                        outputPort, edgeId)) {
+                                    continue;
+                                }
+                                for (PlannedSourceAlias alias
+                                        : producer.sourceAliasesForOutputPort(
+                                        outputPort)) {
+                                    changed |= consumer.addSourceAliasToInput(
+                                            inputPort, alias);
+                                }
                             }
                         }
                     }
@@ -12429,8 +13452,8 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean selectedSourceProducer(RuntimeTask producer,
-                                               String sourceId) {
-            if (producer == null || safe(sourceId).isEmpty()) return false;
+                                               String sourcePhaseId) {
+            if (producer == null || safe(sourcePhaseId).isEmpty()) return false;
             for (RuntimeTask consumer : tasks) {
                 for (PlannedFieldAdmission admission
                         : consumer.fieldAdmissions.values()) {
@@ -12442,7 +13465,8 @@ public final class ConcolicRegionRuntime {
                     for (PlannedSourceAlias alias
                             : admission.sourceAliases) {
                         if (producer.taskId.equals(alias.sourceTaskId)
-                                && sourceId.equals(alias.sourceId)) {
+                                && sourcePhaseId.equals(
+                                alias.sourcePhaseId)) {
                             return true;
                         }
                     }
@@ -12505,19 +13529,81 @@ public final class ConcolicRegionRuntime {
         private synchronized String commitSelectedVersions(
                 ActiveRegion active) {
             if (active == null || active.abandoned) return "";
+            if (!active.configuredSourcePhaseGaps.isEmpty()) {
+                return "configured source phase replay has "
+                        + active.configuredSourcePhaseGaps.size()
+                        + " fail-closed gap(s)";
+            }
             Map<String, Long> maps = active.stagedMapVersions();
             Map<String, Long> fields = active.stagedFieldVersions();
             Map<String, String> sources = active.stagedSourceSymbols();
+            Map<String, SourceSelectorPublication> selectors =
+                    active.stagedSourceSelectorValues();
             String failure = validateMapVersions(active, maps);
             if (!failure.isEmpty()) return failure;
             failure = validateFieldVersions(active, fields);
             if (!failure.isEmpty()) return failure;
             failure = validateSourceSymbols(active, sources);
             if (!failure.isEmpty()) return failure;
+            failure = validateSourceSelectorValues(active, selectors);
+            if (!failure.isEmpty()) return failure;
             publishMapVersions(active, maps);
             publishFieldVersions(active, fields);
             publishSourceSymbols(active, sources);
+            publishSourceSelectorValues(active, selectors);
             return "";
+        }
+
+        private String validateSourceSelectorValues(
+                ActiveRegion active,
+                Map<String, SourceSelectorPublication> staged) {
+            for (RuntimeTask.SourceField source
+                    : active.activation.sourceFields.values()) {
+                if (!selectedSourceValueProducer(active.activation,
+                        source.sourcePhaseId)) {
+                    continue;
+                }
+                if (active.sourcePublicationRejected(
+                        source.sourcePhaseId)) {
+                    return "configured source selector producer rejected its "
+                            + "application invariant for "
+                            + source.sourcePhaseId;
+                }
+                String identity = source.sourcePhaseId;
+                SourceSelectorPublication publication = staged.get(identity);
+                if (publication == null
+                        || !active.activation.taskId.equals(
+                        publication.sourceTaskId)) {
+                    return "configured source selector producer returned no "
+                            + "exact session value for " + source.sourceId;
+                }
+                SourceSelectorPublication prior =
+                        publishedSourceSelectorValues.get(identity);
+                if (prior != null && !prior.sameValue(publication)) {
+                    return "configured source selector producer published "
+                            + "conflicting session values for "
+                            + source.sourceId;
+                }
+            }
+            return "";
+        }
+
+        private void publishSourceSelectorValues(
+                ActiveRegion active,
+                Map<String, SourceSelectorPublication> staged) {
+            for (Map.Entry<String, SourceSelectorPublication> entry
+                    : staged.entrySet()) {
+                SourceSelectorPublication publication = entry.getValue();
+                if (publication != null
+                        && active != null
+                        && active.activation.taskId.equals(
+                        publication.sourceTaskId)
+                        && selectedSourceValueProducer(active.activation,
+                        publication.producerPhaseId)) {
+                    publishedSourceSelectorValues.put(entry.getKey(),
+                            publication);
+                }
+            }
         }
 
         private String validateSourceSymbols(
@@ -12525,16 +13611,16 @@ public final class ConcolicRegionRuntime {
             for (RuntimeTask.SourceField source
                     : active.activation.sourceFields.values()) {
                 if (!selectedSourceProducer(active.activation,
-                        source.sourceId)) {
+                        source.sourcePhaseId)) {
                     continue;
                 }
-                String raw = staged.get(source.sourceId);
+                String raw = staged.get(source.sourcePhaseId);
                 if (raw == null || raw.isEmpty()) {
                     return "selected configured source producer returned no "
                             + "exact VM symbol for " + source.sourceId;
                 }
                 String key = active.activation.taskId + "\n"
-                        + source.sourceId;
+                        + source.sourcePhaseId;
                 String prior = publishedSourceSymbols.get(key);
                 if (prior != null && !prior.equals(raw)) {
                     return "selected configured source producer published "
@@ -12549,10 +13635,10 @@ public final class ConcolicRegionRuntime {
             for (RuntimeTask.SourceField source
                     : active.activation.sourceFields.values()) {
                 if (selectedSourceProducer(active.activation,
-                        source.sourceId)) {
+                        source.sourcePhaseId)) {
                     publishedSourceSymbols.put(active.activation.taskId
-                            + "\n" + source.sourceId,
-                            staged.get(source.sourceId));
+                            + "\n" + source.sourcePhaseId,
+                            staged.get(source.sourcePhaseId));
                 }
             }
         }
@@ -12563,7 +13649,7 @@ public final class ConcolicRegionRuntime {
                 return "";
             }
             return safe(publishedSourceSymbols.get(
-                    alias.sourceTaskId + "\n" + alias.sourceId));
+                    alias.sourceTaskId + "\n" + alias.sourcePhaseId));
         }
 
         private Long publishedMapVersion(PlannedMapAdmission admission) {
@@ -12807,15 +13893,28 @@ public final class ConcolicRegionRuntime {
                                     + task.rootContextSelector.requestApi);
                     continue;
                 }
-                // A receiver-scoped task already declares that its owner is
-                // part of the occurrence address. Require exact source
-                // attribution before opening a VM region or materializing an
-                // input: either the receiver's own registration, or the exact
-                // root context already resolved from its async/request/RPC
-                // seed. Starting a source-less or wrong-source candidate and
-                // checking only at terminal pollutes the workload-wide
-                // symbolic session while contributing no usable result.
-                if (task.rootContextSelector.receiverScoped
+                // REGISTERED_SOURCE is an exact receiver-owned occurrence
+                // address. Its registration must already exist, and its full
+                // lifecycle key (including epoch) must match before opening a
+                // VM region or applying any model write. The explicit
+                // UNREGISTERED_SOURCE case retains the receiver-conflict
+                // check used for background/global work with no trace source.
+                boolean exactRegistered = task.rootContextSelector
+                        .requiresExactRegisteredReceiver();
+                if (exactRegistered && !exactRegisteredSource(
+                        registeredReceiverSource, task.sourceKey)) {
+                    task.noteUnaddressedCandidate(
+                            registeredReceiverSource == null
+                                    ? "matching root receiver had no "
+                                    + "registered source; its anchor names "
+                                    + task.sourceKey
+                                    : "matching root receiver belonged to "
+                                    + registeredReceiverSource.key()
+                                    + " instead of " + task.sourceKey);
+                    continue;
+                }
+                if (!exactRegistered
+                        && task.rootContextSelector.receiverScoped
                         && registeredReceiverSource != null
                         && !RuntimeTraceContext.sameSourceIdentity(
                         task.sourceKey, registeredReceiverSource.key())) {
@@ -12985,6 +14084,12 @@ public final class ConcolicRegionRuntime {
                 ? registered : RuntimeTraceContext.currentSource();
     }
 
+    private static boolean exactRegisteredSource(
+            SourceRef registered, String expectedSourceKey) {
+        return registered != null
+                && safe(expectedSourceKey).equals(registered.key());
+    }
+
     /** Test seam for receiver registration versus exact root-context priority. */
     static boolean exactEntrySourceForTests(Object receiver,
                                             String expectedSourceKey) {
@@ -12992,13 +14097,11 @@ public final class ConcolicRegionRuntime {
         return source != null && safe(expectedSourceKey).equals(source.key());
     }
 
-    /** Whether receiver-owned evidence permits the plan's exact source. */
+    /** Test seam for exact REGISTERED_SOURCE receiver admission. */
     static boolean plannedEntrySourceForTests(Object receiver,
                                               String expectedSourceKey) {
         SourceRef registered = RuntimeTraceContext.sourceFor(receiver);
-        return registered == null
-                || RuntimeTraceContext.sameSourceIdentity(
-                expectedSourceKey, registered.key());
+        return exactRegisteredSource(registered, expectedSourceKey);
     }
 
 
@@ -13048,7 +14151,8 @@ public final class ConcolicRegionRuntime {
         }
         List<String> result = new ArrayList<>();
         for (PlannedSourceAlias alias : admission.sourceAliases) {
-            result.add(alias.sourceOccurrenceId + "\n" + alias.sourceId
+            result.add(alias.sourcePhaseId + "\n"
+                    + alias.sourceOccurrenceId + "\n" + alias.sourceId
                     + "\n" + alias.fieldSignature + "\n" + alias.symbol());
         }
         return result;
@@ -13056,8 +14160,39 @@ public final class ConcolicRegionRuntime {
 
     /** Test seam for the canonical raw name of one configured source. */
     static String configuredSourceSymbolForTests(
-            String sourceOccurrenceId, String sourceId) {
-        return configuredSourceSymbol(sourceOccurrenceId, sourceId);
+            String sourcePhaseId, String sourceId) {
+        return configuredSourceSymbol(sourcePhaseId, sourceId);
+    }
+
+    /** Test seam for staged versus occurrence-accepted source selection. */
+    static String configuredSourceSelectorLifecycleForTests(
+            String producerTaskId, String consumerTaskId,
+            String producerPhaseId, String consumePhaseId, String sourceId,
+            String fieldSignature, String rawSymbol, int value,
+            boolean accepted, boolean rejected) {
+        Configuration configured = configuration();
+        RuntimeTask producer = configured.taskById(producerTaskId);
+        RuntimeTask consumer = configured.taskById(consumerTaskId);
+        if (producer == null || consumer == null) return "NO_TASK";
+        ConfiguredSourceSelectorContract.Selector selector =
+                consumer.sourceSelectors.get(safe(consumePhaseId));
+        if (selector == null) return "NO_SELECTOR";
+        ActiveRegion candidate = new ActiveRegion(-1L, producer,
+                new Object(), Thread.currentThread());
+        candidate.stageSourceSelectorValue(producerPhaseId, sourceId,
+                fieldSignature, rawSymbol, value);
+        if (rejected) {
+            candidate.rejectedSourcePublications.add(producerPhaseId);
+        }
+        if (accepted) {
+            String failure = configured.commitSelectedVersions(candidate);
+            if (!failure.isEmpty()) return "REFUSED:" + failure;
+        }
+        SourceSelectorPublication publication = configured
+                .publishedSourceSelector(consumer, selector);
+        return publication == null ? "ABSENT"
+                : publication.sourceTaskId + "\n" + publication.rawSymbol
+                + "\n" + publication.value;
     }
 
     /** Test seam for candidate-local staging versus accepted publication. */
@@ -13106,11 +14241,12 @@ public final class ConcolicRegionRuntime {
      */
     static String plannedFieldPrerequisiteMissForTests(
             String taskId, String method, int unitIndex, Object fieldOwner,
-            String fieldSignature, String fieldName) {
+            String fieldSignature, String fieldName, SourceRef rootSource) {
         Configuration configured = configuration();
         RuntimeTask requested = configured.taskById(taskId);
         if (requested == null) return "NO_TASK";
         Object rootReceiver = new Object();
+        RuntimeTraceContext.registerSource(rootReceiver, rootSource);
         RuntimeTask admitted = configured.select(
                 requested.instrumentationSelector, requested.rootMethod,
                 rootReceiver, new Object[0]);
@@ -13158,9 +14294,11 @@ public final class ConcolicRegionRuntime {
             if (!active.abandoned) endLiveSelectedRegion();
             configured.releaseCandidate(admitted);
         }
+        Object retryReceiver = new Object();
+        RuntimeTraceContext.registerSource(retryReceiver, rootSource);
         RuntimeTask retry = configured.select(
                 requested.instrumentationSelector, requested.rootMethod,
-                new Object(), new Object[0]);
+                retryReceiver, new Object[0]);
         retried = retry == requested;
         if (retry != null) configured.releaseCandidate(retry);
         return "pending=" + pending + ",gaps=" + gaps
@@ -13180,49 +14318,6 @@ public final class ConcolicRegionRuntime {
                 requested.instrumentationSelector, rootMethod, receiver,
                 rootArguments);
         return admitted == null ? "" : admitted.taskId;
-    }
-
-    /**
-     * Test seam for the campaign completion gate.  Returns the campaign halt
-     * status once every task has settled, otherwise -1.
-     */
-    static int settleCampaignTaskForTests(String taskId, int status) {
-        return configuration().settle(taskId, status);
-    }
-
-    /**
-     * Test seam for the candidate loop: one candidate ran and was not the
-     * addressed occurrence, exactly as a finished activation reports it.
-     */
-    static void noteUnaddressedCandidateForTests(String taskId, String why) {
-        for (RuntimeTask task : configuration().tasks) {
-            if (task.taskId.equals(taskId)) {
-                task.noteUnaddressedCandidate(why);
-            }
-        }
-    }
-
-
-    /** Test seam for the root-predicate half of a replay address. */
-    static boolean compatibleRootForTests(
-            JsonObject rootSelector, String selectedMethod,
-            String actualMethod, Object receiver, Object[] rootArguments,
-            String threadName) {
-        return compatibleRoot(selectedMethod, actualMethod,
-                RootContextSelector.from(rootSelector),
-                RootArgumentSelector.from(rootSelector), receiver,
-                rootArguments, threadName);
-    }
-
-    /**
-     * Test seam for the causal-anchor half of a replay address: why the
-     * candidate that observed this context is not the addressed occurrence,
-     * or {@code ""} when it is.
-     */
-    static String unconfirmedAnchorForTests(JsonObject rootSelector,
-                                            Set<String> attributedSourceKeys) {
-        return RootContextSelector.from(rootSelector).unconfirmed(
-                attributedSourceKeys);
     }
 
     private static final class EngineApi {

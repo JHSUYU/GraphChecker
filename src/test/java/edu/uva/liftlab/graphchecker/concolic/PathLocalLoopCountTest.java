@@ -111,6 +111,39 @@ public class PathLocalLoopCountTest {
                 .getAsJsonArray(LoopBoundPolicy.LOOP_CARDINALITIES)
                 .get(0).getAsJsonObject()
                 .get(LoopBoundPolicy.LOOP_CARDINALITY).getAsInt());
+
+        BoundedLoopComposition notReached =
+                BoundedLoopComposition.ofPlanRows(
+                        Collections.singletonList(plan(
+                                LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, 0)),
+                        Collections.singletonList(plan(
+                                LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, 0)));
+        JsonObject skipped = pathCase(0, -1);
+        skipped.getAsJsonArray(LoopBoundPolicy.PATH_LOOP_COUNTS)
+                .get(0).getAsJsonObject().addProperty(
+                LoopBoundPolicy.PATH_LOOP_REACHED, false);
+        notReached.observeCase(OCCURRENCE, skipped);
+        assertEquals(notReached.gaps().toString(), 0,
+                notReached.gaps().size());
+    }
+
+    @Test
+    public void retainedLoopReachabilityMarkerIsMandatory() {
+        BoundedLoopComposition missing = BoundedLoopComposition.ofPlanRows(
+                Collections.singletonList(plan(
+                        LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, 0)),
+                Collections.singletonList(plan(
+                        LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, 0)));
+        JsonObject path = pathCase(0, -1);
+        path.getAsJsonArray(LoopBoundPolicy.PATH_LOOP_COUNTS)
+                .get(0).getAsJsonObject().remove(
+                LoopBoundPolicy.PATH_LOOP_REACHED);
+
+        missing.observeCase(OCCURRENCE, path);
+
+        assertTrue(missing.gaps().toString(), missing.gaps().toString()
+                .contains(LoopBoundPolicy
+                        .PATH_LOOP_REACHABILITY_MISSING));
     }
 
     @Test
@@ -146,6 +179,32 @@ public class PathLocalLoopCountTest {
 
         assertEquals(0, model.gaps().size());
         assertEquals(3, model.loopOf(OCCURRENCE, SITE).bodyBound);
+    }
+
+    @Test
+    public void composerAuditsEachFatalPathLoopCount() {
+        BoundedLoopComposition model = BoundedLoopComposition.ofPlanRows(
+                Collections.singletonList(plan(
+                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 3)),
+                Collections.singletonList(plan(
+                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 3)));
+        JsonObject fatal = new JsonObject();
+        fatal.addProperty("occurrenceId", OCCURRENCE);
+        JsonArray paths = new JsonArray();
+        JsonObject targetPath = pathCase(2, -1);
+        targetPath.remove("caseId");
+        paths.add(targetPath);
+        fatal.add("paths", paths);
+
+        ConcolicSmtComposer.observeFatalLoopCases(model, fatal);
+
+        JsonObject retained = model.manifest()
+                .getAsJsonArray("boundedLoops").get(0).getAsJsonObject();
+        assertEquals(1, retained.getAsJsonArray("caseCounts").size());
+        JsonObject count = retained.getAsJsonArray("caseCounts").get(0)
+                .getAsJsonObject();
+        assertEquals("TARGET_PATH.0", count.get("caseId").getAsString());
+        assertEquals(2, count.get(LoopBoundPolicy.LOOP_BODY_COUNT).getAsInt());
     }
 
     private static JsonObject plan(String classification, int bound) {
@@ -184,6 +243,7 @@ public class PathLocalLoopCountTest {
         JsonObject row = new JsonObject();
         row.addProperty(LoopBoundPolicy.LOOP_SITE_ID, SITE);
         row.addProperty(LoopBoundPolicy.LOOP_BODY_COUNT, count);
+        row.addProperty(LoopBoundPolicy.PATH_LOOP_REACHED, true);
         if (cardinality >= 0) {
             JsonObject exact = new JsonObject();
             exact.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID,

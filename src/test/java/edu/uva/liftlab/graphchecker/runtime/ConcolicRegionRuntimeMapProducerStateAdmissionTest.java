@@ -1,9 +1,12 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
 import org.junit.Before;
@@ -14,9 +17,11 @@ import org.junit.rules.TemporaryFolder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /** Frozen edge/task/port admission of one upstream shared Map state. */
 public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
@@ -41,6 +46,12 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
     private static final String SOURCE_ID = "SOURCE.keyId";
     private static final String SOURCE_FIELD =
             "<example.Key: int keyId>";
+    private static final String PRODUCER_ROOT =
+            "<example.Producer: void run()>";
+    private static final String SOURCE_HOOK_CALLEE =
+            "<example.SourceHook: boolean symbolize()>";
+    private static final int SOURCE_UNIT = 3;
+    private static final Gson GSON = new Gson();
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -151,13 +162,14 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
     public void exactReferenceOutputCarriesItsConfiguredSourceIdentity()
             throws Exception {
         loadField("CONCRETE", true, true);
+        String sourcePhaseId = sourcePhaseId(PRODUCER_OCCURRENCE);
         String symbol = ConcolicRegionRuntime.configuredSourceSymbolForTests(
-                PRODUCER_OCCURRENCE, SOURCE_ID);
+                sourcePhaseId, SOURCE_ID);
         assertEquals(1, ConcolicRegionRuntime
                 .plannedFieldSourceAliasesForTests(CONSUMER, FLAG_FIELD)
                 .size());
-        assertEquals(PRODUCER_OCCURRENCE + "\n" + SOURCE_ID + "\n"
-                        + SOURCE_FIELD + "\n" + symbol,
+        assertEquals(sourcePhaseId + "\n" + PRODUCER_OCCURRENCE + "\n"
+                        + SOURCE_ID + "\n" + SOURCE_FIELD + "\n" + symbol,
                 ConcolicRegionRuntime
                         .plannedFieldSourceAliasesForTests(
                                 CONSUMER, FLAG_FIELD).get(0));
@@ -167,6 +179,77 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
         assertTrue(ConcolicRegionRuntime
                 .plannedFieldSourceAliasesForTests(CONSUMER, FLAG_FIELD)
                 .isEmpty());
+    }
+
+    @Test
+    public void configuredSourceModelRequiresExactProducerOccurrence()
+            throws Exception {
+        // Configuration admission runs before a source hook has any owner on
+        // which it could perform the modeled field write.
+        loadField("CONCRETE", true, true, PRODUCER_OCCURRENCE);
+
+        ConcolicRegionRuntime.resetForTests();
+        try {
+            loadField("CONCRETE", true, true,
+                    "test/node#epoch0/region/PRODUCER#2");
+            fail("cross-occurrence source assignment was admitted");
+        } catch (IllegalStateException rejected) {
+            assertTrue(rejected.getMessage(), rejected.getMessage().contains(
+                    "unsupported configured source"));
+        }
+    }
+
+    @Test
+    public void registeredSourceRootRequiresExactReceiverEpochBeforeAdmission()
+            throws Exception {
+        String taskId = "TASK.registered-source";
+        String occurrence =
+                "test/node#epoch0/region/REGISTERED_SOURCE#1";
+        String root = "<example.Registered: void run()>";
+        JsonObject task = baseTask(taskId, "REGISTERED_SOURCE",
+                occurrence, root, "TARGET_REACH_CLOSURE");
+        task.getAsJsonObject("rootSelector")
+                .getAsJsonObject("causalAnchor")
+                .addProperty("kind", "REGISTERED_SOURCE");
+        Path plan = folder.newFile("registered-source-plan.jsonl").toPath();
+        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id", taskId);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve(
+                        "registered-source-results.jsonl").toString());
+        assertEquals(1,
+                ConcolicRegionRuntime.campaignTaskIdsForTests().size());
+
+        assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
+                taskId, root, new Object(), new Object[0]));
+
+        Object stale = new Object();
+        RuntimeTraceContext.registerSource(stale, new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "test/node", 1L));
+        assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
+                taskId, root, stale, new Object[0]));
+
+        Object exact = new Object();
+        RuntimeTraceContext.registerSource(exact, new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "test/node", 0L));
+        assertEquals(taskId,
+                ConcolicRegionRuntime.admitCampaignTaskForTests(
+                        taskId, root, exact, new Object[0]));
+    }
+
+    @Test
+    public void rootAnchorKindAndSourceIdentityAreFailClosed()
+            throws Exception {
+        assertRootAnchorRejected("UNKNOWN_SOURCE", "test/node#epoch0",
+                "test/node#epoch0", "causalAnchor.kind");
+        assertRootAnchorRejected("REGISTERED_SOURCE",
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
+                "test/node#epoch0", "causalAnchor.kind");
+        assertRootAnchorRejected("UNREGISTERED_SOURCE", "test/node#epoch0",
+                "test/node#epoch0", "causalAnchor.kind");
+        assertRootAnchorRejected("REGISTERED_SOURCE", "test/other#epoch0",
+                "test/node#epoch0", "instead of task source");
     }
 
     @Test
@@ -181,7 +264,9 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
                         .plannedFieldPrerequisiteMissForTests(
                                 CONSUMER,
                                 "<example.Consumer: void run()>", 2,
-                                new FlagHolder(), FLAG_FIELD, "enabled"));
+                                new FlagHolder(), FLAG_FIELD, "enabled",
+                                new SourceRef("TEST", "CLIENT",
+                                        "test/client", 0L)));
     }
 
     private void load(String firstEdge, String secondEdge) throws Exception {
@@ -233,6 +318,12 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
 
     private void loadField(String mode, boolean selected,
                            boolean source) throws Exception {
+        loadField(mode, selected, source, "");
+    }
+
+    private void loadField(String mode, boolean selected,
+                           boolean source, String assignmentOccurrence)
+            throws Exception {
         JsonObject consumer = baseTask(CONSUMER, "CONSUMER",
                 "test/client#epoch0/region/CONSUMER#1",
                 "<example.Consumer: void run()>",
@@ -260,16 +351,41 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
         producer.add("outputClosure", fieldOutputClosure(
                 selected ? FLAG_EDGE : "RF.flag.other"));
         if (source) {
+            String sourcePhaseId = sourcePhaseId(PRODUCER_OCCURRENCE);
             JsonObject declaration = new JsonObject();
             declaration.addProperty("authority",
-                    "CONFIGURED_EXACT_SOURCE_FIELD_V1");
+                    SymbolicSourceEvidence.DECLARATION_AUTHORITY);
+            declaration.addProperty("sourcePhaseId", sourcePhaseId);
             declaration.addProperty("sourceId", SOURCE_ID);
             declaration.addProperty("fieldSignature", SOURCE_FIELD);
             declaration.addProperty("requiredOutputFieldSignature",
                     FLAG_FIELD);
             JsonArray declarations = new JsonArray();
             declarations.add(declaration);
-            producer.add("symbolicSourceFields", declarations);
+            producer.add(SymbolicSourceEvidence.TASK_FIELD, declarations);
+            addSourcePhaseCatalog(producer, PRODUCER_OCCURRENCE,
+                    sourcePhaseId);
+        }
+        if (!assignmentOccurrence.isEmpty()) {
+            String assignmentPhaseId = sourcePhaseId(assignmentOccurrence);
+            JsonObject assignment = new JsonObject();
+            assignment.addProperty("modelAssignmentKey", "MODEL.keyId");
+            assignment.addProperty("engineSymbol", "M_I_field_"
+                    + ConcolicRegionRuntime.configuredSourceSymbolForTests(
+                    assignmentPhaseId, SOURCE_ID)
+                    + "_example/Key");
+            assignment.addProperty("inputSymbol", "SOURCE_PHASE:"
+                    + assignmentPhaseId);
+            assignment.addProperty("configuredSourcePhaseId",
+                    assignmentPhaseId);
+            assignment.addProperty("configuredSourceId", SOURCE_ID);
+            assignment.addProperty("configuredSourceFieldSignature",
+                    SOURCE_FIELD);
+            assignment.addProperty("valueType", "INT");
+            assignment.addProperty("value", "9");
+            JsonArray assignments = new JsonArray();
+            assignments.add(assignment);
+            producer.add("modelAssignments", assignments);
         }
         assertEquals("REGION_ACTIVATION", producer.getAsJsonObject(
                 "outputClosure").getAsJsonArray("members").get(0)
@@ -288,6 +404,33 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
                         + System.nanoTime() + ".jsonl").toString());
         assertEquals(2,
                 ConcolicRegionRuntime.campaignTaskIdsForTests().size());
+    }
+
+    private static void addSourcePhaseCatalog(
+            JsonObject task, String occurrenceId, String sourcePhaseId) {
+        ConfiguredSourcePhaseContract.Declaration declaration =
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        Collections.singletonList(
+                                ConfiguredSourcePhaseContract.declaration(
+                                        ConfiguredSourcePhaseContract.Phase
+                                                .PUBLISH,
+                                        SOURCE_ID, SOURCE_FIELD,
+                                        PRODUCER_ROOT, SOURCE_UNIT))).get(0);
+        JsonArray phases = new JsonArray();
+        phases.add(GSON.toJsonTree(ConfiguredSourcePhaseContract.occurrence(
+                declaration, occurrenceId, 1, 1L, 1L, 1L,
+                SOURCE_HOOK_CALLEE, Collections.singletonList(1L))));
+        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
+        JsonArray selected = new JsonArray();
+        selected.add(sourcePhaseId);
+        task.add(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD, selected);
+    }
+
+    private static String sourcePhaseId(String occurrenceId) {
+        return ConfiguredSourcePhaseContract.phaseId(occurrenceId,
+                ConfiguredSourcePhaseContract.siteId(PRODUCER_ROOT,
+                        SOURCE_UNIT),
+                ConfiguredSourcePhaseContract.Phase.PUBLISH, 1);
     }
 
     private static JsonArray inputActions(String mode) {
@@ -505,6 +648,7 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
         selector.addProperty("receiverClass", Object.class.getName());
         JsonObject anchor = new JsonObject();
         anchor.addProperty("sourceKey", task.get("sourceKey").getAsString());
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
         selector.add("causalAnchor", anchor);
         task.add("rootSelector", selector);
         task.add("inputActions", new JsonArray());
@@ -516,6 +660,38 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
         admission.addProperty("state", "EXECUTABLE");
         task.add("admission", admission);
         return task;
+    }
+
+    private void assertRootAnchorRejected(String anchorKind,
+                                          String anchorSourceKey,
+                                          String taskSourceKey,
+                                          String expectedMessage)
+            throws Exception {
+        ConcolicRegionRuntime.resetForTests();
+        String taskId = "TASK.bad-anchor." + System.nanoTime();
+        JsonObject task = baseTask(taskId, "BAD_ANCHOR",
+                taskSourceKey + "/region/BAD_ANCHOR#1",
+                "<example.BadAnchor: void run()>",
+                "TARGET_REACH_CLOSURE");
+        JsonObject anchor = task.getAsJsonObject("rootSelector")
+                .getAsJsonObject("causalAnchor");
+        anchor.addProperty("kind", anchorKind);
+        anchor.addProperty("sourceKey", anchorSourceKey);
+        Path plan = folder.newFile("bad-anchor-" + System.nanoTime()
+                + ".jsonl").toPath();
+        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id", taskId);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve("bad-anchor-results-"
+                        + System.nanoTime() + ".jsonl").toString());
+        try {
+            ConcolicRegionRuntime.campaignTaskIdsForTests();
+            fail("invalid root causal anchor was admitted");
+        } catch (IllegalStateException rejected) {
+            assertTrue(rejected.getMessage(), rejected.getMessage().contains(
+                    expectedMessage));
+        }
     }
 
     private static void restore(String property, String value) {

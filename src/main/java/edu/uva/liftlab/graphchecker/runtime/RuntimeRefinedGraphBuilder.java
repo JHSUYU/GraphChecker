@@ -600,15 +600,6 @@ final class RuntimeRefinedGraphBuilder {
         }
     }
 
-    private static void addAllUnique(List<String> target,
-                                     List<String> additions) {
-        for (String addition : values(additions)) {
-            if (!target.contains(addition)) {
-                target.add(addition);
-            }
-        }
-    }
-
     private static void requireCandidateEdge(Map<String, Object> edge,
                                              File source)
             throws IOException {

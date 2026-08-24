@@ -11,11 +11,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -64,6 +67,87 @@ public class CausynthTraceRecorderTest {
         }
     }
 
+    @Test
+    public void activeCallSiteContextTracksNestedNormalReturn()
+            throws Exception {
+        String results = System.getProperty("causynth.concolic.results");
+        try {
+            clear();
+            System.setProperty("causynth.concolic.results",
+                    folder.newFile("context-results.jsonl").getPath());
+            long root = CausynthTraceRecorder.enterMethod(
+                    "<example.Root: void run()>", new Object());
+            long outer = CausynthTraceRecorder.beginCall(root,
+                    "<example.Root: void run()>", 4,
+                    "<example.Helper: void call()>", new Object());
+            assertCallSite("<example.Root: void run()>#u4",
+                    "<example.Helper: void call()>", root, outer);
+
+            long child = CausynthTraceRecorder.enterMethod(
+                    "<example.Helper: void call()>", new Object());
+            long nested = CausynthTraceRecorder.beginCall(child,
+                    "<example.Helper: void call()>", 7,
+                    "<example.Source: void publish()>", null);
+            assertCallSite("<example.Helper: void call()>#u7",
+                    "<example.Source: void publish()>", child, nested);
+            CausynthTraceRecorder.endCall(nested, null, "");
+            assertCallSite("<example.Root: void run()>#u4",
+                    "<example.Helper: void call()>", root, outer);
+            CausynthTraceRecorder.exitMethod(child, null, "");
+            CausynthTraceRecorder.endCall(outer, null, "");
+            assertNull(CausynthTraceRecorder.currentCallSiteContext());
+            CausynthTraceRecorder.exitMethod(root, null, "");
+        } finally {
+            clear();
+            restore("causynth.concolic.results", results);
+        }
+    }
+
+    @Test
+    public void activeCallSiteContextDoesNotSurviveThrowOrStaleReplacement()
+            throws Exception {
+        String results = System.getProperty("causynth.concolic.results");
+        try {
+            clear();
+            System.setProperty("causynth.concolic.results",
+                    folder.newFile("throw-results.jsonl").getPath());
+            long root = CausynthTraceRecorder.enterMethod(
+                    "<example.Root: void run()>", new Object());
+            long stale = CausynthTraceRecorder.beginCall(root,
+                    "<example.Root: void run()>", 1,
+                    "<example.Stale: void call()>", null);
+            assertCallSite("<example.Root: void run()>#u1",
+                    "<example.Stale: void call()>", root, stale);
+            long replacement = CausynthTraceRecorder.beginCall(root,
+                    "<example.Root: void run()>", 2,
+                    "<example.Throwing: void call()>", null);
+            assertCallSite("<example.Root: void run()>#u2",
+                    "<example.Throwing: void call()>", root, replacement);
+
+            long child = CausynthTraceRecorder.enterMethod(
+                    "<example.Throwing: void call()>", new Object());
+            CausynthTraceRecorder.throwMethod(child,
+                    new IllegalStateException("expected"));
+            assertNull(CausynthTraceRecorder.currentCallSiteContext());
+            CausynthTraceRecorder.exitMethod(root, null, "");
+        } finally {
+            clear();
+            restore("causynth.concolic.results", results);
+        }
+    }
+
+    private static void assertCallSite(String siteId, String callee,
+                                       long ownerCallId,
+                                       long invocationId) {
+        CausynthTraceRecorder.ActiveCallSiteContext context =
+                CausynthTraceRecorder.currentCallSiteContext();
+        assertNotNull(context);
+        assertEquals(siteId, context.siteId());
+        assertEquals(callee, context.declaredCallee());
+        assertEquals(ownerCallId, context.ownerCallId());
+        assertEquals(invocationId, context.invocationId());
+    }
+
     /**
      * A frame stamped before its receiver was registered is attributed to
      * that receiver after the trace is re-read.
@@ -84,44 +168,63 @@ public class CausynthTraceRecorderTest {
                 "causynth.trace.output.dir");
         Path output = folder.newFolder("late-registration").toPath();
         String actorRun = "<example.ServiceActor: void run()>";
+        String helperRun = "<example.Helper: void run()>";
+        String otherRun = "<example.OtherService: void run()>";
         try {
             clear();
             System.setProperty("causynth.trace.output.dir",
                     output.toString());
             Object node = new Object();
             Object actor = new Object();
+            Object helper = new Object();
+            Object otherNode = new Object();
+            Object otherService = new Object();
 
             // The service thread runs first; nothing about its owner is known
             // and the frame is stamped with what is ambient, which is nothing.
             long frame = CausynthTraceRecorder.enterMethod(actorRun, actor);
+            long helperFrame = CausynthTraceRecorder.enterMethod(
+                    helperRun, helper);
+            CausynthTraceRecorder.exitMethod(helperFrame, null, "");
+            long otherFrame = CausynthTraceRecorder.enterMethod(
+                    otherRun, otherService);
+            CausynthTraceRecorder.exitMethod(otherFrame, null, "");
             // The node declares itself and claims the actor afterwards.
             CausynthTraceRecorder.registerSource(node, "CLUSTER_NODE",
                     "DATANODE", "cluster0/dn0", 1L);
             CausynthTraceRecorder.registerSourceAlias(actor, node);
+            CausynthTraceRecorder.registerSource(otherNode, "CLUSTER_NODE",
+                    "DATANODE", "cluster0/dn1", 1L);
+            CausynthTraceRecorder.registerSourceAlias(otherService,
+                    otherNode);
             CausynthTraceRecorder.exitMethod(frame, null, "");
             shutdown();
 
             // The durable row carries the identity, not just the class: two
             // nodes' actors are the same class and must not collapse.
             List<JsonObject> aliases = traceRows(output, "SOURCE_ALIAS");
-            assertEquals(1, aliases.size());
-            assertTrue(aliases.get(0).has("objectId"));
-            int recorded = aliases.get(0).get("objectId").getAsInt();
+            assertEquals(2, aliases.size());
+            JsonObject actorAlias = aliases.get(0);
+            assertTrue(actorAlias.has("objectId"));
+            int recorded = actorAlias.get("objectId").getAsInt();
             assertEquals(recorded, traceRows(output, "METHOD_ENTER").get(0)
                     .get("objectId").getAsInt());
 
             // Clear and re-read: the in-memory binding is gone, exactly as it
             // is when the aggregation path plans.
-            boolean seen = false;
+            Map<String, String> sources = new LinkedHashMap<>();
             for (RuntimeRegionPlanner.MethodEvent event
                     : CausynthTraceRecorder.reattributedFramesForTests(
                             output.resolve("runtime_trace.jsonl").toFile(),
                             null)) {
-                if (!actorRun.equals(event.method)) continue;
-                seen = true;
-                assertEquals("cluster0/dn0#epoch1", event.sourceKey);
+                sources.put(event.method, event.sourceKey);
             }
-            assertTrue("no frame for " + actorRun, seen);
+            assertEquals("cluster0/dn0#epoch1", sources.get(actorRun));
+            assertEquals("an unregistered synchronous descendant inherits "
+                            + "the nearest registered receiver owner",
+                    "cluster0/dn0#epoch1", sources.get(helperRun));
+            assertEquals("a descendant's own registered receiver wins",
+                    "cluster0/dn1#epoch1", sources.get(otherRun));
         } finally {
             shutdown();
             clear();

@@ -167,12 +167,13 @@ public final class CoverageDivergence {
         summary.addProperty("divergenceCount", total);
         summary.addProperty("unclassifiedCount", unclassified);
         summary.addProperty("targetRelationUsable", targetRelationUsable);
+        int incompleteCount = total + unclassified;
         // A partial relation is retained whenever the target relation is
         // still usable.  Losing it because something else diverged would
         // discard evidence the run did produce.
         summary.addProperty("retainedPartialRelation",
-                targetRelationUsable && total > 0);
-        summary.addProperty("coverageState", coverageState(total,
+                targetRelationUsable && incompleteCount > 0);
+        summary.addProperty("coverageState", coverageState(incompleteCount,
                 targetRelationUsable));
         JsonArray divergences = new JsonArray();
         for (JsonObject row : classified) divergences.add(row);

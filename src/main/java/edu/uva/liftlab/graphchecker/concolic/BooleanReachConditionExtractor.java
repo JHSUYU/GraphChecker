@@ -51,6 +51,10 @@ import java.util.regex.Pattern;
  */
 public final class BooleanReachConditionExtractor {
     private static final int MAX_EXISTENTIAL_PERTURBATIONS = 32;
+    static final String SYMBOLIC_VARIABLE_MODELS =
+            "symbolicVariableModels";
+    private static final String SYMBOLIC_VARIABLE_MODEL_KIND =
+            "SYMBOLIC_VARIABLE_MODEL";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
     private BooleanReachConditionExtractor() {
@@ -68,6 +72,7 @@ public final class BooleanReachConditionExtractor {
                 arguments.timeoutMillis);
         JsonObject report = extract(smt, manifest, regions, solver,
                 arguments.maxInputs, arguments.maxValuations);
+        report.add("solverAttempts", solver.attempts());
         report.add("compositionManifestArtifact",
                 artifact(arguments.manifest));
         report.add("solverArtifact", solver.artifact());
@@ -89,6 +94,15 @@ public final class BooleanReachConditionExtractor {
         boolean recordedModelComplete =
                 bool(manifest, "recordedModelComplete", false);
         report.addProperty("recordedModelComplete", recordedModelComplete);
+        boolean unsatClosureComplete = unsatClosureComplete(manifest);
+        report.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
+                unsatClosureComplete);
+        JsonObject unsatClosureEvidence = object(manifest,
+                ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE);
+        if (unsatClosureEvidence.size() > 0) {
+            report.add(ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE,
+                    unsatClosureEvidence.deepCopy());
+        }
 
         List<String> gaps = new ArrayList<>();
         validateCompositionAuthority(manifest, gaps);
@@ -97,14 +111,19 @@ public final class BooleanReachConditionExtractor {
         }
 
         PortCatalog ports = PortCatalog.from(regions);
+        ConfiguredSourceCatalog configuredSources =
+                ConfiguredSourceCatalog.from(manifest, gaps);
         Discovery discovery = discover(composedSmt, ports,
-                PortOccurrenceCatalog.from(manifest));
+                PortOccurrenceCatalog.from(manifest), configuredSources,
+                gaps);
         List<RootInput> inputs = discovery.rootInputs;
         JsonObject roots = new JsonObject();
         roots.add("booleanInputs", inputCatalog(inputs));
         roots.add("existentialInputs", inputCatalog(
                 discovery.existentialNonBooleanRootInputs));
         report.add("roots", roots);
+        JsonArray symbolicVariableModels = new JsonArray();
+        report.add(SYMBOLIC_VARIABLE_MODELS, symbolicVariableModels);
 
         long valuationCount = inputs.size() >= 63
                 ? Long.MAX_VALUE : 1L << inputs.size();
@@ -133,14 +152,15 @@ public final class BooleanReachConditionExtractor {
         int count = (int) valuationCount;
         for (int ordinal = 0; ordinal < count; ordinal++) {
             boolean[] values = valuation(ordinal, inputs.size());
-            String query = valuationQuery(domainBase, inputs, values);
+            String query = valuationQuery(domainBase, inputs, values,
+                    discovery.existentialNonBooleanRootInputs);
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
             String status = result.status();
             JsonObject row = valuationRow(values, status);
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
-                JsonArray witness = existentialWitness(solver, query,
+                JsonArray witness = existentialWitness(result,
                         discovery.existentialNonBooleanRootInputs);
                 if (witness.size() > 0) {
                     row.add("existentialWitness", witness);
@@ -159,6 +179,20 @@ public final class BooleanReachConditionExtractor {
                             }
                         }
                     }
+                }
+                JsonArray configuredWitness = configuredSourceWitness(
+                        inputs, values, witness);
+                if (configuredWitness.size() > 0) {
+                    row.add("configuredSourceWitness",
+                            configuredWitness);
+                    JsonObject symbolicModel = new JsonObject();
+                    symbolicModel.addProperty("schemaVersion", 1);
+                    symbolicModel.addProperty("kind",
+                            SYMBOLIC_VARIABLE_MODEL_KIND);
+                    symbolicModel.addProperty("valuationOrdinal", ordinal);
+                    symbolicModel.add("variables",
+                            configuredWitness.deepCopy());
+                    symbolicVariableModels.add(symbolicModel);
                 }
             } else if (!"unsat".equals(status)) {
                 row.addProperty("solverOutput", result.diagnostic());
@@ -184,9 +218,10 @@ public final class BooleanReachConditionExtractor {
         boolean complete = solverErrors == 0;
         // Best-effort branch replay never proves that all program paths were
         // explored.  A satisfying selected case is still a bounded witness;
-        // only an open recorded read-from model makes an unsatisfiable answer
+        // any open selected read-from, producer-path, target-path or
+        // composition coverage authority makes an unsatisfiable answer
         // inconclusive.
-        boolean observedUnderapproximation = !recordedModelComplete;
+        boolean observedUnderapproximation = !unsatClosureComplete;
         String reachability = !complete
                 ? "UNKNOWN" : !satisfyingValuations.isEmpty()
                 ? "REACHABLE" : observedUnderapproximation
@@ -202,7 +237,9 @@ public final class BooleanReachConditionExtractor {
         if (observedUnderapproximation
                 && satisfyingValuations.isEmpty() && complete) {
             reachCondition.addProperty("coverageConclusion",
-                    "INCONCLUSIVE_UNDERAPPROXIMATION");
+                    recordedModelComplete
+                            ? "INCONCLUSIVE_OPEN_PATH_CLOSURE"
+                            : "INCONCLUSIVE_UNDERAPPROXIMATION");
         }
         reachCondition.addProperty("degeneracyCheck", degeneracyCheck(
                 formula, reachability, inputs.size(),
@@ -306,8 +343,43 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
+    /** The Composer's single, internally consistent UNSAT closure claim. */
+    private static boolean unsatClosureComplete(JsonObject manifest) {
+        if (manifest == null
+                || !bool(manifest,
+                ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false)
+                || !ConcolicSmtComposer.FINAL_READY.equals(
+                string(manifest, ConcolicSmtComposer.FINAL_STATUS))) {
+            return false;
+        }
+        JsonObject evidence = object(manifest,
+                ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE);
+        JsonElement partial = evidence.get("partialProducerSummaryIds");
+        return integer(evidence, "schemaVersion", -1) == 1
+                && "UNSAT_CLOSURE_EVIDENCE".equals(
+                string(evidence, "kind"))
+                && ConcolicSmtComposer.UNSAT_CLOSURE_AUTHORITY.equals(
+                string(evidence, "authority"))
+                && bool(evidence, "recordedModelComplete", false)
+                == bool(manifest, "recordedModelComplete", false)
+                && bool(evidence, "recordedModelComplete", false)
+                && bool(evidence, "producerPathsClosed", false)
+                && bool(evidence, "targetPathsClosed", false)
+                && bool(evidence, "compositionCoverageClosed", false)
+                && bool(evidence, "finalStatusReady", false)
+                && integer(evidence, "targetCoverageGapCount", -1) == 0
+                && integer(evidence,
+                "compositionCoverageGapCount", -1) == 0
+                && partial != null && partial.isJsonArray()
+                && partial.getAsJsonArray().size() == 0
+                && bool(evidence,
+                ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false);
+    }
+
     private static Discovery discover(String smt, PortCatalog ports,
-                                      PortOccurrenceCatalog occurrences) {
+                                      PortOccurrenceCatalog occurrences,
+                                      ConfiguredSourceCatalog sources,
+                                      List<String> gaps) {
         List<RootInput> roots = new ArrayList<>();
         List<RootInput> domainInputs = new ArrayList<>();
         List<RootInput> scalarRoots = new ArrayList<>();
@@ -354,16 +426,56 @@ public final class BooleanReachConditionExtractor {
                         occurrence.nullnessSolverTerm));
             }
         }
+        for (ConfiguredSourceInfo source : sources.sorted()) {
+            ScalarEncoding encoding = ScalarEncoding.of(source.descriptor);
+            if (encoding == null
+                    || !encoding.occurrenceSort.equals(source.sort)
+                    || !encoding.solverSort.equals(source.smtSort)
+                    || !configuredSourceBindingDeclared(smt, source,
+                    encoding)) {
+                String subject = "configured-source:" + source.sourceId
+                        + "@" + source.sourcePhaseId;
+                undecoded.add(subject);
+                gaps.add("CONFIGURED_SOURCE_TERM_NOT_DECLARED_OR_SORT_MISMATCH:"
+                        + subject);
+                continue;
+            }
+            RootInput input = new RootInput(source.asPortInfo(),
+                    source.sourceOccurrenceId, source.solverTerm,
+                    source.nullnessSolverTerm, source.sourcePhaseId,
+                    source.sourceKey);
+            if (source.asPortInfo().javaBoolean) {
+                roots.add(input);
+                domainInputs.add(input);
+            } else {
+                scalarRoots.add(input);
+            }
+        }
         Comparator<RootInput> byOccurrence = Comparator
                 .comparing((RootInput value) -> value.port.id)
-                .thenComparing(value -> value.occurrenceId);
+                .thenComparing(value -> value.occurrenceId)
+                .thenComparing(value -> value.sourcePhaseId);
         Collections.sort(roots, byOccurrence);
         Collections.sort(domainInputs, Comparator.comparing(
                 (RootInput value) -> value.port.id).thenComparing(
-                value -> value.occurrenceId));
+                value -> value.occurrenceId).thenComparing(
+                value -> value.sourcePhaseId));
         Collections.sort(scalarRoots, byOccurrence);
         return new Discovery(roots, domainInputs, scalarRoots,
                 undecoded.size());
+    }
+
+    private static boolean configuredSourceBindingDeclared(
+            String smt, ConfiguredSourceInfo source,
+            ScalarEncoding encoding) {
+        if (!smt.contains("(declare-const " + source.solverTerm + " "
+                + encoding.solverSort + ")")) {
+            return false;
+        }
+        return encoding != ScalarEncoding.STRING
+                || !source.nullnessSolverTerm.isEmpty()
+                && smt.contains("(declare-const "
+                + source.nullnessSolverTerm + " Bool)");
     }
 
     private static boolean canonicalScalarBindingDeclared(
@@ -394,15 +506,26 @@ public final class BooleanReachConditionExtractor {
 
     private static String valuationQuery(String base,
                                          List<RootInput> inputs,
-                                         boolean[] values) {
+                                         boolean[] values,
+                                         List<RootInput> witnessRoots) {
         StringBuilder query = new StringBuilder(base);
         for (int index = 0; index < inputs.size(); index++) {
             query.append("(assert ")
                     .append(inputs.get(index).literal(values[index]))
                     .append(")").append(System.lineSeparator());
         }
-        return query.append("(check-sat)")
-                .append(System.lineSeparator()).toString();
+        query.append("(check-sat)").append(System.lineSeparator());
+        if (witnessRoots != null && !witnessRoots.isEmpty()) {
+            query.append("(get-value (");
+            for (RootInput root : witnessRoots) {
+                query.append(' ').append(root.solverTerm);
+                if (!root.nullnessSolverTerm.isEmpty()) {
+                    query.append(' ').append(root.nullnessSolverTerm);
+                }
+            }
+            query.append("))").append(System.lineSeparator());
+        }
+        return query.toString();
     }
 
     private static String appendBooleanDomain(String base,
@@ -450,6 +573,8 @@ public final class BooleanReachConditionExtractor {
         private final Path executable;
         private final long timeoutMillis;
         private final JsonObject artifact;
+        private final JsonArray attempts = new JsonArray();
+        private int queryOrdinal;
 
         Z3Solver(String executable, long timeoutMillis) throws IOException {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
@@ -462,18 +587,66 @@ public final class BooleanReachConditionExtractor {
             return artifact.deepCopy();
         }
 
+        JsonArray attempts() {
+            return attempts.deepCopy();
+        }
+
         ConcolicConstraintSolver.SolverOutput check(String smt)
                 throws IOException,
                 InterruptedException {
-            String query = smt;
-            if (SmtArrayExtensionalityAudit
-                    .provesExtensionalityRedundant(smt)) {
-                query = "(set-option :smt.array.extensional false)\n"
-                        + "(set-option :smt.random_seed 7)\n"
-                        + "(set-option :sat.random_seed 7)\n" + smt;
-            }
-            return ConcolicConstraintSolver.run(executable, query,
+            int currentQuery = queryOrdinal++;
+            boolean noExtensionality = SmtArrayExtensionalityAudit
+                    .provesExtensionalityRedundant(smt);
+            String firstOptions = noExtensionality
+                    ? "(set-option :smt.array.extensional false)\n"
+                    + "(set-option :smt.random_seed 7)\n"
+                    + "(set-option :sat.random_seed 7)\n"
+                    : "";
+            ConcolicConstraintSolver.SolverOutput first = attempt(
+                    currentQuery, 0, "DEFAULT_SEED_7", smt, firstOptions,
                     timeoutMillis);
+            if ("sat".equals(first.status())
+                    || "unsat".equals(first.status())) {
+                return first;
+            }
+            String fallbackOptions = (noExtensionality
+                    ? "(set-option :smt.array.extensional false)\n" : "")
+                    + "(set-option :smt.auto_config false)\n"
+                    + "(set-option :smt.arith.solver 2)\n"
+                    + "(set-option :smt.case_split 3)\n"
+                    + "(set-option :smt.random_seed 91)\n"
+                    + "(set-option :sat.random_seed 91)\n";
+            long fallbackTimeout = timeoutMillis > Long.MAX_VALUE / 3L
+                    ? Long.MAX_VALUE : timeoutMillis * 3L;
+            return attempt(currentQuery, 1,
+                    "AUTO_OFF_ARITH2_CASE3_SEED91", smt,
+                    fallbackOptions, fallbackTimeout);
+        }
+
+        private ConcolicConstraintSolver.SolverOutput attempt(
+                int currentQuery, int ordinal, String strategy,
+                String baseQuery, String options, long attemptTimeout)
+                throws IOException, InterruptedException {
+            String query = options + baseQuery;
+            long started = System.nanoTime();
+            ConcolicConstraintSolver.SolverOutput result =
+                    ConcolicConstraintSolver.run(executable, query,
+                            attemptTimeout);
+            long elapsedMillis = Math.max(0L,
+                    (System.nanoTime() - started) / 1_000_000L);
+            JsonObject row = new JsonObject();
+            row.addProperty("queryOrdinal", currentQuery);
+            row.addProperty("attemptOrdinal", ordinal);
+            row.addProperty("strategy", strategy);
+            row.addProperty("baseQuerySha256",
+                    ArtifactIO.sha256(baseQuery));
+            row.addProperty("solverQuerySha256", ArtifactIO.sha256(query));
+            row.addProperty("timeoutMillis", attemptTimeout);
+            row.addProperty("elapsedMillis", elapsedMillis);
+            row.addProperty("status", result.status());
+            row.addProperty("options", options.trim());
+            attempts.add(row);
+            return result;
         }
 
         private static Path resolveExecutable(String requested)
@@ -534,14 +707,33 @@ public final class BooleanReachConditionExtractor {
         private final String occurrenceId;
         private final String solverTerm;
         private final String nullnessSolverTerm;
+        private final String sourcePhaseId;
+        private final String sourceKey;
 
         private RootInput(PortInfo port, String occurrenceId,
                           String solverTerm,
                           String nullnessSolverTerm) {
+            this(port, occurrenceId, solverTerm, nullnessSolverTerm, "");
+        }
+
+        private RootInput(PortInfo port, String occurrenceId,
+                          String solverTerm,
+                          String nullnessSolverTerm,
+                          String sourcePhaseId) {
+            this(port, occurrenceId, solverTerm, nullnessSolverTerm,
+                    sourcePhaseId, "");
+        }
+
+        private RootInput(PortInfo port, String occurrenceId,
+                          String solverTerm,
+                          String nullnessSolverTerm,
+                          String sourcePhaseId, String sourceKey) {
             this.port = port;
             this.occurrenceId = firstNonBlank(occurrenceId);
             this.solverTerm = solverTerm;
             this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
+            this.sourcePhaseId = firstNonBlank(sourcePhaseId);
+            this.sourceKey = firstNonBlank(sourceKey);
         }
 
         private String literal(boolean value) {
@@ -561,8 +753,20 @@ public final class BooleanReachConditionExtractor {
 
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
-            result.addProperty("portId", port.id);
-            result.addProperty("occurrenceId", occurrenceId);
+            if (port.configuredSource) {
+                result.addProperty("inputKind", "CONFIGURED_SOURCE_FIELD");
+                result.addProperty("sourceKey", sourceKey);
+                result.addProperty("sourceId", port.id);
+                result.addProperty("sourceOccurrenceId", occurrenceId);
+                result.addProperty("sourcePhaseId", sourcePhaseId);
+                result.addProperty("fieldSignature", port.fieldSignature);
+                result.addProperty("displayName", sourceKey + "::"
+                        + port.id + "::" + sourcePhaseId);
+            } else {
+                result.addProperty("inputKind", "REGION_INPUT_PORT");
+                result.addProperty("portId", port.id);
+                result.addProperty("occurrenceId", occurrenceId);
+            }
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
             if (!nullnessSolverTerm.isEmpty()) {
@@ -685,37 +889,51 @@ public final class BooleanReachConditionExtractor {
      * A solver that will not answer leaves the row as it was.</p>
      */
     private static JsonArray existentialWitness(
-            Z3Solver solver, String query, List<RootInput> roots) {
+            ConcolicConstraintSolver.SolverOutput answer,
+            List<RootInput> roots) {
         JsonArray witness = new JsonArray();
-        if (roots.isEmpty()) return witness;
-        StringBuilder terms = new StringBuilder();
+        if (roots.isEmpty() || answer == null
+                || !"sat".equals(answer.status())) return witness;
+        Map<String, String> assigned =
+                ConcolicConstraintSolver.getValues(answer.stdout);
         for (RootInput root : roots) {
-            terms.append(' ').append(root.solverTerm);
-        }
-        try {
-            ConcolicConstraintSolver.SolverOutput answer = solver.check(
-                    query + "\n(get-value (" + terms.toString().trim()
-                            + "))");
-            if (!"sat".equals(answer.status())) return witness;
-            Map<String, String> assigned =
-                    ConcolicConstraintSolver.getValues(answer.stdout);
-            for (RootInput root : roots) {
-                String value = assigned.get(root.solverTerm);
-                if (value == null) continue;
-                JsonObject row = new JsonObject();
-                row.addProperty("portId", root.port.id);
-                row.addProperty("occurrenceId", root.occurrenceId);
-                row.addProperty("solverTerm", root.solverTerm);
-                row.addProperty("value", value);
-                witness.add(row);
+            String value = assigned.get(root.solverTerm);
+            if (value == null) continue;
+            JsonObject row = root.toJson();
+            row.addProperty("value", value);
+            if (!root.nullnessSolverTerm.isEmpty()) {
+                String nullness = assigned.get(
+                        root.nullnessSolverTerm);
+                if (nullness != null) {
+                    row.addProperty("nullnessValue", nullness);
+                }
             }
-        } catch (IOException | InterruptedException unanswered) {
-            if (unanswered instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
-            return new JsonArray();
+            witness.add(row);
         }
         return witness;
+    }
+
+    /** Materializable configured fields, separated from anonymous ports. */
+    private static JsonArray configuredSourceWitness(
+            List<RootInput> booleanRoots, boolean[] booleanValues,
+            JsonArray existentialWitness) {
+        JsonArray result = new JsonArray();
+        for (int index = 0; index < booleanRoots.size(); index++) {
+            RootInput root = booleanRoots.get(index);
+            if (!root.port.configuredSource) continue;
+            JsonObject row = root.toJson();
+            row.addProperty("value", booleanValues[index]);
+            result.add(row);
+        }
+        for (JsonElement element : existentialWitness) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if ("CONFIGURED_SOURCE_FIELD".equals(
+                    string(row, "inputKind"))) {
+                result.add(row.deepCopy());
+            }
+        }
+        return result;
     }
 
     /**
@@ -855,6 +1073,135 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
+    /** Exact writable source terms published by the Composer. */
+    private static final class ConfiguredSourceCatalog {
+        private final List<ConfiguredSourceInfo> sources = new ArrayList<>();
+
+        private static ConfiguredSourceCatalog from(
+                JsonObject manifest, List<String> gaps) {
+            ConfiguredSourceCatalog result = new ConfiguredSourceCatalog();
+            JsonElement encoded = manifest == null ? null : manifest.get(
+                    ConcolicSmtComposer
+                            .CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
+            if (encoded == null || !encoded.isJsonArray()) {
+                gaps.add("CONFIGURED_SOURCE_MATERIALIZATIONS_MISSING");
+                return result;
+            }
+            Map<String, ConfiguredSourceInfo> byIdentity =
+                    new LinkedHashMap<>();
+            Map<String, String> identityByTerm = new LinkedHashMap<>();
+            int ordinal = 0;
+            for (JsonElement element : encoded.getAsJsonArray()) {
+                if (!element.isJsonObject()) {
+                    gaps.add("CONFIGURED_SOURCE_MATERIALIZATION_MALFORMED:"
+                            + ordinal++);
+                    continue;
+                }
+                ConfiguredSourceInfo source = ConfiguredSourceInfo.decode(
+                        element.getAsJsonObject());
+                if (source == null) {
+                    gaps.add("CONFIGURED_SOURCE_MATERIALIZATION_MALFORMED:"
+                            + ordinal++);
+                    continue;
+                }
+                String identity = source.sourceKey + "\u0000"
+                        + source.sourcePhaseId + "\u0000" + source.sourceId;
+                ConfiguredSourceInfo held = byIdentity.putIfAbsent(
+                        identity, source);
+                String heldIdentity = identityByTerm.putIfAbsent(
+                        source.solverTerm, identity);
+                if (held != null || heldIdentity != null
+                        && !heldIdentity.equals(identity)) {
+                    gaps.add("CONFIGURED_SOURCE_MATERIALIZATION_CONFLICT:"
+                            + ordinal);
+                } else {
+                    result.sources.add(source);
+                }
+                ordinal++;
+            }
+            return result;
+        }
+
+        private List<ConfiguredSourceInfo> sorted() {
+            List<ConfiguredSourceInfo> result = new ArrayList<>(sources);
+            result.sort(Comparator
+                    .comparing((ConfiguredSourceInfo value) ->
+                            value.sourceKey)
+                    .thenComparing(value -> value.sourceId)
+                    .thenComparing(value -> value.sourcePhaseId)
+                    .thenComparing(value -> value.sourceOccurrenceId)
+                    .thenComparing(value -> value.fieldSignature));
+            return result;
+        }
+    }
+
+    private static final class ConfiguredSourceInfo {
+        private final String sourceKey;
+        private final String sourceId;
+        private final String sourcePhaseId;
+        private final String sourceOccurrenceId;
+        private final String fieldSignature;
+        private final String descriptor;
+        private final String sort;
+        private final String smtSort;
+        private final String solverTerm;
+        private final String nullnessSolverTerm;
+
+        private ConfiguredSourceInfo(String sourceKey, String sourceId,
+                                     String sourcePhaseId,
+                                     String sourceOccurrenceId,
+                                     String fieldSignature,
+                                     String descriptor, String sort,
+                                     String smtSort, String solverTerm,
+                                     String nullnessSolverTerm) {
+            this.sourceKey = firstNonBlank(sourceKey);
+            this.sourceId = firstNonBlank(sourceId);
+            this.sourcePhaseId = firstNonBlank(sourcePhaseId);
+            this.sourceOccurrenceId = firstNonBlank(sourceOccurrenceId);
+            this.fieldSignature = firstNonBlank(fieldSignature);
+            this.descriptor = firstNonBlank(descriptor);
+            this.sort = firstNonBlank(sort);
+            this.smtSort = firstNonBlank(smtSort);
+            this.solverTerm = firstNonBlank(solverTerm);
+            this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
+        }
+
+        private static ConfiguredSourceInfo decode(JsonObject row) {
+            if (row == null || integer(row, "schemaVersion", -1) != 3
+                    || !ConcolicSmtComposer
+                    .CONFIGURED_SOURCE_MATERIALIZATION_KIND.equals(
+                    string(row, "kind"))
+                    || !ConcolicSmtComposer
+                    .CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY.equals(
+                    string(row, "authority"))) {
+                return null;
+            }
+            ConfiguredSourceInfo result = new ConfiguredSourceInfo(
+                    string(row, "sourceKey"),
+                    string(row, "sourceId"),
+                    string(row, "sourcePhaseId"),
+                    string(row, "sourceOccurrenceId"),
+                    string(row, "fieldSignature"),
+                    string(row, "javaTypeDescriptor"),
+                    string(row, "sort"), string(row, "smtSort"),
+                    string(row, "solverTerm"),
+                    string(row, "nullnessSolverTerm"));
+            return result.sourceKey.isEmpty() || result.sourceId.isEmpty()
+                    || result.sourcePhaseId.isEmpty()
+                    || !result.sourcePhaseId.startsWith("SOURCE_PHASE.")
+                    || result.sourceOccurrenceId.isEmpty()
+                    || result.fieldSignature.isEmpty()
+                    || result.descriptor.isEmpty()
+                    || result.sort.isEmpty() || result.smtSort.isEmpty()
+                    || result.solverTerm.isEmpty() ? null : result;
+        }
+
+        private PortInfo asPortInfo() {
+            return new PortInfo(sourceId, descriptor, true,
+                    fieldSignature);
+        }
+    }
+
     private static final class PortOccurrenceCatalog {
         private final List<PortOccurrenceInfo> occurrences =
                 new ArrayList<>();
@@ -925,12 +1272,22 @@ public final class BooleanReachConditionExtractor {
         private final String id;
         private final String descriptor;
         private final boolean javaBoolean;
+        private final boolean configuredSource;
+        private final String fieldSignature;
 
         private PortInfo(String id, String javaType) {
+            this(id, javaTypeDescriptor(javaType), false, "");
+        }
+
+        private PortInfo(String id, String descriptor,
+                         boolean configuredSource,
+                         String fieldSignature) {
             this.id = firstNonBlank(id);
-            this.descriptor = javaTypeDescriptor(javaType);
+            this.descriptor = javaTypeDescriptor(descriptor);
             this.javaBoolean = "Z".equals(descriptor)
                     || "Ljava/lang/Boolean;".equals(descriptor);
+            this.configuredSource = configuredSource;
+            this.fieldSignature = firstNonBlank(fieldSignature);
         }
     }
 

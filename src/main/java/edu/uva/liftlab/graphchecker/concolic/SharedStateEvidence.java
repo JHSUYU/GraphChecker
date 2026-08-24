@@ -510,8 +510,8 @@ public final class SharedStateEvidence {
 
     /**
      * A cross-session name for one location, built from the planned region
-     * occurrence and declared carrier field that both sessions mint
-     * identically.
+     * occurrence, traced receiver and declared carrier field that both
+     * sessions mint identically.
      *
      * <p>The VM's {@code sym_rid} cannot serve here - it is a per-session
      * allocation ordinal, so one map is {@code MAP_STATE/2136#-3} in one
@@ -520,26 +520,31 @@ public final class SharedStateEvidence {
      * warning for the VM's placeholder ordinals; it was never applied to
      * {@code sym_rid}.</p>
      *
-     * <p>The occurrence is required: NameNode, Balancer and DataNode may
-     * declare the same field, but they are different planned instances. A VM
-     * object id cannot distinguish them across fresh JVMs because it is
-     * session-local too.</p>
+     * <p>Both axes are required. The occurrence separates planned activations
+     * across fresh replay JVMs; the trace receiver separates two application
+     * objects accessed by one activation. The receiver id is admitted only
+     * when the replay recorded it, so a changed object-allocation/trace shape
+     * becomes an unresolved location instead of being guessed from the field
+     * name alone.</p>
      *
      * @return the canonical key, or "" when this row cannot be named across
      *         sessions and must stay unresolved
      */
     public static String canonicalLocationKey(String locationKey,
                                               String declaredField,
-                                              String occurrenceId) {
+                                              String occurrenceId,
+                                              long receiverObjectId) {
         String kind = locationKindOf(locationKey);
         if (kind.isEmpty()
                 || occurrenceId == null || occurrenceId.trim().isEmpty()
-                || declaredField == null || declaredField.trim().isEmpty()) {
+                || declaredField == null || declaredField.trim().isEmpty()
+                || receiverObjectId <= 0L) {
             return "";
         }
         int slot = locationKey.indexOf('#');
         if (slot < 0) return "";
-        return kind + "/" + occurrenceId.trim() + "@"
+        return kind + "/" + occurrenceId.trim() + "@receiver:"
+                + receiverObjectId + "@"
                 + declaredField.trim()
                 + locationKey.substring(slot);
     }
@@ -573,7 +578,7 @@ public final class SharedStateEvidence {
     public static Collection<String> canonicalizeLocations(
             JsonObject summary) {
         Set<String> unresolved = new LinkedHashSet<>();
-        Map<String, String> canonical = new LinkedHashMap<>();
+        Map<String, Set<String>> candidates = new LinkedHashMap<>();
         String occurrenceId = string(summary, "occurrenceId");
         for (JsonElement element : array(summary, "edgeBindings")) {
             if (!element.isJsonObject()) continue;
@@ -582,21 +587,43 @@ public final class SharedStateEvidence {
             if (key.isEmpty()) continue;
             String named = canonicalLocationKey(key,
                     string(binding, RecordedReadFrom.EDGE_FIELD),
-                    occurrenceId);
+                    occurrenceId,
+                    longInteger(binding, "receiverObjectId", 0L));
             if (named.isEmpty()) {
                 unresolved.add(key);
                 continue;
             }
-            canonical.put(key, named);
-            rename(binding, key, named);
+            candidates.computeIfAbsent(key,
+                    ignored -> new LinkedHashSet<>()).add(named);
+        }
+        Map<String, String> canonical = new LinkedHashMap<>();
+        for (Map.Entry<String, Set<String>> entry : candidates.entrySet()) {
+            if (entry.getValue().size() != 1) {
+                unresolved.add(entry.getKey());
+                continue;
+            }
+            canonical.put(entry.getKey(), entry.getValue().iterator().next());
+        }
+        for (JsonElement element : array(summary, "edgeBindings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            String key = string(binding, "locationKey");
+            String named = canonical.getOrDefault(key, "");
+            if (!named.isEmpty()) rename(binding, key, named);
         }
         for (JsonObject recorded : recordedMembers(summary)) {
             for (JsonElement element : array(recorded, "versions")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject row = element.getAsJsonObject();
                 String key = string(row, "locationKey");
-                String named = carrierLocationKey(row, occurrenceId);
-                if (named.isEmpty()) named = canonical.getOrDefault(key, "");
+                String carried = carrierLocationKey(row, occurrenceId);
+                String borrowed = canonical.getOrDefault(key, "");
+                if (!carried.isEmpty() && !borrowed.isEmpty()
+                        && !carried.equals(borrowed)) {
+                    if (!key.isEmpty()) unresolved.add(key);
+                    continue;
+                }
+                String named = carried.isEmpty() ? borrowed : carried;
                 if (named.isEmpty()) {
                     if (!key.isEmpty()) unresolved.add(key);
                     continue;
@@ -711,7 +738,8 @@ public final class SharedStateEvidence {
         if (declaringClass.isEmpty() || fieldName.isEmpty()) return "";
         return canonicalLocationKey(string(row, "locationKey"),
                 declaringClass + "#" + fieldName,
-                occurrenceId);
+                occurrenceId,
+                longInteger(carrier, "receiverObjectId", 0L));
     }
 
     private static void rename(JsonObject row, String session,

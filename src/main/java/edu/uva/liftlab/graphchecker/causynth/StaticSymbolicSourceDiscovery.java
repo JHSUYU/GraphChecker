@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import soot.Body;
 import soot.Local;
 import soot.Scene;
@@ -29,6 +30,7 @@ final class StaticSymbolicSourceDiscovery {
     private static final String HOOK_CLASS_SIMPLE_NAME =
             "CausynthSymbolicSource";
     private static final String HOOK_METHOD = "symbolize";
+    private static final String SELECTOR_METHOD = "selectedIntValue";
 
     private StaticSymbolicSourceDiscovery() {
     }
@@ -51,6 +53,14 @@ final class StaticSymbolicSourceDiscovery {
         for (Map<String, Object> region : program.regions) {
             discoverRegion(region, regionRoots, cutBoundaries);
         }
+        Set<String> traceMethods = new LinkedHashSet<>(program.traceMethods);
+        for (Map<String, Object> region : program.regions) {
+            traceMethods.addAll(texts(region.get(
+                    ConfiguredSourcePhaseContract.TRACE_METHODS_FIELD)));
+        }
+        program.traceMethods.clear();
+        program.traceMethods.addAll(traceMethods);
+        Collections.sort(program.traceMethods);
     }
 
     private static void discoverRegion(
@@ -62,6 +72,9 @@ final class StaticSymbolicSourceDiscovery {
         work.addAll(initial);
         Set<String> seen = new LinkedHashSet<>();
         Map<String, Map<String, Object>> bySource = new LinkedHashMap<>();
+        List<Map<String, Object>> phases = new ArrayList<>();
+        Set<String> phaseIdentities = new LinkedHashSet<>();
+        Set<String> phaseTraceMethods = new LinkedHashSet<>();
         while (!work.isEmpty()) {
             String signature = work.removeFirst();
             if (!seen.add(signature)) continue;
@@ -73,7 +86,6 @@ final class StaticSymbolicSourceDiscovery {
             } catch (RuntimeException unavailable) {
                 continue;
             }
-            Local thisLocal = method.isStatic() ? null : safeThis(body);
             int unitIndex = 0;
             for (Unit unit : body.getUnits()) {
                 if (!(unit instanceof Stmt)
@@ -84,8 +96,18 @@ final class StaticSymbolicSourceDiscovery {
                 InvokeExpr invoke = ((Stmt) unit).getInvokeExpr();
                 if (symbolizeHook(invoke)) {
                     Map<String, Object> declaration = declaration(
-                            method, thisLocal, invoke, unitIndex);
+                            method, invoke, unitIndex);
                     merge(bySource, declaration, region);
+                    addPhase(phases, phaseIdentities, phaseTraceMethods,
+                            ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                            text(declaration.get("sourceId")),
+                            text(declaration.get("fieldSignature")),
+                            method, unitIndex);
+                } else if (selectorHook(invoke)) {
+                    addPhase(phases, phaseIdentities, phaseTraceMethods,
+                            ConfiguredSourcePhaseContract.Phase.CONSUME,
+                            selectorSourceId(method, invoke, unitIndex), "",
+                            method, unitIndex);
                 } else {
                     SootMethod callee = concreteCallee(invoke);
                     if (callee != null) {
@@ -104,10 +126,68 @@ final class StaticSymbolicSourceDiscovery {
             region.put(StaticSymbolicSourceDeclaration.FIELD,
                     new ArrayList<>(bySource.values()));
         }
+        if (!phases.isEmpty()) {
+            for (Map<String, Object> phase : phases) {
+                if (!ConfiguredSourcePhaseContract.Phase.CONSUME.name().equals(
+                        text(phase.get("phase")))) {
+                    continue;
+                }
+                Map<String, Object> source = bySource.get(
+                        text(phase.get("sourceId")));
+                if (source != null) {
+                    phase.put("fieldSignature",
+                            text(source.get("fieldSignature")));
+                }
+            }
+            region.put(ConfiguredSourcePhaseContract.DECLARATION_FIELD,
+                    phases);
+            List<String> traced = new ArrayList<>(phaseTraceMethods);
+            Collections.sort(traced);
+            region.put(ConfiguredSourcePhaseContract.TRACE_METHODS_FIELD,
+                    traced);
+        }
+    }
+
+    private static void addPhase(
+            List<Map<String, Object>> phases, Set<String> identities,
+            Set<String> traceMethods,
+            ConfiguredSourcePhaseContract.Phase phase,
+            String sourceId, String fieldSignature,
+            SootMethod method, int unitIndex) throws IOException {
+        final Map<String, Object> declaration;
+        try {
+            declaration = ConfiguredSourcePhaseContract.declaration(
+                    phase, sourceId, fieldSignature,
+                    method.getSignature(), unitIndex);
+        } catch (IllegalArgumentException malformed) {
+            throw malformed(method, unitIndex, malformed.getMessage());
+        }
+        String identity = phase.name() + "\n" + sourceId + "\n"
+                + declaration.get("siteId");
+        if (identities.add(identity)) {
+            phases.add(declaration);
+            traceMethods.add(method.getSignature());
+        }
+    }
+
+    private static String selectorSourceId(
+            SootMethod method, InvokeExpr invoke, int unitIndex)
+            throws IOException {
+        if (invoke.getArgCount() != 1
+                || !(invoke.getArg(0) instanceof StringConstant)) {
+            throw malformed(method, unitIndex,
+                    "selector sourceId must be a string constant");
+        }
+        String sourceId = ((StringConstant) invoke.getArg(0)).value.trim();
+        if (sourceId.isEmpty()) {
+            throw malformed(method, unitIndex,
+                    "selector sourceId must be non-empty");
+        }
+        return sourceId;
     }
 
     private static Map<String, Object> declaration(
-            SootMethod method, Local thisLocal, InvokeExpr invoke,
+            SootMethod method, InvokeExpr invoke,
             int unitIndex) throws IOException {
         if (invoke.getArgCount() != 3
                 || !(invoke.getArg(0) instanceof StringConstant)
@@ -116,9 +196,15 @@ final class StaticSymbolicSourceDiscovery {
                     "sourceId and fieldSignature must be string constants");
         }
         Value owner = invoke.getArg(1);
-        if (thisLocal == null || !thisLocal.equals(owner)) {
+        // The exact owner is selected by the application at this hook.  It
+        // may be the region receiver, or an object first resolved from an
+        // array/Map.  Requiring `this` made those exact member-field sources
+        // impossible and encouraged whole-container symbolization instead.
+        // A local is stable for this Jimple statement; runtime occurrence
+        // admission then requires this sourceId to resolve to one object only.
+        if (!(owner instanceof Local)) {
             throw malformed(method, unitIndex,
-                    "owner must be the declaring method's this object");
+                    "owner must be an explicit local object");
         }
         String sourceId = ((StringConstant) invoke.getArg(0)).value.trim();
         String field = ((StringConstant) invoke.getArg(2)).value.trim();
@@ -153,11 +239,23 @@ final class StaticSymbolicSourceDiscovery {
         String sourceId = text(declaration.get("sourceId"));
         Map<String, Object> prior = bySource.putIfAbsent(
                 sourceId, declaration);
-        if (prior != null && !text(prior.get("fieldSignature")).equals(
-                text(declaration.get("fieldSignature")))) {
-            throw new IOException("region " + text(region.get("regionId"))
-                    + " gives symbolic source " + sourceId
-                    + " two fields");
+        if (prior != null) {
+            if (!text(prior.get("fieldSignature")).equals(
+                    text(declaration.get("fieldSignature")))) {
+                throw new IOException("region "
+                        + text(region.get("regionId"))
+                        + " gives symbolic source " + sourceId
+                        + " two fields");
+            }
+            if (!text(prior.get("declarationMethod")).equals(
+                    text(declaration.get("declarationMethod")))
+                    || !text(prior.get("declarationUnitIndex")).equals(
+                    text(declaration.get("declarationUnitIndex")))) {
+                throw new IOException("region "
+                        + text(region.get("regionId"))
+                        + " declares symbolic source " + sourceId
+                        + " at more than one hook site");
+            }
         }
     }
 
@@ -175,6 +273,20 @@ final class StaticSymbolicSourceDiscovery {
                 && "java.lang.String".equals(parameters.get(0).toString())
                 && "java.lang.Object".equals(parameters.get(1).toString())
                 && "java.lang.String".equals(parameters.get(2).toString());
+    }
+
+    private static boolean selectorHook(InvokeExpr invoke) {
+        if (invoke == null || !SELECTOR_METHOD.equals(
+                invoke.getMethodRef().name())
+                || invoke.getMethodRef().parameterTypes().size() != 1) {
+            return false;
+        }
+        String owner = invoke.getMethodRef().declaringClass().getName();
+        int separator = owner.lastIndexOf('.');
+        String simple = separator < 0 ? owner : owner.substring(separator + 1);
+        return HOOK_CLASS_SIMPLE_NAME.equals(simple)
+                && "java.lang.String".equals(invoke.getMethodRef()
+                .parameterTypes().get(0).toString());
     }
 
     private static SootMethod concreteCallee(InvokeExpr invoke) {
@@ -195,14 +307,6 @@ final class StaticSymbolicSourceDiscovery {
                     && method.getDeclaringClass().isApplicationClass()
                     ? method : null;
         } catch (RuntimeException unresolved) {
-            return null;
-        }
-    }
-
-    private static Local safeThis(Body body) {
-        try {
-            return body.getThisLocal();
-        } catch (RuntimeException absent) {
             return null;
         }
     }

@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
@@ -632,6 +633,7 @@ final class RecordedSharedStateFixtures {
         JsonObject fatal = new JsonObject();
         fatal.addProperty("schemaVersion", 1);
         fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
+        fatal.addProperty("queryKey", "QUERY.RECORDED.SHARED.STATE");
         fatal.addProperty("regionId", "REGION.0");
         fatal.addProperty("occurrenceId", TARGET_OCCURRENCE);
         fatal.addProperty("targetSiteId", "<Test: void consume()>#u1");
@@ -643,6 +645,10 @@ final class RecordedSharedStateFixtures {
         JsonObject path = new JsonObject();
         path.add("constraints", constraints);
         path.addProperty("desiredTakenOutcome", false);
+        path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
+                TargetReachPathQueryBuilder.SOURCE_TARGET_REACH_EVENT);
+        path.addProperty("fatalBranchConditionAuthority",
+                TargetReachPathQueryBuilder.SOURCE_FATAL_BRANCH_AUTHORITY);
         JsonObject targetReach = new JsonObject();
         targetReach.addProperty("kind",
                 PathObservation.TargetReachEvent.KIND);
@@ -657,9 +663,11 @@ final class RecordedSharedStateFixtures {
         metadata.addProperty("predicateNormalization", "IDENTITY");
         BranchWitness witness = BranchWitness.vmPc(
                 "<Test: void consume()>#u1", "<Test: void consume()>", 1, 1,
-                true, binary(constant(0), "==", constant(0)), 0, metadata);
+                true, BranchPredicateAlgebra.complement(targetPredicate),
+                0, metadata);
         fatal.add("seedReplayContract", BranchReplayContract.flip(
                 Collections.<BranchWitness>emptyList(), witness).toJson());
+        LoopBoundPolicy.cfgBackedges(8).writeTo(fatal);
         JsonArray selectedTargetBindings = new JsonArray();
         for (JsonObject firstHop : firstHops) {
             selectedTargetBindings.add(firstHop.deepCopy());
@@ -667,8 +675,6 @@ final class RecordedSharedStateFixtures {
         fatal.add("selectedTargetBindings", selectedTargetBindings);
         JsonObject context = new JsonObject();
         context.addProperty("occurrenceId", TARGET_OCCURRENCE);
-        context.add("equalityClasses", new JsonArray());
-        context.add("equalityRelations", new JsonArray());
         fatal.add("symbolicContext", context);
         return fatal;
     }

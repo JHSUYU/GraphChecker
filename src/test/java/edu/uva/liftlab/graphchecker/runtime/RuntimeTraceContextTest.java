@@ -112,13 +112,9 @@ public class RuntimeTraceContextTest {
                 runnable, other.key()));
     }
 
-    /**
-     * An ambient submitter is not a conflicting owner for an unregistered
-     * long-lived receiver.  Only a receiver alias is strong enough to reject
-     * a planned source at entry.
-     */
+    /** A REGISTERED_SOURCE root requires an exact receiver lifecycle key. */
     @Test
-    public void ambientSourceDoesNotOverridePlannedUnaliasedReceiver() {
+    public void registeredSourceRejectsMissingWrongAndStaleReceiverAlias() {
         Object driver = new Object();
         Object receiver = new Object();
         SourceRef driverSource = new SourceRef(
@@ -127,7 +123,7 @@ public class RuntimeTraceContextTest {
         RuntimeTraceContext.beginRequest(driverSource, "workload");
 
         assertEquals(null, RuntimeTraceContext.sourceFor(receiver));
-        assertEquals(true,
+        assertEquals(false,
                 ConcolicRegionRuntime.plannedEntrySourceForTests(
                         receiver, "cluster0/nn0#epoch1"));
 
@@ -140,7 +136,7 @@ public class RuntimeTraceContextTest {
         assertEquals(true,
                 ConcolicRegionRuntime.plannedEntrySourceForTests(
                         receiver, dataNode.key()));
-        assertEquals(true,
+        assertEquals(false,
                 ConcolicRegionRuntime.plannedEntrySourceForTests(
                         receiver, "cluster0/dn0#epoch99"));
     }

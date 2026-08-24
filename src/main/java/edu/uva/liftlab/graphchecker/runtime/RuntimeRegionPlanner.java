@@ -10,11 +10,12 @@ import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
@@ -574,6 +575,88 @@ final class RuntimeRegionPlanner {
         return retained;
     }
 
+    /**
+     * Exact executions of configured-source hook sites inside one occurrence.
+     *
+     * <p>The static row supplies source semantics and the existing rich
+     * CALL_SITE_ENTER row supplies execution/order identity.  No concrete
+     * source value is inspected.  The ordinal is scoped to one exact hook site,
+     * so two calls to that site in one long-lived service root become two
+     * source phases rather than one task-wide source.</p>
+     */
+    private static List<Map<String, Object>> configuredSourcePhases(
+            Map<String, Object> region, String occurrenceId,
+            long activationRootCallId, TraceIndex trace) {
+        final List<ConfiguredSourcePhaseContract.Declaration> declarations;
+        try {
+            declarations = ConfiguredSourcePhaseContract.declarationsOf(
+                    region.get(ConfiguredSourcePhaseContract
+                            .DECLARATION_FIELD));
+        } catch (IllegalArgumentException malformed) {
+            throw new IllegalArgumentException(
+                    "malformed configured-source phase catalog "
+                    + "for " + text(region.get("regionId")), malformed);
+        }
+        if (declarations.isEmpty()) return Collections.emptyList();
+
+        Map<String, ConfiguredSourcePhaseContract.Declaration> bySite =
+                new LinkedHashMap<>();
+        for (ConfiguredSourcePhaseContract.Declaration declaration
+                : declarations) {
+            ConfiguredSourcePhaseContract.Declaration prior = bySite.putIfAbsent(
+                    declaration.siteId(), declaration);
+            if (prior != null) {
+                throw new IllegalArgumentException(
+                        "configured-source phase site "
+                        + declaration.siteId() + " is declared more than once"
+                        + " in " + text(region.get("regionId")));
+            }
+        }
+
+        Set<Long> activationCalls = trace.subtree(activationRootCallId);
+        List<RuntimeEvent> ordered = new ArrayList<>(
+                trace.runtime(activationCalls));
+        ordered.sort(Comparator.comparingLong(event -> event.seq));
+        Map<String, Integer> ordinals = new LinkedHashMap<>();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (RuntimeEvent event : ordered) {
+            if (!"CALL_SITE_ENTER".equals(event.kind)) continue;
+            ConfiguredSourcePhaseContract.Declaration declaration =
+                    bySite.get(event.siteId);
+            if (declaration == null) continue;
+            if (!declaration.method().equals(event.method)
+                    || event.seq <= 0L || event.callId <= 0L
+                    || event.invocationId <= 0L) {
+                throw new IllegalArgumentException(
+                        "configured-source phase event differs "
+                        + "from exact static site " + declaration.siteId());
+            }
+            int ordinal = ordinals.merge(declaration.identity(), 1,
+                    Integer::sum);
+            List<Long> enclosingCallIds = new ArrayList<>();
+            MethodEvent owner = trace.methodByCall.get(event.callId);
+            Set<Long> seen = new LinkedHashSet<>();
+            while (owner != null && seen.add(owner.callId)) {
+                enclosingCallIds.add(owner.callId);
+                if (owner.callId == activationRootCallId) break;
+                owner = trace.methodByCall.get(owner.parentCallId);
+            }
+            if (enclosingCallIds.isEmpty()
+                    || enclosingCallIds.get(enclosingCallIds.size() - 1)
+                    != activationRootCallId) {
+                throw new IllegalArgumentException(
+                        "configured-source phase event "
+                        + event.seq + " is not enclosed by activation root "
+                        + activationRootCallId);
+            }
+            result.add(ConfiguredSourcePhaseContract.occurrence(
+                    declaration, occurrenceId, ordinal, event.seq,
+                    event.callId, event.invocationId,
+                    event.declaredCallee, enclosingCallIds));
+        }
+        return result;
+    }
+
     private static void linkOneDelivery(
             Result result, Map<String, Object> activation,
             Map<String, Object> exported,
@@ -1090,15 +1173,13 @@ final class RuntimeRegionPlanner {
             // retention decision of this activation is read.  The recorded
             // root call is resolved exactly here and stamped onto the rows it
             // named; every later decision compares occurrence identity only.
-            // The ordinal is reserved over the root source, before retention
-            // is consulted: a discarded activation still occurs at replay,
-            // and the region finalizer reserved over the same seed order one
-            // stage earlier.  Source and region are the whole counter scope,
-            // because they are exactly what the minted identity names: one
-            // activation of one region on one source, with no request layer
-            // beneath it.  A source whose activations span two request scopes
-            // would otherwise restart the count and mint one identity twice.
-            int occurrenceIndex = minter.reserveOrdinal(rootSource.key(),
+            // The ordinal is reserved over the semantic source encoded in
+            // the occurrence identity, before retention is consulted: a
+            // discarded activation still occurs at replay, and the region
+            // finalizer reserved over the same seed order one stage earlier.
+            // The root source remains the independent causal anchor carried
+            // by rootSelector.
+            int occurrenceIndex = minter.reserveOrdinal(source.key(),
                     regionId);
             String occurrenceId = minter.mint(regionId, rootCallId,
                     source.key(), occurrenceIndex);
@@ -1255,6 +1336,12 @@ final class RuntimeRegionPlanner {
                     retainedLoops(region, occurrenceMethods);
             if (!retainedLoops.isEmpty()) {
                 plan.put(RETAINED_LOOPS_FIELD, retainedLoops);
+            }
+            List<Map<String, Object>> sourcePhases = configuredSourcePhases(
+                    region, occurrenceId, rootCallId, trace);
+            if (!sourcePhases.isEmpty()) {
+                plan.put(ConfiguredSourcePhaseContract.PLAN_FIELD,
+                        sourcePhases);
             }
             // Where this occurrence hands a declared communication port to
             // the VM, or takes one from it.  Both sites are the static
@@ -3575,6 +3662,11 @@ final class RuntimeRegionPlanner {
         }
         slice.addProperty("selectedRuntimeEventSeq", longNumber(
                 output.get("eventSeq"), -1L));
+        // Exact dynamic definition frame for this output member.  Source
+        // phase selection uses call ancestry, never event-sequence proximity,
+        // so a later update in the same long-lived root cannot consume an
+        // earlier publication merely because both share one occurrence.
+        slice.addProperty("selectedRuntimeCallId", definitionCallId);
         long selectedFieldReceiver = longNumber(
                 output.get("fieldReceiverObjectId"), 0L);
         if (!mutation && selectedFieldReceiver != 0L) {
@@ -3987,31 +4079,33 @@ final class RuntimeRegionPlanner {
         List<Map<String, Object>> priorHeapInputs =
                 preHandoffHeapInputs(region, goal, occurrenceId, sentAt);
 
-        // A response component is one leaf of its sibling response, not a
-        // summary of every heap read the long-lived handler happened to make
-        // before sending.  The sibling's return slice is the code-level
-        // authority for which of those observed reads can construct or guard
-        // this response.  Intersecting the two retains the exact runtime
-        // roots (including guard roots) while excluding prior, unrelated
-        // interactions in the same coarse occurrence.
-        if (CommunicationCatalogContract.DIRECTION_RESPONSE.equals(
-                direction)) {
-            List<Map<String, Object>> parentBindings =
-                    exactSiblingResponseBindings(goal, parentPortId,
-                            exactBinding);
-            OutputClosureContract parentClosure =
-                    communicationEffectOutputClosure(plan, goal, region,
-                            parentPortId, parentBindings, refinedFlow, trace,
-                            loopBodyBound, new ArrayList<>());
-            if (parentClosure == null) {
-                rejectionReasons.add(
-                        "HANDOFF_COMPONENT_PARENT_RETURN_SLICE_UNRESOLVED:"
-                                + outputPort);
-                return null;
-            }
-            priorHeapInputs = retainParentReturnInputs(priorHeapInputs,
-                    parentClosure.executionScope().inputPorts());
+        // A component is one leaf of its sibling wire value, not a summary
+        // of every heap read the long-lived occurrence happened to make
+        // before sending.  Close the sibling at its exact Java boundary:
+        // ENTRY_RETURN for a response and CALL_ARGUMENT for a request.  That
+        // parent supplies both the code-level live-in frontier and the exact
+        // dynamic call frame used to bind configured source phases.
+        List<Map<String, Object>> parentBindings =
+                exactSiblingParentBindings(goal, parentPortId,
+                        exactBinding);
+        List<String> parentRejections = new ArrayList<>();
+        OutputClosureContract parentClosure =
+                CommunicationCatalogContract.DIRECTION_RESPONSE.equals(
+                        direction)
+                        ? communicationEffectOutputClosure(plan, goal,
+                        region, parentPortId, parentBindings, refinedFlow,
+                        trace, loopBodyBound, parentRejections)
+                        : cutArgumentOutputClosure(plan, goal, region,
+                        parentPortId, parentBindings, refinedFlow, trace,
+                        loopBodyBound, parentRejections);
+        if (parentClosure == null) {
+            rejectionReasons.add(
+                    "HANDOFF_COMPONENT_PARENT_BOUNDARY_UNRESOLVED:"
+                            + outputPort + ":" + parentRejections);
+            return null;
         }
+        priorHeapInputs = retainParentReturnInputs(priorHeapInputs,
+                parentClosure.executionScope().inputPorts());
 
         MethodEvent replayEntry = trace.methodByCall.get(
                 traceEvidenceRootCall(plan));
@@ -4058,6 +4152,15 @@ final class RuntimeRegionPlanner {
                 text(parent.get(
                         CommunicationCatalogContract.PORT_DEFINITION_METHOD)))));
         slice.addProperty("activationLocalOccurrence", 1);
+        OutputClosureContract.Member parentMember =
+                parentClosure.member(parentPortId);
+        if (parentMember == null
+                || !copyExactOutputBoundary(slice, parentMember.slice())) {
+            rejectionReasons.add(
+                    "HANDOFF_COMPONENT_PARENT_BOUNDARY_IDENTITY_MISSING:"
+                            + outputPort);
+            return null;
+        }
         slice.addProperty("outputBoundaryKind", HANDOFF_COMPONENT_BOUNDARY);
         JsonArray edgeIds = new JsonArray();
         Set<String> retainedInputPorts = new LinkedHashSet<>();
@@ -4163,8 +4266,8 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    /** Exact parent edge from the same recorded response delivery. */
-    private static List<Map<String, Object>> exactSiblingResponseBindings(
+    /** Exact parent edge from the same recorded protocol delivery. */
+    private static List<Map<String, Object>> exactSiblingParentBindings(
             Map<String, Object> goal, String parentPortId,
             Map<String, Object> componentBinding) {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -4175,6 +4278,27 @@ final class RuntimeRegionPlanner {
             }
         }
         return result;
+    }
+
+    /** Copies one already validated sibling's exact dynamic output frame. */
+    private static boolean copyExactOutputBoundary(
+            JsonObject destination, JsonObject source) {
+        long eventSeq = JsonFields.longInteger(source,
+                "selectedRuntimeEventSeq", -1L);
+        long callId = JsonFields.longInteger(source,
+                "selectedRuntimeCallId", -1L);
+        return addExactOutputBoundary(destination, eventSeq, callId);
+    }
+
+    /** Writes the two-part identity every dynamic output boundary requires. */
+    static boolean addExactOutputBoundary(
+            JsonObject destination, long eventSeq, long callId) {
+        if (destination == null || eventSeq <= 0L || callId <= 0L) {
+            return false;
+        }
+        destination.addProperty("selectedRuntimeEventSeq", eventSeq);
+        destination.addProperty("selectedRuntimeCallId", callId);
+        return true;
     }
 
     /** Exact trusted inbound RF edges for the retained component inputs. */
@@ -4487,7 +4611,15 @@ final class RuntimeRegionPlanner {
         slice.add("staticSites", stringsJson(staticSites));
         slice.add("methods", stringsJson(methodSet));
         slice.addProperty("activationLocalOccurrence", 1);
-        slice.addProperty("selectedRuntimeEventSeq", evaluation.seq);
+        // A call-argument cut is also a dynamic output boundary.  Retain its
+        // caller frame so a configured source publication is matched by
+        // exact call ancestry rather than by event ordering alone.
+        if (!addExactOutputBoundary(slice, evaluation.seq,
+                evaluation.callId)) {
+            rejectionReasons.add("CUT_ARGUMENT_BOUNDARY_IDENTITY_MISSING:"
+                    + outputPort);
+            return null;
+        }
         slice.addProperty("outputBoundaryKind", CUT_ARGUMENT_BOUNDARY);
         addConcretePrimitiveCallReturns(slice, trace, invocationCalls,
                 argumentSlice.staticSites, inputPorts, regionInputs,
@@ -4669,7 +4801,19 @@ final class RuntimeRegionPlanner {
         slice.add("staticSites", stringsJson(returnSlice.staticSites));
         slice.add("methods", stringsJson(methodSet));
         slice.addProperty("activationLocalOccurrence", 1);
-        slice.addProperty("selectedRuntimeEventSeq", returned.seq);
+        // The event sequence orders the response, but it does not identify
+        // the dynamic definition frame that produced it.  Configured source
+        // phases are selected by exact call ancestry, so retain the call id
+        // of the unique normal method exit just as field/state output
+        // closures do.  Without this identity a real PUBLISH in the server
+        // invocation is indistinguishable from a publication in another
+        // invocation of the same long-lived region and must fail closed.
+        if (!addExactOutputBoundary(slice, returned.seq, returned.callId)) {
+            rejectionReasons.add(
+                    "COMMUNICATION_EFFECT_BOUNDARY_IDENTITY_MISSING:"
+                            + outputPort);
+            return null;
+        }
         slice.addProperty("outputBoundaryKind",
                 COMMUNICATION_EFFECT_BOUNDARY);
         addConcretePrimitiveCallReturns(slice, trace, invocationCalls,
@@ -6293,6 +6437,7 @@ final class RuntimeRegionPlanner {
                     ? 0 : selectedIndex + 1);
             if (selected != null) {
                 branch.put("selectedRuntimeEventSeq", selected.seq);
+                branch.put("selectedCallId", selected.callId);
             }
             branch.put("occurrences", encoded);
             result.add(branch);
@@ -6325,10 +6470,6 @@ final class RuntimeRegionPlanner {
         result.put(CAUSAL_ANCHOR, causalAnchor(source, requestApi));
         return result;
     }
-
-
-    @SuppressWarnings("unchecked")
-
     /** Selector member holding the incoming causal anchor. */
     static final String CAUSAL_ANCHOR = "causalAnchor";
     /** The activation ran on a source the application registered. */

@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
@@ -42,6 +43,8 @@ import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.
  * a second one written for maps.</p>
  */
 final class RecordedMapStateFixtures {
+
+    static final String MAP_EDGE = "EDGE.MAP";
 
     /** The selected map's own session identity. */
     static final long MAP_OWNER = 9L;
@@ -472,7 +475,7 @@ final class RecordedMapStateFixtures {
 
     private static JsonObject binding() {
         JsonObject binding = new JsonObject();
-        binding.addProperty("edgeId", "EDGE.MAP");
+        binding.addProperty("edgeId", MAP_EDGE);
         binding.addProperty("fromRegion", "REGION.1");
         binding.addProperty("toRegion", "REGION.0");
         binding.addProperty("fromOccurrenceId", PRODUCER_OCCURRENCE);
@@ -557,9 +560,12 @@ final class RecordedMapStateFixtures {
         inputs.add("REGION.1.in.0");
         slice.add("inputPorts", inputs);
         for (String member : new String[]{"sites", "staticSites", "methods",
-                "causalEdgeIds", "captureBindings", "captureBindingIssues"}) {
+                "captureBindings", "captureBindingIssues"}) {
             slice.add(member, new JsonArray());
         }
+        JsonArray causalEdges = new JsonArray();
+        causalEdges.add(MAP_EDGE);
+        slice.add("causalEdgeIds", causalEdges);
         return slice;
     }
 
@@ -568,6 +574,7 @@ final class RecordedMapStateFixtures {
         JsonObject fatal = new JsonObject();
         fatal.addProperty("schemaVersion", 1);
         fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
+        fatal.addProperty("queryKey", "QUERY.RECORDED.MAP.STATE");
         fatal.addProperty("regionId", "REGION.0");
         fatal.addProperty("occurrenceId", TARGET_OCCURRENCE);
         fatal.addProperty("targetSiteId", "<Test: void consume()>#u1");
@@ -579,6 +586,10 @@ final class RecordedMapStateFixtures {
         JsonObject path = new JsonObject();
         path.add("constraints", constraints);
         path.addProperty("desiredTakenOutcome", false);
+        path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
+                TargetReachPathQueryBuilder.SOURCE_TARGET_REACH_EVENT);
+        path.addProperty("fatalBranchConditionAuthority",
+                TargetReachPathQueryBuilder.SOURCE_FATAL_BRANCH_AUTHORITY);
         JsonObject targetReach = new JsonObject();
         targetReach.addProperty("kind",
                 PathObservation.TargetReachEvent.KIND);
@@ -593,16 +604,16 @@ final class RecordedMapStateFixtures {
         metadata.addProperty("predicateNormalization", "IDENTITY");
         BranchWitness witness = BranchWitness.vmPc(
                 "<Test: void consume()>#u1", "<Test: void consume()>", 1, 1,
-                true, binary(constant(0), "==", constant(0)), 0, metadata);
+                true, BranchPredicateAlgebra.complement(targetPredicate),
+                0, metadata);
         fatal.add("seedReplayContract", BranchReplayContract.flip(
                 Collections.<BranchWitness>emptyList(), witness).toJson());
+        LoopBoundPolicy.cfgBackedges(8).writeTo(fatal);
         JsonArray selected = new JsonArray();
         selected.add(firstHop.deepCopy());
         fatal.add("selectedTargetBindings", selected);
         JsonObject context = new JsonObject();
         context.addProperty("occurrenceId", TARGET_OCCURRENCE);
-        context.add("equalityClasses", new JsonArray());
-        context.add("equalityRelations", new JsonArray());
         fatal.add("symbolicContext", context);
         return fatal;
     }

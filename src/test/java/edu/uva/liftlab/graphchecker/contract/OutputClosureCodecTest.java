@@ -16,6 +16,7 @@ import java.util.LinkedHashSet;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class OutputClosureCodecTest {
     @Rule
@@ -115,6 +116,134 @@ public class OutputClosureCodecTest {
                 selected.executionScope().methods());
         assertEquals(Collections.singleton("EDGE.heartbeat"),
                 selected.executionScope().causalEdgeIds());
+    }
+
+    @Test
+    public void mergedVersionsDoNotRetainOneDynamicCallIdentity() {
+        String port = "REGION.1.out.value";
+        String cell = "<P: int value>";
+        JsonObject firstSlice = slice(port, cell, "EDGE.value");
+        firstSlice.addProperty("selectedRuntimeEventSeq", 180L);
+        firstSlice.addProperty("selectedRuntimeCallId", 84L);
+        JsonObject secondSlice = slice(port, cell, "EDGE.value");
+        secondSlice.addProperty("selectedRuntimeEventSeq", 285L);
+        secondSlice.addProperty("selectedRuntimeCallId", 187L);
+
+        OutputClosureContract merged = OutputClosureCodec.merge(Arrays.asList(
+                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                        cell, "HEAP_STATE", "int", firstSlice),
+                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                        cell, "HEAP_STATE", "int", secondSlice)));
+
+        JsonObject slice = merged.member(port).slice();
+        assertFalse(slice.has("selectedRuntimeEventSeq"));
+        assertFalse(slice.has("selectedRuntimeCallId"));
+        JsonArray fields = slice.getAsJsonArray("alignmentGaps")
+                .get(0).getAsJsonObject().getAsJsonArray("fields");
+        assertTrue(fields.toString(), fields.contains(
+                new com.google.gson.JsonPrimitive(
+                        "selectedRuntimeEventSeq")));
+        assertTrue(fields.toString(), fields.contains(
+                new com.google.gson.JsonPrimitive(
+                        "selectedRuntimeCallId")));
+    }
+
+    @Test
+    public void mergedSameInvocationPreservesExactDynamicBoundary() {
+        String port = "REGION.1.out.value";
+        String cell = "<P: int value>";
+        JsonObject firstSlice = slice(port, cell, "EDGE.first");
+        firstSlice.addProperty("selectedRuntimeEventSeq", 180L);
+        firstSlice.addProperty("selectedRuntimeCallId", 84L);
+        JsonObject secondSlice = slice(port, cell, "EDGE.second");
+        secondSlice.addProperty("selectedRuntimeEventSeq", 180L);
+        secondSlice.addProperty("selectedRuntimeCallId", 84L);
+
+        OutputClosureContract merged = OutputClosureCodec.merge(Arrays.asList(
+                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                        cell, "HEAP_STATE", "int", firstSlice),
+                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                        cell, "HEAP_STATE", "int", secondSlice)));
+
+        JsonObject slice = merged.member(port).slice();
+        assertEquals(180L, slice.get("selectedRuntimeEventSeq").getAsLong());
+        assertEquals(84L, slice.get("selectedRuntimeCallId").getAsLong());
+        assertFalse(slice.has("alignmentGaps"));
+    }
+
+    @Test
+    public void nestedMergeRetainsRightHandAlignmentGap() {
+        String port = "REGION.1.out.value";
+        String cell = "<P: int value>";
+        JsonObject firstSlice = slice(port, cell, "EDGE.value");
+        firstSlice.addProperty("selectedRuntimeEventSeq", 180L);
+        firstSlice.addProperty("selectedRuntimeCallId", 84L);
+        JsonObject secondSlice = slice(port, cell, "EDGE.value");
+        secondSlice.addProperty("selectedRuntimeEventSeq", 285L);
+        secondSlice.addProperty("selectedRuntimeCallId", 84L);
+        JsonObject thirdSlice = slice(port, cell, "EDGE.value");
+        thirdSlice.addProperty("selectedRuntimeEventSeq", 180L);
+        thirdSlice.addProperty("selectedRuntimeCallId", 187L);
+        OutputClosureContract first = OutputClosureCodec.singleton("REL.1",
+                "REGION.1", port, cell, "HEAP_STATE", "int", firstSlice);
+        OutputClosureContract second = OutputClosureCodec.singleton("REL.1",
+                "REGION.1", port, cell, "HEAP_STATE", "int", secondSlice);
+        OutputClosureContract third = OutputClosureCodec.singleton("REL.1",
+                "REGION.1", port, cell, "HEAP_STATE", "int", thirdSlice);
+
+        OutputClosureContract leftAssociated = OutputClosureCodec.merge(
+                Arrays.asList(OutputClosureCodec.merge(
+                        Arrays.asList(first, second)), third));
+        OutputClosureContract rightAssociated = OutputClosureCodec.merge(
+                Arrays.asList(first, OutputClosureCodec.merge(
+                        Arrays.asList(second, third))));
+
+        assertEquals(leftAssociated.toJson(), rightAssociated.toJson());
+        assertEquals(leftAssociated.closureFingerprint(),
+                rightAssociated.closureFingerprint());
+        JsonArray gaps = leftAssociated.member(port).slice()
+                .getAsJsonArray("alignmentGaps");
+        assertEquals(gaps.toString(), 1, gaps.size());
+        assertEquals("OUTPUT_VERSION_ALIGNMENT_GAP",
+                gaps.get(0).getAsJsonObject().get("kind").getAsString());
+        JsonArray fields = gaps.get(0).getAsJsonObject()
+                .getAsJsonArray("fields");
+        assertTrue(fields.toString(), fields.contains(
+                new com.google.gson.JsonPrimitive(
+                        "selectedRuntimeEventSeq")));
+        assertTrue(fields.toString(), fields.contains(
+                new com.google.gson.JsonPrimitive(
+                        "selectedRuntimeCallId")));
+    }
+
+    @Test
+    public void mergeIsOrderIndependentForCapturesAndSourceDemands() {
+        String port = "REGION.1.out.value";
+        String cell = "<P: int value>";
+        JsonObject firstSlice = slice(port, cell, "EDGE.first",
+                "REGION.1.in.first", "<P: void first()>");
+        firstSlice.add("demandedHeapDeclarations",
+                strings("<P: int first>"));
+        JsonObject secondSlice = slice(port, cell, "EDGE.second",
+                "REGION.1.in.second", "<P: void second()>");
+        secondSlice.add("demandedHeapDeclarations",
+                strings("<P: int second>"));
+        OutputClosureContract first = OutputClosureCodec.singleton("REL.1",
+                "REGION.1", port, cell, "HEAP_STATE", "int", firstSlice);
+        OutputClosureContract second = OutputClosureCodec.singleton("REL.1",
+                "REGION.1", port, cell, "HEAP_STATE", "int", secondSlice);
+
+        OutputClosureContract forward = OutputClosureCodec.merge(
+                Arrays.asList(first, second));
+        OutputClosureContract reverse = OutputClosureCodec.merge(
+                Arrays.asList(second, first));
+
+        assertEquals(forward.toJson(), reverse.toJson());
+        assertEquals(forward.closureFingerprint(),
+                reverse.closureFingerprint());
+        assertEquals(strings("<P: int first>", "<P: int second>"),
+                forward.member(port).slice().getAsJsonArray(
+                        "demandedHeapDeclarations"));
     }
 
     private static JsonObject artifact(OutputClosureContract closure) {

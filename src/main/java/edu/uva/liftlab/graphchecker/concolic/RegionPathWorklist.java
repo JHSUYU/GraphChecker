@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -19,6 +20,8 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Builds bounded branch-flip work for one region closure. */
@@ -306,39 +309,14 @@ public final class RegionPathWorklist {
         }
 
         private void planSummary(PathObservation path) {
-            // The target query already complements the exact observed target
-            // predicate and composes it with upstream producer cases.  A
-            // second local replay of that terminal branch is both redundant
-            // and, for container/reference operands, not materializable as a
-            // concrete Java input.  Path exploration is therefore reserved
-            // for output-producing occurrences that can add a new guarded
-            // interaction/state case.
-            if (path.scope().goalKind().capturesTargetReach()) {
-                return;
-            }
             List<SummaryBranchMapping> candidates = new ArrayList<>();
             JsonObject task = taskById.get(path.sourceTaskId());
-            Set<String> explicitFaultSymbols = explicitFaultSymbols(task);
-            for (SummaryBranchMapping mapping : path.branchMappings()) {
-                String site = mapping.siteId();
-                if (!path.scope().branchSites().contains(site)) {
-                    continue;
-                }
-                if (mapping.isConcreteObservation()) {
-                    continue;
-                }
-                if (!mapping.isExplore()) continue;
-                if (!explicitFaultSymbols.isEmpty()
-                        && !dependsOnAny(mapping.witness()
-                        .sourceSatisfiedPredicate(),
-                        explicitFaultSymbols)) {
-                    continue;
-                }
-                if (abandonsDemandedOutputSite(path, task, mapping)) {
-                    continue;
-                }
-                candidates.add(mapping);
+            if (path.scope().goalKind().capturesTargetReach()) {
+                candidates.addAll(targetPrefixCandidates(path, task));
+            } else {
+                outputRelationCandidates(path, task, candidates);
             }
+
             // Classic depth-first concolic order: flip the latest relevant
             // decision first, then progressively shorter prefixes.
             Collections.sort(candidates, (left, right) -> {
@@ -370,6 +348,215 @@ public final class RegionPathWorklist {
                 }
                 emitTask(path, candidates.get(index));
             }
+        }
+
+        private void outputRelationCandidates(
+                PathObservation path, JsonObject task,
+                List<SummaryBranchMapping> candidates) {
+            Set<String> explicitFaultSymbols = explicitFaultSymbols(task);
+            for (SummaryBranchMapping mapping : path.branchMappings()) {
+                String site = mapping.siteId();
+                if (!path.scope().branchSites().contains(site)) {
+                    continue;
+                }
+                if (mapping.isConcreteObservation()) {
+                    continue;
+                }
+                if (!mapping.isExplore()) continue;
+                if (!explicitFaultSymbols.isEmpty()
+                        && !dependsOnAny(mapping.witness()
+                        .sourceSatisfiedPredicate(),
+                        explicitFaultSymbols)) {
+                    continue;
+                }
+                if (abandonsDemandedOutputSite(path, task, mapping)) {
+                    continue;
+                }
+                candidates.add(mapping);
+            }
+        }
+
+        /**
+         * Selects local predecessor decisions and a non-terminal target
+         * frontier.
+         *
+         * <p>A terminal failure predicate belongs to final composition.  An
+         * observed branch followed by another guard of the same annotated
+         * throw is different: complementing it in SMT would prove only that
+         * execution enters the nested block.  Such a locally writable
+         * frontier is replayed once, with the next guard as the demanded
+         * target event.  Remote-only predecessors remain companion state.</p>
+         */
+        private List<SummaryBranchMapping> targetPrefixCandidates(
+                PathObservation path, JsonObject task) {
+            List<SummaryBranchMapping> result = new ArrayList<>();
+            if (task == null) {
+                gap("TARGET_PREFIX_TASK_MISSING",
+                        "TARGET_PREFIX_REQUIRES_SOURCE_TASK",
+                        path.regionId(), path.pathKey(), "", -1);
+                return result;
+            }
+            JsonObject target = task.has("targetBranch")
+                    && task.get("targetBranch").isJsonObject()
+                    ? task.getAsJsonObject("targetBranch")
+                    : new JsonObject();
+            String targetSite = string(target, "siteId");
+            int targetOccurrence = integer(target, "occurrence", -1);
+            List<SummaryBranchMapping> fatalMappings = new ArrayList<>();
+            for (SummaryBranchMapping mapping : path.branchMappings()) {
+                if (mapping.isWitnessed() && mapping.isExplore()
+                        && targetSite.equals(mapping.siteId())
+                        && targetOccurrence == mapping.occurrence()) {
+                    fatalMappings.add(mapping);
+                }
+            }
+            if (targetSite.isEmpty() || targetOccurrence < 1
+                    || fatalMappings.size() != 1) {
+                gap("TARGET_PREFIX_FATAL_MAPPING_INVALID",
+                        "TARGET_PREFIX_REQUIRES_ONE_EXACT_FATAL_MAPPING",
+                        path.regionId(), path.pathKey(), targetSite,
+                        targetOccurrence);
+                return result;
+            }
+            SummaryBranchMapping fatal = fatalMappings.get(0);
+            PathObservation.TargetReachEvent reach;
+            try {
+                reach = path.targetReachEvent();
+            } catch (IllegalArgumentException malformed) {
+                gap("TARGET_PREFIX_FATAL_EVENT_INVALID",
+                        "TARGET_PREFIX_REQUIRES_EXACT_TARGET_REACH_EVENT",
+                        path.regionId(), path.pathKey(), targetSite,
+                        targetOccurrence);
+                return result;
+            }
+            if (reach == null || !reach.matches(fatal.siteId(),
+                    fatal.occurrence(), fatal.sourceTakenOutcome())) {
+                gap("TARGET_PREFIX_FATAL_EVENT_INVALID",
+                        "TARGET_PREFIX_REQUIRES_EXACT_TARGET_REACH_EVENT",
+                        path.regionId(), path.pathKey(), targetSite,
+                        targetOccurrence);
+                return result;
+            }
+            int fatalPc = fatal.summaryPcIndex();
+            JsonObject nextTarget = nextTargetGuard(task, fatal.siteId());
+            Boolean required = requiredTargetOutcome(task, fatal.siteId());
+            if (nextTarget != null && required != null
+                    && fatal.sourceTakenOutcome() != required
+                    && ConcolicConstraintSolver
+                    .hasLocallyWritableReplayRoot(
+                            fatal.witness().sourceSatisfiedPredicate(),
+                            task)) {
+                result.add(fatal);
+            }
+            for (SummaryBranchMapping mapping : path.branchMappings()) {
+                if (!mapping.isWitnessed()
+                        || mapping.policy()
+                        != SummaryBranchMapping.Policy.PATH_ASSUMPTION
+                        || mapping.summaryPcIndex() >= fatalPc
+                        || !declaredTargetPrefix(task, mapping)) {
+                    continue;
+                }
+                if (!ConcolicConstraintSolver
+                        .hasLocallyWritableReplayRoot(
+                                mapping.witness()
+                                        .sourceSatisfiedPredicate(), task)) {
+                    continue;
+                }
+                result.add(mapping);
+            }
+            return result;
+        }
+
+        /** The next not-yet-selected guard of this annotated throw. */
+        private JsonObject nextTargetGuard(JsonObject task,
+                                           String currentSite) {
+            JsonArray branches = array(task, "branches");
+            int current = -1;
+            JsonObject currentBranch = null;
+            for (int index = 0; index < branches.size(); index++) {
+                if (!branches.get(index).isJsonObject()) continue;
+                JsonObject branch = branches.get(index).getAsJsonObject();
+                if (currentSite.equals(string(branch, "siteId"))) {
+                    if (current >= 0) return null;
+                    current = index;
+                    currentBranch = branch;
+                }
+            }
+            if (current < 0 || currentBranch == null) return null;
+            Set<String> corridor = guardedTargetIdentities(currentBranch);
+            if (corridor.isEmpty()) return null;
+            for (int index = current + 1; index < branches.size(); index++) {
+                if (!branches.get(index).isJsonObject()) continue;
+                JsonObject candidate = branches.get(index).getAsJsonObject();
+                JsonElement required = candidate.get("requiredOutcome");
+                if (!bool(candidate, "failureTarget", false)
+                        || required == null || !required.isJsonPrimitive()
+                        || !required.getAsJsonPrimitive().isBoolean()
+                        || Collections.disjoint(corridor,
+                        guardedTargetIdentities(candidate))) {
+                    continue;
+                }
+                return candidate;
+            }
+            return null;
+        }
+
+        private Set<String> guardedTargetIdentities(JsonObject branch) {
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonElement cell : array(branch,
+                    "failureTargetCells")) {
+                if (cell.isJsonPrimitive()) {
+                    String value = cell.getAsString();
+                    int suffix = value.indexOf("#exception:");
+                    result.add(suffix < 0 ? value
+                            : value.substring(0, suffix));
+                }
+            }
+            for (JsonElement element : array(branch,
+                    "guardedSiteOutcomes")) {
+                if (!element.isJsonObject()) continue;
+                String site = string(element.getAsJsonObject(), "siteId");
+                if (!site.isEmpty()) result.add(site);
+            }
+            return result;
+        }
+
+        private Boolean requiredTargetOutcome(JsonObject task,
+                                              String siteId) {
+            Boolean result = null;
+            for (JsonElement element : array(task, "branches")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!siteId.equals(string(branch, "siteId"))) continue;
+                JsonElement required = branch.get("requiredOutcome");
+                if (required == null || !required.isJsonPrimitive()
+                        || !required.getAsJsonPrimitive().isBoolean()) {
+                    return null;
+                }
+                boolean value = required.getAsBoolean();
+                if (result != null && result != value) return null;
+                result = value;
+            }
+            return result;
+        }
+
+        private boolean declaredTargetPrefix(
+                JsonObject task, SummaryBranchMapping mapping) {
+            int matches = 0;
+            for (JsonElement element : array(task, "branches")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (mapping.siteId().equals(string(branch, "siteId"))
+                        && "PATH_ASSUMPTION".equals(
+                        string(branch, "policy"))) {
+                    int selectedOccurrence = integer(branch,
+                            "selectedOccurrence", mapping.occurrence());
+                    if (selectedOccurrence == mapping.occurrence()) {
+                        matches++;
+                    }
+                }
+            }
+            return matches == 1;
         }
 
         private int campaignTaskCount() {
@@ -486,6 +673,34 @@ public final class RegionPathWorklist {
             }
             replay.addTo(task);
             attachRecordedReadCut(path, replay, task);
+            if (path.scope().goalKind().capturesTargetReach()) {
+                VmHandoffEvidence.writeTo(task, path.vmHandoffEvents());
+                JsonArray bindings = path.edgeBindings();
+                if (bindings.size() > 0) {
+                    task.add("edgeBindings", bindings);
+                }
+                JsonObject sourceTask = taskById.get(path.sourceTaskId());
+                JsonObject selected = sourceTask == null
+                        ? new JsonObject()
+                        : sourceTask.has("targetBranch")
+                        && sourceTask.get("targetBranch").isJsonObject()
+                        ? sourceTask.getAsJsonObject("targetBranch")
+                        : new JsonObject();
+                if (mapping.siteId().equals(string(selected, "siteId"))) {
+                    JsonObject next = nextTargetGuard(sourceTask,
+                            mapping.siteId());
+                    if (next != null) {
+                        JsonObject target = new JsonObject();
+                        target.addProperty("siteId",
+                                string(next, "siteId"));
+                        int occurrence = integer(next,
+                                "selectedOccurrence", -1);
+                        target.addProperty("occurrence",
+                                occurrence > 0 ? occurrence : 1);
+                        task.add("targetBranch", target);
+                    }
+                }
+            }
             tasks.add(task);
         }
 
@@ -524,13 +739,26 @@ public final class RegionPathWorklist {
                 if (!path.relationallyComplete()) {
                     continue;
                 }
+                Set<String> observedTargetPrefixes = new LinkedHashSet<>();
+                if (path.scope().goalKind().capturesTargetReach()) {
+                    for (SummaryBranchMapping prefix
+                            : targetPrefixCandidates(path,
+                            taskById.get(path.sourceTaskId()))) {
+                        observedTargetPrefixes.add(
+                                prefix.decisionIdentity());
+                    }
+                }
                 for (SummaryBranchMapping mapping : path.branchMappings()) {
-                    if (!mapping.isWitnessed() || !mapping.isExplore()) {
+                    if (!mapping.isWitnessed()) {
                         continue;
                     }
-                    if (!path.regionId().isEmpty()
+                    boolean outputExplore = mapping.isExplore()
+                            && !path.regionId().isEmpty()
                             && path.scope().branchSites().contains(
-                            mapping.siteId())) {
+                            mapping.siteId());
+                    boolean targetPrefix = observedTargetPrefixes.contains(
+                            mapping.decisionIdentity());
+                    if (outputExplore || targetPrefix) {
                         observedFlipKeys.add(path.flipKey(mapping,
                                 mapping.sourceTakenOutcome()));
                     }
@@ -599,7 +827,7 @@ public final class RegionPathWorklist {
                 }
             }
             result.add("gaps", GSON.toJsonTree(gaps));
-            List<JsonObject> explorationGaps = new ArrayList<>();
+            List<JsonObject> pathCoverageGaps = new ArrayList<>();
             for (JsonObject record : records.values()) {
                 collectAlignmentGaps(record);
                 String kind = explorationGapKind(string(record, "status"));
@@ -611,11 +839,10 @@ public final class RegionPathWorklist {
                 if (record.has("unsupported")) {
                     gap.add("unsupported", record.get("unsupported"));
                 }
-                explorationGaps.add(gap);
+                pathCoverageGaps.add(gap);
             }
-            explorationGaps.addAll(abandonedFlips);
-            result.add("explorationGaps", GSON.toJsonTree(explorationGaps));
-            coverageGaps.addAll(explorationGaps);
+            pathCoverageGaps.addAll(abandonedFlips);
+            coverageGaps.addAll(pathCoverageGaps);
             result.add("coverageGaps", GSON.toJsonTree(coverageGaps));
             result.addProperty("coverageState",
                     state == State.CLOSED && coverageGaps.isEmpty()

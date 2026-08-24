@@ -23,6 +23,9 @@ import static org.junit.Assert.assertTrue;
  */
 public class SharedStateEvidenceTest {
 
+    private static final String OCCURRENCE =
+            "cluster0/nn0#epoch1/region/REGION.shared#1";
+
     @Test
     public void mapStateSymbolUsesItsExactOccurrenceInputPort() {
         String occurrence = "cluster0/dn0#epoch1/region/REGION.3#1";
@@ -107,6 +110,7 @@ public class SharedStateEvidenceTest {
         JsonObject recorded = new JsonObject();
         recorded.add("versions", versions);
         JsonObject summary = new JsonObject();
+        summary.addProperty("occurrenceId", OCCURRENCE);
         summary.add("edgeBindings", bindings);
         summary.add(SharedStateEvidence.RECORDED_FIELD, recorded);
         return summary;
@@ -168,6 +172,34 @@ public class SharedStateEvidenceTest {
 
         assertFalse("two receivers of one declared field must not merge",
                 locationOf(namenode).equals(locationOf(datanode)));
+    }
+
+    @Test
+    public void oneSessionLocationClaimedByTwoReceiversStaysUnresolved() {
+        JsonObject first = binding("RF.1", "MAP_STATE/2136#-3", ALL_KEYS,
+                100474L);
+        JsonObject second = binding("RF.2", "MAP_STATE/2136#-3", ALL_KEYS,
+                100999L);
+        JsonArray bindings = new JsonArray();
+        bindings.add(first);
+        bindings.add(second);
+        JsonArray versions = new JsonArray();
+        versions.add(versionRow("MAP_STATE/2136#-3"));
+        JsonObject recorded = new JsonObject();
+        recorded.add("versions", versions);
+        JsonObject summary = new JsonObject();
+        summary.addProperty("occurrenceId", OCCURRENCE);
+        summary.add("edgeBindings", bindings);
+        summary.add(SharedStateEvidence.RECORDED_FIELD, recorded);
+
+        assertEquals(java.util.Collections.singletonList(
+                        "MAP_STATE/2136#-3"),
+                new java.util.ArrayList<>(
+                        SharedStateEvidence.canonicalizeLocations(summary)));
+        assertEquals("MAP_STATE/2136#-3",
+                first.get("locationKey").getAsString());
+        assertEquals("MAP_STATE/2136#-3",
+                second.get("locationKey").getAsString());
     }
 
     /**
@@ -271,6 +303,7 @@ public class SharedStateEvidenceTest {
         JsonObject recorded = new JsonObject();
         recorded.add("versions", versions);
         JsonObject summary = new JsonObject();
+        summary.addProperty("occurrenceId", OCCURRENCE);
         summary.add("edgeBindings", new JsonArray());
         summary.add(SharedStateEvidence.RECORDED_FIELD, recorded);
         return summary;

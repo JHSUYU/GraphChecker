@@ -16,10 +16,10 @@ import java.util.Set;
  * The prefix is the <em>semantic</em> source of the activation: for a target
  * region that is the source of the event the selected failure branch was
  * observed on, which may differ from the source current when the root method
- * was entered.  The ordinal is counted over the <em>root</em> source instead,
- * which is the one both pipeline stages that mint this identity can read from
- * the same seed list.  Those two sources are deliberately different inputs; do
- * not collapse them.</p>
+ * was entered.  The ordinal is counted over that same semantic source: its
+ * counter namespace must be the namespace encoded in the occurrence ID.
+ * The root source remains separate causal-anchor evidence used for replay
+ * admission.</p>
  *
  * <p>This ordinal is an identity inside one frozen plan and never a replay
  * address.  Replay addresses an occurrence by the stable selected source,
@@ -52,7 +52,7 @@ public final class OccurrenceMinter {
     private final Set<String> mintedOccurrences = new LinkedHashSet<>();
 
     /**
-     * Reserves this activation's ordinal inside its root-source scope.  Call
+     * Reserves this activation's ordinal inside its semantic-source scope.  Call
      * it once per observed activation, in the recorded seed order, before any
      * retention decision is applied.
      *
@@ -62,8 +62,9 @@ public final class OccurrenceMinter {
      * per-request layer under that, so a request scope in the counter would
      * restart the count inside one source and mint one identity twice.</p>
      */
-    public int reserveOrdinal(String rootSourceKey, String regionId) {
-        return ordinals.merge(safe(rootSourceKey) + "\n" + safe(regionId), 1,
+    public int reserveOrdinal(String semanticSourceKey, String regionId) {
+        return ordinals.merge(safe(semanticSourceKey) + "\n"
+                        + safe(regionId), 1,
                 Integer::sum);
     }
 

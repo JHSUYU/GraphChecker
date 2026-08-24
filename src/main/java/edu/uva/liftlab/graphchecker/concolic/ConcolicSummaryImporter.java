@@ -5,12 +5,13 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
@@ -57,6 +58,18 @@ public final class ConcolicSummaryImporter {
             "CONCOLIC_AUXILIARY_PATH_CONDITION";
     private static final String AUXILIARY_PATH_CONDITION_AUTHORITY =
             "VM_THREAD_AUXILIARY_PATH_CONDITION_V1";
+    private static final String CONFIGURED_SOURCE_PHASE_OBSERVATIONS =
+            "configuredSourcePhaseObservations";
+    private static final String CONFIGURED_SOURCE_PHASE_GAPS =
+            "configuredSourcePhaseGaps";
+    private static final Set<String> CONFIGURED_SOURCE_PHASE_OBSERVATION_FIELDS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(java.util.Arrays
+                    .asList("schemaVersion", "kind", "authority",
+                            "observationIndex", "phaseKind", "siteId",
+                            "replayOrdinal", "sourceId", "fieldSignature",
+                            "matchedPhaseId", "ownerCallId", "invocationId",
+                            "declaredCallee", "exactMatch", "selectedPhase",
+                            "orderMatched")));
 
     private ConcolicSummaryImporter() {
     }
@@ -77,12 +90,9 @@ public final class ConcolicSummaryImporter {
                 sibling(output, TopologyDelta.FILE_NAME).toString()));
         Set<String> regions = regionIds(RuntimePlanArtifact.read(
                 runtimePlan).regions());
+        String iterationId = requiredValue(options, "iteration-id");
         ImportResult imported = importSummaries(results, tasks, regions,
-                output, diagnostics, delta,
-                firstNonBlank(options.get("iteration-id"), ""));
-        // The iteration manifest is published by the campaign orchestrator;
-        // the digests it must record are stated here, once, on stdout.
-        System.out.println(imported.manifestDigests);
+                output, diagnostics, delta, iterationId);
         if (imported.diagnosticCount > 0) {
             try (BufferedReader reader = Files.newBufferedReader(diagnostics,
                     StandardCharsets.UTF_8)) {
@@ -100,14 +110,6 @@ public final class ConcolicSummaryImporter {
 
     public static ImportResult importSummaries(
             Path resultsFile, Path taskPlanFile, Path regionFile,
-            Path outputFile, Path diagnosticFile) throws IOException {
-        return importSummaries(resultsFile, taskPlanFile, regionFile,
-                outputFile, diagnosticFile,
-                sibling(outputFile, TopologyDelta.FILE_NAME), "");
-    }
-
-    public static ImportResult importSummaries(
-            Path resultsFile, Path taskPlanFile, Path regionFile,
             Path outputFile, Path diagnosticFile, Path deltaFile,
             String iterationId) throws IOException {
         return importSummaries(resultsFile, taskPlanFile,
@@ -119,6 +121,7 @@ public final class ConcolicSummaryImporter {
             Path resultsFile, Path taskPlanFile, Set<String> regions,
             Path outputFile, Path diagnosticFile, Path deltaFile,
             String iterationId) throws IOException {
+        String immutableIterationId = requireIterationId(iterationId);
         Map<String, ExecutionTask> tasks = taskIndex(
                 ArtifactIO.readJsonl(taskPlanFile));
         List<JsonObject> rawResults = ArtifactIO.readJsonl(resultsFile);
@@ -128,7 +131,7 @@ public final class ConcolicSummaryImporter {
         // README "Delta ownership is also singular": the frozen-plan
         // comparison happens here, while each raw row is imported, and not as
         // a later pass over a second store.
-        TopologyDelta delta = new TopologyDelta(iterationId,
+        TopologyDelta delta = new TopologyDelta(immutableIterationId,
                 TopologyDelta.planDigest(tasks.values()));
 
         for (int index = 0; index < rawResults.size(); index++) {
@@ -193,8 +196,7 @@ public final class ConcolicSummaryImporter {
         // mean the same thing to the campaign that validates it.
         ArtifactIO.replaceJsonl(deltaFile, delta.rows());
         return new ImportResult(rawResults.size(), summaries.size(),
-                diagnostics.size(), delta.rows().size(), delta.planDigest(),
-                delta.manifestDigests(summaries.size()).toString());
+                diagnostics.size());
     }
 
     /**
@@ -263,10 +265,9 @@ public final class ConcolicSummaryImporter {
             // relationallyComplete false, and one output site exceeding its
             // capacity then discarded the whole producer relation - so the
             // run published nothing instead of publishing a model with a
-            // stated limit.  It travels as a named bounded-coverage gap
-            // instead; the relation is imported and the Composer's own gate
-            // refuses it, because a coverage gap leaves pathCoverageState
-            // short of CLOSED and SelectedPathSetIncomplete still blocks.
+            // stated limit. It travels as a named bounded-coverage gap
+            // instead; the relation remains usable for a satisfying witness,
+            // while the Composer's UNSAT-closure authority remains open.
             if (boundedOutputVersionNotice(unresolved)) continue;
             issues.add("UNRESOLVED_INPUT:" + unresolved);
         }
@@ -325,7 +326,8 @@ public final class ConcolicSummaryImporter {
         String branchReplayMismatch = relationOnlySeed ? ""
                 : branchReplayMismatch(raw, task, mappings);
         if (!branchReplayMismatch.isEmpty()
-                && !reachedRequiredTargetOutcome(task, targetReach)) {
+                && (task.replayContract() != null
+                || !reachedRequiredTargetOutcome(task, targetReach))) {
             diagnostics.add(diagnostic(raw, index,
                     "BRANCH_REPLAY_MISMATCH", branchReplayMismatch));
             return refuse(observation, diagnostics);
@@ -344,8 +346,11 @@ public final class ConcolicSummaryImporter {
                 recordedSharedState(raw, alignmentGaps);
         List<JsonObject> vmHandoffEvents =
                 vmHandoffEvents(raw, alignmentGaps);
+        validateConfiguredSourcePhaseObservations(raw, task, issues);
         JsonArray symbolicSources = symbolicSourceEvidence(raw, task,
                 issues);
+        JsonArray sourceSelectorEvidence = configuredSourceSelectorEvidence(
+                raw, task, issues);
         // A replay that carried a selected read cut is validated against
         // its own recorded evidence, never against the reference run's
         // event ids: this is a different session, and its events restart.
@@ -374,6 +379,10 @@ public final class ConcolicSummaryImporter {
         summary.add("symbolicInputs", symbolicInputs);
         if (symbolicSources.size() > 0) {
             summary.add(SymbolicSourceEvidence.FIELD, symbolicSources);
+        }
+        if (sourceSelectorEvidence.size() > 0) {
+            summary.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD,
+                    sourceSelectorEvidence);
         }
         summary.add("edgeBindings", resolvedEdgeBindings(task,
                 recordedSharedState));
@@ -451,6 +460,164 @@ public final class ConcolicSummaryImporter {
         observation.binding = !vmHandoffEvents.isEmpty();
         observation.effect = recordedSharedState.size() > 0;
         return summary;
+    }
+
+    /**
+     * Validates the runtime hook ledger against the task's frozen full
+     * catalog and selected subsequence.  Exact catalog landmarks that this
+     * task did not select remain admissible audit evidence, but they cannot
+     * stand in for a selected publication/consumption or materialize a
+     * source.  Any unmatched, duplicated, reordered, missing, or gapped
+     * selected phase is a causal-topology refusal.
+     */
+    private static void validateConfiguredSourcePhaseObservations(
+            JsonObject raw, ExecutionTask task, List<String> issues) {
+        final List<ConfiguredSourcePhaseContract.Occurrence> catalog;
+        final List<String> selected;
+        try {
+            catalog = ConfiguredSourcePhaseContract.occurrencesOf(
+                    task.json().get(ConfiguredSourcePhaseContract.PLAN_FIELD));
+            selected = ConfiguredSourcePhaseContract.selectedPhaseIdsOf(
+                    task.json(), catalog);
+        } catch (IllegalArgumentException malformed) {
+            issues.add("SYMBOLIC_SOURCE_PHASE_CATALOG_MALFORMED:"
+                    + firstNonBlank(malformed.getMessage(), "UNKNOWN"));
+            return;
+        }
+
+        boolean observationsArray = raw.has(
+                CONFIGURED_SOURCE_PHASE_OBSERVATIONS)
+                && raw.get(CONFIGURED_SOURCE_PHASE_OBSERVATIONS).isJsonArray();
+        boolean gapsArray = raw.has(CONFIGURED_SOURCE_PHASE_GAPS)
+                && raw.get(CONFIGURED_SOURCE_PHASE_GAPS).isJsonArray();
+        if (!selected.isEmpty() && (!observationsArray || !gapsArray)) {
+            issues.add("SYMBOLIC_SOURCE_PHASE_RUNTIME_LEDGER_MISSING");
+            return;
+        }
+        if (raw.has(CONFIGURED_SOURCE_PHASE_OBSERVATIONS)
+                && !observationsArray
+                || raw.has(CONFIGURED_SOURCE_PHASE_GAPS) && !gapsArray) {
+            issues.add("SYMBOLIC_SOURCE_PHASE_RUNTIME_LEDGER_MALFORMED");
+            return;
+        }
+        if (!gapsArray || !array(raw, CONFIGURED_SOURCE_PHASE_GAPS).isEmpty()) {
+            if (gapsArray) {
+                for (JsonElement gap : array(raw,
+                        CONFIGURED_SOURCE_PHASE_GAPS)) {
+                    issues.add("SYMBOLIC_SOURCE_PHASE_RUNTIME_GAP:"
+                            + CanonicalJson.render(gap));
+                }
+            }
+            if (!selected.isEmpty() && !gapsArray) {
+                // The missing-ledger issue above already states this case.
+                return;
+            }
+        }
+        if (!observationsArray) return;
+
+        Map<String, ConfiguredSourcePhaseContract.Occurrence> phasesById =
+                new LinkedHashMap<>();
+        Map<String, Integer> replayOrdinals = new LinkedHashMap<>();
+        Map<String, Integer> nextOrdinal = new LinkedHashMap<>();
+        for (ConfiguredSourcePhaseContract.Occurrence phase : catalog) {
+            phasesById.put(phase.phaseId(), phase);
+            String siteKey = configuredSourcePhaseSiteKey(phase);
+            int ordinal = nextOrdinal.getOrDefault(siteKey, 0) + 1;
+            nextOrdinal.put(siteKey, ordinal);
+            replayOrdinals.put(phase.phaseId(), ordinal);
+        }
+        Set<String> selectedSet = new LinkedHashSet<>(selected);
+        Set<String> exactObserved = new LinkedHashSet<>();
+        Set<Long> invocationIds = new LinkedHashSet<>();
+        List<String> selectedObserved = new ArrayList<>();
+        int expectedIndex = 1;
+        for (JsonElement element : array(raw,
+                CONFIGURED_SOURCE_PHASE_OBSERVATIONS)) {
+            if (!element.isJsonObject()) {
+                issues.add("SYMBOLIC_SOURCE_PHASE_OBSERVATION_MALFORMED:"
+                        + expectedIndex++);
+                continue;
+            }
+            JsonObject observation = element.getAsJsonObject();
+            int index = exactInteger(observation, "observationIndex", -1);
+            boolean exactSchema =
+                    CONFIGURED_SOURCE_PHASE_OBSERVATION_FIELDS.equals(
+                            observation.keySet())
+                    && exactInteger(observation, "schemaVersion", -1) == 1
+                    && "CONFIGURED_SOURCE_PHASE_OBSERVATION".equals(
+                    string(observation, "kind"))
+                    && "EXACT_ACTIVE_CALL_SITE_REPLAY_V1".equals(
+                    string(observation, "authority"))
+                    && index == expectedIndex
+                    && exactBoolean(observation, "exactMatch") != null
+                    && exactBoolean(observation, "selectedPhase") != null
+                    && exactBoolean(observation, "orderMatched") != null;
+            expectedIndex++;
+            if (!exactSchema) {
+                issues.add("SYMBOLIC_SOURCE_PHASE_OBSERVATION_MALFORMED:"
+                        + index);
+                continue;
+            }
+            boolean exact = exactBoolean(observation, "exactMatch");
+            String phaseId = string(observation, "matchedPhaseId");
+            if (!exact) {
+                issues.add("SYMBOLIC_SOURCE_PHASE_OBSERVATION_UNMATCHED:"
+                        + phaseId + ":" + string(observation, "sourceId"));
+                continue;
+            }
+            ConfiguredSourcePhaseContract.Occurrence phase =
+                    phasesById.get(phaseId);
+            boolean shouldSelect = selectedSet.contains(phaseId);
+            long invocationId = positiveExactLong(observation,
+                    "invocationId");
+            if (phase == null
+                    || !exactObserved.add(phaseId)
+                    || !phase.phase().name().equals(
+                    string(observation, "phaseKind"))
+                    || !phase.siteId().equals(string(observation, "siteId"))
+                    || replayOrdinals.get(phaseId) == null
+                    || replayOrdinals.get(phaseId) != exactInteger(
+                    observation, "replayOrdinal", -1)
+                    || !phase.sourceId().equals(
+                    string(observation, "sourceId"))
+                    || !phase.fieldSignature().equals(
+                    string(observation, "fieldSignature"))
+                    || !phase.runtimeDeclaredCallee().equals(
+                    string(observation, "declaredCallee"))
+                    || positiveExactLong(observation, "ownerCallId") <= 0L
+                    || invocationId <= 0L
+                    || !invocationIds.add(invocationId)
+                    || exactBoolean(observation, "selectedPhase")
+                    != shouldSelect
+                    || !exactBoolean(observation, "orderMatched")) {
+                issues.add("SYMBOLIC_SOURCE_PHASE_OBSERVATION_MISMATCH:"
+                        + phaseId);
+                continue;
+            }
+            if (shouldSelect) selectedObserved.add(phaseId);
+        }
+        if (!selected.equals(selectedObserved)) {
+            issues.add("SYMBOLIC_SOURCE_PHASE_SELECTED_SEQUENCE_MISMATCH:"
+                    + selected + ":" + selectedObserved);
+        }
+    }
+
+    private static String configuredSourcePhaseSiteKey(
+            ConfiguredSourcePhaseContract.Occurrence phase) {
+        return phase.phase().name() + "\n" + phase.sourceId() + "\n"
+                + phase.siteId();
+    }
+
+    private static long positiveExactLong(JsonObject row, String field) {
+        JsonElement value = row == null ? null : row.get(field);
+        try {
+            return value == null || !value.isJsonPrimitive()
+                    || !value.getAsJsonPrimitive().isNumber()
+                    ? -1L : new java.math.BigDecimal(
+                    value.getAsString()).longValueExact();
+        } catch (RuntimeException malformed) {
+            return -1L;
+        }
     }
 
     /**
@@ -543,19 +710,21 @@ public final class ConcolicSummaryImporter {
             }
             row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, runtimeLoopId);
             row.addProperty(LoopBoundPolicy.LOOP_BODY_COUNT, bodyCount);
+            boolean loopReached = controlObserved || bodyCount > 0;
+            row.addProperty(LoopBoundPolicy.PATH_LOOP_REACHED, loopReached);
             row.addProperty("countAuthority",
                     LoopBoundPolicy.PATH_BODY_COUNT_AUTHORITY);
             if (LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(
                     classification)) {
                 JsonArray cardinalities = exactCardinalities(
                         raw, runtimeLoopId, loopSiteId, result);
-                if (cardinalities.size() == 0) {
+                if (cardinalities.size() == 0 && loopReached) {
                     result.gap(
                             LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
                             loopSiteId, "fixed-count loop has a path-local "
                                     + "body count but no exact dynamic array "
                                     + "cardinality observation");
-                } else {
+                } else if (cardinalities.size() > 0) {
                     row.add(LoopBoundPolicy.LOOP_CARDINALITIES,
                             cardinalities);
                 }
@@ -846,7 +1015,8 @@ public final class ConcolicSummaryImporter {
     /** Admits only the exact source declarations frozen into this task. */
     private static JsonArray symbolicSourceEvidence(
             JsonObject raw, ExecutionTask task, List<String> issues) {
-        Map<String, String> expected = new LinkedHashMap<>();
+        Map<String, JsonObject> expectedDeclarations =
+                new LinkedHashMap<>();
         for (JsonElement element : array(task.json(),
                 SymbolicSourceEvidence.TASK_FIELD)) {
             if (!element.isJsonObject()) {
@@ -855,6 +1025,14 @@ public final class ConcolicSummaryImporter {
             }
             JsonObject declaration = element.getAsJsonObject();
             String id = string(declaration, "sourceId");
+            String phaseId = string(declaration, "sourcePhaseId");
+            String sourceOccurrenceId = string(declaration,
+                    "sourceOccurrenceId");
+            String phaseSiteId = string(declaration,
+                    "sourcePhaseSiteId");
+            int phaseOrdinal = exactInteger(declaration,
+                    "sourcePhaseOrdinal", -1);
+            String sourceRole = string(declaration, "sourceRole");
             String field = string(declaration, "fieldSignature");
             Set<String> outputs = new LinkedHashSet<>();
             String output = string(declaration,
@@ -869,13 +1047,89 @@ public final class ConcolicSummaryImporter {
                             + id);
                 }
             }
+            Set<String> targetInputs = new LinkedHashSet<>();
+            String targetInput = string(declaration,
+                    "requiredTargetInputPort");
+            if (!targetInput.isEmpty()) targetInputs.add(targetInput);
+            for (JsonElement encoded : array(declaration,
+                    "requiredTargetInputPorts")) {
+                if (!encoded.isJsonPrimitive()
+                        || encoded.getAsString().trim().isEmpty()
+                        || !targetInputs.add(encoded.getAsString())) {
+                    issues.add("SYMBOLIC_SOURCE_DECLARATION_MALFORMED:"
+                            + id);
+                }
+            }
             if (!SymbolicSourceEvidence.DECLARATION_AUTHORITY.equals(
                     string(declaration, "authority"))
-                    || id.isEmpty() || field.isEmpty() || outputs.isEmpty()
+                    || id.isEmpty() || phaseId.isEmpty() || field.isEmpty()
+                    || !task.occurrenceId().equals(sourceOccurrenceId)
+                    || phaseSiteId.isEmpty() || phaseOrdinal <= 0
+                    || !outputs.isEmpty()
+                    && !"OUTPUT_RELATION".equals(sourceRole)
+                    || !targetInputs.isEmpty()
+                    && !"TARGET_REACH".equals(sourceRole)
+                    || outputs.isEmpty() == targetInputs.isEmpty()
                     || (!output.isEmpty()
                     && declaration.has("requiredOutputFieldSignatures"))
-                    || expected.putIfAbsent(id, field) != null) {
-                issues.add("SYMBOLIC_SOURCE_DECLARATION_MALFORMED:" + id);
+                    || (!targetInput.isEmpty()
+                    && declaration.has("requiredTargetInputPorts"))
+                    || expectedDeclarations.putIfAbsent(
+                    phaseId, declaration) != null) {
+                issues.add("SYMBOLIC_SOURCE_DECLARATION_MALFORMED:"
+                        + phaseId + ":" + id);
+            }
+        }
+        Map<String, ConfiguredSourcePhaseContract.Occurrence>
+                expectedPhases = new LinkedHashMap<>();
+        final List<ConfiguredSourcePhaseContract.Occurrence> taskPhases;
+        final Set<String> selectedPhaseIds;
+        try {
+            taskPhases = ConfiguredSourcePhaseContract.occurrencesOf(
+                    task.json().get(ConfiguredSourcePhaseContract.PLAN_FIELD));
+            selectedPhaseIds = new LinkedHashSet<>(
+                    ConfiguredSourcePhaseContract.selectedPhaseIdsOf(
+                            task.json(), taskPhases));
+        } catch (IllegalArgumentException malformed) {
+            issues.add("SYMBOLIC_SOURCE_PHASE_CATALOG_MALFORMED:"
+                    + firstNonBlank(malformed.getMessage(), "UNKNOWN"));
+            return new JsonArray();
+        }
+        Map<String, ConfiguredSourcePhaseContract.Occurrence> phasesById =
+                new LinkedHashMap<>();
+        for (ConfiguredSourcePhaseContract.Occurrence phase : taskPhases) {
+            if (phasesById.putIfAbsent(phase.phaseId(), phase) != null) {
+                issues.add("SYMBOLIC_SOURCE_PHASE_CATALOG_MALFORMED:"
+                        + phase.phaseId());
+            }
+        }
+        for (Map.Entry<String, JsonObject> selected
+                : expectedDeclarations.entrySet()) {
+            JsonObject declaration = selected.getValue();
+            String id = string(declaration, "sourceId");
+            String phaseId = string(declaration, "sourcePhaseId");
+            ConfiguredSourcePhaseContract.Occurrence phase =
+                    phasesById.get(phaseId);
+            if (phase == null
+                    || phase.phase()
+                    != ConfiguredSourcePhaseContract.Phase.PUBLISH
+                    || !selectedPhaseIds.contains(phaseId)
+                    || !task.occurrenceId().equals(
+                    phase.sourceOccurrenceId())
+                    || !id.equals(phase.sourceId())
+                    || !string(declaration, "fieldSignature").equals(
+                    phase.fieldSignature())
+                    || !string(declaration, "sourcePhaseSiteId").equals(
+                    phase.siteId())
+                    || exactInteger(declaration, "sourcePhaseOrdinal", -1)
+                    != phase.baselineOrdinal()) {
+                issues.add("SYMBOLIC_SOURCE_PHASE_MISSING:"
+                        + phaseId + ":" + id);
+                continue;
+            }
+            if (expectedPhases.putIfAbsent(phase.phaseId(), phase) != null) {
+                issues.add("SYMBOLIC_SOURCE_PHASE_CATALOG_MALFORMED:"
+                        + phase.phaseId());
             }
         }
         JsonArray admitted = new JsonArray();
@@ -889,20 +1143,114 @@ public final class ConcolicSummaryImporter {
             return admitted;
         }
         for (JsonObject event : events) {
+            String phaseId = string(event, "sourcePhaseId");
             String id = string(event, "sourceId");
             String field = string(event, "fieldSignature");
-            if (!task.occurrenceId().equals(string(event,
+            ConfiguredSourcePhaseContract.Occurrence phase =
+                    expectedPhases.get(phaseId);
+            if (phase == null
+                    || !task.occurrenceId().equals(string(event,
                     "sourceOccurrenceId"))
-                    || !field.equals(expected.get(id))
-                    || !observed.add(id)) {
-                issues.add("SYMBOLIC_SOURCE_EVIDENCE_NOT_DECLARED:" + id);
+                    || !id.equals(phase.sourceId())
+                    || !field.equals(phase.fieldSignature())
+                    || !observed.add(phaseId)) {
+                issues.add("SYMBOLIC_SOURCE_EVIDENCE_NOT_DECLARED:"
+                        + phaseId + ":" + id);
                 continue;
             }
             admitted.add(event.deepCopy());
         }
-        for (String id : expected.keySet()) {
-            if (!observed.contains(id)) {
-                issues.add("SYMBOLIC_SOURCE_EVIDENCE_MISSING:" + id);
+        for (Map.Entry<String, ConfiguredSourcePhaseContract.Occurrence>
+                expectedPhase : expectedPhases.entrySet()) {
+            if (!observed.contains(expectedPhase.getKey())) {
+                issues.add("SYMBOLIC_SOURCE_EVIDENCE_MISSING:"
+                        + expectedPhase.getValue().phaseId() + ":"
+                        + expectedPhase.getValue().sourceId());
+            }
+        }
+        return admitted;
+    }
+
+    /** Admits one exact session source value for each declared selector. */
+    private static JsonArray configuredSourceSelectorEvidence(
+            JsonObject raw, ExecutionTask task, List<String> issues) {
+        JsonArray admitted = new JsonArray();
+        final List<ConfiguredSourceSelectorContract.Selector> selectors;
+        final List<JsonObject> evidence;
+        try {
+            selectors = ConfiguredSourceSelectorContract.decode(task.json());
+            evidence = ConfiguredSourceSelectorContract.evidenceOf(raw);
+        } catch (IllegalArgumentException malformed) {
+            issues.add("CONFIGURED_SOURCE_SELECTOR_EVIDENCE_MALFORMED:"
+                    + firstNonBlank(malformed.getMessage(), "UNKNOWN"));
+            return admitted;
+        }
+        Map<String, ConfiguredSourceSelectorContract.Selector> expected =
+                new LinkedHashMap<>();
+        for (ConfiguredSourceSelectorContract.Selector selector : selectors) {
+            expected.put(selector.consumePhaseId(), selector);
+        }
+        Map<String, ConfiguredSourcePhaseContract.Occurrence> consumePhases =
+                new LinkedHashMap<>();
+        Set<String> selectedPhaseIds = new LinkedHashSet<>();
+        try {
+            List<ConfiguredSourcePhaseContract.Occurrence> taskPhases =
+                    ConfiguredSourcePhaseContract.occurrencesOf(
+                    task.json().get(ConfiguredSourcePhaseContract
+                            .PLAN_FIELD));
+            selectedPhaseIds.addAll(
+                    ConfiguredSourcePhaseContract.selectedPhaseIdsOf(
+                            task.json(), taskPhases));
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : taskPhases) {
+                if (phase.phase()
+                        != ConfiguredSourcePhaseContract.Phase.CONSUME) {
+                    continue;
+                }
+                if (consumePhases.putIfAbsent(phase.phaseId(), phase)
+                        != null) {
+                    issues.add("CONFIGURED_SOURCE_CONSUME_PHASE_DUPLICATE:"
+                            + phase.phaseId());
+                }
+            }
+        } catch (IllegalArgumentException malformed) {
+            issues.add("CONFIGURED_SOURCE_PHASE_CATALOG_MALFORMED:"
+                    + firstNonBlank(malformed.getMessage(), "UNKNOWN"));
+            return admitted;
+        }
+        for (ConfiguredSourceSelectorContract.Selector selector : selectors) {
+            ConfiguredSourcePhaseContract.Occurrence phase =
+                    consumePhases.get(selector.consumePhaseId());
+            if (phase == null
+                    || !selectedPhaseIds.contains(
+                    selector.consumePhaseId())
+                    || !task.occurrenceId().equals(
+                    phase.sourceOccurrenceId())
+                    || !selector.sourceId().equals(phase.sourceId())) {
+                issues.add("CONFIGURED_SOURCE_CONSUME_PHASE_MISMATCH:"
+                        + selector.consumePhaseId());
+            }
+        }
+        Set<String> observed = new LinkedHashSet<>();
+        for (JsonObject row : evidence) {
+            String sourceId = string(row, "sourceId");
+            String consumePhaseId = string(row, "consumePhaseId");
+            ConfiguredSourceSelectorContract.Selector selector =
+                    expected.get(consumePhaseId);
+            if (selector == null || !selector.matches(row)
+                    || !observed.add(consumePhaseId)) {
+                issues.add("CONFIGURED_SOURCE_SELECTOR_EVIDENCE_NOT_DECLARED:"
+                        + consumePhaseId + ":" + sourceId);
+                continue;
+            }
+            admitted.add(row.deepCopy());
+        }
+        for (Map.Entry<String, ConfiguredSourceSelectorContract.Selector>
+                selected : expected.entrySet()) {
+            if (!observed.contains(selected.getKey())) {
+                issues.add("CONFIGURED_SOURCE_SELECTOR_EVIDENCE_MISSING:"
+                        + selected.getKey() + ":"
+                        + selected.getValue().sourceId());
             }
         }
         return admitted;
@@ -2307,12 +2655,25 @@ public final class ConcolicSummaryImporter {
 
     private static Path required(
             Map<String, String> options, String name) {
+        return Paths.get(requiredValue(options, name));
+    }
+
+    private static String requiredValue(
+            Map<String, String> options, String name) {
         String value = options.get(name);
         if (value == null || value.trim().isEmpty()) {
             throw new IllegalArgumentException(
                     "missing required --" + name);
         }
-        return Paths.get(value);
+        return value.trim();
+    }
+
+    private static String requireIterationId(String iterationId) {
+        if (iterationId == null || iterationId.trim().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "import iteration id must be non-blank");
+        }
+        return iterationId.trim();
     }
 
     private static Path sibling(Path input, String name) {
@@ -2324,21 +2685,12 @@ public final class ConcolicSummaryImporter {
         public final int rawResultCount;
         public final int validSummaryCount;
         public final int diagnosticCount;
-        public final int deltaRowCount;
-        /** Digest of the frozen task plan this import compared against. */
-        public final String planDigest;
-        /** One JSON line of what an iteration manifest has to record. */
-        public final String manifestDigests;
 
         private ImportResult(int rawResultCount, int validSummaryCount,
-                             int diagnosticCount, int deltaRowCount,
-                             String planDigest, String manifestDigests) {
+                             int diagnosticCount) {
             this.rawResultCount = rawResultCount;
             this.validSummaryCount = validSummaryCount;
             this.diagnosticCount = diagnosticCount;
-            this.deltaRowCount = deltaRowCount;
-            this.planDigest = planDigest;
-            this.manifestDigests = manifestDigests;
         }
     }
 }

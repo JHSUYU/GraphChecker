@@ -36,6 +36,13 @@ public final class OutputClosureCodec {
     private static final List<String> SCOPE_ARRAYS = Arrays.asList(
             "inputPorts", "sites", "staticSites", "methods",
             "causalEdgeIds");
+    private static final List<String> DYNAMIC_REPLAY_FIELDS = Arrays.asList(
+            "activationLocalOccurrence", "selectedRuntimeEventSeq",
+            "selectedRuntimeCallId", "captureAnchorPort",
+            "selectedFieldReceiverObjectId", "branchReplay",
+            "definitionCompletionSeq", "lastMutationCompletionSeq",
+            "observedDefinitionCallId", "foldedMutationCount",
+            "foldedMutationCompletionSeqs", "concreteCallReturns");
 
     private OutputClosureCodec() {
     }
@@ -166,12 +173,15 @@ public final class OutputClosureCodec {
             OutputClosureContract.Member right) {
         JsonObject first = left.toJson();
         JsonObject second = right.toJson();
+        if (first.equals(second)) {
+            return decodeMember(first, 0);
+        }
+        TreeSet<String> changed = new TreeSet<>();
         JsonObject firstOutput = first.getAsJsonObject("output");
         JsonObject secondOutput = second.getAsJsonObject("output");
         for (String field : Arrays.asList("outputSiteId",
                 "outputOccurrence", "replayOccurrence")) {
-            firstOutput.remove(field);
-            secondOutput.remove(field);
+            mergeReplayScalar(firstOutput, secondOutput, field, changed);
         }
         if (!firstOutput.equals(secondOutput)) {
             throw new IllegalArgumentException(
@@ -179,21 +189,22 @@ public final class OutputClosureCodec {
         }
         JsonObject firstSlice = first.getAsJsonObject("slice");
         JsonObject secondSlice = second.getAsJsonObject("slice");
-        TreeSet<String> changed = new TreeSet<>();
         for (String field : SCOPE_ARRAYS) {
             mergeStringArray(firstSlice, secondSlice, field);
         }
+        mergeOptionalStringArray(firstSlice, secondSlice,
+                "demandedHeapDeclarations");
         mergeStringArray(firstSlice, secondSlice, "captureBindingIssues");
         mergeCaptureBindings(firstSlice, secondSlice);
-        for (String field : Arrays.asList("activationLocalOccurrence",
-                "selectedRuntimeEventSeq", "captureAnchorPort",
-                "selectedFieldReceiverObjectId", "branchReplay")) {
-            JsonElement a = firstSlice.remove(field);
-            JsonElement b = secondSlice.remove(field);
-            if (a == null ? b != null : !a.equals(b)) changed.add(field);
+        mergeAlignmentGaps(firstSlice, secondSlice);
+        for (String field : DYNAMIC_REPLAY_FIELDS) {
+            mergeReplayScalar(firstSlice, secondSlice, field, changed);
         }
         for (String field : differingFields(firstSlice, secondSlice)) {
-            if (!"alignmentGaps".equals(field)) changed.add(field);
+            if ("alignmentGaps".equals(field)) continue;
+            throw new IllegalArgumentException(
+                    "conflicting output slice field " + left.portId()
+                            + ": " + field);
         }
         if (!changed.isEmpty()) {
             JsonArray gaps = firstSlice.has("alignmentGaps")
@@ -207,9 +218,89 @@ public final class OutputClosureCodec {
             for (String field : changed) fields.add(field);
             gap.add("fields", fields);
             gaps.add(gap);
-            firstSlice.add("alignmentGaps", gaps);
+            firstSlice.add("alignmentGaps",
+                    normalizeAlignmentGaps(gaps));
         }
         return decodeMember(first, 0);
+    }
+
+    /** Preserves an exact scalar boundary and drops only conflicting ones. */
+    private static void mergeReplayScalar(
+            JsonObject target, JsonObject source, String field,
+            Set<String> changed) {
+        JsonElement first = target.get(field);
+        JsonElement second = source.get(field);
+        if (first == null && second == null
+                || first != null && first.equals(second)) {
+            return;
+        }
+        target.remove(field);
+        source.remove(field);
+        changed.add(field);
+    }
+
+    /** Alignment gaps are monotone evidence across nested/order-reversed merges. */
+    private static void mergeAlignmentGaps(
+            JsonObject target, JsonObject source) {
+        JsonArray gaps = new JsonArray();
+        for (JsonElement element : optionalArray(target,
+                "alignmentGaps")) {
+            gaps.add(element.deepCopy());
+        }
+        for (JsonElement element : optionalArray(source,
+                "alignmentGaps")) {
+            gaps.add(element.deepCopy());
+        }
+        target.remove("alignmentGaps");
+        source.remove("alignmentGaps");
+        if (gaps.size() == 0) return;
+        target.add("alignmentGaps", normalizeAlignmentGaps(gaps));
+    }
+
+    private static JsonArray normalizeAlignmentGaps(JsonArray values) {
+        java.util.TreeMap<String, JsonElement> normalized =
+                new java.util.TreeMap<>();
+        java.util.TreeMap<String, JsonObject> versionGaps =
+                new java.util.TreeMap<>();
+        java.util.TreeMap<String, TreeSet<String>> versionFields =
+                new java.util.TreeMap<>();
+        for (JsonElement value : values) {
+            if (!value.isJsonObject()
+                    || !"OUTPUT_VERSION_ALIGNMENT_GAP".equals(
+                    text(value.getAsJsonObject(), "kind"))) {
+                normalized.put(CanonicalJson.render(value),
+                        value.deepCopy());
+                continue;
+            }
+            JsonObject gap = value.getAsJsonObject().deepCopy();
+            JsonArray fields = optionalArray(gap, "fields");
+            gap.remove("fields");
+            String key = CanonicalJson.render(gap);
+            versionGaps.putIfAbsent(key, gap);
+            TreeSet<String> merged = versionFields.computeIfAbsent(key,
+                    ignored -> new TreeSet<>());
+            for (JsonElement field : fields) {
+                if (!field.isJsonPrimitive()
+                        || !field.getAsJsonPrimitive().isString()
+                        || field.getAsString().trim().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "alignment gap fields must be strings");
+                }
+                merged.add(field.getAsString());
+            }
+        }
+        for (Map.Entry<String, JsonObject> entry : versionGaps.entrySet()) {
+            JsonObject gap = entry.getValue();
+            JsonArray fields = new JsonArray();
+            for (String field : versionFields.get(entry.getKey())) {
+                fields.add(field);
+            }
+            gap.add("fields", fields);
+            normalized.put(CanonicalJson.render(gap), gap);
+        }
+        JsonArray result = new JsonArray();
+        for (JsonElement gap : normalized.values()) result.add(gap);
+        return result;
     }
 
     private static void mergeStringArray(JsonObject target,
@@ -227,9 +318,31 @@ public final class OutputClosureCodec {
         source.add(field, merged.deepCopy());
     }
 
+    private static void mergeOptionalStringArray(
+            JsonObject target, JsonObject source, String field) {
+        if (!target.has(field) && !source.has(field)) return;
+        TreeSet<String> values = new TreeSet<>();
+        for (JsonArray rows : Arrays.asList(optionalArray(target, field),
+                optionalArray(source, field))) {
+            for (JsonElement value : rows) {
+                if (!value.isJsonPrimitive()
+                        || !value.getAsJsonPrimitive().isString()
+                        || value.getAsString().trim().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            field + " must contain non-empty strings");
+                }
+                values.add(value.getAsString());
+            }
+        }
+        JsonArray merged = new JsonArray();
+        for (String value : values) merged.add(value);
+        target.add(field, merged);
+        source.add(field, merged.deepCopy());
+    }
+
     private static void mergeCaptureBindings(JsonObject target,
                                              JsonObject source) {
-        Map<String, JsonObject> bindings = new LinkedHashMap<>();
+        Map<String, JsonObject> bindings = new java.util.TreeMap<>();
         for (JsonArray rows : Arrays.asList(
                 requireArray(target, "captureBindings"),
                 requireArray(source, "captureBindings"))) {
@@ -711,6 +824,15 @@ public final class OutputClosureCodec {
     private static JsonArray requireArray(JsonObject object, String name) {
         JsonElement value = object == null ? null : object.get(name);
         if (value == null || !value.isJsonArray()) {
+            throw new IllegalArgumentException(name + " must be an array");
+        }
+        return value.getAsJsonArray();
+    }
+
+    private static JsonArray optionalArray(JsonObject object, String name) {
+        JsonElement value = object == null ? null : object.get(name);
+        if (value == null) return new JsonArray();
+        if (!value.isJsonArray()) {
             throw new IllegalArgumentException(name + " must be an array");
         }
         return value.getAsJsonArray();

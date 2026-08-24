@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.Gson;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import org.junit.Rule;
@@ -16,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -28,6 +30,38 @@ public class RuntimeSelectedRegionFinalizerTest {
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
+
+    @Test
+    public void oppositeDemandedOutcomesRemainAnExplorableProducerSplit() {
+        String method = "<example.Producer: int output(int)>";
+        String site = method + "#u4";
+        List<Map<String, Object>> edges = new ArrayList<>();
+        for (boolean required : new boolean[]{false, true}) {
+            Map<String, Object> guard = new LinkedHashMap<>();
+            guard.put("transferKind", "GUARD");
+            guard.put("guardSiteId", site);
+            guard.put("siteId", site);
+            guard.put("method", method);
+            guard.put("unitIndex", 4);
+            guard.put("fromCell", method + "::$condition");
+            guard.put("toCell", method + (required
+                    ? "::$leftOutput" : "::$rightOutput"));
+            guard.put("requiredOutcome", required);
+            edges.add(guard);
+        }
+
+        List<Map<String, Object>> policies =
+                RuntimeSelectedRegionFinalizer.branchPoliciesForTests(
+                        edges, new LinkedHashSet<>(
+                                Collections.singletonList(method)));
+
+        assertEquals(1, policies.size());
+        assertEquals("EXPLORE", policies.get(0).get("policy"));
+        assertEquals("ALTERNATIVE_DEMANDED_OUTCOMES",
+                policies.get(0).get("policyReason"));
+        assertFalse(policies.get(0).containsKey("requiredOutcome")
+                && policies.get(0).get("requiredOutcome") != null);
+    }
 
     @Test
     public void onlyTheActivationThatObservedTheFatalSiteIsAClosureTarget()
@@ -46,6 +80,11 @@ public class RuntimeSelectedRegionFinalizerTest {
         skeletonRow.put(StaticSymbolicSourceDeclaration.FIELD,
                 Collections.singletonList(staticSource("SOURCE.VALUE",
                         field, root, 1)));
+        skeletonRow.put(ConfiguredSourcePhaseContract.DECLARATION_FIELD,
+                Collections.singletonList(
+                        ConfiguredSourcePhaseContract.declaration(
+                                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                                "SOURCE.VALUE", field, root, 1)));
         File skeleton = writeRows("thread-entry-skeleton.jsonl",
                 skeletonRow);
         File refined = writeRows("thread-entry-refined.jsonl",
@@ -81,6 +120,10 @@ public class RuntimeSelectedRegionFinalizerTest {
                 retainedSources.get(0).get("sourceId"));
         assertEquals(field,
                 retainedSources.get(0).get("fieldSignature"));
+        List<Map<String, Object>> retainedPhases = rows(result.regions
+                .get(0).get(ConfiguredSourcePhaseContract.DECLARATION_FIELD));
+        assertEquals(1, retainedPhases.size());
+        assertEquals("PUBLISH", retainedPhases.get(0).get("phase"));
         // Exactly one activation carries the fatal prefix the target slice is
         // cut against; the producers were never treated as targets.
         assertTrue(consumer.containsKey("fatalPrefixContexts"));
@@ -146,6 +189,115 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertEquals("SHARED_STATE_NOT_SELECTED",
                 leafFlows.get(0).get("readFromProvenanceGap"));
         assertEquals("p", leafFlows.get(0).get("readFromSourceKey"));
+    }
+
+    @Test
+    public void semanticSourceOwnsFinalizedOccurrenceOrdinals()
+            throws Exception {
+        String root = "<example.Worker: void run()>";
+        File skeleton = writeRows("semantic-ordinal-skeleton.jsonl",
+                threadEntrySkeleton(root));
+        File refined = writeRows("semantic-ordinal-refined.jsonl",
+                fatalGuard(root, root + "::$guard"));
+        Map<String, Object> dn0 = exceptionContextActivation(
+                "REGION.worker", 1L, root);
+        dn0.put("sourceKey", "cluster0/dn0#epoch1");
+        Map<String, Object> dn1 = exceptionContextActivation(
+                "REGION.worker", 2L, root);
+        dn1.put("sourceKey", "cluster0/dn1#epoch1");
+        List<Map<String, Object>> observations = Arrays.asList(
+                object("kind", "BRANCH", "eventSeq", 10L,
+                        "method", root, "callId", 1L,
+                        "siteId", root + "#u9", "outcome", false,
+                        "callSourceKey", "cluster0/client0#epoch0"),
+                object("kind", "BRANCH", "eventSeq", 20L,
+                        "method", root, "callId", 2L,
+                        "siteId", root + "#u9", "outcome", false,
+                        "callSourceKey", "cluster0/client0#epoch0"));
+
+        RuntimeSelectedRegionFinalizer.Result result =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(refined,
+                        skeleton, Collections.singleton(root),
+                        Arrays.asList(dn0, dn1), observations);
+
+        assertEquals("cluster0/client0#epoch0/region/REGION.worker#1",
+                dn0.get("occurrenceId"));
+        assertEquals("cluster0/client0#epoch0/region/REGION.worker#2",
+                dn1.get("occurrenceId"));
+        assertEquals(1, result.regions.size());
+        assertEquals(Arrays.asList(dn0.get("occurrenceId"),
+                        dn1.get("occurrenceId")),
+                result.regions.get(0).get("runtimeOccurrenceIds"));
+    }
+
+    @Test
+    public void identicalRuntimeActivationRowsAreCanonicalizedBeforeMinting()
+            throws Exception {
+        String region = "REGION.d842447f-37ce-3501-854b-9388704c804e";
+        String root = "<example.Worker: void run()>";
+        Map<String, Object> skeletonRow = threadEntrySkeleton(root);
+        skeletonRow.put("regionId", region);
+        File skeleton = writeRows("duplicate-activation-skeleton.jsonl",
+                skeletonRow);
+        Map<String, Object> fatal = fatalGuard(root, root + "::$guard");
+        fatal.put("regionIds", Collections.singletonList(region));
+        File refined = writeRows("duplicate-activation-refined.jsonl", fatal);
+
+        Map<String, Object> activation = exceptionContextActivation(
+                region, 1684443L, root);
+        activation.put("sourceKey", "cluster0/client0#epoch0");
+        // The same parsed JSON object with the member insertion order reversed
+        // is canonically identical, not a second execution.
+        Map<String, Object> reordered = new LinkedHashMap<>();
+        List<Map.Entry<String, Object>> entries = new ArrayList<>(
+                activation.entrySet());
+        Collections.reverse(entries);
+        for (Map.Entry<String, Object> entry : entries) {
+            reordered.put(entry.getKey(), entry.getValue());
+        }
+        Map<String, Object> observation = object("kind", "BRANCH",
+                "eventSeq", 1684448L, "method", root,
+                "callId", 1684443L, "siteId", root + "#u9",
+                "outcome", false,
+                "callSourceKey", "cluster0/client0#epoch0");
+
+        RuntimeSelectedRegionFinalizer.Result result =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(refined,
+                        skeleton, Collections.singleton(root),
+                        Arrays.asList(activation, reordered),
+                        Collections.singletonList(observation));
+
+        String occurrence = "cluster0/client0#epoch0/region/" + region + "#1";
+        assertEquals(occurrence, activation.get("occurrenceId"));
+        assertEquals(Collections.singletonList(occurrence),
+                result.regions.get(0).get("runtimeOccurrenceIds"));
+    }
+
+    @Test
+    public void conflictingPayloadForOneRecordedActivationFailsClosed()
+            throws Exception {
+        String root = "<example.Worker: void run()>";
+        File skeleton = writeRows("conflicting-activation-skeleton.jsonl",
+                threadEntrySkeleton(root));
+        File refined = writeRows("conflicting-activation-refined.jsonl",
+                fatalGuard(root, root + "::$guard"));
+        Map<String, Object> first = exceptionContextActivation(
+                "REGION.worker", 1684443L, root);
+        first.put("sourceKey", "cluster0/dn0#epoch0");
+        Map<String, Object> conflicting = new LinkedHashMap<>(first);
+        conflicting.put("sourceKey", "cluster0/dn1#epoch0");
+
+        try {
+            RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
+                    Collections.singleton(root),
+                    Arrays.asList(first, conflicting),
+                    Collections.<Map<String, Object>>emptyList());
+            throw new AssertionError("conflicting activation must fail closed");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().startsWith(
+                    "conflicting runtime region activation payload:"));
+            assertFalse(first.containsKey("occurrenceId"));
+        }
     }
 
     private static Map<String, Object> staticSource(

@@ -57,6 +57,8 @@ public final class LoopBoundPolicy {
     public static final String PATH_LOOP_COUNTS = "pathLoopCounts";
     /** Number of bodies this replay path executed for one retained loop. */
     public static final String LOOP_BODY_COUNT = "loopBodyCount";
+    /** Whether this case reached this loop's control at all. */
+    public static final String PATH_LOOP_REACHED = "pathLoopReached";
     /** Exact array cardinality for one dynamic fixed-count occurrence. */
     public static final String LOOP_CARDINALITY = "loopCardinality";
     /** Exact cardinality observations published by one completed path. */
@@ -82,6 +84,9 @@ public final class LoopBoundPolicy {
             "PATH_LOCAL_LOOP_COUNT_AMBIGUOUS";
     public static final String PATH_LOOP_COUNT_OUT_OF_BOUND =
             "PATH_LOCAL_LOOP_COUNT_OUT_OF_BOUND";
+    /** A retained-loop row omitted the explicit reached/skipped marker. */
+    public static final String PATH_LOOP_REACHABILITY_MISSING =
+            "PATH_LOCAL_LOOP_REACHABILITY_MISSING";
     public static final String PATH_ARRAY_CARDINALITY_MISSING =
             "PATH_LOCAL_ARRAY_CARDINALITY_MISSING";
 

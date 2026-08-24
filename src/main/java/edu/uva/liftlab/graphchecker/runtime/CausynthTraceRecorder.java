@@ -18,7 +18,6 @@ import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -615,6 +614,22 @@ public final class CausynthTraceRecorder {
             }
         }
         return null;
+    }
+
+    /**
+     * Exact currently executing instrumented call site, or {@code null}.
+     *
+     * <p>This is an immutable snapshot rather than the mutable thread-local
+     * stack entry.  Configured-source replay uses it to bind a manual hook to
+     * the static site and replay ordinal frozen in its task.  Normal return,
+     * exceptional return, stale-site replacement and test reset all remove
+     * the underlying entry before a later hook can observe it.</p>
+     */
+    public static ActiveCallSiteContext currentCallSiteContext() {
+        ActiveCallSite site = ACTIVE_CALL_SITES.get().peek();
+        return site == null ? null : new ActiveCallSiteContext(
+                site.siteId, site.declaredCallee, site.ownerCallId,
+                site.invocationId);
     }
 
     /**
@@ -1345,8 +1360,28 @@ public final class CausynthTraceRecorder {
             owners.remove(objectId);
         }
         if (owners.isEmpty()) return;
+        Map<Long, SourceRef> recordedSources = new LinkedHashMap<>();
+        Map<Long, SourceRef> registeredContexts = new LinkedHashMap<>();
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
-            event.reattribute(owners.get(event.objectId));
+            SourceRef recorded = event.source;
+            SourceRef owner = owners.get(event.objectId);
+            if (owner == null) {
+                SourceRef parentContext = registeredContexts.get(
+                        event.parentCallId);
+                SourceRef parentRecorded = recordedSources.get(
+                        event.parentCallId);
+                boolean sameRecordedContext = recorded == null
+                        ? parentRecorded == null
+                        : recorded.equals(parentRecorded);
+                if (parentContext != null && sameRecordedContext) {
+                    owner = parentContext;
+                }
+            }
+            if (owner != null) {
+                event.reattribute(owner);
+                registeredContexts.put(event.callId, owner);
+            }
+            recordedSources.put(event.callId, recorded);
         }
     }
 
@@ -2386,6 +2421,30 @@ public final class CausynthTraceRecorder {
             this.caller = safe(caller);
             this.declaredCallee = safe(declaredCallee);
         }
+    }
+
+    /** Immutable public view of one exact active call-site invocation. */
+    public static final class ActiveCallSiteContext {
+        private final String siteId;
+        private final String declaredCallee;
+        private final long ownerCallId;
+        private final long invocationId;
+
+        private ActiveCallSiteContext(String siteId, String declaredCallee,
+                                      long ownerCallId, long invocationId) {
+            this.siteId = safe(siteId);
+            this.declaredCallee = safe(declaredCallee);
+            this.ownerCallId = ownerCallId;
+            this.invocationId = invocationId;
+        }
+
+        public String siteId() { return siteId; }
+
+        public String declaredCallee() { return declaredCallee; }
+
+        public long ownerCallId() { return ownerCallId; }
+
+        public long invocationId() { return invocationId; }
     }
 
 }

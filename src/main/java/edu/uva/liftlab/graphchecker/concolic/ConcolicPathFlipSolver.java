@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -60,6 +61,16 @@ public final class ConcolicPathFlipSolver {
         if (source == null) {
             throw new IOException("Source execution task not found: "
                     + sourceId);
+        }
+        try {
+            // Solver workers receive the task plan as an external artifact.
+            // Decode the full task contract here instead of trusting the
+            // worklist's sourceTaskId alone; this includes exact configured
+            // source-phase sequencing and occurrence ownership.
+            ExecutionTask.decode(source);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Source execution task is malformed: "
+                    + sourceId, malformed);
         }
 
         ConcolicConstraintSolver.Result solved =

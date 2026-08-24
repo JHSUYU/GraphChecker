@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -79,6 +80,28 @@ final class RegionSkeletonInstrumentationSelection {
                                         + "non-empty strings");
                     }
                     regionMethods.add(method.getAsString());
+                }
+                JsonElement encodedPhaseMethods = row.get(
+                        ConfiguredSourcePhaseContract.TRACE_METHODS_FIELD);
+                if (encodedPhaseMethods != null) {
+                    if (!encodedPhaseMethods.isJsonArray()) {
+                        throw new IllegalArgumentException(
+                                ConfiguredSourcePhaseContract
+                                        .TRACE_METHODS_FIELD
+                                        + " must be an array");
+                    }
+                    for (JsonElement method
+                            : encodedPhaseMethods.getAsJsonArray()) {
+                        if (!method.isJsonPrimitive()
+                                || !method.getAsJsonPrimitive().isString()
+                                || method.getAsString().trim().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    ConfiguredSourcePhaseContract
+                                            .TRACE_METHODS_FIELD
+                                            + " must contain non-empty strings");
+                        }
+                        methods.add(method.getAsString());
+                    }
                 }
                 if (!regionMethods.contains(root)
                         || !regionMethods.contains(anchor)) {

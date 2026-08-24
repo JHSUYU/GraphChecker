@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingK
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
@@ -51,6 +52,11 @@ public final class ConcolicConstraintSolver {
                 .requiredPathPredicates();
         JsonArray contextConstraints = query.pathContext.expressions();
         List<JsonObject> actions = materializationActions(activation);
+        boolean targetReachQuery = targetReachQuery(task);
+        TargetReplaySupportPlan targetReplayPlan = targetReachQuery
+                ? TargetReplaySupportPlan.build(task, activation,
+                branchConstraints, contextConstraints, actions)
+                : TargetReplaySupportPlan.notTarget();
         SparseContainerBoundaries containerBoundaries =
                 SparseContainerBoundaries.discover(
                         branchConstraints, contextConstraints, actions);
@@ -64,6 +70,16 @@ public final class ConcolicConstraintSolver {
         List<Set<String>> branchSymbolSets = new ArrayList<>();
         Set<String> targetSymbols = new LinkedHashSet<>();
         for (int index = 0; index < branchConstraints.size(); index++) {
+            if (targetReachQuery
+                    && targetReplayPlan.isExternalCompanion(index)) {
+                // This witnessed predecessor is fixed by the full-session
+                // replay's exact RPC/shared-state companion.  It remains in
+                // BranchReplayContract for runtime prefix validation, but no
+                // unconstrained remote source is introduced into the local
+                // flip SMT query.
+                branchSymbolSets.add(Collections.<String>emptySet());
+                continue;
+            }
             Set<String> symbols = encoder.addConstraint(
                     branchConstraints.get(index),
                     "q_branch_" + index);
@@ -72,27 +88,26 @@ public final class ConcolicConstraintSolver {
                 targetSymbols.addAll(symbols);
             }
         }
-        // Configured sources are writable replay boundaries even though
-        // their stable VM names intentionally are not REGION.in.* ports.
-        // Admit only exact declarations from this task; arbitrary VM symbols
-        // remain fixed support state.
-        for (Set<String> symbols : branchSymbolSets) {
-            for (String raw : symbols) {
-                SymbolNames names = encoder.names(raw);
-                if (names != null && configuredSourceResolution(
-                        raw, activation, names.sort) != null) {
-                    encoder.controlledSymbols.add(raw);
-                }
+        ReplaySupport targetSupport = classifyReplaySupport(
+                encoder, targetSymbols, actions, activation);
+        ReplaySupport replaySupport = classifyReplaySupport(
+                encoder, replayControlFrontier(branchSymbolSets),
+                actions, activation);
+        Set<String> writableReplayControlSymbols =
+                replaySupport.writableSymbols;
+        Set<String> nullableReplaySymbols = referencesComparedWithNull(
+                branchConstraints);
+        for (String alias : new ArrayList<>(nullableReplaySymbols)) {
+            String representative = encoder
+                    .materializableFieldRepresentative(
+                            alias, actions, activation);
+            if (representative != null) {
+                nullableReplaySymbols.add(representative);
             }
         }
-        Set<String> replayControlSymbols = replayControlFrontier(
-                branchSymbolSets);
-        replayControlSymbols.retainAll(encoder.controlledSymbols);
-        replayControlSymbols.removeAll(
-                encoder.derivedFieldAliases(actions));
         ReferenceDomains referenceDomains = encoder.bindReferenceDomains(
-                replayControlSymbols, actions,
-                referencesComparedWithNull(branchConstraints));
+                writableReplayControlSymbols, actions,
+                nullableReplaySymbols);
         encoder.bindSparseContainerBoundaries();
         encoder.bindRecordedReadCut(query.recordedReadCut);
         String smt = encoder.finish();
@@ -115,27 +130,31 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        Set<String> unresolvedTargetSymbols = unresolvedMaterializations(
-                encoder, targetSymbols, actions, activation, true);
-        if (!unresolvedTargetSymbols.isEmpty()) {
+        if (targetReachQuery && targetReplayPlan.hasGap()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason",
-                    "FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS");
-            record.add("unresolvedTargetSymbols",
-                    strings(unresolvedTargetSymbols));
+            record.addProperty("reason", targetReplayPlan.reason());
+            record.add("unresolvedCompanionSupportSymbols",
+                    strings(targetReplayPlan.gapSymbols()));
             return new Result(record, smt, new JsonArray(),
                     replayContract);
         }
 
-        Set<String> targetControlledSymbols = new LinkedHashSet<>(
-                targetSymbols);
-        targetControlledSymbols.retainAll(encoder.controlledSymbols);
+        if (!targetSupport.unresolvedSymbols.isEmpty()) {
+            record.addProperty("status", "MATERIALIZATION_GAP");
+            record.addProperty("reason",
+                    "FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS");
+            record.add("unresolvedTargetSymbols",
+                    strings(targetSupport.unresolvedSymbols));
+            return new Result(record, smt, new JsonArray(),
+                    replayContract);
+        }
 
-        if (hasMaterializationGap(encoder, replayControlSymbols, actions,
-                activation, false)) {
+        if (!replaySupport.unresolvedSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
                     "REPLAY_CONTROL_FRONTIER_IS_NOT_MATERIALIZABLE");
+            record.add("unresolvedReplaySupportSymbols",
+                    strings(replaySupport.unresolvedSymbols));
             return new Result(record, smt, new JsonArray(),
                     replayContract);
         }
@@ -172,13 +191,14 @@ public final class ConcolicConstraintSolver {
         if (!readCut.isEmpty()) {
             record.add("selectedReadCut", readCut.toJson());
         }
-        // A flip changes only the inputs that control its target predicate.
-        // Prefix-only inputs keep the source execution's concrete values;
-        // projecting arbitrary solver values for them can satisfy an
-        // unconstrained environment placeholder (for example time == 0) yet
-        // immediately contradict the same prefix in the real replay.
+        // The SMT model satisfies the complete required prefix plus target.
+        // Every writable root in that conjunction must therefore be replayed
+        // from the same model. A derived field alias is represented by the
+        // unique writable root that the recorded field bindings equate with
+        // it. Free environment support was refused above; sparse container
+        // values are projected by their dedicated path below.
         ModelProjection projection = modelAssignments(encoder, values,
-                actions, activation, targetControlledSymbols,
+                actions, activation, writableReplayControlSymbols,
                 referenceDomains);
         ModelProjection containerProjection =
                 sparseContainerAssignments(values, containerBoundaries,
@@ -189,7 +209,7 @@ public final class ConcolicConstraintSolver {
         }
         projection.unresolved.addAll(containerProjection.unresolved);
         JsonArray assignments = projection.assignments;
-        if (targetControlledSymbols.isEmpty()
+        if (writableReplayControlSymbols.isEmpty()
                 && containerBoundaries.models.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
@@ -765,6 +785,14 @@ public final class ConcolicConstraintSolver {
                 return null;
             }
             String identity = function + "#" + count;
+            if (currentConstraintSymbols != null) {
+                // SolverPathContext records only this identity, not an exact
+                // concrete value or provenance that would make it replay
+                // invariant. Track it as path support so it cannot stay a
+                // free SMT variable while replay materializes only others.
+                currentConstraintSymbols.add(
+                        "ENVIRONMENT_PLACEHOLDER:" + identity);
+            }
             String name = "environment__" + safeName(identity) + "__"
                     + sha256(identity).substring(0, 10);
             declarations.put(name, Sort.INT);
@@ -1121,32 +1149,42 @@ public final class ConcolicConstraintSolver {
                     ? expression.getAsJsonObject("_right")
                     : left.getAsJsonObject();
             String raw = string(symbol, "_exp");
-            if (!regionInput(raw)) return;
+            if (raw.isEmpty() || "N".equals(raw) || "V".equals(raw)) {
+                return;
+            }
             fieldSymbols.computeIfAbsent(CanonicalJson.render(field),
                     ignored -> new LinkedHashSet<>()).add(raw);
         }
 
-        private Set<String> derivedFieldAliases(
-                List<JsonObject> actions) {
-            Set<String> result = new LinkedHashSet<>();
+        private String materializableFieldRepresentative(
+                String raw, List<JsonObject> actions,
+                JsonObject activation) {
+            String selected = null;
             for (Set<String> aliases : fieldSymbols.values()) {
-                boolean hasTarget = false;
+                if (!aliases.contains(raw)) continue;
                 for (String alias : aliases) {
-                    if (materializationResolution(alias, actions,
-                            names(alias).sort) != null) {
-                        hasTarget = true;
-                        break;
+                    SymbolNames aliasNames = names(alias);
+                    ActionMatch action = aliasNames == null ? null
+                            : materializationResolution(alias, actions,
+                            aliasNames.sort);
+                    ConfiguredSourceMatch source = aliasNames == null ? null
+                            : configuredSourceResolution(alias, activation,
+                            aliasNames.sort);
+                    if (aliasNames == null
+                            || (action == null) == (source == null)) {
+                        continue;
                     }
-                }
-                if (!hasTarget) continue;
-                for (String alias : aliases) {
-                    if (materializationResolution(alias, actions,
-                            names(alias).sort) == null) {
-                        result.add(alias);
+                    // Two distinct writable roots bound to the same field
+                    // need coordinated replay writes. The compact context
+                    // does not prove which one owns that write, so refuse
+                    // instead of selecting one by iteration order.
+                    if (selected != null && !selected.equals(alias)) {
+                        return null;
                     }
+                    selected = alias;
                 }
             }
-            return result;
+            return selected;
         }
 
         private void bindSparseContainerBoundaries() {
@@ -2053,9 +2091,11 @@ public final class ConcolicConstraintSolver {
             }
             if (source != null) {
                 assignment.addProperty("inputSymbol",
-                        "SOURCE:" + source.sourceId);
+                        "SOURCE_PHASE:" + source.sourcePhaseId);
                 assignment.addProperty("configuredSourceId",
                         source.sourceId);
+                assignment.addProperty("configuredSourcePhaseId",
+                        source.sourcePhaseId);
                 assignment.addProperty("configuredSourceFieldSignature",
                         source.fieldSignature);
             } else {
@@ -2216,6 +2256,250 @@ public final class ConcolicConstraintSolver {
                                 Set<String> unresolved) {
             this.assignments = assignments;
             this.unresolved = unresolved;
+        }
+    }
+
+    private static final class ReplaySupport {
+        private final Set<String> writableSymbols;
+        private final Set<String> unresolvedSymbols;
+
+        private ReplaySupport(Set<String> writableSymbols,
+                              Set<String> unresolvedSymbols) {
+            this.writableSymbols = writableSymbols;
+            this.unresolvedSymbols = unresolvedSymbols;
+        }
+    }
+
+    /**
+     * Classifies target-prefix support before the real encoder is built.
+     *
+     * <p>A target path flip is a local replay of one predecessor decision.
+     * Exact remote predecessors remain in {@link BranchReplayContract} and
+     * are checked by the full-session replay, but they are deliberately not
+     * asserted as free variables in the local SMT query.  No such omission is
+     * allowed for a predicate that also contains a writable local root: that
+     * would require a typed concrete snapshot of the companion value, which
+     * the current handoff/read-from evidence does not carry.</p>
+     */
+    private static final class TargetReplaySupportPlan {
+        private final Set<Integer> externalCompanionPredicates;
+        private final String gapReason;
+        private final Set<String> gapSymbols;
+
+        private TargetReplaySupportPlan(
+                Set<Integer> externalCompanionPredicates,
+                String gapReason, Set<String> gapSymbols) {
+            this.externalCompanionPredicates =
+                    externalCompanionPredicates;
+            this.gapReason = gapReason;
+            this.gapSymbols = gapSymbols;
+        }
+
+        private static TargetReplaySupportPlan notTarget() {
+            return new TargetReplaySupportPlan(
+                    Collections.<Integer>emptySet(), "",
+                    Collections.<String>emptySet());
+        }
+
+        private static TargetReplaySupportPlan build(
+                JsonObject task, JsonObject activation,
+                JsonArray predicates, JsonArray context,
+                List<JsonObject> actions) {
+            SparseContainerBoundaries boundaries =
+                    SparseContainerBoundaries.discover(
+                            predicates, context, actions);
+            Encoder probe = new Encoder(boundaries);
+            for (int index = 0; index < context.size(); index++) {
+                JsonElement constraint = context.get(index);
+                if (!boundaries.isConcreteObservation(constraint)) {
+                    probe.addConstraint(constraint,
+                            "q_target_support_context_" + index);
+                }
+            }
+            List<Set<String>> symbolsByPredicate = new ArrayList<>();
+            for (int index = 0; index < predicates.size(); index++) {
+                symbolsByPredicate.add(probe.addConstraint(
+                        predicates.get(index),
+                        "q_target_support_branch_" + index));
+            }
+
+            CompanionSupport companions = CompanionSupport.from(
+                    task, actions);
+            Set<Integer> external = new LinkedHashSet<>();
+            Set<String> ambiguous = new LinkedHashSet<>();
+            Set<String> missing = new LinkedHashSet<>();
+            Set<String> mixed = new LinkedHashSet<>();
+            boolean selectedHasWritableRoot = false;
+            int selected = predicates.size() - 1;
+
+            for (int index = 0; index < symbolsByPredicate.size(); index++) {
+                ReplaySupport local = classifyReplaySupport(
+                        probe, symbolsByPredicate.get(index), actions,
+                        activation);
+                Set<String> exactCompanion = new LinkedHashSet<>();
+                Set<String> predicateMissing = new LinkedHashSet<>();
+                Set<String> predicateAmbiguous = new LinkedHashSet<>();
+                for (String unresolved : local.unresolvedSymbols) {
+                    SymbolNames names = probe.names(unresolved);
+                    CompanionResolution resolution = companions.resolve(
+                            unresolved, names == null
+                                    ? Sort.UNKNOWN : names.sort);
+                    if (resolution == CompanionResolution.EXACT) {
+                        exactCompanion.add(unresolved);
+                    } else if (resolution
+                            == CompanionResolution.AMBIGUOUS) {
+                        predicateAmbiguous.add(unresolved);
+                    } else {
+                        predicateMissing.add(unresolved);
+                    }
+                }
+                ambiguous.addAll(predicateAmbiguous);
+                missing.addAll(predicateMissing);
+                if (!local.writableSymbols.isEmpty()
+                        && !exactCompanion.isEmpty()) {
+                    mixed.addAll(local.writableSymbols);
+                    mixed.addAll(exactCompanion);
+                }
+                if (index == selected) {
+                    selectedHasWritableRoot =
+                            !local.writableSymbols.isEmpty();
+                }
+                if (local.writableSymbols.isEmpty()
+                        && !exactCompanion.isEmpty()
+                        && predicateMissing.isEmpty()
+                        && predicateAmbiguous.isEmpty()) {
+                    external.add(index);
+                }
+            }
+
+            if (!ambiguous.isEmpty()) {
+                return new TargetReplaySupportPlan(external,
+                        "TARGET_PREFIX_COMPANION_SUPPORT_AMBIGUOUS",
+                        ambiguous);
+            }
+            if (!missing.isEmpty()) {
+                return new TargetReplaySupportPlan(external,
+                        "TARGET_PREFIX_COMPANION_SUPPORT_MISSING", missing);
+            }
+            if (!mixed.isEmpty()) {
+                return new TargetReplaySupportPlan(external,
+                        "TARGET_PREFIX_MIXES_LOCAL_AND_COMPANION_SUPPORT",
+                        mixed);
+            }
+            if (!selectedHasWritableRoot) {
+                Set<String> selectedSymbols = new LinkedHashSet<>();
+                if (selected >= 0) {
+                    selectedSymbols.addAll(symbolsByPredicate.get(selected));
+                }
+                return new TargetReplaySupportPlan(external,
+                        "TARGET_PREFIX_FLIP_HAS_NO_LOCAL_WRITABLE_ROOT",
+                        selectedSymbols);
+            }
+            return new TargetReplaySupportPlan(external, "",
+                    Collections.<String>emptySet());
+        }
+
+        private boolean isExternalCompanion(int index) {
+            return externalCompanionPredicates.contains(index);
+        }
+
+        private boolean hasGap() {
+            return !gapReason.isEmpty();
+        }
+
+        private String reason() {
+            return gapReason;
+        }
+
+        private Set<String> gapSymbols() {
+            return gapSymbols;
+        }
+    }
+
+    private enum CompanionResolution {
+        NONE,
+        EXACT,
+        AMBIGUOUS
+    }
+
+    /** Exact non-local authorities available to one target replay query. */
+    private static final class CompanionSupport {
+        private final Map<String, Set<String>> rpcAuthorities =
+                new LinkedHashMap<>();
+        private final List<SharedCompanion> shared = new ArrayList<>();
+
+        private static CompanionSupport from(
+                JsonObject task, List<JsonObject> actions) {
+            CompanionSupport result = new CompanionSupport();
+            for (JsonObject event : VmHandoffEvidence.eventsOf(task)) {
+                Set<String> symbols = new LinkedHashSet<>();
+                collectEngineSymbols(event.get(
+                        VmHandoffEvidence.EXPRESSION), symbols);
+                String authority = "RPC\u0000"
+                        + string(event, VmHandoffEvidence.PRODUCER_TASK_ID)
+                        + "\u0000" + string(event,
+                        VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
+                for (String symbol : symbols) {
+                    result.rpcAuthorities.computeIfAbsent(symbol,
+                            ignored -> new LinkedHashSet<>()).add(authority);
+                }
+            }
+            for (JsonElement element : array(task, "edgeBindings")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                boolean exact = RecordedReadFrom.PROVENANCE_EXACT.equals(
+                        string(binding, RecordedReadFrom.EDGE_PROVENANCE));
+                if (!exact || !(AutomaticRegionEdge
+                        .trustedRuntimeReadFromBinding(binding)
+                        || AutomaticRegionEdge
+                        .trustedVmRecordedReadFromEvidence(binding))) {
+                    continue;
+                }
+                String port = string(binding, "toInputPort");
+                List<JsonObject> matches = new ArrayList<>();
+                for (JsonObject action : actions) {
+                    if ("CONCRETE".equals(string(action, "mode"))
+                            && port.equals(string(action, "symbol"))) {
+                        matches.add(action);
+                    }
+                }
+                if (matches.size() != 1) continue;
+                String authority = "SHARED\u0000"
+                        + string(binding, "fromOccurrenceId") + "\u0000"
+                        + string(binding, "fromOutputPort");
+                result.shared.add(new SharedCompanion(port,
+                        materializationSort(matches.get(0)), authority));
+            }
+            return result;
+        }
+
+        private CompanionResolution resolve(String raw, Sort sort) {
+            Set<String> authorities = new LinkedHashSet<>();
+            authorities.addAll(rpcAuthorities.getOrDefault(raw,
+                    Collections.<String>emptySet()));
+            for (SharedCompanion candidate : shared) {
+                if ((sort == Sort.UNKNOWN || candidate.sort == sort)
+                        && matchesEngineSymbol(raw, candidate.inputPort)) {
+                    authorities.add(candidate.authority);
+                }
+            }
+            if (authorities.isEmpty()) return CompanionResolution.NONE;
+            return authorities.size() == 1
+                    ? CompanionResolution.EXACT
+                    : CompanionResolution.AMBIGUOUS;
+        }
+    }
+
+    private static final class SharedCompanion {
+        private final String inputPort;
+        private final Sort sort;
+        private final String authority;
+
+        private SharedCompanion(String inputPort, Sort sort,
+                                String authority) {
+            this.inputPort = inputPort;
+            this.sort = sort;
+            this.authority = authority;
         }
     }
 
@@ -2672,8 +2956,7 @@ public final class ConcolicConstraintSolver {
      */
     private static ConfiguredSourceMatch configuredSourceResolution(
             String raw, JsonObject activation, Sort expectedSort) {
-        String occurrence = string(activation, "occurrenceId");
-        if (raw == null || raw.isEmpty() || occurrence.isEmpty()
+        if (raw == null || raw.isEmpty()
                 || expectedSort == null || expectedSort == Sort.UNKNOWN
                 || expectedSort == Sort.REF || expectedSort == Sort.STRING
                 || expectedSort.containerState()) {
@@ -2685,20 +2968,22 @@ public final class ConcolicConstraintSolver {
             if (!element.isJsonObject()) return null;
             JsonObject declaration = element.getAsJsonObject();
             String sourceId = string(declaration, "sourceId");
+            String sourcePhaseId = string(declaration, "sourcePhaseId");
             String fieldSignature = string(declaration, "fieldSignature");
             FieldPathSpec.DeclaredField field =
                     FieldPathSpec.declaredField(fieldSignature);
             if (!SymbolicSourceEvidence.DECLARATION_AUTHORITY.equals(
                     string(declaration, "authority"))
-                    || sourceId.isEmpty() || field == null
+                    || sourceId.isEmpty() || sourcePhaseId.isEmpty()
+                    || field == null
                     || sortOfJava(field.type()) != expectedSort
                     || !matchesEngineSymbol(raw,
-                    SymbolicSourceEvidence.engineLabel(
-                            occurrence, sourceId))) {
+                    SymbolicSourceEvidence.engineLabelForPhase(
+                            sourcePhaseId, sourceId))) {
                 continue;
             }
             if (selected != null) return null;
-            selected = new ConfiguredSourceMatch(sourceId,
+            selected = new ConfiguredSourceMatch(sourcePhaseId, sourceId,
                     field.signature());
         }
         return selected;
@@ -2738,16 +3023,10 @@ public final class ConcolicConstraintSolver {
         return result;
     }
 
-    private static boolean hasMaterializationGap(
+    private static ReplaySupport classifyReplaySupport(
             Encoder encoder, Set<String> symbols, List<JsonObject> actions,
-            JsonObject activation, boolean requireRegionInput) {
-        return !unresolvedMaterializations(encoder, symbols, actions,
-                activation, requireRegionInput).isEmpty();
-    }
-
-    private static Set<String> unresolvedMaterializations(
-            Encoder encoder, Set<String> symbols, List<JsonObject> actions,
-            JsonObject activation, boolean requireRegionInput) {
+            JsonObject activation) {
+        Set<String> writable = new LinkedHashSet<>();
         Set<String> unresolved = new LinkedHashSet<>();
         for (String symbol : symbols) {
             if ("N".equals(symbol) || "V".equals(symbol)) continue;
@@ -2762,16 +3041,92 @@ public final class ConcolicConstraintSolver {
             ConfiguredSourceMatch source = names == null ? null
                     : configuredSourceResolution(symbol, activation,
                     names.sort);
-            boolean exactConfiguredSource = source != null
-                    && action == null;
-            if ((requireRegionInput && !regionInput(symbol)
-                    && !exactConfiguredSource)
-                    || names == null
-                    || (action == null) == (source == null)) {
-                unresolved.add(symbol);
+            if (names != null && (action == null) != (source == null)) {
+                writable.add(symbol);
+                encoder.controlledSymbols.add(symbol);
+                continue;
+            }
+
+            String representative = encoder
+                    .materializableFieldRepresentative(
+                            symbol, actions, activation);
+            SymbolNames representativeNames = encoder.names(representative);
+            ActionMatch representativeAction = representativeNames == null
+                    ? null : materializationResolution(representative,
+                    actions, representativeNames.sort);
+            ConfiguredSourceMatch representativeSource =
+                    representativeNames == null ? null
+                    : configuredSourceResolution(representative, activation,
+                    representativeNames.sort);
+            if (representativeNames != null
+                    && (representativeAction == null)
+                    != (representativeSource == null)) {
+                writable.add(representative);
+                encoder.controlledSymbols.add(representative);
+                continue;
+            }
+
+            // NON_BRANCH_SOLVER_PATH_CONTEXT proves dependency and aliasing,
+            // but carries no exact concrete snapshot provenance. Therefore a
+            // remaining symbol (including time/environment placeholders)
+            // cannot be safely pinned here.
+            unresolved.add(symbol);
+        }
+        return new ReplaySupport(writable, unresolved);
+    }
+
+    /**
+     * Cheap worklist-side admission probe.  It shares the solver's exact
+     * writable-root rules and performs no solve or external process launch.
+     */
+    static boolean hasLocallyWritableReplayRoot(
+            JsonElement predicate, JsonObject activation) {
+        if (predicate == null || activation == null) return false;
+        try {
+            List<JsonObject> actions = materializationActions(activation);
+            JsonArray predicates = new JsonArray();
+            predicates.add(predicate.deepCopy());
+            JsonArray context = new JsonArray();
+            SparseContainerBoundaries boundaries =
+                    SparseContainerBoundaries.discover(
+                            predicates, context, actions);
+            Encoder probe = new Encoder(boundaries);
+            Set<String> symbols = probe.addConstraint(predicate,
+                    "q_local_writable_probe");
+            ReplaySupport support = classifyReplaySupport(
+                    probe, symbols, actions, activation);
+            return !support.writableSymbols.isEmpty()
+                    || !boundaries.models.isEmpty();
+        } catch (IOException malformedActions) {
+            return false;
+        }
+    }
+
+    private static boolean targetReachQuery(JsonObject task) {
+        return ClosureGoalKind.TARGET_REACH_CLOSURE.name().equals(
+                string(task, ClosureGoalKind.TASK_FIELD));
+    }
+
+    private static void collectEngineSymbols(
+            JsonElement expression, Set<String> result) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement element : expression.getAsJsonArray()) {
+                collectEngineSymbols(element, result);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject object = expression.getAsJsonObject();
+        if ("SymbolExpression".equals(string(object, "_type"))) {
+            String raw = string(object, "_exp");
+            if (!raw.isEmpty() && !"N".equals(raw) && !"V".equals(raw)) {
+                result.add(raw);
             }
         }
-        return unresolved;
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            collectEngineSymbols(entry.getValue(), result);
+        }
     }
 
     /**
@@ -2959,11 +3314,13 @@ public final class ConcolicConstraintSolver {
     }
 
     private static final class ConfiguredSourceMatch {
+        private final String sourcePhaseId;
         private final String sourceId;
         private final String fieldSignature;
 
-        private ConfiguredSourceMatch(String sourceId,
+        private ConfiguredSourceMatch(String sourcePhaseId, String sourceId,
                                       String fieldSignature) {
+            this.sourcePhaseId = sourcePhaseId;
             this.sourceId = sourceId;
             this.fieldSignature = fieldSignature;
         }

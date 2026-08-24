@@ -76,7 +76,8 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         // An earlier invocation of the same server method is not the selected
         // producer merely because its root is compatible.
         assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
-                PRODUCER_TASK, PRODUCER_ROOT, new Server(), new Object[0]));
+                PRODUCER_TASK, PRODUCER_ROOT, server("test/server"),
+                new Object[0]));
 
         activate(CONSUMER_TASK, 41L);
         ConcolicRegionRuntime.prepareResponseHandoff(PORT);
@@ -88,7 +89,8 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", "TEST_RPC",
                 "exchange-other", "REQUEST");
         assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
-                PRODUCER_TASK, PRODUCER_ROOT, new Server(), new Object[0]));
+                PRODUCER_TASK, PRODUCER_ROOT, server("test/server"),
+                new Object[0]));
 
         // The exact request delivery claims it, after which this producer task
         // (and no value tuple) is authorized.
@@ -96,7 +98,8 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 "exchange-selected", "REQUEST");
         assertEquals(PRODUCER_TASK,
                 ConcolicRegionRuntime.admitCampaignTaskForTests(PRODUCER_TASK,
-                        PRODUCER_ROOT, new Server(), new Object[0]));
+                        PRODUCER_ROOT, server("test/server"),
+                        new Object[0]));
     }
 
     @Test
@@ -112,10 +115,12 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 "exchange-b", "REQUEST");
 
         assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
-                PRODUCER_TASK, PRODUCER_ROOT, new Server(), new Object[0]));
+                PRODUCER_TASK, PRODUCER_ROOT, server("test/server"),
+                new Object[0]));
         assertEquals(PRODUCER_TASK_B,
                 ConcolicRegionRuntime.admitCampaignTaskForTests(
-                        PRODUCER_TASK_B, PRODUCER_ROOT_B, new Server(),
+                        PRODUCER_TASK_B, PRODUCER_ROOT_B,
+                        server("test/server-b"),
                         new Object[0]));
     }
 
@@ -313,6 +318,7 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         selector.addProperty("receiverClass", receiverClass);
         JsonObject anchor = new JsonObject();
         anchor.addProperty("sourceKey", task.get("sourceKey").getAsString());
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
         selector.add("causalAnchor", anchor);
         task.add("rootSelector", selector);
         task.add("inputActions", new JsonArray());
@@ -468,6 +474,13 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 "flushPendingResponseHandoffGaps");
         flush.setAccessible(true);
         flush.invoke(active);
+    }
+
+    private static Server server(String id) {
+        Server server = new Server();
+        RuntimeTraceContext.registerSource(server,
+                new SourceRef("TEST", "SERVER", id, 0L));
+        return server;
     }
 
     private static void restore(String property, String value) {

@@ -83,11 +83,18 @@ public final class RecordedSessionModel {
     private final List<JsonObject> coverageGaps = new ArrayList<>();
     private final JsonArray readChoices = new JsonArray();
     private final List<JsonObject> gatePlans = new ArrayList<>();
-    private final Map<String, String> fieldByLocation;
-    private final Map<String, Long> readEventBySite;
-    private final Map<String, JsonObject> versionsByLocation;
+    private final Map<Long, String> fieldByReadEvent;
+    private final Map<String, List<Long>> readEventsBySite;
+    private final Map<Long, JsonObject> versionsByReadEvent;
+    /** Read resolution and chosen version, after case-local alpha-renaming. */
+    private final Map<Long, String> resolutionByReadEvent;
+    private final Map<Long, Long> chosenVersionByReadEvent;
     /** The VM's authoritative writer row, addressed by its event/version id. */
     private final Map<Long, JsonObject> writerVersions;
+    /** Synthetic event id -> its replay/case-local identity. */
+    private final Map<Long, EventIdentity> eventIdentities;
+    /** Exact replay/case scope and local VM id -> synthetic event id. */
+    private final Map<String, Map<Long, Long>> eventIdsByScope;
     private final List<JsonObject> writerUniverses = new ArrayList<>();
     private final int ledgerSnapshots;
     private final String orderDomainFault;
@@ -108,17 +115,25 @@ public final class RecordedSessionModel {
     private boolean partial;
 
     private RecordedSessionModel(SessionTargetSlice.Slice slice,
-                                 Map<String, String> fieldByLocation,
-                                 Map<String, Long> readEventBySite,
-                                 Map<String, JsonObject> versionsByLocation,
+                                 Map<Long, String> fieldByReadEvent,
+                                 Map<String, List<Long>> readEventsBySite,
+                                 Map<Long, JsonObject> versionsByReadEvent,
+                                 Map<Long, String> resolutionByReadEvent,
+                                 Map<Long, Long> chosenVersionByReadEvent,
                                  Map<Long, JsonObject> writerVersions,
+                                 Map<Long, EventIdentity> eventIdentities,
+                                 Map<String, Map<Long, Long>> eventIdsByScope,
                                  int ledgerSnapshots,
                                  String orderDomainFault) {
         this.slice = slice;
-        this.fieldByLocation = fieldByLocation;
-        this.readEventBySite = readEventBySite;
-        this.versionsByLocation = versionsByLocation;
+        this.fieldByReadEvent = fieldByReadEvent;
+        this.readEventsBySite = readEventsBySite;
+        this.versionsByReadEvent = versionsByReadEvent;
+        this.resolutionByReadEvent = resolutionByReadEvent;
+        this.chosenVersionByReadEvent = chosenVersionByReadEvent;
         this.writerVersions = writerVersions;
+        this.eventIdentities = eventIdentities;
+        this.eventIdsByScope = eventIdsByScope;
         this.ledgerSnapshots = ledgerSnapshots;
         this.orderDomainFault = orderDomainFault;
     }
@@ -160,16 +175,85 @@ public final class RecordedSessionModel {
         private final String selector;
         private final String regionId;
         private final String occurrenceId;
+        private final String scope;
 
         private EvidenceOwner(JsonObject row, JsonObject recorded,
                               String owner, String selector, String regionId,
-                              String occurrenceId) {
+                              String occurrenceId, String scope) {
             this.row = row;
             this.recorded = recorded;
             this.owner = owner;
             this.selector = selector;
             this.regionId = regionId;
             this.occurrenceId = occurrenceId;
+            this.scope = scope;
+        }
+    }
+
+    /** One local VM event after collision-free alpha-renaming. */
+    private static final class EventIdentity {
+        private final String scope;
+        private final long localId;
+        private final long syntheticId;
+        private final boolean qualified;
+
+        private EventIdentity(String scope, long localId, long syntheticId,
+                              boolean qualified) {
+            this.scope = scope;
+            this.localId = localId;
+            this.syntheticId = syntheticId;
+            this.qualified = qualified;
+        }
+
+        private String solverToken() {
+            if (!qualified) return String.valueOf(localId);
+            String normalized = scope.replaceAll("[^A-Za-z0-9_]", "_");
+            if (normalized.isEmpty()) normalized = "case";
+            return normalized + "__"
+                    + CanonicalJson.sha256(scope).substring(0, 10)
+                    + "__" + localId;
+        }
+    }
+
+    /** Public address of one case-local read used by a consumer binding. */
+    public static final class ReadCase {
+        public final long readEventId;
+        public final String caseGuard;
+        public final String resolution;
+        public final long chosenFieldVersionId;
+
+        private ReadCase(long readEventId, String caseGuard,
+                         String resolution, long chosenFieldVersionId) {
+            this.readEventId = readEventId;
+            this.caseGuard = caseGuard == null ? "" : caseGuard;
+            this.resolution = resolution == null ? "" : resolution;
+            this.chosenFieldVersionId = chosenFieldVersionId;
+        }
+    }
+
+    private static final class PreparedEvidence {
+        private final List<EvidenceOwner> owners;
+        private final List<JsonObject> versionRecords;
+        private final JsonObject ledgerEnvelope;
+        private final JsonElement targetRoots;
+        private final Map<Long, EventIdentity> identities;
+        private final Map<String, Map<Long, Long>> idsByScope;
+        private final int ledgerSnapshots;
+
+        private PreparedEvidence(List<EvidenceOwner> owners,
+                                 List<JsonObject> versionRecords,
+                                 JsonObject ledgerEnvelope,
+                                 JsonElement targetRoots,
+                                 Map<Long, EventIdentity> identities,
+                                 Map<String, Map<Long, Long>> idsByScope,
+                                 int ledgerSnapshots) {
+            this.owners = owners;
+            this.versionRecords = versionRecords;
+            this.ledgerEnvelope = ledgerEnvelope;
+            this.targetRoots = targetRoots;
+            this.identities = identities;
+            this.idsByScope = idsByScope;
+            this.ledgerSnapshots = ledgerSnapshots;
         }
     }
 
@@ -186,36 +270,10 @@ public final class RecordedSessionModel {
     public static RecordedSessionModel of(Collection<JsonObject> summaryRows,
                                           JsonElement targetPredicate,
                                           String targetRegionId) {
-        Map<String, JsonObject> versionRecords = new LinkedHashMap<>();
-        JsonObject ledger = null;
-        int ledgerSnapshots = 0;
-        List<EvidenceOwner> evidence = evidenceOwners(summaryRows);
-        for (EvidenceOwner owned : evidence) {
-            JsonObject recorded = owned.recorded;
-            for (JsonElement element : array(recorded, "versions")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject record = element.getAsJsonObject();
-                if (!SharedStateEvidence.isVersionsRecord(record)) continue;
-                String key = string(record, "locationKey");
-                // Two regions may each report the same session-wide location.
-                // Which read-out is the later one is stated by its snapshot
-                // ordinal; it is deliberately not inferred from how many rows
-                // each holds, because a bounded store evicts and the later
-                // read-out of a busy location is routinely the smaller one.
-                if (SharedStateEvidence.later(record,
-                        versionRecords.get(key))) {
-                    versionRecords.put(key, record);
-                }
-            }
-            JsonObject snapshot = object(recorded, "eventLedger");
-            if (SharedStateEvidence.isLedgerRecord(snapshot)) {
-                ledgerSnapshots++;
-                if (SharedStateEvidence.later(snapshot, ledger)) {
-                    ledger = snapshot;
-                }
-            }
-        }
-        Set<Long> targetReads = targetReads(versionRecords.values(),
+        PreparedEvidence prepared = prepareEvidence(
+                evidenceOwners(summaryRows), targetPredicate, targetRegionId);
+        List<JsonObject> versionRecords = prepared.versionRecords;
+        Set<Long> targetReads = targetReads(versionRecords,
                 targetRegionId);
         // README section 3 asks for send_req < receive_req in the one shared
         // order domain.  The VM already recorded that fact - a HANDOFF_EXPORT
@@ -227,26 +285,251 @@ public final class RecordedSessionModel {
         // them as an unrecorded read.  The attach half arrives with them, as
         // the one adjacent event of another channel.
         SessionTargetSlice.Slice slice = SessionTargetSlice.project(
-                versionRecords.values(), ledger, targetPredicate,
-                targetReads, handoffExportEvents(summaryRows));
+                versionRecords, prepared.ledgerEnvelope,
+                prepared.targetRoots, targetReads,
+                handoffExportEventsOfOwners(prepared.owners));
         // A ledger that passed record admission and still delivered a cyclic
         // relation is refused by the order domain itself.  Reporting it here
         // is what turns that refusal into a composition decision instead of a
         // silently empty order model.
-        String fault = ledger == null ? ""
+        String fault = prepared.ledgerEnvelope == null ? ""
                 : slice.orderDomain().fault();
         RecordedSessionModel model = new RecordedSessionModel(slice,
-                declaredFields(versionRecords.values()),
-                readEventSites(versionRecords.values()),
-                versionLookup(versionRecords.values()),
-                writerVersions(versionRecords.values()),
-                ledgerSnapshots, fault);
-        model.retainCaseOwnership(evidence);
+                fieldsByReadEvent(versionRecords),
+                readEventSites(versionRecords),
+                versionsByReadEvent(versionRecords),
+                resolutionsByReadEvent(versionRecords),
+                chosenVersionsByReadEvent(versionRecords),
+                writerVersions(versionRecords), prepared.identities,
+                prepared.idsByScope, prepared.ledgerSnapshots, fault);
+        model.retainCaseOwnership(prepared.owners);
         if (!fault.isEmpty()) {
             model.coverageGaps.add(gap(ORDER_DOMAIN_CYCLE, "", fault));
         }
         model.lower();
         return model;
+    }
+
+    /**
+     * Alpha-renames the VM's per-session event ids before any snapshots are
+     * unioned. Fresh replay JVMs all begin their ledgers at small integers;
+     * treating those integers as global would join unrelated reads and writes.
+     */
+    private static PreparedEvidence prepareEvidence(
+            List<EvidenceOwner> original, JsonElement targetPredicate,
+            String targetRegionId) {
+        Map<String, Set<Long>> localIds = new LinkedHashMap<>();
+        Map<Long, Set<String>> scopesById = new LinkedHashMap<>();
+        List<String> scopes = new ArrayList<>();
+        long maximum = 0L;
+        for (int index = 0; index < original.size(); index++) {
+            EvidenceOwner owned = original.get(index);
+            String scope = evidenceScope(owned, index);
+            scopes.add(scope);
+            Set<Long> ids = localIds.computeIfAbsent(scope,
+                    ignored -> new TreeSet<>());
+            collectEventIds(owned.row, ids);
+            for (Long id : ids) {
+                if (id == null || id <= 0L) continue;
+                maximum = Math.max(maximum, id);
+                scopesById.computeIfAbsent(id,
+                        ignored -> new TreeSet<>()).add(scope);
+            }
+        }
+
+        Map<String, Map<Long, Long>> idsByScope = new LinkedHashMap<>();
+        Map<Long, EventIdentity> identities = new LinkedHashMap<>();
+        long next = maximum;
+        List<String> orderedScopes = new ArrayList<>(localIds.keySet());
+        Collections.sort(orderedScopes);
+        for (String scope : orderedScopes) {
+            Map<Long, Long> mapping = new LinkedHashMap<>();
+            idsByScope.put(scope, mapping);
+            for (Long local : localIds.get(scope)) {
+                boolean collision = scopesById.get(local).size() > 1;
+                long synthetic = collision ? ++next : local;
+                mapping.put(local, synthetic);
+                identities.put(synthetic, new EventIdentity(scope, local,
+                        synthetic, collision));
+            }
+        }
+
+        List<EvidenceOwner> rewritten = new ArrayList<>();
+        JsonArray roots = new JsonArray();
+        for (int index = 0; index < original.size(); index++) {
+            EvidenceOwner owned = original.get(index);
+            String scope = scopes.get(index);
+            JsonObject row = owned.row.deepCopy();
+            rewriteEventIds(row, idsByScope.get(scope), scope);
+            JsonObject recorded = object(row,
+                    SharedStateEvidence.RECORDED_FIELD);
+            EvidenceOwner scoped = new EvidenceOwner(row, recorded,
+                    owned.owner, owned.selector, owned.regionId,
+                    owned.occurrenceId, scope);
+            rewritten.add(scoped);
+
+            // Every case carries its own expression roots. Scanning the row is
+            // conservative but bounded: the graph collector ignores metadata
+            // and recognizes only VM expression nodes.
+            JsonObject localRoots = row.deepCopy();
+            localRoots.remove(SharedStateEvidence.RECORDED_FIELD);
+            roots.add(localRoots);
+            // A target-path row already carries only that path's constraints.
+            // Re-attaching the aggregate predicate would copy every other
+            // path's replay-local ids into this scope and recreate the very
+            // cross-replay aliasing alpha-renaming removes.
+            if (targetPredicate != null && !row.has("_targetPathOrdinal")
+                    && (original.size() == 1
+                    || targetRegionId != null
+                    && targetRegionId.equals(owned.regionId))) {
+                JsonElement target = targetPredicate.deepCopy();
+                rewriteEventIds(target, idsByScope.get(scope), scope);
+                roots.add(target);
+            }
+        }
+        if (rewritten.isEmpty() && targetPredicate != null) {
+            roots.add(targetPredicate.deepCopy());
+        }
+
+        Map<String, JsonObject> versions = new LinkedHashMap<>();
+        Map<String, JsonObject> ledgers = new LinkedHashMap<>();
+        int ledgerSnapshots = 0;
+        for (EvidenceOwner owned : rewritten) {
+            for (JsonElement element : array(owned.recorded, "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject record = element.getAsJsonObject();
+                if (!SharedStateEvidence.isVersionsRecord(record)) continue;
+                String key = owned.scope + "\n"
+                        + string(record, "locationKey");
+                if (SharedStateEvidence.later(record, versions.get(key))) {
+                    versions.put(key, record);
+                }
+            }
+            JsonObject snapshot = object(owned.recorded, "eventLedger");
+            if (SharedStateEvidence.isLedgerRecord(snapshot)) {
+                ledgerSnapshots++;
+                if (SharedStateEvidence.later(snapshot,
+                        ledgers.get(owned.scope))) {
+                    ledgers.put(owned.scope, snapshot);
+                }
+            }
+        }
+        return new PreparedEvidence(rewritten,
+                new ArrayList<>(versions.values()),
+                mergeLedgerEnvelopes(ledgers.values()), roots, identities,
+                idsByScope, ledgerSnapshots);
+    }
+
+    private static String evidenceScope(EvidenceOwner owned, int ordinal) {
+        if (!owned.owner.isEmpty()) return owned.owner;
+        Set<String> sessions = new TreeSet<>();
+        for (JsonElement element : array(owned.recorded, "versions")) {
+            if (!element.isJsonObject()) continue;
+            String session = string(object(element.getAsJsonObject(),
+                    RecordedEvidenceIdentity.FIELD), "sessionId");
+            if (!session.isEmpty()) sessions.add(session);
+        }
+        JsonObject ledger = object(owned.recorded, "eventLedger");
+        String ledgerSession = string(object(ledger,
+                RecordedEvidenceIdentity.FIELD), "sessionId");
+        if (!ledgerSession.isEmpty()) sessions.add(ledgerSession);
+        if (sessions.size() == 1) return "session:" + sessions.iterator().next();
+        return "unowned:" + first(owned.regionId, "region") + "/"
+                + first(owned.occurrenceId, "occurrence") + "/" + ordinal;
+    }
+
+    private static boolean eventIdMember(String member) {
+        return "eventId".equals(member)
+                || "fieldVersionId".equals(member)
+                || "readEventId".equals(member)
+                || "chosenFieldVersionId".equals(member)
+                || "selectedEventId".equals(member)
+                || "otherEventId".equals(member)
+                || "beforeEventId".equals(member)
+                || "afterEventId".equals(member)
+                || "exportEventId".equals(member)
+                || "attachEventId".equals(member);
+    }
+
+    private static void collectEventIds(JsonElement element, Set<Long> ids) {
+        if (element == null || element.isJsonNull()) return;
+        if (element.isJsonArray()) {
+            for (JsonElement child : element.getAsJsonArray()) {
+                collectEventIds(child, ids);
+            }
+            return;
+        }
+        if (!element.isJsonObject()) return;
+        JsonObject object = element.getAsJsonObject();
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if (eventIdMember(entry.getKey())
+                    && entry.getValue().isJsonPrimitive()
+                    && entry.getValue().getAsJsonPrimitive().isNumber()) {
+                long id = entry.getValue().getAsLong();
+                if (id > 0L) ids.add(id);
+            } else {
+                collectEventIds(entry.getValue(), ids);
+            }
+        }
+    }
+
+    private static void rewriteEventIds(JsonElement element,
+                                        Map<Long, Long> mapping,
+                                        String scope) {
+        if (element == null || element.isJsonNull() || mapping == null) return;
+        if (element.isJsonArray()) {
+            for (JsonElement child : element.getAsJsonArray()) {
+                rewriteEventIds(child, mapping, scope);
+            }
+            return;
+        }
+        if (!element.isJsonObject()) return;
+        JsonObject object = element.getAsJsonObject();
+        if (SharedStateEvidence.GUARDED_READ_TYPE.equals(
+                string(object, "_type"))) {
+            object.addProperty("recordedEventScope", scope);
+        }
+        for (String member : new ArrayList<>(object.keySet())) {
+            JsonElement child = object.get(member);
+            if (eventIdMember(member) && child != null
+                    && child.isJsonPrimitive()
+                    && child.getAsJsonPrimitive().isNumber()) {
+                long local = child.getAsLong();
+                Long synthetic = mapping.get(local);
+                if (synthetic != null) object.addProperty(member, synthetic);
+            } else {
+                rewriteEventIds(child, mapping, scope);
+            }
+        }
+    }
+
+    /** Disjoint union of already-admitted, alpha-renamed ledger snapshots. */
+    private static JsonObject mergeLedgerEnvelopes(
+            Collection<JsonObject> records) {
+        if (records == null || records.isEmpty()) return null;
+        JsonArray events = new JsonArray();
+        JsonArray order = new JsonArray();
+        for (JsonObject record : records) {
+            JsonObject envelope = object(record, "envelope");
+            for (JsonElement event : array(envelope, "events")) {
+                events.add(event.deepCopy());
+            }
+            for (JsonElement edge : array(envelope, "order")) {
+                order.add(edge.deepCopy());
+            }
+        }
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("schemaVersion", SharedStateEvidence.SCHEMA_VERSION);
+        envelope.addProperty("kind", SharedStateEvidence.LEDGER_ENVELOPE_KIND);
+        envelope.addProperty("open", true);
+        envelope.addProperty("recording", true);
+        envelope.addProperty("truncated", false);
+        envelope.addProperty("domainSaturated", false);
+        envelope.addProperty("partialOrder", true);
+        envelope.addProperty("acyclic", true);
+        envelope.add("events", events);
+        envelope.add("order", order);
+        return envelope;
     }
 
     /**
@@ -259,10 +542,9 @@ public final class RecordedSessionModel {
      * twice is deliberately not resolved here - the pair no longer addresses
      * one read, so the entry is dropped and the caller reports the gap.</p>
      */
-    private static Map<String, Long> readEventSites(
+    private static Map<String, List<Long>> readEventSites(
             Collection<JsonObject> records) {
-        Map<String, Long> bySite = new LinkedHashMap<>();
-        Set<String> ambiguous = new LinkedHashSet<>();
+        Map<String, List<Long>> bySite = new LinkedHashMap<>();
         for (JsonObject record : records) {
             JsonObject envelope = object(record, "envelope");
             String location = string(record, "locationKey");
@@ -275,15 +557,13 @@ public final class RecordedSessionModel {
                 if (location.isEmpty() || site.isEmpty()) continue;
                 String key = location + "\n" + site;
                 long event = longInteger(read, "readEventId", 0L);
-                Long held = bySite.get(key);
-                if (held != null && held != event) {
-                    ambiguous.add(key);
-                } else {
-                    bySite.put(key, event);
+                if (event > 0L) {
+                    List<Long> events = bySite.computeIfAbsent(key,
+                            ignored -> new ArrayList<>());
+                    if (!events.contains(event)) events.add(event);
                 }
             }
         }
-        for (String key : ambiguous) bySite.remove(key);
         return bySite;
     }
 
@@ -293,17 +573,52 @@ public final class RecordedSessionModel {
      * {@code ReadFromExpression}.  They are aliases of one record, not two
      * candidate stores.
      */
-    private static Map<String, JsonObject> versionLookup(
+    private static Map<Long, JsonObject> versionsByReadEvent(
             Collection<JsonObject> records) {
-        Map<String, JsonObject> lookup = new LinkedHashMap<>();
+        Map<Long, JsonObject> lookup = new LinkedHashMap<>();
         for (JsonObject record : records) {
-            String canonical = string(record, "locationKey");
-            String session = SharedStateEvidence.locationKey(
-                    object(record, "envelope"));
-            if (!canonical.isEmpty()) lookup.put(canonical, record);
-            if (!session.isEmpty()) lookup.put(session, record);
+            for (JsonElement element
+                    : array(object(record, "envelope"), "reads")) {
+                if (!element.isJsonObject()) continue;
+                long event = longInteger(element.getAsJsonObject(),
+                        "readEventId", 0L);
+                if (event > 0L) lookup.put(event, record);
+            }
         }
         return lookup;
+    }
+
+    private static Map<Long, String> resolutionsByReadEvent(
+            Collection<JsonObject> records) {
+        Map<Long, String> result = new LinkedHashMap<>();
+        for (JsonObject record : records) {
+            for (JsonElement element
+                    : array(object(record, "envelope"), "reads")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject read = element.getAsJsonObject();
+                long event = longInteger(read, "readEventId", 0L);
+                if (event > 0L) result.put(event, string(read, "resolution"));
+            }
+        }
+        return result;
+    }
+
+    private static Map<Long, Long> chosenVersionsByReadEvent(
+            Collection<JsonObject> records) {
+        Map<Long, Long> result = new LinkedHashMap<>();
+        for (JsonObject record : records) {
+            for (JsonElement element
+                    : array(object(record, "envelope"), "reads")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject read = element.getAsJsonObject();
+                long event = longInteger(read, "readEventId", 0L);
+                if (event > 0L) {
+                    result.put(event, longInteger(read,
+                            "chosenFieldVersionId", 0L));
+                }
+            }
+        }
+        return result;
     }
 
     /**
@@ -315,15 +630,21 @@ public final class RecordedSessionModel {
      * because the location identity does not survive into a second session.
      * </p>
      */
-    private static Map<String, String> declaredFields(
+    private static Map<Long, String> fieldsByReadEvent(
             Collection<JsonObject> records) {
-        Map<String, String> fields = new LinkedHashMap<>();
+        Map<Long, String> fields = new LinkedHashMap<>();
         for (JsonObject record : records) {
             String field = RecordedReadFrom.fieldKey(
                     string(object(record, "carrier"), "declaringClass"),
                     string(object(record, "carrier"), "fieldName"));
             if (!field.isEmpty()) {
-                fields.put(string(record, "locationKey"), field);
+                for (JsonElement element
+                        : array(object(record, "envelope"), "reads")) {
+                    if (!element.isJsonObject()) continue;
+                    long event = longInteger(element.getAsJsonObject(),
+                            "readEventId", 0L);
+                    if (event > 0L) fields.put(event, field);
+                }
             }
         }
         return fields;
@@ -387,7 +708,15 @@ public final class RecordedSessionModel {
         for (JsonObject summary : nonNull(summaryRows)) {
             String region = string(summary, "regionId");
             String occurrence = string(summary, "occurrenceId");
-            addEvidenceOwner(summary, "", "", region, occurrence, members);
+            String rowOwner = string(summary, CASE_OWNER);
+            String rowSelector = string(summary, CASE_SELECTOR);
+            if (!rowOwner.isEmpty()
+                    && !rowSelector.equals(caseSelector(rowOwner))) {
+                rowOwner = "";
+                rowSelector = "";
+            }
+            addEvidenceOwner(summary, rowOwner, rowSelector, region,
+                    occurrence, members);
             JsonArray cases = array(object(summary, "regionRelation"),
                     "cases");
             for (int index = 0; index < cases.size(); index++) {
@@ -413,7 +742,7 @@ public final class RecordedSessionModel {
         if (recorded.size() > 0 || !VmHandoffEvidence.eventsOf(row).isEmpty()
                 || array(row, "interactionEvents").size() > 0) {
             members.add(new EvidenceOwner(row, recorded, owner, selector,
-                    regionId, occurrenceId));
+                    regionId, occurrenceId, ""));
         }
     }
 
@@ -456,16 +785,12 @@ public final class RecordedSessionModel {
         return value == null ? "" : value;
     }
 
-    private static Set<Long> handoffExportEvents(
-            Collection<JsonObject> summaryRows) {
+    private static Set<Long> handoffExportEventsOfOwners(
+            Collection<EvidenceOwner> owners) {
         Set<Long> events = new TreeSet<>();
-        for (JsonObject summary : nonNull(summaryRows)) {
-            collectHandoffExportEvents(summary, events);
-            for (JsonElement element
-                    : array(object(summary, "regionRelation"), "cases")) {
-                if (!element.isJsonObject()) continue;
-                collectHandoffExportEvents(element.getAsJsonObject(), events);
-            }
+        if (owners == null) return events;
+        for (EvidenceOwner owner : owners) {
+            collectHandoffExportEvents(owner.row, events);
         }
         return events;
     }
@@ -507,7 +832,13 @@ public final class RecordedSessionModel {
             if (!owned.selector.isEmpty()) {
                 caseEvidenceEvents.addAll(allEvidenceEvents(owned));
             }
-            Set<Long> events = evidenceEvents(owned);
+            // A case-local snapshot is a fact of that replay case as a whole,
+            // not only of events whose writer/reader occurrence equals the
+            // case's region occurrence.  A target read commonly observes a
+            // writer from another thread/region; leaving that writer out makes
+            // its existence false and silently disables the only valid arm.
+            Set<Long> events = owned.selector.isEmpty()
+                    ? evidenceEvents(owned) : allEvidenceEvents(owned);
             for (Long event : events) {
                 if (event == null || event.longValue() <= 0L) continue;
                 if (owned.selector.isEmpty()) {
@@ -635,25 +966,56 @@ public final class RecordedSessionModel {
         return term.append(')').toString();
     }
 
+    /** Resolves one VM-local id only inside its exact replay/case domain. */
+    public long resolveEventId(String scope, long eventId) {
+        if (eventId <= 0L) return 0L;
+        EventIdentity already = eventIdentities.get(eventId);
+        String exactScope = scope == null ? "" : scope;
+        if (already != null) {
+            if (exactScope.isEmpty() || already.scope.equals(exactScope)) {
+                return eventId;
+            }
+            // A synthetic id is still owned by one exact replay.  Supplying it
+            // under another replay's scope is a mismatch, not permission to
+            // borrow the only event with that number.
+            return 0L;
+        }
+        Map<Long, Long> exact = eventIdsByScope.get(exactScope);
+        if (exact != null && exact.containsKey(eventId)) {
+            return exact.get(eventId);
+        }
+        // Non-empty scope is an exact address.  Global unique fallback exists
+        // only for legacy unscoped callers; otherwise a path missing event 41
+        // could silently resolve path A's 41 while lowering path B.
+        if (!exactScope.isEmpty()) return 0L;
+        long resolved = 0L;
+        for (Map<Long, Long> candidate : eventIdsByScope.values()) {
+            Long value = candidate.get(eventId);
+            if (value == null) continue;
+            if (resolved != 0L && resolved != value) return 0L;
+            resolved = value;
+        }
+        return resolved;
+    }
+
+    /** Resolves another local event in the same replay as {@code read}. */
+    public long resolveEventForRead(long read, long localEventId) {
+        EventIdentity identity = eventIdentities.get(read);
+        return identity == null ? resolveEventId("", localEventId)
+                : resolveEventId(identity.scope, localEventId);
+    }
+
+    /** Case formula under which this replay-local event exists. */
+    public String caseGuardOf(long eventId) {
+        return caseGuard(eventId);
+    }
+
     private static String disjunction(Collection<String> selectors) {
         if (selectors == null || selectors.isEmpty()) return "false";
         if (selectors.size() == 1) return selectors.iterator().next();
         StringBuilder term = new StringBuilder("(or");
         for (String selector : selectors) term.append(' ').append(selector);
         return term.append(')').toString();
-    }
-
-    /**
-     * The {@code send &lt; receive} assertion of one VM-recorded handoff.
-     *
-     * <p>Answers the name of the recorded order assertion whose {@code before}
-     * is this delivery's export event, or {@code ""} when the domain holds no
-     * such fact. It is deliberately a lookup and never a proposal: the order of
-     * a handoff is the ledger's, and a composition that could not find it must
-     * report that rather than assert one.</p>
-     */
-    public String handoffOrderAssertion(long exportEventId) {
-        return handoffOrderAssertion(exportEventId, "");
     }
 
     /**
@@ -664,6 +1026,18 @@ public final class RecordedSessionModel {
     public String handoffOrderAssertion(long exportEventId,
                                         String caseSelector) {
         if (exportEventId <= 0L) return "";
+        if (caseSelector != null && !caseSelector.isEmpty()) {
+            for (Map.Entry<String, String> entry : caseSelectors.entrySet()) {
+                if (caseSelector.equals(entry.getValue())) {
+                    long scoped = resolveEventId(entry.getKey(), exportEventId);
+                    if (scoped > 0L) exportEventId = scoped;
+                    break;
+                }
+            }
+        } else {
+            long scoped = resolveEventId("", exportEventId);
+            if (scoped > 0L) exportEventId = scoped;
+        }
         if (caseSelector != null && !caseSelector.isEmpty()
                 && !unguardedEvents.contains(exportEventId)) {
             Set<String> owners = eventCaseSelectors.get(exportEventId);
@@ -675,7 +1049,8 @@ public final class RecordedSessionModel {
             }
             long after = longInteger(edge, "afterEventId", 0L);
             if (!"VALUE_HANDOFF".equals(string(edge, "edgeKind"))) continue;
-            return "recorded_order__" + exportEventId + "__" + after;
+            return "recorded_order__" + eventToken(exportEventId) + "__"
+                    + eventToken(after);
         }
         return "";
     }
@@ -722,14 +1097,16 @@ public final class RecordedSessionModel {
         if (events.isEmpty()) return;
         int bound = events.size();
         for (Long event : events) {
-            positions.add(new OrderVariable(position(event), bound));
+            positions.add(new OrderVariable(positionFor(event), bound));
         }
         for (JsonObject edge : slice.order()) {
             long before = longInteger(edge, "beforeEventId", 0L);
             long after = longInteger(edge, "afterEventId", 0L);
             assertions.add(new OrderAssertion(
-                    "recorded_order__" + before + "__" + after,
-                    "(< " + position(before) + " " + position(after) + ")",
+                    "recorded_order__" + eventToken(before) + "__"
+                            + eventToken(after),
+                    "(< " + positionFor(before) + " "
+                            + positionFor(after) + ")",
                     caseGuard(before, after)));
         }
         for (Map.Entry<Long, JsonObject> entry
@@ -745,7 +1122,7 @@ public final class RecordedSessionModel {
      * @return the symbol name
      */
     private String existence(long eventId, boolean recordedPresent) {
-        String name = existenceName(eventId);
+        String name = scopedExistenceName(eventId);
         if (existenceSymbols.contains(name)) return name;
         existenceSymbols.add(name);
         String guard = recordedPresent ? caseGuard(eventId) : "";
@@ -756,21 +1133,24 @@ public final class RecordedSessionModel {
         return name;
     }
 
-    /** {@code exists(e)} for one recorded event. */
-    public static String existenceName(long eventId) {
-        return "event_exists__" + eventId;
+    public String scopedExistenceName(long eventId) {
+        return "event_exists__" + eventToken(eventId);
     }
 
     /**
      * {@code exists(read)} for one guarded read.
      *
-     * <p>Kept apart from {@link #existenceName}: that family states what the
-     * recorded order domain holds, which is a fact of the run, while this one
-     * states whether the composed witness contains the load - a question only
-     * the selected cases answer.</p>
+     * <p>Kept apart from {@link #scopedExistenceName(long)}: that family states
+     * what the recorded order domain holds, which is a fact of the run, while
+     * this one states whether the composed witness contains the load - a
+     * question only the selected cases answer.</p>
      */
     public static String readExistsName(long readEventId) {
         return "read_exists__" + readEventId;
+    }
+
+    public String scopedReadExistsName(long readEventId) {
+        return "read_exists__" + eventToken(readEventId);
     }
 
     /** Every {@code exists(...)} Boolean this model states. */
@@ -800,7 +1180,7 @@ public final class RecordedSessionModel {
         // a gap is reported and never repaired with an invented candidate.
         String location = SharedStateEvidence.locationKey(guarded);
         BoundedWriterUniverse universe = BoundedWriterUniverse.of(guarded,
-                versionsByLocation.get(location));
+                versionsByReadEvent.get(readEventId));
         writerUniverses.add(universe.toJson());
         coverageGaps.addAll(universe.gaps());
         if (universe.retainsUnknownArm()) partial = true;
@@ -814,7 +1194,7 @@ public final class RecordedSessionModel {
         JsonArray choice = new JsonArray();
         for (JsonElement element : array(guarded, "candidates")) {
             JsonObject candidate = element.getAsJsonObject();
-            String selector = selectorName(readEventId,
+            String selector = scopedSelectorName(readEventId,
                     string(candidate, "selector"));
             selectors.add(selector);
             armSelectors.add(selector);
@@ -851,8 +1231,10 @@ public final class RecordedSessionModel {
             row.addProperty("existenceSymbol", existence(version,
                     events.contains(version)));
             assertions.add(new OrderAssertion(
-                    "recorded_write_exists__" + readEventId + "__" + version,
-                    "(=> " + selector + " " + existenceName(version) + ")"));
+                    "recorded_write_exists__" + eventToken(readEventId)
+                            + "__" + eventToken(version),
+                    "(=> " + selector + " "
+                            + scopedExistenceName(version) + ")"));
             if (!events.contains(version)) {
                 coverageGaps.add(gap(UNORDERED_READ_CUT,
                         SharedStateEvidence.locationKey(guarded),
@@ -869,9 +1251,10 @@ public final class RecordedSessionModel {
                 continue;
             }
             assertions.add(new OrderAssertion(
-                    "recorded_read_cut__" + readEventId + "__" + version,
-                    "(=> " + selector + " (< " + position(version) + " "
-                            + position(readEventId) + "))"));
+                    "recorded_read_cut__" + eventToken(readEventId) + "__"
+                            + eventToken(version),
+                    "(=> " + selector + " (< " + positionFor(version) + " "
+                            + positionFor(readEventId) + "))"));
             for (JsonElement other : array(candidate, "orderConstraints")) {
                 JsonObject constraint = other.getAsJsonObject();
                 if (!"OTHER_WRITE_OUTSIDE_CUT".equals(
@@ -881,12 +1264,14 @@ public final class RecordedSessionModel {
                 long competitor = longInteger(constraint, "otherEventId", 0L);
                 if (!events.contains(competitor)) continue;
                 assertions.add(new OrderAssertion(
-                        "recorded_read_cut_outside__" + readEventId + "__"
-                                + version + "__" + competitor,
-                        "(=> " + selector + " (or (< " + position(competitor)
-                                + " " + position(version) + ") (< "
-                                + position(readEventId) + " "
-                                + position(competitor) + ")))"));
+                        "recorded_read_cut_outside__" + eventToken(readEventId)
+                                + "__" + eventToken(version) + "__"
+                                + eventToken(competitor),
+                        "(=> " + selector + " (or (< "
+                                + positionFor(competitor) + " "
+                                + positionFor(version) + ") (< "
+                                + positionFor(readEventId) + " "
+                                + positionFor(competitor) + ")))"));
             }
         }
         // Which of these arms replay could actually observe is knowable now,
@@ -894,8 +1279,7 @@ public final class RecordedSessionModel {
         // only after solving would turn a named coverage limitation into an
         // unexecutable replay.
         SparseReadCutGate plan = SparseReadCutGate.compile(guarded,
-                slice.orderDomain(), fieldByLocation.get(
-                        SharedStateEvidence.locationKey(guarded)));
+                slice.orderDomain(), fieldByReadEvent.get(readEventId));
         gatePlans.add(plan.toJson());
         coverageGaps.addAll(plan.refusals());
         for (JsonElement element : choice) {
@@ -915,7 +1299,7 @@ public final class RecordedSessionModel {
         // not a question the recorded session can answer; the consumer that
         // holds the case algebra states it, and the one that is stated over
         // the observed target path asserts it directly.
-        String exists = readExistsName(readEventId);
+        String exists = scopedReadExistsName(readEventId);
         if (!existenceSymbols.contains(exists)) existenceSymbols.add(exists);
         StringBuilder exactlyOne = new StringBuilder("(= (+");
         for (int index = 0; index < armSelectors.size(); index++) {
@@ -944,13 +1328,18 @@ public final class RecordedSessionModel {
         readChoices.add(read);
     }
 
-    private static String position(long eventId) {
-        return POSITION_PREFIX + eventId;
+    private String eventToken(long eventId) {
+        EventIdentity identity = eventIdentities.get(eventId);
+        return identity == null ? String.valueOf(eventId)
+                : identity.solverToken();
     }
 
-    /** The one shared position variable of one recorded event. */
-    public static String positionName(long eventId) {
-        return position(eventId);
+    private String positionFor(long eventId) {
+        return POSITION_PREFIX + eventToken(eventId);
+    }
+
+    public String scopedPositionName(long eventId) {
+        return positionFor(eventId);
     }
 
     /**
@@ -963,6 +1352,14 @@ public final class RecordedSessionModel {
      * model take one writer's value under another writer's order.</p>
      */
     public static String selectorName(long readEventId, String arm) {
+        return selectorNameToken(String.valueOf(readEventId), arm);
+    }
+
+    public String scopedSelectorName(long readEventId, String arm) {
+        return selectorNameToken(eventToken(readEventId), arm);
+    }
+
+    private static String selectorNameToken(String readToken, String arm) {
         String sanitized = arm.replaceAll("[^A-Za-z0-9_]", "_");
         // Admission separates the arms by their raw selector, so the SMT name
         // has to separate them too.  Sanitizing is not injective - two raw
@@ -971,7 +1368,7 @@ public final class RecordedSessionModel {
         // nothing in the model states.  Only a name the sanitizer changed
         // carries the disambiguator, so the VM's own rf1/rf2/rf_unknown keep
         // the names they have always had.
-        return SELECTOR_PREFIX + readEventId + "__" + sanitized
+        return SELECTOR_PREFIX + readToken + "__" + sanitized
                 + (sanitized.equals(arm) ? ""
                 : "__" + CanonicalJson.sha256(arm).substring(0, 8));
     }
@@ -997,9 +1394,18 @@ public final class RecordedSessionModel {
         return slice;
     }
 
-    /** Whether the recorded graph reaches the target at all. */
-    public boolean reachesTarget() {
-        return slice.reachesTarget();
+    /**
+     * How many recorded reads this model was built over.
+     *
+     * <p>Its completeness claim is <em>about</em> these reads, so a consumer
+     * has to be able to tell "explained every read it holds" from "holds no
+     * read to explain".  Both conjuncts of that claim are vacuous on an empty
+     * model, so without this the two are indistinguishable.</p>
+     */
+    public int recordedReadCount() {
+        int count = 0;
+        for (List<Long> events : readEventsBySite.values()) count += events.size();
+        return count;
     }
 
     /**
@@ -1010,18 +1416,6 @@ public final class RecordedSessionModel {
      * answer inconclusive, so it travels on the manifest rather than being
      * re-derived by every reader.</p>
      */
-    /**
-     * How many recorded reads this model was built over.
-     *
-     * <p>Its completeness claim is <em>about</em> these reads, so a consumer
-     * has to be able to tell "explained every read it holds" from "holds no
-     * read to explain".  Both conjuncts of that claim are vacuous on an empty
-     * model, so without this the two are indistinguishable.</p>
-     */
-    public int recordedReadCount() {
-        return readEventBySite.size();
-    }
-
     public boolean partial() {
         return partial;
     }
@@ -1046,21 +1440,46 @@ public final class RecordedSessionModel {
         return slice.eventIds().contains(eventId);
     }
 
-    /**
-     * The read one activation performed of one watched location, or 0.
-     *
-     * <p>Zero means the recorded evidence does not address that pair with one
-     * read - the location was never watched, the activation never read it, or
-     * it read it more than once - and a caller must report that rather than
-     * pick a read.</p>
-     */
-    public long readEventOf(String locationKey, String readerSite) {
+    /** Every mutually-exclusive replay case that performed this exact read. */
+    public List<ReadCase> readCasesOf(String locationKey, String readerSite) {
         if (locationKey == null || readerSite == null
                 || locationKey.isEmpty() || readerSite.isEmpty()) {
-            return 0L;
+            return Collections.emptyList();
         }
-        Long event = readEventBySite.get(locationKey + "\n" + readerSite);
-        return event == null ? 0L : event;
+        List<Long> events = readEventsBySite.get(
+                locationKey + "\n" + readerSite);
+        if (events == null) return Collections.emptyList();
+        List<ReadCase> cases = new ArrayList<>();
+        for (Long event : events) {
+            if (event != null && event > 0L) {
+                cases.add(new ReadCase(event, caseGuard(event),
+                        resolutionByReadEvent.get(event),
+                        chosenVersionByReadEvent.getOrDefault(event, 0L)));
+            }
+        }
+        return Collections.unmodifiableList(cases);
+    }
+
+    /** Only guarded alternatives; exact reads have no selector value term. */
+    public List<ReadCase> guardedReadCasesOf(String locationKey,
+                                             String readerSite) {
+        List<ReadCase> result = new ArrayList<>();
+        for (ReadCase readCase : readCasesOf(locationKey, readerSite)) {
+            if (SharedStateEvidence.RESOLUTION_GUARDED.equals(
+                    readCase.resolution)
+                    && guardedReads().containsKey(readCase.readEventId)) {
+                result.add(readCase);
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    /** Whether one read is the VM's exact selection of this version. */
+    public boolean exactReadSelects(long readEventId, long versionEventId) {
+        return SharedStateEvidence.RESOLUTION_EXACT.equals(
+                resolutionByReadEvent.get(readEventId))
+                && chosenVersionByReadEvent.getOrDefault(readEventId, 0L)
+                == versionEventId;
     }
 
     /**
@@ -1096,6 +1515,12 @@ public final class RecordedSessionModel {
     public JsonObject writerVersion(long fieldVersionId) {
         JsonObject version = writerVersions.get(fieldVersionId);
         return version == null ? new JsonObject() : version;
+    }
+
+    public JsonObject writerVersionForRead(long readEventId,
+                                           long localVersionId) {
+        return writerVersion(resolveEventForRead(readEventId,
+                localVersionId));
     }
 
     /**
@@ -1137,12 +1562,24 @@ public final class RecordedSessionModel {
         JsonArray ownership = new JsonArray();
         for (JsonObject row : caseEvidence) ownership.add(row.deepCopy());
         manifest.add("caseEvidence", ownership);
+        // Fresh replay JVMs reuse small VM event ids.  Every event emitted by
+        // this model is therefore addressed by (replay scope, local id) and
+        // may have been alpha-renamed before it reached the SMT.  Persist the
+        // address translation: without it a synthetic read/version/order in
+        // the final witness cannot be traced back to the replay artifact that
+        // recorded the original VM id.
+        JsonArray identities = new JsonArray();
+        for (EventIdentity identity : eventIdentities.values()) {
+            JsonObject row = new JsonObject();
+            row.addProperty("scope", identity.scope);
+            row.addProperty("localEventId", identity.localId);
+            row.addProperty("syntheticEventId", identity.syntheticId);
+            row.addProperty("solverToken", identity.solverToken());
+            row.addProperty("qualified", identity.qualified);
+            identities.add(row);
+        }
+        manifest.add("eventIdentities", identities);
         return manifest;
-    }
-
-    /** Compiled read-cut gate plans, one per sliced guarded read. */
-    public List<JsonObject> gatePlans() {
-        return Collections.unmodifiableList(gatePlans);
     }
 
     /**
@@ -1223,10 +1660,4 @@ public final class RecordedSessionModel {
                 && array(payload, "selectors").size() > 0;
     }
 
-    /** Assertion names this model contributes, for auditing. */
-    public Set<String> assertionNames() {
-        Set<String> names = new LinkedHashSet<>();
-        for (OrderAssertion assertion : assertions) names.add(assertion.name);
-        return names;
-    }
 }

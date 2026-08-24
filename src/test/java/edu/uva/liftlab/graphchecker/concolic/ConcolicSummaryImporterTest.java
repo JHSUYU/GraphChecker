@@ -1,8 +1,12 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
@@ -11,13 +15,16 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class ConcolicSummaryImporterTest {
+    private static final Gson GSON = new Gson();
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
 
@@ -125,6 +132,7 @@ public class ConcolicSummaryImporterTest {
         declareSymbolicSource(task);
         JsonObject raw = pathResult(true, true);
         installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
         SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
                 symbolicSourceEvent(task)));
 
@@ -137,8 +145,10 @@ public class ConcolicSummaryImporterTest {
         assertTrue(summary.get("relationallyComplete").getAsBoolean());
         JsonObject event = summary.getAsJsonArray(
                 SymbolicSourceEvidence.FIELD).get(0).getAsJsonObject();
-        assertEquals("M_I_field_SRC.promoted_key",
-                event.get("rawSymbol").getAsString());
+        assertTrue(event.get("rawSymbol").getAsString().contains(
+                SymbolicSourceEvidence.engineLabelForPhase(
+                        sourcePhaseId(task, 0),
+                        "HDFS11741.NAMENODE.PROMOTED_KEY_ID")));
         assertEquals(task.get("occurrenceId").getAsString(),
                 event.get("sourceOccurrenceId").getAsString());
     }
@@ -157,6 +167,7 @@ public class ConcolicSummaryImporterTest {
         declaration.add("requiredOutputFieldSignatures", outputs);
         JsonObject raw = pathResult(true, true);
         installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
         SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
                 symbolicSourceEvent(task)));
 
@@ -176,6 +187,7 @@ public class ConcolicSummaryImporterTest {
         declareSymbolicSource(task);
         JsonObject raw = pathResult(true, true);
         installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
 
         PathImport imported = importPath("missing-configured-source",
                 task, raw);
@@ -186,6 +198,331 @@ public class ConcolicSummaryImporterTest {
         assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
                 .get("detail").getAsString().contains(
                         "SYMBOLIC_SOURCE_EVIDENCE_MISSING"));
+    }
+
+    @Test
+    public void targetLocalSymbolicSourceSurvivesExactImport()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
+        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
+                symbolicSourceEvent(task)));
+
+        PathImport imported = importPath("target-local-symbolic-source",
+                task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertTrue(summary.get("relationallyComplete").getAsBoolean());
+        JsonObject event = summary.getAsJsonArray(
+                SymbolicSourceEvidence.FIELD).get(0).getAsJsonObject();
+        assertEquals(task.get("occurrenceId").getAsString(),
+                event.get("sourceOccurrenceId").getAsString());
+        assertEquals(sourcePhaseId(task, 0),
+                event.get("sourcePhaseId").getAsString());
+    }
+
+    @Test
+    public void twoPublicationsOfOneSourceInOneOccurrenceStayDistinct()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        appendPublishPhase(task, 2, 2L);
+        JsonObject secondDeclaration = task.getAsJsonArray(
+                SymbolicSourceEvidence.TASK_FIELD).get(0)
+                .getAsJsonObject().deepCopy();
+        JsonObject secondPhase = task.getAsJsonArray(
+                ConfiguredSourcePhaseContract.PLAN_FIELD).get(1)
+                .getAsJsonObject();
+        secondDeclaration.addProperty("sourcePhaseId",
+                secondPhase.get("phaseId").getAsString());
+        secondDeclaration.addProperty("sourcePhaseSiteId",
+                secondPhase.get("siteId").getAsString());
+        secondDeclaration.addProperty("sourcePhaseOrdinal",
+                secondPhase.get("baselineOrdinal").getAsInt());
+        task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD)
+                .add(secondDeclaration);
+        selectSourcePhases(task, sourcePhaseId(task, 0),
+                sourcePhaseId(task, 1));
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0, 1);
+        SymbolicSourceEvidence.writeTo(raw, Arrays.asList(
+                symbolicSourceEvent(task, 0),
+                symbolicSourceEvent(task, 1)));
+
+        PathImport imported = importPath("two-source-phases", task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        JsonArray events = ArtifactIO.readJsonl(imported.output).get(0)
+                .getAsJsonArray(SymbolicSourceEvidence.FIELD);
+        assertEquals(2, events.size());
+        assertFalse(events.get(0).getAsJsonObject().get("sourcePhaseId")
+                .equals(events.get(1).getAsJsonObject().get(
+                        "sourcePhaseId")));
+    }
+
+    @Test
+    public void selectedPhaseWithoutRuntimeArraysIsIncomplete()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        raw.remove("configuredSourcePhaseObservations");
+        raw.remove("configuredSourcePhaseGaps");
+
+        assertIncomplete("source-phase-ledger-missing", task, raw,
+                "SYMBOLIC_SOURCE_PHASE_RUNTIME_LEDGER_MISSING");
+    }
+
+    @Test
+    public void replayWithMissingPhaseLedgerIsRejectedAtAdmission()
+            throws Exception {
+        JsonObject task = pathTask(true);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = pathResult(true, false);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
+                symbolicSourceEvent(task)));
+
+        PathImport imported = importPath("replay-source-ledger-missing",
+                task, raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                imported.diagnostics).get(0);
+        assertEquals("PATH_REPLAY_ADMISSION_REJECTED",
+                diagnostic.get("code").getAsString());
+        assertTrue(diagnostic.get("detail").getAsString().contains(
+                "SYMBOLIC_SOURCE_PHASE_RUNTIME_LEDGER_MISSING"));
+    }
+
+    @Test
+    public void emptySelectedPhaseObservationSequenceIsIncomplete()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        raw.add("configuredSourcePhaseObservations", new JsonArray());
+
+        assertIncomplete("source-phase-ledger-empty", task, raw,
+                "SYMBOLIC_SOURCE_PHASE_SELECTED_SEQUENCE_MISMATCH");
+    }
+
+    @Test
+    public void duplicateSelectedPhaseObservationIsIncomplete()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        JsonObject duplicate = raw.getAsJsonArray(
+                "configuredSourcePhaseObservations").get(0)
+                .getAsJsonObject().deepCopy();
+        duplicate.addProperty("observationIndex", 2);
+        raw.getAsJsonArray("configuredSourcePhaseObservations")
+                .add(duplicate);
+
+        assertIncomplete("source-phase-ledger-duplicate", task, raw,
+                "SYMBOLIC_SOURCE_PHASE_OBSERVATION_MISMATCH");
+    }
+
+    @Test
+    public void runtimeSourcePhaseGapIsIncomplete() throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        JsonObject gap = new JsonObject();
+        gap.addProperty("gapKind", "MISSING");
+        gap.addProperty("phaseId", sourcePhaseId(task, 0));
+        raw.getAsJsonArray("configuredSourcePhaseGaps").add(gap);
+
+        assertIncomplete("source-phase-ledger-gap", task, raw,
+                "SYMBOLIC_SOURCE_PHASE_RUNTIME_GAP");
+    }
+
+    @Test
+    public void exactObservationWithPhaseMetadataMismatchIsIncomplete()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        raw.getAsJsonArray("configuredSourcePhaseObservations").get(0)
+                .getAsJsonObject().addProperty("fieldSignature",
+                "<Test: int other>");
+
+        assertIncomplete("source-phase-ledger-mismatch", task, raw,
+                "SYMBOLIC_SOURCE_PHASE_OBSERVATION_MISMATCH");
+    }
+
+    @Test
+    public void reorderedSelectedPhaseSequenceIsIncomplete()
+            throws Exception {
+        JsonObject task = twoSelectedSourcePhaseTask();
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 1, 0);
+        SymbolicSourceEvidence.writeTo(raw, Arrays.asList(
+                symbolicSourceEvent(task, 0),
+                symbolicSourceEvent(task, 1)));
+
+        assertIncomplete("source-phase-ledger-reordered", task, raw,
+                "SYMBOLIC_SOURCE_PHASE_SELECTED_SEQUENCE_MISMATCH");
+    }
+
+    @Test
+    public void reusedRuntimeInvocationIdIsIncomplete() throws Exception {
+        JsonObject task = twoSelectedSourcePhaseTask();
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0, 1);
+        JsonArray observations = raw.getAsJsonArray(
+                "configuredSourcePhaseObservations");
+        observations.get(1).getAsJsonObject().addProperty("invocationId",
+                observations.get(0).getAsJsonObject()
+                        .get("invocationId").getAsLong());
+        SymbolicSourceEvidence.writeTo(raw, Arrays.asList(
+                symbolicSourceEvent(task, 0),
+                symbolicSourceEvent(task, 1)));
+
+        assertIncomplete("source-phase-invocation-reused", task, raw,
+                "SYMBOLIC_SOURCE_PHASE_OBSERVATION_MISMATCH");
+    }
+
+    @Test
+    public void fullCatalogLandmarkBeforeOnlySelectedSecondIsAccepted()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        appendPublishPhase(task, 2, 2L);
+        JsonObject source = task.getAsJsonArray(
+                SymbolicSourceEvidence.TASK_FIELD).get(0).getAsJsonObject();
+        JsonObject second = task.getAsJsonArray(
+                ConfiguredSourcePhaseContract.PLAN_FIELD).get(1)
+                .getAsJsonObject();
+        source.addProperty("sourcePhaseId",
+                second.get("phaseId").getAsString());
+        source.addProperty("sourcePhaseSiteId",
+                second.get("siteId").getAsString());
+        source.addProperty("sourcePhaseOrdinal",
+                second.get("baselineOrdinal").getAsInt());
+        selectSourcePhases(task, sourcePhaseId(task, 1));
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0, 1);
+        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
+                symbolicSourceEvent(task, 1)));
+
+        PathImport imported = importPath("only-second-source-phase", task,
+                raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        assertTrue(ArtifactIO.readJsonl(imported.output).get(0)
+                .get("relationallyComplete").getAsBoolean());
+    }
+
+    @Test
+    public void selectorEvidenceAcceptsFieldlessCrossRegionConsumePhase()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        String sourceId = "HDFS11741.NAMENODE.CURRENT_KEY_ID";
+        String field =
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>";
+        appendSourcePhase(task, ConfiguredSourcePhaseContract.Phase.CONSUME,
+                sourceId, "", 3, 1, 3L);
+        String consumePhaseId = sourcePhaseId(task, 0);
+        selectSourcePhases(task, consumePhaseId);
+        String producerPhaseId = "SOURCE_PHASE.upstream-publish";
+        String producerOccurrence = "cluster/nn0/source#1";
+        JsonObject selector = ConfiguredSourceSelectorContract.exactInt(
+                consumePhaseId, producerPhaseId, producerOccurrence,
+                sourceId, field);
+        JsonArray selectors = new JsonArray();
+        selectors.add(selector);
+        task.add(ConfiguredSourceSelectorContract.TASK_FIELD, selectors);
+        ConfiguredSourceSelectorContract.Selector decoded =
+                ConfiguredSourceSelectorContract.decode(task).get(0);
+        String rawSymbol = ConfiguredSourceSelectorContract
+                .expectedRawSymbolPrefix(producerPhaseId, sourceId, field)
+                + "DelegationKey";
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
+        JsonArray evidence = new JsonArray();
+        evidence.add(ConfiguredSourceSelectorContract.evidence(decoded,
+                "TASK.UPSTREAM", rawSymbol, 17));
+        raw.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD, evidence);
+
+        PathImport imported = importPath("selector-phase-evidence", task,
+                raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject admitted = ArtifactIO.readJsonl(imported.output).get(0)
+                .getAsJsonArray(
+                        ConfiguredSourceSelectorContract.EVIDENCE_FIELD)
+                .get(0).getAsJsonObject();
+        assertEquals(consumePhaseId,
+                admitted.get("consumePhaseId").getAsString());
+        assertEquals(producerPhaseId,
+                admitted.get("producerPhaseId").getAsString());
+    }
+
+    @Test
+    public void selectorEvidenceRejectsConsumePhaseWithWrongSourceId()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        String sourceId = "HDFS11741.NAMENODE.CURRENT_KEY_ID";
+        String field =
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>";
+        appendSourcePhase(task, ConfiguredSourcePhaseContract.Phase.CONSUME,
+                "HDFS11741.OTHER.KEY_ID", "", 3, 1, 3L);
+        String consumePhaseId = sourcePhaseId(task, 0);
+        selectSourcePhases(task, consumePhaseId);
+        JsonObject selector = ConfiguredSourceSelectorContract.exactInt(
+                consumePhaseId, "SOURCE_PHASE.upstream-publish",
+                "cluster/nn0/source#1", sourceId, field);
+        JsonArray selectors = new JsonArray();
+        selectors.add(selector);
+        task.add(ConfiguredSourceSelectorContract.TASK_FIELD, selectors);
+        ConfiguredSourceSelectorContract.Selector decoded =
+                ConfiguredSourceSelectorContract.decode(task).get(0);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
+        JsonArray evidence = new JsonArray();
+        evidence.add(ConfiguredSourceSelectorContract.evidence(decoded,
+                "TASK.UPSTREAM", ConfiguredSourceSelectorContract
+                        .expectedRawSymbolPrefix(
+                                "SOURCE_PHASE.upstream-publish", sourceId,
+                                field) + "DelegationKey", 17));
+        raw.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD, evidence);
+
+        assertIncomplete("selector-wrong-consume-source", task, raw,
+                "CONFIGURED_SOURCE_CONSUME_PHASE_MISMATCH");
+    }
+
+    @Test
+    public void targetSourceWithOutputAndInputBoundaryIsIncomplete()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareSymbolicSource(task);
+        task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD).get(0)
+                .getAsJsonObject().addProperty("requiredTargetInputPort",
+                "TARGET.promotedKey");
+        addTargetSourceInput(task);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
+        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
+                symbolicSourceEvent(task)));
+
+        assertIncomplete("target-source-dual-boundary", task, raw,
+                "SYMBOLIC_SOURCE_DECLARATION_MALFORMED");
     }
 
     @Test
@@ -349,6 +686,30 @@ public class ConcolicSummaryImporterTest {
         assertFalse(summary.getAsJsonObject(
                 PathObservation.TargetReachEvent.FIELD)
                 .get("outcome").getAsBoolean());
+    }
+
+    @Test
+    public void requiredFatalOutcomeNeverOverridesLocalReplayContract()
+            throws Exception {
+        JsonObject replay = pathTask(true);
+        JsonObject selectedBranch = replay.getAsJsonArray("branches")
+                .get(0).getAsJsonObject();
+        selectedBranch.addProperty("selectedOccurrence", 1);
+        selectedBranch.addProperty("requiredOutcome", true);
+
+        // The replay contract complements the source witness and therefore
+        // requires false. The fresh execution instead repeats true; reaching
+        // the independently selected fatal outcome cannot certify that this
+        // local prefix flip happened.
+        PathImport imported = importPath("required-fatal-replay-mismatch",
+                replay, pathResult(true, true));
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals("BRANCH_REPLAY_MISMATCH",
+                ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                        .get("code").getAsString());
+        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString().contains("wrong replay outcome"));
     }
 
     @Test
@@ -583,9 +944,11 @@ public class ConcolicSummaryImporterTest {
 
     /**
      * README Step 1: identical planned identity and schema adds a guarded
-     * local case, a new cut writes {@code TOPOLOGY_DIVERGENCE}, and a planned
-     * event that did not occur writes a gap.  Nothing a run failed to observe
-     * removes evidence, and no refused row leaves the delta silent.
+     * local case and a new cut writes {@code TOPOLOGY_DIVERGENCE}. A branch
+     * site behind another outcome is expected to be absent from one local
+     * case; only the region path worklist may classify global path coverage.
+     * Nothing a run failed to observe removes evidence, and no refused row
+     * leaves the delta silent.
      */
     @Test
     public void topologyDeltaClassifiesCasesCutsAndRefusals()
@@ -610,6 +973,27 @@ public class ConcolicSummaryImporterTest {
         assertEquals("", deltaRow(rows, TopologyDelta.NEW_LOCAL_CASE)
                 .get("gap").getAsString());
 
+        // The frozen region contains a second semantic branch, but this one
+        // case returns before reaching it.  This is not a per-case topology
+        // gap: another case or an UNSAT terminal owns that global obligation.
+        JsonObject twoBranchTask = pathTask(false);
+        JsonObject tail = twoBranchTask.getAsJsonArray("branches")
+                .get(0).getAsJsonObject().deepCopy();
+        tail.addProperty("siteId", seedMethod() + "#u9");
+        tail.addProperty("unitIndex", 9);
+        tail.add("occurrences", new JsonArray());
+        twoBranchTask.getAsJsonArray("branches").add(tail);
+        java.util.List<JsonObject> caseLocal = ArtifactIO.readJsonl(
+                importPath("delta-case-local-tail", twoBranchTask,
+                        pathResult(true, true)).delta);
+        for (JsonObject row : caseLocal) {
+            assertFalse(row.toString(),
+                    TopologyDelta.COVERAGE_GAP.equals(
+                            row.get("deltaKind").getAsString()));
+            assertFalse(row.toString(), row.toString().contains(
+                    TopologyDelta.PLANNED_BRANCH_EVENT_NOT_OBSERVED));
+        }
+
         // An execution whose identity the frozen plan does not contain
         // belongs to the next iteration's plan: it publishes a divergence and
         // no local case at all.
@@ -632,16 +1016,45 @@ public class ConcolicSummaryImporterTest {
                     && !TopologyDelta.NEW_OCCURRENCE.equals(kind));
         }
 
-        // A refused row is named, never dropped silently.
-        java.util.List<JsonObject> refused = ArtifactIO.readJsonl(
-                importPath("delta-refused", pathTask(false),
-                        pathResult(true, false)).delta);
-
-        assertEquals(1, refused.size());
-        assertEquals(TopologyDelta.COVERAGE_GAP,
-                refused.get(0).get("deltaKind").getAsString());
+        // Importer admission owns a refused row. The topology classifier must
+        // not duplicate the same gap under a second stage.
+        PathImport refused = importPath("delta-refused", pathTask(false),
+                pathResult(true, false));
+        assertEquals(0, ArtifactIO.readJsonl(refused.delta).size());
         assertEquals("BRANCH_REPLAY_MISMATCH",
-                refused.get(0).get("gap").getAsString());
+                ArtifactIO.readJsonl(refused.diagnostics).get(0)
+                        .get("code").getAsString());
+    }
+
+    @Test
+    public void topologyDeltaCarriesTheExplicitImportIterationIdentity()
+            throws Exception {
+        String iterationId = "iteration-0007";
+        JsonObject task = pathTask(false);
+        PathImport imported = importPath("delta-iteration-identity",
+                iterationId, task, pathResult(true, true));
+        String expectedPlanDigest = TopologyDelta.planDigest(
+                Collections.singletonList(ExecutionTask.decode(task)));
+
+        java.util.List<JsonObject> rows = ArtifactIO.readJsonl(imported.delta);
+        assertFalse(rows.isEmpty());
+        for (JsonObject row : rows) {
+            assertEquals(iterationId,
+                    row.get("iterationId").getAsString());
+            assertEquals(expectedPlanDigest,
+                    row.get("planDigest").getAsString());
+        }
+    }
+
+    @Test
+    public void importRefusesMissingIterationIdentity() throws Exception {
+        try {
+            importPath("delta-missing-iteration", " ", pathTask(false),
+                    pathResult(true, true));
+            fail("blank import iteration id was accepted");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("iteration id"));
+        }
     }
 
     private static JsonObject deltaRow(java.util.List<JsonObject> rows,
@@ -656,6 +1069,12 @@ public class ConcolicSummaryImporterTest {
 
     private PathImport importPath(String name, JsonObject task,
                                   JsonObject... raws) throws Exception {
+        return importPath(name, "test-" + name, task, raws);
+    }
+
+    private PathImport importPath(String name, String iterationId,
+                                  JsonObject task, JsonObject... raws)
+            throws Exception {
         Path directory = folder.newFolder(name).toPath();
         Path results = directory.resolve("results.jsonl");
         Path tasks = directory.resolve("tasks.jsonl");
@@ -674,8 +1093,8 @@ public class ConcolicSummaryImporterTest {
         ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
         ArtifactIO.replaceJsonl(results, rows);
         return new PathImport(ConcolicSummaryImporter.importSummaries(
-                results, tasks, regions, output, diagnostics), output,
-                diagnostics, delta);
+                results, tasks, regions, output, diagnostics, delta,
+                iterationId), output, diagnostics, delta);
     }
 
     private void assertIncomplete(String name, JsonObject task,
@@ -787,18 +1206,200 @@ public class ConcolicSummaryImporterTest {
         JsonArray sources = new JsonArray();
         sources.add(source);
         task.add(SymbolicSourceEvidence.TASK_FIELD, sources);
+        appendPublishPhase(task, 1, 1L);
+        JsonObject phase = task.getAsJsonArray(
+                ConfiguredSourcePhaseContract.PLAN_FIELD).get(0)
+                .getAsJsonObject();
+        source.addProperty("sourcePhaseId",
+                phase.get("phaseId").getAsString());
+        source.addProperty("sourceOccurrenceId",
+                task.get("occurrenceId").getAsString());
+        source.addProperty("sourcePhaseSiteId",
+                phase.get("siteId").getAsString());
+        source.addProperty("sourcePhaseOrdinal",
+                phase.get("baselineOrdinal").getAsInt());
+        source.addProperty("sourceRole", "OUTPUT_RELATION");
+        selectSourcePhases(task, phase.get("phaseId").getAsString());
+    }
+
+    private static void declareTargetSymbolicSource(JsonObject task) {
+        declareSymbolicSource(task);
+        JsonObject declaration = task.getAsJsonArray(
+                SymbolicSourceEvidence.TASK_FIELD).get(0).getAsJsonObject();
+        declaration.remove("requiredOutputFieldSignature");
+        declaration.addProperty("requiredTargetInputPort",
+                "TARGET.promotedKey");
+        declaration.addProperty("sourceRole", "TARGET_REACH");
+        addTargetSourceInput(task);
+    }
+
+    private static void addTargetSourceInput(JsonObject task) {
+        JsonObject action = new JsonObject();
+        action.addProperty("mode", "CONCRETE");
+        action.addProperty("portId", "TARGET.promotedKey");
+        action.addProperty("symbol", "TARGET.promotedKey");
+        action.addProperty("accessFieldSignature",
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>");
+        task.getAsJsonArray("inputActions").add(action);
     }
 
     private static JsonObject symbolicSourceEvent(JsonObject task) {
+        return symbolicSourceEvent(task, 0);
+    }
+
+    private static JsonObject symbolicSourceEvent(JsonObject task,
+                                                  int phaseIndex) {
+        String phaseId = sourcePhaseId(task, phaseIndex);
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
         expression.addProperty("_java_type", "int");
-        expression.addProperty("_exp", "M_I_field_SRC.promoted_key");
+        expression.addProperty("_exp", "M_I_field_"
+                + SymbolicSourceEvidence.engineLabelForPhase(phaseId,
+                "HDFS11741.NAMENODE.PROMOTED_KEY_ID")
+                + "_promoted_key");
         return SymbolicSourceEvidence.event(
+                phaseId,
                 "HDFS11741.NAMENODE.PROMOTED_KEY_ID",
                 task.get("occurrenceId").getAsString(),
                 "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>",
                 expression);
+    }
+
+    private static JsonObject exactSourceRaw(JsonObject task) {
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        installPhaseRuntimeLedger(raw, task, 0);
+        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
+                symbolicSourceEvent(task)));
+        return raw;
+    }
+
+    private static JsonObject twoSelectedSourcePhaseTask() {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        appendPublishPhase(task, 2, 2L);
+        JsonObject secondDeclaration = task.getAsJsonArray(
+                SymbolicSourceEvidence.TASK_FIELD).get(0)
+                .getAsJsonObject().deepCopy();
+        JsonObject secondPhase = task.getAsJsonArray(
+                ConfiguredSourcePhaseContract.PLAN_FIELD).get(1)
+                .getAsJsonObject();
+        secondDeclaration.addProperty("sourcePhaseId",
+                secondPhase.get("phaseId").getAsString());
+        secondDeclaration.addProperty("sourcePhaseSiteId",
+                secondPhase.get("siteId").getAsString());
+        secondDeclaration.addProperty("sourcePhaseOrdinal",
+                secondPhase.get("baselineOrdinal").getAsInt());
+        task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD)
+                .add(secondDeclaration);
+        selectSourcePhases(task, sourcePhaseId(task, 0),
+                sourcePhaseId(task, 1));
+        return task;
+    }
+
+    private static void appendPublishPhase(JsonObject task, int ordinal,
+                                           long eventSeq) {
+        String field =
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>";
+        appendSourcePhase(task,
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                "HDFS11741.NAMENODE.PROMOTED_KEY_ID", field, 2,
+                ordinal, eventSeq);
+    }
+
+    private static void appendSourcePhase(
+            JsonObject task, ConfiguredSourcePhaseContract.Phase kind,
+            String sourceId, String field, int unitIndex, int ordinal,
+            long eventSeq) {
+        java.util.Map<String, Object> declaration =
+                ConfiguredSourcePhaseContract.declaration(
+                        kind, sourceId, field, seedMethod(), unitIndex);
+        ConfiguredSourcePhaseContract.Declaration decoded =
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        Collections.singletonList(declaration)).get(0);
+        java.util.Map<String, Object> phase =
+                ConfiguredSourcePhaseContract.occurrence(decoded,
+                        task.get("occurrenceId").getAsString(), ordinal,
+                        eventSeq, 1L, eventSeq,
+                        "<TestHook: void symbolize()>",
+                        Collections.singletonList(1L));
+        JsonArray phases = task.has(ConfiguredSourcePhaseContract.PLAN_FIELD)
+                ? task.getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
+                : new JsonArray();
+        phases.add(GSON.toJsonTree(phase));
+        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
+    }
+
+    private static String sourcePhaseId(JsonObject task, int index) {
+        return task.getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
+                .get(index).getAsJsonObject().get("phaseId").getAsString();
+    }
+
+    private static void selectSourcePhases(JsonObject task,
+                                           String... phaseIds) {
+        JsonArray selected = new JsonArray();
+        for (String phaseId : phaseIds) selected.add(phaseId);
+        task.add(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD,
+                selected);
+    }
+
+    private static void installPhaseRuntimeLedger(
+            JsonObject raw, JsonObject task, int... phaseIndexes) {
+        JsonArray observations = new JsonArray();
+        java.util.Set<String> selected = new java.util.LinkedHashSet<>();
+        for (com.google.gson.JsonElement element : task.getAsJsonArray(
+                ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD)) {
+            selected.add(element.getAsString());
+        }
+        JsonArray catalog = task.getAsJsonArray(
+                ConfiguredSourcePhaseContract.PLAN_FIELD);
+        for (int observationIndex = 0;
+             observationIndex < phaseIndexes.length; observationIndex++) {
+            int phaseIndex = phaseIndexes[observationIndex];
+            JsonObject phase = catalog.get(phaseIndex).getAsJsonObject();
+            String phaseId = phase.get("phaseId").getAsString();
+            String key = phase.get("phaseKind").getAsString() + "\n"
+                    + phase.get("sourceId").getAsString() + "\n"
+                    + phase.get("siteId").getAsString();
+            int replayOrdinal = 0;
+            for (int index = 0; index <= phaseIndex; index++) {
+                JsonObject prior = catalog.get(index).getAsJsonObject();
+                String priorKey = prior.get("phaseKind").getAsString() + "\n"
+                        + prior.get("sourceId").getAsString() + "\n"
+                        + prior.get("siteId").getAsString();
+                if (key.equals(priorKey)) replayOrdinal++;
+            }
+            JsonObject observation = new JsonObject();
+            observation.addProperty("schemaVersion", 1);
+            observation.addProperty("kind",
+                    "CONFIGURED_SOURCE_PHASE_OBSERVATION");
+            observation.addProperty("authority",
+                    "EXACT_ACTIVE_CALL_SITE_REPLAY_V1");
+            observation.addProperty("observationIndex",
+                    observationIndex + 1);
+            observation.addProperty("phaseKind",
+                    phase.get("phaseKind").getAsString());
+            observation.addProperty("siteId",
+                    phase.get("siteId").getAsString());
+            observation.addProperty("replayOrdinal", replayOrdinal);
+            observation.addProperty("sourceId",
+                    phase.get("sourceId").getAsString());
+            observation.addProperty("fieldSignature",
+                    phase.get("fieldSignature").getAsString());
+            observation.addProperty("matchedPhaseId", phaseId);
+            observation.addProperty("ownerCallId", 101L);
+            observation.addProperty("invocationId",
+                    200L + observationIndex);
+            observation.addProperty("declaredCallee",
+                    phase.get("runtimeDeclaredCallee").getAsString());
+            observation.addProperty("exactMatch", true);
+            observation.addProperty("selectedPhase",
+                    selected.contains(phaseId));
+            observation.addProperty("orderMatched", true);
+            observations.add(observation);
+        }
+        raw.add("configuredSourcePhaseObservations", observations);
+        raw.add("configuredSourcePhaseGaps", new JsonArray());
     }
 
     private static JsonObject pathResult(boolean includeMapping,

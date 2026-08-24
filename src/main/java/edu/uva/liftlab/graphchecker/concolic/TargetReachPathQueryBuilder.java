@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import com.google.gson.Gson;
@@ -23,6 +25,7 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -38,6 +41,10 @@ public final class TargetReachPathQueryBuilder {
             "SOURCE_TARGET_REACH_EVENT";
     static final String REQUIRED_TARGET_REACH_EVENT =
             "REQUIRED_TARGET_REACH_EVENT";
+    static final String SOURCE_FATAL_BRANCH_AUTHORITY =
+            "RUNTIME_SOURCE_EVENT_AND_WITNESS_FLIP_V1";
+    static final String REQUIRED_FATAL_BRANCH_AUTHORITY =
+            "RUNTIME_REQUIRED_TARGET_EVENT_V1";
     private static final Gson JSON = new GsonBuilder()
             .disableHtmlEscaping().create();
 
@@ -55,6 +62,7 @@ public final class TargetReachPathQueryBuilder {
 
     static JsonObject build(Arguments arguments) throws IOException {
         JsonObject manifest = ArtifactIO.readObject(arguments.pathManifest);
+        validatePathManifest(manifest);
         if (!ClosureGoalKind.TARGET_REACH_CLOSURE.name().equals(
                 string(manifest, ClosureGoalKind.TASK_FIELD))) {
             // Not an evidence disagreement: this artifact is not a target
@@ -64,17 +72,45 @@ public final class TargetReachPathQueryBuilder {
         }
         // Named, never silent, but never a reason to publish nothing: a
         // worklist that stopped short or carried gaps is a partial region,
-        // and a partial region is what best effort merging produces.  The
-        // gate downstream still refuses an incomplete path set.
+        // and a partial region is what best effort merging produces. A
+        // satisfying path may still be accepted; the downstream UNSAT
+        // closure authority prevents absence in this set from becoming an
+        // unreachability claim.
         List<JsonObject> coverageGaps = new ArrayList<>();
+        for (JsonElement element : array(manifest, "coverageGaps")) {
+            if (element.isJsonObject()) {
+                JsonObject raw = element.getAsJsonObject();
+                String kind = string(raw, "kind");
+                if (isTargetPathCoverageGap(kind)) {
+                    coverageGaps.add(CoverageDivergence.of(
+                            CoverageDivergence.Kind.TARGET, kind,
+                            string(raw, "queryKey"),
+                            string(raw, "reason")));
+                } else {
+                    coverageGaps.add(raw.deepCopy());
+                }
+            }
+        }
         String worklistState = string(manifest, "state");
+        String coverageState = string(manifest, "coverageState");
         JsonArray worklistGaps = array(manifest, "gaps");
-        if (!"CLOSED".equals(worklistState) || worklistGaps.size() != 0) {
+        boolean hasClassifiedCoverage = false;
+        for (JsonObject gap : coverageGaps) {
+            if (CoverageDivergence.classify(gap) != null) {
+                hasClassifiedCoverage = true;
+                break;
+            }
+        }
+        if (!"CLOSED".equals(worklistState) || worklistGaps.size() != 0
+                || !"CLOSED".equals(coverageState)
+                && !hasClassifiedCoverage) {
             coverageGaps.add(CoverageDivergence.of(
                     CoverageDivergence.Kind.TARGET,
                     "TARGET_WORKLIST_NOT_CLOSED",
                     string(manifest, "occurrenceId"),
-                    "state=" + worklistState + ", gaps="
+                    "state=" + worklistState + ", coverageState="
+                            + firstNonBlank(coverageState, "UNSTATED")
+                            + ", gaps="
                             + worklistGapReasons(worklistGaps)));
         }
 
@@ -94,6 +130,11 @@ public final class TargetReachPathQueryBuilder {
                     + " decide the target; found " + ready.size()
                     + " and none of them waits on all the others");
         }
+        String queryKey = string(seed, "queryKey");
+        if (queryKey.isEmpty()) {
+            throw new IOException(
+                    "target seed query has no stable queryKey");
+        }
         String region = string(seed, "regionId");
         String occurrenceId = string(seed, "occurrenceId");
         String goalId = string(seed, "goalId");
@@ -111,10 +152,19 @@ public final class TargetReachPathQueryBuilder {
             throw new IOException("selected target occurrence does not match "
                     + "the seed query");
         }
+        LoopBoundPolicy seedLoopBound = loopBound(seed,
+                "target seed query");
+        LoopBoundPolicy worklistLoopBound = loopBound(manifest,
+                "target path worklist");
+        if (!seedLoopBound.identity().equals(
+                worklistLoopBound.identity())) {
+            throw new IOException("target seed and closed path worklist "
+                    + "do not have the same loopBound authority");
+        }
         SelectedOccurrence selected = SelectedOccurrence.decode(
                 object(seed, "selectedTargetOccurrence"), region,
                 occurrenceId, "target seed query");
-        final BranchReplayContract targetReplay;
+        BranchReplayContract targetReplay;
         try {
             targetReplay = BranchReplayContract.fromJson(
                     object(seed, "replayContract"));
@@ -139,6 +189,18 @@ public final class TargetReachPathQueryBuilder {
                     + "exact source witness flip");
         }
 
+        List<JsonObject> summaries = ArtifactIO.readJsonl(arguments.summaries,
+                "Malformed target summary %1$s:%2$d",
+                "Non-object target summary %1$s:%2$d");
+        TargetDecision progressed = progressedTargetDecision(seed,
+                summaries, region, occurrenceId, goalId, targetSite);
+        if (progressed != null) {
+            targetSite = progressed.siteId;
+            targetOccurrence = progressed.occurrence;
+            fatalRequiredOutcome = progressed.requiredOutcome;
+            targetReplay = progressed.replayContract;
+        }
+
         Map<String, JsonObject> pathsByKey = new LinkedHashMap<>();
         Map<String, JsonObject> runtimeBindings = new LinkedHashMap<>();
         // Edges whose runtime evidence two target paths state differently.
@@ -146,12 +208,7 @@ public final class TargetReachPathQueryBuilder {
         // Path keys two summaries describe differently.  Neither is kept:
         // picking one would be a semantic choice this class cannot make.
         Map<String, String> conflictingPaths = new LinkedHashMap<>();
-        List<JsonObject> recordedSharedState = new ArrayList<>();
-        List<JsonObject> vmHandoffEvents = new ArrayList<>();
-        List<JsonObject> symbolicSources = new ArrayList<>();
-        List<JsonObject> summaries = ArtifactIO.readJsonl(arguments.summaries,
-                "Malformed target summary %1$s:%2$d",
-                "Non-object target summary %1$s:%2$d");
+        Map<String, JsonObject> symbolicSources = new LinkedHashMap<>();
         // One exact required-outcome execution is already an existential
         // failure witness. Prefer one deterministic direct witness over the
         // seed projection and over other direct witnesses. Hoisting several
@@ -178,6 +235,11 @@ public final class TargetReachPathQueryBuilder {
             // prevents a malformed mapping row from entering the path set.
             PathObservation observation = PathObservation.decode(
                     summary, null);
+            if (!seedLoopBound.identity().equals(
+                    observation.scope().loopBound().identity())) {
+                throw new IOException("target summary and seed query do not "
+                        + "have the same loopBound authority");
+            }
             if (!observation.branchMappingIssue().isEmpty()) {
                 throw new IOException("Malformed target branch mapping: "
                         + observation.branchMappingIssue());
@@ -217,18 +279,29 @@ public final class TargetReachPathQueryBuilder {
                     contestedBindings);
             JsonObject shared = object(summary,
                     SharedStateEvidence.RECORDED_FIELD);
-            if (shared.size() > 0) recordedSharedState.add(shared);
-            vmHandoffEvents.addAll(VmHandoffEvidence.eventsOf(summary));
-            symbolicSources.addAll(SymbolicSourceEvidence.eventsOf(summary));
+            for (JsonObject source
+                    : SymbolicSourceEvidence.eventsOf(summary)) {
+                String identity = SymbolicSourceEvidence.identity(source);
+                JsonObject prior = symbolicSources.putIfAbsent(identity,
+                        source.deepCopy());
+                if (prior != null && !prior.equals(source)) {
+                    throw new IOException("target paths disagree on exact "
+                            + "configured source phase " + identity);
+                }
+            }
 
             JsonObject path = new JsonObject();
+            if (shared.size() > 0) {
+                path.add(SharedStateEvidence.RECORDED_FIELD,
+                        shared.deepCopy());
+            }
             JsonArray constraints = requiredAttested
                     ? witnessedTargetConstraints(summary, targetMapping)
                     : flippedTargetConstraints(summary, targetMapping);
             path.addProperty("fatalBranchConditionAuthority",
                     requiredAttested
-                            ? "RUNTIME_REQUIRED_TARGET_EVENT_V1"
-                            : "RUNTIME_SOURCE_EVENT_AND_WITNESS_FLIP_V1");
+                            ? REQUIRED_FATAL_BRANCH_AUTHORITY
+                            : SOURCE_FATAL_BRANCH_AUTHORITY);
             path.addProperty(TARGET_ATTESTATION_ROLE,
                     requiredAttested ? REQUIRED_TARGET_REACH_EVENT
                             : SOURCE_TARGET_REACH_EVENT);
@@ -236,6 +309,34 @@ public final class TargetReachPathQueryBuilder {
                     targetReach.toJson());
             path.addProperty("desiredTakenOutcome",
                     fatalRequiredOutcome);
+            List<JsonObject> selectorEvidence =
+                    ConfiguredSourceSelectorContract.evidenceOf(summary);
+            if (!selectorEvidence.isEmpty()) {
+                JsonArray encodedSelectors = new JsonArray();
+                for (JsonObject evidence : selectorEvidence) {
+                    encodedSelectors.add(evidence.deepCopy());
+                }
+                // Unlike RPC/session catalogs, this value was consumed by
+                // one concrete target replay.  Hoisting it to the query root
+                // would let a different target prefix reuse that replay's
+                // selected application object.
+                path.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD,
+                        encodedSelectors);
+            }
+            // The attached expression belongs to this exact target replay.
+            // Hoisting it to the query root lets another target-prefix case
+            // reuse a delivery that did not occur in that replay.
+            VmHandoffEvidence.writeTo(path,
+                    VmHandoffEvidence.eventsOf(summary));
+            JsonArray loopCounts = observation.pathLoopCounts();
+            if (loopCounts.size() > 0) {
+                path.add(LoopBoundPolicy.PATH_LOOP_COUNTS, loopCounts);
+            }
+            JsonArray loopCountGaps = observation.pathLoopCountGaps();
+            if (loopCountGaps.size() > 0) {
+                path.add(LoopBoundPolicy.PATH_LOOP_COUNT_GAPS,
+                        loopCountGaps);
+            }
             String pathKey = observation.pathKey();
             path.add("constraints", constraints.deepCopy());
             if (conflictingPaths.containsKey(pathKey)) continue;
@@ -258,13 +359,14 @@ public final class TargetReachPathQueryBuilder {
         }
         if (encodedPaths.size() == 0) {
             throw new IOException(
-                    "closed target worklist contains no exact "
+                    "target path set contains no exact "
                             + "source-attested target path");
         }
 
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", 1);
         result.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
+        result.addProperty("queryKey", queryKey);
         result.addProperty("regionId", region);
         result.addProperty("occurrenceId", occurrenceId);
         if (!string(seed, "sourceKey").isEmpty()) {
@@ -273,24 +375,17 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("targetSiteId", targetSite);
         result.addProperty("targetOccurrence", targetOccurrence);
         result.addProperty("requiredTakenOutcome", fatalRequiredOutcome);
-        result.addProperty("targetExceptionType", arguments.exceptionType);
         result.add("paths", encodedPaths);
-        result.add("seedReplayContract",
-                object(seed, "replayContract").deepCopy());
+        result.add("seedReplayContract", targetReplay.toJson());
+        seedLoopBound.writeTo(result);
         JsonObject symbolicContext =
                 object(seed, "symbolicContext").deepCopy();
-        refineContextBindings(symbolicContext, runtimeBindings);
         selected.requireExactContext(symbolicContext);
         result.add("symbolicContext", symbolicContext);
         result.add("selectedTargetBindings",
                 selected.exactBindings(runtimeBindings));
-        JsonObject shared = SharedStateEvidence.mergeRecorded(
-                recordedSharedState);
-        if (shared.size() > 0) {
-            result.add(SharedStateEvidence.RECORDED_FIELD, shared);
-        }
-        VmHandoffEvidence.writeTo(result, vmHandoffEvents);
-        SymbolicSourceEvidence.writeTo(result, symbolicSources);
+        SymbolicSourceEvidence.writeTo(result,
+                new ArrayList<>(symbolicSources.values()));
         // Named, never silent: an edge dropped from refinement is coverage
         // the query does not carry, and the composer folds these rows into
         // the same coverage stream as every other named gap.
@@ -321,6 +416,209 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("constraintAuthority",
                 "RECORDED_TARGET_PREFIX_V1");
         return result;
+    }
+
+    private static boolean isTargetPathCoverageGap(String kind) {
+        return kind.startsWith("PATH_FLIP_")
+                || "UNSUPPORTED_PATH_FLIP".equals(kind)
+                || "BOUND_REACHED".equals(kind);
+    }
+
+    private static void validatePathManifest(JsonObject manifest)
+            throws IOException {
+        if (JsonFields.integer(manifest, "schemaVersion", -1) != 1
+                || !"REGION_PATH_WORKLIST".equals(string(manifest, "kind"))) {
+            throw new IOException("target path worklist schema is invalid");
+        }
+        String state = string(manifest, "state");
+        if (!("NOT_STARTED".equals(state) || "GAPPED".equals(state)
+                || "PENDING".equals(state) || "CLOSED".equals(state))) {
+            throw new IOException("target path worklist state is invalid");
+        }
+        for (String field : new String[]{"gaps", "coverageGaps"}) {
+            JsonElement value = manifest.get(field);
+            if (value == null || !value.isJsonArray()) {
+                throw new IOException("target path worklist " + field
+                        + " must be an array");
+            }
+        }
+        String coverage = string(manifest, "coverageState");
+        if (!("CLOSED".equals(coverage) || "PARTIAL".equals(coverage)
+                || "SEED_ONLY".equals(coverage))) {
+            throw new IOException(
+                    "target path worklist coverageState is invalid");
+        }
+    }
+
+    /** Decodes one exact loop authority at an artifact boundary. */
+    private static LoopBoundPolicy loopBound(JsonObject owner, String label)
+            throws IOException {
+        try {
+            return LoopBoundPolicy.decode(owner);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException(label + " has no usable loopBound authority",
+                    malformed);
+        }
+    }
+
+    /**
+     * Promotes an observed outer target frontier to the next exact guard of
+     * the same annotated throw.
+     *
+     * <p>The compact catalog is static authority for membership and required
+     * polarity; the fresh summary is runtime authority that the successor was
+     * actually reached.  With a pending successor and no such summary the
+     * outer complement is not a fatal query and is refused.</p>
+     */
+    private static TargetDecision progressedTargetDecision(
+            JsonObject seed, List<JsonObject> summaries,
+            String region, String occurrenceId, String goalId,
+            String currentSite) throws IOException {
+        JsonArray encoded = array(seed, "targetGuardCatalog");
+        List<JsonObject> catalog = new ArrayList<>();
+        for (JsonElement element : encoded) {
+            if (element.isJsonObject()) {
+                catalog.add(element.getAsJsonObject());
+            }
+        }
+        if (catalog.isEmpty()) return null;
+        int current = uniqueGuardIndex(catalog, currentSite);
+        if (current < 0) {
+            throw new IOException("target guard catalog does not contain "
+                    + "the selected site " + currentSite);
+        }
+        Set<String> corridor = guardedTargetIdentities(
+                catalog.get(current));
+        Set<Integer> successors = new LinkedHashSet<>();
+        for (int index = current + 1; index < catalog.size(); index++) {
+            JsonObject candidate = catalog.get(index);
+            if (!bool(candidate, "failureTarget", false)
+                    || requiredOutcome(candidate) == null
+                    || Collections.disjoint(corridor,
+                    guardedTargetIdentities(candidate))) {
+                continue;
+            }
+            successors.add(index);
+        }
+        if (successors.isEmpty()) return null;
+
+        TargetDecision selected = null;
+        String selectedPath = null;
+        int selectedIndex = -1;
+        for (JsonObject summary : summaries) {
+            if (!region.equals(string(summary, "regionId"))
+                    || !occurrenceId.equals(string(summary,
+                    "occurrenceId"))
+                    || !goalId.equals(string(summary, "goalId"))
+                    || !ClosureGoalKind.fromTask(summary)
+                    .capturesTargetReach()
+                    || !bool(summary, "relationallyComplete", false)) {
+                continue;
+            }
+            PathObservation observation = PathObservation.decode(
+                    summary, null);
+            if (!observation.branchMappingIssue().isEmpty()) {
+                throw new IOException("Malformed target branch mapping: "
+                        + observation.branchMappingIssue());
+            }
+            final PathObservation.TargetReachEvent reach;
+            try {
+                reach = observation.targetReachEvent();
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException("Malformed target reach event: "
+                        + malformed.getMessage(), malformed);
+            }
+            if (reach == null) continue;
+            int index = uniqueGuardIndex(catalog, reach.siteId());
+            if (!successors.contains(index)) continue;
+            SummaryBranchMapping mapping = targetSiteMapping(observation,
+                    reach.siteId(), reach.occurrence());
+            if (mapping == null || !reach.matches(mapping.siteId(),
+                    mapping.occurrence(),
+                    mapping.sourceTakenOutcome())) {
+                continue;
+            }
+            Boolean required = requiredOutcome(catalog.get(index));
+            if (required == null) continue;
+            BranchReplayContract replay = BranchReplayContract.fromSummary(
+                    summary, reach.siteId(), reach.occurrence());
+            // A normal successor event is the source witness whose complement
+            // final composition must solve.  An already-failing execution is
+            // a different direct-attestation protocol; never encode it as an
+            // opposite-polarity replay by accident.
+            if (replay.requiredTakenOutcome() != required) continue;
+            String pathKey = observation.pathKey();
+            if (selected == null || index > selectedIndex
+                    || index == selectedIndex
+                    && pathKey.compareTo(selectedPath) < 0) {
+                selected = new TargetDecision(reach.siteId(),
+                        reach.occurrence(), required, replay);
+                selectedPath = pathKey;
+                selectedIndex = index;
+            }
+        }
+        if (selected == null) {
+            throw new IOException("target frontier " + currentSite
+                    + " has an unobserved successor guard in the same "
+                    + "annotated exception corridor");
+        }
+        return selected;
+    }
+
+    private static int uniqueGuardIndex(List<JsonObject> catalog,
+                                        String siteId) throws IOException {
+        int result = -1;
+        for (int index = 0; index < catalog.size(); index++) {
+            if (!siteId.equals(string(catalog.get(index), "siteId"))) {
+                continue;
+            }
+            if (result >= 0) {
+                throw new IOException("target guard catalog contains the "
+                        + "same site twice: " + siteId);
+            }
+            result = index;
+        }
+        return result;
+    }
+
+    private static Boolean requiredOutcome(JsonObject branch) {
+        JsonElement encoded = branch.get("requiredOutcome");
+        return encoded != null && encoded.isJsonPrimitive()
+                && encoded.getAsJsonPrimitive().isBoolean()
+                ? encoded.getAsBoolean() : null;
+    }
+
+    private static Set<String> guardedTargetIdentities(JsonObject branch) {
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonElement cell : array(branch, "failureTargetCells")) {
+            if (!cell.isJsonPrimitive()) continue;
+            String value = cell.getAsString();
+            int suffix = value.indexOf("#exception:");
+            result.add(suffix < 0 ? value : value.substring(0, suffix));
+        }
+        for (JsonElement element : array(branch,
+                "guardedSiteOutcomes")) {
+            if (!element.isJsonObject()) continue;
+            String site = string(element.getAsJsonObject(), "siteId");
+            if (!site.isEmpty()) result.add(site);
+        }
+        return result;
+    }
+
+    private static final class TargetDecision {
+        private final String siteId;
+        private final int occurrence;
+        private final boolean requiredOutcome;
+        private final BranchReplayContract replayContract;
+
+        private TargetDecision(String siteId, int occurrence,
+                               boolean requiredOutcome,
+                               BranchReplayContract replayContract) {
+            this.siteId = siteId;
+            this.occurrence = occurrence;
+            this.requiredOutcome = requiredOutcome;
+            this.replayContract = replayContract;
+        }
     }
 
     /** Selects one exact required-outcome target execution by stable key. */
@@ -413,17 +711,15 @@ public final class TargetReachPathQueryBuilder {
         }
     }
 
-    /** The target replay's VM evidence supersedes the seed trace candidate. */
     /**
      * Collects the runtime binding evidence the target paths agree on.
      *
      * <p>A region is merged best effort: not every path has to be usable, and
      * one edge two paths describe differently is not a reason to publish no
      * query at all.  README: observed cases are an existential
-     * under-approximation and the milestone makes no UNSAT-completeness
-     * claim, so production is best effort while acceptance stays strict - the
-     * contested edge simply does not refine its seed, the query is still
-     * built, and the gate still refuses an incomplete path set.</p>
+     * under-approximation, so a SAT witness may retain named coverage gaps;
+     * only an UNSAT conclusion requires a closed path set. The contested edge
+     * simply does not refine its seed and the query is still built.</p>
      *
      * <p>The contested edge is dropped rather than resolved.  Choosing one of
      * two descriptions would be a pairing decision this class has no
@@ -466,7 +762,6 @@ public final class TargetReachPathQueryBuilder {
         return reasons.isEmpty() ? "none" : String.join(";", reasons);
     }
 
-    /** Which members two descriptions of one edge disagree on. */
     /**
      * The binding members two sessions must agree on.  The VM's own
      * location triple is session-local by construction -- the rid counter
@@ -498,41 +793,6 @@ public final class TargetReachPathQueryBuilder {
             }
         }
         return String.join(",", fields);
-    }
-
-    private static void refineContextBindings(
-            JsonObject context, Map<String, JsonObject> runtimeBindings)
-            throws IOException {
-        refineRelations(array(context, "equalityRelations"),
-                runtimeBindings);
-    }
-
-    private static void refineRelations(
-            JsonArray relations, Map<String, JsonObject> runtimeBindings)
-            throws IOException {
-        for (JsonElement element : relations) {
-            if (!element.isJsonObject()) continue;
-            JsonArray selected = array(element.getAsJsonObject(),
-                    "selectedBindings");
-            for (int index = 0; index < selected.size(); index++) {
-                if (!selected.get(index).isJsonObject()) continue;
-                JsonObject seed = selected.get(index).getAsJsonObject();
-                JsonObject runtime = runtimeBindings.get(string(seed,
-                        "edgeId"));
-                if (runtime == null) continue;
-                for (String identity : new String[]{"edgeId",
-                        "fromOccurrenceId", "toOccurrenceId",
-                        "fromOutputPort", "toInputPort"}) {
-                    if (!string(seed, identity).equals(string(runtime,
-                            identity))) {
-                        throw new IOException("runtime binding changes "
-                                + identity + " of seed edge "
-                                + string(seed, "edgeId"));
-                    }
-                }
-                selected.set(index, runtime.deepCopy());
-            }
-        }
     }
 
     /** The witnessed decision of the exact target site, or null. */
@@ -704,14 +964,6 @@ public final class TargetReachPathQueryBuilder {
                 throw new IOException("selected target symbolic context has "
                         + "the wrong occurrence identity");
             }
-            Set<String> exactInputs = exactInputPorts;
-            Set<String> contextBindings = new LinkedHashSet<>();
-            collectContextBindings(array(context, "equalityRelations"),
-                    exactInputs, contextBindings);
-            if (!bindingIds.containsAll(contextBindings)) {
-                throw new IOException("selected target symbolic context "
-                        + "contains a binding outside the demanded ledger");
-            }
         }
 
         private JsonArray exactBindings(
@@ -730,49 +982,21 @@ public final class TargetReachPathQueryBuilder {
             return result;
         }
 
-        private void collectContextBindings(
-                JsonArray relations, Set<String> exactInputs,
-                Set<String> result) throws IOException {
-            for (JsonElement element : relations) {
-                if (!element.isJsonObject()) continue;
-                JsonObject relation = element.getAsJsonObject();
-                for (JsonElement selected : array(relation,
-                        "selectedBindings")) {
-                    if (!selected.isJsonObject()) continue;
-                    JsonObject binding = selected.getAsJsonObject();
-                    if (!instance.equals(string(binding,
-                            "toOccurrenceId")) || !exactInputs.contains(
-                            string(binding, "toInputPort"))) {
-                        throw new IOException("selected target symbolic "
-                                + "context contains an unrelated binding");
-                    }
-                    String id = string(binding, "edgeId");
-                    if (id.isEmpty()) {
-                        throw new IOException("selected target symbolic "
-                                + "context binding has no edgeId");
-                    }
-                    result.add(id);
-                }
-            }
-        }
     }
 
     static final class Arguments {
         private final Path summaries;
         private final Path pathManifest;
         private final Path seedQuery;
-        private final String exceptionType;
         private final String targetInstance;
         private final Path output;
 
         private Arguments(Path summaries, Path pathManifest,
-                          Path seedQuery, String exceptionType,
-                          String targetInstance,
+                          Path seedQuery, String targetInstance,
                           Path output) {
             this.summaries = summaries;
             this.pathManifest = pathManifest;
             this.seedQuery = seedQuery;
-            this.exceptionType = exceptionType;
             this.targetInstance = targetInstance;
             this.output = output;
         }
@@ -790,7 +1014,6 @@ public final class TargetReachPathQueryBuilder {
             return new Arguments(requiredPath(values, "summaries"),
                     requiredPath(values, "path-manifest"),
                     requiredPath(values, "seed-query"),
-                    required(values, "exception-type"),
                     optional(values, "target-instance"),
                     requiredPath(values, "output"));
         }

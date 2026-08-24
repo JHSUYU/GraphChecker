@@ -272,6 +272,11 @@ public final class PathObservation {
         return VmHandoffEvidence.eventsOf(raw);
     }
 
+    /** Exact configured-source values this path consumed to select an object. */
+    public java.util.List<JsonObject> configuredSourceSelectorEvidence() {
+        return ConfiguredSourceSelectorContract.evidenceOf(raw);
+    }
+
     public boolean hasExactOutputSet(Set<String> outputPorts) {
         Set<String> covered = new TreeSet<>(
                 object(raw, "outputExpressions").keySet());

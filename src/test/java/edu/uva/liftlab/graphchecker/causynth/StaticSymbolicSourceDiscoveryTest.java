@@ -1,11 +1,14 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import soot.ArrayType;
 import soot.Body;
 import soot.BooleanType;
+import soot.IntType;
 import soot.Local;
 import soot.LongType;
 import soot.Modifier;
@@ -16,6 +19,8 @@ import soot.SootField;
 import soot.SootMethod;
 import soot.VoidType;
 import soot.jimple.Jimple;
+import soot.jimple.IntConstant;
+import soot.jimple.NullConstant;
 import soot.jimple.StringConstant;
 
 import java.util.ArrayList;
@@ -30,10 +35,8 @@ import static org.junit.Assert.assertTrue;
 
 public class StaticSymbolicSourceDiscoveryTest {
     private static final List<String> SOURCE_IDS = Arrays.asList(
-            "RPC_COMPARE.VALUE", "RPC_COMPARE.ADJUSTMENT",
-            "RPC_COMPARE.GUARD_LEFT", "RPC_COMPARE.GUARD_RIGHT",
-            "RPC_COMPARE.LOWER_BOUND", "RPC_COMPARE.UPPER_BOUND",
-            "RPC_COMPARE.BIAS", "RPC_COMPARE.PIVOT");
+            "RPC_COMPARE.A", "RPC_COMPARE.B", "RPC_COMPARE.C",
+            "RPC_COMPARE.D", "RPC_COMPARE.E");
 
     @Before
     public void resetBefore() {
@@ -47,7 +50,7 @@ public class StaticSymbolicSourceDiscoveryTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    public void sharedHelperDeclaresEightSourcesForBothRpcRegions()
+    public void sharedHelperDeclaresFiveSourcesForBothRpcRegions()
             throws Exception {
         SootClass hook = new SootClass(
                 "example.CausynthSymbolicSource", Modifier.PUBLIC);
@@ -89,7 +92,7 @@ public class StaticSymbolicSourceDiscoveryTest {
             List<Map<String, Object>> declarations =
                     (List<Map<String, Object>>) region.get(
                             StaticSymbolicSourceDeclaration.FIELD);
-            assertEquals(8, declarations.size());
+            assertEquals(5, declarations.size());
             for (int index = 0; index < declarations.size(); index++) {
                 Map<String, Object> declaration = declarations.get(index);
                 assertEquals(SOURCE_IDS.get(index),
@@ -104,8 +107,9 @@ public class StaticSymbolicSourceDiscoveryTest {
         }
     }
 
-    @Test(expected = java.io.IOException.class)
-    public void rejectsHookWhoseOwnerIsNotThis() throws Exception {
+    @Test
+    @SuppressWarnings("unchecked")
+    public void acceptsExactNonThisOwnerSelectedByTheHook() throws Exception {
         SootClass hook = new SootClass(
                 "example.CausynthSymbolicSource", Modifier.PUBLIC);
         hook.setLibraryClass();
@@ -116,7 +120,8 @@ public class StaticSymbolicSourceDiscoveryTest {
                 RefType.v("java.lang.String")), BooleanType.v(),
                 Modifier.PUBLIC | Modifier.STATIC);
         hook.addMethod(symbolize);
-        SootClass node = new SootClass("example.BadNode", Modifier.PUBLIC);
+        SootClass node = new SootClass("example.SelectedOwnerNode",
+                Modifier.PUBLIC);
         Scene.v().addClass(node);
         node.setApplicationClass();
         SootField field = new SootField("value", LongType.v());
@@ -132,13 +137,238 @@ public class StaticSymbolicSourceDiscoveryTest {
         body.getUnits().add(Jimple.v().newAssignStmt(other, self));
         body.getUnits().add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(symbolize.makeRef(),
-                        StringConstant.v("RPC_COMPARE.VALUE"), other,
+                        StringConstant.v("RPC_COMPARE.A"), other,
                         StringConstant.v(field.getSignature()))));
         body.getUnits().add(Jimple.v().newReturnStmt(
                 soot.jimple.LongConstant.v(0L)));
         StaticProgram program = new StaticProgram();
-        program.regions.add(region("REGION.BAD", rpc));
+        program.regions.add(region("REGION.SELECTED_OWNER", rpc));
         StaticSymbolicSourceDiscovery.discover(program);
+        List<Map<String, Object>> declarations =
+                (List<Map<String, Object>>) program.regions.get(0).get(
+                        StaticSymbolicSourceDeclaration.FIELD);
+        assertEquals(1, declarations.size());
+        assertEquals("RPC_COMPARE.A",
+                declarations.get(0).get("sourceId"));
+        assertEquals(field.getSignature(),
+                declarations.get(0).get("fieldSignature"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void discoversExactFieldOnObjectSelectedFromArrayZero()
+            throws Exception {
+        SootClass hook = new SootClass(
+                "example.CausynthSymbolicSource", Modifier.PUBLIC);
+        hook.setLibraryClass();
+        Scene.v().addClass(hook);
+        SootMethod symbolize = new SootMethod("symbolize", Arrays.asList(
+                RefType.v("java.lang.String"),
+                RefType.v("java.lang.Object"),
+                RefType.v("java.lang.String")), BooleanType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        hook.addMethod(symbolize);
+
+        SootClass element = new SootClass("example.Element", Modifier.PUBLIC);
+        Scene.v().addClass(element);
+        element.setApplicationClass();
+        SootField value = new SootField("value", LongType.v());
+        element.addField(value);
+
+        SootClass node = new SootClass("example.ArrayOwnerNode",
+                Modifier.PUBLIC);
+        Scene.v().addClass(node);
+        node.setApplicationClass();
+        ArrayType elementsType = ArrayType.v(RefType.v(element.getName()), 1);
+        SootMethod rpc = new SootMethod("getFromArray",
+                Collections.singletonList(elementsType), LongType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        node.addMethod(rpc);
+        Body body = Jimple.v().newBody(rpc);
+        rpc.setActiveBody(body);
+        Local elements = Jimple.v().newLocal("elements", elementsType);
+        Local selected = Jimple.v().newLocal("selected",
+                RefType.v(element.getName()));
+        body.getLocals().add(elements);
+        body.getLocals().add(selected);
+        body.getUnits().add(Jimple.v().newIdentityStmt(elements,
+                Jimple.v().newParameterRef(elementsType, 0)));
+        body.getUnits().add(Jimple.v().newAssignStmt(selected,
+                Jimple.v().newArrayRef(elements, IntConstant.v(0))));
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(symbolize.makeRef(),
+                        StringConstant.v("ARRAY.ELEMENT.ZERO"), selected,
+                        StringConstant.v(value.getSignature()))));
+        body.getUnits().add(Jimple.v().newReturnStmt(
+                soot.jimple.LongConstant.v(0L)));
+
+        StaticProgram program = new StaticProgram();
+        program.regions.add(region("REGION.ARRAY.ELEMENT.ZERO", rpc));
+        StaticSymbolicSourceDiscovery.discover(program);
+
+        List<Map<String, Object>> declarations =
+                (List<Map<String, Object>>) program.regions.get(0).get(
+                        StaticSymbolicSourceDeclaration.FIELD);
+        assertEquals(1, declarations.size());
+        Map<String, Object> declaration = declarations.get(0);
+        assertEquals("ARRAY.ELEMENT.ZERO", declaration.get("sourceId"));
+        assertEquals(value.getSignature(), declaration.get("fieldSignature"));
+        assertEquals(rpc.getSignature(), declaration.get("declarationMethod"));
+        assertEquals(2, ((Number) declaration.get(
+                "declarationUnitIndex")).intValue());
+    }
+
+    @Test(expected = java.io.IOException.class)
+    public void rejectsNullOwnerInsteadOfInventingAnObject() throws Exception {
+        SootClass hook = new SootClass(
+                "example.CausynthSymbolicSource", Modifier.PUBLIC);
+        hook.setLibraryClass();
+        Scene.v().addClass(hook);
+        SootMethod symbolize = new SootMethod("symbolize", Arrays.asList(
+                RefType.v("java.lang.String"),
+                RefType.v("java.lang.Object"),
+                RefType.v("java.lang.String")), BooleanType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        hook.addMethod(symbolize);
+        SootClass node = new SootClass("example.NullOwnerNode",
+                Modifier.PUBLIC);
+        Scene.v().addClass(node);
+        node.setApplicationClass();
+        SootField value = new SootField("value", LongType.v());
+        node.addField(value);
+        SootMethod rpc = new SootMethod("get", Collections.emptyList(),
+                LongType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        node.addMethod(rpc);
+        Body body = Jimple.v().newBody(rpc);
+        rpc.setActiveBody(body);
+        body.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(symbolize.makeRef(),
+                        StringConstant.v("NULL.OWNER"), NullConstant.v(),
+                        StringConstant.v(value.getSignature()))));
+        body.getUnits().add(Jimple.v().newReturnStmt(
+                soot.jimple.LongConstant.v(0L)));
+        StaticProgram program = new StaticProgram();
+        program.regions.add(region("REGION.NULL.OWNER", rpc));
+
+        StaticSymbolicSourceDiscovery.discover(program);
+    }
+
+    @Test(expected = java.io.IOException.class)
+    public void rejectsSameSourceAtTwoDifferentHookSites() throws Exception {
+        SootClass hook = new SootClass(
+                "example.CausynthSymbolicSource", Modifier.PUBLIC);
+        hook.setLibraryClass();
+        Scene.v().addClass(hook);
+        SootMethod symbolize = new SootMethod("symbolize", Arrays.asList(
+                RefType.v("java.lang.String"),
+                RefType.v("java.lang.Object"),
+                RefType.v("java.lang.String")), BooleanType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        hook.addMethod(symbolize);
+        SootClass node = new SootClass("example.DuplicateNode",
+                Modifier.PUBLIC);
+        Scene.v().addClass(node);
+        node.setApplicationClass();
+        SootField field = new SootField("value", LongType.v());
+        node.addField(field);
+        SootMethod rpc = new SootMethod("get", Collections.emptyList(),
+                LongType.v(), Modifier.PUBLIC);
+        node.addMethod(rpc);
+        Body body = Jimple.v().newBody(rpc);
+        rpc.setActiveBody(body);
+        Local self = thisLocal(body, node, "self");
+        for (int index = 0; index < 2; index++) {
+            body.getUnits().add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(symbolize.makeRef(),
+                            StringConstant.v("DUPLICATE"), self,
+                            StringConstant.v(field.getSignature()))));
+        }
+        body.getUnits().add(Jimple.v().newReturnStmt(
+                soot.jimple.LongConstant.v(0L)));
+        StaticProgram program = new StaticProgram();
+        program.regions.add(region("REGION.DUPLICATE", rpc));
+        StaticSymbolicSourceDiscovery.discover(program);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void discoversOrderedPublishConsumeSitesAndRichTraceMethods()
+            throws Exception {
+        SootClass hook = new SootClass(
+                "example.CausynthSymbolicSource", Modifier.PUBLIC);
+        hook.setLibraryClass();
+        Scene.v().addClass(hook);
+        SootMethod symbolize = new SootMethod("symbolize", Arrays.asList(
+                RefType.v("java.lang.String"),
+                RefType.v("java.lang.Object"),
+                RefType.v("java.lang.String")), BooleanType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        SootMethod selected = new SootMethod("selectedIntValue",
+                Collections.singletonList(RefType.v("java.lang.String")),
+                RefType.v("java.lang.Integer"),
+                Modifier.PUBLIC | Modifier.STATIC);
+        hook.addMethod(symbolize);
+        hook.addMethod(selected);
+
+        SootClass node = new SootClass("example.PhasedNode", Modifier.PUBLIC);
+        Scene.v().addClass(node);
+        node.setApplicationClass();
+        SootField keyId = new SootField("keyId", IntType.v());
+        node.addField(keyId);
+
+        SootMethod phaseHelper = new SootMethod("rotate",
+                Collections.emptyList(), VoidType.v(), Modifier.PRIVATE);
+        node.addMethod(phaseHelper);
+        Body helperBody = Jimple.v().newBody(phaseHelper);
+        phaseHelper.setActiveBody(helperBody);
+        Local helperThis = thisLocal(helperBody, node, "phaseThis");
+        Local selectedValue = Jimple.v().newLocal("selected",
+                RefType.v("java.lang.Integer"));
+        helperBody.getLocals().add(selectedValue);
+        helperBody.getUnits().add(Jimple.v().newAssignStmt(selectedValue,
+                Jimple.v().newStaticInvokeExpr(selected.makeRef(),
+                        StringConstant.v("ROTATING.KEY"))));
+        helperBody.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(symbolize.makeRef(),
+                        StringConstant.v("ROTATING.KEY"), helperThis,
+                        StringConstant.v(keyId.getSignature()))));
+        helperBody.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        SootMethod root = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC);
+        node.addMethod(root);
+        Body rootBody = Jimple.v().newBody(root);
+        root.setActiveBody(rootBody);
+        Local rootThis = thisLocal(rootBody, node, "rootThis");
+        rootBody.getUnits().add(Jimple.v().newInvokeStmt(
+                Jimple.v().newVirtualInvokeExpr(rootThis,
+                        phaseHelper.makeRef())));
+        rootBody.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        StaticProgram program = new StaticProgram();
+        program.traceMethods.add(root.getSignature());
+        Map<String, Object> region = region("REGION.PHASED", root);
+        program.regions.add(region);
+
+        StaticSymbolicSourceDiscovery.discover(program);
+
+        List<Map<String, Object>> phases =
+                (List<Map<String, Object>>) region.get(
+                        ConfiguredSourcePhaseContract.DECLARATION_FIELD);
+        assertEquals(2, phases.size());
+        assertEquals("CONSUME", phases.get(0).get("phase"));
+        assertEquals("PUBLISH", phases.get(1).get("phase"));
+        for (Map<String, Object> phase : phases) {
+            assertEquals("ROTATING.KEY", phase.get("sourceId"));
+            assertEquals(keyId.getSignature(),
+                    phase.get("fieldSignature"));
+            assertEquals(phaseHelper.getSignature(),
+                    phase.get("declarationMethod"));
+        }
+        assertEquals(Collections.singletonList(phaseHelper.getSignature()),
+                region.get(ConfiguredSourcePhaseContract.TRACE_METHODS_FIELD));
+        assertTrue(program.traceMethods.contains(root.getSignature()));
+        assertTrue(program.traceMethods.contains(phaseHelper.getSignature()));
     }
 
     private static SootMethod helper(

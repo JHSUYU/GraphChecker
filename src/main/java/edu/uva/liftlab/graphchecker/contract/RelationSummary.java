@@ -376,6 +376,16 @@ public final class RelationSummary {
             item.add(SharedStateEvidence.RECORDED_FIELD, recordedSharedState);
         }
         VmHandoffEvidence.writeTo(item, path.vmHandoffEvents());
+        List<JsonObject> selectorEvidence =
+                path.configuredSourceSelectorEvidence();
+        if (!selectorEvidence.isEmpty()) {
+            JsonArray encodedSelectors = new JsonArray();
+            for (JsonObject evidence : selectorEvidence) {
+                encodedSelectors.add(evidence.deepCopy());
+            }
+            item.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD,
+                    encodedSelectors);
+        }
         JsonArray symbolicSources = path.symbolicSourceEvidence();
         if (symbolicSources.size() > 0) {
             item.add(SymbolicSourceEvidence.FIELD, symbolicSources);

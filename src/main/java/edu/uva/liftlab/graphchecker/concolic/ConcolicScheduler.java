@@ -1,13 +1,13 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import edu.uva.liftlab.graphchecker.SymbolicEnvironment;
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
@@ -100,6 +100,7 @@ public final class ConcolicScheduler {
         }
         LoadedInputs loaded = loadInputs(arguments);
         Result result = scheduleLoaded(arguments, loaded, null);
+        loaded.symbolicInputs.bindSourceSelectors(result.executionTasks);
         loaded.symbolicInputs.validateSourceCoverage(result.executionTasks);
         writeResult(arguments.outputDirectory, result);
         return result;
@@ -125,7 +126,6 @@ public final class ConcolicScheduler {
             throw new IOException("runtime plan contains no region plans: "
                     + arguments.regionPlan);
         }
-        List<JsonObject> edges = runtimePlan.edgeValidations();
         List<JsonObject> summaries = arguments.summaries == null
                 ? Collections.<JsonObject>emptyList()
                 : readJsonl(arguments.summaries);
@@ -137,13 +137,12 @@ public final class ConcolicScheduler {
                         regions);
 
         Map<String, Region> regionIndex = regionIndex(regions);
-        MergePlan mergePlan = buildMergePlan(regionIndex, edges);
         if (regionPlanIdentity != null) {
             requireArtifactIdentity(arguments.regionPlan,
                     regionPlanIdentity, "region plan changed while loading");
         }
         return new LoadedInputs(regionPlans, summaries, regionIndex,
-                definitions, mergePlan, regionPlanIdentity, symbolicInputs);
+                definitions, regionPlanIdentity, symbolicInputs);
     }
 
     private static Result scheduleLoaded(
@@ -159,6 +158,16 @@ public final class ConcolicScheduler {
         Result result = new Result();
         Set<String> scheduledOutputOccurrences = new LinkedHashSet<>();
         for (Candidate candidate : candidates) {
+            JsonArray taskInputActions = loaded.symbolicInputs
+                    .includeTargetSourceFrontier(
+                            candidate.goal.plan().regionId(),
+                            candidate.inputActions,
+                            candidate.targetSourceFrontier);
+            JsonArray selectedInputs = loaded.symbolicInputs.select(
+                    candidate.goal.plan().regionId(), taskInputActions);
+            String taskId = candidate.seedTaskId(selectedInputs);
+            JsonObject taskQueryOccurrence = queryOccurrenceWithInputs(
+                    candidate.queryOccurrence, selectedInputs);
             OutputClosureContract outputContract = candidate.outputContract();
             JsonObject captured = outputContract != null ? null
                     : exactTargetSummary(candidate, loaded.summaries);
@@ -171,13 +180,13 @@ public final class ConcolicScheduler {
             // seed query.  The cap bounds newly scheduled VM work only.
             if (captured != null && outputContract == null) {
                 result.queries.add(branchQuery(candidate, captured,
-                        loaded.mergePlan));
+                        taskId, taskQueryOccurrence));
             }
             if (result.executionTasks.size() >= arguments.maxJobs) {
                 continue;
             }
-            JsonArray edgeBindings = loaded.mergePlan
-                    .outboundValueEqualityBindings(candidate.goal);
+            JsonArray edgeBindings = objectRows(
+                    candidate.goal.edgeBindingsView());
             if (candidate.targetEdgeBindings != null) {
                 edgeBindings = candidate.targetEdgeBindings.deepCopy();
             }
@@ -196,10 +205,6 @@ public final class ConcolicScheduler {
                         "producer occurrence emitted more than one union task: "
                                 + candidate.goal.plan().occurrenceId());
             }
-            String taskId = candidate.seedTaskId();
-            JsonArray selectedInputs = loaded.symbolicInputs.select(
-                    candidate.goal.plan().regionId(),
-                    candidate.inputActions);
             ExecutionTask scheduled = ExecutionTask.create(candidate.goal,
                     taskId, selectedInputs,
                     candidate.branches, edgeBindings,
@@ -208,9 +213,10 @@ public final class ConcolicScheduler {
             JsonObject executionTask = scheduled.json();
             promoteSelectedReplayEntry(executionTask, outputContract);
             loaded.symbolicInputs.annotate(executionTask,
-                    candidate.inputActions, selectedInputs);
+                    taskInputActions, selectedInputs);
             loaded.symbolicInputs.annotateSources(executionTask,
-                    candidate.goal.plan().regionId(), outputContract);
+                    candidate.goal.plan().regionId(), outputContract,
+                    taskInputActions);
             if (outputContract != null) {
                 // The timeline annotation is derived after the immutable
                 // planner goal was decoded.  Replace only that canonical
@@ -253,6 +259,7 @@ public final class ConcolicScheduler {
             JsonObject task, OutputClosureContract closure) {
         if (task == null || closure == null) return;
         JsonObject selected = null;
+        String selectedPort = "";
         boolean missing = false;
         for (OutputClosureContract.Member member : closure.members()) {
             JsonObject entry = object(member.slice(),
@@ -270,10 +277,15 @@ public final class ConcolicScheduler {
             }
             if (selected == null) {
                 selected = entry.deepCopy();
+                selectedPort = member.portId();
             } else if (!selected.equals(entry)) {
                 throw new IllegalArgumentException(
                         "selected outputs require incompatible replay "
-                                + "continuations");
+                                + "continuations: task="
+                                + string(task, "taskId") + " port="
+                                + member.portId() + " selectedPort="
+                                + selectedPort + " selected=" + selected
+                                + " conflicting=" + entry);
             }
         }
         if (selected == null) return;
@@ -370,9 +382,19 @@ public final class ConcolicScheduler {
         Map<String, JsonObject> queries = new LinkedHashMap<>();
         for (RuntimeWorkflowDiscovery.Selection selection
                 : workflow.selections()) {
-            Result selected = scheduleLoaded(
-                    arguments.forSelection(selection), loaded,
-                    selection.producerProjection);
+            Result selected;
+            try {
+                selected = scheduleLoaded(
+                        arguments.forSelection(selection), loaded,
+                        selection.producerProjection);
+            } catch (IllegalArgumentException failure) {
+                String projection = selection.producerProjection == null
+                        ? "TARGET" : CanonicalJson.render(
+                        selection.producerProjection.json());
+                throw new IOException("target-first selection is not "
+                        + "executable: campaign=" + selection.campaignId
+                        + " projection=" + projection, failure);
+            }
             if (selected.executionTasks.size() != 1) {
                 throw new IOException("target-first selection emitted "
                         + selected.executionTasks.size()
@@ -382,12 +404,13 @@ public final class ConcolicScheduler {
             JsonObject task = selected.executionTasks.get(0);
             putUnique(tasks, task, "taskId");
             for (JsonObject query : selected.queries) {
-                putUnique(queries, query, "queryKey");
+                indexTargetQuery(queries, query);
             }
         }
         Result result = new Result();
         result.executionTasks.addAll(sortedValues(tasks));
         result.queries.addAll(sortedValues(queries));
+        loaded.symbolicInputs.bindSourceSelectors(result.executionTasks);
         loaded.symbolicInputs.validateSourceCoverage(result.executionTasks);
         writeResult(arguments.outputDirectory, result);
         Path taskPlan = arguments.outputDirectory.resolve(
@@ -439,6 +462,12 @@ public final class ConcolicScheduler {
             throw new IOException("conflicting scheduled " + identity
                     + ": " + key);
         }
+    }
+
+    /** The exact target-query aggregation seam used by target-first. */
+    static void indexTargetQuery(Map<String, JsonObject> queries,
+                                 JsonObject query) throws IOException {
+        putUnique(queries, query, "queryKey");
     }
 
     private static List<JsonObject> sortedValues(
@@ -678,6 +707,16 @@ public final class ConcolicScheduler {
      * compact closure row.  They share an edgeId and may carry complementary
      * fields, so join compatible views without weakening conflict checks.
      */
+    private static JsonArray objectRows(JsonArray source) {
+        JsonArray result = new JsonArray();
+        for (JsonElement element : source) {
+            if (element.isJsonObject()) {
+                result.add(element.deepCopy());
+            }
+        }
+        return result;
+    }
+
     private static JsonArray mergeEdgeBindings(JsonArray bindings)
             throws IOException {
         Map<String, JsonObject> rows = new LinkedHashMap<>();
@@ -840,7 +879,8 @@ public final class ConcolicScheduler {
                         TargetBranch.outputCapture(), true,
                         inputActions, true,
                         goal.plan().occurrenceId(),
-                        new JsonObject(), null, outputClosure));
+                        new JsonObject(), null, outputClosure,
+                        new JsonArray()));
                 return;
             }
             if (producerProjection != null) {
@@ -882,6 +922,16 @@ public final class ConcolicScheduler {
                                 : eligibleFailureTargets
                                 + " eligible failure targets"));
             }
+            String queryInstance = targetQueryInstance(arguments, goal);
+            // One target task drives the bounded path worklist for the whole
+            // guarded throw.  Ordinary inputs remain branch-local below, but
+            // manually declared source fields that can move any conjunct of
+            // this fatal predicate must be present from the first replay: the
+            // worklist does not mint a new task when a shallower flip exposes
+            // a deeper guard.
+            JsonArray targetSourceFrontier = materializationPlan(goal,
+                    goal.symbolize(), definitions, definitionMethods, null,
+                    branches, queryInstance, arguments.targetEdgeIds);
             for (int index = 0; index < branches.size(); index++) {
                 JsonElement element = branches.get(index);
                 if (!element.isJsonObject()) {
@@ -914,7 +964,6 @@ public final class ConcolicScheduler {
                 // decision this task never reopens.
                 JsonArray reachSlice = targetReachBranchSlice(branches,
                         target);
-                String queryInstance = targetQueryInstance(arguments, goal);
                 JsonArray inputActions = materializationPlan(goal,
                         goal.symbolize(), definitions,
                         definitionMethods, null, reachSlice,
@@ -930,7 +979,7 @@ public final class ConcolicScheduler {
                         queryInstance,
                         targetQueryOccurrence(arguments, goal,
                                 inputActions, targetBindings),
-                        targetBindings, null));
+                        targetBindings, null, targetSourceFrontier));
             }
     }
 
@@ -1062,16 +1111,16 @@ public final class ConcolicScheduler {
         for (JsonElement element : goal.edgeBindingsView()) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
-            boolean selectedComponent = selectedEdgeIds.contains(
+            boolean selectedHandoff = selectedEdgeIds.contains(
                     string(binding, "edgeId"))
-                    && handoffComponentBinding(binding);
+                    && selectedWorkflowHandoffBinding(binding);
             if (queryInstance.equals(string(binding,
                     "toOccurrenceId"))
                     && (exactPorts.contains(string(binding, "toInputPort"))
-                    || selectedComponent)
+                    || selectedHandoff)
                     && (selectedEdgeIds.isEmpty()
                     || selectedEdgeIds.contains(string(binding, "edgeId")))
-                    && (selectedComponent
+                    && (selectedHandoff
                     ? AutomaticRegionEdge.schedulableProducerBinding(binding)
                     : AutomaticRegionEdge
                     .trustedRuntimeCompositionBinding(binding))) {
@@ -1099,6 +1148,31 @@ public final class ConcolicScheduler {
     }
 
     /**
+     * A selected response delivery remains part of the replay topology even
+     * when the branch currently being reopened does not consume its value.
+     *
+     * <p>This distinction matters for a nested target such as
+     * {@code if (localGate) if (rpcValue > limit) throw}: the seed replay can
+     * observe only the outer local gate, but the two RPC calls have already
+     * executed and the ranked workflow has selected their exact producers.
+     * Dropping those response edges with the local symbolic frontier removes
+     * the caller-side scheduling arm and makes the selected producer tasks
+     * impossible to admit.  Retaining the edge does not make the response a
+     * symbolic root of the outer branch; it only preserves the exact cut that
+     * the replayed VM handoff must attest before a later inner case can use
+     * the value.</p>
+     */
+    private static boolean selectedWorkflowHandoffBinding(
+            JsonObject binding) {
+        if (handoffComponentBinding(binding)) return true;
+        return "RUNTIME_PROTOCOL_FLOW".equals(string(binding, "kind"))
+                && "RESPONSE".equalsIgnoreCase(
+                string(binding, "direction"))
+                && !string(binding, "fromOutputPort").isEmpty()
+                && !string(binding, "toInputPort").isEmpty();
+    }
+
+    /**
      * A target task solves one failure-directed branch.  Other observed
      * decisions remain in the replay prefix, but are assumptions rather than
      * independent flip targets.  This keeps enabler constraints without
@@ -1120,6 +1194,34 @@ public final class ConcolicScheduler {
                         "TARGET_REACH_PREFIX_CONTEXT");
             }
             result.add(branch);
+        }
+        return result;
+    }
+
+    /**
+     * Bounded control metadata needed to distinguish a terminal exception
+     * guard from an observed frontier leading to a still-unobserved guard.
+     * Predicates and occurrence histories stay in the task/summary; copying
+     * them here would recreate the large branch-catalog artifact this query
+     * replaced.
+     */
+    private static JsonArray targetGuardCatalog(JsonArray branches) {
+        JsonArray result = new JsonArray();
+        for (JsonElement element : branches) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!bool(branch, "failureTarget", false)) continue;
+            JsonObject compact = new JsonObject();
+            for (String field : new String[]{
+                    "siteId", "failureTarget", "requiredOutcome",
+                    RuntimeSelectedRegionFinalizer.FAILURE_TARGET_CELLS,
+                    "guardedSiteOutcomes"}) {
+                JsonElement value = branch.get(field);
+                if (value != null && !value.isJsonNull()) {
+                    compact.add(field, value.deepCopy());
+                }
+            }
+            result.add(compact);
         }
         return result;
     }
@@ -1986,56 +2088,35 @@ public final class ConcolicScheduler {
         return index;
     }
 
-    /**
-     * The merge plan of one region catalog and one recorded edge set.
-     *
-     * <p>The seam {@link #loadInputs} and this package's tests share, so what
-     * a test drives is the index a campaign really builds rather than a
-     * smaller one written beside it.</p>
-     */
-    static MergePlan mergePlan(List<JsonObject> regions,
-                               List<JsonObject> edges) {
-        return buildMergePlan(regionIndex(regions), edges);
-    }
-
-    private static MergePlan buildMergePlan(Map<String, Region> regions,
-                                            List<JsonObject> edges) {
-        return new MergePlan();
-    }
-
     private static JsonObject branchQuery(Candidate candidate,
                                           JsonObject summary,
-                                          MergePlan mergePlan) {
+                                          String seedTaskId,
+                                          JsonObject queryOccurrence) {
         JsonObject query = new JsonObject();
         query.addProperty("schemaVersion", 1);
         query.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
-        // The selected task already has a stable semantic identity.  Reuse it
-        // rather than hashing the same region/occurrence/site tuple again.
+        // scheduleTargetFirst indexes every selected query by this stable
+        // semantic identity before the builder consumes its fields.
         query.addProperty("queryKey",
-                candidate.seedTaskId() + "/target-branch");
+                targetBranchQueryKey(seedTaskId));
         query.addProperty("goalId", candidate.goal.goalId());
         query.addProperty("regionId", candidate.goal.plan().regionId());
         query.addProperty("sourceKey", candidate.goal.plan().sourceKey());
-        query.addProperty("relationKey",
-                candidate.goal.plan().relationKey());
         query.addProperty("occurrenceId",
                 candidate.queryOccurrenceId);
         query.add("selectedTargetOccurrence",
-                candidate.queryOccurrence.deepCopy());
+                queryOccurrence.deepCopy());
         query.addProperty("targetSiteId", candidate.target.siteId);
         query.addProperty("fatalRequiredTakenOutcome",
                 candidate.target.requiredOutcome);
-        if (summary.has(LoopBoundPolicy.FIELD)
-                && summary.get(LoopBoundPolicy.FIELD).isJsonObject()) {
-            // The query is the target relation consumed by composition.
-            // Preserve the exact task bound the importer validated; runtime
-            // plan rows intentionally do not duplicate execution authority.
-            query.add(LoopBoundPolicy.FIELD,
-                    summary.get(LoopBoundPolicy.FIELD).deepCopy());
-        }
+        query.add("targetGuardCatalog",
+                targetGuardCatalog(candidate.branches));
+        // The query is the target relation consumed by composition. Preserve
+        // the canonical task bound the importer validated; runtime plan rows
+        // intentionally do not duplicate execution authority.
+        LoopBoundPolicy.decode(summary).writeTo(query);
         try {
             BranchReplayContract contract;
-            boolean seedContextOnly = false;
             try {
                 contract = BranchReplayContract.fromSummary(summary,
                     candidate.target.siteId,
@@ -2050,39 +2131,58 @@ public final class ConcolicScheduler {
                 }
             } catch (IllegalArgumentException noDirectTargetWitness) {
                 contract = latestTargetSeedDecision(candidate, summary);
-                seedContextOnly = true;
             }
-            contract.addTo(query);
+            // This artifact is consumed by the target path-set builder, not
+            // by the local path-flip solver.  Carry the replay identity and
+            // polarity, but do not publish an unused solverPathContext that
+            // no target-stage consumer validates.
+            query.add("replayContract", contract.toJson());
             query.addProperty("readyForSolver", true);
-            if (seedContextOnly) {
-                query.addProperty("seedContextOnly", true);
-            }
         } catch (IllegalArgumentException incompleteWitness) {
             query.addProperty("readyForSolver", false);
             query.addProperty("blocker", incompleteWitness.getMessage());
         }
-        query.add("symbolicContext",
-                mergePlan.contextFor(candidate.goal.plan().regionId(),
-                        candidate.queryOccurrenceId,
-                        candidate.queryOccurrence,
-                        candidate.targetEdgeBindings));
-        // The target relation is carried by the query rather than decoded as
-        // an output-producing RelationSummary.  Keep the VM evidence beside
-        // that relation for the same reason: it belongs to this exact target
-        // occurrence, and dropping it here leaves the composer with only the
-        // pre-replay trace candidate.  In particular, a replay whose RPC
-        // ordinal drifted still has an exact export/receive tuple and one
-        // session event ledger; those are the runtime authority, while the
-        // trace exchange id remains discovery metadata.
-        JsonObject shared = object(summary,
-                SharedStateEvidence.RECORDED_FIELD);
-        if (shared.size() > 0) {
-            query.add(SharedStateEvidence.RECORDED_FIELD,
-                    shared.deepCopy());
-        }
-        VmHandoffEvidence.writeTo(query,
-                VmHandoffEvidence.eventsOf(summary));
+        JsonObject symbolicContext = new JsonObject();
+        symbolicContext.addProperty("occurrenceId",
+                candidate.queryOccurrenceId);
+        query.add("symbolicContext", symbolicContext);
         return query;
+    }
+
+    /** The solver query names every input frozen into the effective task. */
+    private static JsonObject queryOccurrenceWithInputs(
+            JsonObject encoded, JsonArray taskInputActions) {
+        JsonObject result = encoded == null
+                ? new JsonObject() : encoded.deepCopy();
+        Set<String> inputs = new java.util.TreeSet<>();
+        for (JsonElement element : array(result, "inputPorts")) {
+            if (element.isJsonPrimitive()
+                    && !element.getAsString().trim().isEmpty()) {
+                inputs.add(element.getAsString());
+            }
+        }
+        for (JsonElement element : taskInputActions == null
+                ? new JsonArray() : taskInputActions) {
+            if (!element.isJsonObject()) continue;
+            String input = firstNonBlank(string(
+                    element.getAsJsonObject(), "symbol"),
+                    string(element.getAsJsonObject(), "portId"));
+            if (!input.isEmpty()) inputs.add(input);
+        }
+        JsonArray ports = new JsonArray();
+        for (String input : inputs) ports.add(input);
+        result.add("inputPorts", ports);
+        return result;
+    }
+
+    /** Stable identity shared by target query publication and aggregation. */
+    static String targetBranchQueryKey(String seedTaskId) {
+        String task = seedTaskId == null ? "" : seedTaskId.trim();
+        if (task.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "target branch query requires a seed task identity");
+        }
+        return task + "/target-branch";
     }
 
     /**
@@ -2342,13 +2442,6 @@ public final class ConcolicScheduler {
             return result;
         }
 
-        private JsonArray sites(String cell,
-                                Set<String> allowedMethods,
-                                OutputClosureContract.ExecutionScope scope) {
-            return filteredSites(byCell.get(cell), allowedMethods, scope,
-                    false);
-        }
-
         private JsonArray returnSites(String callReturnCell,
                                       Set<String> allowedMethods,
                                       OutputClosureContract.ExecutionScope
@@ -2537,6 +2630,7 @@ public final class ConcolicScheduler {
         private final JsonObject queryOccurrence;
         private final JsonArray targetEdgeBindings;
         private final OutputClosureContract selectedOutputContract;
+        private final JsonArray targetSourceFrontier;
 
         private Candidate(Goal goal, JsonArray branches,
                           TargetBranch target,
@@ -2545,7 +2639,8 @@ public final class ConcolicScheduler {
                           String queryOccurrenceId,
                           JsonObject queryOccurrence) {
             this(goal, branches, target, hasRequiredWitness, inputActions,
-                    ready, queryOccurrenceId, queryOccurrence, null, null);
+                    ready, queryOccurrenceId, queryOccurrence, null, null,
+                    new JsonArray());
         }
 
         private Candidate(Goal goal, JsonArray branches,
@@ -2555,7 +2650,8 @@ public final class ConcolicScheduler {
                           String queryOccurrenceId,
                           JsonObject queryOccurrence,
                           JsonArray targetEdgeBindings,
-                          OutputClosureContract selectedOutputContract) {
+                          OutputClosureContract selectedOutputContract,
+                          JsonArray targetSourceFrontier) {
             this.goal = goal;
             this.branches = branches;
             this.target = target;
@@ -2571,6 +2667,8 @@ public final class ConcolicScheduler {
             this.targetEdgeBindings = targetEdgeBindings == null
                     ? null : targetEdgeBindings.deepCopy();
             this.selectedOutputContract = selectedOutputContract;
+            this.targetSourceFrontier = targetSourceFrontier == null
+                    ? new JsonArray() : targetSourceFrontier.deepCopy();
         }
 
         private OutputClosureContract outputContract() {
@@ -2586,7 +2684,7 @@ public final class ConcolicScheduler {
          * structural occurrence id do: two occurrences may instantiate the
          * same reusable relation, but they are distinct replay tasks.</p>
          */
-        private String seedTaskId() {
+        private String seedTaskId(JsonArray taskInputActions) {
             StringBuilder identity = new StringBuilder(
                     "TASK.SEED.SEMANTIC.V3");
             identity.append('\n').append(goal.plan().sourceKey());
@@ -2594,7 +2692,7 @@ public final class ConcolicScheduler {
             identity.append('\n').append(goal.plan().regionId());
             identity.append('\n').append(goal.kind().name());
             identity.append('\n').append(regionContentHash());
-            identity.append('\n').append(portSetHash());
+            identity.append('\n').append(portSetHash(taskInputActions));
             identity.append('\n').append(target.siteId)
                     .append('\n').append(target.selectedOccurrence)
                     .append('\n').append(target.observedOutcome)
@@ -2624,9 +2722,9 @@ public final class ConcolicScheduler {
          * and cell/kind/type plus static capture endpoints (with their
          * replay-stable bounded occurrence) for demanded outputs.
          */
-        private String portSetHash() {
+        private String portSetHash(JsonArray taskInputActions) {
             java.util.TreeSet<String> descriptors = new java.util.TreeSet<>();
-            for (JsonElement element : inputActions) {
+            for (JsonElement element : taskInputActions) {
                 if (!element.isJsonObject()) continue;
                 descriptors.add("IN\n" + semanticPortDescriptor(
                         element.getAsJsonObject()));
@@ -2688,36 +2786,6 @@ public final class ConcolicScheduler {
                 }
             }
             return CanonicalJson.render(filtered);
-        }
-    }
-
-    static final class MergePlan {
-        private MergePlan() {
-        }
-
-        /**
-         * Copies runtime-confirmed protocol equalities onto the producer
-         * activation that will own the imported output summary. This is a
-         * summary edge, not a READ_FROM edge: serialization may change object
-         * identity while preserving the complete endpoint value.
-         */
-        JsonArray outboundValueEqualityBindings(Goal goal) {
-            JsonArray bindings = new JsonArray();
-            for (JsonElement element : goal.edgeBindingsView()) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                bindings.add(binding.deepCopy());
-            }
-            return bindings;
-        }
-
-        JsonObject contextFor(String regionId,
-                                      String occurrenceId,
-                                      JsonObject selectedOccurrence,
-                                      JsonArray selectedTargetBindings) {
-            JsonObject context = new JsonObject();
-            context.addProperty("occurrenceId", occurrenceId);
-            return context;
         }
     }
 
@@ -2869,12 +2937,18 @@ public final class ConcolicScheduler {
                 RegionSelection selection = selections.computeIfAbsent(
                         regionId, ignored -> new RegionSelection());
                 selection.addAll(selection.fields,
-                        array(row, "fieldSignatures"));
+                        configurationArray(row, "fieldSignatures"),
+                        "fieldSignatures");
                 selection.addAll(selection.ports,
-                        array(row, "portIds"));
+                        configurationArray(row, "portIds"), "portIds");
                 selection.addAll(selection.cells,
-                        array(row, "cells"));
-                for (JsonElement element : array(row,
+                        configurationArray(row, "cells"), "cells");
+                for (JsonObject declaration
+                        : ConfiguredSourceSelectorContract.declarationsOf(
+                        row)) {
+                    selection.addSelectorDeclaration(declaration);
+                }
+                for (JsonElement element : configurationArray(row,
                         SymbolicSourceEvidence.TASK_FIELD)) {
                     if (!element.isJsonObject()) {
                         throw new IOException(SymbolicSourceEvidence.TASK_FIELD
@@ -2884,9 +2958,33 @@ public final class ConcolicScheduler {
                             element.getAsJsonObject()));
                 }
             }
+            Set<String> catalogRegions = new LinkedHashSet<>();
+            for (JsonObject region : regionCatalog == null
+                    ? Collections.<JsonObject>emptyList() : regionCatalog) {
+                String regionId = firstNonBlank(string(region, "regionId"));
+                if (!regionId.isEmpty()) catalogRegions.add(regionId);
+            }
+            for (String configuredRegion : selections.keySet()) {
+                if (!catalogRegions.contains(configuredRegion)) {
+                    throw new IOException("symbolic input selection names "
+                            + "an unknown static region: "
+                            + configuredRegion);
+                }
+            }
             mergeDiscoveredSources(selections, regionCatalog);
             return new SymbolicInputSelection(true, CONFIGURED_AUTHORITY,
                     ArtifactIO.sha256(path), selections);
+        }
+
+        private static JsonArray configurationArray(
+                JsonObject row, String field) throws IOException {
+            JsonElement encoded = row == null ? null : row.get(field);
+            if (encoded == null) return new JsonArray();
+            if (!encoded.isJsonArray()) {
+                throw new IOException("symbolic input selection " + field
+                        + " must be an array");
+            }
+            return encoded.getAsJsonArray();
         }
 
         /**
@@ -2924,6 +3022,14 @@ public final class ConcolicScheduler {
         private static void mergeDiscoveredSources(
                 Map<String, RegionSelection> selections,
                 List<JsonObject> regionCatalog) throws IOException {
+            Set<String> explicitOverrides = new LinkedHashSet<>();
+            for (RegionSelection selection : selections.values()) {
+                for (SourceField source : selection.sources) {
+                    if (!source.inferOutputs) {
+                        explicitOverrides.add(source.sourceIdentity());
+                    }
+                }
+            }
             for (JsonObject region : regionCatalog == null
                     ? Collections.<JsonObject>emptyList() : regionCatalog) {
                 String regionId = string(region, "regionId");
@@ -2935,6 +3041,13 @@ public final class ConcolicScheduler {
                     }
                     SourceField source = SourceField.fromDiscovered(
                             element.getAsJsonObject());
+                    // The explicit row names the authoritative region and
+                    // target/output boundary.  A call-graph envelope that
+                    // also reaches the same hook must not create another
+                    // obligation or a second VM root.
+                    if (explicitOverrides.contains(source.sourceIdentity())) {
+                        continue;
+                    }
                     selections.computeIfAbsent(regionId,
                             ignored -> new RegionSelection())
                             .addDiscoveredSource(source);
@@ -2972,6 +3085,55 @@ public final class ConcolicScheduler {
                 selected.add(retained);
             }
             return selected;
+        }
+
+        /**
+         * Keeps manual target roots needed by any guard of the same throw.
+         *
+         * <p>The ordinary materialization frontier is intentionally scoped to
+         * the one branch this seed task first reopens.  A target path worklist
+         * can expose deeper conjuncts without scheduling a new task, however,
+         * so a manually declared source used by one of those conjuncts must
+         * already be addressable.  Only hook-owned, locally materializable
+         * actions are added; RPC/read-from inputs and undeclared heap leaves
+         * retain the branch-local policy.</p>
+         */
+        JsonArray includeTargetSourceFrontier(
+                String regionId, JsonArray branchActions,
+                JsonArray guardedTargetActions) {
+            JsonArray result = branchActions == null
+                    ? new JsonArray() : branchActions.deepCopy();
+            if (!configured || guardedTargetActions == null
+                    || guardedTargetActions.size() == 0) {
+                return result;
+            }
+            RegionSelection selection = regions.get(safe(regionId));
+            if (selection == null || selection.sources.isEmpty()) {
+                return result;
+            }
+            Set<String> represented = new LinkedHashSet<>();
+            for (JsonElement element : result) {
+                if (!element.isJsonObject()) continue;
+                String symbol = firstNonBlank(string(
+                        element.getAsJsonObject(), "symbol"),
+                        string(element.getAsJsonObject(), "portId"));
+                if (!symbol.isEmpty()) represented.add(symbol);
+            }
+            for (JsonElement element : guardedTargetActions) {
+                if (!element.isJsonObject()) continue;
+                JsonObject action = element.getAsJsonObject();
+                String symbol = firstNonBlank(string(action, "symbol"),
+                        string(action, "portId"));
+                if (symbol.isEmpty() || represented.contains(symbol)
+                        || !"SYMBOLIC".equals(string(action, "mode"))
+                        || !selection.sourceOwns(action)
+                        || SourceField.relationBoundTargetInput(action)) {
+                    continue;
+                }
+                result.add(action.deepCopy());
+                represented.add(symbol);
+            }
+            return result;
         }
 
         /** Applies the same allowlist before target-first producer closure. */
@@ -3022,21 +3184,477 @@ public final class ConcolicScheduler {
          * not mint the source as a side effect.
          */
         void annotateSources(JsonObject task, String regionId,
-                                     OutputClosureContract closure)
+                                     OutputClosureContract closure,
+                                     JsonArray targetActions)
                 throws IOException {
-            if (!configured || task == null || closure == null) return;
+            if (!configured || task == null) return;
             RegionSelection selection = regions.get(safe(regionId));
-            if (selection == null || selection.sources.isEmpty()) return;
+            if (selection == null || selection.sources.isEmpty()) {
+                task.remove(ConfiguredSourcePhaseContract.PLAN_FIELD);
+                task.remove(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD);
+                return;
+            }
+            List<TaskSourcePhase> phases = taskSourcePhases(task);
             JsonArray selected = new JsonArray();
+            Map<String, LinkedHashMap<String, TaskSourcePhase>>
+                    publicationsBySource =
+                    new LinkedHashMap<>();
+            Set<String> retainedPhaseIds = new LinkedHashSet<>();
             for (SourceField source : selection.sources) {
-                Set<String> outputs = source.matchingOutputs(closure);
-                if (!outputs.isEmpty()) selected.add(source.toJson(outputs));
+                Set<String> outputs = closure == null
+                        ? Collections.<String>emptySet()
+                        : source.matchingOutputs(closure);
+                Set<String> inputs = closure != null
+                        ? Collections.<String>emptySet()
+                        : source.matchingTargetInputs(targetActions);
+                if (outputs.isEmpty() && inputs.isEmpty()) continue;
+                if (closure != null) {
+                    Map<TaskSourcePhase, Set<String>> byPublication =
+                            outputPublications(source, outputs, closure,
+                                    phases, task);
+                    for (Map.Entry<TaskSourcePhase, Set<String>> group
+                            : byPublication.entrySet()) {
+                        registerPublication(publicationsBySource, source,
+                                group.getKey());
+                        retainedPhaseIds.add(
+                                group.getKey().occurrence.phaseId());
+                        selected.add(source.toOutputJson(group.getValue(),
+                                group.getKey().occurrence));
+                    }
+                } else if (ClosureGoalKind.TARGET_REACH_CLOSURE.name().equals(
+                        string(task, ClosureGoalKind.TASK_FIELD))) {
+                    TaskSourcePhase publish = latestPublication(source,
+                            phases, phase -> phaseInsideSelectedBoundary(
+                                    phase.occurrence, task, null));
+                    requirePublication(source, task, publish,
+                            "target boundary");
+                    registerPublication(publicationsBySource, source,
+                            publish);
+                    retainedPhaseIds.add(publish.occurrence.phaseId());
+                    selected.add(source.toTargetJson(inputs,
+                            publish.occurrence));
+                }
+            }
+
+            // A selector is required only by a source this exact task mints.
+            // Its CONSUME phase must be in the same selected call boundary
+            // and precede that dependent PUBLISH phase.
+            for (JsonObject declaration : selection.selectorDeclarations) {
+                Set<String> requiredBy = new LinkedHashSet<>(
+                        ConfiguredSourceSelectorContract
+                                .requiredBySourceIds(declaration));
+                for (Map.Entry<String, LinkedHashMap<String,
+                        TaskSourcePhase>> dependent
+                        : publicationsBySource.entrySet()) {
+                    if (!requiredBy.contains(dependent.getKey())) continue;
+                    for (TaskSourcePhase publication
+                            : dependent.getValue().values()) {
+                        TaskSourcePhase consume = latestPhase(phases,
+                                phase -> phase.occurrence.phase()
+                                        == ConfiguredSourcePhaseContract
+                                        .Phase.CONSUME
+                                        && string(declaration,
+                                        "sourceId").equals(
+                                        phase.occurrence.sourceId())
+                                        && phase.occurrence.runtimeEventSeq()
+                                        < publication.occurrence
+                                        .runtimeEventSeq()
+                                        && phaseInsideSelectedCall(
+                                        phase.occurrence, task, closure));
+                        if (consume == null) {
+                            throw new IOException("configured source selector "
+                                    + string(declaration, "sourceId")
+                                    + " required by " + dependent.getKey()
+                                    + " phase "
+                                    + publication.occurrence.phaseId()
+                                    + " in task " + string(task, "taskId")
+                                    + " has no exact preceding CONSUME phase");
+                        }
+                        retainedPhaseIds.add(
+                                consume.occurrence.phaseId());
+                    }
+                }
             }
             if (selected.size() > 0) {
                 task.add(SymbolicSourceEvidence.TASK_FIELD, selected);
                 JsonObject policy = object(task, TASK_FIELD);
                 policy.addProperty("selectedSymbolicSourceCount",
                         selected.size());
+            }
+            retainTaskSourcePhases(task, phases, retainedPhaseIds, closure);
+        }
+
+        private static Map<TaskSourcePhase, Set<String>> outputPublications(
+                SourceField source, Set<String> outputCells,
+                OutputClosureContract closure, List<TaskSourcePhase> phases,
+                JsonObject task) throws IOException {
+            Map<TaskSourcePhase, Set<String>> result = new LinkedHashMap<>();
+            for (String cell : outputCells) {
+                TaskSourcePhase selected = null;
+                int members = 0;
+                for (OutputClosureContract.Member member
+                        : closure.members()) {
+                    if (!cell.equals(member.cell())) continue;
+                    members++;
+                    TaskSourcePhase candidate = latestPublication(source,
+                            phases, phase -> phaseBeforeOutput(
+                                    phase.occurrence, member));
+                    requirePublication(source, task, candidate,
+                            "output " + member.portId());
+                    if (selected != null && !selected.occurrence.phaseId()
+                            .equals(candidate.occurrence.phaseId())) {
+                        throw new IOException("configured source output cell "
+                                + cell + " crosses two publication phases: "
+                                + selected.occurrence.phaseId() + " and "
+                                + candidate.occurrence.phaseId());
+                    }
+                    selected = candidate;
+                }
+                if (members == 0 || selected == null) {
+                    throw new IOException("configured source output cell "
+                            + cell + " is absent from selected closure in "
+                            + string(task, "taskId"));
+                }
+                result.computeIfAbsent(selected,
+                        ignored -> new LinkedHashSet<>()).add(cell);
+            }
+            return result;
+        }
+
+        private static boolean phaseBeforeOutput(
+                ConfiguredSourcePhaseContract.Occurrence phase,
+                OutputClosureContract.Member member) {
+            long callId = longInteger(member.slice(),
+                    "selectedRuntimeCallId", -1L);
+            long boundary = Math.max(longInteger(member.slice(),
+                            "selectedRuntimeEventSeq", -1L),
+                    longInteger(member.slice(),
+                            "definitionCompletionSeq", -1L));
+            return callId > 0L && boundary > 0L
+                    && phase.enclosingCallIds().contains(callId)
+                    && phase.runtimeEventSeq() <= boundary;
+        }
+
+        private static TaskSourcePhase latestPublication(
+                SourceField source, List<TaskSourcePhase> phases,
+                java.util.function.Predicate<TaskSourcePhase> boundary) {
+            return latestPhase(phases, phase -> phase.occurrence.phase()
+                    == ConfiguredSourcePhaseContract.Phase.PUBLISH
+                    && source.sourceId.equals(phase.occurrence.sourceId())
+                    && source.fieldSignature.equals(
+                    phase.occurrence.fieldSignature())
+                    && boundary.test(phase));
+        }
+
+        private static TaskSourcePhase latestPhase(
+                List<TaskSourcePhase> phases,
+                java.util.function.Predicate<TaskSourcePhase> predicate) {
+            TaskSourcePhase selected = null;
+            for (TaskSourcePhase phase : phases) {
+                if (predicate.test(phase)
+                        && (selected == null
+                        || phase.occurrence.runtimeEventSeq()
+                        > selected.occurrence.runtimeEventSeq())) {
+                    selected = phase;
+                }
+            }
+            return selected;
+        }
+
+        private static void requirePublication(
+                SourceField source, JsonObject task, TaskSourcePhase phase,
+                String boundary) throws IOException {
+            if (phase != null) return;
+            throw new IOException("configured symbolic source "
+                    + source.sourceId + " in task "
+                    + string(task, "taskId") + "@"
+                    + string(task, "occurrenceId")
+                    + " has no exact PUBLISH phase before " + boundary);
+        }
+
+        private static void registerPublication(
+                Map<String, LinkedHashMap<String, TaskSourcePhase>> versions,
+                SourceField source, TaskSourcePhase phase) {
+            versions.computeIfAbsent(source.sourceId,
+                    ignored -> new LinkedHashMap<>()).putIfAbsent(
+                    phase.occurrence.phaseId(), phase);
+        }
+
+        private static List<TaskSourcePhase> taskSourcePhases(
+                JsonObject task) throws IOException {
+            JsonArray encoded = array(task,
+                    ConfiguredSourcePhaseContract.PLAN_FIELD);
+            final List<ConfiguredSourcePhaseContract.Occurrence> decoded;
+            try {
+                decoded = ConfiguredSourcePhaseContract.occurrencesOf(encoded);
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException("malformed configured source phases in "
+                        + string(task, "taskId"), malformed);
+            }
+            if (decoded.size() != encoded.size()) {
+                throw new IOException("configured source phase decode lost "
+                        + "rows in " + string(task, "taskId"));
+            }
+            List<TaskSourcePhase> result = new ArrayList<>();
+            for (int index = 0; index < decoded.size(); index++) {
+                result.add(new TaskSourcePhase(decoded.get(index),
+                        encoded.get(index).getAsJsonObject().deepCopy()));
+            }
+            return result;
+        }
+
+        private static boolean phaseInsideSelectedBoundary(
+                ConfiguredSourcePhaseContract.Occurrence phase,
+                JsonObject task, OutputClosureContract closure) {
+            if (phase == null) return false;
+            if (closure != null) {
+                for (OutputClosureContract.Member member : closure.members()) {
+                    JsonObject slice = member.slice();
+                    long callId = longInteger(slice,
+                            "selectedRuntimeCallId", -1L);
+                    long boundary = Math.max(longInteger(slice,
+                                    "selectedRuntimeEventSeq", -1L),
+                            longInteger(slice, "definitionCompletionSeq",
+                                    -1L));
+                    if (callId > 0L && boundary > 0L
+                            && phase.enclosingCallIds().contains(callId)
+                            && phase.runtimeEventSeq() <= boundary) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            for (JsonElement element : array(task, "branches")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!bool(branch, "failureTarget", false)) continue;
+                long callId = longInteger(branch, "selectedCallId", -1L);
+                long boundary = longInteger(branch,
+                        "selectedRuntimeEventSeq", -1L);
+                if (callId > 0L && boundary > 0L
+                        && phase.enclosingCallIds().contains(callId)
+                        && phase.runtimeEventSeq() <= boundary) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static boolean phaseInsideSelectedCall(
+                ConfiguredSourcePhaseContract.Occurrence phase,
+                JsonObject task, OutputClosureContract closure) {
+            if (phase == null) return false;
+            if (closure != null) {
+                for (OutputClosureContract.Member member : closure.members()) {
+                    long callId = longInteger(member.slice(),
+                            "selectedRuntimeCallId", -1L);
+                    if (callId > 0L
+                            && phase.enclosingCallIds().contains(callId)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            for (JsonElement element : array(task, "branches")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!bool(branch, "failureTarget", false)) continue;
+                long callId = longInteger(branch, "selectedCallId", -1L);
+                if (callId > 0L
+                        && phase.enclosingCallIds().contains(callId)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static void retainTaskSourcePhases(
+                JsonObject task, List<TaskSourcePhase> phases,
+                Set<String> selectedPhaseIds,
+                OutputClosureContract closure) {
+            task.remove(ConfiguredSourcePhaseContract.PLAN_FIELD);
+            task.remove(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD);
+            JsonArray catalog = new JsonArray();
+            JsonArray selected = new JsonArray();
+            for (TaskSourcePhase phase : phases) {
+                if (!phaseInsideSelectedCall(
+                        phase.occurrence, task, closure)) {
+                    continue;
+                }
+                catalog.add(phase.encoded.deepCopy());
+                if (selectedPhaseIds != null && selectedPhaseIds.contains(
+                        phase.occurrence.phaseId())) {
+                    selected.add(phase.occurrence.phaseId());
+                }
+            }
+            if (selectedPhaseIds != null
+                    && selected.size() != selectedPhaseIds.size()) {
+                throw new IllegalArgumentException("selected configured "
+                        + "source phase is outside the replay call");
+            }
+            if (catalog.size() > 0) {
+                task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, catalog);
+            }
+            if (selected.size() > 0) {
+                task.add(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD,
+                        selected);
+            }
+        }
+
+        private static final class TaskSourcePhase {
+            private final ConfiguredSourcePhaseContract.Occurrence occurrence;
+            private final JsonObject encoded;
+
+            private TaskSourcePhase(
+                    ConfiguredSourcePhaseContract.Occurrence occurrence,
+                    JsonObject encoded) {
+                this.occurrence = occurrence;
+                this.encoded = encoded;
+            }
+        }
+
+        /** Every configured source in a scheduled region must be reachable. */
+        void bindSourceSelectors(List<JsonObject> tasks)
+                throws IOException {
+            if (!configured) return;
+            List<SourceFlowTask> flow = new ArrayList<>();
+            Map<String, List<SourceFlowTask>> byOccurrence =
+                    new LinkedHashMap<>();
+            for (JsonObject task : tasks) {
+                SourceFlowTask indexed = new SourceFlowTask(task);
+                flow.add(indexed);
+                byOccurrence.computeIfAbsent(indexed.occurrenceId,
+                        ignored -> new ArrayList<>()).add(indexed);
+            }
+
+            // Seed each new version at the output phase that its declaration
+            // owns.  A task that also consumes the logical source therefore
+            // still sees only the predecessor on its input side.
+            for (SourceFlowTask task : flow) task.seedOwnSources();
+            Map<String, String> edgeEndpoints = new LinkedHashMap<>();
+            boolean changed;
+            do {
+                changed = false;
+                Set<String> seenEdges = new LinkedHashSet<>();
+                for (SourceFlowTask owner : flow) {
+                    for (JsonElement element : array(owner.json,
+                            "edgeBindings")) {
+                        if (!element.isJsonObject()) continue;
+                        JsonObject edge = element.getAsJsonObject();
+                        String edgeId = string(edge, "edgeId");
+                        String fromOccurrence = string(edge,
+                                "fromOccurrenceId");
+                        String toOccurrence = string(edge,
+                                "toOccurrenceId");
+                        String outputPort = string(edge, "fromOutputPort");
+                        String inputPort = string(edge, "toInputPort");
+                        String edgeKey = edgeId + "\n" + fromOccurrence
+                                + "\n" + outputPort + "\n" + toOccurrence
+                                + "\n" + inputPort;
+                        if (edgeId.isEmpty() || fromOccurrence.isEmpty()
+                                || toOccurrence.isEmpty()
+                                || outputPort.isEmpty()
+                                || inputPort.isEmpty()) {
+                            continue;
+                        }
+                        String endpoints = fromOccurrence + "\n"
+                                + outputPort + "\n" + toOccurrence + "\n"
+                                + inputPort;
+                        String priorEndpoints = edgeEndpoints.putIfAbsent(
+                                edgeId, endpoints);
+                        if (priorEndpoints != null
+                                && !priorEndpoints.equals(endpoints)) {
+                            throw new IOException("configured source flow edge "
+                                    + edgeId + " has conflicting endpoints");
+                        }
+                        if (!seenEdges.add(edgeKey)) continue;
+                        for (SourceFlowTask producer
+                                : byOccurrence.getOrDefault(fromOccurrence,
+                                Collections.<SourceFlowTask>emptyList())) {
+                            if (!producer.publishes(outputPort, edgeId)) {
+                                continue;
+                            }
+                            for (SourceFlowTask consumer
+                                    : byOccurrence.getOrDefault(toOccurrence,
+                                    Collections.<SourceFlowTask>emptyList())) {
+                                for (SourceVersion version
+                                        : producer.outputVersions(outputPort)) {
+                                    changed |= consumer.addInputVersion(
+                                            inputPort, version,
+                                            inputArrival(edge), edgeId);
+                                }
+                            }
+                        }
+                    }
+                }
+                for (SourceFlowTask task : flow) {
+                    changed |= task.propagateInputsToOutputs();
+                }
+            } while (changed);
+
+            for (SourceFlowTask indexed : flow) {
+                JsonObject task = indexed.json;
+                RegionSelection selection = regions.get(
+                        string(task, "regionId"));
+                if (selection == null
+                        || selection.selectorDeclarations.isEmpty()) {
+                    continue;
+                }
+                JsonArray selected = new JsonArray();
+                for (JsonObject declaration
+                        : selection.selectorDeclarations) {
+                    if (!indexed.requiresSelector(declaration)) {
+                        continue;
+                    }
+                    String sourceId = string(declaration, "sourceId");
+                    String field = string(declaration, "fieldSignature");
+                    List<ConfiguredSourcePhaseContract.Occurrence> consumes =
+                            indexed.consumePhases(sourceId);
+                    if (consumes.isEmpty()) {
+                        throw new IOException("configured source selector "
+                                + sourceId + " required by "
+                                + ConfiguredSourceSelectorContract
+                                .requiredBySourceIds(declaration)
+                                + " in consumer task " + indexed.taskId
+                                + " has no exact CONSUME phase");
+                    }
+                    for (ConfiguredSourcePhaseContract.Occurrence consume
+                            : consumes) {
+                        List<SourceVersion> matching =
+                                indexed.inputVersions(sourceId, field,
+                                        consume);
+                        if (matching.size() != 1) {
+                            List<String> candidates = new ArrayList<>();
+                            for (SourceVersion candidate : matching) {
+                                candidates.add(candidate.taskId + "@"
+                                        + candidate.occurrenceId + ":"
+                                        + candidate.phaseId);
+                            }
+                            Collections.sort(candidates);
+                            throw new IOException("configured source selector "
+                                    + sourceId + " " + field + " consumePhase="
+                                    + consume.phaseId() + " required by "
+                                    + ConfiguredSourceSelectorContract
+                                    .requiredBySourceIds(declaration)
+                                    + " in consumer task " + indexed.taskId
+                                    + "@" + indexed.occurrenceId + " region "
+                                    + string(task, "regionId")
+                                    + " requires one exact upstream source "
+                                    + "version; found " + matching.size()
+                                    + " candidates " + candidates);
+                        }
+                        SourceVersion producer = matching.get(0);
+                        selected.add(
+                                ConfiguredSourceSelectorContract.exactInt(
+                                        consume.phaseId(), producer.phaseId,
+                                        producer.occurrenceId, sourceId,
+                                        field));
+                    }
+                }
+                if (selected.size() > 0) {
+                    task.add(ConfiguredSourceSelectorContract.TASK_FIELD,
+                            selected);
+                }
             }
         }
 
@@ -3045,30 +3663,174 @@ public final class ConcolicScheduler {
                 throws IOException {
             if (!configured) return;
             Set<String> scheduledRegions = new LinkedHashSet<>();
-            Map<String, Set<String>> occurrences = new LinkedHashMap<>();
+            Map<String, Set<ClosureGoalKind>> scheduledKinds =
+                    new LinkedHashMap<>();
+            Map<String, Map<String, SourcePhaseSelection>> versions =
+                    new LinkedHashMap<>();
             Set<String> coveredOutputs = new LinkedHashSet<>();
+            Set<String> coveredTargetInputs = new LinkedHashSet<>();
+            Set<String> expectedTargetInputs = new LinkedHashSet<>();
             for (JsonObject task : tasks) {
                 String region = string(task, "regionId");
                 scheduledRegions.add(region);
+                ClosureGoalKind taskKind = ClosureGoalKind.fromTask(task);
+                scheduledKinds.computeIfAbsent(region,
+                        ignored -> new LinkedHashSet<>()).add(
+                        taskKind);
                 for (JsonElement element : array(task,
                         SymbolicSourceEvidence.TASK_FIELD)) {
                     if (!element.isJsonObject()) continue;
-                    String sourceId = string(element.getAsJsonObject(),
-                            "sourceId");
-                    occurrences.computeIfAbsent(region + "\n" + sourceId,
-                            ignored -> new LinkedHashSet<>()).add(
-                            string(task, "occurrenceId"));
+                    JsonObject declaration = element.getAsJsonObject();
+                    String sourceId = string(declaration, "sourceId");
+                    String phaseId = string(declaration, "sourcePhaseId");
+                    if (sourceId.isEmpty() || phaseId.isEmpty()) {
+                        throw new IOException("configured symbolic source "
+                                + "selection lacks exact phase identity in "
+                                + string(task, "taskId"));
+                    }
+                    Set<String> requiredOutputs =
+                            SourceField.requiredOutputs(declaration);
+                    Set<String> requiredTargetInputs =
+                            SourceField.requiredTargetInputs(declaration);
+                    if (requiredOutputs.isEmpty()
+                            == requiredTargetInputs.isEmpty()) {
+                        throw new IOException("configured symbolic source "
+                                + sourceId + " has no exact boundary role in "
+                                + string(task, "taskId"));
+                    }
+                    String expectedRole = requiredOutputs.isEmpty()
+                            ? "TARGET_REACH" : "OUTPUT_RELATION";
+                    SourcePhaseSelection selected = versions
+                            .computeIfAbsent(region + "\n" + sourceId,
+                                    ignored -> new LinkedHashMap<>())
+                            .computeIfAbsent(phaseId,
+                                    ignored -> new SourcePhaseSelection());
+                    String sourceRole = string(declaration, "sourceRole");
+                    if (!expectedRole.equals(sourceRole)
+                            || "OUTPUT_RELATION".equals(expectedRole)
+                            != taskKind.capturesOutputRelation()) {
+                        throw new IOException("configured symbolic source "
+                                + sourceId + " has a boundary/task role "
+                                + "mismatch in "
+                                + string(task, "taskId"));
+                    }
+                    selected.occurrences.add(string(task, "occurrenceId"));
+                    selected.tasks.add(string(task, "taskId"));
+                    selected.roles.add(sourceRole);
                     for (String output : SourceField.requiredOutputs(
-                            element.getAsJsonObject())) {
+                            declaration)) {
                         coveredOutputs.add(region + "\n" + sourceId + "\n"
                                 + output);
                     }
+                    for (String input : SourceField.requiredTargetInputs(
+                            declaration)) {
+                        coveredTargetInputs.add(region + "\n" + sourceId
+                                + "\n" + input);
+                    }
+                }
+                if (taskKind.capturesTargetReach()) {
+                    JsonArray inputActions = array(task,
+                            InputActionCatalog.FIELD);
+                    if (inputActions.size() == 0) {
+                        inputActions = array(task, "selectedActions");
+                    }
+                    RegionSelection selection = regions.get(region);
+                    for (JsonElement element : inputActions) {
+                        if (!element.isJsonObject() || selection == null) {
+                            continue;
+                        }
+                        JsonObject action = element.getAsJsonObject();
+                        if (!"CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED".equals(
+                                string(action, "symbolicDemand"))
+                                || SourceField.relationBoundTargetInput(
+                                action)) {
+                            continue;
+                        }
+                        String field = RegionSelection.actionField(action);
+                        String input = firstNonBlank(string(action, "portId"),
+                                string(action, "symbol"));
+                        if (field.isEmpty() || input.isEmpty()) continue;
+                        for (SourceField source : selection.sources) {
+                            if (!field.equals(source.fieldSignature)
+                                    || !source.inferOutputs
+                                    && !source.requiredTargetInputPorts
+                                    .contains(input)) {
+                                continue;
+                            }
+                            expectedTargetInputs.add(region + "\n"
+                                    + source.sourceId + "\n" + input);
+                        }
+                    }
                 }
             }
+            if (!coveredTargetInputs.containsAll(expectedTargetInputs)) {
+                Set<String> missing = new LinkedHashSet<>(
+                        expectedTargetInputs);
+                missing.removeAll(coveredTargetInputs);
+                throw new IOException("configured target-local source "
+                        + "frontier lacks exact evidence: " + missing);
+            }
+            Set<String> validatedDiscovered = new LinkedHashSet<>();
             for (Map.Entry<String, RegionSelection> region
                     : regions.entrySet()) {
                 if (!scheduledRegions.contains(region.getKey())) continue;
                 for (SourceField source : region.getValue().sources) {
+                    if (source.inferOutputs) {
+                        String declaration = source.declarationIdentity();
+                        if (!validatedDiscovered.add(declaration)) continue;
+                        boolean scheduledOutputDeclaration = false;
+                        Map<String, SourcePhaseSelection> selectedOutputs =
+                                new LinkedHashMap<>();
+                        for (Map.Entry<String, RegionSelection> candidate
+                                : regions.entrySet()) {
+                            if (!scheduledRegions.contains(candidate.getKey())) {
+                                continue;
+                            }
+                            for (SourceField peer : candidate.getValue().sources) {
+                                if (!peer.inferOutputs || !declaration.equals(
+                                        peer.declarationIdentity())) {
+                                    continue;
+                                }
+                                if (scheduledKinds.getOrDefault(
+                                        candidate.getKey(),
+                                        Collections.<ClosureGoalKind>emptySet())
+                                        .contains(ClosureGoalKind
+                                                .OUTPUT_RELATION_CLOSURE)) {
+                                    scheduledOutputDeclaration = true;
+                                }
+                                String key = candidate.getKey() + "\n"
+                                        + peer.sourceId;
+                                Map<String, SourcePhaseSelection>
+                                        selectedVersions = versions.get(key);
+                                if (selectedVersions == null
+                                        || selectedVersions.isEmpty()) {
+                                    continue;
+                                }
+                                validateSourcePhaseSelections(
+                                        "discovered symbolic source "
+                                                + candidate.getKey() + ":"
+                                                + peer.sourceId,
+                                        selectedVersions);
+                                for (Map.Entry<String,
+                                        SourcePhaseSelection> selected
+                                        : selectedVersions.entrySet()) {
+                                    if (selected.getValue().roles.contains(
+                                            "OUTPUT_RELATION")) {
+                                        selectedOutputs.putIfAbsent(
+                                                selected.getKey(),
+                                                selected.getValue());
+                                    }
+                                }
+                            }
+                        }
+                        if (scheduledOutputDeclaration
+                                && selectedOutputs.isEmpty()) {
+                            throw new IOException("discovered symbolic source "
+                                    + source.sourceId + " is not in any selected "
+                                    + "output closure");
+                        }
+                        continue;
+                    }
                     for (String output
                             : source.requiredOutputFieldSignatures) {
                         String coverageKey = region.getKey() + "\n"
@@ -3080,21 +3842,55 @@ public final class ConcolicScheduler {
                                     + ":" + output);
                         }
                     }
-                    Set<String> selected = occurrences.get(region.getKey()
-                            + "\n" + source.sourceId);
-                    if (selected == null || selected.isEmpty()) {
-                        throw new IOException("configured symbolic source is "
-                                + "not in the selected output closure: "
-                                + region.getKey() + ":" + source.sourceId);
+                    for (String input : source.requiredTargetInputPorts) {
+                        String coverageKey = region.getKey() + "\n"
+                                + source.sourceId + "\n" + input;
+                        if (!coveredTargetInputs.contains(coverageKey)) {
+                            throw new IOException("configured symbolic source "
+                                    + "target input is not in the selected "
+                                    + "target frontier: " + region.getKey()
+                                    + ":" + source.sourceId + ":" + input);
+                        }
                     }
-                    if (selected.size() != 1 || selected.contains("")) {
-                        throw new IOException("configured symbolic source "
-                        + "matches more than one occurrence: "
-                                + region.getKey() + ":" + source.sourceId
-                                + " -> " + selected);
-                    }
+                    validateSourcePhaseSelections(
+                            "configured symbolic source "
+                                    + region.getKey() + ":" + source.sourceId,
+                            versions.get(region.getKey() + "\n"
+                                    + source.sourceId));
                 }
             }
+        }
+
+        private static void validateSourcePhaseSelections(String label,
+                Map<String, SourcePhaseSelection> versions)
+                throws IOException {
+            if (versions == null || versions.isEmpty()) {
+                throw new IOException(label
+                        + " is not in the selected output closure");
+            }
+            for (Map.Entry<String, SourcePhaseSelection> version
+                    : versions.entrySet()) {
+                SourcePhaseSelection selected = version.getValue();
+                if (version.getKey().isEmpty()
+                        || selected.occurrences.size() != 1
+                        || selected.occurrences.contains("")) {
+                    throw new IOException(label + " phase "
+                            + version.getKey() + " matches more than one "
+                            + "occurrence: " + selected.occurrences);
+                }
+                if (selected.tasks.size() != 1
+                        || selected.tasks.contains("")) {
+                    throw new IOException(label + " phase "
+                            + version.getKey() + " matches more than one "
+                            + "output task: " + selected.tasks);
+                }
+            }
+        }
+
+        private static final class SourcePhaseSelection {
+            private final Set<String> occurrences = new LinkedHashSet<>();
+            private final Set<String> tasks = new LinkedHashSet<>();
+            private final Set<String> roles = new LinkedHashSet<>();
         }
 
         private int symbolicCount(JsonArray actions) {
@@ -3113,6 +3909,21 @@ public final class ConcolicScheduler {
             private final Set<String> ports = new LinkedHashSet<>();
             private final Set<String> cells = new LinkedHashSet<>();
             private final List<SourceField> sources = new ArrayList<>();
+            private final List<JsonObject> selectorDeclarations =
+                    new ArrayList<>();
+
+            private void addSelectorDeclaration(JsonObject declaration)
+                    throws IOException {
+                String sourceId = string(declaration, "sourceId");
+                for (JsonObject prior : selectorDeclarations) {
+                    if (sourceId.equals(string(prior, "sourceId"))) {
+                        throw new IOException(
+                                ConfiguredSourceSelectorContract.CONFIG_FIELD
+                                        + " repeats sourceId " + sourceId);
+                    }
+                }
+                selectorDeclarations.add(declaration.deepCopy());
+            }
 
             private void addSource(SourceField source) throws IOException {
                 for (SourceField prior : sources) {
@@ -3124,16 +3935,41 @@ public final class ConcolicScheduler {
                                             + " gives one sourceId two fields: "
                                             + source.sourceId);
                         }
-                        if (prior.requiredOutputFieldSignatures.contains(
-                                source.requiredOutputFieldSignature)) {
+                        if (!prior.requiredOutputFieldSignatures.isEmpty()
+                                != !source.requiredOutputFieldSignatures
+                                .isEmpty()
+                                || !prior.requiredTargetInputPorts.isEmpty()
+                                != !source.requiredTargetInputPorts
+                                .isEmpty()) {
                             throw new IOException(
                                     SymbolicSourceEvidence.TASK_FIELD
-                                            + " repeats one source output: "
+                                            + " gives one source both output "
+                                            + "and target roles: "
+                                            + source.sourceId);
+                        }
+                        Set<String> repeated = new LinkedHashSet<>(
+                                prior.requiredOutputFieldSignatures);
+                        repeated.retainAll(
+                                source.requiredOutputFieldSignatures);
+                        Set<String> repeatedInputs = new LinkedHashSet<>(
+                                prior.requiredTargetInputPorts);
+                        repeatedInputs.retainAll(
+                                source.requiredTargetInputPorts);
+                        if (!repeated.isEmpty() || !repeatedInputs.isEmpty()) {
+                            throw new IOException(
+                                    SymbolicSourceEvidence.TASK_FIELD
+                                            + " repeats one source boundary: "
                                             + source.sourceId + ":"
-                                            + source.requiredOutputFieldSignature);
+                                            + firstNonBlank(
+                                            repeated.stream().findFirst()
+                                                    .orElse(""),
+                                            repeatedInputs.stream().findFirst()
+                                                    .orElse("")));
                         }
                         prior.requiredOutputFieldSignatures.addAll(
                                 source.requiredOutputFieldSignatures);
+                        prior.requiredTargetInputPorts.addAll(
+                                source.requiredTargetInputPorts);
                         return;
                     }
                 }
@@ -3156,11 +3992,17 @@ public final class ConcolicScheduler {
                 sources.add(source);
             }
 
-            private void addAll(Set<String> output, JsonArray values) {
+            private void addAll(Set<String> output, JsonArray values,
+                                String field) throws IOException {
                 for (JsonElement element : values) {
-                    if (!element.isJsonPrimitive()) continue;
-                    String value = firstNonBlank(element.getAsString());
-                    if (!value.isEmpty()) output.add(value);
+                    if (!element.isJsonPrimitive()
+                            || !element.getAsJsonPrimitive().isString()
+                            || firstNonBlank(element.getAsString()).isEmpty()) {
+                        throw new IOException("symbolic input selection "
+                                + field + " entries must be non-empty "
+                                + "strings");
+                    }
+                    output.add(firstNonBlank(element.getAsString()));
                 }
             }
 
@@ -3190,27 +4032,322 @@ public final class ConcolicScheduler {
             }
         }
 
+        /** One accepted-task candidate for a logical source version. */
+        private static final class SourceVersion {
+            private final String taskId;
+            private final String occurrenceId;
+            private final String phaseId;
+            private final String sourceId;
+            private final String fieldSignature;
+
+            private SourceVersion(String taskId, String occurrenceId,
+                                  String phaseId, String sourceId,
+                                  String fieldSignature) {
+                this.taskId = taskId;
+                this.occurrenceId = occurrenceId;
+                this.phaseId = phaseId;
+                this.sourceId = sourceId;
+                this.fieldSignature = fieldSignature;
+            }
+
+            private String identity() {
+                return taskId + "\n" + occurrenceId + "\n" + phaseId
+                        + "\n" + sourceId
+                        + "\n" + fieldSignature;
+            }
+
+            private String logicalIdentity() {
+                return sourceId + "\n" + fieldSignature;
+            }
+        }
+
+        /** One version's exact arrival at one selected consumer input. */
+        private static final class SourceArrival {
+            private final SourceVersion version;
+            private final long eventSeq;
+
+            private SourceArrival(SourceVersion version, long eventSeq) {
+                this.version = version;
+                this.eventSeq = eventSeq;
+            }
+        }
+
+        /** Port-sensitive source-version flow over the selected task graph. */
+        private static final class SourceFlowTask {
+            private final JsonObject json;
+            private final String taskId;
+            private final String occurrenceId;
+            private final Map<String, FlowOutput> outputs =
+                    new LinkedHashMap<>();
+            private final Map<String, LinkedHashMap<String, SourceArrival>>
+                    inputVersions = new LinkedHashMap<>();
+            private final List<ConfiguredSourcePhaseContract.Occurrence>
+                    sourcePhases;
+            private final Set<String> selectedSourcePhaseIds;
+
+            private SourceFlowTask(JsonObject task) throws IOException {
+                this.json = task;
+                this.taskId = string(task, "taskId");
+                this.occurrenceId = string(task, "occurrenceId");
+                if (taskId.isEmpty() || occurrenceId.isEmpty()) {
+                    throw new IOException("configured source flow task has "
+                            + "no exact task/occurrence identity");
+                }
+                try {
+                    sourcePhases = ConfiguredSourcePhaseContract.occurrencesOf(
+                            array(task,
+                                    ConfiguredSourcePhaseContract.PLAN_FIELD));
+                    selectedSourcePhaseIds = new LinkedHashSet<>(
+                            ConfiguredSourcePhaseContract.selectedPhaseIdsOf(
+                                    task, sourcePhases));
+                } catch (IllegalArgumentException malformed) {
+                    throw new IOException("configured source flow task has "
+                            + "malformed phases in " + taskId, malformed);
+                }
+                for (JsonElement element : array(object(task,
+                        OutputClosureContract.FIELD), "members")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject member = element.getAsJsonObject();
+                    JsonObject output = object(member, "output");
+                    JsonObject slice = object(member, "slice");
+                    String port = string(output, "portId");
+                    String cell = string(output, "cell");
+                    if (port.isEmpty() || cell.isEmpty()
+                            || outputs.put(port,
+                            new FlowOutput(cell, slice)) != null) {
+                        throw new IOException("configured source flow has "
+                                + "a malformed output member in " + taskId);
+                    }
+                }
+            }
+
+            private void seedOwnSources() throws IOException {
+                for (JsonElement element : array(json,
+                        SymbolicSourceEvidence.TASK_FIELD)) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject source = element.getAsJsonObject();
+                    String sourceId = string(source, "sourceId");
+                    String phaseId = string(source, "sourcePhaseId");
+                    String field = string(source, "fieldSignature");
+                    Set<String> cells = SourceField.requiredOutputs(source);
+                    if (sourceId.isEmpty() || phaseId.isEmpty()
+                            || field.isEmpty()
+                            || cells.isEmpty()) {
+                        continue;
+                    }
+                    if (!selectedSourcePhaseIds.contains(phaseId)) {
+                        throw new IOException("configured source " + sourceId
+                                + " is not selected in phase catalog of "
+                                + taskId);
+                    }
+                    SourceVersion version = new SourceVersion(taskId,
+                            occurrenceId, phaseId, sourceId, field);
+                    boolean seeded = false;
+                    for (FlowOutput output : outputs.values()) {
+                        if (cells.contains(output.cell)) {
+                            output.seed(version);
+                            seeded = true;
+                        }
+                    }
+                    if (!seeded) {
+                        throw new IOException("configured source " + sourceId
+                                + " has no exact output phase in " + taskId);
+                    }
+                }
+            }
+
+            private boolean publishes(String outputPort, String edgeId) {
+                FlowOutput output = outputs.get(outputPort);
+                return output != null && output.edgeIds.contains(edgeId);
+            }
+
+            private List<SourceVersion> outputVersions(String outputPort) {
+                FlowOutput output = outputs.get(outputPort);
+                return output == null
+                        ? Collections.<SourceVersion>emptyList()
+                        : new ArrayList<>(output.versions.values());
+            }
+
+            private boolean addInputVersion(
+                    String inputPort, SourceVersion version,
+                    long arrivalEventSeq, String edgeId) {
+                if (inputPort.isEmpty() || version == null
+                        || arrivalEventSeq <= 0L || safe(edgeId).isEmpty()) {
+                    return false;
+                }
+                LinkedHashMap<String, SourceArrival> arrivals = inputVersions
+                        .computeIfAbsent(inputPort,
+                                ignored -> new LinkedHashMap<>());
+                SourceArrival prior = arrivals.get(version.identity());
+                if (prior != null && prior.eventSeq >= arrivalEventSeq) {
+                    return false;
+                }
+                arrivals.put(version.identity(), new SourceArrival(version,
+                        arrivalEventSeq));
+                return true;
+            }
+
+            private boolean propagateInputsToOutputs() {
+                boolean changed = false;
+                for (FlowOutput output : outputs.values()) {
+                    for (String input : output.inputPorts) {
+                        for (SourceArrival arrival : inputVersions
+                                .getOrDefault(input,
+                                        new LinkedHashMap<String,
+                                                SourceArrival>()).values()) {
+                            changed |= output.propagate(arrival.version);
+                        }
+                    }
+                }
+                return changed;
+            }
+
+            /** Whether this exact task declares a source that needs it. */
+            private boolean requiresSelector(JsonObject declaration) {
+                Set<String> requiredBy = new LinkedHashSet<>(
+                        ConfiguredSourceSelectorContract
+                                .requiredBySourceIds(declaration));
+                for (JsonElement element : array(json,
+                        SymbolicSourceEvidence.TASK_FIELD)) {
+                    if (element.isJsonObject()
+                            && requiredBy.contains(string(
+                            element.getAsJsonObject(), "sourceId"))) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            private List<ConfiguredSourcePhaseContract.Occurrence>
+                    consumePhases(String sourceId) {
+                List<ConfiguredSourcePhaseContract.Occurrence> result =
+                        new ArrayList<>();
+                for (ConfiguredSourcePhaseContract.Occurrence phase
+                        : sourcePhases) {
+                    if (phase.phase()
+                            == ConfiguredSourcePhaseContract.Phase.CONSUME
+                            && selectedSourcePhaseIds.contains(
+                            phase.phaseId())
+                            && safe(sourceId).equals(phase.sourceId())) {
+                        result.add(phase);
+                    }
+                }
+                return result;
+            }
+
+            private List<SourceVersion> inputVersions(
+                    String sourceId, String fieldSignature,
+                    ConfiguredSourcePhaseContract.Occurrence consume) {
+                Map<String, SourceArrival> exact = new LinkedHashMap<>();
+                for (Map<String, SourceArrival> port
+                        : inputVersions.values()) {
+                    for (SourceArrival arrival : port.values()) {
+                        SourceVersion version = arrival.version;
+                        if (sourceId.equals(version.sourceId)
+                                && fieldSignature.equals(
+                                version.fieldSignature)
+                                && !taskId.equals(version.taskId)
+                                && arrival.eventSeq
+                                < consume.runtimeEventSeq()) {
+                            SourceArrival prior = exact.get(
+                                    version.identity());
+                            if (prior == null || arrival.eventSeq
+                                    > prior.eventSeq) {
+                                exact.put(version.identity(), arrival);
+                            }
+                        }
+                    }
+                }
+                long latest = -1L;
+                for (SourceArrival arrival : exact.values()) {
+                    latest = Math.max(latest, arrival.eventSeq);
+                }
+                List<SourceVersion> result = new ArrayList<>();
+                for (SourceArrival arrival : exact.values()) {
+                    if (arrival.eventSeq == latest) {
+                        result.add(arrival.version);
+                    }
+                }
+                return result;
+            }
+        }
+
+        /** Exact consumer-side event at which one selected edge arrived. */
+        private static long inputArrival(JsonObject edge) {
+            boolean protocol = "RUNTIME_PROTOCOL_FLOW".equals(
+                    string(edge, "kind"));
+            long primary = longInteger(edge, protocol
+                    ? "receiverEventSeq" : "readerEventSeq", -1L);
+            return primary > 0L ? primary : longInteger(edge, protocol
+                    ? "readerEventSeq" : "receiverEventSeq", -1L);
+        }
+
+        private static final class FlowOutput {
+            private final String cell;
+            private final Set<String> inputPorts = new LinkedHashSet<>();
+            private final Set<String> edgeIds = new LinkedHashSet<>();
+            private final Set<String> ownLogicalVersions =
+                    new LinkedHashSet<>();
+            private final LinkedHashMap<String, SourceVersion> versions =
+                    new LinkedHashMap<>();
+
+            private FlowOutput(String cell, JsonObject slice) {
+                this.cell = cell;
+                addStrings(inputPorts, array(slice, "inputPorts"));
+                addStrings(edgeIds, array(slice, "causalEdgeIds"));
+            }
+
+            private void seed(SourceVersion version) {
+                ownLogicalVersions.add(version.logicalIdentity());
+                versions.put(version.identity(), version);
+            }
+
+            private boolean propagate(SourceVersion version) {
+                // A source hook in this task runs before its selected output
+                // boundary.  Its new version shadows the predecessor only at
+                // that boundary, while the predecessor remains visible on
+                // the input side for this task's selector hook.
+                return !ownLogicalVersions.contains(version.logicalIdentity())
+                        && versions.putIfAbsent(version.identity(), version)
+                        == null;
+            }
+
+            private static void addStrings(
+                    Set<String> destination, JsonArray source) {
+                for (JsonElement element : source) {
+                    if (element.isJsonPrimitive()) {
+                        String value = safe(element.getAsString());
+                        if (!value.isEmpty()) destination.add(value);
+                    }
+                }
+            }
+        }
+
         /** One exact program source and the output state it must influence. */
         private static final class SourceField {
             private final String sourceId;
             private final String fieldSignature;
-            private final String requiredOutputFieldSignature;
             private final Set<String> requiredOutputFieldSignatures =
                     new LinkedHashSet<>();
+            private final Set<String> requiredTargetInputPorts =
+                    new LinkedHashSet<>();
             private final boolean inferOutputs;
+            private final String declarationMethod;
+            private final int declarationUnitIndex;
 
             private SourceField(String sourceId, String fieldSignature,
-                                String requiredOutputFieldSignature,
-                                boolean inferOutputs) {
+                                Set<String> requiredOutputs,
+                                Set<String> requiredTargetInputs,
+                                boolean inferOutputs,
+                                String declarationMethod,
+                                int declarationUnitIndex) {
                 this.sourceId = sourceId;
                 this.fieldSignature = fieldSignature;
-                this.requiredOutputFieldSignature =
-                        requiredOutputFieldSignature;
+                this.requiredOutputFieldSignatures.addAll(requiredOutputs);
+                this.requiredTargetInputPorts.addAll(requiredTargetInputs);
                 this.inferOutputs = inferOutputs;
-                if (!requiredOutputFieldSignature.isEmpty()) {
-                    this.requiredOutputFieldSignatures.add(
-                            requiredOutputFieldSignature);
-                }
+                this.declarationMethod = safe(declarationMethod);
+                this.declarationUnitIndex = declarationUnitIndex;
             }
 
             private static SourceField from(JsonObject row)
@@ -3218,15 +4355,16 @@ public final class ConcolicScheduler {
                 String sourceId = firstNonBlank(string(row, "sourceId"));
                 String field = firstNonBlank(string(row,
                         "fieldSignature"));
-                String output = firstNonBlank(string(row,
-                        "requiredOutputFieldSignature"));
+                Set<String> outputs = requiredOutputs(row);
+                Set<String> targetInputs = requiredTargetInputs(row);
                 if (sourceId.isEmpty() || field.isEmpty()
-                        || output.isEmpty()) {
+                        || outputs.isEmpty() == targetInputs.isEmpty()) {
                     throw new IOException(SymbolicSourceEvidence.TASK_FIELD
-                            + " needs sourceId, fieldSignature and "
-                            + "requiredOutputFieldSignature");
+                            + " needs sourceId, fieldSignature and exactly "
+                            + "one of output or target-input boundaries");
                 }
-                return new SourceField(sourceId, field, output, false);
+                return new SourceField(sourceId, field, outputs,
+                        targetInputs, false, "", -1);
             }
 
             private static SourceField fromDiscovered(JsonObject row)
@@ -3244,12 +4382,34 @@ public final class ConcolicScheduler {
                     throw new IOException("malformed static symbolic source "
                             + "declaration");
                 }
-                return new SourceField(sourceId, field, "", true);
+                String method = string(row, "declarationMethod");
+                int unit = JsonFields.exactInteger(row,
+                        "declarationUnitIndex", -1);
+                if (method.isEmpty() || unit < 0) {
+                    throw new IOException("malformed static symbolic source "
+                            + "declaration location");
+                }
+                return new SourceField(sourceId, field,
+                        Collections.<String>emptySet(),
+                        Collections.<String>emptySet(), true, method, unit);
+            }
+
+            private String sourceIdentity() {
+                return sourceId + "\n" + fieldSignature;
+            }
+
+            private String declarationIdentity() {
+                return sourceId + "\n" + fieldSignature + "\n"
+                        + declarationMethod + "\n" + declarationUnitIndex;
             }
 
             private Set<String> matchingOutputs(
                     OutputClosureContract closure) {
                 Set<String> matches = new LinkedHashSet<>();
+                if (!inferOutputs
+                        && requiredOutputFieldSignatures.isEmpty()) {
+                    return matches;
+                }
                 for (OutputClosureContract.Member member
                         : closure.members()) {
                     if (!inferOutputs
@@ -3269,12 +4429,72 @@ public final class ConcolicScheduler {
                 return matches;
             }
 
-            private JsonObject toJson(Set<String> outputs) {
+            private Set<String> matchingTargetInputs(JsonArray actions) {
+                Set<String> matches = new LinkedHashSet<>();
+                if (!inferOutputs && requiredTargetInputPorts.isEmpty()) {
+                    return matches;
+                }
+                for (JsonElement element : actions == null
+                        ? new JsonArray() : actions) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject action = element.getAsJsonObject();
+                    String input = firstNonBlank(string(action, "portId"),
+                            string(action, "symbol"));
+                    if (input.isEmpty()
+                            || !"SYMBOLIC".equals(string(action, "mode"))
+                            || !fieldSignature.equals(
+                            RegionSelection.actionField(action))
+                            || relationBoundTargetInput(action)
+                            || !inferOutputs
+                            && !requiredTargetInputPorts.contains(input)) {
+                        continue;
+                    }
+                    matches.add(input);
+                }
+                return matches;
+            }
+
+            private static boolean relationBoundTargetInput(
+                    JsonObject action) {
+                return "EXACT_INCOMING_COMPOSITION".equals(
+                        string(action, "symbolicDemand"))
+                        || !string(action, "selectedIncomingEdgeId").isEmpty()
+                        || !string(action,
+                        "intraRegionReadFromAuthority").isEmpty();
+            }
+
+            private JsonObject baseJson(
+                    String role,
+                    ConfiguredSourcePhaseContract.Occurrence publish) {
+                if (publish == null
+                        || publish.phase()
+                        != ConfiguredSourcePhaseContract.Phase.PUBLISH
+                        || !sourceId.equals(publish.sourceId())
+                        || !fieldSignature.equals(
+                        publish.fieldSignature())) {
+                    throw new IllegalArgumentException(
+                            "configured source requires its exact PUBLISH "
+                                    + "phase");
+                }
                 JsonObject row = new JsonObject();
                 row.addProperty("authority",
                         SymbolicSourceEvidence.DECLARATION_AUTHORITY);
                 row.addProperty("sourceId", sourceId);
+                row.addProperty("sourcePhaseId", publish.phaseId());
+                row.addProperty("sourceOccurrenceId",
+                        publish.sourceOccurrenceId());
+                row.addProperty("sourcePhaseSiteId", publish.siteId());
+                row.addProperty("sourcePhaseOrdinal",
+                        publish.baselineOrdinal());
                 row.addProperty("fieldSignature", fieldSignature);
+                row.addProperty("sourceRole", role);
+                return row;
+            }
+
+            private JsonObject toOutputJson(
+                    Set<String> outputs,
+                    ConfiguredSourcePhaseContract.Occurrence publish) {
+                JsonObject row = baseJson("OUTPUT_RELATION", publish);
                 if (outputs.size() == 1) {
                     row.addProperty("requiredOutputFieldSignature",
                             outputs.iterator().next());
@@ -3282,6 +4502,21 @@ public final class ConcolicScheduler {
                     JsonArray encoded = new JsonArray();
                     for (String output : outputs) encoded.add(output);
                     row.add("requiredOutputFieldSignatures", encoded);
+                }
+                return row;
+            }
+
+            private JsonObject toTargetJson(
+                    Set<String> inputs,
+                    ConfiguredSourcePhaseContract.Occurrence publish) {
+                JsonObject row = baseJson("TARGET_REACH", publish);
+                if (inputs.size() == 1) {
+                    row.addProperty("requiredTargetInputPort",
+                            inputs.iterator().next());
+                } else {
+                    JsonArray encoded = new JsonArray();
+                    for (String input : inputs) encoded.add(input);
+                    row.add("requiredTargetInputPorts", encoded);
                 }
                 return row;
             }
@@ -3300,6 +4535,20 @@ public final class ConcolicScheduler {
                 }
                 return result;
             }
+
+            private static Set<String> requiredTargetInputs(JsonObject row) {
+                Set<String> result = new LinkedHashSet<>();
+                String single = string(row, "requiredTargetInputPort");
+                if (!single.isEmpty()) result.add(single);
+                for (JsonElement input : array(row,
+                        "requiredTargetInputPorts")) {
+                    if (input.isJsonPrimitive()
+                            && !input.getAsString().isEmpty()) {
+                        result.add(input.getAsString());
+                    }
+                }
+                return result;
+            }
         }
     }
 
@@ -3308,7 +4557,6 @@ public final class ConcolicScheduler {
         private final List<JsonObject> summaries;
         private final Map<String, Region> regionIndex;
         private final DefinitionIndex definitions;
-        private final MergePlan mergePlan;
         private final JsonObject regionPlanIdentity;
         private final SymbolicInputSelection symbolicInputs;
 
@@ -3316,14 +4564,12 @@ public final class ConcolicScheduler {
                              List<JsonObject> summaries,
                              Map<String, Region> regionIndex,
                              DefinitionIndex definitions,
-                             MergePlan mergePlan,
                              JsonObject regionPlanIdentity,
                              SymbolicInputSelection symbolicInputs) {
             this.regionPlans = regionPlans;
             this.summaries = summaries;
             this.regionIndex = regionIndex;
             this.definitions = definitions;
-            this.mergePlan = mergePlan;
             this.regionPlanIdentity = regionPlanIdentity;
             this.symbolicInputs = symbolicInputs;
         }

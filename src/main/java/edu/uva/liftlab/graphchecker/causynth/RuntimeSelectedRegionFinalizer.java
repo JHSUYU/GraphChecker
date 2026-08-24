@@ -9,11 +9,11 @@ import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
 
 import java.io.BufferedReader;
@@ -305,6 +305,12 @@ public final class RuntimeSelectedRegionFinalizer {
                 region.put(StaticSymbolicSourceDeclaration.FIELD,
                         skeleton.get(StaticSymbolicSourceDeclaration.FIELD));
             }
+            if (skeleton.get(
+                    ConfiguredSourcePhaseContract.DECLARATION_FIELD) != null) {
+                region.put(ConfiguredSourcePhaseContract.DECLARATION_FIELD,
+                        skeleton.get(ConfiguredSourcePhaseContract
+                                .DECLARATION_FIELD));
+            }
 
             List<Map<String, Object>> regionGraph = edgesByRegion.getOrDefault(
                     regionId, Collections.emptyList());
@@ -544,24 +550,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     : callee + ".param" + argumentIndex + ":" + javaType;
         }
         return "";
-    }
-
-    /** Erased type of a heap port's leaf field, or {@code ""}. */
-    private static String leafJavaType(Map<String, Object> port) {
-        List<String> declarations = strings(
-                port.get("fieldPathDeclarations"));
-        if (declarations.isEmpty()) {
-            return "";
-        }
-        FieldPathSpec.DeclaredField leaf = FieldPathSpec.declaredField(
-                declarations.get(declarations.size() - 1));
-        return leaf == null ? "" : leaf.type();
-    }
-
-    /** The method half of a {@code <method>#u<index>} site id. */
-    private static String accessMethod(String siteId) {
-        int marker = siteId.lastIndexOf("#u");
-        return marker <= 0 ? "" : siteId.substring(0, marker);
     }
 
     /**
@@ -848,10 +836,10 @@ public final class RuntimeSelectedRegionFinalizer {
      * consumes its position.  The runtime planner reserves over the same
      * ordered seeds one stage later and fails closed on any disagreement.</p>
      *
-     * <p>The ordinal is counted over the <em>root</em> source, while the
-     * identity prefix is the <em>semantic</em> source: for a target region,
-     * the source of the event the selected failure branch was observed on.
-     * Those two are deliberately different inputs.</p>
+     * <p>The identity prefix and ordinal counter are both scoped by the
+     * <em>semantic</em> source: for a target region, the source of the event
+     * the selected failure branch was observed on.  The root source remains
+     * separate causal-anchor evidence for replay admission.</p>
      */
     private static Map<String, Map<String, Object>> mintOccurrences(
             Map<String, List<Map<String, Object>>> targetPoliciesByRegion,
@@ -862,9 +850,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 runtimeBranchObservations);
         OccurrenceMinter minter = new OccurrenceMinter();
         Map<String, Map<String, Object>> byOccurrence = new LinkedHashMap<>();
-        for (Map<String, Object> instance : runtimeInstances == null
-                ? Collections.<Map<String, Object>>emptyList()
-                : runtimeInstances) {
+        for (Map<String, Object> instance : canonicalRuntimeActivations(
+                runtimeInstances, source)) {
             if (!"RUNTIME_REGION_ACTIVATION".equals(
                     text(instance.get("kind")))) {
                 throw new IOException("invalid runtime region activation: "
@@ -891,12 +878,14 @@ public final class RuntimeSelectedRegionFinalizer {
             } else {
                 instance.put("sourceAuthority", "EXPLICIT_TRACE_SOURCE");
             }
-            int ordinal = minter.reserveOrdinal(rootSourceKey, regionId);
+            String semanticSourceKey = semanticSourceKey(
+                    targetPoliciesByRegion.get(regionId), instance,
+                    observations, rootSourceKey);
+            int ordinal = minter.reserveOrdinal(semanticSourceKey, regionId);
             String occurrenceId;
             try {
                 occurrenceId = minter.mint(regionId, rootCallId,
-                        semanticSourceKey(targetPoliciesByRegion.get(regionId),
-                                instance, observations, rootSourceKey),
+                        semanticSourceKey,
                         ordinal);
             } catch (IllegalArgumentException duplicate) {
                 throw new IOException("duplicate runtime region activation: "
@@ -907,6 +896,54 @@ public final class RuntimeSelectedRegionFinalizer {
             byOccurrence.put(occurrenceId, instance);
         }
         return byOccurrence;
+    }
+
+    /**
+     * Canonical activation records at the trace-aggregation boundary.
+     *
+     * <p>The skeleton planner normally owns this uniqueness already, but an
+     * aggregation retry or a combined artifact can present the same complete
+     * row twice.  Such a duplicate is not a second execution: letting it reach
+     * {@link OccurrenceMinter#reserveOrdinal} would consume a position that the
+     * trace never performed and then report a false identity conflict.  Map
+     * equality is the exact parsed-JSON structural comparison here: object-key
+     * order is irrelevant, while list order, numeric representation, owner and
+     * every other payload member remain significant.</p>
+     *
+     * <p>The recorded activation identity is the same one enforced by the
+     * minter, {@code (regionId, rootCallId)}.  Equal payloads retain the first
+     * recorded representative deterministically.  Different payloads under
+     * that identity are ambiguous evidence and fail closed; different roots or
+     * regions are never compared or merged.</p>
+     */
+    private static List<Map<String, Object>> canonicalRuntimeActivations(
+            Collection<Map<String, Object>> runtimeInstances, File source)
+            throws IOException {
+        Map<String, Map<String, Object>> byRecordedActivation =
+                new LinkedHashMap<>();
+        for (Map<String, Object> instance : runtimeInstances == null
+                ? Collections.<Map<String, Object>>emptyList()
+                : runtimeInstances) {
+            if (!"RUNTIME_REGION_ACTIVATION".equals(
+                    text(instance.get("kind")))) {
+                throw new IOException("invalid runtime region activation: "
+                        + source);
+            }
+            String regionId = text(instance.get("regionId"));
+            long rootCallId = longNumber(instance.get("rootCallId"), -1L);
+            if (regionId.isEmpty() || rootCallId < 0L) {
+                throw new IOException("runtime region activation requires "
+                        + "regionId and rootCallId: " + source);
+            }
+            String identity = recordedRootCallKey(regionId, rootCallId);
+            Map<String, Object> previous = byRecordedActivation.putIfAbsent(
+                    identity, instance);
+            if (previous != null && !previous.equals(instance)) {
+                throw new IOException("conflicting runtime region activation "
+                        + "payload: " + regionId + "\n" + rootCallId);
+            }
+        }
+        return new ArrayList<>(byRecordedActivation.values());
     }
 
     /** True when this skeleton's methods were observed in the trace. */
@@ -2988,18 +3025,29 @@ public final class RuntimeSelectedRegionFinalizer {
                     && !demandScope.contains(text(
                     representative.get("method")));
             branch.put("loopControlGuard", loopStructure);
-            branch.put("policy", conflicting || loopStructure
+            // Opposite required outcomes mean this guard selects between
+            // alternative demanded semantics.  That is precisely a producer
+            // case split to explore, not a concrete path assumption.  Only
+            // positively identified loop/carrier structure or code outside
+            // the demanded method scope is replayed without flipping.
+            branch.put("policy", loopStructure
                     || carrierStructure || outsideDemand
                     ? "PATH_ASSUMPTION" : "EXPLORE");
-            branch.put("policyReason", conflicting
-                    ? "CONFLICTING_REQUIRED_OUTCOMES"
-                    : loopStructure ? "BOUND_LOOP_CONTROL_GUARD"
+            branch.put("policyReason", loopStructure
+                    ? "BOUND_LOOP_CONTROL_GUARD"
                     : carrierStructure ? "STRUCTURE_CARRIER_GUARD"
                     : outsideDemand ? "OUTSIDE_DEMANDED_SCOPE"
+                    : conflicting ? "ALTERNATIVE_DEMANDED_OUTCOMES"
                     : "FAILURE_DIRECTED_SEMANTIC_GUARD");
             result.add(branch);
         }
         return result;
+    }
+
+    /** Package-visible regression seam for demand-scoped branch policy. */
+    static List<Map<String, Object>> branchPoliciesForTests(
+            List<Map<String, Object>> edges, Set<String> demandScope) {
+        return branches(edges, demandScope);
     }
 
     private static List<String> operandCells(
@@ -4005,13 +4053,6 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         return new BufferedReader(new InputStreamReader(input,
                 StandardCharsets.UTF_8));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> row(Object value) {
-        return value instanceof Map<?, ?>
-                ? (Map<String, Object>) value
-                : Collections.<String, Object>emptyMap();
     }
 
     @SuppressWarnings("unchecked")

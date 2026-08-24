@@ -3,9 +3,9 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -13,7 +13,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
@@ -21,8 +20,8 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -128,7 +127,11 @@ public final class TopologyDelta {
     private final Set<String> namedTasks = new LinkedHashSet<>();
 
     TopologyDelta(String iterationId, String planDigest) {
-        this.iterationId = iterationId == null ? "" : iterationId.trim();
+        if (iterationId == null || iterationId.trim().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "topology delta iteration id must be non-blank");
+        }
+        this.iterationId = iterationId.trim();
         this.planDigest = planDigest == null ? "" : planDigest;
     }
 
@@ -142,10 +145,6 @@ public final class TopologyDelta {
         for (JsonObject row : ordered.values()) canonical.add(row);
         return CanonicalJson.sha256(canonical);
     }
-
-    String iterationId() { return iterationId; }
-
-    String planDigest() { return planDigest; }
 
     /**
      * Classifies one raw result against its frozen task.
@@ -212,12 +211,13 @@ public final class TopologyDelta {
             if (observation.binding) emit(base, NEW_CAUSAL_BINDING, "");
             if (observation.effect) emit(base, NEW_EFFECT, "");
         }
-        if (!observation.gap.isEmpty()) {
+        // Import admission failures already have one authoritative diagnostic
+        // row. Re-emitting them here doubled every refused replay in the
+        // campaign gap report. The only coverage fact owned solely by this
+        // classifier is a frozen task for which no raw row existed at all.
+        if (PLANNED_TASK_PRODUCED_NO_RESULT.equals(observation.gap)) {
             emit(base, COVERAGE_GAP, observation.gap);
         }
-        String unseen = line < 0 ? ""
-                : unobservedPlannedEvents(raw, plannedSchema, observedSchema);
-        if (!unseen.isEmpty()) emit(base, COVERAGE_GAP, unseen);
     }
 
     /** Names every frozen task this iteration produced no result row for. */
@@ -234,21 +234,6 @@ public final class TopologyDelta {
         List<JsonObject> ordered = new ArrayList<>(rows);
         Collections.sort(ordered, ROW_ORDER);
         return ordered;
-    }
-
-    /** Row counts by delta kind, for the iteration manifest. */
-    SortedMap<String, Integer> countsByKind() {
-        SortedMap<String, Integer> result = new TreeMap<>();
-        for (String kind : new String[]{NEW_LOCAL_CASE, NEW_EFFECT,
-                NEW_OCCURRENCE, NEW_CAUSAL_BINDING, TOPOLOGY_DIVERGENCE,
-                COVERAGE_GAP}) {
-            result.put(kind, Integer.valueOf(0));
-        }
-        for (JsonObject row : rows) {
-            String kind = string(row, "deltaKind");
-            result.put(kind, Integer.valueOf(result.get(kind).intValue() + 1));
-        }
-        return result;
     }
 
     private JsonObject emit(JsonObject base, String deltaKind, String gap) {
@@ -323,6 +308,7 @@ public final class TopologyDelta {
             result.add("outputPorts", new JsonArray());
             result.add("captureBindings", new JsonArray());
             result.add("branchSites", new JsonArray());
+            result.add("configuredSourcePhases", new JsonArray());
             result.addProperty("loopBound", "");
             return result;
         }
@@ -350,6 +336,13 @@ public final class TopologyDelta {
                 : task.outputClosure().outputPorts()));
         result.add("captureBindings", strings(captures));
         result.add("branchSites", strings(sites));
+        List<ConfiguredSourcePhaseContract.Occurrence> phaseCatalog =
+                ConfiguredSourcePhaseContract.occurrencesOf(array(
+                        task.json(),
+                        ConfiguredSourcePhaseContract.PLAN_FIELD));
+        result.add("configuredSourcePhases", strings(
+                ConfiguredSourcePhaseContract.selectedPhaseIdsOf(
+                        task.json(), phaseCatalog)));
         result.addProperty("loopBound", task.loopBound().identity());
         return result;
     }
@@ -398,6 +391,17 @@ public final class TopologyDelta {
             result.add("branchSites", strings(observedBranchSites(raw)));
         } else {
             unobserved.add("branchSites");
+        }
+
+        if (raw.has("configuredSourcePhaseObservations")) {
+            result.add("configuredSourcePhases",
+                    observedSourcePhases(raw));
+        } else if (array(planned, "configuredSourcePhases").size() > 0) {
+            // An older/malformed runtime did not state phase evidence at all.
+            // Preserve the planned digest and name it unobserved; Importer
+            // owns the coverage refusal. A present but shorter/different
+            // ledger below is an observed causal-topology contradiction.
+            unobserved.add("configuredSourcePhases");
         }
 
         String loopSite = boundedLoopSite(raw);
@@ -479,28 +483,45 @@ public final class TopologyDelta {
         if (!plannedLoop.equals(observedLoop)) {
             result.add(divergence("loopBound", plannedLoop, observedLoop));
         }
+        JsonArray plannedPhases = array(plannedSchema,
+                "configuredSourcePhases");
+        JsonArray observedPhases = array(observedSchema,
+                "configuredSourcePhases");
+        if (!plannedPhases.equals(observedPhases)) {
+            result.add(divergence("configuredSourcePhases",
+                    CanonicalJson.render(plannedPhases),
+                    CanonicalJson.render(observedPhases)));
+        }
         return result;
     }
 
-    /**
-     * The planned branch events this execution never decided.
-     *
-     * <p>An activation cut at its declared bound never runs the tail of its
-     * region, so the sites it did not reach are that bound and not a
-     * coverage finding; every other unreached planned site is one.</p>
-     */
-    private static String unobservedPlannedEvents(JsonObject raw,
-                                                  JsonObject plannedSchema,
-                                                  JsonObject observedSchema) {
-        if (ConcolicSummaryImporter.boundedPrefixExit(
-                string(raw, "exitKind"))) {
-            return "";
+    /** Stable replay observation vocabulary, excluding replay-local call ids. */
+    private static JsonArray observedSourcePhases(JsonObject raw) {
+        JsonArray result = new JsonArray();
+        for (JsonElement element : array(raw,
+                "configuredSourcePhaseObservations")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject observation = element.getAsJsonObject();
+            String matched = string(observation, "matchedPhaseId");
+            if (bool(observation, "exactMatch", false)
+                    && bool(observation, "selectedPhase", false)
+                    && !matched.isEmpty()) {
+                result.add(matched);
+                continue;
+            }
+            if (bool(observation, "exactMatch", false)) {
+                // A known replay-call landmark outside the task-required
+                // subsequence is retained for audit but is not a selected
+                // source-version topology endpoint.
+                continue;
+            }
+            result.add("UNMATCHED:" + string(observation, "phaseKind")
+                    + ":" + string(observation, "sourceId")
+                    + ":" + string(observation, "siteId")
+                    + "#" + integer(observation, "replayOrdinal", 0)
+                    + ":" + matched);
         }
-        SortedSet<String> unseen = new TreeSet<>(
-                textSet(array(plannedSchema, "branchSites")));
-        unseen.removeAll(textSet(array(observedSchema, "branchSites")));
-        return unseen.isEmpty() ? ""
-                : PLANNED_BRANCH_EVENT_NOT_OBSERVED + ":" + join(unseen);
+        return result;
     }
 
     private static JsonObject divergence(String field, String planned,
@@ -534,28 +555,4 @@ public final class TopologyDelta {
         return result;
     }
 
-    private static String join(Collection<String> values) {
-        StringBuilder result = new StringBuilder();
-        for (String value : values) {
-            if (result.length() > 0) result.append(',');
-            result.append(value);
-        }
-        return result.toString();
-    }
-
-    /** One machine-readable line naming what an iteration manifest records. */
-    JsonObject manifestDigests(int summaryCount) {
-        JsonObject result = new JsonObject();
-        result.addProperty("kind", "CONCOLIC_IMPORT_DIGESTS");
-        result.addProperty("iterationId", iterationId);
-        result.addProperty("planDigest", planDigest);
-        result.addProperty("summaryCount", summaryCount);
-        result.addProperty("deltaRowCount", rows.size());
-        JsonObject counts = new JsonObject();
-        for (Map.Entry<String, Integer> entry : countsByKind().entrySet()) {
-            counts.addProperty(entry.getKey(), entry.getValue());
-        }
-        result.add("deltaCounts", counts);
-        return result;
-    }
 }

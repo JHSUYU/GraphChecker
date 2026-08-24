@@ -10,7 +10,7 @@ import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 
-/** The target scheduler retains only selected, schedulable component edges. */
+/** The target scheduler retains selected handoffs across frontier projection. */
 public class SelectedComponentTargetBindingTest {
 
     private static final String OCCURRENCE = "node/region/R.target#1";
@@ -41,6 +41,35 @@ public class SelectedComponentTargetBindingTest {
 
         assertEquals(1, retained.size());
         assertEquals("RPC.component", retained.get(0).getAsJsonObject()
+                .get("edgeId").getAsString());
+    }
+
+    /**
+     * The outer branch of a nested target can depend only on a local source.
+     * A response already selected by the target-first workflow must still be
+     * carried by the task so its exact producer can be armed during this seed
+     * replay; it is topology, not another root of the outer predicate.
+     */
+    @Test
+    public void selectedPrimitiveResponseSurvivesLocalOnlyFrontier() {
+        JsonObject selected = protocol("RPC.selected", "XCH.selected.resp");
+        selected.addProperty("direction", "RESPONSE");
+        JsonObject unrelated = protocol("RPC.unrelated",
+                "XCH.unrelated.resp");
+        unrelated.addProperty("direction", "RESPONSE");
+
+        RegionInstancePlan.Goal goal = goal(selected, unrelated);
+        JsonArray actions = new JsonArray();
+        JsonObject localGate = new JsonObject();
+        localGate.addProperty("symbol", "REGION.target.in.localGate");
+        actions.add(localGate);
+
+        JsonArray retained = ConcolicScheduler.targetInputBindings(goal,
+                actions, OCCURRENCE,
+                Collections.singleton("RPC.selected"));
+
+        assertEquals(1, retained.size());
+        assertEquals("RPC.selected", retained.get(0).getAsJsonObject()
                 .get("edgeId").getAsString());
     }
 

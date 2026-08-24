@@ -227,7 +227,26 @@ public final class BoundedLoopComposition {
                                 + loop.bodyBound);
                 continue;
             }
-            if (loop.fixedCount() && !exactCardinalities(row)) {
+            // A coarse region may declare library loops that this particular
+            // path returned before reaching.  Their inferred zero body count
+            // is not a dynamic N observation and needs no array cardinality.
+            // The distinction must be stated by the fresh importer. Treating
+            // a missing legacy marker as reached or skipped would invent one
+            // of two materially different path-local loop claims.
+            JsonElement reached = row.get(
+                    LoopBoundPolicy.PATH_LOOP_REACHED);
+            if (reached == null || !reached.isJsonPrimitive()
+                    || !reached.getAsJsonPrimitive().isBoolean()) {
+                gap(LoopBoundPolicy.PATH_LOOP_REACHABILITY_MISSING,
+                        loop.identity + "\n" + caseId,
+                        "guarded case does not state whether the retained "
+                                + "loop control was reached");
+                loop.pathCounts.add(caseCount(caseId, row));
+                continue;
+            }
+            boolean loopReached = reached.getAsBoolean();
+            if (loop.fixedCount() && loopReached
+                    && !exactCardinalities(row)) {
                 gap(LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
                         loop.identity + "\n" + caseId,
                         "fixed-count case carries no exact dynamic N");

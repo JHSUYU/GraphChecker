@@ -189,10 +189,8 @@ public final class RuntimeWorkflowDiscovery {
             throw new IOException("ranked target goal is not replayable; "
                     + selected.context());
         }
-        List<Demand> producers = discovery.discoverDemands(selected);
-        for (Demand producer : producers) {
-            producer.includeSourceOutputs(sourceOutputSelection);
-        }
+        List<Demand> producers = discovery.discoverDemands(selected,
+                sourceOutputSelection);
         return new RankedWorkflow(selected, producers);
     }
 
@@ -201,9 +199,11 @@ public final class RuntimeWorkflowDiscovery {
      * in the reverse runtime read-from closure rooted at the target.
      * A selected relation may discharge several distinct inputs at once.
      */
-    private List<Demand> discoverDemands(Target selectedTarget)
+    private List<Demand> discoverDemands(
+            Target selectedTarget, SourceOutputSelection sourceSelection)
             throws IOException {
-        DemandClosure closure = discoverDemandClosure(selectedTarget);
+        DemandClosure closure = discoverDemandClosure(selectedTarget,
+                sourceSelection);
         if (closure.demands.isEmpty()) {
             throw new IOException("runtime read-from graph has no executable "
                     + "producer path to target; targetRegion="
@@ -215,6 +215,13 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     private DemandClosure discoverDemandClosure(Target selectedTarget)
+            throws IOException {
+        return discoverDemandClosure(selectedTarget,
+                (regionId, closure) -> Collections.emptySet());
+    }
+
+    private DemandClosure discoverDemandClosure(
+            Target selectedTarget, SourceOutputSelection sourceSelection)
             throws IOException {
         // This is the target's fatal input frontier, before producer inputs
         // extend the recursive closure.  Ranking is about freedom left on the
@@ -303,8 +310,14 @@ public final class RuntimeWorkflowDiscovery {
                     producersByDownstream);
             admitSharedStateStep(selectedTarget, selected, admitted,
                     frontier, producerByEndpoint, producersByDownstream);
+            boolean sourceFrontierChanged = false;
+            for (Demand demand : selected.values()) {
+                sourceFrontierChanged |= demand.includeSourceOutputInputs(
+                        sourceSelection, frontier, producersByDownstream);
+            }
             if (selected.size() == selectedBefore
-                    && admitted.size() == admittedBefore) {
+                    && admitted.size() == admittedBefore
+                    && !sourceFrontierChanged) {
                 break;
             }
         }
@@ -1428,52 +1441,100 @@ public final class RuntimeWorkflowDiscovery {
                 Occurrence selected = requireOccurrence(sourceInstance);
                 OutputClosureContract.Member member = member(edge,
                         selected);
-                Set<String> unmaterializable = new LinkedHashSet<>();
-                for (JsonElement input : member.slice()
-                        .getAsJsonArray("inputPorts")) {
-                    String port = input.getAsString();
-                    Endpoint endpoint = Endpoint.of(plan, sourceInstance,
-                            selected.exactInput(port));
-                    JsonObject action = dependencyAction(goal, port);
-                    if (action != null) {
-                        if (causalAction(action)
-                                || exactTransportedValueProducer(endpoint,
-                                producersByDownstream)) {
-                            requiredInputEndpoints.add(endpoint);
-                            frontier.addFromMember(endpoint, member,
-                                    producersByDownstream);
-                        }
-                        continue;
-                    }
-                    // A cut input can have no local action yet still have an
-                    // exact remote producer.  Follow that evidence before
-                    // applying the declared-cut exemption; otherwise an
-                    // admitted state writer is scheduled without the RPC
-                    // response that computes its write.
-                    if (exactTrustedCausalProducer(endpoint,
+                addMemberInputs(sourceInstance, selected, member, frontier,
+                        producersByDownstream);
+            }
+        }
+
+        /**
+         * Adds configured-source output members before the predecessor walk
+         * closes.  Their exact inputs then participate in the same fixed
+         * point as ordinary RPC/shared-state members, so a selector CONSUME
+         * cannot be scheduled without its prior PUBLISH producer.
+         */
+        private boolean includeSourceOutputInputs(
+                SourceOutputSelection selection,
+                CausalFrontier frontier,
+                Map<Endpoint, List<ProducerCandidate>> producersByDownstream)
+                throws IOException {
+            if (goal.outputClosure() == null) return false;
+            Set<String> configuredCells = selection.selected(regionId,
+                    goal.outputClosure());
+            if (configuredCells == null || configuredCells.isEmpty()) {
+                return false;
+            }
+            Set<String> alreadySelectedCells = new LinkedHashSet<>();
+            for (JsonObject edge : selectedEdges.values()) {
+                Occurrence exact = requireOccurrence(required(edge,
+                        "fromOccurrenceId"));
+                alreadySelectedCells.add(member(edge, exact).cell());
+            }
+            boolean changed = false;
+            for (String cell : configuredCells) {
+                if (alreadySelectedCells.contains(cell)) continue;
+                List<OutputClosureContract.Member> matches =
+                        new ArrayList<>();
+                for (OutputClosureContract.Member member
+                        : goal.outputClosure().members()) {
+                    if (cell.equals(member.cell())) matches.add(member);
+                }
+                if (matches.size() != 1) {
+                    throw new IOException("configured symbolic source output "
+                            + "is not unique in selected producer closure: "
+                            + cell + " -> " + matches.size());
+                }
+                OutputClosureContract.Member member = matches.get(0);
+                if (!sourceAugmentedOutputs.add(member.portId())) continue;
+                addMemberInputs(occurrenceId, occurrence, member, frontier,
+                        producersByDownstream);
+                changed = true;
+            }
+            return changed;
+        }
+
+        private void addMemberInputs(
+                String sourceInstance, Occurrence selected,
+                OutputClosureContract.Member member,
+                CausalFrontier frontier,
+                Map<Endpoint, List<ProducerCandidate>> producersByDownstream)
+                throws IOException {
+            Set<String> unmaterializable = new LinkedHashSet<>();
+            for (JsonElement input : member.slice()
+                    .getAsJsonArray("inputPorts")) {
+                String port = input.getAsString();
+                Endpoint endpoint = Endpoint.of(plan, sourceInstance,
+                        selected.exactInput(port));
+                JsonObject action = dependencyAction(goal, port);
+                if (action != null) {
+                    if (causalAction(action)
+                            || exactTransportedValueProducer(endpoint,
                             producersByDownstream)) {
                         requiredInputEndpoints.add(endpoint);
                         frontier.addFromMember(endpoint, member,
                                 producersByDownstream);
-                        continue;
                     }
-                    if (CommunicationCatalogContract.declaredPortId(port)) {
-                        // The one input a fragment never materializes and
-                        // never has an action for: its value crossed the cut.
-                        // ConcolicScheduler.projectSymbolize states the same
-                        // rule over the same ports; this walk had been the
-                        // one place that asked without it, so a prefix whose
-                        // demanded member reads Resp_in died here instead.
-                        continue;
-                    }
-                    unmaterializable.add(port);
+                    continue;
                 }
-                if (!unmaterializable.isEmpty()) {
-                    throw new IOException(
-                            OUTPUT_SLICE_INPUT_UNMATERIALIZABLE + ": output="
-                                    + member.portId() + "; inputs="
-                                    + unmaterializable + "; " + context());
+                // A cut input can have no local action yet still have an
+                // exact remote producer. Follow that evidence before the
+                // declared-cut exemption.
+                if (exactTrustedCausalProducer(endpoint,
+                        producersByDownstream)) {
+                    requiredInputEndpoints.add(endpoint);
+                    frontier.addFromMember(endpoint, member,
+                            producersByDownstream);
+                    continue;
                 }
+                if (CommunicationCatalogContract.declaredPortId(port)) {
+                    continue;
+                }
+                unmaterializable.add(port);
+            }
+            if (!unmaterializable.isEmpty()) {
+                throw new IOException(
+                        OUTPUT_SLICE_INPUT_UNMATERIALIZABLE + ": output="
+                                + member.portId() + "; inputs="
+                                + unmaterializable + "; " + context());
             }
         }
 
@@ -1517,6 +1578,16 @@ public final class RuntimeWorkflowDiscovery {
                 addStrings(edgeIds,
                         array(member.slice(), "causalEdgeIds"));
             }
+            for (String output : sourceAugmentedOutputs) {
+                OutputClosureContract.Member member =
+                        goal.outputClosure().member(output);
+                if (member == null) {
+                    throw new IOException("configured source output has no "
+                            + "closure member: " + output);
+                }
+                outputs.add(output);
+                addStrings(edgeIds, array(member.slice(), "causalEdgeIds"));
+            }
             projection = ProducerOutputProjection.create(campaignId,
                     regionId, relationKey, goalId, outputs,
                     edgeIds);
@@ -1528,49 +1599,6 @@ public final class RuntimeWorkflowDiscovery {
                         + "exact-output projection; " + context());
             }
             return projection;
-        }
-
-        /**
-         * Adds only explicitly configured source-derived outputs to an
-         * already selected producer.  This runs after target ranking and
-         * therefore cannot turn unrelated concrete carriers into a competing
-         * target closure; the existing occurrence and goal remain unchanged.
-         */
-        private void includeSourceOutputs(SourceOutputSelection selection)
-                throws IOException {
-            if (projection == null || goal.outputClosure() == null) return;
-            Set<String> configuredCells = selection.selected(regionId,
-                    goal.outputClosure());
-            if (configuredCells == null || configuredCells.isEmpty()) return;
-            Set<String> outputs = new LinkedHashSet<>(
-                    projection.outputPorts());
-            Set<String> edges = new LinkedHashSet<>(projection.edgeIds());
-            Set<String> satisfiedCells = new LinkedHashSet<>();
-            for (String output : outputs) {
-                OutputClosureContract.Member member =
-                        goal.outputClosure().member(output);
-                if (member != null) satisfiedCells.add(member.cell());
-            }
-            for (String cell : configuredCells) {
-                if (satisfiedCells.contains(cell)) continue;
-                List<OutputClosureContract.Member> matches = new ArrayList<>();
-                for (OutputClosureContract.Member member
-                        : goal.outputClosure().members()) {
-                    if (cell.equals(member.cell())) matches.add(member);
-                }
-                if (matches.size() != 1) {
-                    throw new IOException("configured symbolic source output "
-                            + "is not unique in selected producer closure: "
-                            + cell + " -> " + matches.size());
-                }
-                OutputClosureContract.Member member = matches.get(0);
-                String output = member.portId();
-                outputs.add(output);
-                sourceAugmentedOutputs.add(output);
-                addStrings(edges, array(member.slice(), "causalEdgeIds"));
-            }
-            projection = ProducerOutputProjection.create(campaignId,
-                    regionId, relationKey, goalId, outputs, edges);
         }
 
         /**

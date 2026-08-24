@@ -30,6 +30,11 @@ public final class RegionInstancePlan {
             // regionId and no traceEvidence, and an activationId is a
             // different shape from an occurrenceId.
             "activationId",
+            // Exact dynamic executions of configured-source publish/consume
+            // hook sites inside this coarse occurrence.  A scheduler may split
+            // logical source versions by these phases without changing the
+            // replay root identity.
+            ConfiguredSourcePhaseContract.PLAN_FIELD,
             // The declared communication ports this occurrence exports or
             // attaches, with the site each is handed to the VM at.
             CommunicationHandoffSpec.FIELD,
@@ -45,6 +50,15 @@ public final class RegionInstancePlan {
         require(occurrenceId(), "occurrenceId");
         require(relationKey(), "relationKey");
         require(regionId(), "regionId");
+        for (ConfiguredSourcePhaseContract.Occurrence phase
+                : ConfiguredSourcePhaseContract.occurrencesOf(
+                encoded.get(ConfiguredSourcePhaseContract.PLAN_FIELD), true)) {
+            if (!occurrenceId().equals(phase.sourceOccurrenceId())) {
+                throw new IllegalArgumentException(
+                        "configured source phase belongs to another "
+                                + "occurrence: " + phase.phaseId());
+            }
+        }
 
         List<Goal> decoded = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>();

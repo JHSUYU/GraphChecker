@@ -3,11 +3,15 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import org.junit.Assume;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.nio.file.Paths;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -134,8 +138,10 @@ public class ConcolicConstraintSolverTest {
         String occurrence = "test/node#epoch0/region/REGION.source#1";
         String sourceId = "SOURCE.COMPLEX.VALUE";
         String field = "<example.Source: long value>";
-        String raw = "M_J_field_" + SymbolicSourceEvidence.engineLabel(
-                occurrence, sourceId) + "_example/Source";
+        String phaseId = sourcePhaseId(occurrence, sourceId);
+        String raw = "M_J_field_"
+                + SymbolicSourceEvidence.engineLabelForPhase(
+                phaseId, sourceId) + "_example/Source";
         JsonObject predicate = binaryExpression(
                 numericSymbol(raw, "J"), ">",
                 numericConstant("J", "100"));
@@ -151,10 +157,12 @@ public class ConcolicConstraintSolverTest {
         JsonObject assignment = result.modelAssignments.get(0)
                 .getAsJsonObject();
         assertEquals(raw, assignment.get("engineSymbol").getAsString());
-        assertEquals("SOURCE:" + sourceId,
+        assertEquals("SOURCE_PHASE:" + phaseId,
                 assignment.get("inputSymbol").getAsString());
         assertEquals(sourceId,
                 assignment.get("configuredSourceId").getAsString());
+        assertEquals(phaseId,
+                assignment.get("configuredSourcePhaseId").getAsString());
         assertEquals(field, assignment.get(
                 "configuredSourceFieldSignature").getAsString());
         assertTrue(assignment.get("value").getAsLong() > 100L);
@@ -168,6 +176,341 @@ public class ConcolicConstraintSolverTest {
                 refused.record.get("status").getAsString());
         assertEquals("FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS",
                 refused.record.get("reason").getAsString());
+    }
+
+    @Test
+    public void modelProjectsWritableConfiguredSourceFromPrefixAndTargetRoot()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+
+        String occurrence = "test/node#epoch0/region/REGION.source#1";
+        String sourceId = "SOURCE.PREFIX.VALUE";
+        String field = "<example.Source: long prefixValue>";
+        String prefixRaw = "M_J_field_"
+                + SymbolicSourceEvidence.engineLabelForPhase(
+                sourcePhaseId(occurrence, sourceId), sourceId)
+                + "_example/Source";
+        String targetRaw = "M_I_field_REGION.3.in.0_example/Input";
+        JsonObject prefix = binaryExpression(
+                numericSymbol(prefixRaw, "J"), ">",
+                numericConstant("J", "100"));
+        JsonObject target = binaryExpression(
+                numericSymbol(targetRaw, "I"), ">", intConstant(0));
+        JsonObject activation = configuredSourceActivation(
+                occurrence, sourceId, field);
+        JsonObject targetAction = materialization("REGION.3.in.0", 0);
+        targetAction.addProperty("mode", "SYMBOLIC");
+        activation.getAsJsonArray("inputActions").add(targetAction);
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(prefix, target), activation, Paths.get("z3"),
+                10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(result.modelAssignments.toString(), 2,
+                result.modelAssignments.size());
+        JsonObject sourceAssignment = null;
+        JsonObject targetAssignment = null;
+        for (JsonElement element : result.modelAssignments) {
+            JsonObject assignment = element.getAsJsonObject();
+            if (prefixRaw.equals(
+                    assignment.get("engineSymbol").getAsString())) {
+                sourceAssignment = assignment;
+            } else if (targetRaw.equals(
+                    assignment.get("engineSymbol").getAsString())) {
+                targetAssignment = assignment;
+            }
+        }
+        assertTrue(result.modelAssignments.toString(),
+                sourceAssignment != null);
+        assertTrue(result.modelAssignments.toString(),
+                targetAssignment != null);
+        assertEquals(sourceId, sourceAssignment.get(
+                "configuredSourceId").getAsString());
+        assertEquals(field, sourceAssignment.get(
+                "configuredSourceFieldSignature").getAsString());
+        assertTrue(sourceAssignment.get("value").getAsLong() > 100L);
+        assertEquals("REGION.3.in.0",
+                targetAssignment.get("inputSymbol").getAsString());
+        assertTrue(targetAssignment.get("value").getAsInt() > 0);
+    }
+
+    @Test
+    public void modelProjectsAllFiveConfiguredSourcesAcrossPrefixAndTarget()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+
+        String occurrence = "test/node#epoch0/region/REGION.five#1";
+        String[] sourceIds = {
+                "SOURCE.A", "SOURCE.B", "SOURCE.C", "SOURCE.D", "SOURCE.E"
+        };
+        JsonObject activation = configuredSourcesActivation(
+                occurrence, sourceIds);
+        JsonObject[] symbols = new JsonObject[sourceIds.length];
+        for (int index = 0; index < sourceIds.length; index++) {
+            String raw = "M_J_field_"
+                    + SymbolicSourceEvidence.engineLabelForPhase(
+                    sourcePhaseId(occurrence, sourceIds[index]),
+                    sourceIds[index]) + "_example/Source";
+            symbols[index] = numericSymbol(raw, "J");
+        }
+        JsonObject prefixC = binaryExpression(symbols[2].deepCopy(), ">",
+                numericConstant("J", "30"));
+        JsonObject prefixD = binaryExpression(symbols[3].deepCopy(), ">",
+                numericConstant("J", "40"));
+        JsonObject prefixE = binaryExpression(symbols[4].deepCopy(), ">",
+                numericConstant("J", "50"));
+        JsonObject targetAB = binaryExpression(symbols[0].deepCopy(), ">",
+                symbols[1].deepCopy());
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(prefixC, prefixD, prefixE, targetAB), activation,
+                Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(result.modelAssignments.toString(), 5,
+                result.modelAssignments.size());
+        Set<String> projectedSources = new LinkedHashSet<>();
+        for (JsonElement element : result.modelAssignments) {
+            JsonObject assignment = element.getAsJsonObject();
+            projectedSources.add(assignment.get("configuredSourceId")
+                    .getAsString());
+        }
+        assertEquals(new LinkedHashSet<>(java.util.Arrays.asList(sourceIds)),
+                projectedSources);
+    }
+
+    @Test
+    public void freeEnvironmentSupportRefusesReplayBeforeSolverLaunch()
+            throws Exception {
+        String targetRaw = "M_I_field_REGION.3.in.0_example/Input";
+        JsonObject environmentPrefix = binaryExpression(
+                currentTimeMillisPlaceholder(1), ">",
+                numericConstant("J", "0"));
+        JsonObject target = binaryExpression(
+                numericSymbol(targetRaw, "I"), ">", intConstant(0));
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(environmentPrefix, target), activation(),
+                Paths.get("definitely-missing-z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "MATERIALIZATION_GAP",
+                result.record.get("status").getAsString());
+        assertEquals("REPLAY_CONTROL_FRONTIER_IS_NOT_MATERIALIZABLE",
+                result.record.get("reason").getAsString());
+        assertTrue(result.record.toString(), result.record
+                .getAsJsonArray("unresolvedReplaySupportSymbols")
+                .contains(new com.google.gson.JsonPrimitive(
+                        "ENVIRONMENT_PLACEHOLDER:currentTimeMills#1")));
+        assertEquals(0, result.modelAssignments.size());
+    }
+
+    @Test
+    public void targetPrefixKeepsExactRpcCompanionOutOfAssignments()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String remoteRaw = "M_I_field_REMOTE.RPC.VALUE_example/Reply";
+        String localRaw = "M_I_field_REGION.3.in.0_example/Input";
+        JsonObject fixture = targetTask(
+                binaryExpression(numericSymbol(remoteRaw, "I"), ">",
+                        intConstant(0)),
+                binaryExpression(numericSymbol(localRaw, "I"), ">",
+                        intConstant(5)));
+        VmHandoffEvidence.writeTo(fixture,
+                java.util.Collections.singletonList(
+                        VmHandoffEvidence.event("REGION.3.in.rpc", 11L,
+                                numericSymbol(remoteRaw, "I"),
+                                "TASK.REMOTE.PRODUCER",
+                                "REGION.REMOTE/occurrence-1")));
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                fixture, activation(), Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(result.modelAssignments.toString(), 1,
+                result.modelAssignments.size());
+        assertEquals(localRaw, result.modelAssignments.get(0)
+                .getAsJsonObject().get("engineSymbol").getAsString());
+    }
+
+    @Test
+    public void targetPrefixRequiresUniqueExactRpcCompanion()
+            throws Exception {
+        String remoteRaw = "M_I_field_REMOTE.RPC.VALUE_example/Reply";
+        JsonObject missing = targetTask(
+                binaryExpression(numericSymbol(remoteRaw, "I"), ">",
+                        intConstant(0)),
+                binary(">", 5));
+        ConcolicConstraintSolver.Result missingResult = solveForTest(
+                missing, activation(), Paths.get("definitely-missing-z3"),
+                10_000L);
+        assertEquals(missingResult.record.toString(),
+                "MATERIALIZATION_GAP",
+                missingResult.record.get("status").getAsString());
+        assertEquals("TARGET_PREFIX_COMPANION_SUPPORT_MISSING",
+                missingResult.record.get("reason").getAsString());
+
+        JsonObject ambiguous = missing.deepCopy();
+        java.util.List<JsonObject> events = new java.util.ArrayList<>();
+        events.add(VmHandoffEvidence.event("REGION.3.in.rpc", 11L,
+                numericSymbol(remoteRaw, "I"), "TASK.PRODUCER.A",
+                "REGION.A/occurrence-1"));
+        events.add(VmHandoffEvidence.event("REGION.3.in.rpc", 12L,
+                numericSymbol(remoteRaw, "I"), "TASK.PRODUCER.B",
+                "REGION.B/occurrence-1"));
+        VmHandoffEvidence.writeTo(ambiguous, events);
+        ConcolicConstraintSolver.Result ambiguousResult = solveForTest(
+                ambiguous, activation(), Paths.get("definitely-missing-z3"),
+                10_000L);
+        assertEquals(ambiguousResult.record.toString(),
+                "MATERIALIZATION_GAP",
+                ambiguousResult.record.get("status").getAsString());
+        assertEquals("TARGET_PREFIX_COMPANION_SUPPORT_AMBIGUOUS",
+                ambiguousResult.record.get("reason").getAsString());
+    }
+
+    @Test
+    public void targetPrefixRejectsPredicateMixingLocalAndCompanion()
+            throws Exception {
+        String remoteRaw = "M_I_field_REMOTE.RPC.VALUE_example/Reply";
+        String localRaw = "M_I_field_REGION.3.in.0_example/Input";
+        JsonObject mixed = targetTask(binaryExpression(
+                numericSymbol(localRaw, "I"), ">",
+                numericSymbol(remoteRaw, "I")));
+        VmHandoffEvidence.writeTo(mixed,
+                java.util.Collections.singletonList(
+                        VmHandoffEvidence.event("REGION.3.in.rpc", 11L,
+                                numericSymbol(remoteRaw, "I"),
+                                "TASK.REMOTE.PRODUCER",
+                                "REGION.REMOTE/occurrence-1")));
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                mixed, activation(), Paths.get("definitely-missing-z3"),
+                10_000L);
+
+        assertEquals(result.record.toString(), "MATERIALIZATION_GAP",
+                result.record.get("status").getAsString());
+        assertEquals("TARGET_PREFIX_MIXES_LOCAL_AND_COMPANION_SUPPORT",
+                result.record.get("reason").getAsString());
+    }
+
+    @Test
+    public void targetPrefixAcceptsOneExactSharedCompanion()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String sharedPort = "REGION.3.in.shared";
+        String sharedRaw = "M_I_field_" + sharedPort + "_example/Owner";
+        JsonObject fixture = targetTask(
+                binaryExpression(numericSymbol(sharedRaw, "I"), ">",
+                        intConstant(0)),
+                binary(">", 5));
+        JsonArray bindings = new JsonArray();
+        bindings.add(exactSharedBinding(sharedPort));
+        fixture.add("edgeBindings", bindings);
+        JsonObject source = activation();
+        JsonObject sharedAction = materialization(sharedPort, 1);
+        sharedAction.addProperty("mode", "CONCRETE");
+        source.getAsJsonArray("inputActions").add(sharedAction);
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                fixture, source, Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(result.modelAssignments.toString(), 1,
+                result.modelAssignments.size());
+        assertEquals("REGION.3.in.0", result.modelAssignments.get(0)
+                .getAsJsonObject().get("inputSymbol").getAsString());
+    }
+
+    @Test
+    public void fieldBindingAliasProjectsItsUniqueWritableRepresentative()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+
+        String rootRaw = "M_I_field_REGION.3.in.0_example/Input";
+        String aliasRaw = "M_I_field_REGION.99.in.0_example/Input";
+        JsonObject target = binaryExpression(numericSymbol(aliasRaw, "I"),
+                ">", intConstant(0));
+        JsonObject rootBinding = fieldBinding(rootRaw);
+        JsonObject aliasBinding = fieldBinding(aliasRaw);
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(target), activation(), Paths.get("z3"), 10_000L,
+                rootBinding, aliasBinding);
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(result.modelAssignments.toString(), 1,
+                result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals(rootRaw,
+                assignment.get("engineSymbol").getAsString());
+        assertEquals("REGION.3.in.0",
+                assignment.get("inputSymbol").getAsString());
+        assertTrue(assignment.get("value").getAsInt() > 0);
+    }
+
+    @Test
+    public void branchAliasWithoutFieldBindingIsNeverGuessedAsAReplayRoot()
+            throws Exception {
+        String aliasRaw = "M_I_field_REGION.99.in.0_example/Input";
+        JsonObject target = binaryExpression(numericSymbol(aliasRaw, "I"),
+                ">", intConstant(0));
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(target), activation(),
+                Paths.get("definitely-missing-z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "MATERIALIZATION_GAP",
+                result.record.get("status").getAsString());
+        assertEquals("FLIP_CONDITION_DEPENDS_ON_UNMATERIALIZABLE_SYMBOLS",
+                result.record.get("reason").getAsString());
+        assertTrue(result.record.toString(), result.record
+                .getAsJsonArray("unresolvedTargetSymbols")
+                .contains(new com.google.gson.JsonPrimitive(aliasRaw)));
+        assertEquals(0, result.modelAssignments.size());
+    }
+
+    @Test
+    public void fieldBindingAliasProjectsConfiguredSourceRepresentative()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+
+        String occurrence = "test/node#epoch0/region/REGION.alias#1";
+        String sourceId = "SOURCE.ALIAS.VALUE";
+        String field = "<example.Source: long value>";
+        String sourceRaw = "M_J_field_"
+                + SymbolicSourceEvidence.engineLabelForPhase(
+                sourcePhaseId(occurrence, sourceId), sourceId)
+                + "_example/Source";
+        String aliasRaw = "M_J_field_REGION.99.in.0_example/Source";
+        JsonObject target = binaryExpression(numericSymbol(aliasRaw, "J"),
+                ">", numericConstant("J", "0"));
+
+        ConcolicConstraintSolver.Result result = solveForTest(
+                task(target), configuredSourceActivation(
+                        occurrence, sourceId, field), Paths.get("z3"),
+                10_000L, fieldBinding(sourceRaw, "J"),
+                fieldBinding(aliasRaw, "J"));
+
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(result.modelAssignments.toString(), 1,
+                result.modelAssignments.size());
+        JsonObject assignment = result.modelAssignments.get(0)
+                .getAsJsonObject();
+        assertEquals(sourceRaw,
+                assignment.get("engineSymbol").getAsString());
+        assertEquals(sourceId,
+                assignment.get("configuredSourceId").getAsString());
+        assertEquals(field, assignment.get(
+                "configuredSourceFieldSignature").getAsString());
+        assertTrue(assignment.get("value").getAsLong() > 0L);
     }
 
     @Test
@@ -340,6 +683,8 @@ public class ConcolicConstraintSolverTest {
         source.addProperty("authority",
                 SymbolicSourceEvidence.DECLARATION_AUTHORITY);
         source.addProperty("sourceId", sourceId);
+        source.addProperty("sourcePhaseId",
+                sourcePhaseId(occurrence, sourceId));
         source.addProperty("fieldSignature", fieldSignature);
         source.addProperty("requiredOutputFieldSignature",
                 "<example.Source: long output>");
@@ -347,6 +692,35 @@ public class ConcolicConstraintSolverTest {
         sources.add(source);
         activation.add(SymbolicSourceEvidence.TASK_FIELD, sources);
         return activation;
+    }
+
+    private static JsonObject configuredSourcesActivation(
+            String occurrence, String... sourceIds) {
+        JsonObject activation = new JsonObject();
+        activation.addProperty("occurrenceId", occurrence);
+        activation.add("inputActions", new JsonArray());
+        JsonArray sources = new JsonArray();
+        for (int index = 0; index < sourceIds.length; index++) {
+            JsonObject source = new JsonObject();
+            source.addProperty("authority",
+                    SymbolicSourceEvidence.DECLARATION_AUTHORITY);
+            source.addProperty("sourceId", sourceIds[index]);
+            source.addProperty("sourcePhaseId",
+                    sourcePhaseId(occurrence, sourceIds[index]));
+            source.addProperty("fieldSignature", "<example.Source: long value"
+                    + index + ">");
+            source.addProperty("requiredOutputFieldSignature",
+                    "<example.Source: long output>");
+            sources.add(source);
+        }
+        activation.add(SymbolicSourceEvidence.TASK_FIELD, sources);
+        return activation;
+    }
+
+    private static String sourcePhaseId(
+            String occurrence, String sourceId) {
+        return ConfiguredSourcePhaseContract.phaseId(occurrence, sourceId,
+                ConfiguredSourcePhaseContract.Phase.PUBLISH, 1);
     }
 
     private static JsonObject materialization(String symbol, int index) {
@@ -460,6 +834,37 @@ public class ConcolicConstraintSolverTest {
         return task;
     }
 
+    private static JsonObject targetTask(JsonObject... conditions) {
+        JsonObject task = task(conditions);
+        ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
+        return task;
+    }
+
+    private static JsonObject exactSharedBinding(String toInputPort) {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("schemaVersion", 3);
+        binding.addProperty("edgeId", "EDGE.EXACT.SHARED");
+        binding.addProperty("evidenceKind",
+                "FIELD_ASSIGNMENT_READ_FROM_V1");
+        binding.addProperty("correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+        binding.addProperty("fromOccurrenceId",
+                "REGION.PRODUCER/occurrence-1");
+        binding.addProperty("toOccurrenceId",
+                "REGION.3/occurrence-1");
+        binding.addProperty("fromOutputPort", "REGION.PRODUCER.out.0");
+        binding.addProperty("toInputPort", toInputPort);
+        binding.addProperty("writerLaneId", "lane.writer");
+        binding.addProperty("readerLaneId", "lane.reader");
+        binding.addProperty("programOrderRequired", false);
+        binding.addProperty("writerEventSeq", 20L);
+        binding.addProperty("readerEventSeq", 30L);
+        binding.addProperty("receiverObjectId", 7L);
+        binding.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_EXACT);
+        return binding;
+    }
+
     private static JsonObject binary(String operator, int constant) {
         return binarySymbol(
                 "M_I_field_REGION.3.in.0_java/lang/Integer",
@@ -510,6 +915,36 @@ public class ConcolicConstraintSolverTest {
         result.addProperty("_java_type", javaType);
         result.addProperty("_exp", "Y_" + javaType + "_" + value);
         return result;
+    }
+
+    private static JsonObject currentTimeMillisPlaceholder(int count) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "PlaceholderExpression");
+        result.addProperty("_java_type", "J");
+        result.addProperty("_place_holder_func", "currentTimeMills");
+        result.addProperty("_count", count);
+        return result;
+    }
+
+    private static JsonObject fieldBinding(String raw) {
+        return fieldBinding(raw, "I");
+    }
+
+    private static JsonObject fieldBinding(String raw, String javaType) {
+        JsonObject owner = numericSymbol(
+                "M_L'example/Owner'_1", "example/Owner");
+        JsonObject field = new JsonObject();
+        field.addProperty("_type", "FieldAccessExpression");
+        field.addProperty("_java_type", javaType);
+        field.addProperty("ownerClass", "example/Owner");
+        field.addProperty("fieldOffset", 8);
+        field.add("owner", owner);
+        JsonObject binding = binaryExpression(field, "==",
+                numericSymbol(raw, javaType));
+        binding.addProperty("_code_position",
+                "static void java.lang.System.symbolizeExactField("
+                        + "jobject, jobject, jobject, jobject, jobject):-1");
+        return binding;
     }
 
     private static JsonObject binaryExpression(

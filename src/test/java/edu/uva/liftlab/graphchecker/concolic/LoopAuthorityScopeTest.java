@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -67,5 +70,31 @@ public class LoopAuthorityScopeTest {
         // selected nothing" into "no loop mattered".
         assertTrue(ConcolicSmtComposer.touchesSelectedScope(
                 SUBSTITUTE_VARS + "#u10", Collections.<String>emptySet()));
+    }
+
+    @Test
+    public void missingFixedCardinalityDecidesOnlyInsideTheSelectedSlice() {
+        assertTrue(ConcolicSmtComposer.loopAuthorityRefusesForTests(
+                LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
+                ADD_KEYS + "#u20", scope(ADD_KEYS)));
+        assertFalse(ConcolicSmtComposer.loopAuthorityRefusesForTests(
+                LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
+                SUBSTITUTE_VARS + "#u10", scope(ADD_KEYS)));
+    }
+
+    @Test
+    public void targetMethodJoinsProducerMethodsInAcceptanceScope() {
+        JsonObject fatal = new JsonObject();
+        fatal.addProperty("targetSiteId", ADD_KEYS + "#u40");
+
+        Set<String> selected =
+                ConcolicSmtComposer.selectedScopeMethodsForTests(
+                        scope(REMOVE_EXPIRED), fatal);
+
+        assertTrue(selected.contains(REMOVE_EXPIRED));
+        assertTrue(selected.contains(ADD_KEYS));
+        assertTrue(ConcolicSmtComposer.loopAuthorityRefusesForTests(
+                LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
+                ADD_KEYS + "#u20", selected));
     }
 }

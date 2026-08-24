@@ -1,11 +1,13 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 
 import java.io.File;
@@ -55,6 +57,23 @@ public class RuntimeRegionPlannerTest {
 
         assertEquals(interaction, selected.method);
         assertEquals("example.Actor", selected.receiverType);
+    }
+
+    @Test
+    public void dynamicOutputBoundaryRequiresBothEventAndCallIdentity() {
+        JsonObject exact = new JsonObject();
+        assertTrue(RuntimeRegionPlanner.addExactOutputBoundary(
+                exact, 180L, 84L));
+        assertEquals(180L,
+                exact.get("selectedRuntimeEventSeq").getAsLong());
+        assertEquals(84L,
+                exact.get("selectedRuntimeCallId").getAsLong());
+
+        JsonObject missingCall = new JsonObject();
+        assertFalse(RuntimeRegionPlanner.addExactOutputBoundary(
+                missingCall, 180L, -1L));
+        assertFalse(missingCall.has("selectedRuntimeEventSeq"));
+        assertFalse(missingCall.has("selectedRuntimeCallId"));
     }
 
     @Test
@@ -435,6 +454,110 @@ public class RuntimeRegionPlannerTest {
                 .get("occurrenceId")).endsWith("#2"));
     }
 
+    @Test
+    public void configuredSourcePhasesUseExactSiteOrderAndCallAncestry()
+            throws Exception {
+        String helper = "<example.Keys: void rotate()>";
+        String field = "<example.Key: int keyId>";
+        String consumeSite = helper + "#u3";
+        String publishSite = helper + "#u7";
+        Map<String, Object> region = fullRegion();
+        region.put(ConfiguredSourcePhaseContract.DECLARATION_FIELD,
+                Arrays.asList(
+                        ConfiguredSourcePhaseContract.declaration(
+                                ConfiguredSourcePhaseContract.Phase.CONSUME,
+                                "ROTATING.KEY", field, helper, 3),
+                        ConfiguredSourcePhaseContract.declaration(
+                                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                                "ROTATING.KEY", field, helper, 7)));
+        File regions = jsonl("source-phase-regions.jsonl", region);
+        File edges = jsonl("source-phase-edges.jsonl");
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl("source-phase-refined.jsonl", refined);
+
+        List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "t", 7,
+                        ROOT, 10, "example.Root", 1, 0, 0),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "t", 7,
+                        TARGET, 20, "example.Target", 2, 1, 0),
+                // The phase helper is in the recorded root subtree, but not
+                // in activation.callIds: it is selected for rich tracing only.
+                new RuntimeRegionPlanner.MethodEvent(3, "test", "t", 7,
+                        helper, 30, "example.Keys", 3, 2, 0),
+                // Same static site in another, unrelated activation must not
+                // be admitted merely because its event is later in the trace.
+                new RuntimeRegionPlanner.MethodEvent(9, "test", "other", 8,
+                        helper, 40, "example.Keys", 99, 0, 0));
+        List<RuntimeRegionPlanner.RuntimeEvent> runtime = Arrays.asList(
+                new RuntimeRegionPlanner.RuntimeEvent(4,
+                        "CALL_SITE_ENTER", helper, 3, 301, 0,
+                        consumeSite, "<example.Hook: int consume()>",
+                        -1, "", 0, "", false, false),
+                new RuntimeRegionPlanner.RuntimeEvent(5,
+                        "CALL_SITE_ENTER", helper, 3, 302, 0,
+                        publishSite, "<example.Hook: void publish()>",
+                        -1, "", 0, "", false, false),
+                new RuntimeRegionPlanner.RuntimeEvent(6,
+                        "CALL_SITE_ENTER", helper, 3, 303, 0,
+                        consumeSite, "<example.Hook: int consume()>",
+                        -1, "", 0, "", false, false),
+                new RuntimeRegionPlanner.RuntimeEvent(7,
+                        "CALL_SITE_ENTER", helper, 3, 304, 0,
+                        publishSite, "<example.Hook: void publish()>",
+                        -1, "", 0, "", false, false),
+                new RuntimeRegionPlanner.RuntimeEvent(8, "BRANCH", TARGET,
+                        2, 0, 0, TARGET + "#u4", -1, "", 0, "",
+                        true, false),
+                new RuntimeRegionPlanner.RuntimeEvent(10,
+                        "CALL_SITE_ENTER", helper, 99, 901, 0,
+                        consumeSite, "<example.Hook: int consume()>",
+                        -1, "", 0, "", false, false));
+
+        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                regions, edges, refinedFile,
+                Collections.singletonList(activation("REGION.1", 1, ROOT,
+                        Arrays.asList(1L, 2L))), methods, runtime,
+                Collections.emptyList());
+
+        assertEquals(1, result.regionPlans.size());
+        Map<String, Object> plan = result.regionPlans.get(0);
+        List<Map<String, Object>> phases = rows(plan.get(
+                ConfiguredSourcePhaseContract.PLAN_FIELD));
+        assertEquals(4, phases.size());
+        assertEquals(Arrays.asList("CONSUME", "PUBLISH", "CONSUME",
+                        "PUBLISH"),
+                Arrays.asList(phases.get(0).get("phaseKind"),
+                        phases.get(1).get("phaseKind"),
+                        phases.get(2).get("phaseKind"),
+                        phases.get(3).get("phaseKind")));
+        assertEquals(Arrays.asList(1L, 1L, 2L, 2L), Arrays.asList(
+                ((Number) phases.get(0).get("baselineOrdinal")).longValue(),
+                ((Number) phases.get(1).get("baselineOrdinal")).longValue(),
+                ((Number) phases.get(2).get("baselineOrdinal")).longValue(),
+                ((Number) phases.get(3).get("baselineOrdinal")).longValue()));
+        assertEquals(4L, phases.get(0).get("eventSeq"));
+        assertEquals(301L, phases.get(0).get("invocationId"));
+        assertEquals(3L, phases.get(0).get("ownerCallId"));
+        assertEquals(Arrays.asList(3L, 2L, 1L),
+                phases.get(0).get("enclosingCallIds"));
+        assertEquals(ConfiguredSourcePhaseContract.phaseId(
+                        String.valueOf(plan.get("occurrenceId")), consumeSite,
+                        ConfiguredSourcePhaseContract.Phase.CONSUME, 1),
+                phases.get(0).get("phaseId"));
+        List<Map<String, Object>> plannedBranches = rows(
+                ((List<Map<String, Object>>) plan.get("closureGoals"))
+                        .get(0).get("branches"));
+        assertEquals(2L, plannedBranches.get(0).get("selectedCallId"));
+        // The occurrence-level rows survive the strict plan decoder.  The
+        // scheduler's task constructor copies this field verbatim.
+        assertEquals(4, RegionInstancePlan.decode(
+                GSON.toJsonTree(plan).getAsJsonObject()).json()
+                .getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
+                .size());
+    }
+
     private static String goalKind(Map<String, Object> plan) {
         List<?> goals = (List<?>) plan.get("closureGoals");
         assertEquals(1, goals.size());
@@ -646,6 +769,72 @@ public class RuntimeRegionPlannerTest {
         assertEquals(RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
                 retainedAnchor.get("sourceKey"));
         assertEquals("UNREGISTERED_SOURCE", retainedAnchor.get("kind"));
+    }
+
+    @Test
+    public void semanticSourceOwnsTheOccurrenceOrdinalNamespace()
+            throws Exception {
+        Map<String, Object> region = fullRegion();
+        rows(region.get("branchPolicies")).get(0).put(
+                "failureTarget", true);
+        SourceRef dn0 = new SourceRef("CLUSTER_NODE", "DATANODE",
+                "cluster0/dn0", 1);
+        SourceRef dn1 = new SourceRef("CLUSTER_NODE", "DATANODE",
+                "cluster0/dn1", 1);
+        SourceRef client = new SourceRef("EXTERNAL_APP", "CLIENT",
+                "cluster0/client0", 0);
+        region.put("runtimeOccurrenceIds", Arrays.asList(
+                OccurrenceMinter.occurrenceId(client.key(), "REGION.1", 1),
+                OccurrenceMinter.occurrenceId(client.key(), "REGION.1", 2)));
+
+        File regions = jsonl("semantic-ordinal-regions.jsonl", region);
+        File edges = jsonl("semantic-ordinal-edges.jsonl");
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl("semantic-ordinal-refined.jsonl", refined);
+        List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "dn0",
+                        7, ROOT, 10, "example.Root", 1, 0, 0,
+                        7, 101, 0, 0, dn0, "request#1", "api"),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "dn0",
+                        7, TARGET, 20, "example.Target", 2, 1, 0,
+                        7, 101, 0, 0, client, "request#1", "api"),
+                new RuntimeRegionPlanner.MethodEvent(3, "test", "dn1",
+                        8, ROOT, 30, "example.Root", 3, 0, 0,
+                        8, 202, 0, 0, dn1, "request#1", "api"),
+                new RuntimeRegionPlanner.MethodEvent(4, "test", "dn1",
+                        8, TARGET, 40, "example.Target", 4, 3, 0,
+                        8, 202, 0, 0, client, "request#1", "api"));
+        List<RuntimeRegionPlanner.RuntimeEvent> observed = Arrays.asList(
+                new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH", TARGET,
+                        2, 0, 0, TARGET + "#u4", -1, "", 0, "", true,
+                        false),
+                new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH", TARGET,
+                        4, 0, 0, TARGET + "#u4", -1, "", 0, "", true,
+                        false));
+
+        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+                regions, edges, refinedFile, Arrays.asList(
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L)),
+                        activation("REGION.1", 3, ROOT,
+                                Arrays.asList(3L, 4L))),
+                events, observed, Collections.emptyList());
+
+        assertEquals(2, result.regionPlans.size());
+        assertEquals(OccurrenceMinter.occurrenceId(
+                        client.key(), "REGION.1", 1),
+                result.regionPlans.get(0).get("occurrenceId"));
+        assertEquals(OccurrenceMinter.occurrenceId(
+                        client.key(), "REGION.1", 2),
+                result.regionPlans.get(1).get("occurrenceId"));
+        Map<?, ?> firstAnchor = (Map<?, ?>) ((Map<?, ?>) result.regionPlans
+                .get(0).get("rootSelector")).get("causalAnchor");
+        Map<?, ?> secondAnchor = (Map<?, ?>) ((Map<?, ?>) result.regionPlans
+                .get(1).get("rootSelector")).get("causalAnchor");
+        assertEquals(dn0.key(), firstAnchor.get("sourceKey"));
+        assertEquals(dn1.key(), secondAnchor.get("sourceKey"));
     }
 
     @SuppressWarnings("unchecked")

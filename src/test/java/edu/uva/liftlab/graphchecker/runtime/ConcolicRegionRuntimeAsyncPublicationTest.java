@@ -168,6 +168,26 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
     }
 
     @Test
+    public void terminalRejectsUnappliedModelAssignmentByKey()
+            throws Exception {
+        Path resultFile = loadCampaign(unappliedModelAssignmentTask());
+        activateResponseCandidate(75L);
+        completeReplayProgress(75L, ROOT + "#u8", 1, false);
+        installFakeEngine();
+
+        assertTrue(ConcolicRegionRuntime.completeResponseHandoff());
+        assertTrue(Files.exists(resultFile));
+        String row = new String(Files.readAllBytes(resultFile),
+                StandardCharsets.UTF_8);
+        assertTrue(row, row.contains("\"skipKind\":\""
+                + ConcolicRegionRuntime.SKIP_UNAPPLIED_MODEL_ASSIGNMENT
+                + "\""));
+        assertTrue(row, row.contains("MODEL.unused"));
+        assertFalse(occurrenceClaimed());
+        assertFalse(FakeVm.outputObservationBuilt);
+    }
+
+    @Test
     public void abnormalPublicationReleasesCandidate() throws Exception {
         Path resultFile = loadCampaign();
         activateResponseCandidate(72L);
@@ -201,6 +221,7 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
 
     private static JsonObject incompleteReplayTask() {
         JsonObject task = task();
+        addUnusedModelAssignment(task);
         JsonObject predicate = new JsonObject();
         predicate.addProperty("_type", "ConstExpr");
         predicate.addProperty("_java_type", "Z");
@@ -211,6 +232,34 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
         task.add("replayContract", BranchReplayContract.flip(
                 Collections.<BranchWitness>emptyList(), source).toJson());
         return task;
+    }
+
+    private static JsonObject unappliedModelAssignmentTask() {
+        JsonObject task = task();
+        addUnusedModelAssignment(task);
+
+        JsonObject predicate = new JsonObject();
+        predicate.addProperty("_type", "ConstExpr");
+        predicate.addProperty("_java_type", "Z");
+        predicate.addProperty("_exp", "Y_Z_1");
+        BranchWitness source = BranchWitness.vmPc(
+                ROOT + "#u8", ROOT, 8, 1, true, predicate, 0,
+                new JsonObject());
+        task.add("replayContract", BranchReplayContract.flip(
+                Collections.<BranchWitness>emptyList(), source).toJson());
+        return task;
+    }
+
+    private static void addUnusedModelAssignment(JsonObject task) {
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("modelAssignmentKey", "MODEL.unused");
+        assignment.addProperty("engineSymbol", "M_I_unused");
+        assignment.addProperty("inputSymbol", "INPUT.unused");
+        assignment.addProperty("valueType", "INT");
+        assignment.addProperty("value", "41");
+        JsonArray assignments = new JsonArray();
+        assignments.add(assignment);
+        task.add("modelAssignments", assignments);
     }
 
     private static JsonObject task() {
@@ -228,6 +277,7 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
         selector.addProperty("receiverClass", Object.class.getName());
         JsonObject anchor = new JsonObject();
         anchor.addProperty("sourceKey", SOURCE);
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
         selector.add("causalAnchor", anchor);
         task.add("rootSelector", selector);
         task.add("inputActions", new JsonArray());
@@ -370,6 +420,27 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
         regions.put(token, active);
         currentToken().set(token);
         ConcolicRegionRuntime.beginLiveSelectedRegion();
+    }
+
+    private static void completeReplayProgress(
+            long token, String siteId, int occurrence, boolean outcome)
+            throws Exception {
+        Field activeRegions = ConcolicRegionRuntime.class.getDeclaredField(
+                "ACTIVE");
+        activeRegions.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<Long, Object> regions =
+                (Map<Long, Object>) activeRegions.get(null);
+        Object active = regions.get(token);
+        Field replayProgress = active.getClass().getDeclaredField(
+                "replayProgress");
+        replayProgress.setAccessible(true);
+        Object progress = replayProgress.get(active);
+        Method observe = progress.getClass().getDeclaredMethod(
+                "observe", String.class, int.class, boolean.class);
+        observe.setAccessible(true);
+        assertTrue((Boolean) observe.invoke(
+                progress, siteId, occurrence, outcome));
     }
 
     private static void installFakeEngine() throws Exception {

@@ -18,31 +18,66 @@ public class SymbolicSourceEvidenceTest {
             "cluster0/nn0#epoch1/region/REGION.2aed#1";
     private static final String FIELD =
             "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>";
+    private static final String PHASE_A = "SOURCE_PHASE.publish-a";
+    private static final String PHASE_B = "SOURCE_PHASE.publish-b";
 
     @Test
     public void duplicateCaseEvidenceNamesOneCanonicalSource() {
-        JsonObject first = owner(event("M_I_field_SRC.shared", SOURCE,
-                OCCURRENCE));
-        JsonObject replay = owner(event("M_I_field_SRC.shared", SOURCE,
-                OCCURRENCE));
+        String raw = raw(PHASE_A, SOURCE, "shared");
+        JsonObject first = owner(event(raw, PHASE_A, SOURCE, OCCURRENCE));
+        JsonObject replay = owner(event(raw, PHASE_A, SOURCE, OCCURRENCE));
 
         Map<String, String> identities =
                 SymbolicSourceEvidence.rawSymbolIdentities(
                         Arrays.asList(first, replay));
 
         assertEquals(1, identities.size());
-        assertEquals(OCCURRENCE + "\n" + SOURCE,
-                identities.get("M_I_field_SRC.shared"));
+        assertEquals(PHASE_A + "\n" + SOURCE, identities.get(raw));
     }
 
     @Test
     public void rawSymbolAndSourceIdentityAreBothOneToOne() {
+        String shared = raw(PHASE_A, SOURCE, "shared");
+        JsonObject conflicting = event(raw(PHASE_A, "OTHER", "shared"),
+                PHASE_A, "OTHER", OCCURRENCE);
+        conflicting.addProperty("rawSymbol", shared);
+        conflicting.getAsJsonObject("expression")
+                .addProperty("_exp", shared);
         assertMalformed(Arrays.asList(
-                owner(event("M_I_field_SRC.shared", SOURCE, OCCURRENCE)),
-                owner(event("M_I_field_SRC.shared", "OTHER", OCCURRENCE))));
+                owner(event(shared, PHASE_A, SOURCE, OCCURRENCE)),
+                owner(conflicting)));
         assertMalformed(Arrays.asList(
-                owner(event("M_I_field_SRC.first", SOURCE, OCCURRENCE)),
-                owner(event("M_I_field_SRC.second", SOURCE, OCCURRENCE))));
+                owner(event(raw(PHASE_A, SOURCE, "first"), PHASE_A,
+                        SOURCE, OCCURRENCE)),
+                owner(event(raw(PHASE_A, SOURCE, "second"), PHASE_A,
+                        SOURCE, OCCURRENCE))));
+    }
+
+    @Test
+    public void twoPublishPhasesInOneOccurrenceStayDistinct() {
+        String first = raw(PHASE_A, SOURCE, "first");
+        String second = raw(PHASE_B, SOURCE, "second");
+
+        Map<String, String> identities =
+                SymbolicSourceEvidence.rawSymbolIdentities(Arrays.asList(
+                        owner(event(first, PHASE_A, SOURCE, OCCURRENCE)),
+                        owner(event(second, PHASE_B, SOURCE, OCCURRENCE))));
+
+        assertEquals(2, identities.size());
+        assertEquals(PHASE_A + "\n" + SOURCE, identities.get(first));
+        assertEquals(PHASE_B + "\n" + SOURCE, identities.get(second));
+    }
+
+    @Test
+    public void oneOwnerCannotRepeatOnePhaseEvent() {
+        String raw = raw(PHASE_A, SOURCE, "shared");
+        JsonObject duplicate = new JsonObject();
+        JsonArray rows = new JsonArray();
+        rows.add(event(raw, PHASE_A, SOURCE, OCCURRENCE));
+        rows.add(event(raw, PHASE_A, SOURCE, OCCURRENCE));
+        duplicate.add(SymbolicSourceEvidence.FIELD, rows);
+
+        assertMalformed(Collections.singletonList(duplicate));
     }
 
     @Test
@@ -60,16 +95,17 @@ public class SymbolicSourceEvidenceTest {
 
     @Test
     public void composerScopeKeyIsGlobalOnlyForAttestedSource() {
-        JsonObject attested = owner(event("M_I_field_SRC.shared", SOURCE,
+        String raw = raw(PHASE_A, SOURCE, "shared");
+        JsonObject attested = owner(event(raw, PHASE_A, SOURCE,
                 OCCURRENCE));
 
         assertEquals(
                 ConcolicSmtComposer.symbolScopeKeyForTests(
                         Collections.singletonList(attested),
-                        "M_I_field_SRC.shared", "case-a"),
+                        raw, "case-a"),
                 ConcolicSmtComposer.symbolScopeKeyForTests(
                         Collections.singletonList(attested),
-                        "M_I_field_SRC.shared", "case-b"));
+                        raw, "case-b"));
         assertTrue(!ConcolicSmtComposer.symbolScopeKeyForTests(
                         Collections.singletonList(attested),
                         "M_I_field_ordinary", "case-a").equals(
@@ -86,10 +122,15 @@ public class SymbolicSourceEvidenceTest {
         return owner;
     }
 
-    private static JsonObject event(String raw, String source,
+    private static JsonObject event(String raw, String phase, String source,
                                     String occurrence) {
-        return SymbolicSourceEvidence.event(source, occurrence, FIELD,
+        return SymbolicSourceEvidence.event(phase, source, occurrence, FIELD,
                 symbol(raw));
+    }
+
+    private static String raw(String phase, String source, String suffix) {
+        return "M_I_field_" + SymbolicSourceEvidence.engineLabelForPhase(
+                phase, source) + "_" + suffix;
     }
 
     private static JsonObject symbol(String raw) {
@@ -111,8 +152,8 @@ public class SymbolicSourceEvidenceTest {
 
     private static void assertEventRejected(JsonObject expression) {
         try {
-            SymbolicSourceEvidence.event(SOURCE, OCCURRENCE, FIELD,
-                    expression);
+            SymbolicSourceEvidence.event(PHASE_A, SOURCE, OCCURRENCE,
+                    FIELD, expression);
             fail("expected source expression rejection");
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage(), !expected.getMessage().isEmpty());

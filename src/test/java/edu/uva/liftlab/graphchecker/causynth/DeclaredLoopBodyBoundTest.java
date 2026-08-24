@@ -356,63 +356,6 @@ public class DeclaredLoopBodyBoundTest {
         return method;
     }
 
-    /**
-     * <pre>
-     * u0 proto := @parameter0
-     * u1 i = 0
-     * u2 if i &gt;= 3 goto u8     // outer loop control
-     * u3 j = 0
-     * u4 if j &gt;= 2 goto u7     // inner loop control
-     * u5 j = j + 1
-     * u6 goto u4
-     * u7 goto u2
-     * u8 proto.call(i)          // the cut
-     * u9 return
-     * </pre>
-     */
-    private SootMethod clientWithNestAroundCut() {
-        SootClass object = libraryClass("java.lang.Object");
-        SootClass protocol = protocolInterface(object);
-        SootMethod declared = protocol.getMethodByName("call");
-        SootClass owner = applicationClass("example.NestClient", object);
-        SootMethod method = new SootMethod("run",
-                Collections.<soot.Type>singletonList(
-                        RefType.v(protocol.getName())),
-                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
-        owner.addMethod(method);
-        methods.put(method.getSignature(), method);
-        Body body = Jimple.v().newBody(method);
-        method.setActiveBody(body);
-        Local proto = local(body, "proto", RefType.v(protocol.getName()));
-        Local outerCounter = local(body, "i", IntType.v());
-        Local innerCounter = local(body, "j", IntType.v());
-        Unit cut = Jimple.v().newInvokeStmt(
-                Jimple.v().newInterfaceInvokeExpr(proto, declared.makeRef(),
-                        outerCounter));
-        Unit outerHead = Jimple.v().newIfStmt(
-                Jimple.v().newGeExpr(outerCounter, IntConstant.v(3)), cut);
-        Unit outerLatch = Jimple.v().newGotoStmt(outerHead);
-        Unit innerHead = Jimple.v().newIfStmt(
-                Jimple.v().newGeExpr(innerCounter, IntConstant.v(2)),
-                outerLatch);
-        body.getUnits().add(Jimple.v().newIdentityStmt(proto,
-                Jimple.v().newParameterRef(proto.getType(), 0)));
-        body.getUnits().add(Jimple.v().newAssignStmt(outerCounter,
-                IntConstant.v(0)));
-        body.getUnits().add(outerHead);
-        body.getUnits().add(Jimple.v().newAssignStmt(innerCounter,
-                IntConstant.v(0)));
-        body.getUnits().add(innerHead);
-        body.getUnits().add(Jimple.v().newAssignStmt(innerCounter,
-                Jimple.v().newAddExpr(innerCounter, IntConstant.v(1))));
-        body.getUnits().add(Jimple.v().newGotoStmt(innerHead));
-        body.getUnits().add(outerLatch);
-        body.getUnits().add(cut);
-        body.getUnits().add(Jimple.v().newReturnVoidStmt());
-        bodies.put(method.getSignature(), body);
-        return method;
-    }
-
     private SootClass protocolInterface(SootClass object) {
         SootClass protocol = Scene.v().containsClass("example.Proto")
                 ? Scene.v().getSootClass("example.Proto") : null;
