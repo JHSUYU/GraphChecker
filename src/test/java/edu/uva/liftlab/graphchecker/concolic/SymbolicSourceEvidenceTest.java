@@ -94,6 +94,19 @@ public class SymbolicSourceEvidenceTest {
     }
 
     @Test
+    public void expressionTypeMustExactlyMatchTheDeclaredField() {
+        JsonObject intExpression = symbol(raw(PHASE_A, SOURCE, "typed"));
+        try {
+            SymbolicSourceEvidence.event(PHASE_A, SOURCE, OCCURRENCE,
+                    "<example.Owner: long value>", intExpression);
+            fail("expected field/expression width mismatch rejection");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(
+                    "field type differs from VM expression"));
+        }
+    }
+
+    @Test
     public void composerScopeKeyIsGlobalOnlyForAttestedSource() {
         String raw = raw(PHASE_A, SOURCE, "shared");
         JsonObject attested = owner(event(raw, PHASE_A, SOURCE,

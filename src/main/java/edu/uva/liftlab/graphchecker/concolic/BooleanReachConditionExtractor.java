@@ -597,30 +597,40 @@ public final class BooleanReachConditionExtractor {
             int currentQuery = queryOrdinal++;
             boolean noExtensionality = SmtArrayExtensionalityAudit
                     .provesExtensionalityRedundant(smt);
-            String firstOptions = noExtensionality
-                    ? "(set-option :smt.array.extensional false)\n"
-                    + "(set-option :smt.random_seed 7)\n"
-                    + "(set-option :sat.random_seed 7)\n"
-                    : "";
-            ConcolicConstraintSolver.SolverOutput first = attempt(
-                    currentQuery, 0, "DEFAULT_SEED_7", smt, firstOptions,
-                    timeoutMillis);
-            if ("sat".equals(first.status())
-                    || "unsat".equals(first.status())) {
-                return first;
-            }
-            String fallbackOptions = (noExtensionality
+            String firstOptions = (noExtensionality
                     ? "(set-option :smt.array.extensional false)\n" : "")
                     + "(set-option :smt.auto_config false)\n"
                     + "(set-option :smt.arith.solver 2)\n"
                     + "(set-option :smt.case_split 3)\n"
                     + "(set-option :smt.random_seed 91)\n"
                     + "(set-option :sat.random_seed 91)\n";
-            long fallbackTimeout = timeoutMillis > Long.MAX_VALUE / 3L
+            ConcolicConstraintSolver.SolverOutput first = attempt(
+                    currentQuery, 0, "AUTO_OFF_ARITH2_CASE3_SEED91_FAST",
+                    smt, firstOptions, Math.min(timeoutMillis, 5_000L));
+            if ("sat".equals(first.status())
+                    || "unsat".equals(first.status())) {
+                return first;
+            }
+            String fallbackOptions = noExtensionality
+                    ? "(set-option :smt.array.extensional false)\n"
+                    + "(set-option :smt.random_seed 7)\n"
+                    + "(set-option :sat.random_seed 7)\n"
+                    : "";
+            ConcolicConstraintSolver.SolverOutput fallback = attempt(
+                    currentQuery, 1,
+                    "DEFAULT_SEED_7", smt,
+                    fallbackOptions, timeoutMillis);
+            if ("sat".equals(fallback.status())
+                    || "unsat".equals(fallback.status())) {
+                return fallback;
+            }
+            // Preserve the former long tuned fallback after the bounded fast
+            // probe and the configured default budget have both failed.
+            long longTimeout = timeoutMillis > Long.MAX_VALUE / 3L
                     ? Long.MAX_VALUE : timeoutMillis * 3L;
-            return attempt(currentQuery, 1,
-                    "AUTO_OFF_ARITH2_CASE3_SEED91", smt,
-                    fallbackOptions, fallbackTimeout);
+            return attempt(currentQuery, 2,
+                    "AUTO_OFF_ARITH2_CASE3_SEED91_LONG", smt,
+                    firstOptions, longTimeout);
         }
 
         private ConcolicConstraintSolver.SolverOutput attempt(

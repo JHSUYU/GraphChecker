@@ -257,15 +257,15 @@ public class BooleanReachConditionExtractorSolverTest {
     }
 
     @Test
-    public void timeoutFallsBackToTheRecordedDeterministicStrategy()
+    public void tunedProbeTimeoutFallsBackToTheDefaultStrategy()
             throws Exception {
         Path fake = Files.createTempFile("causynth-z3-portfolio", ".sh");
         try {
             Files.write(fake, ("#!/bin/sh\n"
                     + "query=$(cat)\n"
                     + "case \"$query\" in\n"
-                    + "  *':smt.auto_config false'*) echo sat ;;\n"
-                    + "  *) sleep 1 ;;\n"
+                    + "  *':smt.auto_config false'*) sleep 1 ;;\n"
+                    + "  *) echo sat ;;\n"
                     + "esac\n").getBytes(StandardCharsets.UTF_8));
             assertTrue(fake.toFile().setExecutable(true));
             BooleanReachConditionExtractor.Z3Solver solver =
@@ -279,14 +279,14 @@ public class BooleanReachConditionExtractorSolverTest {
                     .get("status").getAsString());
             assertEquals("sat", attempts.get(1).getAsJsonObject()
                     .get("status").getAsString());
-            assertEquals("AUTO_OFF_ARITH2_CASE3_SEED91",
+            assertEquals("DEFAULT_SEED_7",
                     attempts.get(1).getAsJsonObject().get("strategy")
                             .getAsString());
             assertEquals(attempts.get(0).getAsJsonObject()
                             .get("baseQuerySha256").getAsString(),
                     attempts.get(1).getAsJsonObject()
                             .get("baseQuerySha256").getAsString());
-            assertEquals(150L, attempts.get(1).getAsJsonObject()
+            assertEquals(50L, attempts.get(1).getAsJsonObject()
                     .get("timeoutMillis").getAsLong());
         } finally {
             Files.deleteIfExists(fake);

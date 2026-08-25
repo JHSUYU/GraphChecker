@@ -554,6 +554,16 @@ public final class ConfiguredSourcePhaseContract {
 
         public String siteId() { return siteId; }
 
+        /** Static method that contains this exact configured-source hook. */
+        public String declarationMethod() {
+            return text(encoded.get("declarationMethod"));
+        }
+
+        /** Original Jimple unit index of this exact configured-source hook. */
+        public int declarationUnitIndex() {
+            return ((Number) encoded.get("declarationUnitIndex")).intValue();
+        }
+
         public int baselineOrdinal() { return baselineOrdinal; }
 
         public long runtimeEventSeq() { return runtimeEventSeq; }

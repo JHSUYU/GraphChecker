@@ -83,6 +83,9 @@ public class TargetReachCutPortTest {
                 selectedPath.get("desiredTakenOutcome").getAsBoolean());
         assertEquals(">", selectedPath.getAsJsonArray("constraints")
                 .get(0).getAsJsonObject().get("_op").getAsString());
+        assertEquals(TARGET_SITE, selectedPath.getAsJsonObject(
+                TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS)
+                .getAsJsonObject("site").get("siteId").getAsString());
         JsonArray admitted = query.getAsJsonObject("selectedTargetOccurrence")
                 .getAsJsonArray("inputPorts");
         assertEquals(1, admitted.size());
@@ -307,6 +310,43 @@ public class TargetReachCutPortTest {
         assertEquals(1, path.getAsJsonArray(VmHandoffEvidence.FIELD).size());
         assertEquals(41L, path.getAsJsonArray(VmHandoffEvidence.FIELD)
                 .get(0).getAsJsonObject().get("exportEventId").getAsLong());
+    }
+
+    @Test
+    public void sameLocalPrefixKeepsDistinctRpcHandoffCases()
+            throws Exception {
+        JsonObject first = summary();
+        JsonObject second = summary();
+        JsonObject firstExpression = new JsonObject();
+        firstExpression.addProperty("_type", "SymbolExpression");
+        firstExpression.addProperty("_java_type", "I");
+        firstExpression.addProperty("_exp", "M_I_field_REMOTE_A");
+        JsonObject secondExpression = new JsonObject();
+        secondExpression.addProperty("_type", "SymbolExpression");
+        secondExpression.addProperty("_java_type", "I");
+        secondExpression.addProperty("_exp", "M_I_field_REMOTE_B");
+        VmHandoffEvidence.writeTo(first, Collections.singletonList(
+                VmHandoffEvidence.event(CUT_PORT, 41L, firstExpression,
+                        "TASK.PRODUCER.A", "slice/dnA#epoch0/region/R#1")));
+        VmHandoffEvidence.writeTo(second, Collections.singletonList(
+                VmHandoffEvidence.event(CUT_PORT, 42L, secondExpression,
+                        "TASK.PRODUCER.B", "slice/dnB#epoch0/region/R#1")));
+
+        JsonObject query = build(CUT_PORT, Arrays.asList(first, second));
+
+        assertEquals(query.toString(), 2,
+                query.getAsJsonArray("paths").size());
+        assertFalse(query.toString(), query.has("coverageGaps"));
+        java.util.Set<String> producers = new java.util.LinkedHashSet<>();
+        for (com.google.gson.JsonElement encoded
+                : query.getAsJsonArray("paths")) {
+            producers.add(encoded.getAsJsonObject()
+                    .getAsJsonArray(VmHandoffEvidence.FIELD)
+                    .get(0).getAsJsonObject()
+                    .get(VmHandoffEvidence.PRODUCER_TASK_ID).getAsString());
+        }
+        assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
+                "TASK.PRODUCER.A", "TASK.PRODUCER.B")), producers);
     }
 
     @Test

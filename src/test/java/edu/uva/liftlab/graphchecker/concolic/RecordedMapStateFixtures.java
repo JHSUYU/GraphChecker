@@ -572,7 +572,8 @@ final class RecordedMapStateFixtures {
     private static JsonObject fatalQuery(JsonObject targetPredicate,
                                          JsonObject firstHop) {
         JsonObject fatal = new JsonObject();
-        fatal.addProperty("schemaVersion", 1);
+        fatal.addProperty("schemaVersion",
+                TargetReachPathQueryBuilder.SCHEMA_VERSION);
         fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
         fatal.addProperty("queryKey", "QUERY.RECORDED.MAP.STATE");
         fatal.addProperty("regionId", "REGION.0");
@@ -606,6 +607,8 @@ final class RecordedMapStateFixtures {
                 "<Test: void consume()>#u1", "<Test: void consume()>", 1, 1,
                 true, BranchPredicateAlgebra.complement(targetPredicate),
                 0, metadata);
+        path.add(TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS,
+                witness.toJson());
         fatal.add("seedReplayContract", BranchReplayContract.flip(
                 Collections.<BranchWitness>emptyList(), witness).toJson());
         LoopBoundPolicy.cfgBackedges(8).writeTo(fatal);

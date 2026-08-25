@@ -11,6 +11,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -24,6 +26,8 @@ public final class SymbolicSourceEvidence {
     public static final String KIND = "CONFIGURED_SYMBOLIC_SOURCE_FIELD";
     public static final String AUTHORITY = "VM_EXACT_SOURCE_PHASE_FIELD_V2";
     public static final int SCHEMA_VERSION = 2;
+    private static final Pattern FIELD_SIGNATURE = Pattern.compile(
+            "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
 
     private SymbolicSourceEvidence() {
     }
@@ -51,6 +55,8 @@ public final class SymbolicSourceEvidence {
         row.addProperty("fieldSignature", required(fieldSignature,
                 "fieldSignature"));
         JsonObject symbolic = exactSymbol(expression);
+        requireDeclaredFieldType(fieldSignature,
+                string(symbolic, "_java_type"));
         row.addProperty("rawSymbol", string(symbolic, "_exp"));
         row.addProperty("javaType", string(symbolic, "_java_type"));
         row.add("expression", symbolic.deepCopy());
@@ -155,6 +161,8 @@ public final class SymbolicSourceEvidence {
                 "sourceOccurrenceId");
         required(string(event, "fieldSignature"), "fieldSignature");
         JsonObject expression = exactSymbol(event.get("expression"));
+        requireDeclaredFieldType(string(event, "fieldSignature"),
+                string(expression, "_java_type"));
         String raw = string(event, "rawSymbol");
         String phaseMarker = "_field_" + engineLabelForPhase(
                 string(event, "sourcePhaseId"),
@@ -189,6 +197,26 @@ public final class SymbolicSourceEvidence {
                     FIELD + " contains a truncated VM expression");
         }
         return symbolic;
+    }
+
+    /** The VM symbol must have the exact declared field type. */
+    private static void requireDeclaredFieldType(String fieldSignature,
+                                                 String expressionJavaType) {
+        Matcher field = FIELD_SIGNATURE.matcher(required(fieldSignature,
+                "fieldSignature"));
+        if (!field.matches()) {
+            throw new IllegalArgumentException(
+                    FIELD + " has a malformed exact field signature");
+        }
+        String declared = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                field.group(1));
+        String observed = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                expressionJavaType);
+        if (!declared.equals(observed)) {
+            throw new IllegalArgumentException(
+                    FIELD + " field type differs from VM expression: "
+                            + declared + " != " + observed);
+        }
     }
 
     private static String required(String value, String label) {

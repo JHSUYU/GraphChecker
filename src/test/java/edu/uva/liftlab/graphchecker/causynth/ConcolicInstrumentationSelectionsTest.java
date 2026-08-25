@@ -1,5 +1,10 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -8,6 +13,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Collections;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -110,6 +117,45 @@ public class ConcolicInstrumentationSelectionsTest {
         assertTrue(selected.materializations()
                 .selectsSharedCarrierDeclaration(
                         "example.Keys", "currentKey"));
+    }
+
+    @Test
+    public void configuredSourceHelperIsPartOfTheReplayEnvelope()
+            throws Exception {
+        String root = "<example.Producer: long produce()>";
+        String helper = "<example.SourceDeclarations: void declare()>";
+        String callee = "<example.SourceHook: boolean symbolize(java.lang.String,java.lang.Object,java.lang.String)>";
+        JsonObject task = JsonParser.parseString(
+                campaignTask("TASK.SOURCE", root)).getAsJsonObject();
+        Map<String, Object> declaration =
+                ConfiguredSourcePhaseContract.declaration(
+                        ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                        "SOURCE.A", "<example.Producer: int value>",
+                        helper, 2);
+        ConfiguredSourcePhaseContract.Declaration decoded =
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        Collections.singletonList(declaration)).get(0);
+        Map<String, Object> occurrence =
+                ConfiguredSourcePhaseContract.occurrence(decoded,
+                        task.get("occurrenceId").getAsString(), 1,
+                        10L, 9L, 11L, callee,
+                        Collections.singletonList(9L));
+        JsonArray phases = new JsonArray();
+        phases.add(new Gson().toJsonTree(occurrence));
+        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
+        Path plan = folder.newFile().toPath();
+        Files.write(plan, (task.toString() + "\n")
+                .getBytes(StandardCharsets.UTF_8));
+
+        ConcolicInstrumentationSelections.InstrumentationPlan selected =
+                withPlan(plan, "TASK.SOURCE").get(0);
+        assertTrue(selected.envelopeMethods().contains(root));
+        assertTrue(selected.envelopeMethods().contains(helper));
+        assertEquals(1, selected.configuredSourcePhases().size());
+        Set<String> applicationClasses = withPlanClasses(
+                plan, "TASK.SOURCE");
+        assertTrue(applicationClasses.contains("example.Producer"));
+        assertTrue(applicationClasses.contains("example.SourceDeclarations"));
     }
 
     private static void assertCampaignRefused(Path plan, String selected,

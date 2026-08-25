@@ -35,6 +35,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * it need not already have a concrete replay.
  */
 public final class TargetReachPathQueryBuilder {
+    public static final int SCHEMA_VERSION = 2;
     static final String TARGET_ATTESTATION_ROLE =
             "targetReachAttestationRole";
     static final String SOURCE_TARGET_REACH_EVENT =
@@ -45,6 +46,8 @@ public final class TargetReachPathQueryBuilder {
             "RUNTIME_SOURCE_EVENT_AND_WITNESS_FLIP_V1";
     static final String REQUIRED_FATAL_BRANCH_AUTHORITY =
             "RUNTIME_REQUIRED_TARGET_EVENT_V1";
+    static final String TARGET_BRANCH_WITNESS =
+            "targetBranchWitness";
     private static final Gson JSON = new GsonBuilder()
             .disableHtmlEscaping().create();
 
@@ -205,9 +208,6 @@ public final class TargetReachPathQueryBuilder {
         Map<String, JsonObject> runtimeBindings = new LinkedHashMap<>();
         // Edges whose runtime evidence two target paths state differently.
         Map<String, String> contestedBindings = new LinkedHashMap<>();
-        // Path keys two summaries describe differently.  Neither is kept:
-        // picking one would be a semantic choice this class cannot make.
-        Map<String, String> conflictingPaths = new LinkedHashMap<>();
         Map<String, JsonObject> symbolicSources = new LinkedHashMap<>();
         // One exact required-outcome execution is already an existential
         // failure witness. Prefer one deterministic direct witness over the
@@ -307,6 +307,14 @@ public final class TargetReachPathQueryBuilder {
                             : SOURCE_TARGET_REACH_EVENT);
             path.add(PathObservation.TargetReachEvent.FIELD,
                     targetReach.toJson());
+            // The producer cases selected for this fresh replay may attach a
+            // different expression at the same RPC response port.  The
+            // target is still the same bytecode decision, but its exact VM
+            // predicate is consequently path-local.  Preserve that witness
+            // so the composer can validate the projected predicate against
+            // this execution instead of against the seed expression.
+            path.add(TARGET_BRANCH_WITNESS,
+                    targetMapping.witness().toJson());
             path.addProperty("desiredTakenOutcome",
                     fatalRequiredOutcome);
             List<JsonObject> selectorEvidence =
@@ -339,16 +347,16 @@ public final class TargetReachPathQueryBuilder {
             }
             String pathKey = observation.pathKey();
             path.add("constraints", constraints.deepCopy());
-            if (conflictingPaths.containsKey(pathKey)) continue;
-            JsonObject previous = pathsByKey.put(pathKey, path);
-            if (previous != null && !previous.equals(path)) {
-                // Same key, different content: drop both and name it.  One
-                // of them is not "the" path, and choosing would assert a
-                // prefix the recording never singled out.
-                pathsByKey.remove(pathKey);
-                conflictingPaths.put(pathKey,
-                        disagreementDetail(previous, path));
-            }
+            // PathObservation's key intentionally describes only the local
+            // branch prefix.  Several fresh distributed replays may execute
+            // that same prefix while attaching different producer cases at
+            // an RPC/shared-state boundary.  Those are distinct, exact
+            // causal cases, not contradictory descriptions of one case.
+            // Preserve each complete path payload and deduplicate only byte-
+            // equivalent semantic cases.
+            String caseKey = pathKey + "\u0000"
+                    + CanonicalJson.sha256(path);
+            pathsByKey.putIfAbsent(caseKey, path);
         }
 
         List<String> pathKeys = new ArrayList<>(pathsByKey.keySet());
@@ -364,7 +372,7 @@ public final class TargetReachPathQueryBuilder {
         }
 
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", 1);
+        result.addProperty("schemaVersion", SCHEMA_VERSION);
         result.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
         result.addProperty("queryKey", queryKey);
         result.addProperty("regionId", region);
@@ -396,15 +404,6 @@ public final class TargetReachPathQueryBuilder {
                     "TARGET_PATH_BINDING_NOT_USABLE", entry.getKey(),
                     "target paths describe this edge differently, so it"
                             + " does not refine its seed binding: "
-                            + entry.getValue()));
-        }
-        for (Map.Entry<String, String> entry
-                : conflictingPaths.entrySet()) {
-            coverageGaps.add(CoverageDivergence.of(
-                    CoverageDivergence.Kind.TARGET,
-                    "TARGET_PATH_NOT_USABLE", entry.getKey(),
-                    "target summaries describe this path differently, so"
-                            + " neither description is carried: "
                             + entry.getValue()));
         }
         if (!coverageGaps.isEmpty()) {

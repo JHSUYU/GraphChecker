@@ -77,11 +77,6 @@ public final class ConcolicSmtComposer {
     static final String RECORDED_ITE_TYPE = "IteExpression";
     /** Prefix of the one value term of one guarded read. */
     static final String READ_VALUE_PREFIX = "rf_value__";
-    static final String LIVE_HANDOFF_PRODUCER_RELATION_MISSING =
-            "LIVE_HANDOFF_PRODUCER_RELATION_MISSING";
-    static final String LIVE_HANDOFF_PRODUCER_RELATION_AMBIGUOUS =
-            "LIVE_HANDOFF_PRODUCER_RELATION_AMBIGUOUS";
-
     /**
      * The recorded model holds reads that no arm and no guarded choice
      * explains, so its completeness claim examined nothing.
@@ -403,11 +398,13 @@ public final class ConcolicSmtComposer {
                 }
                 String pathTerm = and(pathTerms);
                 fatalTerms.add(pathTerm);
+                String selectedCase = emitter.bindTargetPathCase(fatal, path,
+                        selectedPathOrdinal, pathTerm);
                 emitter.recordTargetReach(selectedPathOrdinal, path,
-                        pathTerm, fatal);
-                emitter.bindFatalPath(selectedPathOrdinal, pathTerm);
-                fatalPathSelectors.add(emitter.bindTargetPathCase(fatal, path,
-                        selectedPathOrdinal, pathTerm));
+                        selectedCase, fatal);
+                emitter.bindFatalPath(selectedPathOrdinal, selectedCase,
+                        pathTerm);
+                fatalPathSelectors.add(selectedCase);
             }
         } finally {
             emitter.restoreSymbolScope(previousFatalScope);
@@ -1396,7 +1393,8 @@ public final class ConcolicSmtComposer {
     private static void requireCanonicalFatalQuerySchema(JsonObject fatal)
             throws IOException {
         String kind = string(fatal, "kind");
-        if (integer(fatal, "schemaVersion", -1) != 1
+        if (integer(fatal, "schemaVersion", -1)
+                != TargetReachPathQueryBuilder.SCHEMA_VERSION
                 || !"TARGET_REACH_PATH_SET_QUERY".equals(kind)) {
             throw new IOException("Unsupported canonical fatal query schema");
         }
@@ -1473,6 +1471,19 @@ public final class ConcolicSmtComposer {
                 throw new IOException(
                         "Target reach path has no exact attestation "
                                 + "authority");
+            }
+            JsonElement encodedWitness = path.get(
+                    TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS);
+            if (encodedWitness == null || !encodedWitness.isJsonObject()) {
+                throw new IOException(
+                        "Target reach path has no path-local branch witness");
+            }
+            try {
+                BranchWitness.fromJson(encodedWitness.getAsJsonObject());
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException(
+                        "Target reach path has malformed path-local branch "
+                                + "witness", malformed);
             }
         }
     }
@@ -2702,6 +2713,12 @@ public final class ConcolicSmtComposer {
         return booleanNary(terms, true);
     }
 
+    /** One target-local predicate qualified by its exact causal case. */
+    static String selectedCasePathTerm(String selectedCase,
+                                       String pathTerm) {
+        return and(Arrays.asList(selectedCase, pathTerm));
+    }
+
     private static String or(List<String> terms) {
         return booleanNary(terms, false);
     }
@@ -3018,7 +3035,8 @@ public final class ConcolicSmtComposer {
             }
         }
 
-        private void bindFatalPath(int pathOrdinal, String pathTerm) {
+        private void bindFatalPath(int pathOrdinal, String selectedCase,
+                                   String pathTerm) {
             for (FatalAbsenceMutationWitness.Demand demand
                     : failureWitness.demands) {
                 if (demand.pathOrdinal != pathOrdinal) continue;
@@ -3030,7 +3048,14 @@ public final class ConcolicSmtComposer {
                             + demand.target);
                     continue;
                 }
-                demand.pathTerm = pathTerm;
+                // Absence/removal evidence belongs to this exact target
+                // causal case.  Once the target selector is only a
+                // sufficient guard (selector => pathTerm), the bare local
+                // path term no longer identifies the selected RPC/shared-
+                // state case: another unselected case may satisfy the same
+                // local predicate.  Keep both identities in the demand.
+                demand.pathTerm = selectedCasePathTerm(selectedCase,
+                        pathTerm);
                 demand.keyTerm = key.text;
                 demand.keyPrecondition = key.precondition;
             }
@@ -3097,10 +3122,43 @@ public final class ConcolicSmtComposer {
             JsonArray constraints = array(path, "constraints");
             JsonElement selectedPredicate = constraints.size() == 0
                     ? null : constraints.get(constraints.size() - 1);
+            final BranchWitness pathWitness;
+            JsonElement encodedPathWitness = path.get(
+                    TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS);
+            if (encodedPathWitness == null
+                    || !encodedPathWitness.isJsonObject()) {
+                unsupported.add("SelectedTargetPathWitnessMissing:path:"
+                        + pathOrdinal);
+                return;
+            }
+            try {
+                pathWitness = BranchWitness.fromJson(
+                        encodedPathWitness.getAsJsonObject());
+            } catch (IllegalArgumentException malformed) {
+                unsupported.add("SelectedTargetPathWitnessMalformed:path:"
+                        + pathOrdinal + ":" + firstNonBlank(
+                        malformed.getMessage(), "UNKNOWN"));
+                return;
+            }
+            if (!pathWitness.decisionIdentity().equals(
+                    source.decisionIdentity())
+                    || pathWitness.sourceTakenOutcome()
+                    != event.outcome()) {
+                unsupported.add("SelectedTargetPathWitnessMismatch:path:"
+                        + pathOrdinal);
+                return;
+            }
+            JsonElement expectedPredicate;
+            if (sourceAttestation) {
+                expectedPredicate = BranchPredicateAlgebra.complement(
+                        pathWitness.sourceSatisfiedPredicate());
+            } else {
+                expectedPredicate = pathWitness.sourceSatisfiedPredicate();
+            }
             if (selectedPredicate == null
                     || !BranchPredicateAlgebra.equivalent(
                     selectedPredicate,
-                    replay.requiredSatisfiedPredicate())) {
+                    expectedPredicate)) {
                 unsupported.add("SelectedTargetPredicateMismatch:path:"
                         + pathOrdinal);
                 return;
@@ -3172,8 +3230,15 @@ public final class ConcolicSmtComposer {
             String owner = targetPathCaseOwner(fatal, path, pathOrdinal);
             String selector = RecordedSessionModel.caseSelector(owner);
             declare(selector, Sort.BOOL);
+            // Several distributed replays can produce the same target-local
+            // predicate through different RPC/shared-state cases.  The case
+            // selector chooses one exact causal execution; it is therefore a
+            // sufficient guard for that predicate, not an alias for it.  An
+            // equality would force every case with the same predicate true
+            // simultaneously and immediately contradict the exactly-one
+            // partition below.
             assertNamed("target_path_selector_definition_" + pathOrdinal,
-                    "(= " + selector + " " + pathTerm + ")");
+                    "(=> " + selector + " " + pathTerm + ")");
             return selector;
         }
 
@@ -4431,8 +4496,21 @@ public final class ConcolicSmtComposer {
                 symbol = new RawSymbol(name, requested);
                 rawSymbols.put(key, symbol);
                 declare(symbol.name, symbol.sort);
-                assertJavaIntegralDomain(symbol.name, symbol.sort, javaType,
-                        domainLabel);
+                // A configured source denotes one concrete Java field across
+                // every bounded relation case.  Its primitive type domain is
+                // intrinsic to that field, not conditional on whichever case
+                // first happened to mention it.  Keeping this assertion under
+                // the current case guard lets an unselected case assign an
+                // impossible value (for example 4294967299 to an int) that is
+                // then exposed as a supposedly materializable witness.
+                String previousGuard = currentGuard;
+                if (sourceIdentity != null) currentGuard = "";
+                try {
+                    assertJavaIntegralDomain(symbol.name, symbol.sort,
+                            javaType, domainLabel);
+                } finally {
+                    currentGuard = previousGuard;
+                }
             } else if (symbol.sort != requested) {
                 unsupported.add(conflictLabel + "SortConflict:" + raw
                         + ":" + symbol.sort + "->" + requested);
@@ -4468,11 +4546,16 @@ public final class ConcolicSmtComposer {
                 return;
             }
             String javaType = string(event, "javaType");
+            String fieldType = fieldSignatureJavaType(
+                    string(event, "fieldSignature"));
             Sort declaredSort = sortOfJava(javaType);
-            if (declaredSort != symbol.sort) {
+            if (declaredSort != symbol.sort
+                    || !javaTypeDescriptor(javaType).equals(
+                    javaTypeDescriptor(fieldType))) {
                 unsupported.add("ConfiguredSourceMaterializationSortConflict:"
                         + string(event, "sourceId") + ":" + declaredSort
-                        + "->" + symbol.sort);
+                        + "->" + symbol.sort + ":" + fieldType + "->"
+                        + javaType);
                 return;
             }
             JsonObject row = new JsonObject();
@@ -5609,9 +5692,15 @@ public final class ConcolicSmtComposer {
                     }
                     selectors.add(selector);
                     declare(selector, Sort.BOOL);
+                    // A selector identifies one complete producer causal
+                    // case.  Its local guard is necessary for that case, but
+                    // does not uniquely identify it: distinct RPC/shared-
+                    // state executions may have the same local predicate.
+                    // Equality would force all such selectors true and then
+                    // contradict the exactly-one partition below.
                     assertNamed("case_selector_definition_" + region + "_"
                                     + index,
-                            "(= " + selector + " " + guard + ")");
+                            "(=> " + selector + " " + guard + ")");
                     currentGuard = selector;
                     recordFatalAbsenceRemovalEffects(invocation, item,
                             selector);
@@ -6252,7 +6341,7 @@ public final class ConcolicSmtComposer {
                                 + sha256(sourceTaskId + "\n"
                                 + sourceOccurrence + "\n" + raw)
                                 .substring(0, 16),
-                        "(= " + producerSelector + " "
+                        "(=> " + producerSelector + " "
                                 + and(guardTerms) + ")");
                 int unsupportedBefore = unsupported.size();
                 sourceTerm = term(sourceEvent.get("expression"), Sort.INT);

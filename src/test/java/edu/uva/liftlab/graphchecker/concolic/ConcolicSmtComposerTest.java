@@ -294,6 +294,12 @@ public class ConcolicSmtComposerTest {
         assertTrue(result.smtLib, result.smtLib.contains(
                 "(declare-const " + root.get("solverTerm").getAsString()
                         + " Int)"));
+        String sourceTerm = root.get("solverTerm").getAsString();
+        String javaIntDomain = "(and (<= (- 2147483648) " + sourceTerm
+                + ") (<= " + sourceTerm + " 2147483647))";
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(assert (! " + javaIntDomain
+                        + " :named java_integral_domain_"));
         JsonObject fatalAssertion = result.manifest.getAsJsonObject(
                 "fatalPathAssertion");
         assertEquals("fatal_path", fatalAssertion.get("name").getAsString());
@@ -373,6 +379,10 @@ public class ConcolicSmtComposerTest {
         assertTrue(result.smtLib, result.smtLib.contains(
                 "(=> " + consumerSelector + " (and "
                         + producerSelector));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(=> " + producerSelector + " "));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(= " + producerSelector + " "));
         assertTrue(result.smtLib, result.smtLib.contains(" 9)"));
         if (z3Available()) {
             assertEquals(result.smtLib, "sat", z3(result.smtLib));
@@ -556,19 +566,34 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void legacyTargetQueryWithoutPathLocalWitnessIsRejected()
+            throws Exception {
+        String occurrence = "REGION.0@Test#legacy-target-query";
+        JsonObject fatal = fatalQuery(occurrence, targetConstraints());
+        fatal.addProperty("schemaVersion", 1);
+        fatal.getAsJsonArray("paths").get(0).getAsJsonObject().remove(
+                TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS);
+
+        try {
+            composeFatal(occurrence,
+                    Collections.<RelationSummary>emptyList(),
+                    Arrays.asList(region("REGION.0", true, false)),
+                    fatal, null);
+            fail("legacy query must not borrow the seed branch predicate");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage().contains(
+                    "Unsupported canonical fatal query schema"));
+        }
+    }
+
+    @Test
     public void directlyWitnessedRequiredTargetOutcomeIsAdmitted()
             throws Exception {
         String occurrence = "REGION.0@Test#target";
         JsonObject fatal = fatalQuery(occurrence, targetConstraints());
         JsonObject path = fatal.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
-        path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
-                TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT);
-        path.addProperty("fatalBranchConditionAuthority",
-                TargetReachPathQueryBuilder
-                        .REQUIRED_FATAL_BRANCH_AUTHORITY);
-        path.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
-                .addProperty("outcome", false);
+        markRequiredTargetPath(path);
 
         ConcolicSmtComposer.Result result = composeFatal(occurrence,
                 Collections.<RelationSummary>emptyList(),
@@ -584,6 +609,93 @@ public class ConcolicSmtComposerTest {
         assertFalse(attestation.get("outcome").getAsBoolean());
         assertFalse(result.smtLib, result.smtLib.contains(
                 "(assert false) ; fail closed: unsupported"));
+    }
+
+    @Test
+    public void identicalTargetPredicatesRemainAlternativeCausalCases()
+            throws Exception {
+        String occurrence = "REGION.0@Test#target-alternatives";
+        JsonObject fatal = fatalQuery(occurrence, targetConstraints());
+        JsonObject first = fatal.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        first.addProperty("caseId", "TARGET.CASE.A");
+        JsonObject second = first.deepCopy();
+        second.addProperty("caseId", "TARGET.CASE.B");
+        fatal.getAsJsonArray("paths").add(second);
+
+        ConcolicSmtComposer.Result result = composeFatal(occurrence,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false)), fatal,
+                null);
+
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                ":named target_path_selector_partition"));
+        String firstSelector = RecordedSessionModel.caseSelector(
+                RecordedSessionModel.caseOwner("REGION.0", occurrence,
+                        "TARGET.CASE.A", 0));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(assert (! (=> " + firstSelector + " "));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert (! (= " + firstSelector + " "));
+        if (z3Available()) {
+            assertEquals(result.smtLib, "sat", z3(result.smtLib));
+        }
+    }
+
+    @Test
+    public void identicalProducerGuardsRemainAlternativeCausalCases()
+            throws Exception {
+        String target = "REGION.0@Test#producer-alternatives";
+        String producer = "REGION.1@Test#producer-alternatives";
+        JsonObject firstHop = protocolBinding("EDGE.PRODUCER.ALTERNATIVES",
+                producer, "REGION.1.out.0", target, "REGION.0.in.0");
+        JsonObject row = summary("PRODUCER.ALTERNATIVE.A", producer, 1,
+                Collections.<String>emptyList(),
+                Collections.singletonList(firstHop)).toJson();
+        JsonArray cases = row.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases");
+        JsonObject second = cases.get(0).getAsJsonObject().deepCopy();
+        second.addProperty("caseId", "CASE.PRODUCER.ALTERNATIVE.B");
+        second.addProperty("sourceTaskId", "TASK.PRODUCER.ALTERNATIVE.B");
+        second.getAsJsonObject("outputExpressions")
+                .add("REGION.1.out.0", integer(2));
+        cases.add(second);
+
+        ConcolicSmtComposer.Result result = compose(target,
+                Collections.singletonList(RelationSummary.decode(row)),
+                firstHop);
+
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        String firstSelector = RecordedSessionModel.caseSelector(
+                RecordedSessionModel.caseOwner("REGION.1", producer,
+                        "CASE.PRODUCER.ALTERNATIVE.A", 0));
+        String secondSelector = RecordedSessionModel.caseSelector(
+                RecordedSessionModel.caseOwner("REGION.1", producer,
+                        "CASE.PRODUCER.ALTERNATIVE.B", 1));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(assert (! (=> " + firstSelector + " "));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert (! (= " + firstSelector + " "));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(= (+ (ite " + firstSelector + " 1 0) (ite "
+                        + secondSelector + " 1 0)) 1)"));
+        if (z3Available()) {
+            assertEquals(result.smtLib, "sat", z3(result.smtLib));
+        }
+    }
+
+    @Test
+    public void fatalAbsenceDemandRetainsItsTargetCausalCase() {
+        assertEquals("(and selected_case local_path)",
+                ConcolicSmtComposer.selectedCasePathTerm(
+                        "selected_case", "local_path"));
     }
 
     @Test
@@ -609,6 +721,43 @@ public class ConcolicSmtComposerTest {
                         .getAsString());
         assertTrue(result.manifest.toString(), result.manifest.toString()
                 .contains("SelectedTargetPredicateMismatch:path:0"));
+    }
+
+    @Test
+    public void targetPredicateMayUseTheSameBranchWithAReboundRpcExpression()
+            throws Exception {
+        String occurrence = "REGION.0@Test#rpc-rebound-predicate";
+        JsonObject fatal = fatalQuery(occurrence, targetConstraints());
+        JsonObject path = fatal.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+
+        JsonObject reboundSource = binary(
+                reference("M_I_field_REBOUND_RPC_VALUE", "I"),
+                "<=", integer(7));
+        JsonArray reboundConstraints = new JsonArray();
+        reboundConstraints.add(BranchPredicateAlgebra.complement(
+                reboundSource));
+        path.add("constraints", reboundConstraints);
+
+        JsonObject metadata = new JsonObject();
+        metadata.addProperty("predicateNormalization", "IDENTITY");
+        BranchWitness reboundWitness = BranchWitness.vmPc(
+                "<Test: void consume()>#u1", "<Test: void consume()>",
+                1, 1, true, reboundSource, 0, metadata);
+        path.add(TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS,
+                reboundWitness.toJson());
+
+        ConcolicSmtComposer.Result result = composeFatal(occurrence,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false)), fatal,
+                null);
+
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
     }
 
     @Test
@@ -644,6 +793,9 @@ public class ConcolicSmtComposerTest {
                 "desiredTakenOutcome").getAsBoolean());
         assertEquals("SOURCE_TARGET_REACH_EVENT",
                 targetAttestation.get("attestationRole").getAsString());
+        assertTrue(targetAttestation.get("caseGuard").getAsString(),
+                targetAttestation.get("caseGuard").getAsString()
+                        .startsWith("case_selector__"));
         assertTrue(result.smtLib, result.smtLib.contains(
                 ":named target_reach_event"));
         // One position per recorded event, in one domain.
@@ -1095,14 +1247,7 @@ public class ConcolicSmtComposerTest {
         JsonObject fatal = fatalQuery(targetOccurrence, targetConstraints);
         JsonObject targetPath = fatal.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
-        targetPath.addProperty(
-                TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
-                TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT);
-        targetPath.addProperty("fatalBranchConditionAuthority",
-                TargetReachPathQueryBuilder
-                        .REQUIRED_FATAL_BRANCH_AUTHORITY);
-        targetPath.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
-                .addProperty("outcome", false);
+        markRequiredTargetPath(targetPath);
         VmHandoffEvidence.writeTo(targetPath, Arrays.asList(
                 VmHandoffEvidence.event(portA, 41L, integer(1),
                         "TASK.PRODUCER_A", producerAOccurrence),
@@ -1225,14 +1370,7 @@ public class ConcolicSmtComposerTest {
         JsonObject fatal = fatalQuery(targetOccurrence, targetConstraints);
         JsonObject targetPath = fatal.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
-        targetPath.addProperty(
-                TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
-                TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT);
-        targetPath.addProperty("fatalBranchConditionAuthority",
-                TargetReachPathQueryBuilder
-                        .REQUIRED_FATAL_BRANCH_AUTHORITY);
-        targetPath.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
-                .addProperty("outcome", false);
+        markRequiredTargetPath(targetPath);
         // TargetReachPathQueryBuilder retains target-local declarations on
         // the fatal query root: they apply to every retained nested path for
         // this exact target occurrence, while handoffs remain path-local.
@@ -2724,7 +2862,8 @@ public class ConcolicSmtComposerTest {
             String fatalInstance, JsonArray constraints,
             JsonObject... firstHops) {
         JsonObject fatal = new JsonObject();
-        fatal.addProperty("schemaVersion", 1);
+        fatal.addProperty("schemaVersion",
+                TargetReachPathQueryBuilder.SCHEMA_VERSION);
         fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
         fatal.addProperty("queryKey", "QUERY.TEST.FATAL");
         fatal.addProperty("regionId", "REGION.0");
@@ -2765,6 +2904,8 @@ public class ConcolicSmtComposerTest {
                 1, 1, true, BranchPredicateAlgebra.complement(
                 requiredPredicate),
                 0, metadata);
+        path.add(TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS,
+                witness.toJson());
         fatal.add("seedReplayContract", BranchReplayContract.flip(
                 Collections.<BranchWitness>emptyList(), witness).toJson());
         LoopBoundPolicy.cfgBackedges(8).writeTo(fatal);
@@ -2778,6 +2919,22 @@ public class ConcolicSmtComposerTest {
         fatal.add("symbolicContext", context);
         fatal.add("selectedTargetBindings", selectedTargetBindings);
         return fatal;
+    }
+
+    /** Converts the fixture's seed-side attestation into an exact hit. */
+    private static void markRequiredTargetPath(JsonObject path) {
+        path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
+                TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT);
+        path.addProperty("fatalBranchConditionAuthority",
+                TargetReachPathQueryBuilder.REQUIRED_FATAL_BRANCH_AUTHORITY);
+        path.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("outcome", false);
+        JsonArray constraints = path.getAsJsonArray("constraints");
+        JsonObject witness = path.getAsJsonObject(
+                TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS);
+        witness.addProperty("sourceTakenOutcome", false);
+        witness.add("sourceSatisfiedPredicate",
+                constraints.get(constraints.size() - 1).deepCopy());
     }
 
     /** One non-constant target predicate for fixtures without a region port. */

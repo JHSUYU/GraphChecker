@@ -21,7 +21,7 @@ workload setup belong in the Hadoop adapter and `experiments/hdfs/hdfs-11741`;
 the static analyzer, VM, relation model, scheduler, and Composer must not
 contain an HDFS key-state formula.
 
-As of 2026-08-19, there is **no accepted HDFS-11741 SMT artifact**. Existing
+As of 2026-08-24, there is **no accepted HDFS-11741 SMT artifact**. Existing
 `candidate.smt2` files and old segment-era campaign directories predate the
 current design or have unresolved lineage/coverage gaps. They are diagnostic
 history and must never be resumed or imported into a fresh campaign.
@@ -50,6 +50,380 @@ classpath for its manually added context, NameNode/DataNode initialization,
 and workload APIs, but no test class enters Soot application scope, static
 facts, communication discovery, or concolic instrumentation. No other Hadoop
 unit test is relevant to this milestone.
+
+## Takeover checkpoint: the 20-case RPC matrix
+
+The small RPC workload and the HDFS-11741 workload serve different purposes.
+The RPC workload is a bounded integration matrix for manually declared
+sources, real MiniDFSCluster RPC, VM expression handoff, guarded producer
+relations, case merging, and final Z3 output. HDFS-11741 is the milestone that
+must connect several real HDFS state and communication transitions. Passing
+the matrix is a regression prerequisite; it is not evidence that HDFS-11741
+has been completed.
+
+The checkpoint spans two repositories:
+
+| Repository | Role |
+|---|---|
+| `/opt/GraphChecker` | static selection, instrumentation, concolic replay, case import, composition, solver reporting, experiment scripts |
+| `/opt/hadoop` | the two test RPCs, five manually declared DataNode source fields, MiniDFSCluster workload, HDFS-11741 source/target hooks, Hadoop IPC-header carrier, and encrypted-SASL carrier |
+
+### Fixed MiniDFSCluster RPC workload
+
+The only matrix workload is:
+
+```text
+org.apache.hadoop.hdfs.TestCausynthRpcHeaderPropagation
+  #nameNodeComparesValuesReadOnceFromTwoDataNodes
+```
+
+It starts one NameNode and two DataNodes. Cluster startup invokes
+`NameNode.compareCausynthDataNodeValues` exactly once. The NameNode performs
+two different RPC operations:
+
+```text
+DN0.getCausynthValueA() -> firstValue
+DN1.getCausynthValueB() -> secondValue
+
+if (firstValue > secondValue) {
+  throw @CausynthExceptionTarget("causynth-rpc-compare") IOException;
+}
+```
+
+Each DataNode declares the same five eligible fields manually. Runtime source
+identity (`cluster0/dn0` versus `cluster0/dn1`), the RPC operation, and the
+selected occurrence distinguish their uses; source names do not hard-code a
+DataNode as “A” or “B”.
+
+| Source ID | Java field | Type | Concrete default |
+|---|---|---|---:|
+| `RPC_COMPARE.A` | `DataNode.causynthRpcA` | `int` | `0` |
+| `RPC_COMPARE.B` | `DataNode.causynthRpcB` | `boolean` | `false` |
+| `RPC_COMPARE.C` | `DataNode.causynthRpcC` | `long` | `0` |
+| `RPC_COMPARE.D` | `DataNode.causynthRpcD` | `int` | `0` |
+| `RPC_COMPARE.E` | `DataNode.causynthRpcE` | `boolean` | `false` |
+
+Declaring five eligible fields does not make all five symbolic in every task.
+The selected producer output slice chooses only fields that can affect that
+operation's return expression. Unused declarations stay concrete. Once a
+source is selected, its exact declaration call, source phase, owner,
+occurrence, Java field type, model write-back, and RPC handoff remain
+fail-closed.
+
+`DataNode.CAUSYNTH_RPC_SCENARIO` is intentionally a compile-time selector.
+Changing it and incrementally recompiling leaves only one producer pair in the
+analyzed call graph. It is experiment configuration, not a symbolic input.
+
+### Scenario definitions and recorded results
+
+All rows below were run as independent eight-worker fresh campaigns. The
+selected run for each row published `FINAL_READY`, `SAT_CANDIDATE`,
+`REACHABLE`, and zero final gaps. `candidate sha` is the first twelve
+hexadecimal characters of that run's `candidate.smt2` SHA-256; it prevents an
+old or duplicate directory from being mistaken for the selected evidence.
+
+| # | Producer relation stress | Z3 models | fastest recorded SAT | candidate sha |
+|---:|---|---:|---:|---|
+| 1 | `int < MAX`, signed increment, and negative-`long` branch | 1 | 66 ms | `fe06267daff3` |
+| 2 | exact `Integer.MIN_VALUE/MAX_VALUE` disjunctions | 1 | 91 ms | `b7bcaef456f1` |
+| 3 | arithmetic relation guarded by `int && boolean` | 2 | 68 ms | `8f14b9e75950` |
+| 4 | negation and `||`, with a different B-side relation | 4 | 118 ms | `8cdb922d9e8c` |
+| 5 | two compound disjunctive producer cases | 2 | 59 ms | `23ab5134fa5b` |
+| 6 | nested `||` groups under `&&` on both producers | 2 | 101 ms | `86deb5a4daec` |
+| 7 | three-way conjunction and cross-field comparisons | 4 | 108 ms | `e6025430f69f` |
+| 8 | boolean disjunction, equality, inequality, and negation | 10 | 170 ms | `3dd2b9864c43` |
+| 9 | arithmetic guard sums plus `Integer.MAX_VALUE` arm | 1 | 102 ms | `6941c64b40ff` |
+| 10 | three-level short-circuit condition with nested `||` | 4 | 93 ms | `46cc1e733fce` |
+| 11 | a `long` range strictly above `Integer.MAX_VALUE` | 1 | 72 ms | `7da8ec6a4186` |
+| 12 | exact `Long.MIN/MAX` and `Integer.MIN/MAX` cases | 1 | 65 ms | `f4c68e0ab952` |
+| 13 | mixed relational alternatives using all scalar types | 4 | 86 ms | `ca8b6ce771e5` |
+| 14 | parity/bitwise predicates combined with booleans | 3 | 132 ms | `effed4ce5eda` |
+| 15 | Java `int` overflow, including `MAX + 1 == MIN` | 1 | 97 ms | `9d463dbdf7c8` |
+| 16 | Java `long` overflow, including `MAX + 1 == MIN` | 1 | 98 ms | `d858c5812c2f` |
+| 17 | nested short-circuit alternatives on both producers | 15 | 167 ms | `d29d20923047` |
+| 18 | three conjunct groups and a nested disjunctive B guard | 1 | 167 ms | `5b01fdf097a6` |
+| 19 | multi-case `if / else-if / else` producer relations | 2 | 99 ms | `ad629902dfe8` |
+| 20 | combined min/max, `&&`, `||`, negation, and multi-case arithmetic | 2 | 160 ms | `43500eb3e4c3` |
+
+The selected local evidence is under:
+
+```text
+/proj/silentfailure-PG0/gc-rpc-compare/final-scenario-campaigns/
+  scenario-01.oNndiJ
+  ...
+  scenario-20.Ihx2FP
+```
+
+These directories are diagnostic run products, not checked-in truth. A new
+agent should use the committed workload and generate a new immutable root.
+
+The solver report, rather than directory existence, is authoritative:
+
+```bash
+final='<fresh-scenario-run>/final'
+
+jq -e '
+  .finalStatus == "FINAL_READY"
+  and .claim == "SAT_CANDIDATE"
+  and .reachability == "REACHABLE"
+  and .gapCount == 0
+' "$final/result.json"
+
+jq -r '
+  .solverAttempts[]
+  | "query=\(.queryOrdinal) strategy=\(.strategy)"
+    + " status=\(.status) elapsed_ms=\(.elapsedMillis)"
+' "$final/z3-result.json"
+
+jq -r '
+  .symbolicVariableModels[] as $model
+  | $model.variables[]
+  | "source=\(.sourceKey) variable=\(.sourceId)"
+    + " phase=\(.sourcePhaseId) value=\(.value)"
+' "$final/z3-result.json"
+```
+
+For example, the first recorded scenario-20 valuation includes independent
+DN0 and DN1 roots and Java-width boundary values:
+
+```text
+cluster0/dn0: A=-2147483648, B=false,
+              C=-9223372036854775808, D=-2147483648, E=false
+cluster0/dn1: A=0, B=false,
+              C=-4611686018427387929, D=-2147483648, E=false
+```
+
+Unlisted roots in another scenario retain their concrete defaults; they must
+not appear as unconstrained symbolic variables merely because a Java hook was
+declared.
+
+One solver-performance distinction matters. Nineteen selected candidates
+returned `sat` with a plain Z3 replay within 15 seconds. Scenario 14's plain
+default-strategy replay exceeded 60 seconds, while the exact tuned query
+recorded in `z3-result.json` returned `sat` in 132 ms. Therefore acceptance
+uses the stored query digest, options, status, and witness. Do not rewrite the
+claim as “the default `z3 candidate.smt2` command is always fast.” The next
+Composer should emit the selected solver options directly into the final SMT
+if a standalone default-strategy replay is required.
+
+To rerun the currently selected scenario 1:
+
+```bash
+cd /opt/GraphChecker
+CAUSYNTH_RPC_SCENARIO=1 \
+CAUSYNTH_RPC_HADOOP_ROOT=/opt/hadoop \
+CAUSYNTH_RPC_RUN_BASE='<fresh-output-root>' \
+experiments/hdfs/causynth-rpc-compare/run-z3.sh
+```
+
+For scenario `N`, use an isolated Hadoop worktree, change only
+`DataNode.CAUSYNTH_RPC_SCENARIO` to `N`, and pass both that worktree and `N` to
+the command. `run-z3.sh` refuses a mismatch. The setup stage incrementally
+rebuilds Hadoop; it does not require a clean full Hadoop build for every row.
+
+## Hadoop modifications that GraphChecker relies on
+
+These modifications are experiment/runtime adapters. They identify sources,
+targets, lifecycles, and concrete serialization boundaries; they must not
+encode the HDFS-11741 SMT formula inside Hadoop.
+
+| Hadoop location | Manual responsibility |
+|---|---|
+| `RpcHeader.proto`, `Client`, `Server`, `CausynthRpcWire` | carry `leafPath`, opaque expression handle/UID, and optional producer provenance in the real request/response header; there is no Java `OUTBOUND_LEAVES`/`INBOUND_LEAVES` re-pair map |
+| `CausynthExchangeLifecycle`, `CausynthRpcTrace`, `ProtobufRpcEngine` | bracket the actual Hadoop call attempt, send, receive, retry, response, and failure events |
+| `CausynthTraceContext` | register stable client/NN/DN identities, lifecycle epochs, aliases for service receivers, and one workload request context |
+| `CausynthSymbolicSource` | optional reflection bridge for one exact manually declared field, selector lookup, and fail-closed source rejection |
+| `DelegationKey` | declare `K` and the selected expiry fields; if modeled `K` changes, re-key the same object in its owning map and reject collisions |
+| `BlockTokenSecretManager` | place the K/expiry source hooks at real key rotation/removal/install transitions and annotate the `allKeys.get(keyId) == null` throw |
+| `TestBalancer` and `TestBalancerWithEncryptedTransfer` | register client, NameNode, DataNode, handler, heartbeat, and SASL receiver aliases at MiniDFSCluster construction/request boundaries |
+| `BlockManager` and `HeartbeatManager` | expose the exact heartbeat owner/runnable only for test-side alias registration |
+| `CausynthSymbolicHandoff` | optional reflection bridge from Hadoop to GraphChecker's VM-owned expression broker |
+| `CausynthSaslHandoff`, `SaslDataTransferClient`, `SaslDataTransferServer` | correlate one concrete same-JVM encrypted-SASL connection, export the DEK fields, and attach them to the freshly parsed receiver carrier; malformed, duplicate, stale, or mismatched attempts fail closed |
+| `DataNode`, `NameNode`, `MiniDFSCluster`, `ClientDatanodeProtocol*` | provide the two-operation RPC matrix and its single annotated comparison target |
+
+The ordinary Hadoop behavior remains concrete when GraphChecker is absent:
+the reflection bridges are no-ops, protobuf still carries the ordinary
+application values, and the symbolic handle is opaque to Hadoop. The IPC
+header carrier is appropriate to real Hadoop IPC. The SASL carrier currently
+depends on MiniDFSCluster's same-JVM endpoints and must not be described as a
+cross-process protocol.
+
+## HDFS-11741 acceptance after the refactor
+
+The refactor is successful only if it preserves the following three distinct
+data/state paths and composes them into one bounded target witness:
+
+```text
+Path A: NameNode -> Balancer
+
+NN future/current key K
+  -> NamenodeProtocol.getBlockKeys
+  -> VM VALUE_HANDOFF for the selected key component
+  -> Balancer key state
+  -> cached DataEncryptionKey DEK(K)
+
+Path B: NameNode -> DataNode
+
+NN allKeys version after rotate/remove(K)
+  -> heartbeat KeyUpdateCommand / ExportedBlockKeys
+  -> VM VALUE_HANDOFF for the selected allKeys component
+  -> DataNode.addKeys
+  -> exact DN allKeys version without K
+
+Path C: Balancer -> DataNode target
+
+cached DEK(K)
+  -> encrypted SASL username/keyId
+  -> VM VALUE_HANDOFF attached to the fresh parsed keyId carrier
+  -> BlockTokenSecretManager.retrieveDataEncryptionKey(K, nonce)
+  -> DN allKeys.get(K) == null
+  -> @CausynthExceptionTarget("hdfs-11741")
+```
+
+The sparse causal order is mandatory:
+
+```text
+K is created and owned by the NN map
+  < getBlockKeys exports K
+  < Balancer caches DEK(K)
+  < NN expiry/rotation removes K
+  < a later heartbeat installs the DN version without K
+  < Balancer reuses the cached DEK(K)
+  < SASL attaches keyId=K on the DN side
+  < the target lookup observes the selected DN map version
+```
+
+Symbolic propagation supplies the exact expression on each real handoff;
+runtime tracing supplies source/occurrence/exchange identity and order;
+producer path conditions state when each expression and state transition is
+valid; symbolic merging selects mutually compatible cases. None of these can
+be replaced by a concrete-value correlation or a free `hasK` Boolean.
+
+### Required fresh artifacts and Z3 witness
+
+Run only
+`TestBalancerWithEncryptedTransfer#testEncryptedBalancer1`, with the current
+Hadoop classes, private frozen GraphChecker JAR, VM, target spec, protocol
+stubs, symbolic-input declarations, and loop-bound file in one new immutable
+generation. Eight replay workers remain enabled.
+
+The run is accepted only when all of the following hold:
+
+1. Seed trace is `CLOSED`, runtime refinement is `COMPLETE`, and the selected
+   NN producer, DN producer, Balancer/SASL handoff, and target goals are ready.
+2. Imported relations contain exact evidence for
+   `HDFS11741.NAMENODE.CURRENT_KEY_ID`,
+   `HDFS11741.NAMENODE.SELECTED_KEY_EXPIRY`, and
+   `HDFS11741.DATANODE.SELECTED_KEY_EXPIRY`.
+3. The same symbolic K lineage crosses getBlockKeys, cached DEK, SASL keyId,
+   and the target operand. The heartbeat path supplies the other target
+   operand: the exact DN map/version.
+4. NN, Balancer, and DN containers have distinct case-local owner identity.
+   The formula contains recorded `put/remove/get` transitions, exact array
+   cardinality, bounded loop-count vectors, and guarded read-from/version
+   choices. A whole-map free symbol is not sufficient.
+5. Every selected handoff has a successful VM attach and `VALUE_HANDOFF`
+   event with matching endpoints, occurrence, and send-before-receive order.
+6. The target assertion is the actual selected lookup nullness predicate, not
+   a fatal-local fresh Boolean or an old handwritten expiry formula.
+7. Composer publishes zero selected material gaps. Background/unselected
+   coverage diagnostics do not enter the candidate, but any missing selected
+   source, endpoint, array length, loop case, state version, or occurrence
+   fails closed.
+8. Z3 returns raw `sat`, `result.json` reports `SAT_CANDIDATE` and
+   `REACHABLE`, and the recorded model is tied to the current candidate and
+   composition digests.
+
+At minimum, `z3-result.json` must publish model values for:
+
+```text
+K                         : Int32
+NN selected-key expiry    : Int64
+DN selected-key expiry    : Int64
+```
+
+The composition manifest must additionally name the selected NN removal,
+getBlockKeys/cache, heartbeat/install, SASL, DN map-version, and target cases,
+plus the partial-order edges above. A SAT assignment containing only a
+NameNode-local or target-local variable is not an HDFS-11741 witness.
+
+If final model write-back/replay is available after the refactor, replay the
+published source assignment in a fresh cluster and confirm the selected
+producer paths and handoffs. Until that materializer is complete, report the
+result precisely as a bounded trace-grounded SAT candidate, not as a concrete
+schedule-forced reproduction.
+
+### Known takeover blockers
+
+- There is still no final campaign for the current source generation.
+  `campaign-run79` stopped after seed/planning, `campaign-run80` stopped after
+  freeze, and the configured `campaign-run81` root was never produced.
+- The concolic launcher passes test-only heartbeat-expiry, key-update, and
+  test-wait system properties, but the Hadoop test currently does not consume
+  those properties. Zero replay can therefore remove a healthy DN or time out
+  because instrumentation is slow. Wire these properties into the fixed test
+  after every cluster construction/restart before starting the next full run.
+- Historical run74 is obsolete: it was `UNKNOWN`, timed out, had 759 gaps,
+  and did not contain the current three HDFS-11741 source IDs. It is useful
+  only for diagnosing array-cardinality, coverage, occurrence-prefix, and
+  endpoint/order pressure.
+- `workflow.properties` still contains a concrete old output root. Replace
+  every generated-output path with one new root; never resume an old plan,
+  worker summary, candidate, or frozen JAR.
+
+The immediate post-refactor sequence is therefore:
+
+```text
+wire the test-only timing bridge
+  -> run focused Hadoop hook/SASL tests
+  -> freeze one new generation
+  -> seed/refine/plan
+  -> eight-worker replay and import
+  -> inspect the three path closures
+  -> compose and solve
+  -> audit source/state/handoff/order lineage
+```
+
+### Refactor boundary for the next agent
+
+The production Java tree is approximately 92,870 nonblank/comment-stripped
+lines (100,913 physical lines). Reaching the 30,000-line target is not a
+dead-code-only cleanup. It requires one internal causal IR and deletion of old
+internal artifact compatibility:
+
+```text
+static target/source/endpoint slice
+  -> typed causal plan
+  -> selected runtime events and VM handoffs
+  -> eight-worker replay adds guarded cases/topology delta
+  -> one Composer builds SMT
+  -> one solver runner publishes the decision and witness
+```
+
+Preserve annotated-target discovery, manual exact-source declarations, direct
+VM propagation, the two RPC operations, eight-worker replay, bounded
+case/topology refinement, exact state versions/read-from choices, and one
+fail-closed selected-closure gate. Collapse the parallel recorded/canonical/
+selected session models, duplicate planner/worklist/status layers, duplicate
+JSON codecs, default full trace, default graph generation, and shell-side
+semantic revalidation. Shared-field support remains bounded
+observe-and-confirm; the refactor need not implement arbitrary scheduler
+control.
+
+The only final acceptance authorities should be:
+
+```text
+candidate.smt2
+candidate_composition_manifest.json
+z3-result.json
+run-manifest.json
+```
+
+`result.json` may remain a human-readable index but is not a second authority.
+Raw traces, per-worker plans/results, graphs, replay directories, and path-flip
+queries are compressed debug/failure bundles rather than normal final output.
+Do not weaken HDFS-11741's selected causal closure merely to meet the LOC or
+artifact-size target.
 
 ## Design in one sentence
 
@@ -803,7 +1177,7 @@ Do not reuse any old plan, summary, VM image, or campaign directory.
 After `GATE-1` is implemented, the minimum executable acceptance check is:
 
 ```bash
-final=/proj/silentfailure-PG0/gc-hdfs-11741/campaign-run6/final
+final='<fresh-output-root>/final'
 
 jq -e '
   .finalStatus == "FINAL_READY"

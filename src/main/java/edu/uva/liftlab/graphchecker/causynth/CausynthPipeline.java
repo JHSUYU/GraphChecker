@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.E
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CommunicationEffectCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
@@ -56,7 +57,6 @@ import soot.jimple.InvokeExpr;
 import soot.jimple.Jimple;
 import soot.jimple.LongConstant;
 import soot.jimple.NullConstant;
-import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.ReturnVoidStmt;
 import soot.jimple.SpecialInvokeExpr;
@@ -64,7 +64,6 @@ import soot.jimple.StaticFieldRef;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
 import soot.jimple.SwitchStmt;
-import soot.jimple.ThisRef;
 import soot.jimple.ThrowStmt;
 import soot.tagkit.Tag;
 import soot.toolkits.graph.BriefUnitGraph;
@@ -439,6 +438,9 @@ public final class CausynthPipeline {
          * for is not a cheaper envelope, it is a different model.
          */
         private final Set<String> writerMethods = new LinkedHashSet<>();
+        /** Exact configured-source call sites, deduplicated across tasks. */
+        private final Map<String, ConfiguredSourcePhaseContract.Occurrence>
+                configuredSourcePhaseSites = new LinkedHashMap<>();
         private final ConcolicMaterializationSelection materializations =
                 new ConcolicMaterializationSelection();
         private final ConcolicBranchSelection branches =
@@ -465,6 +467,26 @@ public final class CausynthPipeline {
                 branches.mergeFrom(plan.branches());
                 methods.addAll(plan.envelopeMethods());
                 writerMethods.addAll(plan.instrumentationMethods());
+                for (ConfiguredSourcePhaseContract.Occurrence phase
+                        : plan.configuredSourcePhases()) {
+                    ConfiguredSourcePhaseContract.Occurrence prior =
+                            configuredSourcePhaseSites.putIfAbsent(
+                                    phase.siteId(), phase);
+                    if (prior != null && (!prior.declarationMethod().equals(
+                            phase.declarationMethod())
+                            || prior.declarationUnitIndex()
+                            != phase.declarationUnitIndex()
+                            || prior.phase() != phase.phase()
+                            || !prior.sourceId().equals(phase.sourceId())
+                            || !prior.fieldSignature().equals(
+                            phase.fieldSignature())
+                            || !prior.runtimeDeclaredCallee().equals(
+                            phase.runtimeDeclaredCallee()))) {
+                        throw new IllegalStateException(
+                                "CONFIGURED_SOURCE_PHASE_SITE_CONFLICT: "
+                                        + phase.siteId());
+                    }
+                }
                 Set<String> bounded = new LinkedHashSet<>(
                         plan.instrumentationMethods());
                 SootMethod replayEntry = declaredReplayEntry(plan);
@@ -772,6 +794,8 @@ public final class CausynthPipeline {
             instrumentConcolicRegion(plan, refs, envelope);
         }
         instrumentConcolicCommunicationHandoffs(campaign, refs);
+        instrumentConcolicConfiguredSourceCallContexts(
+                envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
                 refs);
         instrumentConcolicMethodArguments(envelope.materializations, refs);
@@ -1773,6 +1797,121 @@ public final class CausynthPipeline {
                                 refs.ref(Hook.RESUME_OBSERVATION))));
                 insertAfterSequence(body, unit, after);
             }
+        }
+    }
+
+    /**
+     * Restores the rich trace's exact call-site identity around manual source
+     * hooks that execute during concolic replay.
+     *
+     * <p>A source declaration commonly lives in a helper shared by several
+     * RPC handlers. The helper is deliberately not a new region root, but its
+     * exact hook site is part of the frozen phase ledger. Only those cataloged
+     * calls are wrapped; unrelated calls in the helper remain untouched.</p>
+     */
+    private void instrumentConcolicConfiguredSourceCallContexts(
+            Collection<ConfiguredSourcePhaseContract.Occurrence> phases,
+            HookCatalog refs) {
+        for (ConfiguredSourcePhaseContract.Occurrence phase : phases) {
+            final SootMethod method;
+            try {
+                method = Scene.v().getMethod(phase.declarationMethod());
+            } catch (RuntimeException missing) {
+                throw new IllegalStateException(
+                        "CONFIGURED_SOURCE_PHASE_METHOD_UNAVAILABLE: "
+                                + phase.siteId(), missing);
+            }
+            if (method == null || !method.isConcrete()) {
+                throw new IllegalStateException(
+                        "CONFIGURED_SOURCE_PHASE_METHOD_NOT_CONCRETE: "
+                                + phase.siteId());
+            }
+            Body body = method.retrieveActiveBody();
+            Stmt selected = null;
+            for (Unit unit : snapshotUnits(body)) {
+                if (originalUnitIndex(unit)
+                        != phase.declarationUnitIndex()) continue;
+                if (selected != null || !(unit instanceof Stmt)) {
+                    throw new IllegalStateException(
+                            "CONFIGURED_SOURCE_PHASE_SITE_NOT_UNIQUE: "
+                                    + phase.siteId());
+                }
+                selected = (Stmt) unit;
+            }
+            if (selected == null || !selected.containsInvokeExpr()) {
+                throw new IllegalStateException(
+                        "CONFIGURED_SOURCE_PHASE_CALL_NOT_FOUND: "
+                                + phase.siteId());
+            }
+            InvokeExpr invocation = selected.getInvokeExpr();
+            if (!phase.runtimeDeclaredCallee().equals(
+                    invocation.getMethodRef().getSignature())) {
+                throw new IllegalStateException(
+                        "CONFIGURED_SOURCE_PHASE_CALLEE_MISMATCH: "
+                                + phase.siteId() + " expected "
+                                + phase.runtimeDeclaredCallee() + " but found "
+                                + invocation.getMethodRef().getSignature());
+            }
+
+            Local invocationId = newTraceLocal(body, LongType.v(),
+                    "$causynthSourcePhaseInvocation");
+            List<Unit> before = new ArrayList<>();
+            before.add(Jimple.v().newAssignStmt(invocationId,
+                    LongConstant.v(0L)));
+            before.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.PAUSE_OBSERVATION))));
+            before.add(Jimple.v().newAssignStmt(invocationId,
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE),
+                            StringConstant.v(phase.declarationMethod()),
+                            IntConstant.v(phase.declarationUnitIndex()),
+                            StringConstant.v(phase.runtimeDeclaredCallee()))));
+            insertBeforeSequence(body, selected, before);
+
+            List<Unit> after = new ArrayList<>();
+            Value returnValue = runtimeCallSiteReturnValue(
+                    selected, invocation);
+            Value returnObject = objectArg(body, returnValue, after);
+            Value primitiveReturn = primitiveValueString(
+                    body, returnValue, after);
+            Unit normalExit = Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.EXIT_CONFIGURED_SOURCE_PHASE_SITE),
+                            invocationId, returnObject, primitiveReturn));
+            after.add(normalExit);
+            Unit normalResume = Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION)));
+            after.add(normalResume);
+            Unit continuation = Jimple.v().newNopStmt();
+            after.add(Jimple.v().newGotoStmt(continuation));
+            Local caught = newTraceLocal(body,
+                    RefType.v("java.lang.Throwable"),
+                    "$causynthSourcePhaseThrown");
+            Unit handler = Jimple.v().newIdentityStmt(caught,
+                    Jimple.v().newCaughtExceptionRef());
+            after.add(handler);
+            after.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.THROW_CONFIGURED_SOURCE_PHASE_SITE),
+                            invocationId)));
+            after.add(Jimple.v().newInvokeStmt(
+                    Jimple.v().newStaticInvokeExpr(
+                            refs.ref(Hook.RESUME_OBSERVATION))));
+            after.add(Jimple.v().newThrowStmt(caught));
+            after.add(continuation);
+            insertAfterSequence(body, selected, after);
+            // The source declaration itself is instrumentation bookkeeping:
+            // its explicit native symbolize call must execute, but its Java
+            // helper branches, maps and reflection must not enter the
+            // workload path condition.  Keep the mute open across exactly
+            // this invocation and close it on both normal and exceptional
+            // edges.
+            SootClass throwable = Scene.v().getSootClass(
+                    "java.lang.Throwable");
+            body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
+                    normalExit, handler));
         }
     }
 
@@ -4143,6 +4282,9 @@ public final class CausynthPipeline {
         EXIT_ACTIVE_METHOD,
         THROW_ACTIVE_METHOD,
         ENTER_REGION_FRAME,
+        ENTER_CONFIGURED_SOURCE_PHASE_SITE,
+        EXIT_CONFIGURED_SOURCE_PHASE_SITE,
+        THROW_CONFIGURED_SOURCE_PHASE_SITE,
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
         MATERIALIZE_ARGUMENT,
@@ -4256,6 +4398,15 @@ public final class CausynthPipeline {
                     .add(Hook.ENTER_REGION_FRAME, runtime, "enterRegionFrame",
                             LongType.v(), string, string, object,
                             ArrayType.v(object, 1))
+                    .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,
+                            "enterConfiguredSourcePhaseCallSite",
+                            LongType.v(), string, IntType.v(), string)
+                    .add(Hook.EXIT_CONFIGURED_SOURCE_PHASE_SITE, runtime,
+                            "exitConfiguredSourcePhaseCallSite", VoidType.v(),
+                            LongType.v(), object, string)
+                    .add(Hook.THROW_CONFIGURED_SOURCE_PHASE_SITE, runtime,
+                            "throwConfiguredSourcePhaseCallSite", VoidType.v(),
+                            LongType.v())
                     .add(Hook.ENTER_ACCESSOR_CALL_CONTEXT, runtime,
                             "enterAccessorCallContext", LongType.v(), string,
                             IntType.v(), string, string, object)

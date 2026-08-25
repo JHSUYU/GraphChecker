@@ -8,6 +8,12 @@ source "${repo}/run_engine.sh"
 
 test_tmp=$(mktemp -d)
 cleanup() {
+  local test_pid
+  for test_pid in "${winner_pid:-}" "${loser_pid:-}"; do
+    [[ -n "${test_pid}" ]] || continue
+    kill "${test_pid}" >/dev/null 2>&1 || true
+    wait "${test_pid}" >/dev/null 2>&1 || true
+  done
   [[ "${test_tmp}" == /tmp/* ]] || return 1
   rm -r -- "${test_tmp}"
 }
@@ -186,5 +192,98 @@ rm -r -- "${campaign}/iteration-0001"
 jq '.kind = "WRONG"' "${manifest}" >"${manifest}.bad"
 mv "${manifest}.bad" "${manifest}"
 expect_failure campaign_iteration_manifests_json "${campaign}"
+
+# A second campaign for the same root must lose before it can truncate the
+# winner's metrics.  Stop the winner inside its first real campaign stage so
+# both contenders remain live while the loser executes do_campaign's actual
+# reservation path; all expensive semantic stages stay stubbed out.
+reservation_root="${test_tmp}/reservation-campaign"
+reservation_ready="${test_tmp}/reservation-winner-ready"
+reservation_release="${test_tmp}/reservation-winner-release"
+winner_status="${test_tmp}/reservation-winner-status"
+loser_status="${test_tmp}/reservation-loser-status"
+schedule_output_dir="${reservation_root}"
+campaign_setup_command=""
+campaign_max_iterations=1
+campaign_validate() {
+  printf 'winner-owned-metrics\n' >"${campaign_stage_metrics}"
+  : >"${reservation_ready}"
+  while [[ ! -e "${reservation_release}" ]]; do
+    sleep 0.01
+  done
+  exit 0
+}
+(
+  set +e
+  (do_campaign)
+  printf '%s\n' "$?" >"${winner_status}"
+  exit 0
+) &
+winner_pid=$!
+reservation_wait_attempts=0
+while [[ ! -e "${reservation_ready}" ]]; do
+  kill -0 "${winner_pid}" >/dev/null 2>&1 \
+    || fail "the winning contender exited before its first campaign stage"
+  reservation_wait_attempts=$((reservation_wait_attempts + 1))
+  [[ "${reservation_wait_attempts}" -lt 500 ]] \
+    || fail "the winning contender did not reach its first campaign stage"
+  sleep 0.01
+done
+(
+  set +e
+  (do_campaign) >/dev/null 2>&1
+  printf '%s\n' "$?" >"${loser_status}"
+  exit 0
+) &
+loser_pid=$!
+wait "${loser_pid}"
+loser_pid=""
+[[ $(<"${loser_status}") -ne 0 ]] \
+  || fail "the second contender acquired an already reserved campaign root"
+[[ $(<"${reservation_root}/stage_metrics.tsv") == "winner-owned-metrics" ]] \
+  || fail "the losing contender truncated the winner's stage metrics"
+: >"${reservation_release}"
+wait "${winner_pid}"
+winner_pid=""
+[[ $(<"${winner_status}") -eq 0 ]] \
+  || fail "the winning contender did not retain its campaign reservation"
+
+# The private tool copy is the one identity observed by both adapter entry
+# points.  Hash and mode checks keep this focused on the freeze contract rather
+# than merely checking that an environment variable happened to be present.
+freeze_root="${test_tmp}/freeze-campaign"
+source_jar="${test_tmp}/GraphChecker-source.jar"
+mkdir -p "${freeze_root}/frozen-inputs"
+printf 'frozen GraphChecker test bytes\n' >"${source_jar}"
+source_sha=$(campaign_digest "${source_jar}")
+campaign_root="${freeze_root}"
+graphchecker_jar="${source_jar}"
+campaign_freeze_graphchecker_jar
+private_jar="${freeze_root}/frozen-inputs/GraphChecker.jar"
+[[ "${graphchecker_jar}" == "${private_jar}" ]] \
+  || fail "freeze did not replace graphchecker_jar with the private path"
+[[ $(campaign_digest "${private_jar}") == "${source_sha}" ]] \
+  || fail "the private GraphChecker jar differs from its frozen source"
+[[ $(stat -c '%A' "${private_jar}") != *w* ]] \
+  || fail "the private GraphChecker jar remains writable"
+
+workload_work_dir="${test_tmp}"
+config_file="${test_tmp}/workflow.properties"
+custom_jdk_home="${test_tmp}/jdk"
+causynth_protocol_stubs=""
+adapter_observed="${test_tmp}/adapter-graphchecker-jar"
+workload_observed="${test_tmp}/workload-graphchecker-jar"
+export RUN_ENGINE_TEST_ADAPTER_OUTPUT="${adapter_observed}"
+export RUN_ENGINE_TEST_WORKLOAD_OUTPUT="${workload_observed}"
+campaign_run_adapter freeze-test \
+  'printf "%s\n" "$GRAPHCHECKER_JAR" >"$RUN_ENGINE_TEST_ADAPTER_OUTPUT"'
+runtime_region_plan="${test_tmp}/runtime/concolic_region_plan.jsonl"
+analysis_classes_dir="${test_tmp}/instrumented-classes"
+workload_command='printf "%s\n" "$GRAPHCHECKER_JAR" >"$RUN_ENGINE_TEST_WORKLOAD_OUTPUT"'
+run_configured_workload
+[[ $(<"${adapter_observed}") == "${private_jar}" ]] \
+  || fail "the setup/replay adapter did not observe the private jar"
+[[ $(<"${workload_observed}") == "${private_jar}" ]] \
+  || fail "the configured seed workload did not observe the private jar"
 
 echo "run_engine campaign helper tests passed"

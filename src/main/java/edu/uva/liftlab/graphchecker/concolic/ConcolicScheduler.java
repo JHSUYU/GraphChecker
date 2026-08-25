@@ -66,19 +66,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * for the composer; no offline channel-local order is synthesized here.</p>
  */
 public final class ConcolicScheduler {
-    /**
-     * An outbound relation whose endpoint is no port this pipeline declares.
-     *
-     * <p>A refusal and not a gap: both endpoints were already resolved
-     * against the declaring region's own catalog, so an id that is neither
-     * region-minted nor a declared cut port means the catalog and the id
-     * minter disagree. Skipping it was silent - the binding was simply absent
-     * from the task plan.</p>
-     */
-    static final String RELATION_PORT_UNRECOGNIZED =
-            "OUTBOUND_RELATION_PORT_UNRECOGNIZED";
-
-
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
     private ConcolicScheduler() {
@@ -3196,6 +3183,7 @@ public final class ConcolicScheduler {
             }
             List<TaskSourcePhase> phases = taskSourcePhases(task);
             JsonArray selected = new JsonArray();
+            Set<String> selectedSourceIdentities = new LinkedHashSet<>();
             Map<String, LinkedHashMap<String, TaskSourcePhase>>
                     publicationsBySource =
                     new LinkedHashMap<>();
@@ -3208,6 +3196,7 @@ public final class ConcolicScheduler {
                         ? Collections.<String>emptySet()
                         : source.matchingTargetInputs(targetActions);
                 if (outputs.isEmpty() && inputs.isEmpty()) continue;
+                selectedSourceIdentities.add(source.sourceIdentity());
                 if (closure != null) {
                     Map<TaskSourcePhase, Set<String>> byPublication =
                             outputPublications(source, outputs, closure,
@@ -3275,11 +3264,19 @@ public final class ConcolicScheduler {
                     }
                 }
             }
+            JsonObject policy = object(task, TASK_FIELD);
+            if (!task.has(TASK_FIELD)) {
+                task.add(TASK_FIELD, policy);
+            }
+            policy.addProperty("declaredSymbolicSourceCount",
+                    selection.sources.size());
+            policy.addProperty("selectedSymbolicSourceCount",
+                    selectedSourceIdentities.size());
+            policy.addProperty("unusedSymbolicSourceCount",
+                    selection.sources.size()
+                            - selectedSourceIdentities.size());
             if (selected.size() > 0) {
                 task.add(SymbolicSourceEvidence.TASK_FIELD, selected);
-                JsonObject policy = object(task, TASK_FIELD);
-                policy.addProperty("selectedSymbolicSourceCount",
-                        selected.size());
             }
             retainTaskSourcePhases(task, phases, retainedPhaseIds, closure);
         }
@@ -3513,7 +3510,7 @@ public final class ConcolicScheduler {
             }
         }
 
-        /** Every configured source in a scheduled region must be reachable. */
+        /** Every selected source must have exact boundary and phase evidence. */
         void bindSourceSelectors(List<JsonObject> tasks)
                 throws IOException {
             if (!configured) return;
@@ -3658,13 +3655,11 @@ public final class ConcolicScheduler {
             }
         }
 
-        /** Every configured source in a scheduled region must be reachable. */
+        /** Validates exact phase and boundary evidence for selected sources. */
         void validateSourceCoverage(List<JsonObject> tasks)
                 throws IOException {
             if (!configured) return;
             Set<String> scheduledRegions = new LinkedHashSet<>();
-            Map<String, Set<ClosureGoalKind>> scheduledKinds =
-                    new LinkedHashMap<>();
             Map<String, Map<String, SourcePhaseSelection>> versions =
                     new LinkedHashMap<>();
             Set<String> coveredOutputs = new LinkedHashSet<>();
@@ -3674,9 +3669,6 @@ public final class ConcolicScheduler {
                 String region = string(task, "regionId");
                 scheduledRegions.add(region);
                 ClosureGoalKind taskKind = ClosureGoalKind.fromTask(task);
-                scheduledKinds.computeIfAbsent(region,
-                        ignored -> new LinkedHashSet<>()).add(
-                        taskKind);
                 for (JsonElement element : array(task,
                         SymbolicSourceEvidence.TASK_FIELD)) {
                     if (!element.isJsonObject()) continue;
@@ -3778,9 +3770,6 @@ public final class ConcolicScheduler {
                     if (source.inferOutputs) {
                         String declaration = source.declarationIdentity();
                         if (!validatedDiscovered.add(declaration)) continue;
-                        boolean scheduledOutputDeclaration = false;
-                        Map<String, SourcePhaseSelection> selectedOutputs =
-                                new LinkedHashMap<>();
                         for (Map.Entry<String, RegionSelection> candidate
                                 : regions.entrySet()) {
                             if (!scheduledRegions.contains(candidate.getKey())) {
@@ -3790,13 +3779,6 @@ public final class ConcolicScheduler {
                                 if (!peer.inferOutputs || !declaration.equals(
                                         peer.declarationIdentity())) {
                                     continue;
-                                }
-                                if (scheduledKinds.getOrDefault(
-                                        candidate.getKey(),
-                                        Collections.<ClosureGoalKind>emptySet())
-                                        .contains(ClosureGoalKind
-                                                .OUTPUT_RELATION_CLOSURE)) {
-                                    scheduledOutputDeclaration = true;
                                 }
                                 String key = candidate.getKey() + "\n"
                                         + peer.sourceId;
@@ -3811,24 +3793,14 @@ public final class ConcolicScheduler {
                                                 + candidate.getKey() + ":"
                                                 + peer.sourceId,
                                         selectedVersions);
-                                for (Map.Entry<String,
-                                        SourcePhaseSelection> selected
-                                        : selectedVersions.entrySet()) {
-                                    if (selected.getValue().roles.contains(
-                                            "OUTPUT_RELATION")) {
-                                        selectedOutputs.putIfAbsent(
-                                                selected.getKey(),
-                                                selected.getValue());
-                                    }
-                                }
                             }
                         }
-                        if (scheduledOutputDeclaration
-                                && selectedOutputs.isEmpty()) {
-                            throw new IOException("discovered symbolic source "
-                                    + source.sourceId + " is not in any selected "
-                                    + "output closure");
-                        }
+                        // A Java symbolize hook declares an eligible source,
+                        // not a requirement that every declared field affect
+                        // every selected output.  Sources absent from the
+                        // exact output slice remain concrete and are omitted
+                        // from symbolicSourceFields.  Once selected, their
+                        // phase/version evidence above is still fail-closed.
                         continue;
                     }
                     for (String output

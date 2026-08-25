@@ -270,6 +270,11 @@ public final class CausynthTraceRecorder {
         removeCallSite(invocationId);
     }
 
+    /** Closes one exact call-site activation on its exceptional edge. */
+    public static void throwCall(long invocationId) {
+        closeCallSite(activeCallSite(invocationId), "CALL_SITE_THROW");
+    }
+
     public static void recordBranch(long callId, String method, int unitIndex,
                                     String expression, boolean outcome) {
         ExecutionEvent event = newExecutionEvent("BRANCH",

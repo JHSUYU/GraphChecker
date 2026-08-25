@@ -321,6 +321,52 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Opens the exact static call-site context for a configured-source hook.
+     *
+     * <p>The rich seed trace already records this identity. Concolic replay
+     * rewrites only its bounded task envelope, so a declaration kept in a
+     * helper needs this targeted context even though the helper is not a
+     * symbolic region root. The caller brackets this bookkeeping while the
+     * VM path condition is paused.</p>
+     */
+    public static long enterConfiguredSourcePhaseCallSite(
+            String method, int unitIndex, String declaredCallee) {
+        try {
+            ActiveRegion active = activeRegion();
+            long replayOwnerId = active == null ? 0L : active.token;
+            return CausynthTraceRecorder.beginCall(replayOwnerId, safe(method),
+                    unitIndex, safe(declaredCallee), null);
+        } catch (Throwable ignored) {
+            // Evidence bookkeeping must never change workload behavior.  A
+            // zero id makes both matching close hooks no-ops.
+            return 0L;
+        }
+    }
+
+    /** Closes the context opened by {@link #enterConfiguredSourcePhaseCallSite}. */
+    public static void exitConfiguredSourcePhaseCallSite(
+            long invocationId, Object returnValue, String primitiveValue) {
+        if (invocationId <= 0L) return;
+        try {
+            CausynthTraceRecorder.endCall(invocationId, returnValue,
+                    safe(primitiveValue));
+        } catch (Throwable ignored) {
+            // See enterConfiguredSourcePhaseCallSite: trace failure is not an
+            // application failure.
+        }
+    }
+
+    /** Closes a configured-source call-site on the invocation's throw edge. */
+    public static void throwConfiguredSourcePhaseCallSite(long invocationId) {
+        if (invocationId <= 0L) return;
+        try {
+            CausynthTraceRecorder.throwCall(invocationId);
+        } catch (Throwable ignored) {
+            // Keep the original workload exception as the only visible one.
+        }
+    }
+
+    /**
      * Mutes this layer's own bookkeeping for the duration of one evidence
      * call, and must be paired with {@link #endBookkeeping()} in a finally.
      *

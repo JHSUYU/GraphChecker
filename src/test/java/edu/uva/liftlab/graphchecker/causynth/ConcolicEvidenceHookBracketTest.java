@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections
@@ -7,6 +8,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections
         .InstrumentationPlan;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
@@ -14,6 +16,7 @@ import org.junit.rules.TemporaryFolder;
 import soot.Body;
 import soot.G;
 import soot.IntType;
+import soot.BooleanType;
 import soot.Local;
 import soot.Modifier;
 import soot.Scene;
@@ -30,8 +33,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -124,6 +129,89 @@ public class ConcolicEvidenceHookBracketTest {
         assertTrue(hooks.contains("materializeField"));
     }
 
+    @Test
+    public void configuredSourceHelperGetsOneExactMutedCallContext()
+            throws Exception {
+        ConfiguredSourceFixture fixture = configuredSourceFixture();
+        InstrumentationPlan plan = planForConfiguredSource(fixture);
+
+        Method instrument = CausynthPipeline.class.getDeclaredMethod(
+                "instrumentConcolicCampaign", List.class);
+        instrument.setAccessible(true);
+        instrument.invoke(new CausynthPipeline(null),
+                Collections.singletonList(plan));
+
+        List<String> hooks = hookNames(fixture.helper.getActiveBody());
+        assertEquals(1, count(hooks,
+                "enterConfiguredSourcePhaseCallSite"));
+        assertEquals(1, count(hooks,
+                "exitConfiguredSourcePhaseCallSite"));
+        assertEquals(1, count(hooks,
+                "throwConfiguredSourcePhaseCallSite"));
+        assertMuted(hooks, "enterConfiguredSourcePhaseCallSite");
+        assertMuted(hooks, "exitConfiguredSourcePhaseCallSite");
+        // The exceptional close is reached directly from the selected
+        // invocation's trap and therefore inherits the pause opened before
+        // entry.  A linear unit walk sees the unreachable normal resume just
+        // before the handler; assertConfiguredSourceCleanup pins the actual
+        // handler close/resume sequence instead.
+        assertConfiguredSourceCleanup(hooks);
+        assertInvocationInsideMute(fixture.helper.getActiveBody(),
+                fixture.hook.getSignature());
+        assertTrue(plan.envelopeMethods().contains(
+                fixture.helper.getSignature()));
+    }
+
+    private static void assertConfiguredSourceCleanup(List<String> hooks) {
+        int enter = hooks.indexOf("enterConfiguredSourcePhaseCallSite");
+        assertTrue("configured source entry was not found", enter > 0);
+        assertEquals(PAUSE, hooks.get(enter - 1));
+        // The source invocation itself is not a runtime hook and sits between
+        // entry and the first exit.  The first exit/resume is the normal edge;
+        // the second pair is reached directly from the invocation's trap, so
+        // its inherited pause is not visible in this linear hook list.
+        assertEquals("exitConfiguredSourcePhaseCallSite",
+                hooks.get(enter + 1));
+        assertEquals(RESUME, hooks.get(enter + 2));
+        assertEquals("throwConfiguredSourcePhaseCallSite",
+                hooks.get(enter + 3));
+        assertEquals(RESUME, hooks.get(enter + 4));
+    }
+
+    private static void assertInvocationInsideMute(Body body,
+                                                   String signature) {
+        List<String> invocations = new ArrayList<>();
+        int selected = -1;
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()) continue;
+            soot.SootMethodRef ref = ((Stmt) unit).getInvokeExpr()
+                    .getMethodRef();
+            String encoded = ref.getSignature();
+            if (signature.equals(encoded)) selected = invocations.size();
+            invocations.add(encoded);
+        }
+        assertTrue("configured source invocation was not found",
+                selected >= 0);
+        assertEquals("configured source helper was not muted on entry",
+                PAUSE, nearestRuntimeBoundary(invocations, selected, -1));
+        assertEquals("configured source helper was not muted on exit",
+                RESUME, nearestRuntimeBoundary(invocations, selected, 1));
+    }
+
+    private static String nearestRuntimeBoundary(List<String> invocations,
+                                                 int from, int step) {
+        for (int index = from + step;
+             index >= 0 && index < invocations.size(); index += step) {
+            String signature = invocations.get(index);
+            if (signature.contains(RUNTIME_CLASS + ": void " + PAUSE
+                    + "()")) return PAUSE;
+            if (signature.contains(RUNTIME_CLASS + ": void " + RESUME
+                    + "()")) return RESUME;
+        }
+        return "<none>";
+    }
+
     /**
      * Asserts every occurrence of {@code hook} runs inside a muted subtree.
      *
@@ -213,6 +301,59 @@ public class ConcolicEvidenceHookBracketTest {
         return method;
     }
 
+    private static ConfiguredSourceFixture configuredSourceFixture() {
+        G.reset();
+        SootClass object = new SootClass("java.lang.Object", Modifier.PUBLIC);
+        Scene.v().addClass(object);
+        SootClass string = new SootClass("java.lang.String", Modifier.PUBLIC);
+        Scene.v().addClass(string);
+        Scene.v().addClass(new SootClass("java.lang.Throwable",
+                Modifier.PUBLIC));
+
+        SootClass hookOwner = new SootClass("example.SourceHook",
+                Modifier.PUBLIC);
+        SootMethod hook = new SootMethod("symbolize", Arrays.asList(
+                string.getType(), object.getType(), string.getType()),
+                BooleanType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        hookOwner.addMethod(hook);
+        Scene.v().addClass(hookOwner);
+
+        SootClass helperOwner = new SootClass("example.SourceDeclarations",
+                Modifier.PUBLIC);
+        helperOwner.setApplicationClass();
+        Scene.v().addClass(helperOwner);
+        SootMethod helper = new SootMethod("declare",
+                Collections.<soot.Type>singletonList(object.getType()),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        helperOwner.addMethod(helper);
+        Body helperBody = Jimple.v().newBody(helper);
+        helper.setActiveBody(helperBody);
+        Local owner = Jimple.v().newLocal("owner", object.getType());
+        Local result = Jimple.v().newLocal("result", BooleanType.v());
+        helperBody.getLocals().add(owner);
+        helperBody.getLocals().add(result);
+        helperBody.getUnits().add(Jimple.v().newIdentityStmt(owner,
+                Jimple.v().newParameterRef(object.getType(), 0)));
+        helperBody.getUnits().add(Jimple.v().newAssignStmt(result,
+                Jimple.v().newStaticInvokeExpr(hook.makeRef(),
+                        soot.jimple.StringConstant.v("SOURCE.A"), owner,
+                        soot.jimple.StringConstant.v(
+                                "<example.Producer: int value>"))));
+        helperBody.getUnits().add(Jimple.v().newReturnVoidStmt());
+
+        SootClass producer = new SootClass("example.Producer",
+                Modifier.PUBLIC);
+        producer.setApplicationClass();
+        Scene.v().addClass(producer);
+        SootMethod root = new SootMethod("produce", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        producer.addMethod(root);
+        Body rootBody = Jimple.v().newBody(root);
+        root.setActiveBody(rootBody);
+        rootBody.getUnits().add(Jimple.v().newReturnVoidStmt());
+        return new ConfiguredSourceFixture(root, helper, hook);
+    }
+
     private static JsonObject accessorAction(SootMethod caller) {
         JsonObject action = new JsonObject();
         action.addProperty("symbol", "PORT.accessor");
@@ -254,6 +395,68 @@ public class ConcolicEvidenceHookBracketTest {
                 plan, "TASK.SEED.bracket");
         assertEquals(1, campaign.size());
         return campaign.get(0);
+    }
+
+    private InstrumentationPlan planForConfiguredSource(
+            ConfiguredSourceFixture fixture) throws Exception {
+        JsonObject task = new JsonObject();
+        task.addProperty("taskId", "TASK.SEED.source-helper");
+        task.addProperty("goalId", "GOAL.TARGET_REACH.source-helper");
+        task.addProperty("sourceKey", "test/node#epoch0");
+        String occurrenceId = "test/node#epoch0/region/R#1";
+        task.addProperty("occurrenceId", occurrenceId);
+        task.addProperty("relationKey", "test/node/relation/R/segment/S#0");
+        task.addProperty("regionId", "R");
+        task.addProperty("goalKind", "TARGET_REACH_CLOSURE");
+        task.addProperty("targetMethod", fixture.root.getSignature());
+        JsonObject selector = new JsonObject();
+        selector.addProperty("kind", "STATIC_CONTEXT");
+        selector.addProperty("method", fixture.root.getSignature());
+        task.add("rootSelector", selector);
+        task.add("inputActions", new JsonArray());
+        task.add("branches", new JsonArray());
+        LoopBoundPolicy.cfgBackedges(8).writeTo(task);
+        JsonObject admission = new JsonObject();
+        admission.addProperty("state", "EXECUTABLE");
+        task.add("admission", admission);
+
+        Map<String, Object> declaration =
+                ConfiguredSourcePhaseContract.declaration(
+                        ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                        "SOURCE.A", "<example.Producer: int value>",
+                        fixture.helper.getSignature(), 1);
+        ConfiguredSourcePhaseContract.Declaration decoded =
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        Collections.singletonList(declaration)).get(0);
+        Map<String, Object> occurrence =
+                ConfiguredSourcePhaseContract.occurrence(decoded,
+                        occurrenceId, 1, 10L, 9L, 11L,
+                        fixture.hook.getSignature(),
+                        Collections.singletonList(9L));
+        JsonArray phases = new JsonArray();
+        phases.add(new Gson().toJsonTree(occurrence));
+        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
+
+        Path plan = folder.newFile("source-helper-task-plan.jsonl").toPath();
+        Files.write(plan, Collections.singletonList(task.toString()),
+                StandardCharsets.UTF_8);
+        List<InstrumentationPlan> campaign = InstrumentationPlan.campaign(
+                plan, "TASK.SEED.source-helper");
+        assertEquals(1, campaign.size());
+        return campaign.get(0);
+    }
+
+    private static final class ConfiguredSourceFixture {
+        private final SootMethod root;
+        private final SootMethod helper;
+        private final SootMethod hook;
+
+        private ConfiguredSourceFixture(SootMethod root, SootMethod helper,
+                                        SootMethod hook) {
+            this.root = root;
+            this.helper = helper;
+            this.hook = hook;
+        }
     }
 
     private static List<String> hookNames(Body body) {

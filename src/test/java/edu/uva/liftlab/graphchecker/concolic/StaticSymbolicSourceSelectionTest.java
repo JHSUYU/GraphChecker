@@ -16,7 +16,9 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -275,19 +277,119 @@ public class StaticSymbolicSourceSelectionTest {
                 SymbolicSourceEvidence.TASK_FIELD).size());
     }
 
-    @Test(expected = java.io.IOException.class)
-    public void discoveredDeclarationMustReachSomeSelectedOutput()
+    @Test
+    public void discoveredDeclarationsAbsentFromOutputsRemainConcrete()
             throws Exception {
         JsonObject regionA = region("REGION.A", "sharedSymbols");
         JsonObject regionB = region("REGION.B", "sharedSymbols");
         ConcolicScheduler.SymbolicInputSelection selection =
                 ConcolicScheduler.SymbolicInputSelection.read(null,
                         Arrays.asList(regionA, regionB));
-        selection.validateSourceCoverage(Arrays.asList(
-                task(selection, regionA, "OCC.A", "XCH.A.resp",
-                        "<Node: long unrelatedA()>.response", false),
-                task(selection, regionB, "OCC.B", "XCH.B.resp",
-                        "<Node: long unrelatedB()>.response", false)));
+        JsonObject taskA = task(selection, regionA, "OCC.A", "XCH.A.resp",
+                "<Node: long unrelatedA()>.response", false);
+        JsonObject taskB = task(selection, regionB, "OCC.B", "XCH.B.resp",
+                "<Node: long unrelatedB()>.response", false);
+
+        selection.validateSourceCoverage(Arrays.asList(taskA, taskB));
+
+        for (JsonObject task : Arrays.asList(taskA, taskB)) {
+            assertFalse(task.has(SymbolicSourceEvidence.TASK_FIELD));
+            JsonObject policy = task.getAsJsonObject(
+                    "symbolicInputSelection");
+            assertEquals(5, policy.get("declaredSymbolicSourceCount")
+                    .getAsInt());
+            assertEquals(0, policy.get("selectedSymbolicSourceCount")
+                    .getAsInt());
+            assertEquals(5, policy.get("unusedSymbolicSourceCount")
+                    .getAsInt());
+        }
+    }
+
+    /**
+     * Ten producer shapes exercise the actual contract behind manual source
+     * declarations: a hook makes a field eligible, while the selected output
+     * slice decides which eligible fields become roots for this task.  The
+     * field's Java type is part of its exact identity and is never assumed to
+     * be long or int by source selection.
+     */
+    @Test
+    public void tenSourceCountAndTypeShapesSelectOnlyOutputDependencies()
+            throws Exception {
+        SourceShape[] shapes = new SourceShape[] {
+                shape("one-int", types("int"), 0),
+                shape("boolean-guard", types("boolean", "int"), 0),
+                shape("long-and-flag",
+                        types("long", "boolean", "int"), 0, 1),
+                shape("current-a-d",
+                        types("int", "int", "int", "int", "int"), 0, 3),
+                shape("a-becomes-boolean",
+                        types("boolean", "int", "long", "int", "int"),
+                        0, 2),
+                shape("narrow-integrals",
+                        types("byte", "short", "char", "int", "long",
+                                "boolean"), 0, 2, 5),
+                shape("all-primitives",
+                        types("boolean", "byte", "char", "short", "int",
+                                "long", "float", "double"),
+                        0, 4, 5, 7),
+                shape("all-unused",
+                        types("boolean", "int", "long", "double")),
+                shape("only-last-reaches-output",
+                        types("int", "boolean", "short", "long", "char",
+                                "float", "double"), 6),
+                shape("nested-mixed-guard",
+                        types("boolean", "int", "long", "boolean", "byte",
+                                "short", "char", "float", "double", "int"),
+                        0, 1, 3, 5, 8)
+        };
+        assertEquals(10, shapes.length);
+
+        for (int shapeIndex = 0; shapeIndex < shapes.length; shapeIndex++) {
+            SourceShape shape = shapes[shapeIndex];
+            String regionId = "REGION.MATRIX." + shapeIndex;
+            JsonObject region = typedRegion(regionId, shape.name,
+                    shape.types);
+            ConcolicScheduler.SymbolicInputSelection selection =
+                    ConcolicScheduler.SymbolicInputSelection.read(null,
+                            Collections.singletonList(region));
+            JsonObject task = taskDemanding(selection, region,
+                    "OCC.MATRIX." + shapeIndex,
+                    "XCH.MATRIX." + shapeIndex + ".resp",
+                    "<Node: long matrix" + shapeIndex + "()>.response",
+                    shape.demanded);
+
+            selection.validateSourceCoverage(
+                    Collections.singletonList(task));
+
+            String message = "source shape " + shape.name;
+            JsonObject policy = task.getAsJsonObject(
+                    "symbolicInputSelection");
+            assertEquals(message, shape.types.length,
+                    policy.get("declaredSymbolicSourceCount").getAsInt());
+            assertEquals(message, shape.demanded.size(),
+                    policy.get("selectedSymbolicSourceCount").getAsInt());
+            assertEquals(message,
+                    shape.types.length - shape.demanded.size(),
+                    policy.get("unusedSymbolicSourceCount").getAsInt());
+
+            JsonArray selected = task.has(SymbolicSourceEvidence.TASK_FIELD)
+                    ? task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD)
+                    : new JsonArray();
+            assertEquals(message, shape.demanded.size(), selected.size());
+            Set<String> selectedFields = new LinkedHashSet<>();
+            for (JsonElement element : selected) {
+                selectedFields.add(element.getAsJsonObject()
+                        .get("fieldSignature").getAsString());
+            }
+            for (int sourceIndex = 0;
+                 sourceIndex < shape.types.length; sourceIndex++) {
+                String field = typedField(shape.types[sourceIndex],
+                        sourceIndex);
+                assertEquals(message + " field " + sourceIndex,
+                        shape.demanded.contains(sourceIndex),
+                        selectedFields.contains(field));
+            }
+        }
     }
 
     @Test
@@ -421,7 +523,7 @@ public class StaticSymbolicSourceSelectionTest {
     }
 
     @Test
-    public void targetEvidenceCannotDischargeMissingProducerOutput()
+    public void targetEvidenceDoesNotSelectUnusedProducerDeclarations()
             throws Exception {
         JsonObject producerRegion = region("REGION.PRODUCER", "shared");
         JsonObject targetRegion = region("REGION.TARGET", "shared");
@@ -433,15 +535,16 @@ public class StaticSymbolicSourceSelectionTest {
                 "<Node: long unrelated()>.response", false);
         JsonObject target = discoveredTargetTask(selection, targetRegion);
 
-        try {
-            selection.validateSourceCoverage(Arrays.asList(producer, target));
-            fail("target-local evidence must not satisfy producer coverage");
-        } catch (java.io.IOException expected) {
-            assertTrue(expected.getMessage(), expected.getMessage()
-                    .contains("RPC_COMPARE.A"));
-            assertTrue(expected.getMessage(), expected.getMessage()
-                    .contains("output closure"));
-        }
+        selection.validateSourceCoverage(Arrays.asList(producer, target));
+
+        assertFalse(producer.has(SymbolicSourceEvidence.TASK_FIELD));
+        assertTrue(target.has(SymbolicSourceEvidence.TASK_FIELD));
+        JsonObject producerPolicy = producer.getAsJsonObject(
+                "symbolicInputSelection");
+        assertEquals(0, producerPolicy.get("selectedSymbolicSourceCount")
+                .getAsInt());
+        assertEquals(5, producerPolicy.get("unusedSymbolicSourceCount")
+                .getAsInt());
     }
 
     @Test
@@ -951,19 +1054,38 @@ public class StaticSymbolicSourceSelectionTest {
             ConcolicScheduler.SymbolicInputSelection selection,
             JsonObject region, String occurrence, String port,
             String outputCell, boolean demandSources) throws Exception {
+        Set<Integer> demandedIndexes = new LinkedHashSet<>();
+        if (demandSources) {
+            int count = region.getAsJsonArray(
+                    StaticSymbolicSourceDeclaration.FIELD).size();
+            for (int index = 0; index < count; index++) {
+                demandedIndexes.add(index);
+            }
+        }
+        return taskDemanding(selection, region, occurrence, port,
+                outputCell, demandedIndexes);
+    }
+
+    private static JsonObject taskDemanding(
+            ConcolicScheduler.SymbolicInputSelection selection,
+            JsonObject region, String occurrence, String port,
+            String outputCell, Set<Integer> demandedIndexes)
+            throws Exception {
         String regionId = region.get("regionId").getAsString();
         JsonArray candidates = new JsonArray();
         JsonArray demanded = new JsonArray();
+        int sourceIndex = 0;
         for (JsonElement element : region.getAsJsonArray(
                 StaticSymbolicSourceDeclaration.FIELD)) {
             String field = element.getAsJsonObject()
                     .get("fieldSignature").getAsString();
-            if (demandSources) demanded.add(field);
+            if (demandedIndexes.contains(sourceIndex)) demanded.add(field);
             JsonObject action = new JsonObject();
             action.addProperty("mode", "SYMBOLIC");
             action.addProperty("accessFieldSignature", field);
             action.addProperty("symbol", "IN." + candidates.size());
             candidates.add(action);
+            sourceIndex++;
         }
         JsonArray selected = selection.select(regionId, candidates);
         JsonObject slice = new JsonObject();
@@ -1348,6 +1470,60 @@ public class StaticSymbolicSourceSelectionTest {
         }
         region.add(StaticSymbolicSourceDeclaration.FIELD, sources);
         return region;
+    }
+
+    private static JsonObject typedRegion(
+            String regionId, String method, String[] fieldTypes) {
+        JsonObject region = new JsonObject();
+        region.addProperty("schemaVersion", 3);
+        region.addProperty("kind", "SYMBOLIC_REGION");
+        region.addProperty("regionId", regionId);
+        JsonArray sources = new JsonArray();
+        for (int index = 0; index < fieldTypes.length; index++) {
+            JsonObject source = new JsonObject();
+            source.addProperty("schemaVersion",
+                    StaticSymbolicSourceDeclaration.SCHEMA_VERSION);
+            source.addProperty("kind", StaticSymbolicSourceDeclaration.KIND);
+            source.addProperty("authority",
+                    StaticSymbolicSourceDeclaration.AUTHORITY);
+            source.addProperty("sourceId", "MATRIX." + method + "." + index);
+            source.addProperty("fieldSignature",
+                    typedField(fieldTypes[index], index));
+            source.addProperty("declarationMethod", "<Node: void "
+                    + method + "Symbols()>");
+            source.addProperty("declarationUnitIndex", index);
+            sources.add(source);
+        }
+        region.add(StaticSymbolicSourceDeclaration.FIELD, sources);
+        return region;
+    }
+
+    private static String typedField(String type, int index) {
+        return "<Node: " + type + " value" + index + ">";
+    }
+
+    private static String[] types(String... types) {
+        return types;
+    }
+
+    private static SourceShape shape(
+            String name, String[] types, int... demanded) {
+        Set<Integer> indexes = new LinkedHashSet<>();
+        for (int index : demanded) indexes.add(index);
+        return new SourceShape(name, types, indexes);
+    }
+
+    private static final class SourceShape {
+        private final String name;
+        private final String[] types;
+        private final Set<Integer> demanded;
+
+        private SourceShape(String name, String[] types,
+                            Set<Integer> demanded) {
+            this.name = name;
+            this.types = types;
+            this.demanded = demanded;
+        }
     }
 
     private static void addRegionPublishPhases(

@@ -5,8 +5,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
-import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
@@ -14,7 +14,6 @@ import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import soot.SootClass;
 import soot.SootField;
 import soot.SootFieldRef;
@@ -157,6 +156,9 @@ public final class ConcolicInstrumentationSelections {
          * declaration; the rewrite only puts the broker call there.
          */
         private final List<CommunicationHandoffSpec> communicationHandoffs;
+        /** Complete replay-call catalog, including unselected landmarks. */
+        private final List<ConfiguredSourcePhaseContract.Occurrence>
+                configuredSourcePhases;
         private final Set<String> instrumentationMethods;
         private final Set<String> replayAnchorMethods;
         private final String targetMethod;
@@ -199,6 +201,10 @@ public final class ConcolicInstrumentationSelections {
             exactHeapOutputs = exactHeapOutputCaptures(
                     task.outputCaptures());
             communicationHandoffs = task.communicationHandoffs();
+            configuredSourcePhases =
+                    ConfiguredSourcePhaseContract.occurrencesOf(
+                            task.json().get(
+                                    ConfiguredSourcePhaseContract.PLAN_FIELD));
 
             LinkedHashSet<String> anchorMethods = new LinkedHashSet<>();
             if (!task.targetMethod().isEmpty()) {
@@ -235,6 +241,15 @@ public final class ConcolicInstrumentationSelections {
             // selecting it adds the site and no transport frame.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
                 if (!site.manualCarrier()) methods.add(site.method());
+            }
+            // A declaration may live in a small helper called by the region
+            // root. The replay validates the exact static hook site, so that
+            // helper is part of the immutable instrumentation envelope even
+            // when it is outside the producer's output slice. Unselected
+            // phase rows remain no-op landmarks at runtime.
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : configuredSourcePhases) {
+                methods.add(phase.declarationMethod());
             }
             instrumentationMethods = Collections.unmodifiableSet(methods);
             anchorMethods.remove(rootMethod);
@@ -403,6 +418,11 @@ public final class ConcolicInstrumentationSelections {
 
         List<CommunicationHandoffSpec> communicationHandoffs() {
             return communicationHandoffs;
+        }
+
+        List<ConfiguredSourcePhaseContract.Occurrence>
+        configuredSourcePhases() {
+            return configuredSourcePhases;
         }
 
         Set<String> instrumentationMethods() {

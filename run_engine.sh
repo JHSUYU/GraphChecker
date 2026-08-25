@@ -624,6 +624,7 @@ run_configured_workload() {
   local trace_dir
   trace_dir=$(dirname "${runtime_region_plan}")
   workload_env=(
+    "GRAPHCHECKER_JAR=${graphchecker_jar}"
     "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}"
     "CAUSYNTH_INSTRUMENTED_CLASSES_DIR=${analysis_classes_dir}"
     "CAUSYNTH_TRACE_OUTPUT_DIR=${trace_dir}"
@@ -1097,7 +1098,8 @@ campaign_path_closures_json() {
 # and EMIT then consume the same bytes; a later process-substitution failure
 # cannot silently turn a prefix of the worker tree into the reported set.
 campaign_materialize_path_closures() {
-  local workers=$1 output=$2 pending="${output}.tmp"
+  local workers=$1 output=$2 pending
+  pending="${output}.tmp"
   [[ ! -e "${output}" ]] || {
     echo "path-closure snapshot already exists: ${output}" >&2
     return 1
@@ -1211,6 +1213,40 @@ campaign_run_adapter() {
 
 campaign_setup() {
   campaign_run_adapter setup "${campaign_setup_command}"
+}
+
+# Copy the executable tool into this run before even the setup adapter loads
+# it. A recorded hash alone is not a freeze: a concurrent `mvn package` can
+# replace the live target jar after the JVM has started, making later lazy
+# class loads observe a different archive. The before/copy/after digests turn
+# such a race into a named FREEZE_TOOL failure; every later stage uses the
+# private, read-only copy.
+campaign_freeze_graphchecker_jar() {
+  local source_jar="${graphchecker_jar}"
+  local frozen_dir="${campaign_root}/frozen-inputs"
+  local frozen_jar="${frozen_dir}/GraphChecker.jar"
+  local before_sha after_sha frozen_sha
+  [[ -f "${source_jar}" ]] || campaign_fail FREEZE_TOOL CAMPAIGN \
+    "${source_jar}" "the source GraphChecker jar is missing"
+  [[ -d "${frozen_dir}" ]] || campaign_fail FREEZE_TOOL CAMPAIGN \
+    "${frozen_dir}" "the campaign did not reserve its private input directory"
+  [[ ! -e "${frozen_jar}" ]] || campaign_fail FREEZE_TOOL CAMPAIGN \
+    "${frozen_jar}" "the private GraphChecker jar already exists"
+  before_sha=$(campaign_digest "${source_jar}") || campaign_fail \
+    FREEZE_TOOL CAMPAIGN "${source_jar}" "pre-copy digest failed"
+  cp -p -- "${source_jar}" "${frozen_jar}" || campaign_fail \
+    FREEZE_TOOL CAMPAIGN "${source_jar}" "private jar copy failed"
+  after_sha=$(campaign_digest "${source_jar}") || campaign_fail \
+    FREEZE_TOOL CAMPAIGN "${source_jar}" "post-copy digest failed"
+  frozen_sha=$(campaign_digest "${frozen_jar}") || campaign_fail \
+    FREEZE_TOOL CAMPAIGN "${frozen_jar}" "private jar digest failed"
+  [[ "${before_sha}" == "${after_sha}"
+      && "${before_sha}" == "${frozen_sha}" ]] || campaign_fail \
+    FREEZE_TOOL CAMPAIGN "${source_jar}" \
+    "the GraphChecker jar changed while it was being frozen"
+  chmod a-w "${frozen_jar}" || campaign_fail FREEZE_TOOL CAMPAIGN \
+    "${frozen_jar}" "failed to make the private jar read-only"
+  graphchecker_jar="${frozen_jar}"
 }
 
 # The one frozen generation, and the campaign's only provenance authority.
@@ -2610,9 +2646,16 @@ do_campaign() {
   [[ ! -e "${campaign_root}/iteration-0000" && ! -e "${campaign_final}" ]] \
     || die "this campaign root already holds a published run: ${campaign_root}"
   ensure_output_directory "${campaign_root}"
+  # Reserve this run before either process can truncate its stage metrics.
+  # mkdir is the one atomic claim on a campaign root; every later artifact is
+  # immutable beneath the directory owned by the winner.
+  mkdir -- "${campaign_root}/frozen-inputs" || campaign_fail \
+    FREEZE_TOOL CAMPAIGN "${campaign_root}" \
+    "the campaign root is already reserved by another run"
   : >"${campaign_stage_metrics}"
 
   campaign_stage VALIDATE campaign_validate
+  campaign_stage FREEZE_TOOL campaign_freeze_graphchecker_jar
   if [[ -n "${campaign_setup_command}" ]]; then
     campaign_stage SETUP campaign_setup
   fi
