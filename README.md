@@ -1147,10 +1147,70 @@ build parallel old/new models.
 | `SMT-1` | Build one selected-input ledger before writing SMT. Each selected value must be a local symbolic root, VM handoff result, or known read-from arm. | No free selected port, unknown writer, supplied map-membership fact, stale generation, or unresolved selected gap reaches `candidate.smt2`. |
 | `GATE-1` | Make Composer publish the sole `FINAL_READY` decision and selected blockers. Shell must not report `SAT_CANDIDATE` from reachability alone or reconstruct legacy trust states. | Acceptance requires current frozen provenance, ready Composer status, complete selected witness, zero selected blockers/candidate/unknown arms, and a parsed Z3 SAT result. |
 | `PERF-1` | Preserve production-only/lazy static analysis, delete segment computation and duplicate unconsumed indexes, union-instrument once, and run independent replay obligations in the existing worker pool. | Static analysis does not regress from the optimized path; no per-goal analysis/instrument/JVM loop returns. |
+| `ARM-1` | Address the response-producer arm by the cut's own send instead of "the next `RPC_SEND` on this thread". `observeExchangeLeg` drains `PENDING_RESPONSE_ATTACH_PORTS` at whichever send happens next on the calling thread, and loses the ThreadLocal outright when Hadoop sends params on an IPC pool thread. | The arm binds the send its own cut declared; a lost or mismatched arm is a named gap, never a silent non-export. |
+| `OCC-2` | Enforce the planned occurrence address at replay, or stop claiming it. The plan names `fromOccurrenceId … REGION.X#5`, but the runtime stamps that label on every armed activation (`#5#a1 … #5#a10`) without ever matching occurrence 5. | The planned ordinal is checked against the observed occurrence and a mismatch is a named gap; no row carries an address nothing enforces. |
+| `ROOT-1` | Load protocol rows in skeleton (pass-1) mode so a minted client-entry region requires the recorded exchange, not merely the call-site owner frame. `COMMUNICATION_CLIENT_ENTRY` triggers today on an observed frame inside a registered request because `skeletonOnly=true` never populates `RPC_SEND`/`RPC_RECEIVE`. | A client-entry region is minted only where the trace recorded the send; a call site that never fired is a named gap, not a silent no-op. |
+| `GAP-1` | Publish producer-side refusals. `RuntimeTask.unansweredAddress()` and the producer's ~15 refusals per run reach no artifact, so an export that never happened is indistinguishable from one that was never demanded. | Every refusal that prevents an export or an attach appears in `gaps.json` with its port and reason. |
+| `MODEL-1` | Publish all three model values the acceptance section requires (`K` : Int32, NN selected-key expiry : Int64, DN selected-key expiry : Int64). One is published today. | `z3-result.json` carries the three valuations, each traceable to a configured-source materialization. |
+| `CLOSE-1` | Close the composition coverage closure. `unsatClosureEvidence` reports `compositionCoverageClosed=false` with `compositionCoverageGapCount=1` while `targetCoverageGapCount=0`. | `unsatClosureComplete=true`, with both target and composition coverage closed. |
 
 The validation rule is intentionally small: validate once where an invariant is
 created, then pass the result forward. Do not add a new attestation layer to
 replace a deleted one.
+
+### HDFS-11741: where the chain actually breaks, and the traps around it
+
+One root cause has now surfaced at four distinct loci: **an occurrence is
+addressed by a polling or enumeration ordinal while the causal event it needs
+is sparse**, so the addressed occurrence is almost never the one carrying the
+event. `loop-bounds.jsonl`'s own header already states the rule the code did
+not follow. Two loci are fixed (the producer read-from binding, and the
+client-side execution-context root); `ARM-1` and `OCC-2` above are the two
+that remain.
+
+A loop bound is a **sampling** mechanism, not a **selection** mechanism.
+Raising one is almost never the fix: it multiplies captured regions on every
+node without improving the odds of hitting a sparse event. The DN heartbeat
+region already runs every turn of its window (`turnsAdmitted: 25` against
+`anchorProbeCeiling: 24`) and still anchors nothing, because the anchor is the
+VM's own attach evidence and the attach can only succeed on a turn the
+producer already exported on. NN→DN is therefore blocked in the **producer**
+arm (`ARM-1`), one hop upstream of anything DN turn selection can reach.
+
+Method that settles this class of question quickly: run the **new** jar over an
+**old** campaign's frozen inputs. Five byte-identical reproductions across the
+trace recorder, the scheduler (both directions), the importer and the composer
+exonerated an entire change set by construction and redirected the search to
+the non-deterministic replay. Before blaming a code change for an artifact
+difference, replay the old inputs through the new jar.
+
+Traps that have each cost a day:
+
+- **The frozen-plan harnesses cannot see planning or selection changes.**
+  `recompose-matrix.sh` and `reschedule-matrix.sh` replay recorded plans, so a
+  green 20/20 from them is necessary, never sufficient, for a change to the
+  static planner or to skeleton selection. `reskeleton-matrix.sh` is the only
+  harness that exercises selection. Anything about pass 2 needs a campaign.
+- **`gapCount` gates acceptance independently of `FINAL_READY`.** The engine
+  withholds the candidate with `exit 3` whenever the run names an unresolved
+  gap, and `FINAL_READY` means only "no composer-owned blocker". Check the
+  exit status and the gap count before calling anything done.
+- **Positional references derived from one run rot.** A Hadoop method-body edit
+  shifted a `#uN` Jimple index and hard-failed the static pass. After touching
+  instrumentation, re-derive every index from the published
+  `retained_loops.jsonl.gz`; never guess one.
+- **`symbolic-inputs.jsonl` may only pin a region that already exists.**
+  `SymbolicInputSelection.read` throws on an unknown static region, so a pin
+  added for a newly minted region breaks every campaign that does not mint it.
+  Add the pin only after the region has been observed in a real plan.
+- **Bounding the instrumentation set is not the campaign-time lever.** Measured:
+  the rich set is 5,621 methods and 52% of them never execute, but an
+  observation bound removes only 13% of the trace bytes and ~3% of wall clock,
+  because 65% of the bytes come from region anchor methods that no bound can
+  drop. The real levers are `REPLAY` running under `-Xint` (46% of a campaign),
+  the pass-1 whole-program Soot analysis (12%), and startup config parsing
+  (`Configuration.loadResource` alone is 26% of the trace).
+
 
 ## HDFS-11741 under the general model
 
