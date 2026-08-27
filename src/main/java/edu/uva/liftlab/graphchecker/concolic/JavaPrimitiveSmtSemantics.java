@@ -543,6 +543,15 @@ public final class JavaPrimitiveSmtSemantics {
                 "cannot lower an ambiguous integral bit operation");
     }
 
+    /**
+     * Normalize the concolic VM's expression-IR spelling to Java's spelling.
+     * The VM deliberately serializes {@code iushr}/{@code lushr} as
+     * {@code >>u}; Java source and the SMT lowering use {@code >>>}.
+     */
+    static String canonicalVmOperator(String operator) {
+        return ">>u".equals(operator) ? ">>>" : operator;
+    }
+
     private static String constantBitwise(String operator, String variable,
                                           BigInteger rawMask,
                                           IntegralWidth width) {

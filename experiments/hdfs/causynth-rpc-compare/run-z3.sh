@@ -25,7 +25,7 @@ scenario=${CAUSYNTH_RPC_SCENARIO:-}
 run_label=run
 
 if [[ -n "${scenario}" ]]; then
-  [[ "${scenario}" =~ ^([1-9]|1[0-9]|20)$ ]] || {
+  [[ "${scenario}" =~ ^([1-9]|[1-3][0-9]|40)$ ]] || {
     printf '[causynth-rpc] invalid scenario: %s\n' "${scenario}" >&2
     exit 2
   }

@@ -828,7 +828,8 @@ public final class ConcolicConstraintSolver {
 
         private Term binary(JsonObject expression, String origin) {
             recordFieldAlias(expression);
-            String operator = string(expression, "_op");
+            String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
+                    string(expression, "_op"));
             JsonElement leftExpression = expression.get("_left");
             if (leftExpression == null || leftExpression.isJsonNull()) {
                 Term operand = term(expression.get("_right"), null,

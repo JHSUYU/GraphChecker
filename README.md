@@ -52,7 +52,7 @@ and workload APIs, but no test class enters Soot application scope, static
 facts, communication discovery, or concolic instrumentation. No other Hadoop
 unit test is relevant to this milestone.
 
-## Takeover checkpoint: the 20-case RPC matrix
+## Takeover checkpoint: the 40-case RPC matrix
 
 The small RPC workload and the HDFS-11741 workload serve different purposes.
 The RPC workload is a bounded integration matrix for manually declared
@@ -62,7 +62,11 @@ must connect several real HDFS state and communication transitions. Passing
 the matrix is a regression prerequisite; it is not evidence that HDFS-11741
 has been completed.
 
-The checkpoint spans two repositories:
+The checkpoint contains the original 20 producer pairs plus 20 deeper
+DataNode-side pairs.  The second group adds nested control flow, De Morgan
+forms, adjacent Java-width boundaries, cross-field affine relations, signed
+and unsigned shifts, symbolic shift distances, bitwise complement, and local
+boolean intermediates.  The checkpoint spans two repositories:
 
 | Repository | Role |
 |---|---|
@@ -151,6 +155,45 @@ old or duplicate directory from being mistaken for the selected evidence.
 | 19 | multi-case `if / else-if / else` producer relations | 2 | 99 ms | `ad629902dfe8` |
 | 20 | combined min/max, `&&`, `||`, negation, and multi-case arithmetic | 2 | 160 ms | `43500eb3e4c3` |
 
+The deeper rows were also independent eight-worker fresh campaigns.  In
+addition to the final solver result, `path-flip queries` counts the local
+producer queries actually discharged as SAT or UNSAT before composition.  It
+therefore distinguishes a deep relation test from a run that only solves the
+NameNode comparison.
+
+| # | Deeper producer relation stress | path-flip queries | Z3 models | fastest recorded SAT | candidate sha |
+|---:|---|---:|---:|---:|---|
+| 21 | bounded interval plus a real nested boolean branch | 7 | 4 | 104 ms | `6f4cbf4bc313` |
+| 22 | De Morgan negation over compound `&&` / `||` guards | 6 | 2 | 96 ms | `da22867170cc` |
+| 23 | adjacent `Integer.MIN_VALUE/MAX_VALUE` ranges | 8 | 8 | 91 ms | `1e6fa65df0fa` |
+| 24 | adjacent `Long.MIN_VALUE/MAX_VALUE` ranges | 7 | 2 | 82 ms | `50ef41fe6cbb` |
+| 25 | cross-field inequalities and mixed affine output | 9 | 2 | 106 ms | `dac166856a7b` |
+| 26 | multi-level `if` control flow on both producers | 10 | 4 | 111 ms | `c3d6a14a2a5a` |
+| 27 | affine difference/sum guards spanning `int` and `long` | 6 | 2 | 97 ms | `02097d4e9eb8` |
+| 28 | exact cross-field affine equalities | 4 | 4 | 97 ms | `2ce473de033c` |
+| 29 | staged long/int range partition with `else-if` cases | 11 | 4 | 110 ms | `cbcbb9f2a0f3` |
+| 30 | Java `int` negation overflow and wrapped multiplication | 6 | 2 | 83 ms | `7eb825d2f70d` |
+| 31 | Java `long` negation and multiplication overflow | 6 | 2 | 85 ms | `c621e4aa87a1` |
+| 32 | several exact bit-mask predicates | 7 | 2 | 123 ms | `ef408fe65b02` |
+| 33 | wrapped left shift and signed right shift | 6 | 4 | 99 ms | `4ab1129f5bdc` |
+| 34 | Java `int` unsigned right shift in guards and outputs | 4 | 2 | 95 ms | `b080c955124e` |
+| 35 | XOR/OR local values feeding guards and output relations | 6 | 4 | 330 ms | `c6cca8a7a328` |
+| 36 | Java `long` unsigned and signed right shifts | 4 | 2 | 84 ms | `3ee91b2acbb1` |
+| 37 | bitwise complement stored in local variables | 4 | 2 | 145 ms | `ada0ecdca2c3` |
+| 38 | symbolic shift distance with Java distance masking | 4 | 2 | 183 ms | `7df082abc0ec` |
+| 39 | local boolean intermediates over nested short-circuit logic | 12 | 4 | 116 ms | `f165a202dde8` |
+| 40 | deep nested cases combining masks, boundaries, `>>>`, and affine outputs | 35 | 2 | 167 ms | `b70928c0978c` |
+
+Scenario 34 exposed and then validated one general GraphChecker fix.  The
+concolic VM serializes Java `iushr`/`lushr` as the expression-IR operator
+`>>u`, while the local path-flip solver and final Composer originally accepted
+only the Java source spelling `>>>`.  The first fresh run
+`scenario-34.ecdtWf` therefore failed closed with
+`UNSUPPORTED_EXPRESSION_IR`; it is not a passing artifact.  Both SMT consumers
+now canonicalize the VM spelling, unit tests cover local solving and final
+composition, and the selected fresh run `scenario-34.Ysb6Ec` has zero
+unsupported flips and zero final gaps.
+
 The selected local evidence is under:
 
 ```text
@@ -158,6 +201,11 @@ The selected local evidence is under:
   scenario-01.oNndiJ
   ...
   scenario-20.Ihx2FP
+
+/proj/silentfailure-PG0/gc-rpc-compare/new-datanode-scenario-campaigns/
+  scenario-21.uQZFfE
+  ...
+  scenario-40.sR1cS5
 ```
 
 These directories are diagnostic run products, not checked-in truth. A new
@@ -284,14 +332,17 @@ Unlisted roots in another scenario retain their concrete defaults; they must
 not appear as unconstrained symbolic variables merely because a Java hook was
 declared.
 
-One solver-performance distinction matters. Nineteen selected candidates
-returned `sat` with a plain Z3 replay within 15 seconds. Scenario 14's plain
-default-strategy replay exceeded 60 seconds, while the exact tuned query
-recorded in `z3-result.json` returned `sat` in 132 ms. Therefore acceptance
-uses the stored query digest, options, status, and witness. Do not rewrite the
-claim as “the default `z3 candidate.smt2` command is always fast.” The next
-Composer should emit the selected solver options directly into the final SMT
-if a standalone default-strategy replay is required.
+One solver-performance distinction matters. For the original scenarios 1--20,
+nineteen selected candidates returned `sat` with a plain Z3 replay within 15
+seconds. Scenario 14's plain default-strategy replay exceeded 60 seconds,
+while the exact tuned query recorded in `z3-result.json` returned `sat` in 132
+ms. All selected scenarios 21--40 returned a recorded SAT attempt within 330
+ms, but they were not separately audited under the plain default strategy.
+Therefore acceptance uses the stored query digest, options, status, and
+witness. Do not rewrite the claim as “the default `z3 candidate.smt2` command
+is always fast.” The next Composer should emit the selected solver options
+directly into the final SMT if a standalone default-strategy replay is
+required.
 
 To rerun the currently selected scenario 1:
 

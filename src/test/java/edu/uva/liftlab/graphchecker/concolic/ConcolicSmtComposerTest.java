@@ -652,6 +652,42 @@ public class ConcolicSmtComposerTest {
         assertFalse(result.manifest.has("operandBindingLedger"));
     }
 
+    @Test
+    public void vmUnsignedShiftSpellingReachesFinalComposition()
+            throws Exception {
+        String fatalOccurrence = "REGION.0@Test#target-vm-ushr";
+        String sourceOccurrence = "REGION.1@Test#source-vm-ushr";
+        String sourceId = "TEST.CONFIGURED.VM_USHR";
+        String sourcePhase = publishPhase(sourceOccurrence);
+        String raw = configuredRaw(sourcePhase, sourceId, "vm_ushr");
+        RelationSummary source = summary("SOURCE.VM_USHR",
+                sourceOccurrence, 7, Collections.<String>emptyList(),
+                Collections.<JsonObject>emptyList());
+        JsonObject sourceRow = source.toJson();
+        JsonObject sourceCase = sourceRow.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject();
+        SymbolicSourceEvidence.writeTo(sourceCase,
+                Collections.singletonList(SymbolicSourceEvidence.event(
+                        sourcePhase, sourceId, sourceOccurrence,
+                        "<Test: int source>", reference(raw, "I"),
+                        1, false, null)));
+
+        JsonObject vmUnsignedShift = binary(reference(raw, "I"), ">>u",
+                integer(28));
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(vmUnsignedShift, "==", integer(15)));
+        ConcolicSmtComposer.Result result = composeFatal(fatalOccurrence,
+                Collections.singletonList(RelationSummary.decode(sourceRow)),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                fatalQuery(fatalOccurrence, constraints), null);
+
+        assertTrue(result.smtLib, result.smtLib.contains("4294967296"));
+        assertTrue(result.smtLib, result.smtLib.contains("268435456"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
+    }
+
     /**
      * HDFS-11741's shape: the declared read found a root the VM had already
      * propagated onto the field, so it NAMED it instead of minting.  The

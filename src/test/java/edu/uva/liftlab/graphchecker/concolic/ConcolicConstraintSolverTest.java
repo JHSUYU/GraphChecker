@@ -133,6 +133,25 @@ public class ConcolicConstraintSolverTest {
         assertTrue(result.smtLib, result.smtLib.contains("(div "));
         assertFalse(result.record.toString(),
                 result.record.getAsJsonArray("unsupported").size() > 0);
+
+        // The VM expression IR calls Java's unsigned right shift ">>u".
+        // This spelling must be accepted at the IR boundary, not rejected as
+        // an unknown BinaryExpression operator.
+        JsonObject unsignedShift = binaryExpression(input.deepCopy(),
+                ">>u", intConstant(28));
+        ConcolicConstraintSolver.Result unsignedResult = solveForTest(
+                task(binaryExpression(unsignedShift, "==", intConstant(15))),
+                activation(), Paths.get("z3"), 10_000L);
+
+        assertEquals(unsignedResult.record.toString(), "SAT_MODEL_READY",
+                unsignedResult.record.get("status").getAsString());
+        assertTrue(unsignedResult.smtLib, unsignedResult.smtLib.contains(
+                "(mod "));
+        assertTrue(unsignedResult.smtLib, unsignedResult.smtLib.contains(
+                "4294967296"));
+        assertFalse(unsignedResult.record.toString(),
+                unsignedResult.record.getAsJsonArray("unsupported")
+                        .size() > 0);
     }
 
     @Test
