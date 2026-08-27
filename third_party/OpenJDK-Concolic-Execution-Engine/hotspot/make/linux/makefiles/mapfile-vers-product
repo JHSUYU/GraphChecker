@@ -290,6 +290,7 @@ SUNWprivate_1.1 {
                 JVM_GetSharedMapVersions;
                 JVM_ProposeEventOrder;
                 JVM_GetEventLedger;
+                JVM_ActivateConcolicEventLedger;
                 JVM_GetConcolicRegionSummary;
                 JVM_FinishConcolicRegion;
 

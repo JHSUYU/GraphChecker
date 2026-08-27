@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
@@ -32,17 +33,15 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * Execution-task parsing and immutable instrumentation selections.
- *
- * <p>This class deliberately contains no Soot body mutation. It validates the
- * scheduler-owned plan and exposes only the exact sites that the pipeline may
- * instrument, keeping fail-closed plan semantics separate from bytecode
- * rewriting.</p>
- */
+/** Execution-task parsing and immutable instrumentation selections. */
 public final class ConcolicInstrumentationSelections {
     private ConcolicInstrumentationSelections() {
     }
@@ -54,21 +53,13 @@ public final class ConcolicInstrumentationSelections {
                 "false"));
     }
 
-    /**
-     * Declaring classes whose bodies the selected campaign may rewrite.
-     *
-     * <p>The full project roots remain on Soot's class path, but making every
-     * class in those roots an application class forces Soot to load and emit
-     * thousands of unrelated Hadoop classes.  The immutable task plan already
-     * states the complete instrumentation envelope, so its declaring classes
-     * are the narrow application set for this pass.</p>
-     */
+    /** Declaring classes whose bodies the selected campaign may rewrite. */
     public static Set<String> applicationClassesFromEnvironment() {
         Set<String> classes = new LinkedHashSet<>();
         for (InstrumentationPlan plan
                 : instrumentationCampaignFromEnvironment()) {
             for (String signature : plan.envelopeMethods()) {
-                String owner = declaringClass(signature);
+                String owner = CausynthStaticFacts.methodOwner(signature);
                 if (!owner.isEmpty()) classes.add(owner);
             }
         }
@@ -80,33 +71,12 @@ public final class ConcolicInstrumentationSelections {
         return Collections.unmodifiableSet(classes);
     }
 
-    private static String declaringClass(String methodSignature) {
-        String signature = stringValue(methodSignature).trim();
-        if (!signature.startsWith("<")) return "";
-        int colon = signature.indexOf(':');
-        if (colon <= 1) return "";
-        return signature.substring(1, colon).trim();
-    }
-
-    /**
-     * How many tasks one instrumentation campaign may contain.  The bound
-     * mirrors the runtime's: one pass instruments the union of the campaign's
-     * regions, so an unbounded plan would rewrite an unbounded slice of the
-     * program.
-     */
+    /** How many tasks one instrumentation campaign may contain. */
     static final String MAX_TASKS_PROPERTY =
             "causynth.concolic.campaign.max.tasks";
     static final int DEFAULT_MAX_TASKS = 64;
 
-    /**
-     * The campaign this instrumentation pass must cover, in plan order.
-     *
-     * <p>One pass instruments the union of the campaign's regions, and each
-     * task keeps its own selections: the runtime still admits an activation
-     * per task by that task's own root predicate, so widening the
-     * instrumentation does not widen selection.  A campaign of one is the
-     * ordinary single-task run.</p>
-     */
+    /** The campaign this instrumentation pass must cover, in plan order. */
     static List<InstrumentationPlan> instrumentationCampaignFromEnvironment() {
         String planValue = stringValue(System.getProperty(
                 "causynth.concolic.task.plan"));
@@ -127,33 +97,32 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    /**
-     * One immutable view of the scheduler-selected execution task. The
-     * instrumentation pipeline builds this once and derives every selection
-     * from it instead of reparsing the JSONL for each hook family.
-     */
+    /** One immutable view of the scheduler-selected execution task. */
     static final class InstrumentationPlan {
-        private final String taskId;
         /** Exact plan selector shared by a seed task and its replays. */
         private final String instrumentationSelector;
-        private final String regionId;
         private final String rootMethod;
         private final String receiverClass;
-        /** The region occurrence this plan is stated over. */
-        private final String occurrenceId;
         private final ConcolicBranchSelection branches;
         private final LoopBoundPolicy loopBound;
         /** Array-indexed loops whose concrete cardinality is not a K_L. */
         private final Set<String> fixedCountLoopSites;
+        /**
+         * The loop body this region is rooted at, empty when the region keeps
+         * its root method's own entry. Present only under
+         * {@link LoopBoundPolicy#LOOP_BODY_ROOT}.
+         */
+        private final String rootLoopMethod;
+        private final int rootLoopHeaderUnitIndex;
+        private final Set<String> rootLoopControlSites;
         private final ConcolicMaterializationSelection materializations;
         private final List<RootedOutputCapture> outputCaptures;
         private final List<CallArgumentOutputCapture> callArgumentOutputs;
         private final List<CommunicationEffectCapture> communicationEffects;
         private final List<ExactHeapOutputCapture> exactHeapOutputs;
         /**
-         * Where this occurrence hands a declared communication port to the
-         * VM, or takes one from it.  Both sites are the port's own static
-         * declaration; the rewrite only puts the broker call there.
+         * Where this occurrence hands a declared communication port to the VM,
+         * or takes one from it.
          */
         private final List<CommunicationHandoffSpec> communicationHandoffs;
         /** Complete replay-call catalog, including unselected landmarks. */
@@ -162,7 +131,6 @@ public final class ConcolicInstrumentationSelections {
         private final Set<String> instrumentationMethods;
         private final Set<String> replayAnchorMethods;
         private final String targetMethod;
-        private final boolean outputRelation;
         private final boolean dynamicAssociativeTarget;
 
         private InstrumentationPlan(ExecutionTask task) throws IOException {
@@ -170,41 +138,40 @@ public final class ConcolicInstrumentationSelections {
                 throw new IOException("Execution task " + task.taskId()
                         + " is not executable");
             }
-            taskId = task.taskId();
             instrumentationSelector = task.instrumentationSelector();
-            regionId = task.regionId();
             rootMethod = task.rootMethod();
             if (rootMethod.isEmpty()) {
                 throw new IOException("Execution task " + task.taskId()
                         + " has no root method");
             }
-            receiverClass = jsonString(task.rootSelector(), "receiverClass");
-            occurrenceId = task.occurrenceId();
+            receiverClass = string(task.rootSelector(), "receiverClass");
             InputActionCatalog inputActions = task.inputActions();
             JsonArray symbolic = inputActions.symbolic();
             targetMethod = task.targetMethod();
-            outputRelation = task.outputClosure() != null;
             dynamicAssociativeTarget = declaresDynamicAssociativeTarget(
                     task.modelAssignments());
             branches = ConcolicBranchSelection.from(task.branches());
             loopBound = task.loopBound();
-            fixedCountLoopSites = fixedCountLoopSites(task.json());
+            fixedCountLoopSites = task.fixedCountLoopSites();
+            rootLoopMethod = task.rootLoopMethod();
+            rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
+            rootLoopControlSites = task.rootLoopControlSites();
             materializations = ConcolicMaterializationSelection.from(symbolic);
             materializations.addSharedCarrierTargets(
                     task.sharedCarriers(), inputActions.all());
             outputCaptures = rootedOutputCaptures(task.outputCaptures(),
                     inputActions.all());
-            callArgumentOutputs = callArgumentOutputCaptures(
-                    task.outputCaptures());
-            communicationEffects = communicationEffectCaptures(
-                    task.outputCaptures());
-            exactHeapOutputs = exactHeapOutputCaptures(
-                    task.outputCaptures());
+            callArgumentOutputs = selectedCaptures(task.outputCaptures(),
+                    OutputCaptureSpec::capturesCallArgument,
+                    CallArgumentOutputCapture::new);
+            communicationEffects = selectedCaptures(task.outputCaptures(),
+                    OutputCaptureSpec::capturesCommunicationEffect,
+                    CommunicationEffectCapture::new);
+            exactHeapOutputs = selectedCaptures(task.outputCaptures(),
+                    OutputCaptureSpec::capturesExactHeapWrite,
+                    ExactHeapOutputCapture::new);
             communicationHandoffs = task.communicationHandoffs();
-            configuredSourcePhases =
-                    ConfiguredSourcePhaseContract.occurrencesOf(
-                            task.json().get(
-                                    ConfiguredSourcePhaseContract.PLAN_FIELD));
+            configuredSourcePhases = task.configuredSourcePhases();
 
             LinkedHashSet<String> anchorMethods = new LinkedHashSet<>();
             if (!task.targetMethod().isEmpty()) {
@@ -221,32 +188,20 @@ public final class ConcolicInstrumentationSelections {
                 methods.addAll(branches.methods());
                 anchorMethods.addAll(branches.methods());
             }
-            for (CallArgumentOutputCapture capture : callArgumentOutputs) {
-                methods.add(capture.method());
-            }
-            for (CommunicationEffectCapture capture : communicationEffects) {
-                methods.add(capture.method());
-            }
-            for (ExactHeapOutputCapture capture : exactHeapOutputs) {
-                methods.add(capture.method());
-            }
+            addCaptureMethods(methods, callArgumentOutputs);
+            addCaptureMethods(methods, communicationEffects);
+            addCaptureMethods(methods, exactHeapOutputs);
             // A concrete shared-state carrier is not a fresh symbolic input,
             // but its exact read still needs the materialization hook which
-            // admits the planner-selected producer version.  The access site
-            // comes from the frozen input action; adding only that method
-            // keeps the instrumentation envelope bounded by the plan.
+            // admits the planner-selected producer version.
             methods.addAll(materializations.sharedCarrierAccessMethods());
             // A cut's own frame is where the port's value is presented and
-            // received.  It is inside this occurrence by construction, so
-            // selecting it adds the site and no transport frame.
+            // received.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
                 if (!site.manualCarrier()) methods.add(site.method());
             }
             // A declaration may live in a small helper called by the region
-            // root. The replay validates the exact static hook site, so that
-            // helper is part of the immutable instrumentation envelope even
-            // when it is outside the producer's output slice. Unselected
-            // phase rows remain no-op landmarks at runtime.
+            // root.
             for (ConfiguredSourcePhaseContract.Occurrence phase
                     : configuredSourcePhases) {
                 methods.add(phase.declarationMethod());
@@ -363,25 +318,12 @@ public final class ConcolicInstrumentationSelections {
             return rootMethod;
         }
 
-        String taskId() {
-            return taskId;
-        }
-
         String instrumentationSelector() {
             return instrumentationSelector;
         }
 
-        String regionId() {
-            return regionId;
-        }
-
         String receiverClass() {
             return receiverClass;
-        }
-
-        /** The region occurrence this plan is stated over. */
-        String occurrenceId() {
-            return occurrenceId;
         }
 
         ConcolicBranchSelection branches() {
@@ -394,6 +336,26 @@ public final class ConcolicInstrumentationSelections {
 
         Set<String> fixedCountLoopSites() {
             return fixedCountLoopSites;
+        }
+
+        /** True when this region's activation is one loop iteration. */
+        boolean loopBodyRoot() {
+            return !rootLoopMethod.isEmpty();
+        }
+
+        /** The method holding the loop body this region is rooted at. */
+        String rootLoopMethod() {
+            return rootLoopMethod;
+        }
+
+        /** Original unit index of that loop's dominance-proved header. */
+        int rootLoopHeaderUnitIndex() {
+            return rootLoopHeaderUnitIndex;
+        }
+
+        /** Iteration-control sites the region's exits are installed on. */
+        Set<String> rootLoopControlSites() {
+            return rootLoopControlSites;
         }
 
         ConcolicMaterializationSelection materializations() {
@@ -429,67 +391,22 @@ public final class ConcolicInstrumentationSelections {
             return instrumentationMethods;
         }
 
-        Set<String> replayAnchorMethods() {
-            return replayAnchorMethods;
-        }
-
-
-        String targetMethod() {
-            return targetMethod;
-        }
-
-        boolean outputRelation() {
-            return outputRelation;
-        }
-
         /**
          * Whether this task's solver model selects a value by associative
-         * access ordinal, and therefore needs an instrumented {@code Map}
-         * read site to apply it.
-         *
-         * <p>The instrumenter uses this to decide whether a task with no
-         * exact selected read site is a named coverage gap or simply a task
-         * that never wanted one.  It is never permission to widen the
-         * envelope: a task that wants a read site and names none stays a
-         * reported gap.</p>
+         * access ordinal, and therefore needs an instrumented {@code Map} read
+         * site to apply it.
          */
         boolean dynamicAssociativeTarget() {
             return dynamicAssociativeTarget;
         }
 
-        private static Set<String> fixedCountLoopSites(JsonObject task) {
-            Set<String> result = new LinkedHashSet<>();
-            for (JsonElement element : JsonFields.array(
-                    task, "retainedLoops")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject loop = element.getAsJsonObject();
-                if (!LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(
-                        jsonString(loop,
-                                LoopBoundPolicy.LOOP_CLASSIFICATION))) {
-                    continue;
-                }
-                String primary = jsonString(
-                        loop, LoopBoundPolicy.LOOP_SITE_ID);
-                if (!primary.isEmpty()) result.add(primary);
-                for (JsonElement site : JsonFields.array(
-                        loop, LoopBoundPolicy.LOOP_CONTROL_SITE_IDS)) {
-                    if (!site.isJsonPrimitive()) continue;
-                    String value = site.getAsString().trim();
-                    if (!value.isEmpty()) result.add(value);
-                }
-            }
-            return Collections.unmodifiableSet(result);
-        }
-
         /**
          * The methods this task's envelope may rewrite, before the replay
-         * entry Soot selects is added to it.
-         *
-         * <p>This is README section 1's per-task envelope as the plan states
-         * it: the mandatory target/region/RPC/SASL anchors, the closure the
-         * scheduler already intersected with the seed trace and the current
-         * output closure, and the exact alternative sites this task names.
-         * Nothing else in the application belongs to it.</p>
+         * entry Soot selects is added to it. This is README section 1's per-
+         * task envelope as the plan states it: the mandatory
+         * target/region/RPC/SASL anchors, the closure the scheduler already
+         * intersected with the seed trace and the current output closure, and
+         * the exact alternative sites this task names.
          */
         Set<String> envelopeMethods() {
             Set<String> methods = replayDemandMethods();
@@ -501,30 +418,16 @@ public final class ConcolicInstrumentationSelections {
             return methods;
         }
 
-        /**
-         * The methods whose effects a delayed engine arm may not skip.
-         *
-         * <p>This is the envelope minus its anchors, and the distinction
-         * matters: the arm selectors ask whether the declared target reaches
-         * a demanded effect, and a set that contains the target itself
-         * answers yes unconditionally - which would arm every output relation
-         * at its target call rather than where its effects actually are.</p>
-         */
+        /** The methods whose effects a delayed engine arm may not skip. */
         Set<String> replayDemandMethods() {
             Set<String> methods = new LinkedHashSet<>();
             methods.addAll(branches.methods());
             methods.addAll(materializations.localMethods());
             methods.addAll(materializations.methodArgumentMethods());
             methods.addAll(materializations.accessorCallerMethods());
-            for (ExactHeapOutputCapture capture : exactHeapOutputs) {
-                methods.add(capture.method());
-            }
-            for (CallArgumentOutputCapture capture : callArgumentOutputs) {
-                methods.add(capture.method());
-            }
-            for (CommunicationEffectCapture capture : communicationEffects) {
-                methods.add(capture.method());
-            }
+            addCaptureMethods(methods, exactHeapOutputs);
+            addCaptureMethods(methods, callArgumentOutputs);
+            addCaptureMethods(methods, communicationEffects);
             for (CommunicationHandoffSpec handoff : communicationHandoffs) {
                 if (!handoff.manualCarrier()) methods.add(handoff.method());
             }
@@ -540,9 +443,9 @@ public final class ConcolicInstrumentationSelections {
                         .get("containerTarget");
                 if (encoded == null || !encoded.isJsonObject()) continue;
                 JsonObject container = encoded.getAsJsonObject();
-                if ("ASSOCIATIVE".equals(jsonString(container, "shape"))
+                if ("ASSOCIATIVE".equals(string(container, "shape"))
                         && "ACCESS_ORDINAL".equals(
-                        jsonString(container, "selectorKind"))) {
+                        string(container, "selectorKind"))) {
                     return true;
                 }
             }
@@ -559,7 +462,7 @@ public final class ConcolicInstrumentationSelections {
                 for (JsonElement element : actions) {
                     JsonObject action = element.getAsJsonObject();
                     if (!capture.accessRootInputPort().equals(
-                            jsonString(action, "symbol"))) {
+                            string(action, "symbol"))) {
                         continue;
                     }
                     if (match != null) {
@@ -582,13 +485,12 @@ public final class ConcolicInstrumentationSelections {
                 }
                 // A nested heap owner is identified by the exact field-read
                 // hook at runtime, not by inventing a path from the region
-                // root receiver.  Runtime captures it from that observed
-                // owner when the bounded activation finishes.
+                // root receiver.
                 if (match != null && "HEAP_OBJECT_FIELD".equals(
-                        jsonString(match, "location"))) {
-                    if (!"SYMBOLIC".equals(jsonString(match, "mode"))
+                        string(match, "location"))) {
+                    if (!"SYMBOLIC".equals(string(match, "mode"))
                             || !"FIELD_ACCESS".equals(
-                            jsonString(match, "bindingMode"))) {
+                            string(match, "bindingMode"))) {
                         throw new IOException("Output capture "
                                 + capture.captureBindingId()
                                 + " has no symbolic nested field owner");
@@ -600,44 +502,30 @@ public final class ConcolicInstrumentationSelections {
             return Collections.unmodifiableList(rooted);
         }
 
-        private static List<CallArgumentOutputCapture>
-        callArgumentOutputCaptures(List<OutputCaptureSpec> captures) {
-            List<CallArgumentOutputCapture> result = new ArrayList<>();
-            for (OutputCaptureSpec capture : captures) {
-                if (capture.capturesCallArgument()) {
-                    result.add(new CallArgumentOutputCapture(capture));
-                }
+        private static void addCaptureMethods(Set<String> methods,
+                Collection<? extends SpecCapture> captures) {
+            for (SpecCapture capture : captures) {
+                methods.add(capture.method());
             }
-            return Collections.unmodifiableList(result);
         }
 
-        private static List<CommunicationEffectCapture>
-        communicationEffectCaptures(List<OutputCaptureSpec> captures) {
-            List<CommunicationEffectCapture> result = new ArrayList<>();
+        private static <T> List<T> selectedCaptures(
+                List<OutputCaptureSpec> captures,
+                Predicate<OutputCaptureSpec> selects,
+                Function<OutputCaptureSpec, T> build) {
+            List<T> result = new ArrayList<>();
             for (OutputCaptureSpec capture : captures) {
-                if (capture.capturesCommunicationEffect()) {
-                    result.add(new CommunicationEffectCapture(capture));
-                }
-            }
-            return Collections.unmodifiableList(result);
-        }
-
-        private static List<ExactHeapOutputCapture>
-        exactHeapOutputCaptures(List<OutputCaptureSpec> captures) {
-            List<ExactHeapOutputCapture> result = new ArrayList<>();
-            for (OutputCaptureSpec capture : captures) {
-                if (capture.capturesExactHeapWrite()) {
-                    result.add(new ExactHeapOutputCapture(capture));
-                }
+                if (selects.test(capture)) result.add(build.apply(capture));
             }
             return Collections.unmodifiableList(result);
         }
     }
 
-    static final class ExactHeapOutputCapture {
-        private final OutputCaptureSpec capture;
+    /** The accessors every {@link OutputCaptureSpec} view shares. */
+    abstract static class SpecCapture {
+        final OutputCaptureSpec capture;
 
-        private ExactHeapOutputCapture(OutputCaptureSpec capture) {
+        SpecCapture(OutputCaptureSpec capture) {
             this.capture = capture;
         }
 
@@ -656,28 +544,19 @@ public final class ConcolicInstrumentationSelections {
         String declaredCallee() {
             return capture.declaredCallee();
         }
+    }
+
+    static final class ExactHeapOutputCapture extends SpecCapture {
+        private ExactHeapOutputCapture(OutputCaptureSpec capture) {
+            super(capture);
+        }
 
         String fieldSignature() {
-            // The existing pipeline selector consumes this accessor to match
-            // the concrete putfield.  For a nested leaf projection that is
-            // the definition field, not the semantic output leaf.
-            return capture.definitionFieldSignature();
-        }
-
-        String definitionFieldSignature() {
-            return capture.definitionFieldSignature();
-        }
-
-        String leafFieldSignature() {
-            return capture.leafFieldSignature();
+            return capture.fieldSignature();
         }
 
         List<String> fieldPath() {
             return capture.fieldPath();
-        }
-
-        boolean nestedFieldWriteState() {
-            return capture.nestedFieldWriteState();
         }
 
         boolean mutationState() {
@@ -697,64 +576,31 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    static final class CallArgumentOutputCapture {
-        private final OutputCaptureSpec capture;
-
+    static final class CallArgumentOutputCapture extends SpecCapture {
         private CallArgumentOutputCapture(OutputCaptureSpec capture) {
-            this.capture = capture;
-        }
-
-        String captureBindingId() {
-            return capture.captureBindingId();
-        }
-
-        String method() {
-            return capture.definitionMethod();
-        }
-
-        int unitIndex() {
-            return capture.definitionUnitIndex();
+            super(capture);
         }
 
         int argumentIndex() {
             return capture.argumentIndex();
         }
-
-        String declaredCallee() {
-            return capture.declaredCallee();
-        }
     }
 
     /** One semantic server method whose return emits a response event. */
-    static final class CommunicationEffectCapture {
-        private final OutputCaptureSpec capture;
-
+    static final class CommunicationEffectCapture extends SpecCapture {
         private CommunicationEffectCapture(OutputCaptureSpec capture) {
-            this.capture = capture;
-        }
-
-        String captureBindingId() {
-            return capture.captureBindingId();
-        }
-
-        String method() {
-            return capture.definitionMethod();
+            super(capture);
         }
     }
 
-    static final class RootedOutputCapture {
-        private final OutputCaptureSpec capture;
+    static final class RootedOutputCapture extends SpecCapture {
         private final List<String> fieldPath;
 
         private RootedOutputCapture(OutputCaptureSpec capture,
                                     List<String> fieldPath) {
-            this.capture = capture;
+            super(capture);
             this.fieldPath = Collections.unmodifiableList(
                     new ArrayList<>(fieldPath));
-        }
-
-        String captureBindingId() {
-            return capture.captureBindingId();
         }
 
         String fieldSignature() {
@@ -767,8 +613,6 @@ public final class ConcolicInstrumentationSelections {
     }
 
     static final class ConcolicBranchSelection {
-        private static final Pattern SITE =
-                Pattern.compile("^(<.*>)#u([0-9]+)$");
         private final Map<String, Set<Integer>> unitsByMethod =
                 new LinkedHashMap<>();
 
@@ -779,9 +623,10 @@ public final class ConcolicInstrumentationSelections {
                     continue;
                 }
                 JsonObject branch = element.getAsJsonObject();
-                String method = jsonString(branch, "method");
+                String method = string(branch, "method");
                 int unit = JsonFields.integer(branch, "unitIndex", -1);
-                Matcher site = SITE.matcher(jsonString(branch, "siteId"));
+                Matcher site = SITE_ID.matcher(
+                        string(branch, "siteId"));
                 if (site.matches()) {
                     method = site.group(1);
                     unit = Integer.parseInt(site.group(2));
@@ -803,49 +648,30 @@ public final class ConcolicInstrumentationSelections {
             return units == null ? Collections.emptySet() : units;
         }
 
-        /**
-         * Unions another task's branch sites into this one.
-         *
-         * <p>A branch hook carries its method and unit, not a task id, so two
-         * tasks naming the same site want one hook and not two.  Each task
-         * still contributes only the exact alternative it named.</p>
-         */
+        /** Unions another task's branch sites into this one. */
         void mergeFrom(ConcolicBranchSelection other) {
-            for (Map.Entry<String, Set<Integer>> entry
-                    : other.unitsByMethod.entrySet()) {
-                unitsByMethod.computeIfAbsent(entry.getKey(),
-                        ignored -> new LinkedHashSet<>())
-                        .addAll(entry.getValue());
-            }
+            mergeSets(unitsByMethod, other.unitsByMethod);
         }
 
         int siteCount() {
-            int sites = 0;
-            for (Set<Integer> units : unitsByMethod.values()) {
-                sites += units.size();
-            }
-            return sites;
+            return totalSize(unitsByMethod);
         }
     }
 
     private static FieldTarget concolicFieldTarget(JsonObject action) {
         DeclaredField field = FieldPathSpec.declaredField(
-                jsonString(action, "accessFieldSignature"));
+                string(action, "accessFieldSignature"));
         return field == null ? null
                 : new FieldTarget(field.owner(), field.name());
     }
 
     /**
-     * The small set of concrete Jimple values that a scheduled activation
-     * asks Soot to expose to the VM.  This is intentionally task-plan
-     * driven: the static region supplies candidates, while the runtime
-     * instance decides which concrete local/heap owner is authoritative.
+     * The small set of concrete Jimple values that a scheduled activation asks
+     * Soot to expose to the VM.
      */
     static final class ConcolicMaterializationSelection {
         private static final Pattern LOCAL = Pattern.compile(
                 "^(<.+>)::([^#]+)(?:#.*)?$");
-        private static final Pattern FIELD_SITE = Pattern.compile(
-                "^(<.+>)#u([0-9]+)$");
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
                 new LinkedHashMap<>();
         private final Map<String, Set<Integer>> methodArguments =
@@ -872,11 +698,11 @@ public final class ConcolicInstrumentationSelections {
 
         void add(JsonObject action) throws IOException {
             addAccessorCallTarget(action);
-            String mode = jsonString(action, "bindingMode");
-            String cell = jsonString(action, "cell");
+            String mode = string(action, "bindingMode");
+            String cell = string(action, "cell");
             if ("METHOD_ARGUMENT".equals(mode)) {
-                String method = jsonString(action, "method");
-                int index = intJson(action, "index", -1);
+                String method = string(action, "method");
+                int index = integer(action, "index", -1);
                 if (method.isEmpty() || index < 0) {
                     throw unsupported(action);
                 }
@@ -885,8 +711,8 @@ public final class ConcolicInstrumentationSelections {
                 return;
             }
             if ("LOCAL_DEFINITION".equals(mode)) {
-                String method = jsonString(action, "method");
-                String local = jsonString(action, "local");
+                String method = string(action, "method");
+                String local = string(action, "local");
                 Matcher matcher = LOCAL.matcher(cell);
                 if (matcher.matches()) {
                     method = firstNonBlank(method, matcher.group(1));
@@ -898,7 +724,7 @@ public final class ConcolicInstrumentationSelections {
                         for (JsonElement element
                                 : definitions.getAsJsonArray()) {
                             if (element.isJsonObject()) {
-                                int site = intJson(element.getAsJsonObject(),
+                                int site = integer(element.getAsJsonObject(),
                                         "unitIndex", -1);
                                 if (site >= 0) {
                                     addLocal(method, local, site);
@@ -914,7 +740,7 @@ public final class ConcolicInstrumentationSelections {
                 }
                 return;
             }
-            String location = jsonString(action, "location");
+            String location = string(action, "location");
             if (!"FIELD_ACCESS".equals(mode)
                     && !"HEAP_OBJECT_FIELD".equals(location)) {
                 return;
@@ -928,9 +754,7 @@ public final class ConcolicInstrumentationSelections {
         /**
          * Access-owner shared carriers use the same exact getfield hooks as a
          * heap materialization, but they are not themselves new symbolic
-         * inputs.  Register only their declared owner/name pair so Soot emits
-         * the hook in this task's selected production methods; runtime
-         * admission still decides whether the hook selects anything.
+         * inputs.
          */
         void addSharedCarrierTargets(JsonArray carriers, JsonArray actions)
                 throws IOException {
@@ -939,11 +763,11 @@ public final class ConcolicInstrumentationSelections {
                 if (!element.isJsonObject()) continue;
                 JsonObject carrier = element.getAsJsonObject();
                 if (!"ACTIVATION_FIELD_RECEIVER".equals(
-                        jsonString(carrier, "sourceKind"))) {
+                        string(carrier, "sourceKind"))) {
                     continue;
                 }
-                String owner = jsonString(carrier, "declaringClass");
-                String name = jsonString(carrier, "fieldName");
+                String owner = string(carrier, "declaringClass");
+                String name = string(carrier, "fieldName");
                 if (owner.isEmpty() || name.isEmpty()) {
                     throw unsupported(carrier);
                 }
@@ -960,9 +784,9 @@ public final class ConcolicInstrumentationSelections {
                 String fieldKey = target.owner + "|" + target.name;
                 if (!carrierFields.contains(fieldKey)) continue;
                 addSharedCarrierAccessSite(
-                        jsonString(action, "staticAccessSiteId"), fieldKey);
+                        string(action, "staticAccessSiteId"), fieldKey);
                 addSharedCarrierAccessSite(
-                        jsonString(action, "siteId"), fieldKey);
+                        string(action, "siteId"), fieldKey);
                 for (JsonElement site : JsonFields.array(
                         action, "accessSites")) {
                     if (site.isJsonPrimitive()) {
@@ -975,7 +799,7 @@ public final class ConcolicInstrumentationSelections {
 
         private void addSharedCarrierAccessSite(String encoded,
                                                 String fieldKey) {
-            Matcher site = FIELD_SITE.matcher(stringValue(encoded).trim());
+            Matcher site = SITE_ID.matcher(stringValue(encoded).trim());
             if (!site.matches()) return;
             int unit;
             try {
@@ -1000,10 +824,10 @@ public final class ConcolicInstrumentationSelections {
         }
 
         void addAccessorCallTarget(JsonObject action) throws IOException {
-            String caller = jsonString(action, "accessorCallerMethod");
-            int unitIndex = intJson(action, "accessorCallUnitIndex", -1);
-            String callee = jsonString(action, "accessorDeclaredCallee");
-            String implementation = jsonString(action,
+            String caller = string(action, "accessorCallerMethod");
+            int unitIndex = integer(action, "accessorCallUnitIndex", -1);
+            String callee = string(action, "accessorDeclaredCallee");
+            String implementation = string(action,
                     "accessorImplementationMethod");
             boolean constrained = !caller.isEmpty() || unitIndex >= 0
                     || !callee.isEmpty() || !implementation.isEmpty();
@@ -1012,9 +836,10 @@ public final class ConcolicInstrumentationSelections {
                     || implementation.isEmpty()) {
                 throw unsupported(action);
             }
-            String site = caller + "#u" + unitIndex;
+            String site = CommunicationCatalogContract.siteId(caller,
+                    unitIndex);
 
-            String fieldSignature = jsonString(action,
+            String fieldSignature = string(action,
                     "accessFieldSignature");
             DeclaredField declaredField =
                     FieldPathSpec.declaredField(fieldSignature);
@@ -1024,19 +849,25 @@ public final class ConcolicInstrumentationSelections {
             AccessorCallTarget target = new AccessorCallTarget(caller,
                     unitIndex, site, callee, implementation, fieldSignature,
                     declaredField.name());
-            AccessorCallTarget previous = accessorCallsBySite.get(
-                    target.callSiteId);
-            if (previous != null && !previous.sameMaterialization(target)) {
+            if (conflicts(target)) {
                 throw unsupported(action);
             }
-            if (previous == null) {
-                accessorCallsBySite.put(target.callSiteId, target);
+        }
+
+        /** Records {@code target}, or reports a conflicting holder. */
+        private boolean conflicts(AccessorCallTarget target) {
+            AccessorCallTarget previous = accessorCallsBySite.get(
+                    target.callSiteId);
+            if (previous != null) {
+                return !previous.sameMaterialization(target);
             }
+            accessorCallsBySite.put(target.callSiteId, target);
+            return false;
         }
 
         private static IOException unsupported(JsonObject action) {
             return new IOException("Unsupported concolic materialization "
-                    + jsonString(action, "symbol"));
+                    + string(action, "symbol"));
         }
 
         boolean isEmpty() {
@@ -1051,42 +882,8 @@ public final class ConcolicInstrumentationSelections {
             return sharedCarrierFieldsBySite.keySet();
         }
 
-        boolean matchesSharedCarrierSite(String method, int unitIndex,
-                                         String owner, String fieldName) {
-            Map<Integer, Set<String>> sites =
-                    sharedCarrierFieldsBySite.get(method);
-            return sites != null
-                    && sites.getOrDefault(unitIndex, Collections.emptySet())
-                    .contains(stringValue(owner) + "|"
-                            + stringValue(fieldName));
-        }
-
-        boolean selectsSharedCarrierDeclaration(String owner,
-                                                 String fieldName) {
-            return sharedCarrierFields.contains(stringValue(owner) + "|"
-                    + stringValue(fieldName));
-        }
-
         boolean matchesWriteCarrier(SootFieldRef field) {
-            if (field == null) return false;
-            SootField declared = CausynthStaticFacts.declaredField(field);
-            SootClass declaringClass = declared == null
-                    ? field.declaringClass() : declared.getDeclaringClass();
-            String owner = declaringClass == null ? ""
-                    : stringValue(declaringClass.getName());
-            String fieldName = stringValue(declared == null
-                    ? field.name() : declared.getName());
-            if (sharedCarrierFields.contains(owner + "|" + fieldName)) {
-                return true;
-            }
-            for (FieldTarget target : fields.values()) {
-                if (target.name.equals(fieldName)
-                        && (target.owner.isEmpty()
-                        || target.owner.equals(owner))) {
-                    return true;
-                }
-            }
-            return false;
+            return matchesSelectedField(field, true, "", -1);
         }
 
         Set<String> localMethods() {
@@ -1117,20 +914,18 @@ public final class ConcolicInstrumentationSelections {
 
         boolean matches(String method, String local, int unitIndex) {
             Map<String, Set<Integer>> locals = localsByMethod.get(method);
-            if (locals == null || !locals.containsKey(local)) {
-                return false;
-            }
-            Set<Integer> sites = locals.get(local);
-            return sites.isEmpty() || sites.contains(unitIndex);
+            Set<Integer> sites = locals == null ? null : locals.get(local);
+            return sites != null
+                    && (sites.isEmpty() || sites.contains(unitIndex));
         }
 
-        static int intJson(JsonObject object, String field,
-                                   int fallback) {
-            return JsonFields.integer(object, field, fallback);
+        boolean matches(String method, int unitIndex, SootFieldRef field) {
+            return matchesSelectedField(field, false, method, unitIndex);
         }
 
-        boolean matches(String method, int unitIndex,
-                                SootFieldRef field) {
+        private boolean matchesSelectedField(SootFieldRef field,
+                                             boolean writeCarrier,
+                                             String method, int unitIndex) {
             if (field == null) {
                 return false;
             }
@@ -1142,11 +937,11 @@ public final class ConcolicInstrumentationSelections {
             String fieldName = stringValue(declared == null
                     ? field.name() : declared.getName());
             String fieldKey = owner + "|" + fieldName;
-            Map<Integer, Set<String>> carrierSites =
-                    sharedCarrierFieldsBySite.get(method);
-            if (carrierSites != null
-                    && carrierSites.getOrDefault(unitIndex,
-                    Collections.emptySet()).contains(fieldKey)) {
+            Map<Integer, Set<String>> carrierSites = writeCarrier ? null
+                    : sharedCarrierFieldsBySite.get(method);
+            if (writeCarrier ? sharedCarrierFields.contains(fieldKey)
+                    : carrierSites != null && carrierSites.getOrDefault(
+                    unitIndex, Collections.emptySet()).contains(fieldKey)) {
                 return true;
             }
             for (FieldTarget target : fields.values()) {
@@ -1169,64 +964,25 @@ public final class ConcolicInstrumentationSelections {
          * per task inserted the same hook once per plan row.</p>
          */
         void mergeFrom(ConcolicMaterializationSelection other) {
-            for (Map.Entry<String, Map<String, Set<Integer>>> method
-                    : other.localsByMethod.entrySet()) {
-                Map<String, Set<Integer>> locals = localsByMethod
-                        .computeIfAbsent(method.getKey(),
-                                ignored -> new LinkedHashMap<>());
-                for (Map.Entry<String, Set<Integer>> local
-                        : method.getValue().entrySet()) {
-                    locals.computeIfAbsent(local.getKey(),
-                            ignored -> new LinkedHashSet<>())
-                            .addAll(local.getValue());
-                }
-            }
-            for (Map.Entry<String, Set<Integer>> arguments
-                    : other.methodArguments.entrySet()) {
-                methodArguments.computeIfAbsent(arguments.getKey(),
-                        ignored -> new LinkedHashSet<>())
-                        .addAll(arguments.getValue());
-            }
+            mergeNested(localsByMethod, other.localsByMethod);
+            mergeSets(methodArguments, other.methodArguments);
             fields.putAll(other.fields);
             sharedCarrierFields.addAll(other.sharedCarrierFields);
-            for (Map.Entry<String, Map<Integer, Set<String>>> method
-                    : other.sharedCarrierFieldsBySite.entrySet()) {
-                Map<Integer, Set<String>> sites = sharedCarrierFieldsBySite
-                        .computeIfAbsent(method.getKey(),
-                                ignored -> new LinkedHashMap<>());
-                for (Map.Entry<Integer, Set<String>> site
-                        : method.getValue().entrySet()) {
-                    sites.computeIfAbsent(site.getKey(),
-                            ignored -> new LinkedHashSet<>())
-                            .addAll(site.getValue());
-                }
-            }
+            mergeNested(sharedCarrierFieldsBySite,
+                    other.sharedCarrierFieldsBySite);
             for (AccessorCallTarget target
                     : other.accessorCallsBySite.values()) {
-                AccessorCallTarget previous = accessorCallsBySite.get(
-                        target.callSiteId);
-                if (previous != null
-                        && !previous.sameMaterialization(target)) {
+                if (conflicts(target)) {
                     throw new IllegalStateException(
                             "ACCESSOR_CALLSITE_CAMPAIGN_CONFLICT: "
                                     + target.callSiteId);
-                }
-                if (previous == null) {
-                    accessorCallsBySite.put(target.callSiteId, target);
                 }
             }
         }
 
         /**
-         * Whether this campaign named the exact bytecode site
-         * {@code method#uUnit}.
-         *
-         * <p>README section 1's first gate.  A materialization that has no
-         * declared owner - an associative read, whose hook takes only the
-         * container and the key and so carries no site of its own - may be
-         * emitted only where the plan already put a site.  A selected local
-         * with no definition sites at all is deliberately not one: it names a
-         * method, and a method is not a site.</p>
+         * Whether this campaign named the exact bytecode site {@code
+         * method#uUnit}. README section 1's first gate.
          */
         boolean selectedSite(String method, int unitIndex) {
             if (unitIndex < 0) return false;
@@ -1237,7 +993,7 @@ public final class ConcolicInstrumentationSelections {
                 }
             }
             return accessorCallsBySite.containsKey(
-                    method + "#u" + unitIndex);
+                    CommunicationCatalogContract.siteId(method, unitIndex));
         }
 
         /** Unique local-definition sites this campaign named. */
@@ -1253,11 +1009,7 @@ public final class ConcolicInstrumentationSelections {
 
         /** Unique method-argument slots this campaign named. */
         int methodArgumentCount() {
-            int slots = 0;
-            for (Set<Integer> indices : methodArguments.values()) {
-                slots += indices.size();
-            }
-            return slots;
+            return totalSize(methodArguments);
         }
 
         /** Unique declared fields this campaign named. */
@@ -1313,21 +1065,39 @@ public final class ConcolicInstrumentationSelections {
         final String name;
 
         FieldTarget(String owner, String name) {
-            String normalizedOwner = firstNonBlank(owner);
-            String normalizedName = firstNonBlank(name);
-            this.owner = normalizedOwner == null ? "" : normalizedOwner;
-            this.name = normalizedName == null ? "" : normalizedName;
+            this.owner = JsonFields.firstNonBlank(owner);
+            this.name = JsonFields.firstNonBlank(name);
         }
     }
 
 
-    private static String jsonString(JsonObject object, String field) {
-        return JsonFields.string(object, field);
+    /** The project-wide {@code <method>#u<unitIndex>} site-id form. */
+    private static final Pattern SITE_ID =
+            Pattern.compile("^(<.*>)#u([0-9]+)$");
+
+    private static int totalSize(Map<?, ? extends Collection<?>> byKey) {
+        int total = 0;
+        for (Collection<?> values : byKey.values()) {
+            total += values.size();
+        }
+        return total;
     }
 
-    static String stringValue(Object value) {
-        return value == null || "null".equals(String.valueOf(value))
-                ? "" : String.valueOf(value);
+    private static <K, V> void mergeSets(Map<K, Set<V>> into,
+                                         Map<K, Set<V>> from) {
+        for (Map.Entry<K, Set<V>> entry : from.entrySet()) {
+            into.computeIfAbsent(entry.getKey(),
+                    ignored -> new LinkedHashSet<>())
+                    .addAll(entry.getValue());
+        }
+    }
+
+    private static <K, I, V> void mergeNested(Map<K, Map<I, Set<V>>> into,
+                                              Map<K, Map<I, Set<V>>> from) {
+        for (Map.Entry<K, Map<I, Set<V>>> entry : from.entrySet()) {
+            mergeSets(into.computeIfAbsent(entry.getKey(),
+                    ignored -> new LinkedHashMap<>()), entry.getValue());
+        }
     }
 
     static int intValue(Object value, int fallback) {

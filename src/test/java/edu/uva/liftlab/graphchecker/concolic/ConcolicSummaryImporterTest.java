@@ -5,9 +5,9 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import org.junit.Rule;
@@ -48,6 +48,64 @@ public class ConcolicSummaryImporterTest {
                 summary.getAsJsonObject(
                         PathObservation.TargetReachEvent.FIELD)
                         .get("kind").getAsString());
+    }
+
+    /**
+     * README's resource rule: an output site that ran past its bounded
+     * version capacity is a named gap.  The runtime states the row
+     * structurally on {@code outputVersionGaps}; the importer validates it
+     * once at decode and carries it into {@code alignmentGaps} unchanged.
+     */
+    @Test
+    public void boundedOutputVersionGapTravelsAsAStructuredRow()
+            throws Exception {
+        JsonObject raw = pathResult(true, true);
+        JsonArray gaps = new JsonArray();
+        gaps.add(outputVersionGap(11, 8));
+        raw.add("outputVersionGaps", gaps);
+
+        PathImport imported = importPath("bounded-output-version-gap",
+                pathTask(false), raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        JsonArray alignment = summary.getAsJsonArray("alignmentGaps");
+        assertEquals(1, alignment.size());
+        JsonObject gap = alignment.get(0).getAsJsonObject();
+        assertEquals("OUTPUT_VERSION_ALIGNMENT_GAP",
+                gap.get("kind").getAsString());
+        assertEquals("BOUNDED_OUTPUT_VERSION_CAPACITY_V1",
+                gap.get("authority").getAsString());
+        assertEquals("BINDING.OUT", gap.get("captureBindingId")
+                .getAsString());
+        assertEquals(8, gap.get("versionCapacity").getAsInt());
+        assertEquals(11, gap.get("versionsObserved").getAsInt());
+        assertEquals(8, gap.get("versionsCaptured").getAsInt());
+    }
+
+    /**
+     * The counts are ints stated by the layer that knows them.  A row that
+     * states one of them any other way is a shape this importer does not
+     * read, and is refused at decode instead of being half-read.
+     */
+    @Test
+    public void malformedOutputVersionGapRowIsRefusedAtDecode()
+            throws Exception {
+        JsonObject raw = pathResult(true, true);
+        JsonObject malformed = outputVersionGap(11, 8);
+        // A number-shaped string is still not an int.
+        malformed.addProperty("versionsObserved", "11");
+        JsonArray gaps = new JsonArray();
+        gaps.add(malformed);
+        raw.add("outputVersionGaps", gaps);
+
+        PathImport imported = importPath("bounded-output-version-malformed",
+                pathTask(false), raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals("OUTPUT_VERSION_GAP_ROW_MALFORMED",
+                ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                        .get("code").getAsString());
     }
 
     @Test
@@ -154,53 +212,6 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void configuredSymbolicSourceAcceptsMultipleRequiredOutputs()
-            throws Exception {
-        JsonObject task = pathTask(false);
-        declareSymbolicSource(task);
-        JsonObject declaration = task.getAsJsonArray(
-                SymbolicSourceEvidence.TASK_FIELD).get(0).getAsJsonObject();
-        declaration.remove("requiredOutputFieldSignature");
-        JsonArray outputs = new JsonArray();
-        outputs.add("<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: java.util.Map allKeys>");
-        outputs.add("<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: org.apache.hadoop.hdfs.security.token.block.BlockKey currentKey>");
-        declaration.add("requiredOutputFieldSignatures", outputs);
-        JsonObject raw = pathResult(true, true);
-        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
-        installPhaseRuntimeLedger(raw, task, 0);
-        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
-                symbolicSourceEvent(task)));
-
-        PathImport imported = importPath("configured-symbolic-source-outputs",
-                task, raw);
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-        assertTrue(ArtifactIO.readJsonl(imported.output).get(0)
-                .get("relationallyComplete").getAsBoolean());
-    }
-
-    @Test
-    public void missingConfiguredSymbolicSourceMakesSeedIncomplete()
-            throws Exception {
-        JsonObject task = pathTask(false);
-        declareSymbolicSource(task);
-        JsonObject raw = pathResult(true, true);
-        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
-        installPhaseRuntimeLedger(raw, task, 0);
-
-        PathImport imported = importPath("missing-configured-source",
-                task, raw);
-
-        assertEquals(1, imported.result.validSummaryCount);
-        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
-        assertFalse(summary.get("relationallyComplete").getAsBoolean());
-        assertTrue(ArtifactIO.readJsonl(imported.diagnostics).get(0)
-                .get("detail").getAsString().contains(
-                        "SYMBOLIC_SOURCE_EVIDENCE_MISSING"));
-    }
-
-    @Test
     public void targetLocalSymbolicSourceSurvivesExactImport()
             throws Exception {
         JsonObject task = pathTask(false);
@@ -229,25 +240,7 @@ public class ConcolicSummaryImporterTest {
     @Test
     public void twoPublicationsOfOneSourceInOneOccurrenceStayDistinct()
             throws Exception {
-        JsonObject task = pathTask(false);
-        declareTargetSymbolicSource(task);
-        appendPublishPhase(task, 2, 2L);
-        JsonObject secondDeclaration = task.getAsJsonArray(
-                SymbolicSourceEvidence.TASK_FIELD).get(0)
-                .getAsJsonObject().deepCopy();
-        JsonObject secondPhase = task.getAsJsonArray(
-                ConfiguredSourcePhaseContract.PLAN_FIELD).get(1)
-                .getAsJsonObject();
-        secondDeclaration.addProperty("sourcePhaseId",
-                secondPhase.get("phaseId").getAsString());
-        secondDeclaration.addProperty("sourcePhaseSiteId",
-                secondPhase.get("siteId").getAsString());
-        secondDeclaration.addProperty("sourcePhaseOrdinal",
-                secondPhase.get("baselineOrdinal").getAsInt());
-        task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD)
-                .add(secondDeclaration);
-        selectSourcePhases(task, sourcePhaseId(task, 0),
-                sourcePhaseId(task, 1));
+        JsonObject task = twoSelectedSourcePhaseTask();
         JsonObject raw = pathResult(true, true);
         installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
         installPhaseRuntimeLedger(raw, task, 0, 1);
@@ -267,7 +260,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void selectedPhaseWithoutRuntimeArraysIsIncomplete()
+    public void mintSiteWithoutRuntimeArraysIsIncomplete()
             throws Exception {
         JsonObject task = pathTask(false);
         declareTargetSymbolicSource(task);
@@ -301,16 +294,246 @@ public class ConcolicSummaryImporterTest {
                 "SYMBOLIC_SOURCE_PHASE_RUNTIME_LEDGER_MISSING"));
     }
 
+    /**
+     * {@code symbolizedInputs} carries one object row per entry of a declared
+     * mint site.  A row the VM answered with an already propagated expression
+     * ({@code reused}) is not a new root -- the expression it carries names
+     * the root that produced it.
+     */
     @Test
-    public void emptySelectedPhaseObservationSequenceIsIncomplete()
+    public void symbolizedInputRowsCarryOnlyTheirNewRoots()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        JsonArray symbolized = new JsonArray();
+        JsonObject minted = new JsonObject();
+        minted.addProperty("sourceId", "TARGET.LOCAL");
+        minted.addProperty("occurrenceId",
+                task.get("occurrenceId").getAsString());
+        minted.addProperty("siteId", "<Test: void run()>#u3");
+        minted.addProperty("ordinal", 2);
+        minted.addProperty("fieldSignature", "<Test: int keyId>");
+        minted.addProperty("symbol", "MINTED.ROOT");
+        minted.addProperty("reused", false);
+        symbolized.add(minted);
+        JsonObject propagated = minted.deepCopy();
+        propagated.addProperty("symbol", "");
+        propagated.addProperty("reused", true);
+        symbolized.add(propagated);
+        raw.add("symbolizedInputs", symbolized);
+
+        PathImport imported = importPath("symbolized-input-rows", task, raw);
+
+        JsonArray inputs = ArtifactIO.readJsonl(imported.output).get(0)
+                .getAsJsonArray("symbolicInputs");
+        assertEquals(String.valueOf(inputs), 1, inputs.size());
+        assertEquals("MINTED.ROOT", inputs.get(0).getAsString());
+    }
+
+    /**
+     * A declared configured source the replay reached and left with no root
+     * of its own is named, not silent.
+     *
+     * <p>The runtime files no {@link SymbolicSourceEvidence} row for a read
+     * that found an already propagated compound, and that is right: naming a
+     * root that does not exist would be worse.  Saying nothing at all is how
+     * the model value the declaration demanded disappears behind a result
+     * that reads complete, so the importer names the entry it can see was
+     * reached and never answered.  It stays a coverage gap: the relation the
+     * execution did produce is admitted unchanged.</p>
+     */
+    @Test
+    public void reachedConfiguredSourceWithNoRootIsNamed() throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        JsonArray symbolized = new JsonArray();
+        symbolized.add(propagatedExpiryMint(task));
+        raw.add("symbolizedInputs", symbolized);
+
+        PathImport imported = importPath("configured-source-no-root",
+                task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        JsonObject diagnostic = ArtifactIO.readJsonl(
+                imported.diagnostics).get(0);
+        assertEquals("CONFIGURED_SOURCE_ROOT_NOT_MATERIALIZED",
+                diagnostic.get("code").getAsString());
+        String detail = diagnostic.get("detail").getAsString();
+        assertTrue(detail, detail.contains("HDFS11741.KEY_EXPIRY"));
+        assertTrue(detail, detail.contains("long expiryDate"));
+        assertTrue(detail, detail.contains("materialized no symbolic root"));
+    }
+
+    /** The mint that did file its root is not named a second time as a gap.
+     */
+    @Test
+    public void configuredSourceThatMintedItsRootIsNotNamed()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        JsonArray symbolized = new JsonArray();
+        JsonObject minted = new JsonObject();
+        minted.addProperty("sourceId",
+                "HDFS11741.NAMENODE.PROMOTED_KEY_ID");
+        minted.addProperty("occurrenceId",
+                task.get("occurrenceId").getAsString());
+        minted.addProperty("siteId", seedMethod() + "#u2");
+        minted.addProperty("ordinal", 1);
+        minted.addProperty("fieldSignature",
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: "
+                        + "int keyId>");
+        minted.addProperty("symbol", "MINTED.ROOT");
+        minted.addProperty("reused", false);
+        symbolized.add(minted);
+        raw.add("symbolizedInputs", symbolized);
+
+        PathImport imported = importPath("configured-source-with-root",
+                task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
+    /** A region-input root names no configured source, so this ledger never
+     *  claimed to carry it and its absence from the ledger is not a gap. */
+    @Test
+    public void regionInputRootIsNotAConfiguredSourceGap() throws Exception {
+        JsonObject task = pathTask(false);
+        declareTargetSymbolicSource(task);
+        JsonObject raw = exactSourceRaw(task);
+        JsonArray symbolized = new JsonArray();
+        JsonObject local = new JsonObject();
+        local.addProperty("symbol", "REGION.SEED.in.local");
+        local.addProperty("reused", false);
+        symbolized.add(local);
+        raw.add("symbolizedInputs", symbolized);
+
+        PathImport imported = importPath("region-input-root", task, raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+    }
+
+    /** One reached mint site with no root of its own, as the runtime states
+     *  it: the row carries the propagated expression it found. */
+    private static JsonObject propagatedExpiryMint(JsonObject task) {
+        JsonObject propagated = new JsonObject();
+        propagated.addProperty("sourceId", "HDFS11741.KEY_EXPIRY");
+        propagated.addProperty("occurrenceId",
+                task.get("occurrenceId").getAsString());
+        propagated.addProperty("siteId", seedMethod() + "#u7");
+        propagated.addProperty("ordinal", 1);
+        propagated.addProperty("fieldSignature",
+                "<org.apache.hadoop.security.token.delegation.DelegationKey: "
+                        + "long expiryDate>");
+        propagated.addProperty("symbol", "");
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "FieldAccessExpression");
+        expression.addProperty("_java_type", "J");
+        expression.addProperty("ownerClass",
+                "org/apache/hadoop/hdfs/security/token/block/BlockKey");
+        propagated.add("expression", expression);
+        propagated.addProperty("reused", true);
+        return propagated;
+    }
+
+    /** The pre-wave-4 plain-string entry is not an artifact shape this
+     *  importer reads: the decode refuses it under its own named code. */
+    @Test
+    public void plainStringSymbolizedInputIsRefused() throws Exception {
+        JsonObject task = pathTask(false);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        JsonArray symbolized = new JsonArray();
+        symbolized.add("PLAIN.ROOT");
+        raw.add("symbolizedInputs", symbolized);
+
+        PathImport imported = importPath("plain-symbolized-input", task, raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals("SYMBOLIZED_INPUT_ROW_MALFORMED",
+                ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                        .get("code").getAsString());
+    }
+
+    /** {@code freeSymbols} is a required member: a result that never stated
+     *  the C2 ledger cannot be read as one that reported no free root. */
+    @Test
+    public void resultWithoutFreeSymbolLedgerIsRefused() throws Exception {
+        JsonObject task = pathTask(false);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+        raw.remove(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD);
+
+        PathImport imported = importPath("no-free-symbol-ledger", task, raw);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals("FREE_SYMBOL_LEDGER_MISSING",
+                ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                        .get("code").getAsString());
+    }
+
+    /**
+     * C2 coverage travels with the case.  The composer reads this ledger off
+     * every case-evidence row, so a result that reported no free root must
+     * still hand the case an empty array rather than omit the member.
+     */
+    @Test
+    public void freeSymbolsTravelFromTheRawResultOntoTheCase()
+            throws Exception {
+        JsonObject task = pathTask(false);
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
+
+        PathImport silent = importPath("free-symbols-absent", task, raw);
+        assertEquals(0, ArtifactIO.readJsonl(silent.output).get(0)
+                .getAsJsonArray(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD)
+                .size());
+
+        JsonArray free = new JsonArray();
+        JsonObject row = new JsonObject();
+        row.addProperty("symbol", "free__site__occ__1");
+        row.addProperty("vmSymbol", "M_I_free_1");
+        row.addProperty("siteId", "<Test: void run()>#u9");
+        row.addProperty("occurrenceId",
+                task.get("occurrenceId").getAsString());
+        row.addProperty("ordinal", 1);
+        row.addProperty("javaType", "I");
+        row.addProperty("reason", "no recorded lineage");
+        free.add(row);
+        raw.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, free);
+
+        PathImport reported = importPath("free-symbols-reported", task, raw);
+
+        JsonArray carried = ArtifactIO.readJsonl(reported.output).get(0)
+                .getAsJsonArray(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD);
+        assertEquals(String.valueOf(carried), 1, carried.size());
+        assertEquals("free__site__occ__1", carried.get(0).getAsJsonObject()
+                .get("symbol").getAsString());
+        // A free root is a coverage report, never a refusal.
+        assertEquals(0, reported.result.diagnosticCount);
+    }
+
+    /** A declared mint site the replay did not reach is a fact about this
+     * execution, not a defect: nothing predicts which occurrences of a site
+     * run, so an empty observation ledger is admitted. */
+    @Test
+    public void emptyPhaseObservationLedgerIsStillComplete()
             throws Exception {
         JsonObject task = pathTask(false);
         declareTargetSymbolicSource(task);
         JsonObject raw = exactSourceRaw(task);
         raw.add("configuredSourcePhaseObservations", new JsonArray());
+        raw.remove(SymbolicSourceEvidence.FIELD);
 
-        assertIncomplete("source-phase-ledger-empty", task, raw,
-                "SYMBOLIC_SOURCE_PHASE_SELECTED_SEQUENCE_MISMATCH");
+        PathImport imported = importPath("source-phase-ledger-empty", task,
+                raw);
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
     }
 
     @Test
@@ -345,35 +568,6 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void exactObservationWithPhaseMetadataMismatchIsIncomplete()
-            throws Exception {
-        JsonObject task = pathTask(false);
-        declareTargetSymbolicSource(task);
-        JsonObject raw = exactSourceRaw(task);
-        raw.getAsJsonArray("configuredSourcePhaseObservations").get(0)
-                .getAsJsonObject().addProperty("fieldSignature",
-                "<Test: int other>");
-
-        assertIncomplete("source-phase-ledger-mismatch", task, raw,
-                "SYMBOLIC_SOURCE_PHASE_OBSERVATION_MISMATCH");
-    }
-
-    @Test
-    public void reorderedSelectedPhaseSequenceIsIncomplete()
-            throws Exception {
-        JsonObject task = twoSelectedSourcePhaseTask();
-        JsonObject raw = pathResult(true, true);
-        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
-        installPhaseRuntimeLedger(raw, task, 1, 0);
-        SymbolicSourceEvidence.writeTo(raw, Arrays.asList(
-                symbolicSourceEvent(task, 0),
-                symbolicSourceEvent(task, 1)));
-
-        assertIncomplete("source-phase-ledger-reordered", task, raw,
-                "SYMBOLIC_SOURCE_PHASE_SELECTED_SEQUENCE_MISMATCH");
-    }
-
-    @Test
     public void reusedRuntimeInvocationIdIsIncomplete() throws Exception {
         JsonObject task = twoSelectedSourcePhaseTask();
         JsonObject raw = pathResult(true, true);
@@ -393,23 +587,9 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void fullCatalogLandmarkBeforeOnlySelectedSecondIsAccepted()
+    public void aMintRecordedAtTheSecondCatalogSiteIsAdmitted()
             throws Exception {
-        JsonObject task = pathTask(false);
-        declareTargetSymbolicSource(task);
-        appendPublishPhase(task, 2, 2L);
-        JsonObject source = task.getAsJsonArray(
-                SymbolicSourceEvidence.TASK_FIELD).get(0).getAsJsonObject();
-        JsonObject second = task.getAsJsonArray(
-                ConfiguredSourcePhaseContract.PLAN_FIELD).get(1)
-                .getAsJsonObject();
-        source.addProperty("sourcePhaseId",
-                second.get("phaseId").getAsString());
-        source.addProperty("sourcePhaseSiteId",
-                second.get("siteId").getAsString());
-        source.addProperty("sourcePhaseOrdinal",
-                second.get("baselineOrdinal").getAsInt());
-        selectSourcePhases(task, sourcePhaseId(task, 1));
+        JsonObject task = twoSelectedSourcePhaseTask();
         JsonObject raw = pathResult(true, true);
         installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
         installPhaseRuntimeLedger(raw, task, 0, 1);
@@ -423,106 +603,6 @@ public class ConcolicSummaryImporterTest {
         assertEquals(0, imported.result.diagnosticCount);
         assertTrue(ArtifactIO.readJsonl(imported.output).get(0)
                 .get("relationallyComplete").getAsBoolean());
-    }
-
-    @Test
-    public void selectorEvidenceAcceptsFieldlessCrossRegionConsumePhase()
-            throws Exception {
-        JsonObject task = pathTask(false);
-        String sourceId = "HDFS11741.NAMENODE.CURRENT_KEY_ID";
-        String field =
-                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>";
-        appendSourcePhase(task, ConfiguredSourcePhaseContract.Phase.CONSUME,
-                sourceId, "", 3, 1, 3L);
-        String consumePhaseId = sourcePhaseId(task, 0);
-        selectSourcePhases(task, consumePhaseId);
-        String producerPhaseId = "SOURCE_PHASE.upstream-publish";
-        String producerOccurrence = "cluster/nn0/source#1";
-        JsonObject selector = ConfiguredSourceSelectorContract.exactInt(
-                consumePhaseId, producerPhaseId, producerOccurrence,
-                sourceId, field);
-        JsonArray selectors = new JsonArray();
-        selectors.add(selector);
-        task.add(ConfiguredSourceSelectorContract.TASK_FIELD, selectors);
-        ConfiguredSourceSelectorContract.Selector decoded =
-                ConfiguredSourceSelectorContract.decode(task).get(0);
-        String rawSymbol = ConfiguredSourceSelectorContract
-                .expectedRawSymbolPrefix(producerPhaseId, sourceId, field)
-                + "DelegationKey";
-        JsonObject raw = pathResult(true, true);
-        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
-        installPhaseRuntimeLedger(raw, task, 0);
-        JsonArray evidence = new JsonArray();
-        evidence.add(ConfiguredSourceSelectorContract.evidence(decoded,
-                "TASK.UPSTREAM", rawSymbol, 17));
-        raw.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD, evidence);
-
-        PathImport imported = importPath("selector-phase-evidence", task,
-                raw);
-
-        assertEquals(1, imported.result.validSummaryCount);
-        assertEquals(0, imported.result.diagnosticCount);
-        JsonObject admitted = ArtifactIO.readJsonl(imported.output).get(0)
-                .getAsJsonArray(
-                        ConfiguredSourceSelectorContract.EVIDENCE_FIELD)
-                .get(0).getAsJsonObject();
-        assertEquals(consumePhaseId,
-                admitted.get("consumePhaseId").getAsString());
-        assertEquals(producerPhaseId,
-                admitted.get("producerPhaseId").getAsString());
-    }
-
-    @Test
-    public void selectorEvidenceRejectsConsumePhaseWithWrongSourceId()
-            throws Exception {
-        JsonObject task = pathTask(false);
-        String sourceId = "HDFS11741.NAMENODE.CURRENT_KEY_ID";
-        String field =
-                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>";
-        appendSourcePhase(task, ConfiguredSourcePhaseContract.Phase.CONSUME,
-                "HDFS11741.OTHER.KEY_ID", "", 3, 1, 3L);
-        String consumePhaseId = sourcePhaseId(task, 0);
-        selectSourcePhases(task, consumePhaseId);
-        JsonObject selector = ConfiguredSourceSelectorContract.exactInt(
-                consumePhaseId, "SOURCE_PHASE.upstream-publish",
-                "cluster/nn0/source#1", sourceId, field);
-        JsonArray selectors = new JsonArray();
-        selectors.add(selector);
-        task.add(ConfiguredSourceSelectorContract.TASK_FIELD, selectors);
-        ConfiguredSourceSelectorContract.Selector decoded =
-                ConfiguredSourceSelectorContract.decode(task).get(0);
-        JsonObject raw = pathResult(true, true);
-        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
-        installPhaseRuntimeLedger(raw, task, 0);
-        JsonArray evidence = new JsonArray();
-        evidence.add(ConfiguredSourceSelectorContract.evidence(decoded,
-                "TASK.UPSTREAM", ConfiguredSourceSelectorContract
-                        .expectedRawSymbolPrefix(
-                                "SOURCE_PHASE.upstream-publish", sourceId,
-                                field) + "DelegationKey", 17));
-        raw.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD, evidence);
-
-        assertIncomplete("selector-wrong-consume-source", task, raw,
-                "CONFIGURED_SOURCE_CONSUME_PHASE_MISMATCH");
-    }
-
-    @Test
-    public void targetSourceWithOutputAndInputBoundaryIsIncomplete()
-            throws Exception {
-        JsonObject task = pathTask(false);
-        declareSymbolicSource(task);
-        task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD).get(0)
-                .getAsJsonObject().addProperty("requiredTargetInputPort",
-                "TARGET.promotedKey");
-        addTargetSourceInput(task);
-        JsonObject raw = pathResult(true, true);
-        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(1));
-        installPhaseRuntimeLedger(raw, task, 0);
-        SymbolicSourceEvidence.writeTo(raw, Collections.singletonList(
-                symbolicSourceEvent(task)));
-
-        assertIncomplete("target-source-dual-boundary", task, raw,
-                "SYMBOLIC_SOURCE_DECLARATION_MALFORMED");
     }
 
     @Test
@@ -719,6 +799,7 @@ public class ConcolicSummaryImporterTest {
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
         OutputClosureCodec.writeTo(task, OutputClosureCodec.singleton(
                 "test/source/REGION.SEED", "REGION.SEED",
+                Collections.singletonList("REGION.SEED.out.0"),
                 "REGION.SEED.out.0", "<Test: int output>", "REGION_OUTPUT",
                 "int", outputSlice("REGION.SEED.out.0",
                         "<Test: int output>")));
@@ -754,9 +835,20 @@ public class ConcolicSummaryImporterTest {
         assertEquals(0, count.get(LoopBoundPolicy.LOOP_BODY_COUNT).getAsInt());
         assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                 count.get(LoopBoundPolicy.LOOP_BODY_BOUND).getAsInt());
-        assertEquals(LoopBoundPolicy.BOUND_FROM_POLICY,
-                count.get(LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY)
-                        .getAsString());
+        // README LOOP-1: inheriting the core default K_L is not an
+        // experiment-owned bound declaration.  The exact count stays on the
+        // case, the row states no bound authority, and the absent
+        // declaration is one named gap - the same reason and subject
+        // BoundedLoopComposition.ofPlanRows raises for it.
+        assertFalse(count.has(LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY));
+        JsonObject undeclared = ArtifactIO.readJsonl(zero.output).get(0)
+                .getAsJsonArray(LoopBoundPolicy.PATH_LOOP_COUNT_GAPS)
+                .get(0).getAsJsonObject();
+        assertEquals(BoundedLoopComposition.LOOP_BODY_BOUND_UNDECLARED,
+                undeclared.get("reason").getAsString());
+        assertEquals(task.get("occurrenceId").getAsString() + "\n"
+                        + helperMethod() + "#u4",
+                undeclared.get("subject").getAsString());
 
         JsonObject beyond = pathResult(true, true);
         JsonObject bodies = new JsonObject();
@@ -839,7 +931,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void vmHandoffV3ExpressionAndProducerSurviveSummaryImport()
+    public void vmHandoffV4ExpressionAndProducerSurviveSummaryImport()
             throws Exception {
         // The exact destination expression travels with the VM ledger
         // reference.  Import keeps both case-local and performs no pairing.
@@ -849,7 +941,7 @@ public class ConcolicSummaryImporterTest {
         JsonObject attachedExpression = new JsonObject();
         attachedExpression.addProperty("_type", "Int");
         attachedExpression.addProperty("_value", 17);
-        events.add(VmHandoffEvidence.event("XCH.1.req.keyId", 41L,
+        events.add(VmHandoffEvidence.event("XCH.1.req.keyId", 41L, 42L,
                 attachedExpression, "TASK.PRODUCER",
                 "REGION.producer@Test#1"));
         rpcRaw.add(VmHandoffEvidence.FIELD, events);
@@ -859,7 +951,9 @@ public class ConcolicSummaryImporterTest {
         JsonObject summary = ArtifactIO.readJsonl(handoff.output).get(0);
         assertEquals(1, VmHandoffEvidence.eventsOf(summary).size());
         assertEquals(41L, VmHandoffEvidence.eventsOf(summary).get(0)
-                .get("exportEventId").getAsLong());
+                .get(VmHandoffEvidence.EXPORT_EVENT_ID).getAsLong());
+        assertEquals(42L, VmHandoffEvidence.eventsOf(summary).get(0)
+                .get(VmHandoffEvidence.ATTACH_EVENT_ID).getAsLong());
         assertEquals(VmHandoffEvidence.SCHEMA_VERSION,
                 VmHandoffEvidence.eventsOf(summary).get(0)
                         .get("schemaVersion").getAsInt());
@@ -877,17 +971,30 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void vmHandoffV3RequiresExpressionAndExactProducer() {
+    public void vmHandoffV4RequiresBothEndpointsExpressionAndProducer() {
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "Int");
         expression.addProperty("_value", 23);
         JsonObject event = VmHandoffEvidence.event(
-                "XCH.1.req.keyId", 43L, expression, "TASK.PRODUCER",
+                "XCH.1.req.keyId", 43L, 44L, expression, "TASK.PRODUCER",
                 "REGION.producer@Test#1");
 
         assertTrue(VmHandoffEvidence.isEvent(event));
-        assertEquals(3, event.get("schemaVersion").getAsInt());
+        assertEquals(4, event.get("schemaVersion").getAsInt());
         assertEquals(expression, event.get(VmHandoffEvidence.EXPRESSION));
+        assertEquals(44L, VmHandoffEvidence.attachEventOf(event));
+
+        // README RPC-1: an export may be attached at several receivers, so a
+        // row without its attach endpoint names no receive and cannot be
+        // completed from anything else it carries.
+        JsonObject missingAttach = event.deepCopy();
+        missingAttach.remove(VmHandoffEvidence.ATTACH_EVENT_ID);
+        assertFalse(VmHandoffEvidence.isEvent(missingAttach));
+        assertEquals(0L, VmHandoffEvidence.attachEventOf(missingAttach));
+
+        JsonObject missingExport = event.deepCopy();
+        missingExport.remove(VmHandoffEvidence.EXPORT_EVENT_ID);
+        assertFalse(VmHandoffEvidence.isEvent(missingExport));
 
         JsonObject missingExpression = event.deepCopy();
         missingExpression.remove(VmHandoffEvidence.EXPRESSION);
@@ -902,7 +1009,7 @@ public class ConcolicSummaryImporterTest {
         assertFalse(VmHandoffEvidence.isEvent(missingOccurrence));
 
         JsonObject legacy = event.deepCopy();
-        legacy.addProperty("schemaVersion", 2);
+        legacy.addProperty("schemaVersion", 3);
         assertFalse(VmHandoffEvidence.isEvent(legacy));
 
         JsonObject truncated = event.deepCopy();
@@ -972,6 +1079,24 @@ public class ConcolicSummaryImporterTest {
         // never a second occurrence node.
         assertEquals("", deltaRow(rows, TopologyDelta.NEW_LOCAL_CASE)
                 .get("gap").getAsString());
+
+        // The same rule from the schema side.  This occurrence carried less
+        // of its frozen schema than the plan demanded: it captured nothing
+        // for the one output relation it was planned for.  Producing less is
+        // never a new slot, so the topology is unchanged and the case is
+        // published - and because a component the run did not state keeps the
+        // planned value and is named instead, the row does not claim "same
+        // topology" while its own schema digest says the opposite.
+        java.util.List<JsonObject> unproduced = ArtifactIO.readJsonl(
+                importPath("delta-unproduced-output", relationOnlyTask(),
+                        pathResult(true, true)).delta);
+        JsonObject producedNothing = deltaRow(unproduced,
+                TopologyDelta.NEW_OCCURRENCE);
+        assertEquals(producedNothing.get("plannedSchemaDigest").getAsString(),
+                producedNothing.get("observedSchemaDigest").getAsString());
+        assertTrue(producedNothing.toString(), producedNothing
+                .getAsJsonArray("unobservedSchemaFields").toString()
+                .contains("outputPorts"));
 
         // The frozen region contains a second semantic branch, but this one
         // case returns before reaching it.  This is not a per-case topology
@@ -1093,7 +1218,10 @@ public class ConcolicSummaryImporterTest {
         ArtifactIO.replaceJsonl(regions, Collections.singletonList(region));
         ArtifactIO.replaceJsonl(results, rows);
         return new PathImport(ConcolicSummaryImporter.importSummaries(
-                results, tasks, regions, output, diagnostics, delta,
+                results, tasks,
+                ConcolicSummaryImporter.regionIds(
+                        ArtifactIO.readJsonl(regions)),
+                output, diagnostics, delta,
                 iterationId), output, diagnostics, delta);
     }
 
@@ -1187,49 +1315,22 @@ public class ConcolicSummaryImporterTest {
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
         OutputClosureCodec.writeTo(task, OutputClosureCodec.singleton(
                 "test/source/REGION.SEED", "REGION.SEED",
+                Collections.singletonList("REGION.SEED.out.0"),
                 "REGION.SEED.out.0", "<Test: int output>", "REGION_OUTPUT",
                 "int", outputSlice("REGION.SEED.out.0",
                         "<Test: int output>")));
         return task;
     }
 
+    /** Declaring a source is declaring its mint SITE.  There is no task-side
+     * selection row any more: which occurrence of the site produced a value
+     * is decided at replay, by the VM. */
     private static void declareSymbolicSource(JsonObject task) {
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourceId",
-                "HDFS11741.NAMENODE.PROMOTED_KEY_ID");
-        source.addProperty("fieldSignature",
-                "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>");
-        source.addProperty("requiredOutputFieldSignature",
-                "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: java.util.Map allKeys>");
-        JsonArray sources = new JsonArray();
-        sources.add(source);
-        task.add(SymbolicSourceEvidence.TASK_FIELD, sources);
         appendPublishPhase(task, 1, 1L);
-        JsonObject phase = task.getAsJsonArray(
-                ConfiguredSourcePhaseContract.PLAN_FIELD).get(0)
-                .getAsJsonObject();
-        source.addProperty("sourcePhaseId",
-                phase.get("phaseId").getAsString());
-        source.addProperty("sourceOccurrenceId",
-                task.get("occurrenceId").getAsString());
-        source.addProperty("sourcePhaseSiteId",
-                phase.get("siteId").getAsString());
-        source.addProperty("sourcePhaseOrdinal",
-                phase.get("baselineOrdinal").getAsInt());
-        source.addProperty("sourceRole", "OUTPUT_RELATION");
-        selectSourcePhases(task, phase.get("phaseId").getAsString());
     }
 
     private static void declareTargetSymbolicSource(JsonObject task) {
         declareSymbolicSource(task);
-        JsonObject declaration = task.getAsJsonArray(
-                SymbolicSourceEvidence.TASK_FIELD).get(0).getAsJsonObject();
-        declaration.remove("requiredOutputFieldSignature");
-        declaration.addProperty("requiredTargetInputPort",
-                "TARGET.promotedKey");
-        declaration.addProperty("sourceRole", "TARGET_REACH");
         addTargetSourceInput(task);
     }
 
@@ -1262,7 +1363,7 @@ public class ConcolicSummaryImporterTest {
                 "HDFS11741.NAMENODE.PROMOTED_KEY_ID",
                 task.get("occurrenceId").getAsString(),
                 "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>",
-                expression);
+                expression, phaseIndex + 1, false, null);
     }
 
     private static JsonObject exactSourceRaw(JsonObject task) {
@@ -1274,26 +1375,11 @@ public class ConcolicSummaryImporterTest {
         return raw;
     }
 
+    /** Two entries of one mint site inside one occurrence. */
     private static JsonObject twoSelectedSourcePhaseTask() {
         JsonObject task = pathTask(false);
         declareTargetSymbolicSource(task);
         appendPublishPhase(task, 2, 2L);
-        JsonObject secondDeclaration = task.getAsJsonArray(
-                SymbolicSourceEvidence.TASK_FIELD).get(0)
-                .getAsJsonObject().deepCopy();
-        JsonObject secondPhase = task.getAsJsonArray(
-                ConfiguredSourcePhaseContract.PLAN_FIELD).get(1)
-                .getAsJsonObject();
-        secondDeclaration.addProperty("sourcePhaseId",
-                secondPhase.get("phaseId").getAsString());
-        secondDeclaration.addProperty("sourcePhaseSiteId",
-                secondPhase.get("siteId").getAsString());
-        secondDeclaration.addProperty("sourcePhaseOrdinal",
-                secondPhase.get("baselineOrdinal").getAsInt());
-        task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD)
-                .add(secondDeclaration);
-        selectSourcePhases(task, sourcePhaseId(task, 0),
-                sourcePhaseId(task, 1));
         return task;
     }
 
@@ -1311,13 +1397,13 @@ public class ConcolicSummaryImporterTest {
             JsonObject task, ConfiguredSourcePhaseContract.Phase kind,
             String sourceId, String field, int unitIndex, int ordinal,
             long eventSeq) {
-        java.util.Map<String, Object> declaration =
-                ConfiguredSourcePhaseContract.declaration(
-                        kind, sourceId, field, seedMethod(), unitIndex);
+        JsonArray declarations = new JsonArray();
+        declarations.add(ConfiguredSourcePhaseContract.declaration(
+                kind, sourceId, field, seedMethod(), unitIndex));
         ConfiguredSourcePhaseContract.Declaration decoded =
                 ConfiguredSourcePhaseContract.declarationsOf(
-                        Collections.singletonList(declaration)).get(0);
-        java.util.Map<String, Object> phase =
+                        declarations).get(0);
+        JsonObject phase =
                 ConfiguredSourcePhaseContract.occurrence(decoded,
                         task.get("occurrenceId").getAsString(), ordinal,
                         eventSeq, 1L, eventSeq,
@@ -1326,7 +1412,7 @@ public class ConcolicSummaryImporterTest {
         JsonArray phases = task.has(ConfiguredSourcePhaseContract.PLAN_FIELD)
                 ? task.getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
                 : new JsonArray();
-        phases.add(GSON.toJsonTree(phase));
+        phases.add(phase);
         task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
     }
 
@@ -1335,40 +1421,18 @@ public class ConcolicSummaryImporterTest {
                 .get(index).getAsJsonObject().get("phaseId").getAsString();
     }
 
-    private static void selectSourcePhases(JsonObject task,
-                                           String... phaseIds) {
-        JsonArray selected = new JsonArray();
-        for (String phaseId : phaseIds) selected.add(phaseId);
-        task.add(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD,
-                selected);
-    }
-
+    /** The hook ledger, as the runtime states it: exactly the seven runtime
+     * facts.  Everything else the row could carry restates the catalog row
+     * {@code matchedPhaseId} already names, and is refused as an extra. */
     private static void installPhaseRuntimeLedger(
             JsonObject raw, JsonObject task, int... phaseIndexes) {
         JsonArray observations = new JsonArray();
-        java.util.Set<String> selected = new java.util.LinkedHashSet<>();
-        for (com.google.gson.JsonElement element : task.getAsJsonArray(
-                ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD)) {
-            selected.add(element.getAsString());
-        }
         JsonArray catalog = task.getAsJsonArray(
                 ConfiguredSourcePhaseContract.PLAN_FIELD);
         for (int observationIndex = 0;
              observationIndex < phaseIndexes.length; observationIndex++) {
-            int phaseIndex = phaseIndexes[observationIndex];
-            JsonObject phase = catalog.get(phaseIndex).getAsJsonObject();
-            String phaseId = phase.get("phaseId").getAsString();
-            String key = phase.get("phaseKind").getAsString() + "\n"
-                    + phase.get("sourceId").getAsString() + "\n"
-                    + phase.get("siteId").getAsString();
-            int replayOrdinal = 0;
-            for (int index = 0; index <= phaseIndex; index++) {
-                JsonObject prior = catalog.get(index).getAsJsonObject();
-                String priorKey = prior.get("phaseKind").getAsString() + "\n"
-                        + prior.get("sourceId").getAsString() + "\n"
-                        + prior.get("siteId").getAsString();
-                if (key.equals(priorKey)) replayOrdinal++;
-            }
+            JsonObject phase = catalog.get(phaseIndexes[observationIndex])
+                    .getAsJsonObject();
             JsonObject observation = new JsonObject();
             observation.addProperty("schemaVersion", 1);
             observation.addProperty("kind",
@@ -1377,29 +1441,33 @@ public class ConcolicSummaryImporterTest {
                     "EXACT_ACTIVE_CALL_SITE_REPLAY_V1");
             observation.addProperty("observationIndex",
                     observationIndex + 1);
-            observation.addProperty("phaseKind",
-                    phase.get("phaseKind").getAsString());
-            observation.addProperty("siteId",
-                    phase.get("siteId").getAsString());
-            observation.addProperty("replayOrdinal", replayOrdinal);
-            observation.addProperty("sourceId",
-                    phase.get("sourceId").getAsString());
-            observation.addProperty("fieldSignature",
-                    phase.get("fieldSignature").getAsString());
-            observation.addProperty("matchedPhaseId", phaseId);
+            observation.addProperty("matchedPhaseId",
+                    phase.get("phaseId").getAsString());
             observation.addProperty("ownerCallId", 101L);
             observation.addProperty("invocationId",
                     200L + observationIndex);
-            observation.addProperty("declaredCallee",
-                    phase.get("runtimeDeclaredCallee").getAsString());
-            observation.addProperty("exactMatch", true);
-            observation.addProperty("selectedPhase",
-                    selected.contains(phaseId));
-            observation.addProperty("orderMatched", true);
             observations.add(observation);
         }
         raw.add("configuredSourcePhaseObservations", observations);
         raw.add("configuredSourcePhaseGaps", new JsonArray());
+    }
+
+    private static JsonObject outputVersionGap(int observed, int captured) {
+        JsonObject gap = new JsonObject();
+        gap.addProperty("schemaVersion", 1);
+        gap.addProperty("kind", "OUTPUT_VERSION_ALIGNMENT_GAP");
+        gap.addProperty("authority", "BOUNDED_OUTPUT_VERSION_CAPACITY_V1");
+        gap.addProperty("captureBindingId", "BINDING.OUT");
+        gap.addProperty("outputSiteId", seedSite());
+        gap.addProperty("versionCapacity", 8);
+        gap.addProperty("versionsObserved", observed);
+        gap.addProperty("versionsCaptured", captured);
+        gap.addProperty("reason", "BINDING.OUT ran past its bounded output"
+                + " version capacity 8 at " + seedSite() + "; " + captured
+                + " of " + observed + " observed version(s) were captured,"
+                + " so this relation is a bounded prefix of the run and not"
+                + " a closed one");
+        return gap;
     }
 
     private static JsonObject pathResult(boolean includeMapping,
@@ -1412,12 +1480,10 @@ public class ConcolicSummaryImporterTest {
         JsonObject engine = new JsonObject();
         engine.addProperty("complete", true);
         engine.addProperty("aborted", false);
-        JsonArray path = new JsonArray();
-        if (includeMapping) path.add(branchPredicate(outcome));
-        engine.add("pathCondition", path);
         raw.add("engineSummary", engine);
         raw.add("unresolvedInputs", new JsonArray());
         raw.add("symbolizedInputs", new JsonArray());
+        raw.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
         raw.add("outputCaptures", new JsonArray());
         JsonArray mappings = new JsonArray();
         if (includeMapping) {
@@ -1439,6 +1505,12 @@ public class ConcolicSummaryImporterTest {
         targetReach.addProperty("occurrence", 1);
         targetReach.addProperty("outcome", outcome);
         raw.add(PathObservation.TargetReachEvent.FIELD, targetReach);
+        // README PC-1: the VM no longer serializes an ambient path
+        // condition, so the selected-branch plus bounded auxiliary channel
+        // is the shape every raw result has.  Cases that need a different
+        // auxiliary envelope overwrite this one.
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(
+                includeMapping ? 1 : 0));
         return raw;
     }
 
@@ -1451,8 +1523,329 @@ public class ConcolicSummaryImporterTest {
         engine.addProperty("pathConditionAuthority",
                 "VM_SELECTED_BRANCH_AND_AUXILIARY_CONSTRAINTS_V1");
         if (auxiliary != null) {
+            // The marker serializer emits one entry per recorded condition,
+            // so a fixture that did not state the count itself gets the one
+            // its own conditions array implies.
+            if (!auxiliary.has("emittedConditionCount")) {
+                auxiliary.addProperty("emittedConditionCount",
+                        auxiliary.getAsJsonArray("conditions").size());
+            }
             engine.add("auxiliaryPathCondition", auxiliary);
+        } else {
+            engine.remove("auxiliaryPathCondition");
         }
+    }
+
+    /**
+     * HDFS-11741 campaign-takeover-24: the balancer Dispatcher exported all
+     * three declared SASL handshake leaves and the VM answered
+     * {@code NOT_SYMBOLIC} for {@code blockPoolId} and {@code nonce}.  The
+     * recorder admits that case on purpose, and
+     * {@code hasCapturedDemandedOutput} admits it too, but
+     * {@code outputExpressions} reported it as
+     * {@code OUTPUT_CAPTURE_COUNT:<port>:0} -- a claim that the occurrence
+     * never reached the site.  The relation was refused, the path planner
+     * dropped it, and the Composer was never handed the one producer the
+     * target's keyId comes from.  The refusal stands; it now says what it
+     * found.
+     */
+    @Test
+    public void aConcreteHandoffLeafIsPresentedNotUncaptured()
+            throws Exception {
+        JsonObject concrete = new JsonObject();
+        concrete.addProperty("captureBindingId", "CAPTURE.leaf");
+        concrete.addProperty("outputSiteId", LEAF_SITE);
+        concrete.addProperty("outputOccurrence", 1);
+        concrete.addProperty("outputVersionOrdinal", 1);
+        concrete.addProperty("concreteLeaf", true);
+        concrete.addProperty("primitiveValue", "BP-1-127.0.0.1-1");
+
+        assertTrue("the VM answered this leaf concrete",
+                ConcolicSummaryImporter.concreteHandoffLeaf(
+                        leafSpec(OutputCaptureSpec.HANDOFF_BOUND_LEAF),
+                        concrete));
+
+        // Scoped to the handoff leaf: a heap write with no expression is
+        // still an unobserved boundary and still counts as uncaptured.
+        assertFalse("only a handoff leaf is presented without an expression",
+                ConcolicSummaryImporter.concreteHandoffLeaf(
+                        leafSpec(OutputCaptureSpec.FIELD_WRITE_STATE),
+                        concrete));
+
+        // A guarded capture failure recorded neither an expression nor the
+        // VM's concrete answer, and stays uncaptured.
+        JsonObject silent = new JsonObject();
+        silent.addProperty("captureBindingId", "CAPTURE.leaf");
+        silent.addProperty("outputSiteId", LEAF_SITE);
+        silent.addProperty("outputOccurrence", 1);
+        silent.addProperty("outputVersionOrdinal", 1);
+        assertFalse("a guarded capture failure is not a presented leaf",
+                ConcolicSummaryImporter.concreteHandoffLeaf(
+                        leafSpec(OutputCaptureSpec.HANDOFF_BOUND_LEAF),
+                        silent));
+
+        // A row that names no activation-local occurrence carries no
+        // exact boundary and is not presented evidence either.
+        JsonObject unscoped = concrete.deepCopy();
+        unscoped.addProperty("outputOccurrence", 0);
+        assertFalse("a leaf without its occurrence is not an exact boundary",
+                ConcolicSummaryImporter.concreteHandoffLeaf(
+                        leafSpec(OutputCaptureSpec.HANDOFF_BOUND_LEAF),
+                        unscoped));
+    }
+
+    /**
+     * Once-only-root rule, second owner.  The recorder already refuses to
+     * call an occurrence incomplete for a heap write whose recorded version
+     * is an instance-level fact
+     * ({@code ConcolicRegionRuntime#completeExactOutputBoundary}), and the
+     * importer re-derives completeness independently over the same closure.
+     * The two owners must answer alike: a per-iteration occurrence of a
+     * {@code LOOP_BODY_ROOT} region that never sampled the once-entered write
+     * owes no per-occurrence production of that port, so demanding a capture
+     * count here imports every occurrence incomplete and the region can never
+     * be composed.
+     */
+    @Test
+    public void instanceScopedHeapWriteOwesNoPerOccurrenceCapture()
+            throws Exception {
+        PathImport imported = importPath("instance-scoped-write",
+                heapWriteTask(true, false), heapWriteResult());
+
+        assertEquals(1, imported.result.validSummaryCount);
+        assertEquals(0, imported.result.diagnosticCount);
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertTrue("an occurrence that never sampled the once-entered write"
+                        + " is not incomplete because of it",
+                summary.get("relationallyComplete").getAsBoolean());
+        // The relaxation admits the occurrence; it never invents a version.
+        // The port is simply absent, which is what the composer reads as the
+        // once-only rule rather than as a joint output-set mismatch.
+        assertFalse("no expression is fabricated for the relaxed port",
+                summary.getAsJsonObject("outputExpressions")
+                        .has(HEAP_WRITE_PORT));
+    }
+
+    /** Fail-closed: only the explicit flag relaxes the demand. */
+    @Test
+    public void anUntaggedHeapWriteStillDemandsItsCapture()
+            throws Exception {
+        assertIncomplete("untagged-heap-write",
+                heapWriteTask(false, false), heapWriteResult(),
+                "OUTPUT_CAPTURE_COUNT:" + HEAP_WRITE_PORT + ":0");
+    }
+
+    /** Fail-closed: one writer that is not instance-scoped means some
+     *  occurrence does owe this port, so the whole port stays demanded. */
+    @Test
+    public void oneUntaggedWriterKeepsTheWholePortDemanded()
+            throws Exception {
+        assertIncomplete("mixed-writers",
+                heapWriteTask(true, true), heapWriteResult(),
+                "OUTPUT_CAPTURE_COUNT:" + HEAP_WRITE_PORT + ":0");
+    }
+
+    /**
+     * Fail-closed at the contract: the flag is only ever stamped on an exact
+     * heap write, so a closure that states it on any other capture kind is
+     * refused at decode and never reaches the importer's relaxation at all.
+     */
+    @Test
+    public void theTagIsRefusedOnAnythingButAnExactHeapWrite()
+            throws Exception {
+        java.lang.reflect.Method decode =
+                OutputCaptureSpec.class.getDeclaredMethod(
+                        "decodeValidated", JsonObject.class);
+        decode.setAccessible(true);
+        JsonObject encoded = new JsonObject();
+        encoded.addProperty("captureBindingId", "CAPTURE.leaf");
+        encoded.addProperty("outputPort", "XCH.test.req.blockPoolId");
+        encoded.addProperty("captureKind",
+                OutputCaptureSpec.HANDOFF_BOUND_LEAF);
+        encoded.addProperty("outputCell", "XCH.test.req.blockPoolId");
+        encoded.addProperty("javaType", "java.lang.String");
+        encoded.addProperty("occurrenceScope", "REGION_ACTIVATION");
+        encoded.addProperty("outputSiteId", LEAF_SITE);
+        encoded.addProperty("outputOccurrence", 1);
+        encoded.addProperty(OutputCaptureSpec.INSTANCE_SCOPED_PRODUCER, true);
+        try {
+            decode.invoke(null, encoded);
+            fail("a handoff leaf may not claim an instance-scoped producer");
+        } catch (java.lang.reflect.InvocationTargetException refused) {
+            assertTrue(refused.getCause()
+                    instanceof IllegalArgumentException);
+            assertTrue(refused.getCause().getMessage().contains(
+                    "instance-scoped producer requires an exact heap-write"));
+        }
+    }
+
+    private static final String HEAP_WRITE_PORT = "REGION.SEED.out.write";
+    private static final String HEAP_WRITE_CELL = "<test.Worker: int counter>";
+    private static final String HEAP_WRITE_SITE =
+            "FIELD_WRITE_STATE:" + seedMethod() + "#u7:" + HEAP_WRITE_CELL;
+
+    /** One demanded heap-write port, written by one or two declared sites. */
+    private static JsonObject heapWriteTask(boolean instanceScoped,
+                                            boolean addUntaggedWriter) {
+        JsonObject task = pathTask(false);
+        task.remove("targetBranch");
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
+        JsonObject slice = outputSlice(HEAP_WRITE_PORT, HEAP_WRITE_CELL);
+        JsonArray captures = slice.getAsJsonArray("captureBindings");
+        captures.add(heapWriteCapture("CAPTURE.write", instanceScoped));
+        if (addUntaggedWriter) {
+            captures.add(heapWriteCapture("CAPTURE.second", false));
+        }
+        OutputClosureCodec.writeTo(task, OutputClosureCodec.singleton(
+                "test/source/REGION.SEED", "REGION.SEED",
+                Collections.singletonList(HEAP_WRITE_PORT),
+                HEAP_WRITE_PORT, HEAP_WRITE_CELL, "HEAP_STATE",
+                "int", slice));
+        return task;
+    }
+
+    private static JsonObject heapWriteCapture(String bindingId,
+                                               boolean instanceScoped) {
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureBindingId", bindingId);
+        capture.addProperty("outputPort", HEAP_WRITE_PORT);
+        capture.addProperty("captureKind", OutputCaptureSpec.FIELD_WRITE_STATE);
+        capture.addProperty("outputCell", HEAP_WRITE_CELL);
+        capture.addProperty("fieldSignature", HEAP_WRITE_CELL);
+        capture.addProperty("javaType", "int");
+        capture.addProperty("definitionMethod", seedMethod());
+        capture.addProperty("definitionUnitIndex", 7);
+        capture.addProperty("occurrenceScope", "REGION_ACTIVATION");
+        capture.addProperty("outputSiteId", HEAP_WRITE_SITE);
+        capture.addProperty("outputOccurrence", 1);
+        if (instanceScoped) {
+            capture.addProperty(
+                    OutputCaptureSpec.INSTANCE_SCOPED_PRODUCER, true);
+        }
+        return capture;
+    }
+
+    /** An occurrence that reached its exit without sampling the write. */
+    private static JsonObject heapWriteResult() {
+        JsonObject raw = pathResult(false, true);
+        raw.remove(PathObservation.TargetReachEvent.FIELD);
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(0));
+        return raw;
+    }
+
+    /**
+     * The marker serializer emits one entry per recorded condition -- a real
+     * expression or a typed truncation marker -- so the auxiliary envelope's
+     * three counts agree unconditionally.  A marker is a named coverage gap
+     * on that path, carrying the VM's own truncation kind and the position
+     * the marker states, and it fails that path closed without touching the
+     * other activations of the same task.
+     */
+    @Test
+    public void aTruncationMarkerNamesItsKindAndPosition() throws Exception {
+        JsonObject auxiliary = auxiliaryPathCondition(8);
+        JsonArray indices = auxiliary.getAsJsonArray("pathConditionIndices");
+        JsonArray conditions = auxiliary.getAsJsonArray("conditions");
+        indices.add(1);
+        indices.add(2);
+        conditions.add(branchPredicate(true));
+        conditions.add(truncationMarker(
+                "PATH_CONDITION_RANGE_BYTE_LIMIT", 1));
+        auxiliary.addProperty("conditionCount", 2);
+        auxiliary.addProperty("emittedConditionCount", 2);
+
+        JsonObject raw = pathResult(true, true);
+        installAuxiliaryPathCondition(raw, auxiliary);
+        PathImport imported = importPath("marked-auxiliary-window",
+                pathTask(false), raw);
+
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertFalse("a marked condition still fails this path closed",
+                summary.get("relationallyComplete").getAsBoolean());
+        // The real expression that precedes every marker is kept: the window
+        // is a genuine prefix, not a sample.
+        assertEquals(1, summary.getAsJsonArray("pathCondition").size());
+        String detail = ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString();
+        assertTrue("the gap names the VM's kind and position: " + detail,
+                detail.contains("VM_EXPRESSION_SERIALIZATION_TRUNCATED:"
+                        + "PATH_CONDITION_RANGE_BYTE_LIMIT:1"));
+        assertFalse("agreeing counts are not a cardinality fault: " + detail,
+                detail.contains(
+                        "AUXILIARY_PATH_CONDITION_MALFORMED:CARDINALITY"));
+    }
+
+    /**
+     * A run whose VM predates the marker serializer published a short array
+     * with no way to tell a byte-capped window from a dropped one.  It is
+     * refused under its own name -- no tolerance -- so a reader sees that the
+     * run needs replacing rather than the schema.
+     */
+    @Test
+    public void aLegacyEnvelopeWithoutEmittedCountIsRefusedByName()
+            throws Exception {
+        JsonObject auxiliary = auxiliaryPathCondition(8);
+        auxiliary.getAsJsonArray("pathConditionIndices").add(1);
+        auxiliary.getAsJsonArray("pathConditionIndices").add(2);
+        auxiliary.getAsJsonArray("conditions").add(branchPredicate(true));
+        auxiliary.addProperty("conditionCount", 2);
+        auxiliary.addProperty("emittedConditionCount", 1);
+        auxiliary.remove("emittedConditionCount");
+
+        JsonObject raw = pathResult(true, true);
+        installLegacyAuxiliaryPathCondition(raw, auxiliary);
+        PathImport imported = importPath("legacy-auxiliary-window",
+                pathTask(false), raw);
+
+        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
+        assertFalse("a legacy envelope is not admitted",
+                summary.get("relationallyComplete").getAsBoolean());
+        String detail = ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("detail").getAsString();
+        assertTrue("the refusal names the legacy run: " + detail,
+                detail.contains(
+                        "AUXILIARY_PATH_CONDITION_LEGACY_NO_EMITTED_COUNT"));
+    }
+
+    private static JsonObject truncationMarker(String kind, int index) {
+        JsonObject marker = new JsonObject();
+        marker.addProperty("_type", "TruncatedExpression");
+        marker.addProperty("_index", index);
+        marker.addProperty("_code_position", "<test.Helper: void scan()>#u4");
+        marker.addProperty("expressionAuthority",
+                "VM_SERIALIZATION_TRUNCATION_V1");
+        marker.addProperty("truncationKind", kind);
+        return marker;
+    }
+
+    /** Installs an envelope exactly as a pre-marker VM published it. */
+    private static void installLegacyAuxiliaryPathCondition(
+            JsonObject raw, JsonObject auxiliary) {
+        installAuxiliaryPathCondition(raw, auxiliary);
+        raw.getAsJsonObject("engineSummary")
+                .getAsJsonObject("auxiliaryPathCondition")
+                .remove("emittedConditionCount");
+    }
+
+    private static final String LEAF_SITE =
+            "HANDOFF_BOUND_LEAF:XCH.test:HANDSHAKE/blockPoolId";
+
+    private static OutputCaptureSpec leafSpec(String captureKind)
+            throws Exception {
+        JsonObject encoded = new JsonObject();
+        encoded.addProperty("captureBindingId", "CAPTURE.leaf");
+        encoded.addProperty("outputPort", "XCH.test.req.blockPoolId");
+        encoded.addProperty("captureKind", captureKind);
+        encoded.addProperty("outputCell", "XCH.test.req.blockPoolId");
+        encoded.addProperty("javaType", "java.lang.String");
+        encoded.addProperty("occurrenceScope", "REGION_ACTIVATION");
+        encoded.addProperty("outputSiteId", LEAF_SITE);
+        encoded.addProperty("outputOccurrence", 1);
+        java.lang.reflect.Method decode =
+                OutputCaptureSpec.class.getDeclaredMethod(
+                        "decodeValidated", JsonObject.class);
+        decode.setAccessible(true);
+        return (OutputCaptureSpec) decode.invoke(null, encoded);
     }
 
     private static JsonObject auxiliaryPathCondition(int watermark) {

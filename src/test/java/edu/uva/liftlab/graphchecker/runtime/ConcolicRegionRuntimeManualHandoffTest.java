@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.RpcExpressionHandoff;
-import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
@@ -234,7 +233,7 @@ public class ConcolicRegionRuntimeManualHandoffTest {
             throws Exception {
         JsonObject encoded = task(responseAttach("XCH.remote.resp"));
         addTargetInputs(encoded, TARGET_FIELD);
-        addTargetSource(encoded, TARGET_PORT, false);
+        addTargetSource(encoded);
         addTargetSourceAssignment(encoded);
 
         Object loaded = runtimeTask(encoded);
@@ -242,36 +241,6 @@ public class ConcolicRegionRuntimeManualHandoffTest {
         CommunicationHandoffSpec attached = lookup(loaded, CARRIER, FIELD,
                 DESCRIPTOR, false);
         assertEquals("XCH.remote.resp", attached.portId());
-    }
-
-    @Test
-    public void responseAttachCannotBeClaimedAsTargetLocalSource()
-            throws Exception {
-        JsonObject encoded = task(responseAttach("XCH.remote.resp"));
-        addTargetInputs(encoded, TARGET_FIELD);
-        addTargetSource(encoded, "XCH.remote.resp", false);
-
-        assertIllegalTask(encoded);
-    }
-
-    @Test
-    public void targetSourcePortMustNameItsExactFieldAction()
-            throws Exception {
-        JsonObject encoded = task(responseAttach("XCH.remote.resp"));
-        addTargetInputs(encoded, "<example.Target: long otherValue>");
-        addTargetSource(encoded, TARGET_PORT, false);
-
-        assertIllegalTask(encoded);
-    }
-
-    @Test
-    public void targetSourceCannotAlsoDeclareAnOutputBoundary()
-            throws Exception {
-        JsonObject encoded = task(responseAttach("XCH.remote.resp"));
-        addTargetInputs(encoded, TARGET_FIELD);
-        addTargetSource(encoded, TARGET_PORT, true);
-
-        assertIllegalTask(encoded);
     }
 
     private static Object runtimeTask(JsonObject encoded) throws Exception {
@@ -283,15 +252,19 @@ public class ConcolicRegionRuntimeManualHandoffTest {
         return constructor.newInstance(ExecutionTask.decode(encoded));
     }
 
+    @SuppressWarnings("unchecked")
     private static CommunicationHandoffSpec lookup(
             Object task, String carrierClass, String field,
             String descriptor, boolean exporting) throws Exception {
-        Method method = task.getClass().getDeclaredMethod(
-                "manualCommunicationHandoff", String.class, String.class,
-                String.class, boolean.class);
-        method.setAccessible(true);
-        return (CommunicationHandoffSpec) method.invoke(task, carrierClass,
-                field, descriptor, exporting);
+        Method key = task.getClass().getDeclaredMethod("handoffCarrierKey",
+                String.class, String.class, String.class, boolean.class);
+        key.setAccessible(true);
+        Field carriers = task.getClass().getDeclaredField(
+                "manualCommunicationHandoffs");
+        carriers.setAccessible(true);
+        return ((Map<String, CommunicationHandoffSpec>) carriers.get(task))
+                .get((String) key.invoke(null, carrierClass, field,
+                        descriptor, exporting));
     }
 
     private static void assertIllegalTask(JsonObject encoded)
@@ -331,51 +304,30 @@ public class ConcolicRegionRuntimeManualHandoffTest {
         task.getAsJsonArray("inputActions").add(remote);
     }
 
-    private static void addTargetSource(
-            JsonObject task, String inputPort, boolean addOutputBoundary) {
-        String phaseId = targetSourcePhaseId(task);
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourcePhaseId", phaseId);
-        source.addProperty("sourceId", TARGET_SOURCE);
-        source.addProperty("fieldSignature", TARGET_FIELD);
-        source.addProperty("requiredTargetInputPort", inputPort);
-        if (addOutputBoundary) {
-            source.addProperty("requiredOutputFieldSignature",
-                    "<example.Target: long output>");
-        }
-        JsonArray sources = new JsonArray();
-        sources.add(source);
-        task.add(SymbolicSourceEvidence.TASK_FIELD, sources);
-
+    private static void addTargetSource(JsonObject task) {
+        // Wave 3: a task declares mint SITES only; the selected-source
+        // row that used to travel beside them is gone.
+        JsonArray declared = new JsonArray();
+        declared.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                TARGET_SOURCE, TARGET_FIELD, TARGET_ROOT,
+                TARGET_SOURCE_UNIT));
         ConfiguredSourcePhaseContract.Declaration declaration =
-                ConfiguredSourcePhaseContract.declarationsOf(
-                        Collections.singletonList(
-                                ConfiguredSourcePhaseContract.declaration(
-                                        ConfiguredSourcePhaseContract.Phase
-                                                .PUBLISH,
-                                        TARGET_SOURCE, TARGET_FIELD,
-                                        TARGET_ROOT, TARGET_SOURCE_UNIT)))
-                        .get(0);
+                ConfiguredSourcePhaseContract.declarationsOf(declared).get(0);
         JsonArray phases = new JsonArray();
-        phases.add(GSON.toJsonTree(ConfiguredSourcePhaseContract.occurrence(
+        phases.add(ConfiguredSourcePhaseContract.occurrence(
                 declaration, task.get("occurrenceId").getAsString(), 1, 1L,
                 1L, 1L, SOURCE_HOOK_CALLEE,
-                Collections.singletonList(1L))));
+                Collections.singletonList(1L)));
         task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
-        JsonArray selected = new JsonArray();
-        selected.add(phaseId);
-        task.add(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD, selected);
     }
 
     private static void addTargetSourceAssignment(JsonObject task) {
         String phaseId = targetSourcePhaseId(task);
         JsonObject assignment = new JsonObject();
         assignment.addProperty("modelAssignmentKey", "MODEL.target.local");
-        assignment.addProperty("engineSymbol", "M_J_field_"
-                + ConcolicRegionRuntime.configuredSourceSymbolForTests(
-                phaseId, TARGET_SOURCE) + "_example/Target");
+        assignment.addProperty("engineSymbol",
+                "M_J_field_SRC.example_example/Target");
         assignment.addProperty("inputSymbol", "SOURCE_PHASE:" + phaseId);
         assignment.addProperty("configuredSourcePhaseId", phaseId);
         assignment.addProperty("configuredSourceId", TARGET_SOURCE);
@@ -527,42 +479,37 @@ public class ConcolicRegionRuntimeManualHandoffTest {
     }
 
     private static void installFakeEngine() throws Exception {
-        Class<?> handoffType = nested("HandoffApi");
-        Constructor<?> handoffConstructor = handoffType.getDeclaredConstructor(
-                Method.class, Method.class);
-        handoffConstructor.setAccessible(true);
-        Object handoff = handoffConstructor.newInstance(
-                fake("exportExpression", Object.class, String.class,
-                        String.class, String.class),
-                fake("attachExpression", Object.class, String.class,
-                        String.class, String.class, long.class));
+        Object engine = newEngine();
+        bind(engine, "export", fake("exportExpression", Object.class,
+                String.class, String.class, String.class, long[].class));
+        bind(engine, "attach", fake("attachExpression", Object.class,
+                String.class, String.class, String.class, long.class,
+                long[].class));
+        bind(engine, "getFieldExpression", fake("fieldExpression",
+                Object.class, String.class, String.class, String.class,
+                Object.class));
+        bind(engine, "pausePathCondition", fake("pause"));
+        bind(engine, "resumePathCondition", fake("resume"));
+        install(engine);
+    }
 
-        Class<?> pathType = nested("PathConditionApi");
-        Constructor<?> pathConstructor = pathType.getDeclaredConstructor(
-                Method.class);
-        pathConstructor.setAccessible(true);
-        Object path = pathConstructor.newInstance(new Object[]{null});
+    /** A stock EngineApi with every VM method absent, for selective binding. */
+    private static Object newEngine() throws Exception {
+        Constructor<?> constructor = Class.forName(
+                ConcolicRegionRuntime.class.getName() + "$EngineApi")
+                .getDeclaredConstructor();
+        constructor.setAccessible(true);
+        return constructor.newInstance();
+    }
 
-        Class<?> sharedType = nested("SharedStateApi");
-        Constructor<?> sharedConstructor = sharedType.getDeclaredConstructors()[0];
-        sharedConstructor.setAccessible(true);
-        Object shared = sharedConstructor.newInstance(
-                new Object[sharedConstructor.getParameterCount()]);
+    private static void bind(Object engine, String name, Method target)
+            throws Exception {
+        Field field = engine.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(engine, target);
+    }
 
-        Class<?> engineType = nested("EngineApi");
-        Constructor<?> engineConstructor =
-                engineType.getDeclaredConstructors()[0];
-        engineConstructor.setAccessible(true);
-        Object[] arguments = new Object[engineConstructor.getParameterCount()];
-        arguments[11] = fake("fieldExpression", Object.class, String.class,
-                String.class, String.class, Object.class);
-        arguments[14] = fake("pause");
-        arguments[15] = fake("resume");
-        arguments[19] = handoff;
-        arguments[20] = path;
-        arguments[21] = shared;
-        Object engine = engineConstructor.newInstance(arguments);
-
+    private static void install(Object engine) throws Exception {
         Field engineApi = ConcolicRegionRuntime.class.getDeclaredField(
                 "engineApi");
         engineApi.setAccessible(true);
@@ -572,11 +519,6 @@ public class ConcolicRegionRuntimeManualHandoffTest {
     private static Method fake(String name, Class<?>... parameters)
             throws Exception {
         return FakeVm.class.getDeclaredMethod(name, parameters);
-    }
-
-    private static Class<?> nested(String name) throws Exception {
-        return Class.forName(ConcolicRegionRuntime.class.getName()
-                + "$" + name);
     }
 
     public static final class FakeVm {
@@ -589,15 +531,23 @@ public class ConcolicRegionRuntimeManualHandoffTest {
         public static long exportExpression(Object owner,
                                             String declaringClass,
                                             String fieldName,
-                                            String descriptor) {
+                                            String descriptor,
+                                            long[] eventOut) {
             EXPORTS.incrementAndGet();
+            // README RPC-1: the VM names the export's own ledger event.
+            if (eventOut != null && eventOut.length > 0) eventOut[0] = 90L;
             return HANDLE;
         }
 
         public static long attachExpression(Object owner,
                                             String declaringClass,
                                             String fieldName,
-                                            String descriptor, long handle) {
+                                            String descriptor, long handle,
+                                            long[] eventOut) {
+            // Both endpoints: the export it consumed, and this exact attach.
+            if (eventOut != null && eventOut.length > 0) {
+                eventOut[0] = 92L + ATTACHES.get();
+            }
             ATTACHES.incrementAndGet();
             return 91L;
         }

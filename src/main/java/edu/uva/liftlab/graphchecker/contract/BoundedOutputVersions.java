@@ -14,12 +14,11 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Canonical carrier for one output port whose bounded execution produced
- * several write versions at one static site.
- *
- * <p>The version ordinal is the site-local bounded occurrence index inside
- * one region activation.  It is not a cross-execution identity: which version
- * a reader observes is settled by the composed versioned channel, so every
- * bounded version is exported and each becomes one guarded relation case.</p>
+ * several write versions at one static site.  The version ordinal is the
+ * site-local bounded occurrence index inside one region activation, not a
+ * cross-execution identity: which version a reader observes is settled by the
+ * composed versioned channel, so every bounded version is exported and each
+ * becomes one guarded relation case.
  */
 public final class BoundedOutputVersions {
     public static final String KIND = "BOUNDED_OUTPUT_VERSION_SET";
@@ -32,7 +31,6 @@ public final class BoundedOutputVersions {
     private BoundedOutputVersions() {
     }
 
-    /** Encodes the ordered bounded versions observed at one output site. */
     public static JsonObject encodeVersionSet(
             String outputSiteId,
             NavigableMap<Integer, JsonElement> expressionsByOrdinal) {
@@ -66,7 +64,6 @@ public final class BoundedOutputVersions {
         return result;
     }
 
-    /** True only for the canonical bounded version-set carrier. */
     public static boolean isVersionSet(JsonElement value) {
         return value != null && value.isJsonObject()
                 && KIND.equals(string(value.getAsJsonObject(), "kind"))
@@ -74,7 +71,6 @@ public final class BoundedOutputVersions {
                 "authority"));
     }
 
-    /** Ordered ordinal-to-expression versions of one canonical carrier. */
     public static NavigableMap<Integer, JsonElement> versions(
             JsonObject versionSet) {
         NavigableMap<Integer, JsonElement> result = new TreeMap<>();
@@ -105,10 +101,8 @@ public final class BoundedOutputVersions {
         return string(versionSet, "outputSiteId");
     }
 
-    /**
-     * One guard condition binding a relation case to one exported version.
-     * The bound is the largest exported ordinal of the site-local index.
-     */
+    /** One guard condition binding a relation case to one exported version;
+     *  the bound is the largest exported ordinal of the site-local index. */
     public static JsonObject versionSelectionCondition(
             String outputPort, String outputSiteId, int versionOrdinal,
             int versionBound) {
@@ -128,7 +122,6 @@ public final class BoundedOutputVersions {
         return condition;
     }
 
-    /** True only for a guard condition produced by version expansion. */
     public static boolean isVersionSelection(JsonObject expression) {
         return expression != null && VERSION_SELECTION_TYPE.equals(
                 string(expression, "_type"));

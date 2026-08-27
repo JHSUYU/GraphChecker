@@ -5,8 +5,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.nio.charset.StandardCharsets;
-import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -16,13 +16,19 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.required;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.trimmed;
+
 /**
  * Static hook sites and their exact dynamic executions for configured sources.
+ * A region occurrence may execute one source hook many times: the static
+ * declaration names the hook site, the occurrence row names one execution of
+ * it, and keeping the two separate prevents a long-lived service-loop task
+ * from being treated as if it published one timeless source version.
  *
- * <p>A region occurrence may execute one source hook many times.  The static
- * declaration names the hook site; the occurrence row names one execution of
- * that site.  Keeping the two separate prevents a long-lived service-loop task
- * from being treated as if it published one timeless source version.</p>
+ * <p>One codec: a row is built, validated and carried as the {@link JsonObject}
+ * the plan wire holds; no producer hands this contract another shape.
  */
 public final class ConfiguredSourcePhaseContract {
     public static final int SCHEMA_VERSION = 1;
@@ -31,9 +37,6 @@ public final class ConfiguredSourcePhaseContract {
     public static final String TRACE_METHODS_FIELD =
             "configuredSourcePhaseTraceMethods";
     public static final String PLAN_FIELD = "configuredSourcePhases";
-    /** Exact task-relevant subsequence within the replay-call phase catalog. */
-    public static final String SELECTED_PLAN_FIELD =
-            "selectedConfiguredSourcePhaseIds";
     public static final String DECLARATION_KIND =
             "CONFIGURED_SOURCE_PHASE_DECLARATION";
     public static final String DECLARATION_AUTHORITY =
@@ -41,149 +44,89 @@ public final class ConfiguredSourcePhaseContract {
     public static final String PLAN_KIND = "CONFIGURED_SOURCE_PHASE";
     public static final String PLAN_AUTHORITY =
             "EXACT_RUNTIME_SOURCE_HOOK_EXECUTION_V1";
-    private static final Set<String> OCCURRENCE_FIELDS =
-            Collections.unmodifiableSet(new LinkedHashSet<>(java.util.Arrays
-                    .asList("schemaVersion", "kind", "authority", "phase",
-                            "sourceId", "fieldSignature",
-                            "declarationMethod", "declarationUnitIndex",
-                            "siteId", "phaseId", "phaseKind",
-                            "sourceOccurrenceId", "baselineOrdinal",
-                            "eventSeq", "ownerCallId", "invocationId",
-                            "runtimeDeclaredCallee", "enclosingCallIds")));
+    private static final Set<String> DECLARATION_FIELDS = names(
+            "schemaVersion", "kind", "authority", "phase", "sourceId",
+            "fieldSignature", "declarationMethod", "declarationUnitIndex",
+            "siteId");
+    private static final Set<String> OCCURRENCE_FIELDS = names(
+            "schemaVersion", "kind", "authority", "phase", "sourceId",
+            "fieldSignature", "declarationMethod", "declarationUnitIndex",
+            "siteId", "phaseId", "phaseKind", "sourceOccurrenceId",
+            "baselineOrdinal", "eventSeq", "ownerCallId", "invocationId",
+            "runtimeDeclaredCallee", "enclosingCallIds");
 
     private ConfiguredSourcePhaseContract() {
     }
 
+    /** Every phase is a mint SITE: a hook execution that publishes one
+     * fresh symbol for one declared field. */
     public enum Phase {
-        PUBLISH,
-        CONSUME
+        PUBLISH
     }
 
-    public static Map<String, Object> declaration(
+    public static JsonObject declaration(
             Phase phase, String sourceId, String fieldSignature,
             String method, int unitIndex) {
         String exactMethod = required(method, "declarationMethod");
-        if (unitIndex < 0) {
-            throw new IllegalArgumentException(
-                    "declarationUnitIndex must be non-negative");
-        }
-        String field = normalized(fieldSignature);
-        if (phase == Phase.PUBLISH
-                && FieldPathSpec.declaredField(field) == null) {
-            throw new IllegalArgumentException(
-                    "publish phase requires an exact declared field");
-        }
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("schemaVersion", SCHEMA_VERSION);
-        row.put("kind", DECLARATION_KIND);
-        row.put("authority", DECLARATION_AUTHORITY);
-        row.put("phase", requiredPhase(phase).name());
-        row.put("sourceId", required(sourceId, "sourceId"));
-        row.put("fieldSignature", field);
-        row.put("declarationMethod", exactMethod);
-        row.put("declarationUnitIndex", unitIndex);
-        row.put("siteId", siteId(exactMethod, unitIndex));
-        return validateDeclaration(row).json();
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", SCHEMA_VERSION);
+        row.addProperty("kind", DECLARATION_KIND);
+        row.addProperty("authority", DECLARATION_AUTHORITY);
+        row.addProperty("phase", requiredPhase(phase).name());
+        row.addProperty("sourceId", required(sourceId, "sourceId"));
+        row.addProperty("fieldSignature", trimmed(fieldSignature));
+        row.addProperty("declarationMethod", exactMethod);
+        row.addProperty("declarationUnitIndex", unitIndex);
+        row.addProperty("siteId", siteId(exactMethod, unitIndex));
+        validateDeclaration(row);
+        return row;
     }
 
-    public static List<Declaration> declarationsOf(Object encoded) {
-        if (encoded == null) return Collections.emptyList();
-        if (!(encoded instanceof Collection<?>)) {
+    public static List<Declaration> declarationsOf(JsonElement encoded) {
+        if (encoded == null || encoded.isJsonNull()) {
+            return Collections.emptyList();
+        }
+        if (!encoded.isJsonArray()) {
             throw new IllegalArgumentException(
-                    DECLARATION_FIELD + " must be a collection");
+                    DECLARATION_FIELD + " must be an array");
         }
         List<Declaration> result = new ArrayList<>();
-        for (Object element : (Collection<?>) encoded) {
-            if (!(element instanceof Map<?, ?>)) {
+        for (JsonElement element : encoded.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
                 throw new IllegalArgumentException(
                         DECLARATION_FIELD + " entries must be objects");
             }
-            result.add(validateDeclaration(stringMap((Map<?, ?>) element)));
+            result.add(validateDeclaration(element.getAsJsonObject()));
         }
         return Collections.unmodifiableList(result);
     }
 
-    public static List<Occurrence> occurrencesOf(Object encoded) {
+    public static List<Occurrence> occurrencesOf(JsonElement encoded) {
         return occurrencesOf(encoded, false);
-    }
-
-    /**
-     * Validates the exact phases a task must observe inside its broader
-     * replay-call catalog. Known catalog phases outside this subsequence are
-     * no-op landmarks; an execution outside the catalog is a topology change.
-     */
-    public static List<String> selectedPhaseIdsOf(
-            JsonObject task, List<Occurrence> catalog) {
-        if (task == null) return Collections.emptyList();
-        JsonArray encoded;
-        if (!task.has(SELECTED_PLAN_FIELD)) {
-            encoded = new JsonArray();
-        } else if (!task.get(SELECTED_PLAN_FIELD).isJsonArray()) {
-            throw new IllegalArgumentException(
-                    SELECTED_PLAN_FIELD + " must be an array");
-        } else {
-            encoded = task.getAsJsonArray(SELECTED_PLAN_FIELD);
-        }
-        Map<String, Integer> positions = new LinkedHashMap<>();
-        List<Occurrence> phases = catalog == null
-                ? Collections.<Occurrence>emptyList() : catalog;
-        for (int index = 0; index < phases.size(); index++) {
-            positions.put(phases.get(index).phaseId(), index);
-        }
-        List<String> selected = new ArrayList<>();
-        Set<String> unique = new LinkedHashSet<>();
-        int previous = -1;
-        for (JsonElement element : encoded) {
-            if (!element.isJsonPrimitive()
-                    || !element.getAsJsonPrimitive().isString()) {
-                throw new IllegalArgumentException(SELECTED_PLAN_FIELD
-                        + " entries must be phase-id strings");
-            }
-            String phaseId = required(element.getAsString(), "phaseId");
-            Integer position = positions.get(phaseId);
-            if (position == null || !unique.add(phaseId)
-                    || position <= previous) {
-                throw new IllegalArgumentException(SELECTED_PLAN_FIELD
-                        + " must be a unique ordered catalog subsequence");
-            }
-            previous = position;
-            selected.add(phaseId);
-        }
-        return Collections.unmodifiableList(selected);
     }
 
     /**
      * Decodes an ordered runtime phase catalog.
      *
      * @param completeOccurrence whether every execution of each exact site
-     *     must be present. Region-plan rows pass {@code true}; a scheduled
-     *     task may carry a strict subsequence and passes {@code false}.
+     *     must be present; region-plan rows pass {@code true}.
      */
     public static List<Occurrence> occurrencesOf(
-            Object encoded, boolean completeOccurrence) {
-        if (encoded == null) return Collections.emptyList();
-        List<Occurrence> result = new ArrayList<>();
-        if (encoded instanceof JsonArray) {
-            for (JsonElement element : (JsonArray) encoded) {
-                if (!element.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            PLAN_FIELD + " entries must be objects");
-                }
-                result.add(validateOccurrence(jsonMap(
-                        element.getAsJsonObject())));
-            }
-        } else if (!(encoded instanceof Collection<?>)) {
+            JsonElement encoded, boolean completeOccurrence) {
+        if (encoded == null || encoded.isJsonNull()) {
+            return Collections.emptyList();
+        }
+        if (!encoded.isJsonArray()) {
             throw new IllegalArgumentException(
-                    PLAN_FIELD + " must be a collection");
-        } else {
-            for (Object element : (Collection<?>) encoded) {
-                if (!(element instanceof Map<?, ?>)) {
-                    throw new IllegalArgumentException(
-                            PLAN_FIELD + " entries must be objects");
-                }
-                result.add(validateOccurrence(stringMap(
-                        (Map<?, ?>) element)));
+                    PLAN_FIELD + " must be an array");
+        }
+        List<Occurrence> result = new ArrayList<>();
+        for (JsonElement element : encoded.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                throw new IllegalArgumentException(
+                        PLAN_FIELD + " entries must be objects");
             }
+            result.add(validateOccurrence(element.getAsJsonObject()));
         }
         validateOccurrenceSequence(result, completeOccurrence);
         return Collections.unmodifiableList(result);
@@ -218,7 +161,7 @@ public final class ConfiguredSourcePhaseContract {
         }
     }
 
-    public static Map<String, Object> occurrence(
+    public static JsonObject occurrence(
             Declaration declaration, String occurrenceId,
             int baselineOrdinal, long runtimeEventSeq,
             long ownerCallId, long runtimeInvocationId,
@@ -226,32 +169,35 @@ public final class ConfiguredSourcePhaseContract {
         if (declaration == null) {
             throw new IllegalArgumentException("phase declaration is required");
         }
-        if (baselineOrdinal <= 0 || runtimeEventSeq <= 0L
-                || ownerCallId <= 0L || runtimeInvocationId <= 0L) {
-            throw new IllegalArgumentException(
-                    "runtime phase identity must be positive");
-        }
         String occurrence = required(occurrenceId, "occurrenceId");
-        Map<String, Object> row = declaration.json();
-        row.put("kind", PLAN_KIND);
-        row.put("authority", PLAN_AUTHORITY);
-        row.put("phaseId", phaseId(occurrence, declaration.siteId(),
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", SCHEMA_VERSION);
+        row.addProperty("kind", PLAN_KIND);
+        row.addProperty("authority", PLAN_AUTHORITY);
+        row.addProperty("phase", declaration.phase().name());
+        row.addProperty("sourceId", declaration.sourceId());
+        row.addProperty("fieldSignature", declaration.fieldSignature());
+        row.addProperty("declarationMethod", declaration.method());
+        row.addProperty("declarationUnitIndex",
+                declaration.declarationUnitIndex());
+        row.addProperty("siteId", declaration.siteId());
+        row.addProperty("phaseId", phaseId(occurrence, declaration.siteId(),
                 declaration.phase(), baselineOrdinal));
-        row.put("phaseKind", declaration.phase().name());
-        row.put("sourceOccurrenceId", occurrence);
-        row.put("baselineOrdinal", baselineOrdinal);
-        row.put("eventSeq", runtimeEventSeq);
-        row.put("ownerCallId", ownerCallId);
-        row.put("invocationId", runtimeInvocationId);
-        row.put("runtimeDeclaredCallee", required(
+        row.addProperty("phaseKind", declaration.phase().name());
+        row.addProperty("sourceOccurrenceId", occurrence);
+        row.addProperty("baselineOrdinal", baselineOrdinal);
+        row.addProperty("eventSeq", runtimeEventSeq);
+        row.addProperty("ownerCallId", ownerCallId);
+        row.addProperty("invocationId", runtimeInvocationId);
+        row.addProperty("runtimeDeclaredCallee", required(
                 declaredCallee, "runtimeDeclaredCallee"));
-        List<Long> ancestry = positiveCallIds(enclosingCallIds);
-        if (ancestry.isEmpty() || ancestry.get(0) != ownerCallId) {
-            throw new IllegalArgumentException(
-                    "enclosingCallIds must begin with ownerCallId");
+        JsonArray ancestry = new JsonArray();
+        if (enclosingCallIds != null) {
+            for (Long callId : enclosingCallIds) ancestry.add(callId);
         }
-        row.put("enclosingCallIds", ancestry);
-        return validateOccurrence(row).json();
+        row.add("enclosingCallIds", ancestry);
+        validateOccurrence(row);
+        return row;
     }
 
     public static String phaseId(String occurrenceId, String siteId,
@@ -274,176 +220,122 @@ public final class ConfiguredSourcePhaseContract {
         return required(method, "method") + "#u" + unitIndex;
     }
 
-    private static Declaration validateDeclaration(Map<String, Object> row) {
-        if (row == null || row.size() != 9
-                || integer(row.get("schemaVersion"), -1) != SCHEMA_VERSION
-                || !DECLARATION_KIND.equals(text(row.get("kind")))
-                || !DECLARATION_AUTHORITY.equals(text(row.get("authority")))) {
+    private static Declaration validateDeclaration(JsonObject row) {
+        if (!DECLARATION_FIELDS.containsAll(row.keySet())
+                || !constants(row, DECLARATION_KIND, DECLARATION_AUTHORITY)) {
             throw new IllegalArgumentException(
                     DECLARATION_FIELD + " has an unsupported schema");
         }
-        Phase phase;
-        try {
-            phase = Phase.valueOf(required(text(row.get("phase")), "phase"));
-        } catch (RuntimeException invalid) {
-            throw new IllegalArgumentException(
-                    DECLARATION_FIELD + " has an invalid phase", invalid);
-        }
-        String sourceId = required(text(row.get("sourceId")), "sourceId");
-        String field = normalized(text(row.get("fieldSignature")));
-        String method = required(text(row.get("declarationMethod")),
-                "declarationMethod");
-        int unit = integer(row.get("declarationUnitIndex"), -1);
-        String site = required(text(row.get("siteId")), "siteId");
-        if (unit < 0 || !site.equals(siteId(method, unit))
-                || phase == Phase.PUBLISH
-                && FieldPathSpec.declaredField(field) == null
-                || !field.isEmpty()
-                && FieldPathSpec.declaredField(field) == null) {
-            throw new IllegalArgumentException(
-                    DECLARATION_FIELD + " has an invalid exact hook site");
-        }
-        return new Declaration(row, phase, sourceId, method, site);
+        return validateHookSite(row, DECLARATION_FIELD);
     }
 
-    private static Occurrence validateOccurrence(Map<String, Object> row) {
-        if (row == null || !OCCURRENCE_FIELDS.equals(row.keySet())
-                || integer(row.get("schemaVersion"), -1) != SCHEMA_VERSION
-                || !PLAN_KIND.equals(text(row.get("kind")))
-                || !PLAN_AUTHORITY.equals(text(row.get("authority")))) {
+    /** The constant schemaVersion/kind/authority triplet is derived from the
+     *  member being decoded: a row that omits one restates nothing. */
+    private static boolean constants(JsonObject row, String kind,
+                                     String authority) {
+        return (!row.has("schemaVersion")
+                || exactInt(row, "schemaVersion") == SCHEMA_VERSION)
+                && (!row.has("kind") || kind.equals(text(row, "kind")))
+                && (!row.has("authority")
+                || authority.equals(text(row, "authority")));
+    }
+
+    /**
+     * The exact-hook-site half every declaration and occurrence row shares.
+     * {@code field} names the member being decoded so one refusal message
+     * stays specific to it.
+     */
+    private static Declaration validateHookSite(JsonObject row, String field) {
+        Phase phase;
+        try {
+            phase = Phase.valueOf(required(text(row, "phase"), "phase"));
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException(
+                    field + " has an invalid phase", invalid);
+        }
+        String sourceId = required(text(row, "sourceId"), "sourceId");
+        String signature = text(row, "fieldSignature");
+        String method = required(text(row, "declarationMethod"),
+                "declarationMethod");
+        int unit = exactInt(row, "declarationUnitIndex");
+        // siteId is declarationMethod#u<index>, so it is derived here and
+        // only compared when the wire restates it.
+        if (unit < 0 || FieldPathSpec.declaredField(signature) == null
+                || row.has("siteId")
+                && !siteId(method, unit).equals(text(row, "siteId"))) {
+            throw new IllegalArgumentException(
+                    field + " has an invalid exact hook site");
+        }
+        return new Declaration(phase, sourceId, signature, method, unit);
+    }
+
+    private static Occurrence validateOccurrence(JsonObject row) {
+        if (!OCCURRENCE_FIELDS.containsAll(row.keySet())
+                || !constants(row, PLAN_KIND, PLAN_AUTHORITY)) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " has an unsupported schema");
         }
-        Phase phase;
-        try {
-            phase = Phase.valueOf(required(text(row.get("phase")), "phase"));
-        } catch (RuntimeException invalid) {
-            throw new IllegalArgumentException(
-                    PLAN_FIELD + " has an invalid phase", invalid);
-        }
-        if (!phase.name().equals(text(row.get("phaseKind")))) {
+        Declaration declared = validateHookSite(row, PLAN_FIELD);
+        // phaseKind is the phase under a second name.
+        if (row.has("phaseKind")
+                && !declared.phase().name().equals(text(row, "phaseKind"))) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " phaseKind disagrees with phase");
         }
-        String sourceId = required(text(row.get("sourceId")), "sourceId");
-        String field = normalized(text(row.get("fieldSignature")));
-        String method = required(text(row.get("declarationMethod")),
-                "declarationMethod");
-        int unit = integer(row.get("declarationUnitIndex"), -1);
-        String site = required(text(row.get("siteId")), "siteId");
-        if (unit < 0 || !site.equals(siteId(method, unit))
-                || phase == Phase.PUBLISH
-                && FieldPathSpec.declaredField(field) == null
-                || !field.isEmpty()
-                && FieldPathSpec.declaredField(field) == null) {
-            throw new IllegalArgumentException(
-                    PLAN_FIELD + " has an invalid exact hook site");
-        }
         String sourceOccurrenceId = required(
-                text(row.get("sourceOccurrenceId")), "sourceOccurrenceId");
-        int baselineOrdinal = integer(row.get("baselineOrdinal"), -1);
-        long eventSeq = exactLong(row.get("eventSeq"), -1L);
-        long ownerCallId = exactLong(row.get("ownerCallId"), -1L);
-        long invocationId = exactLong(row.get("invocationId"), -1L);
+                text(row, "sourceOccurrenceId"), "sourceOccurrenceId");
+        int baselineOrdinal = exactInt(row, "baselineOrdinal");
+        long eventSeq = exactLong(row, "eventSeq");
+        long invocationId = exactLong(row, "invocationId");
         String declaredCallee = required(
-                text(row.get("runtimeDeclaredCallee")),
-                "runtimeDeclaredCallee");
-        String phaseId = required(text(row.get("phaseId")), "phaseId");
-        if (baselineOrdinal <= 0 || eventSeq <= 0L || ownerCallId <= 0L
-                || invocationId <= 0L || !phaseId.equals(phaseId(
-                sourceOccurrenceId, site, phase, baselineOrdinal))) {
+                text(row, "runtimeDeclaredCallee"), "runtimeDeclaredCallee");
+        String phaseId = required(text(row, "phaseId"), "phaseId");
+        if (baselineOrdinal <= 0 || eventSeq <= 0L || invocationId <= 0L
+                || !phaseId.equals(phaseId(sourceOccurrenceId,
+                declared.siteId(), declared.phase(), baselineOrdinal))) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " has an invalid runtime identity");
         }
-        Object encodedAncestry = row.get("enclosingCallIds");
-        if (!(encodedAncestry instanceof Collection<?>)) {
+        JsonElement encodedAncestry = row.get("enclosingCallIds");
+        if (encodedAncestry == null || !encodedAncestry.isJsonArray()) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " requires enclosingCallIds");
         }
         List<Long> ancestry = new ArrayList<>();
-        for (Object value : (Collection<?>) encodedAncestry) {
-            long callId = exactLong(value, -1L);
+        for (JsonElement value : encodedAncestry.getAsJsonArray()) {
+            long callId = exactLong(value);
             if (callId <= 0L || ancestry.contains(callId)) {
                 throw new IllegalArgumentException(
                         PLAN_FIELD + " has invalid enclosingCallIds");
             }
             ancestry.add(callId);
         }
-        if (ancestry.isEmpty() || ancestry.get(0) != ownerCallId) {
+        // ownerCallId is enclosingCallIds[0] under a second name.
+        if (ancestry.isEmpty() || row.has("ownerCallId")
+                && exactLong(row, "ownerCallId")
+                != ancestry.get(0).longValue()) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " ancestry does not begin at ownerCallId");
         }
-        return new Occurrence(row, phase, phaseId, sourceId, field,
-                sourceOccurrenceId, site, baselineOrdinal, eventSeq,
-                invocationId, declaredCallee, ancestry);
+        return new Occurrence(declared, phaseId, sourceOccurrenceId,
+                baselineOrdinal, eventSeq, invocationId, declaredCallee,
+                ancestry);
     }
 
-    private static Map<String, Object> stringMap(Map<?, ?> source) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : source.entrySet()) {
-            if (!(entry.getKey() instanceof String)) {
-                throw new IllegalArgumentException(
-                        DECLARATION_FIELD + " keys must be strings");
-            }
-            result.put((String) entry.getKey(), entry.getValue());
-        }
-        return result;
+    /** An exact integral member, or -1 when absent or another shape. */
+    private static long exactLong(JsonObject row, String field) {
+        return exactLong(row.get(field));
     }
 
-    private static Map<String, Object> jsonMap(JsonObject source) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        for (Map.Entry<String, JsonElement> entry : source.entrySet()) {
-            result.put(entry.getKey(), jsonValue(entry.getValue()));
-        }
-        return result;
+    private static long exactLong(JsonElement value) {
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isNumber()
+                ? value.getAsLong() : -1L;
     }
 
-    private static Object jsonValue(JsonElement value) {
-        if (value == null || value.isJsonNull()) return null;
-        if (value.isJsonObject()) return jsonMap(value.getAsJsonObject());
-        if (value.isJsonArray()) {
-            List<Object> result = new ArrayList<>();
-            for (JsonElement element : value.getAsJsonArray()) {
-                result.add(jsonValue(element));
-            }
-            return result;
-        }
-        if (value.getAsJsonPrimitive().isBoolean()) {
-            return value.getAsBoolean();
-        }
-        if (value.getAsJsonPrimitive().isNumber()) {
-            return value.getAsNumber();
-        }
-        return value.getAsString();
-    }
-
-    private static int integer(Object value, int fallback) {
-        if (!(value instanceof Number)) return fallback;
-        Number number = (Number) value;
-        int exact = number.intValue();
-        return number.longValue() == exact ? exact : fallback;
-    }
-
-    private static long exactLong(Object value, long fallback) {
-        if (!(value instanceof Number)) return fallback;
-        try {
-            return new BigDecimal(value.toString()).longValueExact();
-        } catch (RuntimeException invalid) {
-            return fallback;
-        }
-    }
-
-    private static List<Long> positiveCallIds(Collection<Long> values) {
-        if (values == null) return Collections.emptyList();
-        List<Long> result = new ArrayList<>();
-        for (Long value : values) {
-            if (value == null || value <= 0L || result.contains(value)) {
-                throw new IllegalArgumentException(
-                        "enclosingCallIds must be positive and unique");
-            }
-            result.add(value);
-        }
-        return result;
+    private static int exactInt(JsonObject row, String field) {
+        long value = exactLong(row, field);
+        return value == (int) value ? (int) value : -1;
     }
 
     private static Phase requiredPhase(Phase phase) {
@@ -453,46 +345,40 @@ public final class ConfiguredSourcePhaseContract {
         return phase;
     }
 
-    private static String required(String value, String label) {
-        String result = normalized(value);
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(label + " is required");
-        }
-        return result;
+    private static Set<String> names(String... values) {
+        return Collections.unmodifiableSet(
+                new LinkedHashSet<>(Arrays.asList(values)));
     }
 
-    private static String normalized(String value) {
-        return value == null ? "" : value.trim();
-    }
-
-    private static String text(Object value) {
-        return value == null ? "" : String.valueOf(value);
-    }
-
-    /** One validated static hook site. */
     public static final class Declaration {
-        private final Map<String, Object> encoded;
         private final Phase phase;
         private final String sourceId;
+        private final String fieldSignature;
         private final String method;
+        private final int unitIndex;
         private final String siteId;
 
-        private Declaration(Map<String, Object> encoded, Phase phase,
-                            String sourceId, String method, String siteId) {
-            this.encoded = new LinkedHashMap<>(encoded);
+        private Declaration(Phase phase, String sourceId,
+                            String fieldSignature, String method,
+                            int unitIndex) {
             this.phase = phase;
             this.sourceId = sourceId;
+            this.fieldSignature = fieldSignature;
             this.method = method;
-            this.siteId = siteId;
-        }
-
-        public Map<String, Object> json() {
-            return new LinkedHashMap<>(encoded);
+            this.unitIndex = unitIndex;
+            this.siteId = ConfiguredSourcePhaseContract.siteId(
+                    method, unitIndex);
         }
 
         public Phase phase() { return phase; }
 
+        public String sourceId() { return sourceId; }
+
+        public String fieldSignature() { return fieldSignature; }
+
         public String method() { return method; }
+
+        public int declarationUnitIndex() { return unitIndex; }
 
         public String siteId() { return siteId; }
 
@@ -501,67 +387,48 @@ public final class ConfiguredSourcePhaseContract {
         }
     }
 
-    /** One validated execution of an exact configured-source hook site. */
     public static final class Occurrence {
-        private final Map<String, Object> encoded;
-        private final Phase phase;
+        private final Declaration declared;
         private final String phaseId;
-        private final String sourceId;
-        private final String fieldSignature;
         private final String sourceOccurrenceId;
-        private final String siteId;
         private final int baselineOrdinal;
         private final long runtimeEventSeq;
         private final long runtimeInvocationId;
         private final String runtimeDeclaredCallee;
         private final List<Long> enclosingCallIds;
 
-        private Occurrence(Map<String, Object> encoded, Phase phase,
-                           String phaseId, String sourceId,
-                           String fieldSignature, String sourceOccurrenceId,
-                           String siteId, int baselineOrdinal,
+        private Occurrence(Declaration declared, String phaseId,
+                           String sourceOccurrenceId, int baselineOrdinal,
                            long runtimeEventSeq, long runtimeInvocationId,
                            String runtimeDeclaredCallee,
                            List<Long> enclosingCallIds) {
-            this.encoded = new LinkedHashMap<>(encoded);
-            this.phase = phase;
+            this.declared = declared;
             this.phaseId = phaseId;
-            this.sourceId = sourceId;
-            this.fieldSignature = fieldSignature;
             this.sourceOccurrenceId = sourceOccurrenceId;
-            this.siteId = siteId;
             this.baselineOrdinal = baselineOrdinal;
             this.runtimeEventSeq = runtimeEventSeq;
             this.runtimeInvocationId = runtimeInvocationId;
             this.runtimeDeclaredCallee = runtimeDeclaredCallee;
             this.enclosingCallIds = Collections.unmodifiableList(
-                    new ArrayList<>(enclosingCallIds));
+                    enclosingCallIds);
         }
 
-        public Map<String, Object> json() {
-            return new LinkedHashMap<>(encoded);
-        }
-
-        public Phase phase() { return phase; }
+        public Phase phase() { return declared.phase(); }
 
         public String phaseId() { return phaseId; }
 
-        public String sourceId() { return sourceId; }
+        public String sourceId() { return declared.sourceId(); }
 
-        public String fieldSignature() { return fieldSignature; }
+        public String fieldSignature() { return declared.fieldSignature(); }
 
         public String sourceOccurrenceId() { return sourceOccurrenceId; }
 
-        public String siteId() { return siteId; }
+        public String siteId() { return declared.siteId(); }
 
-        /** Static method that contains this exact configured-source hook. */
-        public String declarationMethod() {
-            return text(encoded.get("declarationMethod"));
-        }
+        public String declarationMethod() { return declared.method(); }
 
-        /** Original Jimple unit index of this exact configured-source hook. */
         public int declarationUnitIndex() {
-            return ((Number) encoded.get("declarationUnitIndex")).intValue();
+            return declared.declarationUnitIndex();
         }
 
         public int baselineOrdinal() { return baselineOrdinal; }
@@ -570,9 +437,7 @@ public final class ConfiguredSourcePhaseContract {
 
         public long runtimeInvocationId() { return runtimeInvocationId; }
 
-        public String runtimeDeclaredCallee() {
-            return runtimeDeclaredCallee;
-        }
+        public String runtimeDeclaredCallee() { return runtimeDeclaredCallee; }
 
         public List<Long> enclosingCallIds() { return enclosingCallIds; }
     }

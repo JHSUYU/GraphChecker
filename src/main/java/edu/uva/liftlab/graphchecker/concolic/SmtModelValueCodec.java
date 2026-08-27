@@ -6,15 +6,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Lossless syntax handling for the scalar values returned by Z3.
- *
- * <p>This class deliberately accepts only the small, exact SMT value grammar
- * that the replay layer understands: decimal/integer atoms, unary minus,
- * rational division, booleans, and SMT-LIB quoted strings.  Algebraic or
- * otherwise unfamiliar model values are rejected instead of being rewritten
- * into a different Java value.</p>
- */
+/** Lossless syntax handling for the scalar values returned by Z3. */
 public final class SmtModelValueCodec {
     private static final MathContext REAL_REPLAY_CONTEXT =
             MathContext.DECIMAL128;
@@ -51,11 +43,7 @@ public final class SmtModelValueCodec {
         }
     }
 
-    /**
-     * Converts an exact SMT Real model value to a Java decimal literal.
-     * Returns {@code null} for an unsupported expression, division by zero,
-     * or a value that cannot be represented as a finite Java double.
-     */
+    /** Converts an exact SMT Real model value to a Java decimal literal. */
     public static String realToJavaLiteral(String value) {
         String raw = value == null ? "" : value.trim();
         if ("NaN".equals(raw) || "Infinity".equals(raw)
@@ -72,8 +60,7 @@ public final class SmtModelValueCodec {
 
     /**
      * Decodes the exact bit-vector returned by {@code fp.to_ieee_bv} into a
-     * Java parser literal.  Java's decimal rendering round-trips every finite
-     * value; the named spellings preserve NaN, infinities, and signed zero.
+     * Java parser literal.
      */
     public static String floatingPointBitsToJavaLiteral(String value,
                                                         String descriptor) {

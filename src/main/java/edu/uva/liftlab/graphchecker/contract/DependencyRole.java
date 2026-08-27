@@ -10,11 +10,9 @@ public final class DependencyRole {
     }
 
     /**
-     * Decodes the required two-valued dependency role.
-     *
-     * <p>This contract is intentionally fail closed.  Treating a missing or
-     * misspelled role as a value frontier silently creates solver inputs from
-     * structural owners and containers.</p>
+     * Decodes the required two-valued dependency role.  Fail closed on
+     * purpose: treating a missing or misspelled role as a value frontier
+     * silently creates solver inputs from structural owners and containers.
      */
     public static String normalize(Object value) {
         if (value == null) {

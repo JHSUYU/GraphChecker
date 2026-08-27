@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -30,10 +31,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
- * Immutable, once-decoded view of one imported concolic path summary.
- *
- * <p>The original summary is retained only as the attested replay payload.
- * Worklist and relation consumers use the typed and canonical fields below.</p>
+ * Immutable, once-decoded view of one imported concolic path summary.  The
+ * original summary is retained only as the attested replay payload.
  */
 public final class PathObservation {
     private static final Gson GSON = new GsonBuilder()
@@ -45,6 +44,7 @@ public final class PathObservation {
     private final String branchMappingIssue;
     private final AlphaNormalizer alpha;
     private final String pathKey;
+    private final List<Integer> relationPathPositions;
     private final JsonArray relationPathCondition;
     private final String relationGuardKey;
     private final String relationKey;
@@ -64,8 +64,11 @@ public final class PathObservation {
         this.alpha = new AlphaNormalizer(raw);
         this.pathKey = stablePathKey(raw, scope,
                 raw.get("pathCondition"), alpha);
-        this.relationPathCondition = projectRelationPathCondition(
-                raw, scope, branchMappings, alpha);
+        this.relationPathPositions = Collections.unmodifiableList(
+                projectRelationPathCondition(raw, scope, branchMappings,
+                        alpha));
+        this.relationPathCondition = conditionsAt(
+                array(raw, "pathCondition"), relationPathPositions);
         String containerCapacityIssue = InitialContainerObservation
                 .failureRelevantCapacityIssue(relationPathCondition,
                         raw.get("outputExpressions"));
@@ -90,8 +93,61 @@ public final class PathObservation {
                 : scope.outputClosure.producer().regionId();
     }
     public String sourceTaskId() { return string(raw, "taskId"); }
-    /** Causal-skeleton occurrence this path was imported against. */
     public String occurrenceId() { return string(raw, "occurrenceId"); }
+
+    /**
+     * OCC-1: one task's address may be entered several times, and every
+     * compatible activation is published as its own occurrence rather than
+     * one being answered and the rest reported as an ambiguous address.
+     *
+     * <p>These three members travel together.  A row that states no
+     * {@link #ACTIVATION_ORDINAL} is a pre-OCC-1 row and is read exactly as
+     * before: one occurrence, the planned one.</p>
+     */
+    public static final String ACTIVATION_ORDINAL = "activationOrdinal";
+    /** The address the task planned, shared by every activation of it. */
+    public static final String PLANNED_OCCURRENCE_ID = "plannedOccurrenceId";
+    /** Whether this activation exited through the selected target throw. */
+    public static final String TARGET_REACHED = "targetReached";
+
+    /** This activation's ordinal, or 0 when the row states none. */
+    public int activationOrdinal() {
+        return integer(raw, ACTIVATION_ORDINAL, 0);
+    }
+
+    /** Whether this observation is one activation among a task's several. */
+    public boolean statesActivation() { return activationOrdinal() >= 1; }
+
+    /** The planned address; the occurrence itself when none is stated. */
+    public String plannedOccurrenceId() {
+        String planned = string(raw, PLANNED_OCCURRENCE_ID);
+        return planned.isEmpty() ? occurrenceId() : planned;
+    }
+
+    /** Whether this activation reached the target; false when unstated. */
+    public boolean targetReached() {
+        return bool(raw, TARGET_REACHED, false);
+    }
+
+    /**
+     * OCC-1: the planned address behind one occurrence id.
+     *
+     * <p>An activation occurrence is named {@code <plannedAddress>#a<ordinal>}.
+     * A relation, a target reach query and a region plan are all keyed on the
+     * planned address the campaign scheduled, so a match between one of them
+     * and a per-activation summary is made on the address, not the activation.
+     * A string that carries no activation suffix -- a pre-OCC-1 occurrence --
+     * is returned unchanged.</p>
+     */
+    public static String plannedOccurrenceOf(String occurrenceId) {
+        String value = occurrenceId == null ? "" : occurrenceId;
+        int marker = value.lastIndexOf("#a");
+        if (marker <= 0 || marker + 2 >= value.length()) return value;
+        for (int index = marker + 2; index < value.length(); index++) {
+            if (!Character.isDigit(value.charAt(index))) return value;
+        }
+        return value.substring(0, marker);
+    }
     public String sourceKey() { return string(raw, "sourceKey"); }
     public boolean relationallyComplete() {
         return bool(raw, "relationallyComplete", false);
@@ -108,10 +164,19 @@ public final class PathObservation {
     public JsonArray interactionEvents() {
         return array(raw, RelationSummary.INTERACTION_EVENTS).deepCopy();
     }
+    /** The C2 free roots this case reported; empty when it reported none.
+     *  The census itself is required: a summary that never stated it is
+     *  refused by {@link SymbolicSourceEvidence#freeSymbolsOf}. */
+    public JsonArray freeSymbols() {
+        JsonArray result = new JsonArray();
+        for (JsonObject free : SymbolicSourceEvidence.freeSymbolsOf(raw)) {
+            result.add(free);
+        }
+        return result;
+    }
     public JsonArray symbolicSourceEvidence() {
         return array(raw, SymbolicSourceEvidence.FIELD).deepCopy();
     }
-    /** Runtime-observed loop counts belonging to this replay path only. */
     public JsonArray pathLoopCounts() {
         return array(raw, LoopBoundPolicy.PATH_LOOP_COUNTS).deepCopy();
     }
@@ -122,25 +187,27 @@ public final class PathObservation {
     public JsonArray relationPathCondition() {
         return relationPathCondition.deepCopy();
     }
+    /** Recorded-path positions {@link #relationPathCondition()} kept.  README
+     *  PC-1 drops rows from inside the prefix, so a consumer cutting the
+     *  projected guard must cut on these recorded positions. */
+    public List<Integer> relationPathConditionPositions() {
+        return relationPathPositions;
+    }
     public String relationGuardKey() { return relationGuardKey; }
     public String relationKey() { return relationKey; }
     public JsonArray edgeBindings() {
         return array(raw, "edgeBindings").deepCopy();
     }
 
-    /** The exact runtime event which attests this target path, if present. */
     public TargetReachEvent targetReachEvent() {
         JsonElement encoded = raw.get(TargetReachEvent.FIELD);
         return encoded == null ? null : TargetReachEvent.decode(encoded);
     }
 
-    /**
-     * Canonical carrier for the one runtime event that makes a target path
-     * eligible for composition.  This is deliberately stricter than the
-     * generic JSON accessors: target identity is an authority, so unknown
-     * members and number/string coercions are schema errors rather than
-     * compatibility input.
-     */
+    /** Canonical carrier for the runtime event that makes a target path
+     *  eligible for composition.  Stricter than the generic accessors:
+     *  target identity is an authority, so unknown members and coercions are
+     *  schema errors. */
     public static final class TargetReachEvent {
         public static final String FIELD = "targetReach";
         public static final String KIND = "TARGET_REACH_EVENT";
@@ -230,27 +297,19 @@ public final class PathObservation {
         }
     }
 
-    /**
-     * The shared state this path's execution recorded: published field
-     * versions, resolved reads and the session event ledger.  It is
-     * case-local evidence and travels on this path's own guarded case; two
-     * paths of one occurrence never share it.
-     */
+    /** Published field versions, resolved reads and the session event ledger
+     *  this path recorded.  Case-local: two paths never share it. */
     public JsonObject recordedSharedState() {
         return object(raw, SharedStateEvidence.RECORDED_FIELD).deepCopy();
     }
 
     /**
-     * Where this path's execution actually ended.
-     *
-     * <p>README {@code case_k = ... AND terminal_k}: the terminal is
-     * case-local like every other member, because two paths of one
-     * occurrence routinely end differently - one returns, one throws, one is
-     * cut at its declared bound - and a summary that stated only the guard
-     * and the outputs left a consumer unable to tell a completed case from a
-     * bounded prefix of one.  It is derived here rather than restated by the
-     * merge so that the three exit members the importer wrote have exactly
-     * one reading.</p>
+     * Where this path's execution actually ended.  README
+     * {@code case_k = ... AND terminal_k}: case-local, because two paths of
+     * one occurrence routinely end differently and a summary stating only the
+     * guard and the outputs cannot tell a completed case from a bounded
+     * prefix.  Derived here so the importer's three exit members have one
+     * reading.
      */
     public JsonObject terminal() {
         JsonObject terminal = new JsonObject();
@@ -262,22 +321,15 @@ public final class PathObservation {
         return terminal;
     }
 
-    /**
-     * The VM handoffs this path's execution attached, as case-local
-     * references into the session ledger.  Membership is the case's: a
-     * handoff another path of the same occurrence observed is that path's
-     * event and never this one's.
-     */
+    /** VM handoffs this path attached, as case-local references into the
+     *  session ledger: another path's handoff is that path's event. */
     public java.util.List<JsonObject> vmHandoffEvents() {
         return VmHandoffEvidence.eventsOf(raw);
     }
 
-    /** Exact configured-source values this path consumed to select an object. */
-    public java.util.List<JsonObject> configuredSourceSelectorEvidence() {
-        return ConfiguredSourceSelectorContract.evidenceOf(raw);
-    }
-
-    public boolean hasExactOutputSet(Set<String> outputPorts) {
+    /** The output ports this path actually produced: a lowered expression or
+     *  a declared interaction event is equally a production of the port. */
+    public Set<String> producedOutputPorts() {
         Set<String> covered = new TreeSet<>(
                 object(raw, "outputExpressions").keySet());
         for (JsonElement element : interactionEvents()) {
@@ -285,7 +337,11 @@ public final class PathObservation {
             String port = string(element.getAsJsonObject(), "portId");
             if (!port.isEmpty()) covered.add(port);
         }
-        return covered.equals(new TreeSet<>(outputPorts));
+        return covered;
+    }
+
+    public boolean hasExactOutputSet(Set<String> outputPorts) {
+        return producedOutputPorts().equals(new TreeSet<>(outputPorts));
     }
 
     public JsonArray prefixBefore(int conditionIndex) {
@@ -389,9 +445,7 @@ public final class PathObservation {
         public ClosureGoalKind goalKind() { return goalKind; }
         public String goalId() { return goalId; }
         public LoopBoundPolicy loopBound() { return loopBound; }
-        public OutputClosureContract outputClosure() {
-            return outputClosure;
-        }
+        public OutputClosureContract outputClosure() { return outputClosure; }
         public Set<String> branchSites() { return branchSites; }
         public String identity() { return identity; }
         public String outputClosureIdentity() {
@@ -422,13 +476,16 @@ public final class PathObservation {
         return CanonicalJson.sha256(value.toString());
     }
 
-    private static JsonArray projectRelationPathCondition(
+    /**
+     * The failure slice of one recorded case, as recorded-path positions.
+     * README PC-1 for every goal kind: keeping the whole recorded prefix
+     * emits the transport, SASL and startup noise the acceptance condition
+     * forbids.  The kinds differ only in what {@code demanded} is seeded from.
+     */
+    private static List<Integer> projectRelationPathCondition(
             JsonObject summary, Scope scope,
             List<SummaryBranchMapping> mappings, AlphaNormalizer alpha) {
         JsonArray full = array(summary, "pathCondition");
-        if (!scope.goalKind.capturesOutputRelation()) {
-            return full.deepCopy();
-        }
         Map<Integer, SummaryBranchMapping> owners = new LinkedHashMap<>();
         Set<Integer> selected = new LinkedHashSet<>();
         for (SummaryBranchMapping mapping : mappings) {
@@ -440,24 +497,40 @@ public final class PathObservation {
                 }
             }
         }
+        if (scope.goalKind.capturesTargetReach()) {
+            // A target case selects every decision this execution recorded.
+            // A witnessed row is by construction a *selected* branch site, so
+            // it is never transport or startup noise; dropping one weakens a
+            // reachability query into admitting a model that never reaches
+            // the target, which is unsound rather than merely wide.
+            for (SummaryBranchMapping mapping : mappings) {
+                int position = mapping.summaryPcIndex();
+                if (mapping.isWitnessed() && position >= 0
+                        && position < full.size()) {
+                    selected.add(position);
+                }
+            }
+        }
         for (int index = 0; index < full.size(); index++) {
             if (referencesSelectedInput(full.get(index), alpha)) {
                 selected.add(index);
             }
         }
 
-        // The execution task fixes non-selected inputs (including loop
-        // cardinality) to their witnessed concrete values.  A relation guard
-        // therefore contains the selected symbolic decisions plus only the
-        // local definitions on which those decisions depend.  Canonical
-        // region inputs and nondeterministic environment values are boundary
-        // leaves, not definitions to chase back into unrelated VM activity.
+        // The task fixes non-selected inputs to witnessed concrete values, so
+        // a guard holds the selected symbolic decisions plus only the local
+        // definitions they depend on.
         Set<String> demanded = new LinkedHashSet<>();
         Set<String> selectedTokens = new LinkedHashSet<>();
-        Set<String> outputTokens = dependencyTokens(
-                summary.get("outputExpressions"));
-        selectedTokens.addAll(outputTokens);
-        addNonBoundaryTokens(demanded, outputTokens);
+        // What the case has to explain seeds the slice: a relation case its
+        // declared outputs; a target case the branch predicate its fatal
+        // query is about, already in `selected` above.
+        if (scope.goalKind.capturesOutputRelation()) {
+            Set<String> outputTokens = dependencyTokens(
+                    summary.get("outputExpressions"));
+            selectedTokens.addAll(outputTokens);
+            addNonBoundaryTokens(demanded, outputTokens);
+        }
         for (Integer position : selected) {
             Set<String> tokens = dependencyTokens(full.get(position));
             selectedTokens.addAll(tokens);
@@ -496,20 +569,27 @@ public final class PathObservation {
             }
         } while (changed);
 
-        JsonArray projected = new JsonArray();
+        List<Integer> projected = new ArrayList<>();
         for (int index = 0; index < full.size(); index++) {
             if (selected.contains(index) || dependencies.contains(index)) {
-                projected.add(full.get(index).deepCopy());
+                projected.add(index);
             }
         }
         return projected;
     }
 
-    /**
-     * Keeps constraints over inputs the replay actually materialized as
-     * symbolic, even when the output itself is a concrete expression and the
-     * controlling VM branch has no explicit branch-mapping hook.
-     */
+    private static JsonArray conditionsAt(JsonArray full,
+                                          List<Integer> positions) {
+        JsonArray conditions = new JsonArray();
+        for (Integer position : positions) {
+            conditions.add(full.get(position).deepCopy());
+        }
+        return conditions;
+    }
+
+    /** Keeps constraints over inputs the replay materialized as symbolic even
+     *  when the output is concrete and the controlling VM branch has no
+     *  branch-mapping hook. */
     private static boolean referencesSelectedInput(
             JsonElement expression, AlphaNormalizer alpha) {
         for (String token : dependencyTokens(expression)) {
@@ -523,16 +603,11 @@ public final class PathObservation {
     }
 
     /**
-     * Keeps the VM's exact materialization of a boundary input when that
-     * input directly controls a selected semantic branch.
-     *
-     * <p>Canonical {@code REGION.in.*} symbols normally terminate relation
-     * slicing.  An exact-field hook is different: it is the VM-recorded
-     * definition that relates such a scalar boundary to the member selected
-     * from a container expression.  Dropping it makes the scalar free in the
-     * merged relation.  Only the symbol side may satisfy the demand; matching
-     * the container side would pull every unrelated field read from the same
-     * object into the relation.</p>
+     * Keeps the VM's exact materialization of a boundary input that directly
+     * controls a selected semantic branch.  Canonical {@code REGION.in.*}
+     * symbols normally terminate slicing, but dropping this definition makes
+     * the scalar free in the merged relation.  Only the symbol side satisfies
+     * the demand: the container side would pull in every unrelated field read.
      */
     private static boolean exactFieldBindingDefinesAny(
             JsonElement expression, Set<String> demandedTokens) {
@@ -546,15 +621,9 @@ public final class PathObservation {
         return overlaps(defined, demandedTokens);
     }
 
-    /**
-     * Canonical identity of the field term one exact materialization defines.
-     *
-     * <p>Two boundary symbols materialized from the same exact field are equal
-     * through that shared field term.  Once either definition is relevant to a
-     * selected branch or output, retaining every co-definition preserves that
-     * equality without recursively admitting unrelated boundary inputs or
-     * different fields of the same owner.</p>
-     */
+    /** Canonical identity of the field term one exact materialization
+     *  defines, so co-definitions keep two boundary symbols equal without
+     *  admitting unrelated inputs. */
     private static String exactFieldBindingIdentity(
             JsonElement expression, AlphaNormalizer alpha) {
         if (!ContainerSmtCodec.handlesFieldBinding(expression)) return "";
@@ -580,18 +649,12 @@ public final class PathObservation {
     }
 
     /**
-     * A symbol that names a declared port of the relation, and is therefore a
-     * boundary leaf rather than a local definition to chase.
-     *
-     * <p>A region mints its own ports as {@code <regionId>.in./.out.<id>}.  A
-     * communication cut does not: README section 3 sends {@code Req_out},
-     * {@code Resp_out} and {@code Live_out} through ports named after the
-     * exchange <em>site</em>, so a cut port carries no region id and the
-     * region test alone reads it as an ordinary symbol.  Chasing it would
-     * walk a relation's projected path condition into definitions that live
-     * on the far side of the cut, which is exactly what the port exists to
-     * prevent.  {@link CommunicationCatalogContract#declaredPortId} is the
-     * minter, so it is asked rather than pattern-matched.</p>
+     * A symbol naming a declared port, and therefore a boundary leaf rather
+     * than a local definition to chase.  README section 3 sends cut values
+     * through ports named after the exchange <em>site</em>, so a cut port
+     * carries no region id and the region test alone reads it as an ordinary
+     * symbol; chasing it would walk past the cut.
+     * {@link CommunicationCatalogContract#declaredPortId} is the minter.
      */
     private static boolean declaredPortSymbol(String symbol) {
         return (symbol.contains("REGION.")
@@ -694,7 +757,7 @@ public final class PathObservation {
         private final Map<String, String> placeholders = new LinkedHashMap<>();
 
         private AlphaNormalizer(JsonObject summary) {
-            collectInputPortArray(summary.get("symbolicInputs"));
+            collectInputPorts(summary.get("symbolicInputs"));
             JsonElement outputs = summary.get("outputExpressions");
             if (outputs != null && outputs.isJsonObject()) {
                 for (String port : outputs.getAsJsonObject().keySet()) {
@@ -703,36 +766,14 @@ public final class PathObservation {
             }
         }
 
-        private void collectInputPortArray(JsonElement value) {
-            collectPortArray(value);
+        /** {@code symbolicInputs} is the importer's array of root names. */
+        private void collectInputPorts(JsonElement value) {
             if (value == null || !value.isJsonArray()) return;
             for (JsonElement element : value.getAsJsonArray()) {
-                if (element.isJsonPrimitive()) {
-                    addInputPort(element.getAsString());
-                } else if (element.isJsonObject()) {
-                    JsonObject object = element.getAsJsonObject();
-                    addInputPort(string(object, "portId"));
-                    addInputPort(string(object, "inputPort"));
-                }
+                if (!element.isJsonPrimitive()) continue;
+                addPort(element.getAsString());
+                addInputPort(element.getAsString());
             }
-        }
-
-        private void collectPortArray(JsonElement value) {
-            if (value == null || !value.isJsonArray()) return;
-            for (JsonElement element : value.getAsJsonArray()) {
-                if (element.isJsonPrimitive()) {
-                    addPort(element.getAsString());
-                } else if (element.isJsonObject()) {
-                    collectPortObject(element);
-                }
-            }
-        }
-
-        private void collectPortObject(JsonElement value) {
-            JsonObject object = value.getAsJsonObject();
-            addPort(string(object, "portId"));
-            addPort(string(object, "inputPort"));
-            addPort(string(object, "outputPort"));
         }
 
         private void addPort(String candidate) {
@@ -792,13 +833,9 @@ public final class PathObservation {
             return normalized;
         }
 
-        /**
-         * A cross-run stable port name, kept verbatim instead of being
-         * alpha-renamed.  A cut port id qualifies for the same reason a
-         * region port does: both are pure static identities, so two
-         * observations of one relation must normalize them to themselves or
-         * they align by encounter order instead of by name.
-         */
+        /** A cross-run stable port name, kept verbatim rather than
+         *  alpha-renamed: cut and region port ids are pure static identities,
+         *  so two observations must normalize them to themselves. */
         private static boolean looksLikeCanonicalPort(String value) {
             String candidate = firstNonBlank(value);
             return (candidate.startsWith("REGION.")

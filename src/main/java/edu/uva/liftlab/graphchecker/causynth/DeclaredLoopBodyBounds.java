@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
 
 /**
  * The {@code K_L} a campaign declares for the retained loops of its own
@@ -90,13 +91,10 @@ final class DeclaredLoopBodyBounds {
             new LinkedHashSet<String>(Arrays.asList(
                     SITE_FIELD, BOUND_FIELD, REASON_FIELD)));
 
-    private final String source;
     private final SortedMap<String, Declaration> bySite;
     private final Set<String> claimed = new LinkedHashSet<String>();
 
-    private DeclaredLoopBodyBounds(String source,
-                                   SortedMap<String, Declaration> bySite) {
-        this.source = source;
+    private DeclaredLoopBodyBounds(SortedMap<String, Declaration> bySite) {
         this.bySite = bySite;
     }
 
@@ -120,7 +118,7 @@ final class DeclaredLoopBodyBounds {
 
     /** A campaign that declares no bound: every retained loop inherits. */
     static DeclaredLoopBodyBounds none() {
-        return new DeclaredLoopBodyBounds("",
+        return new DeclaredLoopBodyBounds(
                 new TreeMap<String, Declaration>());
     }
 
@@ -171,7 +169,7 @@ final class DeclaredLoopBodyBounds {
                 bySite.put(declaration.site, declaration);
             }
         }
-        return new DeclaredLoopBodyBounds(path.toString(), bySite);
+        return new DeclaredLoopBodyBounds(bySite);
     }
 
     private static Declaration parse(String line, String origin)
@@ -211,32 +209,12 @@ final class DeclaredLoopBodyBounds {
         return new Declaration(site.getAsString().trim(), bound, origin);
     }
 
-    /** True when this campaign declares nothing at all. */
-    boolean isEmpty() {
-        return bySite.isEmpty();
-    }
-
-    /** How many loops this campaign declares a bound for. */
-    int size() {
-        return bySite.size();
-    }
-
-    /** The file these declarations were read from, or {@code ""}. */
-    String source() {
-        return source;
-    }
-
     /**
-     * {@code K_L} for the retained loop one row's loop control sites name,
-     * or {@code 0} when that loop declares none of its own.
-     *
-     * <p>Several sites are one loop nest, and its
-     * model site is the composite {@link
-     * LoopBoundPolicy#loopSiteId(Collection)}.  One loop has one prefix, so
-     * every member site must declare the same bound; members that state
-     * different bounds - or a member that declares one while another inherits
-     * - are refused by name rather than resolved by picking either.</p>
-     *
+     * {@code K_L} for the retained loop one row's loop control sites name, or
+     * {@code 0} when that loop declares none of its own. One loop has one
+     * prefix, so every member site must declare the same bound; members that
+     * state different bounds - or a member that declares one while another
+     * inherits - are refused by name rather than resolved by picking either.
      * @throws IllegalArgumentException naming {@link
      *         BoundedLoopComposition#LOOP_BODY_BOUND_DISAGREES} or {@link
      *         LoopBoundPolicy#DECLARED_BOUND_OUT_OF_RANGE}, in both cases
@@ -282,13 +260,7 @@ final class DeclaredLoopBodyBounds {
         return bound;
     }
 
-    /**
-     * Refuses every declaration no retained loop claimed.
-     *
-     * <p>Deferred to the end of planning on purpose: the plan is re-derived
-     * as the selected method set grows, so a key matched only by the final
-     * plan must not be refused against an earlier one.</p>
-     */
+    /** Refuses every declaration no retained loop claimed. */
     void refuseUnclaimed() {
         List<String> unclaimed = new ArrayList<String>();
         for (Declaration declaration : bySite.values()) {
@@ -341,12 +313,4 @@ final class DeclaredLoopBodyBounds {
                         + "; one loop has one prefix");
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
-            }
-        }
-        return null;
-    }
 }

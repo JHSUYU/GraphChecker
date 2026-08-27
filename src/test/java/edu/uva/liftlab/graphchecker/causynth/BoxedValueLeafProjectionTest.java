@@ -67,7 +67,6 @@ public class BoxedValueLeafProjectionTest {
 
         Map<String, Object> leaf = port(regions, LEAF_PORT);
         assertNull(String.valueOf(leaf), leaf.get("symbolicDemand"));
-        assertNull(leaf.get("replayAuthority"));
 
         Map<String, Object> projection = projection(edges);
         assertNotNull(String.valueOf(edges), projection);
@@ -78,16 +77,6 @@ public class BoxedValueLeafProjectionTest {
         assertEquals(LEAF_PORT, projection.get("toPort"));
         assertEquals(DependencyRole.VALUE_FRONTIER,
                 projection.get("dependencyRole"));
-        // The rule that made it, the edge it was made from, and the port that
-        // edge closed on its own.
-        assertEquals(RuntimeSelectedRegionFinalizer
-                        .BOXED_LEAF_PROJECTION_AUTHORITY,
-                projection.get(RuntimeSelectedRegionFinalizer
-                        .EDGE_BOXED_LEAF_AUTHORITY));
-        assertEquals("RF.carrier", projection.get("boxedCarrierEdgeId"));
-        assertEquals(CARRIER_PORT, projection.get("boxedCarrierPort"));
-        assertEquals("java.lang.Boolean", projection.get("boxedWrapperType"));
-        assertEquals(BOXED_VALUE, projection.get("boxedLeafDeclaration"));
         // Whatever the carrier proves about its writer, the projection states
         // for the leaf, under the same still-undecided read-from address.
         assertEquals("example.Client#raiseRequest",
@@ -117,8 +106,63 @@ public class BoxedValueLeafProjectionTest {
         Map<String, Object> leaf = port(regions, LEAF_PORT);
         assertEquals("CONCRETE_REFERENCE_BOUNDARY_REPLAY",
                 leaf.get("symbolicDemand"));
-        assertEquals("EXACT_TRACE_REFERENCE_LEAF_UNDER_APPROX_V1",
-                leaf.get("replayAuthority"));
+        assertNull(String.valueOf(edges), projection(edges));
+    }
+
+    /**
+     * The strongest reference evidence the recorder can state is still not
+     * evidence about the value.  This is the shape the confirmed cross-JVM
+     * handoff leaves behind: the carrier is a confirmed runtime identity, it
+     * names an exact producer occurrence and output port, it carries a
+     * transported-value-frontier authority, and the consumer never writes the
+     * leaf itself.  All of that decides who produced the <em>reference</em>.
+     * The leaf still keeps the named demotion, because the producer's output
+     * port stands for the object, and the object is not the value.
+     */
+    @Test
+    public void aConfirmedReferenceCarrierStillDoesNotDecideAPlainLeaf() {
+        List<Map<String, Object>> regions = regions(leaf(PLAIN_VALUE,
+                WRAPPER));
+        Map<String, Object> confirmed = carrier(WRAPPER);
+        confirmed.put("state", "CONFIRMED_RUNTIME_IDENTITY");
+        confirmed.put("correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+        confirmed.put("transportedValueFrontierAuthority",
+                "EXACT_RUNTIME_REFERENCE_CARRIER_OF_VM_COMPONENT_V1");
+        List<Map<String, Object>> edges = new ArrayList<>(
+                Collections.singletonList(confirmed));
+
+        RuntimeSelectedRegionFinalizer.markUnclosedReferenceLeavesConcrete(
+                regions, edges, Collections.<Map<String, Object>>emptyList(),
+                Collections.<String, String>emptyMap());
+
+        Map<String, Object> leaf = port(regions, LEAF_PORT);
+        assertEquals("CONCRETE_REFERENCE_BOUNDARY_REPLAY",
+                leaf.get("symbolicDemand"));
+        assertNull(String.valueOf(edges), projection(edges));
+        assertEquals(1, edges.size());
+    }
+
+    /**
+     * A leaf the <em>consumer</em> installs itself was never reached through
+     * the boundary, so it is not demoted and not projected - not even when it
+     * is a wrapper whose reference a carrier did deliver.
+     */
+    @Test
+    public void aLeafTheConsumerWritesItselfIsNeitherDemotedNorProjected() {
+        List<Map<String, Object>> regions = regions(leaf(BOXED_VALUE,
+                WRAPPER));
+        List<Map<String, Object>> edges = new ArrayList<>(
+                Collections.singletonList(carrier(WRAPPER)));
+        List<Map<String, Object>> graph = Collections.singletonList(
+                heapWriteLeaf(WRAPPER, BOXED_VALUE));
+
+        RuntimeSelectedRegionFinalizer.markUnclosedReferenceLeavesConcrete(
+                regions, edges, graph, Collections.singletonMap(
+                        REGION + "\n1", OCCURRENCE));
+
+        Map<String, Object> leaf = port(regions, LEAF_PORT);
+        assertNull(String.valueOf(leaf), leaf.get("symbolicDemand"));
         assertNull(String.valueOf(edges), projection(edges));
     }
 
@@ -216,10 +260,10 @@ public class BoxedValueLeafProjectionTest {
         List<String> projected = new ArrayList<>();
         for (Map<String, Object> edge : edges) {
             if (String.valueOf(edge.get("edgeId")).startsWith("BX.")) {
-                projected.add(String.valueOf(edge.get("boxedCarrierEdgeId")));
+                projected.add(String.valueOf(edge.get("toPort")));
             }
         }
-        assertEquals(Arrays.asList("RF.carrier", "RF.carrier2"), projected);
+        assertEquals(Arrays.asList(LEAF_PORT, LEAF_PORT), projected);
         // Two arms, two identities: one id for two producers would let the
         // canonicalizer keep whichever it saw first.
         assertTrue(edges.get(2).get("edgeId") + " vs "
@@ -278,6 +322,21 @@ public class BoxedValueLeafProjectionTest {
                 "writerEventSeq", 11L, "readerEventSeq", 21L,
                 "readFromField", "example.Client#raiseRequest",
                 "readFromProvenance", "TRACE_CANDIDATE_WRITER");
+        return edge;
+    }
+
+    /** One leaf this activation installs on the delivered object itself. */
+    private static Map<String, Object> heapWriteLeaf(int receiver,
+                                                     String declaration) {
+        Map<String, Object> edge = object("schemaVersion", 3,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "transferKind", "HEAP_WRITE", "id", "DF.write");
+        Map<String, Object> binding = object("regionId", REGION,
+                "rootCallId", 1L, "fieldReceiverObjectId", receiver);
+        binding.put("fieldPathDeclarations",
+                Collections.singletonList(declaration));
+        edge.put("runtimeFieldBindings",
+                Collections.singletonList(binding));
         return edge;
     }
 

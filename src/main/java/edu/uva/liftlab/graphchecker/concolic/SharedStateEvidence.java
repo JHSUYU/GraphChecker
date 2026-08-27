@@ -24,29 +24,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.textString;
 
 /**
  * Named vocabulary for the VM's recorded shared-state evidence.
- *
- * <p>Two envelopes arrive from the session and are admitted here before any
- * consumer may read them:</p>
- *
- * <ul>
- *   <li>the <em>version store</em> of one selected location - every write that
- *   published a version, and every read that was resolved against them,
- *   together with the rule each read was decided by;</li>
- *   <li>the <em>event ledger</em> - one event-id space and one partial order
- *   carrying program, synchronization, read-from, value-handoff, region and
- *   candidate edges.</li>
- * </ul>
- *
- * <p>A third artifact is not an envelope but an expression: the guarded
- * read-from node the VM attaches to a read it could not resolve. It is
- * admitted here too, because the one property that makes it sound - the
- * unconditional unknown-writer arm - is exactly the property a consumer must
- * never be allowed to assume.</p>
- *
- * <p>Everything this class refuses becomes one named
- * {@code SHARED_STATE_GAP} in the same coverage stream as an RPC handoff gap.
- * Nothing is repaired, defaulted or inferred: an envelope that does not prove
- * its own claim is evidence of nothing.</p>
  */
 public final class SharedStateEvidence {
 
@@ -55,27 +32,12 @@ public final class SharedStateEvidence {
 
     /**
      * Schema of the admitted record wrappers this vocabulary produces.
-     *
-     * <p>Version 2 added the {@link RecordedEvidenceIdentity} stamp. It is a
-     * hard break rather than an optional member: a version-1 record cannot say
-     * which activation, session or snapshot it came from, so a consumer
-     * holding both would have to fall back to guessing for the older half.
-     * Mixed input is therefore refused - an unstamped record is not admitted
-     * at all, and becomes the same named gap as any other refusal.</p>
      */
     public static final int RECORD_SCHEMA_VERSION = 2;
 
-    // ---- VM envelope identities --------------------------------------
 
     /**
      * Envelope kind of one selected location's version store.
-     *
-     * <p>A selected map's whole-state store arrives in this same envelope,
-     * deliberately: a field, an array element and a map differ only in the
-     * shape of the expression a version carries, so admitting them through
-     * two schemas would mean two admission rules to keep in agreement. What
-     * distinguishes a map is its location kind and its reserved slot, not its
-     * envelope.</p>
      */
     public static final String VERSIONS_ENVELOPE_KIND =
             "SHARED_FIELD_VERSIONS";
@@ -90,14 +52,6 @@ public final class SharedStateEvidence {
     public static final String UNKNOWN_WRITER_SELECTOR = "rf_unknown";
     /**
      * Explicit form of the empty conjunction.
-     *
-     * <p>The VM writes an unguarded write's path guard as JSON {@code null},
-     * which says "this writer took no recorded branch" and is a different
-     * claim from "the guard was never captured". A JSON null does not survive
-     * a tree copy - object members whose value is null are dropped - so an
-     * unguarded write would arrive downstream indistinguishable from an
-     * unrecorded one. The null is therefore replaced by this marker at the
-     * one place the envelope is first read, before any copy can lose it.</p>
      */
     public static final String EMPTY_CONJUNCTION_KIND = "EMPTY_CONJUNCTION";
     public static final String EMPTY_CONJUNCTION_AUTHORITY =
@@ -109,7 +63,6 @@ public final class SharedStateEvidence {
     public static final String VM_SERIALIZATION_TRUNCATION_AUTHORITY =
             "VM_SERIALIZATION_TRUNCATION_V1";
 
-    // ---- Recorded artifact identities --------------------------------
 
     /** Kind of one admitted version-store record. */
     public static final String VERSIONS_RECORD_KIND =
@@ -130,19 +83,16 @@ public final class SharedStateEvidence {
     public static final String GAP_AUTHORITY =
             "VM_SHARED_STATE_EVIDENCE_GAP_V1";
 
-    // ---- Stages ------------------------------------------------------
 
     public static final String STAGE_SELECT = "SELECT";
     public static final String STAGE_VERSIONS = "VERSIONS";
     public static final String STAGE_LEDGER = "LEDGER";
 
-    // ---- Statuses ----------------------------------------------------
 
     public static final int OK = 0;
 
     // Declared VM carrier-selection refusals (sharedFieldVersions.hpp).
     // Their numeric values are the VM's; they are mirrored so a Java caller
-    // can name a refusal without linking against the custom JDK.
     public static final int SELECT_NO_ACTIVE_CONTEXT = -1;
     public static final int SELECT_MISSING_METADATA = -2;
     public static final int SELECT_FIELD_NOT_FOUND = -3;
@@ -154,10 +104,6 @@ public final class SharedStateEvidence {
     /** The frozen producer edge id is absent or malformed. */
     public static final int SELECT_INVALID_EDGE = -7;
 
-    /**
-     * Bridge-local statuses, deliberately far outside the VM's contiguous
-     * range so they can never be read as one of its answers.
-     */
     public static final int API_UNAVAILABLE = -1000;
     public static final int INVOCATION_FAILED = -1001;
     public static final int MALFORMED_ENVELOPE = -1002;
@@ -165,31 +111,18 @@ public final class SharedStateEvidence {
     public static final int NOT_SELECTED = -1003;
     /** Addressing that names no single location. */
     public static final int MISSING_METADATA = -1004;
-    /**
-     * The recorded evidence keeps an unknown writer for this read: the writer
-     * set is not complete, or a recorded writer carries no cross-run identity.
-     * The read therefore retains its {@code rf_unknown} arm.
-     */
     public static final int UNKNOWN_WRITER = -1005;
     /**
-     * The VM's per-location read log reached its bound and dropped entries,
-     * so this location's writer set is open for a reason that is not "no
-     * writer was recorded".
-     *
-     * <p>Truncation and an ordinary open writer set both clear
-     * {@code writerSetComplete}, and both keep the {@code rf_unknown} arm, so
-     * the model is equally honest either way.  They are not the same finding:
-     * an open set says the run may not have exercised every writer, while a
-     * truncated log says the run <em>did</em> record reads this evidence no
-     * longer holds - usually because unrelated traffic on the same location
      * drowned the log.  README's claim boundary makes a gap-bearing result
-     * inconclusive; which gap it was is what tells a reader whether to widen
-     * coverage or to keep the noise off the selected location, so the two are
-     * named apart rather than merged.</p>
      */
     public static final int READ_LOG_TRUNCATED = -1006;
     /** One expression root was serialized only up to the VM's safety bound. */
     public static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
+    /**
+     * set (README {@code EVENT-1}): both fail closed, but a malformed
+     */
+    public static final int LEDGER_LOG_TRUNCATED = -1008;
+    public static final int LEDGER_DOMAIN_SATURATED = -1009;
 
     /** Exact coverage reason for a VM-bounded expression tree. */
     public static final String VM_EXPRESSION_SERIALIZATION_TRUNCATED =
@@ -200,31 +133,19 @@ public final class SharedStateEvidence {
     public static final String UNDECLARED_REASON =
             REASON_PREFIX + "UNDECLARED_STATUS";
 
-    // ---- VM vocabularies ---------------------------------------------
 
     public static final String RESOLUTION_EXACT = "EXACT";
     public static final String RESOLUTION_GUARDED = "GUARDED";
     public static final String RESOLUTION_NONE = "NONE";
-    /** Exact Map read admitted by one frozen producer-state edge. */
-    public static final String READ_REASON_PLANNED_PRODUCER_STATE =
-            "PLANNED_PRODUCER_STATE";
-
     private static final Set<String> RESOLUTIONS = names(
             RESOLUTION_EXACT, RESOLUTION_GUARDED, RESOLUTION_NONE);
     private static final Set<String> READ_REASONS = names("UNIQUE_VERSION",
             "VALUE_DISTINGUISHED", "SYNC_ORDERED", "AMBIGUOUS_WRITERS",
-            "UNTRACKED_WRITER", "INCOMPLETE_WRITER_SET", "NOT_SELECTED",
-            READ_REASON_PLANNED_PRODUCER_STATE);
+            "UNTRACKED_WRITER", "INCOMPLETE_WRITER_SET", "NOT_SELECTED");
     /** Location kind of one selected map's whole immutable state. */
     public static final String LOCATION_KIND_MAP_STATE = "MAP_STATE";
     /**
      * The reserved slot of a whole-state location.
-     *
-     * <p>A map has no field offset and no array index, so the VM addresses
-     * its state by one sentinel slot shared by the map and every view of it.
-     * It is checked rather than assumed: a {@code MAP_STATE} record carrying
-     * some other slot is addressing something this layer cannot name, and an
-     * unnameable location is refused exactly as a missing one is.</p>
      */
     public static final int MAP_STATE_SLOT = -3;
 
@@ -233,17 +154,23 @@ public final class SharedStateEvidence {
     /**
      * Kinds of published version a location may carry.
      *
-     * <p>The {@code STATE} family is what a selected map publishes: one
-     * immutable whole-map state per selected mutation, named by the mutation
-     * that produced it. GraphChecker never replays those mutations - the
-     * value is the VM's own container expression and travels unread - but it
-     * does require the kind to be declared, so an operation the VM added
-     * without telling this layer is a refusal rather than a silent
-     * admission.</p>
+     * <p>This is the VM's vocabulary, not ours: a whole-state version reads
+     * as {@code STATE_<operation>} (SharedFieldVersions::version_label), and
+     * the operations are the ones the container support publishes -
+     * {@code PUT}, {@code REMOVE}, {@code REMOVE_IF}, {@code CLEAR},
+     * {@code REMOVE_AT} and {@code CLEAR_VIEW} for a map, {@code ADD},
+     * {@code REMOVE} and {@code CLEAR} for a set.  An operation missing here
+     * is not a tolerated unknown: one unadmitted version fails the whole
+     * envelope, so the location loses every version it published and each
+     * read of it reaches the formula with no read-from arm.
+     * {@code REMOVE_IF} is the conditional removal an iterator's
+     * {@code remove()} installs, i.e. exactly what HDFS-11741's
+     * {@code removeExpiredKeys()} does to the DataNode's key map.</p>
      */
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
-            "RMW", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_CLEAR",
-            "STATE_REMOVE_AT", "STATE_CLEAR_VIEW", "STATE_ADD");
+            "RMW", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
+            "STATE_CLEAR", "STATE_REMOVE_AT", "STATE_CLEAR_VIEW",
+            "STATE_ADD");
     /** The version kind every location may publish, whatever its shape. */
     private static final String INITIAL_VERSION_KIND = "INITIAL";
     private static final Set<String> FINGERPRINT_KINDS = names("NONE",
@@ -263,21 +190,8 @@ public final class SharedStateEvidence {
     private SharedStateEvidence() {
     }
 
-    /** Whether {@code status} is the success answer. */
-    public static boolean succeeded(int status) {
-        return status == OK;
-    }
 
-    /** Whether {@code status} is one this build knows how to name. */
-    public static boolean declared(int status) {
-        return !UNDECLARED_REASON.equals(reason(status));
-    }
 
-    /**
-     * Names one status. Every declared status maps to its own reason so the
-     * recorded gaps stay distinguishable; {@link #OK} has none because a
-     * success is never a gap.
-     */
     public static String reason(int status) {
         switch (status) {
             case OK:
@@ -312,6 +226,10 @@ public final class SharedStateEvidence {
                 return REASON_PREFIX + "READ_LOG_TRUNCATED";
             case EXPRESSION_SERIALIZATION_TRUNCATED:
                 return VM_EXPRESSION_SERIALIZATION_TRUNCATED;
+            case LEDGER_LOG_TRUNCATED:
+                return REASON_PREFIX + "LEDGER_LOG_TRUNCATED";
+            case LEDGER_DOMAIN_SATURATED:
+                return REASON_PREFIX + "LEDGER_DOMAIN_SATURATED";
             default:
                 return UNDECLARED_REASON;
         }
@@ -337,10 +255,6 @@ public final class SharedStateEvidence {
 
     /**
      * Replaces every JSON-null path guard in one envelope or expression term
-     * with the explicit empty conjunction, in place, and returns it.
-     *
-     * <p>This runs once, where the VM's answer is first parsed. Everything
-     * downstream then holds evidence that survives being copied.</p>
      */
     public static JsonElement normalizeGuards(JsonElement node) {
         if (node == null) return null;
@@ -372,13 +286,6 @@ public final class SharedStateEvidence {
 
     /**
      * Whether an expression tree recursively contains the VM's explicit
-     * serializer-bound marker.
-     *
-     * <p>Both the node type and the authority are required. A program symbol,
-     * code position or unrelated envelope member may contain either literal;
-     * none of those is evidence that the VM truncated this expression. The
-     * walk is iterative so admitting the serializer's bounded deep tree does
-     * not merely move its former native-stack failure onto the Java stack.</p>
      */
     public static boolean containsVmSerializationTruncation(
             JsonElement expression) {
@@ -445,19 +352,9 @@ public final class SharedStateEvidence {
                 && integer(row, "statusCode", OK) != OK;
     }
 
-    // ---- Version store -----------------------------------------------
 
     /**
      * Names the location one version-store envelope describes, as the VM's
-     * own (owner, slot, kind) triple.
-     *
-     * <p>The owner is a {@code sym_rid}, allocated by a per-session monotonic
-     * counter that is reset for every replay session. It survives a moving
-     * collector and it is stable <em>within</em> one session, but it is
-     * <em>not</em> stable across them: two replays of one occurrence name the
-     * same map with different rids. Use {@link #canonicalLocationKey} for any
-     * identity that has to hold across sessions, and this triple only where a
-     * session's own symbol names are being joined.</p>
      */
     public static String locationKey(JsonObject envelope) {
         JsonObject location = object(envelope, "location");
@@ -502,33 +399,10 @@ public final class SharedStateEvidence {
         return LOCATION_KIND_MAP_STATE.equals(locationKindOf(locationKey));
     }
 
-    /**
-     * The row member carrying the VM's own session-local location triple,
-     * once {@code locationKey} has been canonicalized over it.
-     */
     public static final String SESSION_LOCATION_FIELD = "sessionLocationKey";
 
     /**
      * A cross-session name for one location, built from the planned region
-     * occurrence, traced receiver and declared carrier field that both
-     * sessions mint identically.
-     *
-     * <p>The VM's {@code sym_rid} cannot serve here - it is a per-session
-     * allocation ordinal, so one map is {@code MAP_STATE/2136#-3} in one
-     * replay and {@code MAP_STATE/2139#-3} in the next, and an index keyed on
-     * it splits one location into two. The composer already carries the same
-     * warning for the VM's placeholder ordinals; it was never applied to
-     * {@code sym_rid}.</p>
-     *
-     * <p>Both axes are required. The occurrence separates planned activations
-     * across fresh replay JVMs; the trace receiver separates two application
-     * objects accessed by one activation. The receiver id is admitted only
-     * when the replay recorded it, so a changed object-allocation/trace shape
-     * becomes an unresolved location instead of being guessed from the field
-     * name alone.</p>
-     *
-     * @return the canonical key, or "" when this row cannot be named across
-     *         sessions and must stay unresolved
      */
     public static String canonicalLocationKey(String locationKey,
                                               String declaredField,
@@ -549,11 +423,6 @@ public final class SharedStateEvidence {
                 + locationKey.substring(slot);
     }
 
-    /**
-     * The VM's own session-local triple for one row: the preserved original
-     * when the row was canonicalized, and otherwise its {@code locationKey}.
-     * Only a join against that session's own symbol names may use this.
-     */
     public static String sessionLocationKey(JsonObject row) {
         String session = string(row, SESSION_LOCATION_FIELD);
         return session.isEmpty() ? string(row, "locationKey") : session;
@@ -561,19 +430,6 @@ public final class SharedStateEvidence {
 
     /**
      * Renames one summary's locations from the VM's session-local rid to a
-     * cross-session identity, in place.
-     *
-     * <p>This is the single correction point. It runs at import, the earliest
-     * stage holding both halves of the answer: the task supplies the stable
-     * occurrence while the carrier supplies the declared field, and the
-     * version rows are still keyed by their session-local rid. Every later
-     * reader then sees one name for one planned location.</p>
-     *
-     * <p>A row that names neither a selected carrier nor a planned occurrence
-     * keeps its own session-local key and is reported. It is still evidence
-     * within its session; it simply does not join across them.</p>
-     *
-     * @return the locations that could not be named across sessions
      */
     public static Collection<String> canonicalizeLocations(
             JsonObject summary) {
@@ -636,15 +492,6 @@ public final class SharedStateEvidence {
 
     /**
      * Replaces a VM session-local associative-state symbol with the exact
-     * region input port that owns that state in this summary.
-     *
-     * <p>The join is deliberately narrow: an admitted edge must carry the
-     * same occurrence, a {@code MAP_STATE/<sym_rid>#-3} session location and
-     * one canonical input port.  This is identity normalization, not a Map
-     * key projection; every {@code PUT}/{@code REMOVE}/{@code READ} relation
-     * remains unchanged.</p>
-     *
-     * @return session locations that mapped to more than one input port
      */
     public static Collection<String> canonicalizeContainerStateSymbols(
             JsonObject summary) {
@@ -719,15 +566,6 @@ public final class SharedStateEvidence {
 
     /**
      * The canonical name a version row builds from its own carrier, or "" if
-     * it cannot.
-     *
-     * <p>The carrier is recorded where the read-out happens, so it holds the
-     * receiver the VM's location triple does not. That makes a version row
-     * self-naming: a summary carrying no edge binding has nothing to borrow a
-     * name from, yet its rows describe the same locations as a summary that
-     * does. The declared field is spelled {@code declaringClass#fieldName},
-     * the same shape {@link RecordedReadFrom#EDGE_FIELD} carries, so both
-     * sides mint one string for one location.</p>
      */
     private static String carrierLocationKey(
             JsonObject row, String occurrenceId) {
@@ -773,11 +611,6 @@ public final class SharedStateEvidence {
 
     /**
      * Admits one version-store envelope, answering "" or the exact reason it
-     * proves nothing.
-     *
-     * <p>An unselected location is refused rather than reported as an empty
-     * writer set: "nobody wrote it" and "nobody was watching" are opposite
-     * findings and only one of them is evidence.</p>
      */
     public static String versionsFault(JsonObject envelope) {
         if (envelope == null || envelope.size() == 0) {
@@ -824,14 +657,6 @@ public final class SharedStateEvidence {
 
     /**
      * Admits one published version.
-     *
-     * <p>{@code mapState} is the enclosing location's shape, and the one
-     * thing it decides is which version kinds are legible: a whole-state
-     * location publishes {@code INITIAL} and the {@code STATE} family, a
-     * scalar location publishes {@code INITIAL}, {@code WRITE} and
-     * {@code RMW}. Crossing the two would mean a consumer reading a map's
-     * immutable state as a scalar value, or the reverse, so the pairing is
-     * checked here rather than left to whoever reads the expression.</p>
      */
     private static String versionFault(JsonObject version, boolean mapState) {
         long id = longInteger(version, "fieldVersionId", 0L);
@@ -855,7 +680,6 @@ public final class SharedStateEvidence {
         if (!version.has("pathGuard")) {
             // Explicitly null means the empty conjunction.  An absent key
             // means the guard was never captured, which is a different and
-            // unusable thing.
             return "version " + id + " omits its writer path guard";
         }
         JsonElement expression = version.get("expression");
@@ -898,17 +722,11 @@ public final class SharedStateEvidence {
         if (integer(read, "candidateCount", -1) < 0) {
             return "read " + readEvent + " reports no candidate count";
         }
-        String selectedEdgeId = string(read, "selectedEdgeId");
-        if (READ_REASON_PLANNED_PRODUCER_STATE.equals(
-                string(read, "reason"))) {
-            if (!RESOLUTION_EXACT.equals(resolution)
-                    || selectedEdgeId.isEmpty()) {
-                return "planned producer-state read " + readEvent
-                        + " is not exact or names no selected edge";
-            }
-        } else if (!selectedEdgeId.isEmpty()) {
-            return "ordinary read " + readEvent
-                    + " unexpectedly names a selected edge";
+        // Wave 3 B: a read chooses among every recorded version of its
+        // location.  Nothing preselects an edge for it, so a read that still
+        // names one is stating a narrowing this model no longer has.
+        if (!string(read, "selectedEdgeId").isEmpty()) {
+            return "read " + readEvent + " names a preselected writer edge";
         }
         return "";
     }
@@ -920,32 +738,14 @@ public final class SharedStateEvidence {
 
     /**
      * Whether the VM dropped read-log entries for this location.
-     *
-     * <p>The flag is the publisher's own statement, never an inference from
-     * how many reads the envelope happens to carry: a location that recorded
-     * exactly its bound and a location that overran it look identical from
-     * here, and guessing between them would name a coverage gap that may not
-     * exist.  An envelope that does not state it says nothing, which is not
-     * the same as stating that nothing was dropped - but it is all a reader
-     * has, so the ordinary open-writer-set gap still stands over it.</p>
      */
     public static boolean readLogTruncated(JsonObject envelope) {
         return bool(envelope, "readLogTruncated", false);
     }
 
-    // ---- Activation identity of one write and one read -----------------
 
     /**
      * Members the runtime adds to a version and a read row so each names the
-     * activation that performed it.
-     *
-     * <p>The VM stamps a write with the {@code taskId} of the context that
-     * published it and a read with its {@code regionId}, both of which it
-     * knows; neither is a cross-run address on its own, because a region is
-     * static and a task id is only meaningful next to the plan that minted it.
-     * The runtime holds that plan, so it resolves both into the source and
-     * occurrence the rest of the pipeline addresses activations by, at the one
-     * moment both halves are in the same process.</p>
      */
     public static final String WRITER_SOURCE_KEY = "writerSourceKey";
     public static final String WRITER_OCCURRENCE_ID = "writerOccurrenceId";
@@ -964,11 +764,6 @@ public final class SharedStateEvidence {
                 string(read, READER_OCCURRENCE_ID));
     }
 
-    /**
-     * Wraps one admitted envelope as a recorded evidence row. The envelope
-     * body travels unchanged; the wrapper names what admitted it and which
-     * activation, session and snapshot it came from.
-     */
     public static JsonObject versionsRecord(String locationKey,
                                             JsonObject envelope,
                                             RecordedEvidenceIdentity identity) {
@@ -993,14 +788,9 @@ public final class SharedStateEvidence {
                 && versionsFault(object(row, "envelope")).isEmpty();
     }
 
-    // ---- Event ledger -------------------------------------------------
 
     /**
      * Admits one event-ledger envelope.
-     *
-     * <p>A cyclic domain is refused outright. It is not a partial order, so
-     * every order fact read out of it would be unsound, and a consumer that
-     * merely noted the cycle as a gap would still be using the edges.</p>
      */
     public static String ledgerFault(JsonObject envelope) {
         if (envelope == null || envelope.size() == 0) {
@@ -1061,6 +851,22 @@ public final class SharedStateEvidence {
         return "";
     }
 
+    /**
+     * <p>README {@code EVENT-1}: selected ledger truncation and saturation
+     */
+    public static int ledgerFaultStatus(JsonObject envelope, String fault) {
+        if (fault == null || fault.isEmpty()) return OK;
+        if (envelope != null) {
+            if (bool(envelope, "domainSaturated", false)) {
+                return LEDGER_DOMAIN_SATURATED;
+            }
+            if (bool(envelope, "truncated", false)) {
+                return LEDGER_LOG_TRUNCATED;
+            }
+        }
+        return MALFORMED_ENVELOPE;
+    }
+
     /** Wraps one admitted ledger envelope as a recorded evidence row. */
     public static JsonObject ledgerRecord(JsonObject envelope,
                                           RecordedEvidenceIdentity identity) {
@@ -1085,13 +891,7 @@ public final class SharedStateEvidence {
                 && ledgerFault(object(row, "envelope")).isEmpty();
     }
 
-    // ---- The recorded summary member -----------------------------------
 
-    /**
-     * Builds one {@code recordedSharedState} member from admitted rows.
-     * Returns the empty object when nothing was admitted, so an execution
-     * that recorded nothing carries no member rather than an empty one.
-     */
     public static JsonObject recorded(Collection<JsonObject> versionRecords,
                                       JsonObject ledgerRecord) {
         JsonArray versions = new JsonArray();
@@ -1115,43 +915,7 @@ public final class SharedStateEvidence {
         return recorded;
     }
 
-    /**
-     * Unions several recorded members into one.
-     *
-     * <p>Two executions of one session may each read back the same location
-     * or the same ledger at different moments, and only one of those read-outs
-     * can be kept: keeping both would double every version. Which one is later
-     * is answered by the snapshot ordinal the reader stamped, never by which
-     * one holds more rows - a bounded store evicts its oldest entries, so the
-     * later snapshot of a busy location is routinely the smaller one, and
-     * counting rows would silently keep the stale half.</p>
-     */
-    public static JsonObject mergeRecorded(Collection<JsonObject> members) {
-        Map<String, JsonObject> versions = new LinkedHashMap<>();
-        JsonObject ledger = null;
-        if (members != null) {
-            for (JsonObject member : members) {
-                if (member == null
-                        || !RECORDED_KIND.equals(string(member, "kind"))) {
-                    continue;
-                }
-                for (JsonElement element : array(member, "versions")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject record = element.getAsJsonObject();
-                    if (!isVersionsRecord(record)) continue;
-                    String key = string(record, "locationKey");
-                    if (later(record, versions.get(key))) {
-                        versions.put(key, record);
-                    }
-                }
-                JsonObject snapshot = object(member, "eventLedger");
-                if (isLedgerRecord(snapshot) && later(snapshot, ledger)) {
-                    ledger = snapshot;
-                }
-            }
-        }
-        return recorded(versions.values(), ledger);
-    }
+    // README EVENT-1 forbids a cross-session event-id or snapshot merge, and
 
     /** Whether {@code candidate} is the later snapshot of the two. */
     public static boolean later(JsonObject candidate, JsonObject held) {
@@ -1160,7 +924,6 @@ public final class SharedStateEvidence {
                 > RecordedEvidenceIdentity.snapshotOrdinalOf(held);
     }
 
-    // ---- Guarded read-from expression ---------------------------------
 
     /** Whether {@code node} claims to be a guarded read-from choice. */
     public static boolean claimsGuardedRead(JsonObject node) {
@@ -1170,12 +933,6 @@ public final class SharedStateEvidence {
 
     /**
      * Admits one guarded read-from node.
-     *
-     * <p>The decisive check is the unknown arm. A guarded choice without it
-     * asserts that this run observed every writer of the location, which
-     * turns an under-approximate UNSAT into a global claim. Such a node is
-     * refused rather than repaired: the VM does not emit one, so a node
-     * missing it did not come from the VM.</p>
      */
     public static String guardedReadFault(JsonObject node) {
         if (!claimsGuardedRead(node)) {

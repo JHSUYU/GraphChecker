@@ -74,12 +74,36 @@ public class LoopAuthorityScopeTest {
 
     @Test
     public void missingFixedCardinalityDecidesOnlyInsideTheSelectedSlice() {
-        assertTrue(ConcolicSmtComposer.loopAuthorityRefusesForTests(
+        assertTrue(ConcolicSmtComposer.loopAuthorityRefuses(
                 LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
                 ADD_KEYS + "#u20", scope(ADD_KEYS)));
-        assertFalse(ConcolicSmtComposer.loopAuthorityRefusesForTests(
+        assertFalse(ConcolicSmtComposer.loopAuthorityRefuses(
                 LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
                 SUBSTITUTE_VARS + "#u10", scope(ADD_KEYS)));
+    }
+
+    /**
+     * A constructor's loop decides exactly like any other loop's.
+     *
+     * <p>The scope test used to scan the subject for {@code <...>}, which on
+     * {@code <C: void <init>(..)>#u17} matches only {@code <init>} -- a name
+     * no slice ever holds.  Every loop-authority gap inside a constructor
+     * therefore stopped deciding acceptance, silently.</p>
+     */
+    @Test
+    public void aConstructorLoopInsideTheSliceStillDecides() {
+        String constructor =
+                "<org.apache.hadoop.metrics2.lib.MetricsSourceBuilder: "
+                        + "void <init>(java.lang.Object)>";
+        assertTrue(ConcolicSmtComposer.touchesSelectedScope(
+                constructor + "#u17", scope(constructor, ADD_KEYS)));
+        assertFalse(ConcolicSmtComposer.touchesSelectedScope(
+                constructor + "#u17", scope(ADD_KEYS, REMOVE_EXPIRED)));
+        // And the same through a gap subject, which carries the occurrence
+        // on its own line ahead of the site.
+        assertTrue(ConcolicSmtComposer.touchesSelectedScope(
+                "cluster0/dn0#epoch1/region/REGION.X#1\n" + constructor
+                        + "#u17", scope(constructor)));
     }
 
     @Test
@@ -88,12 +112,12 @@ public class LoopAuthorityScopeTest {
         fatal.addProperty("targetSiteId", ADD_KEYS + "#u40");
 
         Set<String> selected =
-                ConcolicSmtComposer.selectedScopeMethodsForTests(
+                ConcolicSmtComposer.withTargetScopeMethod(
                         scope(REMOVE_EXPIRED), fatal);
 
         assertTrue(selected.contains(REMOVE_EXPIRED));
         assertTrue(selected.contains(ADD_KEYS));
-        assertTrue(ConcolicSmtComposer.loopAuthorityRefusesForTests(
+        assertTrue(ConcolicSmtComposer.loopAuthorityRefuses(
                 LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
                 ADD_KEYS + "#u20", selected));
     }

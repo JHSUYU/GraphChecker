@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -32,11 +33,84 @@ public class SymbolicSourceEvidenceTest {
                         Arrays.asList(first, replay));
 
         assertEquals(1, identities.size());
-        assertEquals(PHASE_A + "\n" + SOURCE, identities.get(raw));
+        // Wave 3 C1: the mint entry, not the source phase, is the identity.
+        assertEquals(SOURCE + "\n" + OCCURRENCE + "\n#1",
+                identities.get(raw));
     }
 
     @Test
-    public void rawSymbolAndSourceIdentityAreBothOneToOne() {
+    public void twoEntriesOfOneSiteAreTwoRoots() {
+        String first = raw(PHASE_A, SOURCE, "entry1");
+        String second = raw(PHASE_A, SOURCE, "entry2");
+
+        Map<String, String> identities =
+                SymbolicSourceEvidence.rawSymbolIdentities(Arrays.asList(
+                        owner(entry(first, PHASE_A, SOURCE, OCCURRENCE, 1)),
+                        owner(entry(second, PHASE_A, SOURCE, OCCURRENCE,
+                                2))));
+
+        assertEquals(2, identities.size());
+        assertEquals(SOURCE + "\n" + OCCURRENCE + "\n#1",
+                identities.get(first));
+        assertEquals(SOURCE + "\n" + OCCURRENCE + "\n#2",
+                identities.get(second));
+    }
+
+    @Test
+    public void aReusedReadDeclaresNoRoot() {
+        String propagated = raw(PHASE_A, SOURCE, "propagated");
+        JsonObject reused = SymbolicSourceEvidence.event(PHASE_A, SOURCE,
+                OCCURRENCE, FIELD, symbol(propagated), 2, true, "");
+
+        assertTrue(SymbolicSourceEvidence.isReused(reused));
+        assertEquals(2, SymbolicSourceEvidence.ordinalOf(reused));
+        assertTrue(SymbolicSourceEvidence.rawSymbolIdentities(
+                Collections.singletonList(owner(reused))).isEmpty());
+    }
+
+    @Test
+    public void aPublishedRootNameTravelsOnTheRow() {
+        String raw = raw(PHASE_A, SOURCE, "named");
+        JsonObject named = SymbolicSourceEvidence.event(PHASE_A, SOURCE,
+                OCCURRENCE, FIELD, symbol(raw), 1, false,
+                "sym__" + SOURCE + "__occ__1");
+
+        assertEquals("sym__" + SOURCE + "__occ__1",
+                named.get(SymbolicSourceEvidence.SYMBOL).getAsString());
+        assertEquals(1, SymbolicSourceEvidence.rawSymbolIdentities(
+                Collections.singletonList(owner(named))).size());
+    }
+
+    @Test
+    public void theFreeSymbolCensusIsStatedOrRefused() {
+        try {
+            SymbolicSourceEvidence.freeSymbolsOf(new JsonObject());
+            fail("expected an unstated free-symbol census to be refused");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage(),
+                    expected.getMessage().contains("is not stated"));
+        }
+        JsonObject owner = new JsonObject();
+        JsonArray rows = new JsonArray();
+        JsonObject free = new JsonObject();
+        free.addProperty("symbol", "free__SITE__OCC__1");
+        free.addProperty("siteId", "SITE");
+        free.addProperty("occurrenceId", "OCC");
+        free.addProperty("ordinal", 1);
+        free.addProperty("javaType", "int");
+        free.addProperty("reason", "no recorded lineage");
+        rows.add(free);
+        JsonObject nameless = new JsonObject();
+        nameless.addProperty("siteId", "SITE");
+        rows.add(nameless);
+        owner.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, rows);
+
+        assertEquals(1,
+                SymbolicSourceEvidence.freeSymbolsOf(owner).size());
+    }
+
+    @Test
+    public void oneRawSymbolStillCannotNameTwoConfiguredSources() {
         String shared = raw(PHASE_A, SOURCE, "shared");
         JsonObject conflicting = event(raw(PHASE_A, "OTHER", "shared"),
                 PHASE_A, "OTHER", OCCURRENCE);
@@ -46,11 +120,15 @@ public class SymbolicSourceEvidenceTest {
         assertMalformed(Arrays.asList(
                 owner(event(shared, PHASE_A, SOURCE, OCCURRENCE)),
                 owner(conflicting)));
-        assertMalformed(Arrays.asList(
-                owner(event(raw(PHASE_A, SOURCE, "first"), PHASE_A,
-                        SOURCE, OCCURRENCE)),
-                owner(event(raw(PHASE_A, SOURCE, "second"), PHASE_A,
-                        SOURCE, OCCURRENCE))));
+        // Two VM symbols for one declared field is what wave 3 C1 makes the
+        // normal case - one per entry - so it is admitted, not refused.
+        Map<String, String> identities =
+                SymbolicSourceEvidence.rawSymbolIdentities(Arrays.asList(
+                        owner(event(raw(PHASE_A, SOURCE, "first"), PHASE_A,
+                                SOURCE, OCCURRENCE)),
+                        owner(event(raw(PHASE_A, SOURCE, "second"), PHASE_A,
+                                SOURCE, OCCURRENCE))));
+        assertEquals(2, identities.size());
     }
 
     @Test
@@ -60,12 +138,16 @@ public class SymbolicSourceEvidenceTest {
 
         Map<String, String> identities =
                 SymbolicSourceEvidence.rawSymbolIdentities(Arrays.asList(
-                        owner(event(first, PHASE_A, SOURCE, OCCURRENCE)),
-                        owner(event(second, PHASE_B, SOURCE, OCCURRENCE))));
+                        owner(entry(first, PHASE_A, SOURCE, OCCURRENCE, 1)),
+                        owner(entry(second, PHASE_B, SOURCE, OCCURRENCE,
+                                2))));
 
+        // Distinct VM symbols stay distinct registry entries: the registry
+        // is keyed by the symbol the VM minted, which is what the Composer
+        // keys its roots by.
         assertEquals(2, identities.size());
-        assertEquals(PHASE_A + "\n" + SOURCE, identities.get(first));
-        assertEquals(PHASE_B + "\n" + SOURCE, identities.get(second));
+        assertTrue(identities.containsKey(first));
+        assertTrue(identities.containsKey(second));
     }
 
     @Test
@@ -98,7 +180,7 @@ public class SymbolicSourceEvidenceTest {
         JsonObject intExpression = symbol(raw(PHASE_A, SOURCE, "typed"));
         try {
             SymbolicSourceEvidence.event(PHASE_A, SOURCE, OCCURRENCE,
-                    "<example.Owner: long value>", intExpression);
+                    "<example.Owner: long value>", intExpression, 1, false, null);
             fail("expected field/expression width mismatch rejection");
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage().contains(
@@ -106,25 +188,62 @@ public class SymbolicSourceEvidenceTest {
         }
     }
 
-    @Test
-    public void composerScopeKeyIsGlobalOnlyForAttestedSource() {
-        String raw = raw(PHASE_A, SOURCE, "shared");
-        JsonObject attested = owner(event(raw, PHASE_A, SOURCE,
-                OCCURRENCE));
 
-        assertEquals(
-                ConcolicSmtComposer.symbolScopeKeyForTests(
-                        Collections.singletonList(attested),
-                        raw, "case-a"),
-                ConcolicSmtComposer.symbolScopeKeyForTests(
-                        Collections.singletonList(attested),
-                        raw, "case-b"));
-        assertTrue(!ConcolicSmtComposer.symbolScopeKeyForTests(
-                        Collections.singletonList(attested),
-                        "M_I_field_ordinary", "case-a").equals(
-                ConcolicSmtComposer.symbolScopeKeyForTests(
-                        Collections.singletonList(attested),
-                        "M_I_field_ordinary", "case-b")));
+    /**
+     * The real HDFS-11741 shape: {@code currentKey.keyId} already carries
+     * {@code M_I_22_field32}, a root the MAP symbolization minted, so no
+     * phase label of this source's own can be in it.  A named row publishes
+     * it anyway; a minted row still may not.
+     */
+    @Test
+    public void aNamedRootNeedNotCarryThisPhasesLabel() {
+        String propagated = "M_I_22_field32";
+        JsonObject named = SymbolicSourceEvidence.event(PHASE_A, SOURCE,
+                OCCURRENCE, FIELD, symbol(propagated), 1, true, "");
+        JsonObject owner = owner(named);
+
+        assertEquals(1, SymbolicSourceEvidence.eventsOf(owner).size());
+        assertTrue(SymbolicSourceEvidence.isReused(
+                SymbolicSourceEvidence.eventsOf(owner).get(0)));
+        // Still not a root: the registry the Composer names roots by skips
+        // it, so the symbol keeps the name its own mint gave it.
+        assertTrue(SymbolicSourceEvidence.rawSymbolIdentities(
+                Collections.singletonList(owner)).isEmpty());
+
+        JsonObject minted = SymbolicSourceEvidence.event(PHASE_A, SOURCE,
+                OCCURRENCE, FIELD, symbol(propagated), 1, false, "");
+        assertMalformed(Collections.singletonList(owner(minted)));
+    }
+
+    /** Exactly what a reused read must be before it can be named. */
+    @Test
+    public void onlyABareVmRootCanBeNamedAsAConfiguredSource() {
+        assertTrue(SymbolicSourceEvidence.namesOneBareVmRoot(FIELD,
+                symbol("M_I_22_field32")));
+
+        // A compound over that same root names roots that live elsewhere.
+        JsonObject compound = new JsonObject();
+        compound.addProperty("_type", "BinaryExpression");
+        compound.addProperty("_java_type", "int");
+        compound.add("_left", symbol("M_I_22_field32"));
+        assertFalse(SymbolicSourceEvidence.namesOneBareVmRoot(FIELD,
+                compound));
+
+        // A fold is not a root.
+        JsonObject constant = symbol("Y_I_7");
+        constant.addProperty("_type", "ConstExpr");
+        assertFalse(SymbolicSourceEvidence.namesOneBareVmRoot(FIELD,
+                constant));
+
+        // A leaf the VM did not mint is not a root either.
+        assertFalse(SymbolicSourceEvidence.namesOneBareVmRoot(FIELD,
+                symbol("X_I_22_field32")));
+
+        // The declared field type still has to be the expression's own.
+        assertFalse(SymbolicSourceEvidence.namesOneBareVmRoot(
+                "<example.Owner: long value>", symbol("M_I_22_field32")));
+
+        assertFalse(SymbolicSourceEvidence.namesOneBareVmRoot(FIELD, null));
     }
 
     private static JsonObject owner(JsonObject event) {
@@ -138,7 +257,13 @@ public class SymbolicSourceEvidenceTest {
     private static JsonObject event(String raw, String phase, String source,
                                     String occurrence) {
         return SymbolicSourceEvidence.event(phase, source, occurrence, FIELD,
-                symbol(raw));
+                symbol(raw), 1, false, null);
+    }
+
+    private static JsonObject entry(String raw, String phase, String source,
+                                    String occurrence, int ordinal) {
+        return SymbolicSourceEvidence.event(phase, source, occurrence, FIELD,
+                symbol(raw), ordinal, false, "");
     }
 
     private static String raw(String phase, String source, String suffix) {
@@ -166,7 +291,7 @@ public class SymbolicSourceEvidenceTest {
     private static void assertEventRejected(JsonObject expression) {
         try {
             SymbolicSourceEvidence.event(PHASE_A, SOURCE, OCCURRENCE,
-                    FIELD, expression);
+                    FIELD, expression, 1, false, null);
             fail("expected source expression rejection");
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage(), !expected.getMessage().isEmpty());

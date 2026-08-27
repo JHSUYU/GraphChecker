@@ -35,7 +35,8 @@ public class SessionTargetSliceTest {
                 SharedStateEvidence.ledgerRecord(twoWriterLedger(),
                         RecordedSharedStateFixtures.identity(
                                 "REGION.reader", 1L)),
-                inlinedWriterTarget(), Collections.singletonList(21L));
+                inlinedWriterTarget(), Collections.singletonList(21L),
+                Collections.<Long>emptyList());
 
         assertTrue(slice.reachesTarget());
         assertTrue(slice.containsRead(21L));

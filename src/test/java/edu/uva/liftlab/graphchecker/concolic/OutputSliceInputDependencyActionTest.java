@@ -2,9 +2,11 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -52,9 +54,9 @@ public class OutputSliceInputDependencyActionTest {
     @Test
     public void aDemandedMemberMayReadTheCutsOwnResponse() throws Exception {
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         producerRow(RESPONSE_PORT), targetRow()),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertTrue(String.valueOf(workflow.producerGroups().size()),
                 workflow.producerGroups().size() == 1);
@@ -68,9 +70,9 @@ public class OutputSliceInputDependencyActionTest {
     @Test
     public void aRegionInputWithNoActionIsRefusedByName() throws Exception {
         try {
-            RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+            RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                     producerRow(UNBOUND_INPUT), targetRow()),
-                    (region, action) -> true);
+                    (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
             fail("an unbindable output slice input must be refused");
         } catch (java.io.IOException refused) {
             String message = String.valueOf(refused.getMessage());
@@ -254,4 +256,16 @@ public class OutputSliceInputDependencyActionTest {
         member.add("slice", slice);
         return member;
     }
+
+    /** The plan rows this fixture states, decoded the way the artifact does. */
+    private static java.util.List<RegionInstancePlan> plans(
+            JsonObject... rows) {
+        java.util.List<RegionInstancePlan> decoded =
+                new java.util.ArrayList<>();
+        for (JsonObject row : rows) {
+            decoded.add(RegionInstancePlan.decode(row));
+        }
+        return decoded;
+    }
+
 }

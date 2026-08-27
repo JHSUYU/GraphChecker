@@ -31,7 +31,7 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 # lock on its storage directory and NFS is the wrong place for that. The trace
 # directory and the analysis artifacts are the multi-gigabyte half and live on
 # the project volume, because the root filesystem has under 2 GB free.
-output=${HDFS11741_OUTPUT:-/opt/GraphChecker/experiments-output/hdfs-11741-session}
+output=${HDFS11741_OUTPUT:-${repo_root}/experiments-output/hdfs-11741-session}
 instrumented=${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:?run_engine did not name the rewritten classes for this pass}
 trace_dir=${CAUSYNTH_TRACE_OUTPUT_DIR:?run_engine did not name the trace root for this generation}
 trace_jdk=${HDFS11741_TRACE_JDK:-/usr/lib/jvm/java-8-openjdk-amd64}

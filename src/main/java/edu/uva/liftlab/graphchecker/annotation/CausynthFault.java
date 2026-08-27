@@ -1,13 +1,6 @@
 package edu.uva.liftlab.graphchecker.annotation;
 
-/**
- * Explicit fault input understood by GraphChecker's selective replay.
- *
- * <p>The ordinary JVM value is {@code false}, so adding a marker does not
- * change a concrete workload.  When the returned value reaches a demanded
- * branch, GraphChecker materializes that exact call return as a symbolic
- * boolean during concolic replay.</p>
- */
+/** Explicit fault input understood by GraphChecker's selective replay. */
 public final class CausynthFault {
     public static final String BOOLEAN_MARKER_SIGNATURE =
             "<edu.uva.liftlab.graphchecker.annotation.CausynthFault: "

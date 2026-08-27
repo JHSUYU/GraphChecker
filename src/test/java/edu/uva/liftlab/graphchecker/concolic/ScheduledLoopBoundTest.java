@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -66,26 +68,36 @@ public class ScheduledLoopBoundTest {
     }
 
     /**
-     * A loop minted under the inherited bound declares nothing of its own.
+     * A declared bound that equals the inherited one is still a declaration.
      *
-     * <p>Recording it would resolve to the same {@code K_L} and move the
-     * contract identity of every campaign that declares nothing, so a run
-     * that retains an ordinary loop keeps the artifacts it already had.</p>
+     * <p>Dropping it as redundant used to keep the contract identity of a
+     * campaign that declares nothing.  README {@code LOOP-1} makes that the
+     * wrong trade: no retained condition loop may inherit the core default,
+     * so a loop whose declaration was dropped arrives at the composition
+     * declaring nothing and every case of it is refused as undeclared.  Four
+     * of HDFS-11741's thirteen rows - the {@code BPServiceActor.offerService}
+     * nest - declare exactly this value, so the identity has to move
+     * instead.</p>
      */
     @Test
-    public void anInheritedBoundIsNotRecordedAsADeclaration() {
+    public void anExplicitlyDeclaredInheritedBoundIsStillADeclaration() {
         LoopBoundPolicy policy = ConcolicScheduler.declaredLoopBounds(
                 INHERITED, Collections.singletonList(
                         loopRow(ROTATION, 0, INHERITED)));
 
         assertEquals(INHERITED, policy.maxBackedgeTraversals());
-        assertTrue(policy.declaredBounds().isEmpty());
+        assertEquals(1, policy.declaredBounds().size());
+        assertEquals(Integer.valueOf(INHERITED),
+                policy.declaredBounds().get(ROTATION));
+        assertEquals(INHERITED, policy.maxBackedgeTraversals(ROTATION));
+        assertTrue(policy.identity(), !policy.identity().equals(
+                LoopBoundPolicy.cfgBackedges(INHERITED).identity()));
     }
 
     /** One loop has one prefix, so two bounds for it are refused by name. */
     @Test
     public void twoBoundsForOneLoopAreRefusedByName() {
-        List<JsonObject> rows = new ArrayList<>();
+        List<RegionInstancePlan> rows = new ArrayList<>();
         rows.add(loopRow(LOOKUP, 0, 60));
         rows.add(loopRow(LOOKUP, 1, 32));
         try {
@@ -112,21 +124,33 @@ public class ScheduledLoopBoundTest {
         }
     }
 
-    private static JsonObject nonLoopRow() {
+    /** One occurrence plan, the shape the scheduler decodes once. */
+    private static RegionInstancePlan nonLoopRow() {
         JsonObject row = new JsonObject();
+        row.addProperty("sourceKey", "cluster/nn#epoch0");
         row.addProperty("occurrenceId", "cluster/nn#epoch0/region/R#1");
-        return row;
+        row.addProperty("relationKey", "cluster/nn#epoch0/region/R#1/out");
+        row.addProperty("regionId", "R");
+        JsonObject goal = new JsonObject();
+        goal.addProperty("goalId", "G1");
+        goal.addProperty("kind", "TARGET_REACH_CLOSURE");
+        goal.add("runtimeDefinitionMethods", new JsonArray());
+        JsonArray goals = new JsonArray();
+        goals.add(goal);
+        row.add("closureGoals", goals);
+        return RegionInstancePlan.decode(row);
     }
 
-    private static JsonObject loopRow(String loopSiteId, int iterationIndex,
-                                      int bodyBound) {
-        JsonObject row = nonLoopRow();
+    private static RegionInstancePlan loopRow(String loopSiteId,
+                                              int iterationIndex,
+                                              int bodyBound) {
+        JsonObject row = nonLoopRow().json();
         JsonObject loop = new JsonObject();
         loop.addProperty(LoopBoundPolicy.LOOP_SITE_ID, loopSiteId);
         loop.addProperty(LoopBoundPolicy.LOOP_BODY_BOUND, bodyBound);
-        com.google.gson.JsonArray loops = new com.google.gson.JsonArray();
+        JsonArray loops = new JsonArray();
         loops.add(loop);
         row.add(BoundedLoopComposition.PLAN_FIELD, loops);
-        return row;
+        return RegionInstancePlan.decode(row);
     }
 }

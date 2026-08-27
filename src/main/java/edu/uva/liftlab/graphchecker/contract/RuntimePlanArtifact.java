@@ -13,7 +13,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -28,11 +27,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * Canonical runtime-planning artifact.
  *
  * <p>The first JSONL row owns the region-port catalog and runtime edge
- * evidence exactly once. Occurrence goals store only edge ids on disk;
- * {@link #read(Path)} hydrates those ids into the in-memory
- * {@code edgeBindings} view consumed by scheduling. This keeps the semantic
- * APIs unchanged without maintaining separate region/edge artifacts or
- * copying the same binding into every producer and consumer goal.</p>
+ * evidence exactly once; occurrence goals store only edge ids, and
+ * {@link #read(Path)} hydrates them back into {@code edgeBindings}.</p>
  */
 public final class RuntimePlanArtifact {
     public static final int SCHEMA_VERSION = 2;
@@ -41,29 +37,27 @@ public final class RuntimePlanArtifact {
     public static final String PLAN_KIND = "CONCOLIC_REGION_PLAN";
     public static final String EDGE_BINDING_IDS = "edgeBindingIds";
 
-    private final List<JsonObject> plans;
-    private final List<JsonObject> edgeValidations;
+    private final List<RegionInstancePlan> plans;
     private final List<JsonObject> regions;
 
-    private RuntimePlanArtifact(List<JsonObject> plans,
-                                List<JsonObject> edgeValidations,
+    private RuntimePlanArtifact(List<RegionInstancePlan> plans,
                                 List<JsonObject> regions) {
-        this.plans = immutableCopies(plans);
-        this.edgeValidations = immutableCopies(edgeValidations);
-        this.regions = immutableCopies(regions);
+        this.plans = plans;
+        this.regions = regions;
     }
+
+    /** The occurrence plans, decoded once here and never re-parsed. */
+    public List<RegionInstancePlan> regionPlans() { return plans; }
 
     public List<JsonObject> plans() {
-        return mutableCopies(plans);
+        List<JsonObject> result = new ArrayList<>();
+        for (RegionInstancePlan plan : plans) {
+            result.add(plan.json().deepCopy());
+        }
+        return result;
     }
 
-    public List<JsonObject> edgeValidations() {
-        return mutableCopies(edgeValidations);
-    }
-
-    public List<JsonObject> regions() {
-        return mutableCopies(regions);
-    }
+    public List<JsonObject> regions() { return copies(regions); }
 
     /** Encodes compact plans plus one canonical region/edge catalog. */
     public static String encode(Collection<JsonObject> encodedPlans,
@@ -71,22 +65,19 @@ public final class RuntimePlanArtifact {
                                 Collection<JsonObject> encodedRegions) {
         List<JsonObject> edges = copies(encodedEdges);
         Map<String, JsonObject> edgeById = indexEdges(edges);
-        List<JsonObject> regions = compactRegions(encodedRegions);
 
         StringBuilder output = new StringBuilder();
-        output.append(encodeCatalog(edges, regions));
+        output.append(encodeCatalog(edges,
+                compactRegions(encodedRegions)));
         for (JsonObject source : encodedPlans) {
-            JsonObject plan = compactBindings(source, edgeById);
-            RegionInstancePlan.decode(hydrateBindings(plan, edgeById));
-            output.append(CanonicalJson.render(plan)).append('\n');
+            output.append(CanonicalJson.render(
+                    compactBindings(source, edgeById))).append('\n');
         }
         return output.toString();
     }
 
-    private static String encodeCatalog(Collection<JsonObject> encodedEdges,
-                                        Collection<JsonObject> encodedRegions) {
-        List<JsonObject> edges = copies(encodedEdges);
-        indexEdges(edges);
+    private static String encodeCatalog(List<JsonObject> edges,
+                                        List<JsonObject> encodedRegions) {
         JsonObject catalog = new JsonObject();
         catalog.addProperty("schemaVersion", SCHEMA_VERSION);
         catalog.addProperty("kind", CATALOG_KIND);
@@ -126,18 +117,27 @@ public final class RuntimePlanArtifact {
             throw new IOException("invalid runtime edge catalog: " + path,
                     malformed);
         }
-        List<JsonObject> hydrated = new ArrayList<>();
+        List<RegionInstancePlan> decoded = new ArrayList<>();
         try {
             for (JsonObject plan : compactPlans) {
-                JsonObject value = hydrateBindings(plan, edgeById);
-                RegionInstancePlan.decode(value);
-                hydrated.add(value);
+                decoded.add(RegionInstancePlan.decode(
+                        hydrateBindings(plan, edgeById)));
             }
         } catch (IllegalArgumentException malformed) {
             throw new IOException("invalid compact runtime plan: " + path,
                     malformed);
         }
-        return new RuntimePlanArtifact(hydrated, edges, regions);
+        // One coarse occurrence is one row (README REGION-1); the decode
+        // point owns that, and names the duplicate rather than reporting a
+        // schema complaint about the artifact it sits in.
+        Set<String> occurrences = new LinkedHashSet<>();
+        for (RegionInstancePlan plan : decoded) {
+            if (!occurrences.add(plan.occurrenceId())) {
+                throw new IOException("duplicate region occurrence: "
+                        + plan.occurrenceId());
+            }
+        }
+        return new RuntimePlanArtifact(decoded, regions);
     }
 
     private static List<JsonObject> readRows(Path path) throws IOException {
@@ -184,16 +184,10 @@ public final class RuntimePlanArtifact {
     private static JsonObject compactBindings(
             JsonObject source, Map<String, JsonObject> edgeById) {
         JsonObject plan = source.deepCopy();
-        if (!PLAN_KIND.equals(string(plan, "kind"))) {
-            throw new IllegalArgumentException(
-                    "runtime plan row must have kind " + PLAN_KIND);
-        }
         for (JsonElement element : array(plan, "closureGoals")) {
-            if (!element.isJsonObject()) {
-                throw new IllegalArgumentException(
-                        "closureGoals must contain objects");
-            }
             JsonObject goal = element.getAsJsonObject();
+            // Compacting twice would replace the stored ids with an empty
+            // list, so the second pass is refused rather than absorbed.
             if (goal.has(EDGE_BINDING_IDS)) {
                 throw new IllegalArgumentException(
                         "runtime plan is already binding-compacted");
@@ -201,15 +195,10 @@ public final class RuntimePlanArtifact {
             Set<String> ids = new LinkedHashSet<>();
             for (JsonElement bindingElement : array(goal,
                     "edgeBindings")) {
-                if (!bindingElement.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "edgeBindings must contain objects");
-                }
                 JsonObject binding = bindingElement.getAsJsonObject();
                 String id = string(binding, "edgeId");
                 JsonObject evidence = edgeById.get(id);
-                if (id.isEmpty() || evidence == null
-                        || !containsBinding(evidence, binding)) {
+                if (id.isEmpty() || !binding.equals(evidence)) {
                     throw new IllegalArgumentException(
                             "goal binding is absent from the edge catalog: "
                                     + id);
@@ -276,15 +265,9 @@ public final class RuntimePlanArtifact {
         return result;
     }
 
-    private static boolean containsBinding(JsonObject evidence,
-                                           JsonObject expected) {
-        return evidence.equals(expected);
-    }
-
     /**
-     * Keeps only the region schema needed after runtime planning. The full
-     * method, branch and access history remains in the trace/refined graph;
-     * downstream scheduling and SMT lowering need only stable port metadata.
+     * Keeps only the region schema needed after runtime planning; the full
+     * method, branch and access history stays in the trace/refined graph.
      */
     private static List<JsonObject> compactRegions(
             Collection<JsonObject> encodedRegions) {
@@ -325,32 +308,25 @@ public final class RuntimePlanArtifact {
                     "sourceKind", "dependencyRole",
                     "declaredFieldSignature", "accessFieldSignature",
                     "leafFieldSignature", "callerMethod", "unitIndex",
-                    // Where a cut port's value is read, by name.  The site
-                    // itself is recoverable from callerMethod/unitIndex, but
-                    // "this is a CALL_ARGUMENT capture, at argument n, defined
-                    // at this method and unit" is the semantics, and dropping
-                    // the names left the composer to re-derive it from a
-                    // position - which is the guess the cut vocabulary exists
+                    // Where a cut port's value is read, by name.  Dropping
+                    // the names left the composer to re-derive the capture
+                    // from a position - the guess the cut vocabulary exists
                     // to avoid.
                     CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
                     CommunicationCatalogContract.PORT_ARGUMENT_INDEX,
                     CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                     CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX,
                     CommunicationCatalogContract.PORT_SERVER_PARAMETER_INDEX,
-                    // Which side of which call site this port is:
-                    // REQUEST/RESPONSE, the role that owns it, and the static
-                    // identity of the site pair and the client call.  Without
-                    // them a consumer sees a port id and has to re-derive the
-                    // direction from the id's spelling.
+                    // Which side of which call site this port is; without
+                    // them a consumer has to re-derive the direction from the
+                    // id's spelling.
                     CommunicationCatalogContract.PORT_DIRECTION,
                     "portRole",
                     CommunicationCatalogContract.EXCHANGE_SITE_KEY,
                     CommunicationCatalogContract.CALL_SITE_ID,
-                    // A structured leaf has no argument position of its own.
-                    // Its parent and encoding authority are therefore the
-                    // complete static address of the value; retain them in
-                    // the canonical catalog instead of asking a downstream
-                    // consumer to infer either from the port spelling.
+                    // A structured leaf has no argument position of its own,
+                    // so its parent and encoding authority are the complete
+                    // static address of the value.
                     CommunicationCatalogContract.PORT_COMPONENT_OF,
                     CommunicationCatalogContract.PORT_ENCODING_AUTHORITY,
                     CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
@@ -387,8 +363,7 @@ public final class RuntimePlanArtifact {
             }
             JsonObject access = new JsonObject();
             // The observed event ordinal is the only identity a compacted
-            // access needs; the recording root call is trace evidence and
-            // never leaves the runtime module.
+            // access needs.
             copy(access, source, "eventSeq");
             copy(access, source, "containerMemberIdentityAuthority");
             copy(access, source, "containerValueObjectId");
@@ -427,13 +402,4 @@ public final class RuntimePlanArtifact {
         return result;
     }
 
-    private static List<JsonObject> immutableCopies(
-            Collection<JsonObject> values) {
-        return Collections.unmodifiableList(copies(values));
-    }
-
-    private static List<JsonObject> mutableCopies(
-            Collection<JsonObject> values) {
-        return copies(values);
-    }
 }

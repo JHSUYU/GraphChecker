@@ -13,15 +13,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Canonical, Soot-CFG-independent identity for one conditional successor.
- *
- * <p>Binary branches use successor {@code 0} for fall-through and successor
- * {@code 1} for the taken target. Switches use the source/classfile case-key
- * order followed by one default successor. Case entries are deliberately not
- * deduplicated by target unit: two keys sharing a bytecode target still name
- * different semantic arms and produce different exact switch predicates.</p>
- */
+/** Canonical, Soot-CFG-independent identity for one conditional successor. */
 final class CausynthBranchShape {
     static final String IF = "IF";
     static final String TABLE_SWITCH = "TABLE_SWITCH";
@@ -88,15 +80,6 @@ final class CausynthBranchShape {
             result.append(key);
         }
         return result.toString();
-    }
-
-    void annotate(Map<String, Object> target) {
-        if (target == null) return;
-        target.put("branchKind", kind);
-        if (isSwitch()) {
-            target.put("switchCaseKeys", new ArrayList<>(caseKeys));
-            target.put("defaultSuccessorIndex", defaultSuccessorIndex);
-        }
     }
 
     private static List<Integer> switchKeys(SwitchStmt branch) {

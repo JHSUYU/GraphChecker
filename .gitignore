@@ -7,3 +7,6 @@
 /src/main/java/concolicplan.jsonl
 /experiments-output/
 __pycache__/
+/scratchpad/
+hs_err_pid*.log
+/experiments/shrink/scan/

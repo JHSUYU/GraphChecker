@@ -123,6 +123,29 @@ private:
   int _pending_branch_occurrence;
   std::vector<BranchEvent> _branch_events;
 //  std::set<oop> _allocated_objs;
+
+  // One in-flight conditional container removal, assembled across the calls
+  // that make up one iteration of a removeExpiredKeys-shaped loop:
+  //   it.next()  names the element being visited (its map key);
+  //   a *marked* symbolic branch -- the `if (expiry < now)` guard the workload
+  //     marks with markConcolicBranch -- records the predicate;
+  //   the element is disposed either by it.remove() (the removal fired: the
+  //     guard is recorded as-is, concretely true) or by the following
+  //     it.hasNext()/it.next() (it did not: the guard is recorded negated,
+  //     concretely false) -- so the guard's concrete truth always equals
+  //     whether the key is concretely gone, which keeps replay sound.
+  // Only a *marked* branch arms it, so an ordinary iterator remove with no
+  // controlling symbolic branch still records an unconditional REMOVE_AT.
+  // Expressions are session-arena owned, never GC-managed oops, so holding
+  // them across the Java calls of one loop iteration is safe.
+  struct PendingConditionalRemoval {
+    bool active;
+    Expression *key;    // the entry's key (the map key, not the ordinal)
+    Expression *guard;  // the marked branch predicate, or NULL until it fires
+    PendingConditionalRemoval() : active(false), key(NULL), guard(NULL) {}
+  };
+  PendingConditionalRemoval _pending_conditional_removal;
+
 public:
   ThreadContext(JavaThread *jt, jlong context_id);
   ~ThreadContext();
@@ -320,6 +343,42 @@ public:
   int current_container_position(oop cursor);
   int current_container_index(oop cursor);
   int next_container_removal_position(oop cursor);
+
+  // Begins tracking the element an iterator just returned as a candidate for
+  // conditional removal.  Any previously tracked element must already have
+  // been disposed by the caller.
+  void begin_conditional_removal(Expression *key) {
+    _pending_conditional_removal.active = true;
+    _pending_conditional_removal.key = key;
+    _pending_conditional_removal.guard = NULL;
+  }
+  // Records the controlling predicate of the tracked element.  Only the first
+  // marked branch after it.next() is taken, and a NULL/unmodeled predicate
+  // leaves the element unguarded (so it stays an unconditional REMOVE_AT).
+  void note_conditional_removal_guard(Expression *guard) {
+    if (_pending_conditional_removal.active
+        && _pending_conditional_removal.guard == NULL && guard != NULL) {
+      _pending_conditional_removal.guard = guard;
+    }
+  }
+  bool conditional_removal_active() const {
+    return _pending_conditional_removal.active;
+  }
+  bool conditional_removal_is_guarded() const {
+    return _pending_conditional_removal.active
+        && _pending_conditional_removal.guard != NULL;
+  }
+  Expression *conditional_removal_key() const {
+    return _pending_conditional_removal.key;
+  }
+  Expression *conditional_removal_guard() const {
+    return _pending_conditional_removal.guard;
+  }
+  void clear_conditional_removal() {
+    _pending_conditional_removal.active = false;
+    _pending_conditional_removal.key = NULL;
+    _pending_conditional_removal.guard = NULL;
+  }
 
   inline ShadowStack &get_shadow_stack() { return _s_stack; }
   /**

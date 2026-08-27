@@ -287,6 +287,15 @@ oop OopUtils::value_of_map_node(oop node_obj) {
   return obj_field_by_name(node_obj, "value", "Ljava/lang/Object;");
 }
 
+oop OopUtils::key_of_map_node(oop node_obj) {
+  if (node_obj == NULL) {
+    return NULL;
+  }
+  // Same layout caveat as value_of_map_node: resolve the declared `key` field
+  // (inherited by LinkedHashMap$Entry from HashMap$Node) by name.
+  return obj_field_by_name(node_obj, "key", "Ljava/lang/Object;");
+}
+
 void StringUtils::replaceAll(std::string &str, const std::string &from, const std::string &to) {
   if (from.empty())
     return;

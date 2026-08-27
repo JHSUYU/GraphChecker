@@ -177,21 +177,22 @@ public class RecordedReadFromTest {
     }
 
     @Test
-    public void plannedProducerStateSelectsOneEdgeNotOneOccurrence() {
+    public void aPreselectedWriterEdgeIsNoLongerAdmitted() {
+        // Wave 3 B: a read chooses among every recorded version of its
+        // location, so nothing may hand it one edge in advance.  An envelope
+        // that still names one is stating a narrowing this model dropped.
         JsonObject envelope = store(SharedStateEvidence.RESOLUTION_EXACT,
-                SharedStateEvidence.READ_REASON_PLANNED_PRODUCER_STATE,
-                11L);
-        JsonObject plannedRead = envelope.getAsJsonArray("reads").get(0)
-                .getAsJsonObject();
-        plannedRead.addProperty("selectedEdgeId", "RF.selected");
+                "UNIQUE_VERSION", 11L);
         assertEquals("", SharedStateEvidence.versionsFault(envelope));
-        JsonObject malformed = envelope.deepCopy();
-        malformed.getAsJsonArray("reads").get(0).getAsJsonObject()
-                .remove("selectedEdgeId");
-        assertTrue(SharedStateEvidence.versionsFault(malformed)
-                .contains("names no selected edge"));
-        RecordedReadFrom index = index(envelope);
+        JsonObject preselected = envelope.deepCopy();
+        preselected.getAsJsonArray("reads").get(0).getAsJsonObject()
+                .addProperty("selectedEdgeId", "RF.selected");
+        assertTrue(SharedStateEvidence.versionsFault(preselected)
+                .contains("names a preselected writer edge"));
 
+        // Every candidate edge out of the recorded writer is now decided the
+        // same way, by occurrence, whatever edge id it carries.
+        RecordedReadFrom index = index(envelope);
         JsonArray candidates = new JsonArray();
         for (String edgeId : new String[]{"RF.earlier", "RF.selected",
                 "RF.later"}) {
@@ -200,15 +201,11 @@ public class RecordedReadFromTest {
             candidates.add(edge);
         }
         assertEquals(3, index.resolve(rows(candidates)));
-        assertEquals(RecordedReadFrom.PROVENANCE_EXCLUDED,
-                provenance(candidates, 0));
-        assertEquals(RecordedReadFrom.PROVENANCE_EXACT,
-                provenance(candidates, 1));
-        assertEquals(RecordedReadFrom.PROVENANCE_EXCLUDED,
-                provenance(candidates, 2));
-        // A caller that has only occurrence identities cannot reuse the
-        // planned read and accidentally credit every same-occurrence phase.
-        assertEquals(RecordedReadFrom.Decision.NO_RECORDED_EVIDENCE,
+        for (int index0 = 0; index0 < 3; index0++) {
+            assertEquals(RecordedReadFrom.PROVENANCE_EXACT,
+                    provenance(candidates, index0));
+        }
+        assertEquals(RecordedReadFrom.Decision.RECORDED_EXACT,
                 index.decide(FIELD, siteOf(WRITER_A), siteOf(READER)));
     }
 

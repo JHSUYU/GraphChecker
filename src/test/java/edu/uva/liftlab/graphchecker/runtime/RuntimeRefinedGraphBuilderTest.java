@@ -49,11 +49,10 @@ public class RuntimeRefinedGraphBuilderTest {
                 "methods", Collections.singletonList(METHOD)));
         RuntimeRegionPlanner.MethodEvent root =
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
-                        1, METHOD, 0, "", 11, 0, 0);
+                        1, METHOD, 0, "", 11, 0, 0, 0L, 0L, 0L, 0L, null, false, "", "");
         RuntimeRegionPlanner.RuntimeEvent argument =
                 new RuntimeRegionPlanner.RuntimeEvent(2, "METHOD_ARGUMENT",
-                        METHOD, 11, 0, 0, "", 0, "example.A", 10, "",
-                        false, false);
+                        METHOD, 11, 0, 0, "", "", 0, "example.A", 10, "", null, null, "", "");
         List<RuntimeRegionPlanner.FieldAccessEvent> fields = Arrays.asList(
                 field(3, 1, "<example.A: example.B b>", 10, 20),
                 field(4, 2, "<example.B: example.C c>", 20, 30),
@@ -68,7 +67,6 @@ public class RuntimeRefinedGraphBuilderTest {
                                 "STATE_CONTEXT", METHOD)),
                         Collections.singletonList(root),
                         Collections.singletonList(argument), fields,
-                        Collections.emptyList(),
                         output.toPath());
 
         assertEquals(1, result.runtimeBoundEdgeCount);

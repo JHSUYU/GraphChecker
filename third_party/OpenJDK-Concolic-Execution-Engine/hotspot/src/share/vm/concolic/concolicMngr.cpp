@@ -395,6 +395,14 @@ jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
   jlong status = attach(thread);
   if (status != 0) return status;
   ctx->push_region(region_id, task_id);
+  // README EVENT-1: starting a selected region *is* the declaration of a
+  // selected event site, so it is what activates the order domain.  The gate
+  // used to be "some location is a shared carrier", which left a case whose
+  // only selected sites are RPC/SASL handoffs recording its VALUE_HANDOFF
+  // edge and nothing else -- no thread start/join, no volatile or atomic
+  // order.  Untraced execution still never enters here, so a workload that
+  // selects nothing keeps its old cost.
+  EventLedger::activate();
   // A region occurrence is an event of the same domain as everything else, so
   // that a read-from or handoff edge can be related to the region it happened
   // in without a second, parallel notion of time.
@@ -802,6 +810,11 @@ std::string ConcolicMngr::getRegionSummary() {
     writer.Key("conditions");
     writer.StartArray();
     writer.EndArray();
+    // Same key as the live envelope: a reader compares conditionCount with
+    // emittedConditionCount unconditionally, and must not have to special-case
+    // the no-context shape to do it.
+    writer.Key("emittedConditionCount");
+    writer.Int(0);
     writer.Key("authority");
     writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
     writer.EndObject();

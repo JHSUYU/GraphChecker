@@ -22,31 +22,13 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
- * The one order domain, read back from the session's event ledger.
- *
- * <p>Every causal channel the VM recorded - program order, synchronization,
- * read-from, value handoff, region and admitted candidate edges - lives in
- * this single relation over one event-id space. A field version id <em>is</em>
- * an event id, so a write, a read, a lifecycle event, an RPC handoff and a
- * region entry are all directly comparable here. That is what the composer
- * needs and what per-channel position variables cannot express: two events on
- * different channels have no relation at all unless one relation holds
- * both.</p>
- *
- * <p>The domain stays partial. Unrelated events remain unrelated, nothing
- * here linearizes it, and there is deliberately no way to ask it for a
- * schedule. What it does answer is (a) whether one event provably precedes
- * another, (b) the relation restricted to a chosen set of events, and (c)
- * whether a proposed candidate order can be admitted without closing a
- * cycle - the same three questions the VM's own ledger answers, with the same
- * refusal vocabulary, because a Java-side answer that disagreed with the VM
- * would be worse than no answer.</p>
- *
- * <p>The one thing it does not take on trust is that the delivered relation
- * is the partial order the envelope says it is. Acyclicity is recomputed over
- * the edges that actually arrived, across every channel at once, and a
- * relation that closes a cycle yields the empty domain with a named
- * {@link #fault()} rather than answers nobody could rely on.</p>
+ * The one order domain, read back from the session's event ledger: every
+ * causal channel the VM recorded lives in one partial relation over one
+ * event-id space, so events on different channels are comparable. It answers
+ * precedence, the relation restricted to a set, and whether a candidate edge
+ * can be admitted - never a schedule. Acyclicity is recomputed over the
+ * delivered edges; a cycle yields the empty domain with a named {@link
+ * #fault()}.
  */
 public final class SessionOrderDomain {
 
@@ -78,9 +60,7 @@ public final class SessionOrderDomain {
     }
 
     /** An empty domain: no events, no order, and it knows it. */
-    public static SessionOrderDomain empty() {
-        return empty("");
-    }
+    public static SessionOrderDomain empty() { return empty(""); }
 
     private static SessionOrderDomain empty(String fault) {
         return new SessionOrderDomain(false, fault,
@@ -91,18 +71,8 @@ public final class SessionOrderDomain {
 
     /**
      * Reads one admitted ledger record, or the envelope inside it. A record
-     * that does not pass {@link SharedStateEvidence} admission yields the
-     * empty domain: an unchecked relation is not an order.
-     *
-     * <p>Acyclicity is <em>recomputed</em> here rather than read off the
-     * envelope's own flag. The flag is the VM's claim about the relation it
-     * maintained; the relation that arrives is the one this composition will
-     * reason over, and a claim that does not hold of the delivered edges is
-     * exactly the case a consumer must not be allowed to walk. Program order,
-     * synchronization, read-from and value handoff all live in this one
-     * relation, so the check is also the cross-channel cycle check: a cycle
-     * that closes only through an RPC handoff edge is refused here and never
-     * reaches the formula.</p>
+     * that fails {@link SharedStateEvidence} admission, or whose delivered
+     * edges close a cycle on any channel, yields the empty domain.
      */
     public static SessionOrderDomain of(JsonObject ledgerRecordOrEnvelope) {
         JsonObject envelope = ledgerRecordOrEnvelope;
@@ -140,14 +110,7 @@ public final class SessionOrderDomain {
                 directKinds);
     }
 
-    /**
-     * Names one cycle of the delivered relation, or "" when it has none.
-     *
-     * <p>The walk is over the whole relation at once, which is the point: the
-     * channels are not separate graphs here, so a field write ordered before a
-     * read that is ordered before a handoff attach that is ordered before that
-     * same write is found by the same traversal as a single-channel cycle.</p>
-     */
+    /** Names one cycle of the whole delivered relation, or "" when it has none. */
     private static String cycleFault(Set<Long> events,
                                      Map<Long, Set<Long>> successors) {
         Set<Long> settled = new LinkedHashSet<>();
@@ -212,16 +175,9 @@ public final class SessionOrderDomain {
         return rendered.append(closing).toString();
     }
 
-    /**
-     * Why this domain holds no relation, or "" when it holds one.
-     *
-     * <p>A refusal and an empty session are different findings and a consumer
-     * must be able to tell them apart: the first says the recorded order was
-     * unusable, the second says nothing was recorded.</p>
-     */
-    public String fault() {
-        return fault;
-    }
+    /** Why this domain holds no relation ("" when it holds one, so a refusal
+     * and an empty session stay distinguishable). */
+    public String fault() { return fault; }
 
     private static Set<Long> successorsOf(Map<Long, Set<Long>> successors,
                                           long event) {
@@ -234,39 +190,15 @@ public final class SessionOrderDomain {
     }
 
     /** Whether this domain came from an open session's ledger. */
-    public boolean open() {
-        return open;
-    }
+    public boolean open() { return open; }
 
-    public boolean isEmpty() {
-        return events.isEmpty();
-    }
+    public boolean isEmpty() { return events.isEmpty(); }
 
-    public int eventCount() {
-        return events.size();
-    }
-
-    public boolean knows(long eventId) {
-        return events.containsKey(eventId);
-    }
-
-    /** The declared kind of one event, or "" when it is not recorded. */
-    public String eventKind(long eventId) {
-        return string(events.get(eventId), "eventKind");
-    }
+    public boolean knows(long eventId) { return events.containsKey(eventId); }
 
     /** The region occurrence one event belongs to, or "". */
     public String regionOf(long eventId) {
         return string(events.get(eventId), "regionId");
-    }
-
-    public long contextOf(long eventId) {
-        return longInteger(events.get(eventId), "contextId", 0L);
-    }
-
-    /** The synchronization object one event acted on, or 0. */
-    public long objectOf(long eventId) {
-        return longInteger(events.get(eventId), "objectSymRid", 0L);
     }
 
     /** Every recorded event, ascending. */
@@ -275,10 +207,8 @@ public final class SessionOrderDomain {
     }
 
     /**
-     * Whether {@code before} provably precedes {@code after} in the recorded
-     * relation, directly or through other events. Unrelated is not "after":
-     * a false answer here means the run showed no order, never that the
-     * opposite order held.
+     * Whether {@code before} provably precedes {@code after}, directly or
+     * transitively. False means the run showed no order, not the reverse.
      */
     public boolean orderedBefore(long before, long after) {
         if (before == after || !knows(before) || !knows(after)) return false;
@@ -297,21 +227,7 @@ public final class SessionOrderDomain {
         return false;
     }
 
-    /**
-     * The kind of the edge the ledger recorded directly between two events,
-     * or "" when it recorded none. A read-from edge exists only where the VM
-     * proved the provenance; a guarded read draws none, deliberately, so this
-     * is the check that separates a proven equality from an undecided one.
-     */
-    public String directKind(long before, long after) {
-        String kind = directKinds.get(before + ">" + after);
-        return kind == null ? "" : kind;
-    }
-
-    /**
-     * Every edge the ledger recorded directly, in insertion order.  A pair
-     * appears once, under the first kind it was recorded with.
-     */
+    /** Every directly recorded edge, in insertion order, once per pair. */
     public List<JsonObject> directEdges() {
         List<JsonObject> edges = new ArrayList<>();
         for (Map.Entry<String, String> entry : directKinds.entrySet()) {
@@ -328,11 +244,9 @@ public final class SessionOrderDomain {
     }
 
     /**
-     * Offers one candidate order edge, with the ledger's own semantics: a
-     * self edge, an unknown event and a cyclic proposal are all refused, and
-     * nothing is added when they are. An admitted candidate joins the same
-     * relation as every observed edge, so a later proposal is checked against
-     * it too.
+     * Offers one candidate edge with the ledger's own semantics: self edges,
+     * unknown events and cyclic proposals are refused and add nothing; an
+     * admitted candidate joins the relation later proposals are checked on.
      */
     public int propose(long before, long after) {
         if (!open) return ORDER_NOT_OPEN;
@@ -364,14 +278,9 @@ public final class SessionOrderDomain {
     }
 
     /**
-     * The relation restricted to {@code selected}: one row per ordered pair
-     * of selected events, whether the ledger related them directly or through
-     * events the slice does not keep.
-     *
-     * <p>Restricting by reachability rather than by direct edges is what
-     * makes the projection sound. Two selected writes may be ordered only
-     * through an intermediate lifecycle, volatile, or handoff event the slice
-     * does not retain; dropping that pair would report them as concurrent.</p>
+     * The relation restricted to {@code selected}, by reachability rather
+     * than by direct edges: a pair ordered only through events the slice
+     * drops would otherwise be reported as concurrent.
      */
     public List<JsonObject> project(Collection<Long> selected) {
         Set<Long> known = new TreeSet<>();

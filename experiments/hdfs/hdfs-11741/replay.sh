@@ -59,7 +59,7 @@ mkdir -p "${output}" "$(dirname -- "${results}")"
 # one is named here instead of surfacing as TEST_CLASSPATH_MISSING from inside
 # the launcher.
 build_output=${HDFS11741_BUILD_OUTPUT:-\
-/opt/GraphChecker/experiments-output/hdfs-11741-session}
+${repo_root}/experiments-output/hdfs-11741-session}
 classpath_file=hadoop-test-classpath.txt
 if [[ ! -f "${output}/${classpath_file}" ]]; then
   [[ -f "${build_output}/${classpath_file}" ]] || {

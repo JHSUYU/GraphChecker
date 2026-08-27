@@ -3,9 +3,24 @@
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)
-hadoop_root=${CAUSYNTH_RPC_HADOOP_ROOT:-/opt/hadoop}
+# The Hadoop checkout this run analyzes. run-matrix.sh passes each row's
+# leased worktree; standalone, the default is the checkout beside this
+# repository. /opt/hadoop is a stale tree with none of the Causynth commits and
+# is never this workload.
+hadoop_root=${CAUSYNTH_RPC_HADOOP_ROOT:-}
+if [[ -z "${hadoop_root}" ]]; then
+  hadoop_root=$(cd -- "${repo_root}/../hadoop" 2>/dev/null && pwd -P) || true
+fi
+[[ -n "${hadoop_root}" && -d "${hadoop_root}" ]] || {
+  printf '[causynth-rpc] no Hadoop checkout: set CAUSYNTH_RPC_HADOOP_ROOT (tried %s)\n' \
+    "${repo_root}/../hadoop" >&2
+  exit 2
+}
 run_base=${CAUSYNTH_RPC_RUN_BASE:-/proj/silentfailure-PG0/gc-rpc-compare/runs}
-protoc=/opt/causynth-toolchain/protoc-2.5.0/bin/protoc
+# The protobuf 2.5 compiler the checkout's protobuf.version needs. Overridable
+# because the toolchain root is a machine fact, not a property of this
+# experiment.
+protoc=${CAUSYNTH_RPC_PROTOC:-/opt/causynth-toolchain/protoc-2.5.0/bin/protoc}
 scenario=${CAUSYNTH_RPC_SCENARIO:-}
 run_label=run
 
@@ -33,7 +48,7 @@ printf '[causynth-rpc] scenario=%s hadoop=%s output=%s\n' \
 cd "${repo_root}"
 
 # Rebuild GraphChecker first.  The campaign SETUP stage below then recompiles
-# the Hadoop production and test classes from the current /opt/hadoop checkout.
+# the Hadoop production and test classes from the selected checkout.
 if [[ "${CAUSYNTH_SKIP_GRAPHCHECKER_BUILD:-0}" != "1" ]]; then
   mvn -q -DskipTests package
 fi

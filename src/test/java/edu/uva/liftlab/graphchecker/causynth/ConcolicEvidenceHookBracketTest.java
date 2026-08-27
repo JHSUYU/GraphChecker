@@ -420,21 +420,21 @@ public class ConcolicEvidenceHookBracketTest {
         admission.addProperty("state", "EXECUTABLE");
         task.add("admission", admission);
 
-        Map<String, Object> declaration =
-                ConfiguredSourcePhaseContract.declaration(
-                        ConfiguredSourcePhaseContract.Phase.PUBLISH,
-                        "SOURCE.A", "<example.Producer: int value>",
-                        fixture.helper.getSignature(), 1);
+        JsonArray declarations = new JsonArray();
+        declarations.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                "SOURCE.A", "<example.Producer: int value>",
+                fixture.helper.getSignature(), 1));
         ConfiguredSourcePhaseContract.Declaration decoded =
                 ConfiguredSourcePhaseContract.declarationsOf(
-                        Collections.singletonList(declaration)).get(0);
-        Map<String, Object> occurrence =
+                        declarations).get(0);
+        JsonObject occurrence =
                 ConfiguredSourcePhaseContract.occurrence(decoded,
                         occurrenceId, 1, 10L, 9L, 11L,
                         fixture.hook.getSignature(),
                         Collections.singletonList(9L));
         JsonArray phases = new JsonArray();
-        phases.add(new Gson().toJsonTree(occurrence));
+        phases.add(occurrence);
         task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
 
         Path plan = folder.newFile("source-helper-task-plan.jsonl").toPath();

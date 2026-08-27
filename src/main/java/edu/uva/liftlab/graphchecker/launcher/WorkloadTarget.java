@@ -9,20 +9,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The annotated target the workload is expected to reach.
- *
- * <p>Resolution goes through the analysis's own scanner, so the launcher and
- * the analysis agree on what {@code hdfs-11741} means by construction. An
- * unresolved id is a prerequisite failure, reported before the workload
- * starts: a run whose target is not even declared in the compiled source
- * cannot produce a target outcome, and finding that out after a multi-minute
- * interpreted workload wastes the run.</p>
- *
- * <p>The class also owns the trace predicates. A streamed trace row records
- * its method as a Soot signature, {@code <class: returnType name(args)>}, so
- * class and method name together identify the target method within a run;
- * overloads are not distinguished, which is enough for a reach question and
- * is reported as such rather than dressed up as branch-level evidence.</p>
+ * The annotated target the workload is expected to reach, and the trace
+ * predicates that recognise it.  Resolution goes through the analysis's own
+ * scanner, so the launcher and the analysis agree on what {@code hdfs-11741}
+ * means by construction, and an unresolved id fails before the workload
+ * starts.  A streamed row records its method as a Soot signature, so class and
+ * method name together identify the target within a run; overloads are not
+ * distinguished, which is enough for a reach question.
  */
 public final class WorkloadTarget {
 
@@ -39,19 +32,13 @@ public final class WorkloadTarget {
     }
 
     /**
-     * Finds the single {@code @CausynthExceptionTarget(id)} in the inputs.
+     * Finds the single {@code @CausynthExceptionTarget(wanted)} in the inputs.
      *
      * @param classInputs directories or jars of compiled application classes
      */
-    public static WorkloadTarget resolve(String exceptionTargetId,
+    public static WorkloadTarget resolve(String wanted,
                                          List<Path> classInputs)
             throws LauncherException {
-        String wanted = exceptionTargetId == null
-                ? "" : exceptionTargetId.trim();
-        if (wanted.isEmpty()) {
-            throw new LauncherException(LauncherDiagnostic.USAGE,
-                    "exception target id is blank");
-        }
         List<String> inputs = new ArrayList<>();
         for (Path input : classInputs) {
             inputs.add(input.toString());
@@ -87,11 +74,8 @@ public final class WorkloadTarget {
         return new WorkloadTarget(matches.get(0));
     }
 
-    public ExceptionTargetSite site() {
-        return site;
-    }
+    public ExceptionTargetSite site() { return site; }
 
-    /** Human-readable identity of the target method. */
     public String methodKey() {
         return site.className() + "#" + site.methodName()
                 + site.methodDescriptor();
@@ -104,10 +88,8 @@ public final class WorkloadTarget {
                 && traceLine.contains(methodMarker);
     }
 
-    /**
-     * Whether one streamed trace row is the target method exiting with the
-     * annotated exception type.
-     */
+    /** Whether one streamed row is the target method exiting with the
+     *  annotated exception type. */
     public boolean thrownBy(String traceLine) {
         return mentionedBy(traceLine)
                 && traceLine.contains("\"event\":\"METHOD_EXIT_THROW\"")

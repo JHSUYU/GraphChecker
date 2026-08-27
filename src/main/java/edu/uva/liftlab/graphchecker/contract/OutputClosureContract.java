@@ -14,6 +14,9 @@ import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.required;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.trimmed;
+
 /** Immutable output contract shared by every occurrence of one relation. */
 public final class OutputClosureContract {
     public static final String FIELD = "outputClosure";
@@ -42,7 +45,6 @@ public final class OutputClosureContract {
                 throw new IllegalArgumentException(
                         "output closure member must not be null");
             }
-            producer.requireOutputPort(member.portId());
             if (index.put(member.portId(), member) != null) {
                 throw new IllegalArgumentException(
                         "duplicate output identity " + member.portId());
@@ -67,11 +69,84 @@ public final class OutputClosureContract {
 
     public List<Member> members() { return members; }
 
-    public Member member(String portId) { return byPort.get(trim(portId)); }
+    public Member member(String portId) { return byPort.get(trimmed(portId)); }
 
     public SortedSet<String> outputPorts() {
         return Collections.unmodifiableSortedSet(
                 new TreeSet<>(byPort.keySet()));
+    }
+
+    /**
+     * Ports produced only by instance-scoped once-only heap writes.
+     *
+     * <p>Such a write's recorded version is an instance-level fact (see
+     * {@link OutputCaptureSpec#INSTANCE_SCOPED_PRODUCER}), so a complete
+     * occurrence of a {@code LOOP_BODY_ROOT} region that did not sample the
+     * once-entered write still owes no per-occurrence production of this port.
+     * Empty for every closure that has no such capture, so callers gated on it
+     * are inert wherever the once-only-root rule never fired.</p>
+     */
+    public SortedSet<String> instanceScopedOutputPorts() {
+        SortedSet<String> ports = new TreeSet<>();
+        for (Member member : members) {
+            JsonArray captures = member.captures();
+            if (captures.size() == 0) continue;
+            boolean all = true;
+            for (JsonElement element : captures) {
+                if (!element.isJsonObject()
+                        || !element.getAsJsonObject().has(
+                                OutputCaptureSpec.INSTANCE_SCOPED_PRODUCER)
+                        || !element.getAsJsonObject().get(
+                                OutputCaptureSpec.INSTANCE_SCOPED_PRODUCER)
+                                .getAsBoolean()) {
+                    all = false;
+                    break;
+                }
+            }
+            if (all) ports.add(member.portId());
+        }
+        return Collections.unmodifiableSortedSet(ports);
+    }
+
+    /**
+     * The subset of {@link #instanceScopedOutputPorts()} whose whole demanded
+     * writer set resolves to an explicit instance-scoped once-only heap
+     * write.
+     *
+     * <p>Fail-closed in every direction: a port with no capture binding, a
+     * binding that will not decode, a spec that does not state the flag, or a
+     * spec that states it on a capture kind that is not an exact heap write
+     * is simply absent, so a caller gated on this set keeps whatever demand it
+     * states today.  Only a port whose entire writer set states the flag on a
+     * heap write is named -- one non-instance-scoped writer means some
+     * occurrence does owe this port.</p>
+     */
+    public SortedSet<String> onceOnlyInstanceScopedPorts() {
+        SortedSet<String> named = instanceScopedOutputPorts();
+        SortedSet<String> ports = new TreeSet<>();
+        for (Member member : members) {
+            if (!named.contains(member.portId())) continue;
+            JsonArray captures = member.captures();
+            if (captures.size() == 0) continue;
+            boolean all = true;
+            for (JsonElement element : captures) {
+                OutputCaptureSpec spec;
+                try {
+                    spec = OutputCaptureSpec.decodeValidated(
+                            element.getAsJsonObject());
+                } catch (RuntimeException unresolvable) {
+                    all = false;
+                    break;
+                }
+                if (!spec.instanceScopedProducer()
+                        || !spec.capturesExactHeapWrite()) {
+                    all = false;
+                    break;
+                }
+            }
+            if (all) ports.add(member.portId());
+        }
+        return Collections.unmodifiableSortedSet(ports);
     }
 
     public ExecutionScope executionScope() { return executionScope; }
@@ -115,29 +190,15 @@ public final class OutputClosureContract {
                 ? element.getAsString().trim() : "";
     }
 
-    static String trim(String value) {
-        return value == null ? "" : value.trim();
-    }
-
     public static final class Producer {
-        /**
-         * Output ports the producing region declared by name, beyond the ones
-         * its own region identity mints.
-         *
-         * <p>Absent for a producer that publishes nothing outside its own
-         * region, so such a producer's wire form is exactly what it was
-         * before this member existed.</p>
-         */
+        /** Output ports the producing region declared by name, beyond those
+         *  its region identity mints; absent when it declares none. */
         public static final String DECLARED_OUTPUT_PORTS =
                 "declaredOutputPorts";
 
         private final String relationKey;
         private final String regionId;
         private final SortedSet<String> declaredOutputPorts;
-
-        Producer(String relationKey, String regionId) {
-            this(relationKey, regionId, Collections.<String>emptyList());
-        }
 
         Producer(String relationKey, String regionId,
                  Collection<String> declaredOutputPorts) {
@@ -148,12 +209,10 @@ public final class OutputClosureContract {
             for (String port : declaredOutputPorts == null
                     ? Collections.<String>emptyList()
                     : declaredOutputPorts) {
-                String id = trim(port);
+                String id = trimmed(port);
                 // A region-scoped port is already admitted by the region
                 // identity it is minted from, so re-declaring it says
-                // nothing.  Dropping it here is what keeps a producer that
-                // declares only region-scoped outputs byte-identical to the
-                // form it had before declarations existed.
+                // nothing.
                 if (id.isEmpty() || regionScoped(id)) continue;
                 declared.add(id);
             }
@@ -165,26 +224,15 @@ public final class OutputClosureContract {
 
         public String regionId() { return regionId; }
 
-        /**
-         * The non-region-scoped output ports this producer's region declared.
-         *
-         * <p>A communication cut is the case that needs this: static
-         * discovery names a cut port after the exchange site it belongs to
-         * ({@code <exchangeSiteKey>.req.<name>}, {@code .resp},
-         * {@code .live.<carrier>}), not after the region, so the region
-         * identity cannot decide whether such a port is one of its own.  The
-         * declaration can, and it admits exactly the declared ids.</p>
-         */
+        /** The non-region-scoped output ports the producer's region declared.
+         *  Static discovery names a cut port after the exchange site, so the
+         *  region identity cannot decide whether it is its own; this can. */
         public SortedSet<String> declaredOutputPorts() {
             return declaredOutputPorts;
         }
 
-        /**
-         * Relation identity only.  A declaration is a static fact about the
-         * region, not a distinguishing part of the relation: two contracts of
-         * one relation cannot legitimately disagree about it, and one of them
-         * may simply have been decoded from a wire that carried no cut port.
-         */
+        /** Relation identity only: a declaration is a static fact about the
+         *  region, and a contract may come from a wire with no cut port. */
         boolean sameAs(Producer other) {
             return other != null
                     && relationKey.equals(other.relationKey)
@@ -195,7 +243,7 @@ public final class OutputClosureContract {
             TreeSet<String> union = new TreeSet<>(declaredOutputPorts);
             if (ports != null) {
                 for (String port : ports) {
-                    String id = trim(port);
+                    String id = trimmed(port);
                     if (!id.isEmpty() && !regionScoped(id)) union.add(id);
                 }
             }
@@ -209,14 +257,10 @@ public final class OutputClosureContract {
                     && portId.length() > prefix.length();
         }
 
-        /**
-         * A member port is admitted when the region minted it
-         * ({@code <regionId>.out.<id>}) or when the region declared it by
-         * name.  Anything else is outside this producer and still throws:
-         * membership is exact, never a prefix or a shape.
-         */
+        /** A member port is admitted when the region minted it or declared
+         *  it by name; membership is exact, never a prefix or a shape. */
         void requireOutputPort(String portId) {
-            String id = trim(portId);
+            String id = trimmed(portId);
             if (regionScoped(id) || declaredOutputPorts.contains(id)) return;
             throw new IllegalArgumentException(
                     "output port is outside producer region: " + portId);
@@ -254,7 +298,6 @@ public final class OutputClosureContract {
             return text(output, "javaTypeDescriptor");
         }
 
-        /** Static publication site, when the capture exposes one. */
         public String outputSite() {
             String encoded = text(output, "outputSiteId");
             int start = encoded.indexOf('<');
@@ -334,13 +377,5 @@ public final class OutputClosureContract {
             }
             return Collections.unmodifiableSortedSet(result);
         }
-    }
-
-    private static String required(String value, String label) {
-        String result = trim(value);
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(label + " is required");
-        }
-        return result;
     }
 }

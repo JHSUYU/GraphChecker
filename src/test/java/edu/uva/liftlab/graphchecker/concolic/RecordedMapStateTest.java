@@ -54,13 +54,14 @@ public class RecordedMapStateTest {
     @Rule
     public final TemporaryFolder temporary = new TemporaryFolder();
 
-    private static final String RF1 = RecordedSessionModel.selectorName(
-            RecordedMapStateFixtures.QUERY_EVENT, "rf1");
-    private static final String RF2 = RecordedSessionModel.selectorName(
-            RecordedMapStateFixtures.QUERY_EVENT, "rf2");
+    private static final String EVENT = String.valueOf(
+            RecordedMapStateFixtures.QUERY_EVENT);
+    private static final String RF1 =
+            RecordedSessionModel.selectorNameToken(EVENT, "rf1");
+    private static final String RF2 =
+            RecordedSessionModel.selectorNameToken(EVENT, "rf2");
     private static final String RF_UNKNOWN =
-            RecordedSessionModel.selectorName(
-                    RecordedMapStateFixtures.QUERY_EVENT,
+            RecordedSessionModel.selectorNameToken(EVENT,
                     SharedStateEvidence.UNKNOWN_WRITER_SELECTOR);
 
     @Test
@@ -249,7 +250,7 @@ public class RecordedMapStateTest {
                         SharedStateEvidence.LOCATION_KIND_MAP_STATE,
                         "INSTANCE_FIELD")), kinds);
         assertEquals(3, array(mapChoice, "candidates").size());
-        assertEquals(2, model.writerUniverses().size());
+        assertEquals(2, model.boundedWriterUniverses().size());
 
         // The schema rules that keep the two shapes apart.
         JsonObject wrongSlot = RecordedMapStateFixtures
@@ -274,6 +275,40 @@ public class RecordedMapStateTest {
                 .addProperty("versionKind", "STATE_PUT");
         assertTrue(SharedStateEvidence.versionsFault(stateInAField)
                 .contains("that its location kind does not publish"));
+    }
+
+    /**
+     * Every whole-state mutation the VM publishes is an admitted kind.
+     *
+     * <p>A version's {@code versionKind} is the VM's own vocabulary:
+     * {@code SharedFieldVersions::version_label} writes {@code STATE_} plus
+     * the operation {@code ContainerSupport::publish_state} was called with,
+     * and those calls are enumerated in {@code symbolicMap.cpp} and
+     * {@code symbolicSet.cpp}.  An operation this side does not name is not a
+     * tolerated unknown: {@code versionsFault} rejects the <em>whole</em>
+     * envelope on the first unadmitted version, so the location loses every
+     * version it published and each read of it reaches the formula with no
+     * read-from arm at all.  That is what happened to HDFS-11741's DataNode
+     * key map, whose {@code removeExpiredKeys()} publishes
+     * {@code STATE_REMOVE_IF}, so the vocabulary is pinned here rather than
+     * discovered in a campaign.</p>
+     */
+    @Test
+    public void everyPublishedWholeStateMutationIsAnAdmittedVersionKind() {
+        for (String operation : Arrays.asList("PUT", "REMOVE", "REMOVE_IF",
+                "CLEAR", "REMOVE_AT", "CLEAR_VIEW", "ADD")) {
+            JsonArray versions = new JsonArray();
+            versions.add(RecordedMapStateFixtures.stateVersion(
+                    RecordedMapStateFixtures.WRITER_A_VERSION,
+                    "STATE_" + operation, "REGION.writerA", "TASK.a",
+                    RecordedMapStateFixtures.writerAState(), null));
+            JsonObject envelope =
+                    RecordedMapStateFixtures.mapVersionsEnvelope(
+                            versions, new JsonArray(), true);
+            SharedStateEvidence.normalizeGuards(envelope);
+            assertEquals("STATE_" + operation + " is a kind the VM publishes",
+                    "", SharedStateEvidence.versionsFault(envelope));
+        }
     }
 
     // ----- two equal-valued writers ---------------------------------------
@@ -492,8 +527,10 @@ public class RecordedMapStateTest {
         assertEquals(Collections.singletonList(
                         BoundedWriterUniverse.SEMANTIC_OCCURRENCE_COVERAGE_OPEN),
                 reasons(closedButForOccurrences.gaps()));
-        assertTrue(closedButForOccurrences.mapState());
-        assertEquals(2, closedButForOccurrences.materializedCases());
+        assertTrue(closedButForOccurrences.toJson().get("mapState")
+                .getAsBoolean());
+        assertEquals(2, closedButForOccurrences.toJson()
+                .get("materializedCases").getAsInt());
 
         // rf2 reading writer A's state: selecting it would hand the reader
         // another writer's value under writer B's order.
@@ -526,43 +563,25 @@ public class RecordedMapStateTest {
                 BoundedWriterUniverse.NO_RECORDED_VERSION_STORE));
         assertTrue(reasons(blind.gaps()).contains(
                 BoundedWriterUniverse.UNRECORDED_WRITER_CASE));
-        assertEquals(0, blind.materializedCases());
+        assertEquals(0, blind.toJson().get("materializedCases").getAsInt());
     }
 
     // ----- parity -----------------------------------------------------------
 
-    /** The map query reaches the drawing as the same model the SMT is. */
+    /** The map query reaches the model as the same census the SMT is. */
     @Test
-    public void theGraphAndTheFormulaProjectOneMapModel() throws Exception {
+    public void theCensusAndTheFormulaProjectOneMapModel() throws Exception {
         ConcolicSmtComposer.Result result = RecordedMapStateFixtures
                 .composedMapGolden(folder(), false, true);
         JsonObject model = CanonicalSessionModel.read(result.manifest);
         assertTrue(CanonicalSessionModel.isModel(model));
-
-        JsonObject graph = CausalGraphWriter.graph(model, new JsonObject());
-        // A map state and a map query are nodes of the model, drawn with the
-        // same node kinds a field version and a field read are.
-        int versions = 0;
-        int reads = 0;
-        for (JsonElement element : array(model, "nodes")) {
-            JsonObject node = element.getAsJsonObject();
-            if (!SharedStateEvidence.LOCATION_KIND_MAP_STATE.equals(
-                    string(node, "locationKind"))) {
-                continue;
-            }
-            if (CanonicalSessionModel.NODE_FIELD_VERSION.equals(
-                    string(node, "nodeType"))) {
-                versions++;
-            } else if (CanonicalSessionModel.NODE_FIELD_READ.equals(
-                    string(node, "nodeType"))) {
-                reads++;
-            }
-        }
-        assertEquals(2, versions);
-        assertEquals(1, reads);
-        String dot = CausalGraphWriter.dot(graph);
-        assertTrue(dot, dot.contains("map state #31"));
-        assertTrue(dot, dot.contains("map query #41"));
+        // A map state and a map query are counted by the model as the same
+        // two kinds a field version and a field read are.
+        JsonObject counts = model.getAsJsonObject("counts");
+        assertEquals(model.toString(), 2,
+                counts.get("fieldVersions").getAsInt());
+        assertEquals(model.toString(), 1,
+                counts.get("fieldReads").getAsInt());
     }
 
     // ----- the VM bridge ----------------------------------------------------

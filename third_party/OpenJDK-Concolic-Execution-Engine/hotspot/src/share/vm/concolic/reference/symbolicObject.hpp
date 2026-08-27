@@ -27,6 +27,7 @@ public:
 
   void init_sym_exp(int field_offset, Expression *exp);
   void set_sym_exp(int field_offset, Expression *exp);
+  bool has_sym_exp(int field_offset);
 
 public:
   void print();

@@ -4,7 +4,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
@@ -37,6 +36,420 @@ public class ConcolicSmtComposerTest {
     @Rule
     public final TemporaryFolder temporary = new TemporaryFolder();
 
+
+    @Test
+    public void staleProducerGenerationRefusesAndFailsTheQueryClosed()
+            throws Exception {
+        // README SMT-1: no stale generation reaches candidate.smt2.  The
+        // summary was traced under TEST_DRIVER/test#epoch0 and its own
+        // binding names a producer occurrence minted by another source, so
+        // composing it would let one node's - or one epoch's - value answer
+        // for another's.
+        String fatalInstance = "REGION.0@Test#call30";
+        String staleProducer = "OTHER_SOURCE/region/REGION.1#1";
+        JsonObject stale = protocolBinding("EDGE.STALE", staleProducer,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0");
+        RelationSummary producer = summary("STALE", staleProducer, 10,
+                Collections.singletonList("REGION.1.in.0"),
+                Collections.singletonList(stale));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Collections.singletonList(producer), stale);
+
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_REFUSED,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        JsonObject refusal = null;
+        for (JsonElement element : result.manifest.getAsJsonArray(
+                "finalStatusRefusals")) {
+            JsonObject row = element.getAsJsonObject();
+            if (ConcolicSmtComposer.PRODUCER_OCCURRENCE_OUTSIDE_SOURCE_KEY
+                    .equals(row.get("code").getAsString())) {
+                refusal = row;
+            }
+        }
+        assertTrue(result.manifest.toString(), refusal != null);
+        assertEquals("EDGE.STALE", refusal.get("subject").getAsString());
+        assertTrue(refusal.toString(), refusal.get("detail").getAsString()
+                .contains(staleProducer));
+        // The artifact itself fails closed: the gate lives in the manifest
+        // and the query is a separate file a later stage solves on its own.
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString(),
+                result.manifest.getAsJsonArray("gaps").toString().contains(
+                        ConcolicSmtComposer
+                                .PRODUCER_OCCURRENCE_OUTSIDE_SOURCE_KEY));
+        // Still reported as the coverage fact it always was.
+        assertTrue(result.manifest.toString(), result.manifest
+                .getAsJsonArray("coverageGaps").toString().contains(
+                        "SOURCE_EPOCH"));
+    }
+
+    @Test
+    public void pathSetCompleteIsPublishedBesideEveryFinalStatus()
+            throws Exception {
+        // README GATE-1's acceptance check reads finalStatus and this member
+        // together, so it exists on a ready composition, on one whose
+        // producer declared an open path set, and on one that never started.
+        assertTrue(exactGolden(10, "CLOSED").manifest
+                .get(ConcolicSmtComposer.PATH_SET_COMPLETE).getAsBoolean());
+        assertFalse(exactGolden(10, "PARTIAL").manifest
+                .get(ConcolicSmtComposer.PATH_SET_COMPLETE).getAsBoolean());
+
+        JsonObject fatal = fatalQuery("REGION.0@Test#target",
+                targetConstraints());
+        fatal.add("coverageGaps", new JsonArray());
+        fatal.getAsJsonArray("coverageGaps").add(CoverageDivergence.of(
+                CoverageDivergence.Kind.TARGET, "PATH_FLIP_REPLAY_NOT_ADMITTED",
+                "QUERY.TEST.FATAL", "one target path was never replayed"));
+        ConcolicSmtComposer.Result openTarget = composeFatal(
+                "REGION.0@Test#target",
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false)), fatal, null);
+        assertFalse(openTarget.manifest.toString(), openTarget.manifest
+                .get(ConcolicSmtComposer.PATH_SET_COMPLETE).getAsBoolean());
+
+        ConcolicSmtComposer.Result absent = composeWithoutFatalQuery();
+        assertEquals(absent.manifest.toString(),
+                ConcolicSmtComposer.FINAL_REFUSED,
+                absent.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertFalse(absent.manifest.toString(), absent.manifest
+                .get(ConcolicSmtComposer.PATH_SET_COMPLETE).getAsBoolean());
+    }
+
+    @Test
+    public void guardedReadOnTheFatalPathRefusesWithNoEdgeBinding()
+            throws Exception {
+        // README STATE-1: a read consumed directly by the target's own
+        // expression has no edge binding, so the binding-row half of the gate
+        // never sees it.  Its bounded writer universe still retains the
+        // rf_unknown arm, and an accepted witness may not rest on a writer
+        // nothing recorded.
+        String fatalInstance = "REGION.0@Test#call30";
+        JsonArray candidates = new JsonArray();
+        candidates.add(RecordedSharedStateFixtures.candidate("rf1", 11L,
+                RecordedSharedStateFixtures.constant(1), null, 21L, 12L));
+        candidates.add(RecordedSharedStateFixtures.unknownCandidate(21L,
+                "M_I_unknownWriter_7_24_r21"));
+        JsonObject envelope = RecordedSharedStateFixtures.twoWriterEnvelope(
+                SharedStateEvidence.RESOLUTION_GUARDED, "AMBIGUOUS_WRITERS",
+                0L);
+        envelope.getAsJsonArray("reads").get(0).getAsJsonObject()
+                .addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
+                        fatalInstance);
+        SharedStateEvidence.normalizeGuards(envelope);
+        JsonObject guarded = RecordedSharedStateFixtures.guardedRead(21L, 7L,
+                24, candidates);
+        SharedStateEvidence.normalizeGuards(guarded);
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(guarded, "==", integer(1)));
+        JsonObject fatal = fatalQuery(fatalInstance, constraints);
+        fatal.getAsJsonArray("paths").get(0).getAsJsonObject()
+                .add(SharedStateEvidence.RECORDED_FIELD,
+                        RecordedSharedStateFixtures.recordedMember(envelope,
+                                RecordedSharedStateFixtures.twoWriterLedger(),
+                                "example.State#value"));
+
+        ConcolicSmtComposer.Result result = composeFatal(fatalInstance,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)), fatal, null);
+
+        // No edge was selected, so the binding half of the gate had nothing
+        // to range over; this refusal is the direct-consumption half.
+        assertEquals(result.manifest.toString(), 0, result.manifest
+                .getAsJsonArray("resolvedEdgeBindings").size());
+        JsonArray refusals = result.manifest.getAsJsonArray(
+                "finalStatusRefusals");
+        assertEquals(refusals.toString(), 1, refusals.size());
+        JsonObject refusal = refusals.get(0).getAsJsonObject();
+        assertEquals(ConcolicSmtComposer.SELECTED_READ_FROM_UNKNOWN_ARM,
+                refusal.get("code").getAsString());
+        assertEquals("INSTANCE_FIELD/7#24",
+                refusal.get("subject").getAsString());
+        assertTrue(refusal.toString(), refusal.get("detail").getAsString()
+                .contains("21"));
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_REFUSED,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        // The run is still reported and still solvable: an open arm is a
+        // declared alternative, not an unauthorized term.
+        assertEquals(result.manifest.toString(), "CANDIDATE_READY",
+                result.manifest.get("state").getAsString());
+        assertFalse(result.smtLib, result.smtLib.contains("(assert false)"));
+    }
+
+    @Test
+    public void openReadFromArmIsFiledApartFromAProvenOne() throws Exception {
+        // README SMT-1 admits a *known* read-from arm.  A binding whose read
+        // kept its rf_unknown arm still constrains the port, so it is an
+        // authority; it is not the same authority, and the ledger and its
+        // audit have to be able to say which one this run used.
+        String fatalInstance = "REGION.0@Test#call30";
+        JsonArray candidates = new JsonArray();
+        candidates.add(RecordedSharedStateFixtures.candidate("rf1", 11L,
+                RecordedSharedStateFixtures.constant(1), null, 21L, 12L));
+        candidates.add(RecordedSharedStateFixtures.unknownCandidate(21L,
+                "M_I_unknownWriter_7_24_r21"));
+        JsonObject envelope = RecordedSharedStateFixtures.twoWriterEnvelope(
+                SharedStateEvidence.RESOLUTION_GUARDED, "AMBIGUOUS_WRITERS",
+                0L);
+        envelope.getAsJsonArray("reads").get(0).getAsJsonObject()
+                .addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
+                        fatalInstance);
+        SharedStateEvidence.normalizeGuards(envelope);
+        JsonObject guarded = RecordedSharedStateFixtures.guardedRead(21L, 7L,
+                24, candidates);
+        SharedStateEvidence.normalizeGuards(guarded);
+        JsonObject edge = binding("EDGE.ARM", "REGION.1@Test#call20",
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0", 20, 30);
+        edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_GUARDED);
+        edge.addProperty(RecordedReadFrom.EDGE_UNKNOWN_ARM,
+                SharedStateEvidence.UNKNOWN_WRITER_SELECTOR);
+        edge.addProperty("locationKey", "INSTANCE_FIELD/7#24");
+        RelationSummary producer = summary("ARM", "REGION.1@Test#call20", 10,
+                Collections.singletonList("REGION.1.in.0"),
+                Collections.singletonList(edge));
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(guarded, "==", integer(1)));
+        // A second mention of the consumer port, so the ledger ranges over
+        // the occurrence the arm above bound.
+        constraints.add(binary(reference("REGION.0.in.0", "I"), ">",
+                integer(-1)));
+        JsonObject fatal = fatalQuery(fatalInstance, constraints, edge);
+        fatal.getAsJsonArray("paths").get(0).getAsJsonObject()
+                .add(SharedStateEvidence.RECORDED_FIELD,
+                        RecordedSharedStateFixtures.recordedMember(envelope,
+                                RecordedSharedStateFixtures.twoWriterLedger(),
+                                "example.State#value"));
+
+        ConcolicSmtComposer.Result result = composeFatal(fatalInstance,
+                Collections.singletonList(producer),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)), fatal,
+                Collections.singletonList(edge));
+
+        JsonArray ledger = result.manifest.getAsJsonArray(
+                "selectedInputLedger");
+        assertEquals(ledger.toString(), 1, ledger.size());
+        JsonObject row = ledger.get(0).getAsJsonObject();
+        assertEquals("REGION.0.in.0", row.get("portId").getAsString());
+        assertEquals(ConcolicSmtComposer.READ_FROM_ARM_UNKNOWN,
+                row.get("authority").getAsString());
+        assertEquals(row.toString(),
+                ConcolicSmtComposer.READ_FROM_ARM_UNKNOWN,
+                row.getAsJsonArray("evidence").get(0).getAsJsonObject()
+                        .get("authority").getAsString());
+        JsonObject audit = result.manifest.getAsJsonObject(
+                "selectedInputLedgerAudit");
+        assertEquals(audit.toString(), 1,
+                audit.get("unknownArmAuthorities").getAsInt());
+        assertEquals(audit.toString(), 0,
+                audit.get("missingOccurrences").getAsInt());
+        // The exact-provenance golden files the same port under the proven
+        // authority, which is what makes the row above a statement about this
+        // binding and not about the ledger.
+        JsonArray provenLedger = exactGolden(10, "CLOSED", true).manifest
+                .getAsJsonArray("selectedInputLedger");
+        JsonObject proven = null;
+        for (JsonElement element : provenLedger) {
+            JsonObject candidate = element.getAsJsonObject();
+            if ("REGION.0.in.0".equals(
+                    candidate.get("portId").getAsString())) {
+                proven = candidate;
+            }
+        }
+        assertTrue(provenLedger.toString(), proven != null);
+        assertEquals(ConcolicSmtComposer.READ_FROM_ARM,
+                proven.get("authority").getAsString());
+    }
+
+
+    @Test
+    public void targetStateReadWithoutAuthorityFailsTheQueryClosed()
+            throws Exception {
+        // A state read the target performs whose recorded arm no authority
+        // admitted, while the container it names is still selected evidence.
+        String fatalInstance = "REGION.0@Test#call30";
+        JsonObject candidateOnly = binding("EDGE.UNAUTHORIZED",
+                "REGION.1@Test#call20", "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        candidateOnly.addProperty(RecordedReadFrom.EDGE_FIELD,
+                "example.State#value");
+        candidateOnly.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_CANDIDATE);
+
+        ConcolicSmtComposer.Result result = composeFatal(fatalInstance,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                fatalQuery(fatalInstance, targetConstraints(), candidateOnly),
+                null);
+
+        assertTrue(result.manifest.toString(), result.manifest
+                .getAsJsonArray("gaps").toString().contains(
+                        ConcolicSmtComposer
+                                .SELECTED_STATE_READ_WITHOUT_AUTHORITY));
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_REFUSED,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
+    }
+
+    @Test
+    public void aRecordedExactReadAuthorizesAnExcludedTraceCandidate()
+            throws Exception {
+        // Same shape as the refusal above, except that the recorded session
+        // states what the read DID take: one exact resolution over a writer
+        // set the VM reported complete.  That resolution is the read's
+        // authority, so the trace candidate it rules out is a decided
+        // alternative, reported as coverage rather than refused.
+        ConcolicSmtComposer.Result result = composeExcludedTraceCandidate(
+                SharedStateEvidence.RESOLUTION_EXACT);
+
+        assertTrue(result.manifest.toString(), !result.manifest
+                .getAsJsonArray("gaps").toString().contains(
+                        ConcolicSmtComposer
+                                .SELECTED_STATE_READ_WITHOUT_AUTHORITY));
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertTrue(result.manifest.toString(), result.manifest
+                .getAsJsonArray("coverageGaps").toString().contains(
+                        RecordedReadFrom.PROVENANCE_EXCLUDED));
+        assertTrue(result.smtLib, !result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
+    }
+
+    @Test
+    public void aRecordedGuardedReadStillRefusesAnExcludedTraceCandidate()
+            throws Exception {
+        // The control: with the same read resolved GUARDED rather than
+        // exactly, the session states no single version the read took, so the
+        // excluded candidate is the missing authority it always was.
+        ConcolicSmtComposer.Result result = composeExcludedTraceCandidate(
+                SharedStateEvidence.RESOLUTION_GUARDED);
+
+        assertTrue(result.manifest.toString(), result.manifest
+                .getAsJsonArray("gaps").toString().contains(
+                        ConcolicSmtComposer
+                                .SELECTED_STATE_READ_WITHOUT_AUTHORITY));
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_REFUSED,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+    }
+
+    /**
+     * One target state read the recorded session resolved with
+     * {@code resolution}, and one trace candidate writer that same session
+     * excluded.
+     */
+    private ConcolicSmtComposer.Result composeExcludedTraceCandidate(
+            String resolution) throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        String field = "example.State#value";
+        JsonObject excluded = binding("EDGE.EXCLUDED",
+                "REGION.1@Test#call20", "REGION.1.out.0", fatalInstance,
+                "REGION.0.in.0", 20, 30);
+        excluded.addProperty(RecordedReadFrom.EDGE_FIELD, field);
+        excluded.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_EXCLUDED);
+        JsonObject envelope = recordedReadEnvelope(fatalInstance, resolution);
+        excluded.addProperty("locationKey",
+                SharedStateEvidence.locationKey(envelope));
+
+        JsonObject fatal = fatalQuery(fatalInstance, targetConstraints(),
+                excluded);
+        JsonObject record = SharedStateEvidence.versionsRecord(
+                SharedStateEvidence.locationKey(envelope), envelope,
+                RecordedSharedStateFixtures.identity("REGION.0", 1L));
+        record.add("carrier",
+                RecordedSharedStateFixtures.carrier(field, "I"));
+        fatal.getAsJsonArray("paths").get(0).getAsJsonObject().add(
+                SharedStateEvidence.RECORDED_FIELD,
+                SharedStateEvidence.recorded(
+                        Collections.singletonList(record), null));
+
+        return composeFatal(fatalInstance,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                fatal, null);
+    }
+
+    /** One location this reader read once, under {@code resolution}. */
+    private static JsonObject recordedReadEnvelope(String readerOccurrence,
+                                                   String resolution) {
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "ConSymbolExp");
+        value.addProperty("_java_type", "I");
+        value.addProperty("_exp", "0");
+        JsonObject version = RecordedSharedStateFixtures.version(41L,
+                "REGION.0", "TASK.0", value, null);
+        version.addProperty("versionKind", "INITIAL");
+        version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
+                readerOccurrence);
+        JsonObject read = RecordedSharedStateFixtures.read(42L, resolution,
+                "UNIQUE_VERSION", 41L, 1);
+        read.addProperty("regionId", "REGION.0");
+        read.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
+                readerOccurrence);
+        JsonArray versions = new JsonArray();
+        versions.add(version);
+        JsonArray reads = new JsonArray();
+        reads.add(read);
+        JsonObject envelope = RecordedSharedStateFixtures.versionsEnvelope(
+                41L, 24, versions, reads);
+        SharedStateEvidence.normalizeGuards(envelope);
+        return envelope;
+    }
+
+    /** Whether one sweep entry names {@code prefix} about {@code port}. */
+    private static boolean containsPrefixed(List<String> entries,
+                                            String prefix, String port) {
+        for (String entry : entries) {
+            if (entry.startsWith(prefix) && entry.contains(port)) return true;
+        }
+        return false;
+    }
+
+    /** The composition of a run whose target query was never published. */
+    private ConcolicSmtComposer.Result composeWithoutFatalQuery()
+            throws Exception {
+        Path directory = temporary.newFolder().toPath();
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        Files.write(summaryFile, new byte[0]);
+        Path regions = directory.resolve("regions.jsonl");
+        writeJsonl(regions, region("REGION.0", true, false));
+        Path runtimePlan = directory.resolve("runtime_plan.jsonl");
+        Files.write(runtimePlan, RuntimePlanArtifact.encode(
+                Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList(),
+                Collections.singletonList(region("REGION.0", true, false)))
+                .getBytes(StandardCharsets.UTF_8));
+        return ConcolicSmtComposer.compose(
+                ConcolicSmtComposer.Arguments.parse(new String[]{
+                        "--fatal-query",
+                        directory.resolve("absent.jsonl").toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--runtime-plan", runtimePlan.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString(),
+                        "--fatal-region", "REGION.0",
+                        "--occurrence-id", "REGION.0@Test#call30"}));
+    }
+
     @Test
     public void canonicalCoverageKeepsStableCodeAndPerQueryIdentity() {
         JsonObject manifest = new JsonObject();
@@ -51,7 +464,7 @@ public class ConcolicSmtComposerTest {
         manifest.add("recordedSessionModel", new JsonObject());
 
         JsonObject canonical = CanonicalSessionModel.of(manifest,
-                new JsonArray(), new JsonArray(), "REGION.target",
+                new JsonArray(), new JsonArray(),
                 "SOURCE/region/target#1");
 
         JsonArray gaps = canonical.getAsJsonArray("gaps");
@@ -127,89 +540,21 @@ public class ConcolicSmtComposerTest {
         manifest.add("recordedSessionModel", new JsonObject());
 
         JsonObject canonical = CanonicalSessionModel.of(manifest,
-                new JsonArray(), new JsonArray(), "REGION.target",
+                new JsonArray(), new JsonArray(),
                 "SOURCE/region/target#1");
-        JsonArray retained = canonical.getAsJsonArray("valueBindings");
-        assertEquals(canonical.toString(), 4, retained.size());
-        Set<String> keys = new LinkedHashSet<>();
-        for (JsonElement element : retained) {
-            keys.add(element.getAsJsonObject().get("bindingKey")
-                    .getAsString());
-        }
-        assertEquals(canonical.toString(), 4, keys.size());
+        // Four distinct binding keys, so no case-scoped row collapses into
+        // another: two exact edges and two guarded reads survive the census.
+        JsonObject counts = canonical.getAsJsonObject("counts");
+        assertEquals(canonical.toString(), 2,
+                counts.get("exactBindings").getAsInt());
+        assertEquals(canonical.toString(), 2,
+                counts.get("guardedBindings").getAsInt());
     }
 
-    @Test
-    public void caseLocalLetCseSharesOneClosedLargeTermDeterministically() {
-        String shared = largeSmtTerm("global_value");
-        String expression = "(and (= " + shared + " " + shared + ")"
-                + " (= " + shared + " " + shared + "))";
 
-        String compressed = ConcolicSmtComposer
-                .caseLocalLetCseForTests(expression);
 
-        assertTrue(compressed, compressed.startsWith(
-                "(let ((gc_case_cse__"));
-        assertEquals(compressed, 1, occurrences(compressed, shared));
-        assertEquals(compressed, compressed, ConcolicSmtComposer
-                .caseLocalLetCseForTests(expression));
-        assertTrue(compressed.length() < expression.length() / 2);
-    }
 
-    @Test
-    public void caseLocalLetCseDoesNotHoistAnAncestorBoundIdentifier() {
-        String scoped = largeBoundSmtTerm("s");
-        String equality = "(= " + scoped + " " + scoped + ")";
-        String expression = "(and (let ((s left)) " + equality + ")"
-                + " (let ((s right)) " + equality + ") )";
 
-        assertEquals(expression, expression, ConcolicSmtComposer
-                .caseLocalLetCseForTests(expression));
-    }
-
-    @Test
-    public void caseLocalLetCseMayShareAClosedTermBelowDifferentLets() {
-        String shared = largeSmtTerm("global_value");
-        String equality = "(= " + shared + " " + shared + ")";
-        String expression = "(and (let ((s left)) " + equality + ")"
-                + " (let ((s right)) " + equality + ") )";
-
-        String compressed = ConcolicSmtComposer
-                .caseLocalLetCseForTests(expression);
-
-        assertTrue(compressed, compressed.startsWith(
-                "(let ((gc_case_cse__"));
-        assertEquals(compressed, 1, occurrences(compressed, shared));
-    }
-
-    @Test
-    public void caseLocalLetCseLeavesSmallTermsAndQuotedParensAlone() {
-        String small = "(and (= (f x) (f x))"
-                + " (= (str.++ \"(\" \")\") \"()\"))";
-
-        assertEquals(small, small, ConcolicSmtComposer
-                .caseLocalLetCseForTests(small));
-    }
-
-    @Test
-    public void caseLocalLetCseStaysBoundedOnAMegabyteAssertion() {
-        String shared = largeSmtTerm("global_value");
-        StringBuilder expression = new StringBuilder("(and");
-        for (int index = 0; index < 300; index++) {
-            expression.append(" (= ").append(shared).append(" unit)");
-        }
-        expression.append(')');
-        assertTrue(expression.length() > 1_000_000);
-
-        long started = System.nanoTime();
-        String compressed = ConcolicSmtComposer
-                .caseLocalLetCseForTests(expression.toString());
-        long elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
-
-        assertTrue("CSE took " + elapsedMillis + "ms",
-                elapsedMillis < 10_000L);
-        assertTrue(compressed.length() < expression.length() / 10);
-    }
 
     @Test
     public void targetScopeExcludesTheWorkloadCatalogWhenRelationsAreEmpty() {
@@ -260,7 +605,7 @@ public class ConcolicSmtComposerTest {
         SymbolicSourceEvidence.writeTo(sourceCase,
                 Collections.singletonList(SymbolicSourceEvidence.event(
                         sourcePhase, sourceId, sourceOccurrence,
-                        "<Test: int source>", reference(raw, "I"))));
+                        "<Test: int source>", reference(raw, "I"), 1, false, null)));
 
         JsonArray constraints = new JsonArray();
         constraints.add(binary(reference(raw, "I"), "==", integer(7)));
@@ -305,244 +650,63 @@ public class ConcolicSmtComposerTest {
         assertEquals("fatal_path", fatalAssertion.get("name").getAsString());
         assertFalse(fatalAssertion.get("solverTerm").getAsString().isEmpty());
         assertFalse(result.manifest.has("operandBindingLedger"));
-        JsonObject canonical = result.manifest.getAsJsonObject(
-                CanonicalSessionModel.MANIFEST_FIELD);
-        assertEquals(fatalAssertion,
-                canonical.getAsJsonObject("target")
-                        .getAsJsonObject("fatalPathAssertion"));
-        JsonObject graph = CausalGraphWriter.graph(canonical,
-                new JsonObject());
-        assertEquals(fatalAssertion,
-                graph.getAsJsonObject("target")
-                        .getAsJsonObject("fatalPathAssertion"));
     }
 
+    /**
+     * HDFS-11741's shape: the declared read found a root the VM had already
+     * propagated onto the field, so it NAMED it instead of minting.  The
+     * named root keeps the SMT name and the guard its own mint gave it - it
+     * is not re-minted - and the composition still publishes the writable
+     * program field behind it.
+     */
     @Test
-    public void configuredSelectorForcesExactProducerCaseAndSelectedInt()
+    public void aNamedPropagatedRootStillMaterializesItsProgramField()
             throws Exception {
-        String fatalOccurrence = "REGION.0@Test#target-selector";
-        String consumerOccurrence = "REGION.1@Test#consumer-selector";
-        String sourceOccurrence = "REGION.1@Test#source-selector";
-        String sourceId = "TEST.SELECTOR.KEY";
-        String field = "<Test: int keyId>";
-        String producerPhaseId = publishPhase(sourceOccurrence);
-        String raw = ConfiguredSourceSelectorContract
-                .expectedRawSymbolPrefix(producerPhaseId, sourceId, field)
-                + "Test";
-        JsonObject firstHop = protocolBinding("EDGE.SELECTOR",
-                consumerOccurrence, "REGION.1.out.0", fatalOccurrence,
-                "REGION.0.in.0");
-
-        RelationSummary producer = configuredSourceProducer(
-                sourceOccurrence, sourceId, field, raw);
-        RelationSummary consumer = summary("SELECTOR.CONSUMER",
-                consumerOccurrence, 1,
+        String fatalOccurrence = "REGION.0@Test#target";
+        String sourceOccurrence = "REGION.1@Test#source";
+        String sourceId = "TEST.CONFIGURED.SOURCE";
+        String sourcePhase = publishPhase(sourceOccurrence);
+        // Minted somewhere else entirely: no label of this phase is in it.
+        String propagated = "M_I_22_field32";
+        RelationSummary source = summary("SOURCE", sourceOccurrence, 7,
                 Collections.<String>emptyList(),
-                Collections.singletonList(firstHop));
-        JsonObject consumerRow = consumer.toJson();
-        JsonObject consumerCase = consumerRow.getAsJsonObject(
-                "regionRelation").getAsJsonArray("cases").get(0)
-                .getAsJsonObject();
-        writeConfiguredSelector(consumerCase, sourceOccurrence, sourceId,
-                field, "TASK.SOURCE.9", raw, 9);
+                Collections.<JsonObject>emptyList());
+        JsonObject sourceRow = source.toJson();
+        JsonObject sourceCase = sourceRow.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases").get(0).getAsJsonObject();
+        SymbolicSourceEvidence.writeTo(sourceCase,
+                Collections.singletonList(SymbolicSourceEvidence.event(
+                        sourcePhase, sourceId, sourceOccurrence,
+                        "<Test: int source>", reference(propagated, "I"), 1,
+                        true, null)));
 
-        ConcolicSmtComposer.Result result = compose(fatalOccurrence,
-                Arrays.asList(RelationSummary.decode(consumerRow), producer),
-                firstHop);
-
-        assertEquals(result.manifest.toString(),
-                ConcolicSmtComposer.FINAL_READY,
-                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
-                        .getAsString());
-        JsonArray ledger = result.manifest.getAsJsonArray(
-                ConfiguredSourceSelectorContract.EVIDENCE_FIELD);
-        assertEquals(ledger.toString(), 1, ledger.size());
-        JsonObject selected = ledger.get(0).getAsJsonObject();
-        assertEquals("TASK.SOURCE.9",
-                selected.get("sourceTaskId").getAsString());
-        assertEquals(9, selected.get("selectedIntValue").getAsInt());
-        assertEquals(producerPhaseId,
-                selected.get("producerPhaseId").getAsString());
-        assertEquals(consumePhase(sourceOccurrence),
-                selected.get("consumePhaseId").getAsString());
-        String consumerOwner = RecordedSessionModel.caseOwner("REGION.1",
-                consumerOccurrence, "CASE.SELECTOR.CONSUMER", 0);
-        String consumerSelector = RecordedSessionModel.caseSelector(
-                consumerOwner);
-        String producerOwner = RecordedSessionModel.caseOwner("REGION.1",
-                sourceOccurrence, "CASE.SOURCE.9", 1);
-        String producerSelector = RecordedSessionModel.caseSelector(
-                producerOwner);
-        String valueAssertion = selected.get("valueAssertion").getAsString();
-        assertTrue(valueAssertion, valueAssertion.startsWith(
-                "configured_source_selector_"));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "(=> " + consumerSelector + " (and "
-                        + producerSelector));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "(=> " + producerSelector + " "));
-        assertFalse(result.smtLib, result.smtLib.contains(
-                "(= " + producerSelector + " "));
-        assertTrue(result.smtLib, result.smtLib.contains(" 9)"));
-        if (z3Available()) {
-            assertEquals(result.smtLib, "sat", z3(result.smtLib));
-            assertEquals(result.smtLib, "unsat", z3(assuming(result.smtLib,
-                    "(not " + producerSelector + ")")));
-        }
-    }
-
-    @Test
-    public void configuredSelectorBindsOnlyNamedPublishPhase()
-            throws Exception {
-        String fatalOccurrence = "REGION.0@Test#target-phase-selector";
-        String consumerOccurrence =
-                "REGION.1@Test#consumer-phase-selector";
-        String sourceOccurrence = "REGION.1@Test#source-phase-selector";
-        String sourceId = "TEST.SELECTOR.PHASED.KEY";
-        String field = "<Test: int keyId>";
-        String firstPhase = publishPhase(sourceOccurrence);
-        String secondPhase = firstPhase + ".SECOND";
-        String firstRaw = configuredRaw(firstPhase, sourceId, "first");
-        String secondRaw = configuredRaw(secondPhase, sourceId, "second");
-        JsonObject firstHop = protocolBinding("EDGE.SELECTOR.PHASED",
-                consumerOccurrence, "REGION.1.out.0", fatalOccurrence,
-                "REGION.0.in.0");
-
-        JsonObject producerRow = configuredSourceProducer(sourceOccurrence,
-                sourceId, field, firstRaw).toJson();
-        JsonObject selectedProducerCase = producerRow.getAsJsonObject(
-                "regionRelation").getAsJsonArray("cases").get(1)
-                .getAsJsonObject();
-        JsonArray sourceEvents = selectedProducerCase.getAsJsonArray(
-                SymbolicSourceEvidence.FIELD);
-        sourceEvents.add(SymbolicSourceEvidence.event(secondPhase, sourceId,
-                sourceOccurrence, field, reference(secondRaw, "I")));
-        RelationSummary consumer = summary("SELECTOR.PHASE.CONSUMER",
-                consumerOccurrence, 1, Collections.<String>emptyList(),
-                Collections.singletonList(firstHop));
-        JsonObject consumerRow = consumer.toJson();
-        writeConfiguredSelector(consumerRow.getAsJsonObject(
-                        "regionRelation").getAsJsonArray("cases").get(0)
-                        .getAsJsonObject(), sourceOccurrence, sourceId,
-                field, "TASK.SOURCE.9", secondRaw, 11,
-                consumePhase(consumerOccurrence), secondPhase);
-
-        ConcolicSmtComposer.Result result = compose(fatalOccurrence,
-                Arrays.asList(RelationSummary.decode(consumerRow),
-                        RelationSummary.decode(producerRow)), firstHop);
-
-        assertEquals(result.manifest.toString(),
-                ConcolicSmtComposer.FINAL_READY,
-                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
-                        .getAsString());
-        JsonObject selected = result.manifest.getAsJsonArray(
-                ConfiguredSourceSelectorContract.EVIDENCE_FIELD)
-                .get(0).getAsJsonObject();
-        assertEquals(secondPhase,
-                selected.get("producerPhaseId").getAsString());
-        assertEquals(secondRaw, selected.get("rawSymbol").getAsString());
-    }
-
-    @Test
-    public void configuredSelectorMissingAmbiguousAndMismatchFailClosed()
-            throws Exception {
-        String fatalOccurrence = "REGION.0@Test#target-selector-gaps";
-        String consumerOccurrence = "REGION.1@Test#consumer-selector-gaps";
-        String sourceOccurrence = "REGION.1@Test#source-selector-gaps";
-        String sourceId = "TEST.SELECTOR.KEY";
-        String field = "<Test: int keyId>";
-        String producerPhaseId = publishPhase(sourceOccurrence);
-        String raw = ConfiguredSourceSelectorContract
-                .expectedRawSymbolPrefix(producerPhaseId, sourceId, field)
-                + "Test";
-        JsonObject firstHop = protocolBinding("EDGE.SELECTOR.GAPS",
-                consumerOccurrence, "REGION.1.out.0", fatalOccurrence,
-                "REGION.0.in.0");
-        RelationSummary producer = configuredSourceProducer(
-                sourceOccurrence, sourceId, field, raw);
-
-        ConcolicSmtComposer.Result missing = composeSelectorFailure(
-                fatalOccurrence, consumerOccurrence, sourceOccurrence,
-                sourceId, field, raw, "TASK.MISSING", producer, firstHop);
-        assertSelectorRefused(missing,
-                ConcolicSmtComposer.SOURCE_SELECTOR_PRODUCER_CASE_MISSING);
-
-        JsonObject ambiguousRow = producer.toJson();
-        JsonArray producerCases = ambiguousRow.getAsJsonObject(
-                "regionRelation").getAsJsonArray("cases");
-        JsonObject duplicate = producerCases.get(1).getAsJsonObject()
-                .deepCopy();
-        duplicate.addProperty("caseId", "CASE.SOURCE.9.DUPLICATE");
-        producerCases.add(duplicate);
-        ConcolicSmtComposer.Result ambiguous = composeSelectorFailure(
-                fatalOccurrence, consumerOccurrence, sourceOccurrence,
-                sourceId, field, raw, "TASK.SOURCE.9",
-                RelationSummary.decode(ambiguousRow), firstHop);
-        assertSelectorRefused(ambiguous,
-                ConcolicSmtComposer
-                        .SOURCE_SELECTOR_PRODUCER_CASE_AMBIGUOUS);
-
-        JsonObject mismatchedProducer = producer.toJson();
-        JsonObject sourceNine = mismatchedProducer.getAsJsonObject(
-                "regionRelation").getAsJsonArray("cases").get(1)
-                .getAsJsonObject();
-        sourceNine.getAsJsonArray(SymbolicSourceEvidence.FIELD).get(0)
-                .getAsJsonObject().addProperty("fieldSignature",
-                        "<Test: int anotherKey>");
-        ConcolicSmtComposer.Result mismatch = composeSelectorFailure(
-                fatalOccurrence, consumerOccurrence, sourceOccurrence,
-                sourceId, field, raw, "TASK.SOURCE.9",
-                RelationSummary.decode(mismatchedProducer), firstHop);
-        assertSelectorRefused(mismatch,
-                ConcolicSmtComposer
-                        .SOURCE_SELECTOR_PRODUCER_EVIDENCE_MISMATCH);
-    }
-
-    @Test
-    public void configuredSelectorOnTargetIsGuardedByThatTargetPath()
-            throws Exception {
-        String fatalOccurrence = "REGION.0@Test#target-selector-path";
-        String sourceOccurrence = "REGION.1@Test#source-selector-path";
-        String sourceId = "TEST.TARGET.SELECTOR.KEY";
-        String field = "<Test: int keyId>";
-        String producerPhaseId = publishPhase(sourceOccurrence);
-        String raw = ConfiguredSourceSelectorContract
-                .expectedRawSymbolPrefix(producerPhaseId, sourceId, field)
-                + "Test";
-        RelationSummary producer = configuredSourceProducer(
-                sourceOccurrence, sourceId, field, raw);
-        JsonObject fatal = fatalQuery(fatalOccurrence,
-                targetConstraints());
-        JsonObject targetPath = fatal.getAsJsonArray("paths").get(0)
-                .getAsJsonObject();
-        writeConfiguredSelector(targetPath, sourceOccurrence, sourceId,
-                field, "TASK.SOURCE.9", raw, 9);
-
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(reference(propagated, "I"), "==", integer(7)));
         ConcolicSmtComposer.Result result = composeFatal(fatalOccurrence,
-                Collections.singletonList(producer),
-                Arrays.asList(region("REGION.0", false, false),
-                        region("REGION.1", false, true)), fatal, null);
+                Collections.singletonList(RelationSummary.decode(sourceRow)),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)),
+                fatalQuery(fatalOccurrence, constraints), null);
 
-        assertEquals(result.manifest.toString(),
-                ConcolicSmtComposer.FINAL_READY,
-                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
-                        .getAsString());
-        JsonObject selected = result.manifest.getAsJsonArray(
-                ConfiguredSourceSelectorContract.EVIDENCE_FIELD)
-                .get(0).getAsJsonObject();
-        String targetOwner = RecordedSessionModel.caseOwner("REGION.0",
-                fatalOccurrence, "TARGET_PATH.0", 0);
-        String targetSelector = RecordedSessionModel.caseSelector(
-                targetOwner);
-        String producerOwner = RecordedSessionModel.caseOwner("REGION.1",
-                sourceOccurrence, "CASE.SOURCE.9", 1);
-        String producerSelector = RecordedSessionModel.caseSelector(
-                producerOwner);
-        assertEquals(targetOwner,
-                selected.get("consumerCaseOwner").getAsString());
+        JsonArray roots = result.manifest.getAsJsonArray(
+                ConcolicSmtComposer
+                        .CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
+        assertEquals(roots.toString(), 1, roots.size());
+        JsonObject root = roots.get(0).getAsJsonObject();
+        assertEquals(sourceId, root.get("sourceId").getAsString());
+        assertEquals(sourceOccurrence,
+                root.get("sourceOccurrenceId").getAsString());
+        assertEquals("<Test: int source>",
+                root.get("fieldSignature").getAsString());
+        assertEquals("I", root.get("javaTypeDescriptor").getAsString());
+        String sourceTerm = root.get("solverTerm").getAsString();
         assertTrue(result.smtLib, result.smtLib.contains(
-                "(=> " + targetSelector + " (and "
-                        + producerSelector));
+                "(declare-const " + sourceTerm + " Int)"));
+        // Naming, never re-minting: the term is the one the propagated
+        // symbol already had, not a fresh configured-source root.
+        assertFalse(sourceTerm, sourceTerm.startsWith("source__"));
+        assertEquals(result.smtLib, 0, occurrences(result.smtLib,
+                "(declare-const source__"));
     }
 
     @Test
@@ -619,8 +783,12 @@ public class ConcolicSmtComposerTest {
         JsonObject first = fatal.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
         first.addProperty("caseId", "TARGET.CASE.A");
+        first.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         JsonObject second = first.deepCopy();
         second.addProperty("caseId", "TARGET.CASE.B");
+        second.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         fatal.getAsJsonArray("paths").add(second);
 
         ConcolicSmtComposer.Result result = composeFatal(occurrence,
@@ -660,6 +828,8 @@ public class ConcolicSmtComposerTest {
                 .getAsJsonArray("cases");
         JsonObject second = cases.get(0).getAsJsonObject().deepCopy();
         second.addProperty("caseId", "CASE.PRODUCER.ALTERNATIVE.B");
+        second.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         second.addProperty("sourceTaskId", "TASK.PRODUCER.ALTERNATIVE.B");
         second.getAsJsonObject("outputExpressions")
                 .add("REGION.1.out.0", integer(2));
@@ -888,10 +1058,23 @@ public class ConcolicSmtComposerTest {
                 ConcolicSmtComposer.FINAL_REFUSED,
                 result.manifest.get(
                         ConcolicSmtComposer.FINAL_STATUS).getAsString());
+        // Both halves of README STATE-1's read-from rule refuse this run, and
+        // they are separate rows because they range over separate things: the
+        // selected edge binding that carries the arm, and the guarded read the
+        // formula lowered.  A read consumed only on the fatal path has the
+        // second row and no first one.
+        Set<String> readFromSubjects = new LinkedHashSet<>();
+        for (JsonElement element : result.manifest.getAsJsonArray(
+                "finalStatusRefusals")) {
+            JsonObject row = element.getAsJsonObject();
+            if (ConcolicSmtComposer.SELECTED_READ_FROM_UNKNOWN_ARM.equals(
+                    row.get("code").getAsString())) {
+                readFromSubjects.add(row.get("subject").getAsString());
+            }
+        }
         assertTrue(result.manifest.toString(),
-                result.manifest.getAsJsonArray("finalStatusRefusals")
-                        .toString().contains(
-                        ConcolicSmtComposer.SELECTED_READ_FROM_UNKNOWN_ARM));
+                readFromSubjects.contains("INSTANCE_FIELD/7#24"));
+        assertEquals(result.manifest.toString(), 2, readFromSubjects.size());
 
         // Which arms replay could enforce is decided before the solve.
         JsonObject plan = recorded.getAsJsonArray("readCutGates").get(0)
@@ -1004,7 +1187,7 @@ public class ConcolicSmtComposerTest {
         JsonObject path = row.getAsJsonObject("regionRelation")
                 .getAsJsonArray("cases").get(0).getAsJsonObject();
         JsonArray handoffs = new JsonArray();
-        handoffs.add(VmHandoffEvidence.event("REGION.1.in.0", 41L,
+        handoffs.add(VmHandoffEvidence.event("REGION.1.in.0", 41L, 42L,
                 reference("producer_guard_x", "I"), "TASK.VMHP",
                 producerInstance));
         path.add(VmHandoffEvidence.FIELD, handoffs);
@@ -1032,6 +1215,7 @@ public class ConcolicSmtComposerTest {
         interaction.addProperty("authority",
                 "INSTRUMENTED_INTERACTION_SITE_V1");
         interaction.addProperty("portId", "REGION.1.in.0");
+        interaction.addProperty("exportEventId", 41L);
         JsonArray interactions = new JsonArray();
         interactions.add(interaction);
         producerPath.add(RelationSummary.INTERACTION_EVENTS, interactions);
@@ -1065,6 +1249,15 @@ public class ConcolicSmtComposerTest {
                 "(=> " + selector + " (= port__REGION_1_in_0__instance__"));
         assertTrue(result.smtLib, result.smtLib.contains(
                 ":named recorded_order__41__42"));
+        // Wave 3 A.  The handoff no longer restates the producer's path
+        // conditions - its relation summary lowers those once - but it does
+        // restate the lineage the row itself carries: this receive happened,
+        // so the case the stated (task, occurrence) ran is selected.  The
+        // producer case is looked up by that pair, never searched for.
+        String producerOwner = RecordedSessionModel.caseOwner("REGION.1",
+                producerInstance, "CASE.VMHP", 0);
+        String producerSelector = RecordedSessionModel.caseSelector(
+                producerOwner);
         String producerGuardLine = "";
         for (String line : result.smtLib.split("\\R")) {
             if (line.contains(":named vm_handoff_producer_guard_")) {
@@ -1073,18 +1266,10 @@ public class ConcolicSmtComposerTest {
             }
         }
         assertFalse(result.smtLib, producerGuardLine.isEmpty());
-        assertTrue(producerGuardLine, producerGuardLine.contains("(> "));
         assertTrue(producerGuardLine, producerGuardLine.contains(
-                "(=> " + selector + " "));
-        String producerOwner = RecordedSessionModel.caseOwner("REGION.1",
-                producerInstance, "CASE.VMHP", 0);
-        String producerSelector = RecordedSessionModel.caseSelector(
-                producerOwner);
-        assertTrue(producerGuardLine, producerGuardLine.contains(
-                producerSelector));
+                "(=> " + selector + " " + producerSelector + ")"));
         if (z3Available()) {
-            assertEquals("unsat", z3(assuming(result.smtLib,
-                    selector,
+            assertEquals("unsat", z3(assuming(result.smtLib, selector,
                     "(not " + producerSelector + ")")));
         }
         JsonArray bindings = result.manifest.getAsJsonArray(
@@ -1108,44 +1293,29 @@ public class ConcolicSmtComposerTest {
         assertEquals(producerInstance, vmBinding
                 .get(VmHandoffEvidence.PRODUCER_OCCURRENCE_ID).getAsString());
         assertEquals(41L, vmBinding.get("localExportEventId").getAsLong());
-        assertEquals(producerSelector,
-                vmBinding.get("producerCaseSelector").getAsString());
-        assertTrue(vmBinding.get("producerGuardAssertion").getAsString()
-                .startsWith("vm_handoff_producer_guard_"));
+        // The two producer strings stay on the ledger row as the path
+        // provenance README RPC-1 asks the manifest to carry; the ledger also
+        // names the cases the link was stated over.  No restated guard.
+        assertFalse(vmBinding.toString(),
+                vmBinding.has("producerGuardAssertion"));
+        assertEquals(vmBinding.toString(), producerSelector,
+                vmBinding.getAsJsonArray("producerCaseSelectors").get(0)
+                        .getAsString());
         assertFalse(result.smtLib, result.smtLib.contains(
                 "VM_HANDOFF_SOURCE_EQUALITY"));
 
         JsonObject canonical = result.manifest.getAsJsonObject(
                 CanonicalSessionModel.MANIFEST_FIELD);
-        JsonObject canonicalHandoff = null;
-        for (JsonElement element : canonical.getAsJsonArray(
-                "valueBindings")) {
-            JsonObject candidate = element.getAsJsonObject();
-            if (VmHandoffEvidence.BINDING_KIND.equals(
-                    candidate.get("kind").getAsString())) {
-                canonicalHandoff = candidate;
-                break;
-            }
-        }
-        assertTrue(canonical.toString(), canonicalHandoff != null);
-        assertEquals(producerInstance, canonicalHandoff
-                .get("fromOccurrenceId").getAsString());
-        assertEquals(producerInstance, canonicalHandoff
-                .get(VmHandoffEvidence.PRODUCER_OCCURRENCE_ID)
-                .getAsString());
-        assertFalse(canonicalHandoff.get("fromNodeId").getAsString()
-                .isEmpty());
-        assertFalse(canonicalHandoff.get("toNodeId").getAsString()
-                .isEmpty());
+        // The handoff names both of its activations, so the census raises
+        // no endpoint gap and leaves no resolved edge as a bare candidate.
         assertFalse(canonical.toString(), canonical.getAsJsonArray("gaps")
                 .toString().contains(CanonicalSessionModel
                         .BINDING_ENDPOINT_UNAVAILABLE));
-        assertFalse(canonical.toString(), canonical
-                .getAsJsonArray("valueBindings").toString().contains(
-                        CanonicalSessionModel.CANDIDATE));
-        assertTrue(canonical.toString(), canonical
-                .getAsJsonArray("structuralEdges").toString().contains(
-                        CanonicalSessionModel.TRACE_CONNECTS_REGIONS));
+        JsonObject canonicalCounts = canonical.getAsJsonObject("counts");
+        assertEquals(canonical.toString(), 0,
+                canonicalCounts.get("candidateBindings").getAsInt());
+        assertTrue(canonical.toString(),
+                canonicalCounts.get("exactBindings").getAsInt() > 0);
 
         JsonObject missingOrderRow = row.deepCopy();
         JsonArray noOrderEvents = new JsonArray();
@@ -1178,37 +1348,41 @@ public class ConcolicSmtComposerTest {
         assertTrue(missingOrder.smtLib, missingOrder.smtLib.contains(
                 "(assert false) ; fail closed: unsupported"));
 
-        JsonObject missingProducerRow = row.deepCopy();
-        missingProducerRow.getAsJsonObject("regionRelation")
+        // A producer task no imported case carries is no longer a refusal:
+        // the value is the expression the receiver already holds, and the
+        // producer strings are provenance.  Nothing is searched, so nothing
+        // can be missing or ambiguous.
+        JsonObject unknownProducerRow = row.deepCopy();
+        unknownProducerRow.getAsJsonObject("regionRelation")
                 .getAsJsonArray("cases").get(0).getAsJsonObject()
                 .getAsJsonArray(VmHandoffEvidence.FIELD).get(0)
                 .getAsJsonObject().addProperty(
                         VmHandoffEvidence.PRODUCER_TASK_ID, "TASK.MISSING");
-        ConcolicSmtComposer.Result missing = compose(fatalInstance,
-                Arrays.asList(RelationSummary.decode(missingProducerRow),
+        ConcolicSmtComposer.Result unknownProducer = compose(fatalInstance,
+                Arrays.asList(RelationSummary.decode(unknownProducerRow),
                         producer), firstHop);
-        assertEquals(missing.manifest.toString(), "CANDIDATE_WITH_GAPS",
-                missing.manifest.get("state").getAsString());
-        assertTrue(missing.manifest.toString(), missing.manifest.toString()
-                .contains(ConcolicSmtComposer
-                        .HANDOFF_PRODUCER_CASE_MISSING));
-
-        JsonObject ambiguousProducerRow = producer.toJson();
-        JsonArray producerCases = ambiguousProducerRow.getAsJsonObject(
-                "regionRelation").getAsJsonArray("cases");
-        JsonObject duplicate = producerCases.get(0).getAsJsonObject()
-                .deepCopy();
-        duplicate.addProperty("caseId", "CASE.VMHP.DUPLICATE");
-        producerCases.add(duplicate);
-        ConcolicSmtComposer.Result ambiguous = compose(fatalInstance,
-                Arrays.asList(RelationSummary.decode(row),
-                        RelationSummary.decode(ambiguousProducerRow)),
-                firstHop);
-        assertEquals("CANDIDATE_WITH_GAPS",
-                ambiguous.manifest.get("state").getAsString());
-        assertTrue(ambiguous.manifest.toString(), ambiguous.manifest
-                .toString().contains(ConcolicSmtComposer
-                        .HANDOFF_PRODUCER_CASE_AMBIGUOUS));
+        assertEquals(unknownProducer.manifest.toString(), "CANDIDATE_READY",
+                unknownProducer.manifest.get("state").getAsString());
+        assertFalse(unknownProducer.manifest.toString(),
+                unknownProducer.manifest.toString().contains(
+                        "HANDOFF_PRODUCER_CASE"));
+        JsonObject unknownBinding = null;
+        for (JsonElement element : unknownProducer.manifest
+                .getAsJsonArray("recordedValueBindings")) {
+            JsonObject candidate = element.getAsJsonObject();
+            if (VmHandoffEvidence.BINDING_KIND.equals(
+                    candidate.get("kind").getAsString())) {
+                unknownBinding = candidate;
+                break;
+            }
+        }
+        assertTrue(unknownProducer.manifest.toString(),
+                unknownBinding != null);
+        assertEquals("TASK.MISSING", unknownBinding
+                .get(VmHandoffEvidence.PRODUCER_TASK_ID).getAsString());
+        assertFalse(unknownBinding.toString(),
+                unknownBinding.get("valueAssertion").getAsString()
+                        .isEmpty());
     }
 
     @Test
@@ -1227,7 +1401,7 @@ public class ConcolicSmtComposerTest {
         // the otherwise legal pair of RPC producer paths inconsistent.
         JsonObject owner = constantReference("SHARED_REPLAY_OWNER",
                 "Lexample/State;");
-        JsonObject field = fieldAccess(owner, "example/State", 24, "J");
+        JsonObject field = fieldAccess(owner, "example/State", 24, "I");
         RelationSummary producerA = summary("PRODUCER_A",
                 producerAOccurrence, integer(1),
                 Collections.<String>emptyList(),
@@ -1237,9 +1411,9 @@ public class ConcolicSmtComposerTest {
                 Collections.<String>emptyList(),
                 Collections.<JsonObject>emptyList());
         producerA = withProducerGuardAndInteraction(producerA,
-                binary(field.deepCopy(), "==", integer(1)), portA);
+                binary(field.deepCopy(), "==", integer(1)), portA, 41L);
         producerB = withProducerGuardAndInteraction(producerB,
-                binary(field.deepCopy(), "==", integer(2)), portB);
+                binary(field.deepCopy(), "==", integer(2)), portB, 51L);
 
         JsonArray targetConstraints = new JsonArray();
         targetConstraints.add(binary(reference(portA, "I"), "<",
@@ -1248,10 +1422,13 @@ public class ConcolicSmtComposerTest {
         JsonObject targetPath = fatal.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
         markRequiredTargetPath(targetPath);
+        // Each producer hands over its own read of that same spelling.  The
+        // handoff row states which producer sent it, and that is what keeps
+        // the two projections apart now that no producer case is looked up.
         VmHandoffEvidence.writeTo(targetPath, Arrays.asList(
-                VmHandoffEvidence.event(portA, 41L, integer(1),
+                VmHandoffEvidence.event(portA, 41L, 42L, field.deepCopy(),
                         "TASK.PRODUCER_A", producerAOccurrence),
-                VmHandoffEvidence.event(portB, 51L, integer(2),
+                VmHandoffEvidence.event(portB, 51L, 52L, field.deepCopy(),
                         "TASK.PRODUCER_B", producerBOccurrence)));
 
         JsonArray events = new JsonArray();
@@ -1335,10 +1512,10 @@ public class ConcolicSmtComposerTest {
                 Collections.singletonList(SymbolicSourceEvidence.event(
                         phaseA, sourceA, producerAOccurrence,
                         "<TestDataNode: int valueA>",
-                        reference(rawA, "I"))));
+                        reference(rawA, "I"), 1, false, null)));
         producerA = withProducerGuardAndInteraction(
                 RelationSummary.decode(producerARow),
-                binary(reference(rawA, "I"), ">=", integer(0)), portA);
+                binary(reference(rawA, "I"), ">=", integer(0)), portA, 141L);
 
         JsonObject producerBRow = producerB.toJson();
         JsonObject producerBCase = producerBRow.getAsJsonObject(
@@ -1348,10 +1525,10 @@ public class ConcolicSmtComposerTest {
                 Collections.singletonList(SymbolicSourceEvidence.event(
                         phaseB, sourceB, producerBOccurrence,
                         "<TestDataNode: int valueB>",
-                        reference(rawB, "I"))));
+                        reference(rawB, "I"), 1, false, null)));
         producerB = withProducerGuardAndInteraction(
                 RelationSummary.decode(producerBRow),
-                binary(reference(rawB, "I"), ">=", integer(0)), portB);
+                binary(reference(rawB, "I"), ">=", integer(0)), portB, 151L);
 
         // This is the nested target shape: the first two conditions are
         // NameNode-local prefix gates, while the final fatal predicate uses
@@ -1377,15 +1554,15 @@ public class ConcolicSmtComposerTest {
         SymbolicSourceEvidence.writeTo(fatal, Arrays.asList(
                 SymbolicSourceEvidence.event(phaseGate, sourceGate,
                         targetOccurrence, "<TestNameNode: int gate>",
-                        reference(rawGate, "I")),
+                        reference(rawGate, "I"), 1, false, null),
                 SymbolicSourceEvidence.event(phaseOffset, sourceOffset,
                         targetOccurrence, "<TestNameNode: int offset>",
-                        reference(rawOffset, "I"))));
+                        reference(rawOffset, "I"), 1, false, null)));
         VmHandoffEvidence.writeTo(targetPath, Arrays.asList(
-                VmHandoffEvidence.event(portA, 141L,
+                VmHandoffEvidence.event(portA, 141L, 142L,
                         reference(rawA, "I"), "TASK.NESTED_PRODUCER_A",
                         producerAOccurrence),
-                VmHandoffEvidence.event(portB, 151L,
+                VmHandoffEvidence.event(portB, 151L, 152L,
                         reference(rawB, "I"), "TASK.NESTED_PRODUCER_B",
                         producerBOccurrence)));
 
@@ -1498,12 +1675,12 @@ public class ConcolicSmtComposerTest {
                 summary("TARGET_PATH_A", producerAOccurrence, 1,
                         Collections.<String>emptyList(),
                         Collections.<JsonObject>emptyList()),
-                binary(integer(1), "==", integer(1)), port);
+                binary(integer(1), "==", integer(1)), port, 41L);
         RelationSummary producerB = withProducerGuardAndInteraction(
                 summary("TARGET_PATH_B", producerBOccurrence, 2,
                         Collections.<String>emptyList(),
                         Collections.<JsonObject>emptyList()),
-                binary(integer(1), "==", integer(1)), port);
+                binary(integer(1), "==", integer(1)), port, 41L);
 
         JsonObject portValue = reference(
                 "M_I_field_" + port + "_example/Reply", "I");
@@ -1518,13 +1695,17 @@ public class ConcolicSmtComposerTest {
         JsonObject first = fatal.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
         first.addProperty("caseId", "TARGET.PATH.A");
+        first.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         VmHandoffEvidence.writeTo(first,
                 Collections.singletonList(VmHandoffEvidence.event(port, 41L,
-                        integer(1), "TASK.TARGET_PATH_A",
+                        42L, integer(1), "TASK.TARGET_PATH_A",
                         producerAOccurrence)));
 
         JsonObject second = first.deepCopy();
         second.addProperty("caseId", "TARGET.PATH.B");
+        second.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         JsonArray secondConstraints = new JsonArray();
         secondConstraints.add(binary(replayField.deepCopy(), "==", integer(2)));
         secondConstraints.add(binary(portValue.deepCopy(), ">", integer(0)));
@@ -1535,7 +1716,7 @@ public class ConcolicSmtComposerTest {
                 // small ids as path A.  Scope, not the raw integer, must keep
                 // these two deliveries distinct through SMT and manifests.
                 Collections.singletonList(VmHandoffEvidence.event(port, 41L,
-                        integer(2), "TASK.TARGET_PATH_B",
+                        42L, integer(2), "TASK.TARGET_PATH_B",
                         producerBOccurrence)));
         fatal.getAsJsonArray("paths").add(second);
 
@@ -1594,20 +1775,6 @@ public class ConcolicSmtComposerTest {
         }
         assertEquals(result.manifest.toString(), 2, scopedExports.size());
         assertEquals(result.manifest.toString(), 2, handoffKeys.size());
-        JsonArray canonicalBindings = result.manifest.getAsJsonObject(
-                CanonicalSessionModel.MANIFEST_FIELD).getAsJsonArray(
-                "valueBindings");
-        Set<String> canonicalHandoffKeys = new LinkedHashSet<>();
-        for (JsonElement element : canonicalBindings) {
-            JsonObject binding = element.getAsJsonObject();
-            if (VmHandoffEvidence.BINDING_KIND.equals(
-                    binding.get("kind").getAsString())) {
-                canonicalHandoffKeys.add(
-                        binding.get("bindingKey").getAsString());
-            }
-        }
-        assertEquals(result.manifest.toString(), 2,
-                canonicalHandoffKeys.size());
         assertEquals(result.smtLib, 2, occurrences(result.smtLib,
                 "(declare-fun container_field__"));
         assertEquals(result.manifest.toString(),
@@ -1627,7 +1794,7 @@ public class ConcolicSmtComposerTest {
                 targetConstraints());
         VmHandoffEvidence.writeTo(fatal,
                 Collections.singletonList(VmHandoffEvidence.event(
-                        "REGION.0.in.0", 41L, integer(1),
+                        "REGION.0.in.0", 41L, 42L, integer(1),
                         "TASK.PRODUCER", "REGION.1@Test#producer")));
 
         ConcolicSmtComposer.Result result = composeFatal(targetOccurrence,
@@ -1738,6 +1905,91 @@ public class ConcolicSmtComposerTest {
                     result.manifest.toString().contains(
                             "MissingExactProducerSummary:REGION.2"));
         }
+    }
+
+    /**
+     * Two closures of one producer occurrence both cover a demand; the one
+     * that recorded values for more of its own ports answers it.
+     *
+     * <p>Answering by set equality took the closure that is exactly the
+     * demand unconditionally, so an occurrence whose closure also holds the
+     * in-region writes that feed the demanded port had every value it
+     * recorded for them dropped without a word -- and the demanded port then
+     * lowered as a local root rather than as the value those writes gave
+     * it.</p>
+     */
+    @Test
+    public void theProducerWithMoreRecordedEvidenceAnswersTheDemand()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#target";
+        String consumerInstance = "REGION.1@Test#consumer";
+        String producerInstance = "REGION.1@Test#producer";
+        JsonObject firstHop = protocolBinding("EDGE.RPC", consumerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0");
+        JsonObject selected = binding("EDGE.READER",
+                producerInstance, "REGION.1.out.0", consumerInstance,
+                "REGION.1.in.0", 1, 2);
+        selected.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_EXACT);
+        selected.addProperty(RecordedReadFrom.EDGE_FIELD,
+                "example.State#value");
+        JsonObject producerCopy = selected.deepCopy();
+        producerCopy.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_CANDIDATE);
+        RelationSummary consumer = summary("CONSUMER", consumerInstance, 10,
+                Collections.singletonList("REGION.1.in.0"),
+                Arrays.asList(firstHop, selected));
+        RelationSummary exactSet = summary("EXACTSET",
+                producerInstance + "#a1", 7, Collections.<String>emptyList(),
+                Collections.singletonList(producerCopy));
+        RelationSummary rich = widerSummary("RICH",
+                producerInstance + "#a2", 7, true,
+                Collections.singletonList(producerCopy.deepCopy()));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Arrays.asList(consumer, exactSet, rich), firstHop);
+
+        assertTrue(result.smtLib, result.smtLib.contains("CASE_RICH"));
+        assertFalse(result.smtLib, result.smtLib.contains("CASE_EXACTSET"));
+    }
+
+    /**
+     * Fail-closed: a wider closure that recorded nothing for its extra port
+     * carries no more evidence, so the smaller closure still answers.
+     */
+    @Test
+    public void aWiderClosureThatRecordedNothingExtraDoesNotOutrank()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#target";
+        String consumerInstance = "REGION.1@Test#consumer";
+        String producerInstance = "REGION.1@Test#producer";
+        JsonObject firstHop = protocolBinding("EDGE.RPC", consumerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0");
+        JsonObject selected = binding("EDGE.READER",
+                producerInstance, "REGION.1.out.0", consumerInstance,
+                "REGION.1.in.0", 1, 2);
+        selected.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_EXACT);
+        selected.addProperty(RecordedReadFrom.EDGE_FIELD,
+                "example.State#value");
+        JsonObject producerCopy = selected.deepCopy();
+        producerCopy.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_CANDIDATE);
+        RelationSummary consumer = summary("CONSUMER", consumerInstance, 10,
+                Collections.singletonList("REGION.1.in.0"),
+                Arrays.asList(firstHop, selected));
+        RelationSummary exactSet = summary("EXACTSET",
+                producerInstance + "#a1", 7, Collections.<String>emptyList(),
+                Collections.singletonList(producerCopy));
+        RelationSummary blind = widerSummary("BLIND",
+                producerInstance + "#a2", 7, false,
+                Collections.singletonList(producerCopy.deepCopy()));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Arrays.asList(consumer, exactSet, blind), firstHop);
+
+        assertTrue(result.smtLib, result.smtLib.contains("CASE_EXACTSET"));
+        assertFalse(result.smtLib, result.smtLib.contains("CASE_BLIND"));
     }
 
     @Test
@@ -2101,6 +2353,137 @@ public class ConcolicSmtComposerTest {
                 .get("reachability").getAsString());
     }
 
+    /**
+     * README CASE-1's acceptance condition for the resolved edge bindings.
+     *
+     * <p>One reader occurrence, two guarded cases, and a read-from edge only
+     * the first of them resolved -- which is what the importer produces, since
+     * it resolves every edge against the recorded read-from of that one path.
+     * The arm that edge justifies must be asserted under the selector of the
+     * case that observed it and under no other, or the second case's guard
+     * would enable a writer that case never read.</p>
+     */
+    @Test
+    public void caseLocalEdgeBindingGuardsOnlyItsOwnReadFromArm()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#target";
+        String consumerInstance = "REGION.1@Test#consumer";
+        String producerInstance = "REGION.1@Test#producer";
+        JsonObject firstHop = protocolBinding("EDGE.RPC", consumerInstance,
+                "REGION.1.out.0", fatalInstance, "REGION.0.in.0");
+        JsonObject arm = binding("EDGE.SHARED", producerInstance,
+                "REGION.1.out.0", consumerInstance, "REGION.1.in.0", 1, 2);
+        arm.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_EXACT);
+        arm.addProperty(RecordedReadFrom.EDGE_FIELD, "example.State#value");
+        arm.addProperty("locationKey", "INSTANCE_FIELD/7#24");
+        arm.addProperty("fieldVersionId", 11);
+        arm.addProperty("readEventId", 21);
+        JsonObject candidate = arm.deepCopy();
+        candidate.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_CANDIDATE);
+
+        RelationSummary consumer = readerWithOneCaseOwningTheEdge(
+                consumerInstance, firstHop, arm);
+        RelationSummary producer = summary("PRODUCER", producerInstance, 7,
+                Collections.<String>emptyList(),
+                Collections.singletonList(candidate));
+
+        ConcolicSmtComposer.Result result = compose(fatalInstance,
+                Arrays.asList(consumer, producer), firstHop);
+
+        String owner = RecordedSessionModel.caseSelector(
+                RecordedSessionModel.caseOwner("REGION.1", consumerInstance,
+                        "CASE.OBSERVED", 0));
+        String other = RecordedSessionModel.caseSelector(
+                RecordedSessionModel.caseOwner("REGION.1", consumerInstance,
+                        "CASE.UNOBSERVED", 1));
+        assertFalse(owner.equals(other));
+        // Both selectors exist and are partitioned, so "guarded by the owner"
+        // is a statement about two live alternatives and not about a constant
+        // the second case simply never got.
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(declare-const " + other + " Bool)"));
+
+        String valueAssertion = "";
+        for (JsonElement element : result.manifest.getAsJsonArray(
+                "recordedValueBindings")) {
+            JsonObject evidence = element.getAsJsonObject();
+            if ("EDGE.SHARED".equals(evidence.get("edgeId").getAsString())) {
+                valueAssertion = evidence.get("valueAssertion").getAsString();
+            }
+        }
+        assertFalse(result.manifest.toString(), valueAssertion.isEmpty());
+        String asserted = assertionNamed(result.smtLib, valueAssertion);
+        assertTrue(asserted, asserted.contains("(=> " + owner + " "));
+        assertFalse(asserted, asserted.contains(other));
+    }
+
+    /** The body of the one named assertion, guard included. */
+    private static String assertionNamed(String smtLib, String name) {
+        int end = smtLib.indexOf(":named " + name + ")");
+        assertTrue(smtLib, end >= 0);
+        int start = smtLib.lastIndexOf("(assert (! ", end);
+        assertTrue(smtLib, start >= 0);
+        return smtLib.substring(start, end);
+    }
+
+    /**
+     * One reader relation with two guarded cases, only the first of which
+     * resolved {@code arm}.  The RPC hop both cases took stays at row level,
+     * which is where a merge puts a binding every case agreed on.
+     */
+    private static RelationSummary readerWithOneCaseOwningTheEdge(
+            String consumerInstance, JsonObject firstHop, JsonObject arm) {
+        JsonObject row = summary("CONSUMER", consumerInstance, 10,
+                Collections.singletonList("REGION.1.in.0"),
+                Arrays.asList(firstHop, arm)).toJson();
+        JsonArray rowLevel = new JsonArray();
+        rowLevel.add(firstHop.deepCopy());
+        row.add("edgeBindings", rowLevel);
+        JsonArray cases = row.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases");
+        JsonObject observed = cases.get(0).getAsJsonObject();
+        observed.addProperty("caseId", "CASE.OBSERVED");
+        observed.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
+        JsonArray owned = new JsonArray();
+        owned.add(arm.deepCopy());
+        observed.add("edgeBindings", owned);
+        JsonObject unobserved = observed.deepCopy();
+        unobserved.addProperty("caseId", "CASE.UNOBSERVED");
+        unobserved.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
+        unobserved.addProperty("sourceTaskId", "TASK.CONSUMER.UNOBSERVED");
+        unobserved.remove("edgeBindings");
+        cases.add(unobserved);
+        row.add(SharedStateEvidence.RECORDED_FIELD,
+                readerRecordedState(consumerInstance,
+                        arm.get("fromOccurrenceId").getAsString()));
+        return RelationSummary.decode(row);
+    }
+
+    /** The exact read of one location this reader occurrence performed. */
+    private static JsonObject readerRecordedState(String readerOccurrence,
+                                                  String writerOccurrence) {
+        JsonObject envelope = RecordedSharedStateFixtures.twoWriterEnvelope(
+                SharedStateEvidence.RESOLUTION_EXACT, "UNIQUE_VERSION", 11L);
+        JsonObject reader = envelope.getAsJsonArray("reads").get(0)
+                .getAsJsonObject();
+        reader.addProperty("regionId", "REGION.1");
+        reader.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
+                readerOccurrence);
+        JsonObject writer = envelope.getAsJsonArray("versions").get(0)
+                .getAsJsonObject();
+        writer.addProperty("regionId", "REGION.1");
+        writer.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
+                writerOccurrence);
+        SharedStateEvidence.normalizeGuards(envelope);
+        return RecordedSharedStateFixtures.recordedMember(envelope,
+                RecordedSharedStateFixtures.twoWriterLedger(),
+                "example.State#value");
+    }
+
     @Test
     public void selectedInputAuthorityIsCaseLocal() {
         assertFalse(ConcolicSmtComposer.authorityCasesDefinitelyAmbiguous(
@@ -2364,6 +2747,8 @@ public class ConcolicSmtComposerTest {
                 .getAsJsonArray("cases");
         JsonObject sourceSeven = cases.get(0).getAsJsonObject();
         sourceSeven.addProperty("caseId", "CASE.SOURCE.7");
+        sourceSeven.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         sourceSeven.addProperty("sourceTaskId", "TASK.SOURCE.7");
         sourceSeven.getAsJsonObject("guard")
                 .getAsJsonArray("conditions").add(binary(
@@ -2371,9 +2756,11 @@ public class ConcolicSmtComposerTest {
         SymbolicSourceEvidence.writeTo(sourceSeven,
                 Collections.singletonList(SymbolicSourceEvidence.event(
                         publishPhase(occurrence), sourceId, occurrence,
-                        field, reference(raw, "I"))));
+                        field, reference(raw, "I"), 1, false, null)));
         JsonObject sourceNine = sourceSeven.deepCopy();
         sourceNine.addProperty("caseId", "CASE.SOURCE.9");
+        sourceNine.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         sourceNine.addProperty("sourceTaskId", "TASK.SOURCE.9");
         JsonArray nineGuard = new JsonArray();
         nineGuard.add(binary(reference(raw, "I"), "==", integer(9)));
@@ -2382,49 +2769,6 @@ public class ConcolicSmtComposerTest {
         return RelationSummary.decode(row);
     }
 
-    private ConcolicSmtComposer.Result composeSelectorFailure(
-            String fatalOccurrence, String consumerOccurrence,
-            String sourceOccurrence, String sourceId, String field,
-            String raw, String sourceTaskId, RelationSummary producer,
-            JsonObject firstHop) throws Exception {
-        RelationSummary consumer = summary("SELECTOR.CONSUMER",
-                consumerOccurrence, 1,
-                Collections.<String>emptyList(),
-                Collections.singletonList(firstHop));
-        JsonObject row = consumer.toJson();
-        writeConfiguredSelector(row.getAsJsonObject("regionRelation")
-                        .getAsJsonArray("cases").get(0).getAsJsonObject(),
-                sourceOccurrence, sourceId, field, sourceTaskId, raw, 9);
-        return compose(fatalOccurrence,
-                Arrays.asList(RelationSummary.decode(row), producer),
-                firstHop);
-    }
-
-    private static void writeConfiguredSelector(
-            JsonObject owner, String sourceOccurrence, String sourceId,
-            String field, String sourceTaskId, String raw, int value) {
-        writeConfiguredSelector(owner, sourceOccurrence, sourceId, field,
-                sourceTaskId, raw, value, consumePhase(sourceOccurrence),
-                publishPhase(sourceOccurrence));
-    }
-
-    private static void writeConfiguredSelector(
-            JsonObject owner, String sourceOccurrence, String sourceId,
-            String field, String sourceTaskId, String raw, int value,
-            String consumePhaseId, String producerPhaseId) {
-        JsonObject task = new JsonObject();
-        JsonArray selectors = new JsonArray();
-        selectors.add(ConfiguredSourceSelectorContract.exactInt(
-                consumePhaseId, producerPhaseId, sourceOccurrence,
-                sourceId, field));
-        task.add(ConfiguredSourceSelectorContract.TASK_FIELD, selectors);
-        JsonObject evidence = ConfiguredSourceSelectorContract.evidence(
-                ConfiguredSourceSelectorContract.decode(task).get(0),
-                sourceTaskId, raw, value);
-        JsonArray rows = new JsonArray();
-        rows.add(evidence);
-        owner.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD, rows);
-    }
 
     private static String publishPhase(String occurrence) {
         return "SOURCE_PHASE.PUBLISH."
@@ -2440,18 +2784,6 @@ public class ConcolicSmtComposerTest {
                                         String suffix) {
         return "M_I_field_" + SymbolicSourceEvidence.engineLabelForPhase(
                 phase, source) + "_" + suffix;
-    }
-
-    private static void assertSelectorRefused(
-            ConcolicSmtComposer.Result result, String reason) {
-        assertEquals(result.manifest.toString(),
-                ConcolicSmtComposer.FINAL_REFUSED,
-                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
-                        .getAsString());
-        assertTrue(result.manifest.toString(), result.manifest.toString()
-                .contains(reason));
-        assertTrue(result.smtLib, result.smtLib.contains(
-                "(assert false) ; fail closed: unsupported"));
     }
 
     @Test
@@ -2554,7 +2886,7 @@ public class ConcolicSmtComposerTest {
         JsonObject slice = emptySlice("REGION.1.out.1",
                 "<Test: int competing>");
         OutputClosureContract second = OutputClosureCodec.singleton(
-                "REL.REGION.1", "REGION.1",
+                "REL.REGION.1", "REGION.1", Collections.<String>emptyList(),
                 "REGION.1.out.1", "<Test: int competing>", "REGION_OUTPUT",
                 "int", slice);
         OutputClosureCodec.writeTo(row, OutputClosureCodec.merge(
@@ -2732,6 +3064,175 @@ public class ConcolicSmtComposerTest {
                 edgeValidations);
     }
 
+    /**
+     * OCC-1/HDFS-11741: a guarded MAP-state read whose arm set the VM had to
+     * truncate at the path-condition byte cap has no arm the codec can
+     * reconstruct, so it fails the formula closed -- even when a compact base
+     * INITIAL arm survives beside the truncated one.  The earlier build
+     * admitted such a read as a SAT under-approximation pinned to that INITIAL
+     * version; that pin has been deleted (a real throw witness now lowers the
+     * full recorded removeExpiredKeys writer set arm for arm), so a genuinely
+     * truncated read is the honest fail-close it always was for a read with no
+     * admissible arm.
+     */
+    @Test
+    public void aTruncatedMapReadWithAnInitialArmStillFailsClosed()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        JsonObject guarded = mapReadWithInitialAndTruncatedArm(21L, 7L);
+        JsonArray constraints = new JsonArray();
+        // The throw predicate: allKeys.get(key) is null.
+        constraints.add(binary(guarded, "==", nullRef()));
+        JsonObject fatal = fatalQuery(fatalInstance, constraints);
+
+        ConcolicSmtComposer.Result result = composeFatal(fatalInstance,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)), fatal, null);
+
+        assertTrue("a truncated read has no admissible arm -> fail-closed: "
+                + result.smtLib, result.smtLib.contains("(assert false)"));
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_REFUSED,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertFalse("the deleted pin emits no pinned-initial coverage: "
+                + result.manifest, result.manifest.toString()
+                        .contains("RECORDED_MAP_READ_PINNED_INITIAL"));
+        assertFalse("the deleted pin is no longer refused by name: "
+                + result.manifest, result.manifest.toString()
+                        .contains("SAT_WITNESS_UNDER_APPROXIMATION"));
+    }
+
+    /**
+     * The same truncated map read WITHOUT a base INITIAL arm has no recorded
+     * version compact enough to pin to, so it stays the hard fail-closed
+     * refusal it always was.
+     */
+    @Test
+    public void aTruncatedMapReadWithNoInitialArmStaysFailClosed()
+            throws Exception {
+        String fatalInstance = "REGION.0@Test#call30";
+        JsonObject guarded = mapReadWithOnlyTruncatedArm(22L, 8L);
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(guarded, "==", nullRef()));
+        JsonObject fatal = fatalQuery(fatalInstance, constraints);
+
+        ConcolicSmtComposer.Result result = composeFatal(fatalInstance,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false),
+                        region("REGION.1", true, true)), fatal, null);
+
+        assertTrue("no initial arm to pin -> still fail-closed: "
+                + result.smtLib, result.smtLib.contains("(assert false)"));
+        assertFalse("no pin was emitted",
+                result.manifest.toString()
+                        .contains("RECORDED_MAP_READ_PINNED_INITIAL"));
+    }
+
+    /** {@code (VRef nullRef)} as a recorded null literal. */
+    private static JsonObject nullRef() {
+        JsonObject n = new JsonObject();
+        n.addProperty("_type", "ConstExpr");
+        n.addProperty("_java_type", "L");
+        n.addProperty("_exp", "N");
+        return n;
+    }
+
+    private static JsonObject assocStateSymbol(String symbol) {
+        JsonObject id = new JsonObject();
+        id.addProperty("_type", "SymbolExpression");
+        id.addProperty("_java_type", "java/util/HashMap");
+        id.addProperty("_exp", symbol);
+        JsonObject state = new JsonObject();
+        state.addProperty("_type", "ContainerRelation");
+        state.addProperty("shape", "ASSOCIATIVE");
+        state.addProperty("operation", "STATE");
+        state.add("arguments", new JsonArray());
+        state.add("receiver", id);
+        state.addProperty("_java_type", "L");
+        return state;
+    }
+
+    private static JsonObject truncated() {
+        JsonObject t = new JsonObject();
+        t.addProperty("_type", "TruncatedExpression");
+        t.addProperty("expressionAuthority",
+                "VM_SERIALIZATION_TRUNCATION_V1");
+        t.addProperty("truncationKind", "PATH_CONDITION_RANGE_BYTE_LIMIT");
+        return t;
+    }
+
+    /** {@code get(key)} over a map version expression. */
+    private static JsonObject mapGet(JsonElement mapState, int key) {
+        JsonObject keyExpr = new JsonObject();
+        keyExpr.addProperty("_type", "ConstExpr");
+        keyExpr.addProperty("_java_type", "I");
+        keyExpr.addProperty("_exp", "Y_I_" + key);
+        JsonArray args = new JsonArray();
+        args.add(keyExpr);
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ContainerRelation");
+        read.addProperty("shape", "ASSOCIATIVE");
+        read.addProperty("operation", "READ");
+        read.add("arguments", args);
+        read.add("receiver", mapState);
+        read.addProperty("_java_type", "L");
+        return read;
+    }
+
+    private JsonObject mapReadWithInitialAndTruncatedArm(long readEventId,
+                                                         long owner) {
+        JsonArray candidates = new JsonArray();
+        // rf1: the INITIAL version -- get over the bare region-entry map.
+        candidates.add(mapReadArm("rf1", 11L,
+                mapGet(assocStateSymbol("M_L'java/util/HashMap'_" + owner),
+                        534995622), readEventId, 12L));
+        // rf2: a later version whose value expression the VM truncated.
+        candidates.add(mapReadArm("rf2", 12L, mapGet(truncated(), 534995622),
+                readEventId, 11L));
+        candidates.add(RecordedSharedStateFixtures.unknownCandidate(
+                readEventId, "M_L_unknownWriter_" + owner + "_r"
+                        + readEventId));
+        return mapGuardedRead(readEventId, owner, candidates);
+    }
+
+    private JsonObject mapReadWithOnlyTruncatedArm(long readEventId,
+                                                   long owner) {
+        JsonArray candidates = new JsonArray();
+        candidates.add(mapReadArm("rf1", 11L, mapGet(truncated(), 534995622),
+                readEventId, 12L));
+        candidates.add(mapReadArm("rf2", 12L, mapGet(truncated(), 534995622),
+                readEventId, 11L));
+        candidates.add(RecordedSharedStateFixtures.unknownCandidate(
+                readEventId, "M_L_unknownWriter_" + owner + "_r"
+                        + readEventId));
+        return mapGuardedRead(readEventId, owner, candidates);
+    }
+
+    private static JsonObject mapReadArm(String selector, long fieldVersionId,
+                                         JsonElement value, long readEventId,
+                                         long... competitors) {
+        JsonObject candidate = RecordedSharedStateFixtures.candidate(
+                selector, fieldVersionId, value, null, readEventId,
+                competitors);
+        candidate.addProperty("versionKind",
+                fieldVersionId == 11L ? "INITIAL" : "STATE_PUT");
+        return candidate;
+    }
+
+    private JsonObject mapGuardedRead(long readEventId, long owner,
+                                      JsonArray candidates) {
+        JsonObject node = RecordedSharedStateFixtures.guardedRead(
+                readEventId, owner, SharedStateEvidence.MAP_STATE_SLOT,
+                candidates);
+        node.getAsJsonObject("location").addProperty("locationKind",
+                SharedStateEvidence.LOCATION_KIND_MAP_STATE);
+        node.addProperty("_java_type", "L");
+        SharedStateEvidence.normalizeGuards(node);
+        return node;
+    }
+
     private ConcolicSmtComposer.Result composeFatal(
             String fatalInstance, java.util.List<RelationSummary> summaries,
             java.util.List<JsonObject> regionRows, JsonObject fatalRow,
@@ -2774,6 +3275,73 @@ public class ConcolicSmtComposerTest {
                         argv.toArray(new String[argv.size()])));
     }
 
+    /**
+     * A producer whose closure also holds the in-region port that feeds the
+     * demanded one, carrying a recorded value for it or not.
+     */
+    private static RelationSummary widerSummary(
+            String id, String instance, int value, boolean recordsFeeder,
+            java.util.List<JsonObject> bindings) {
+        JsonObject demandedSlice = emptySlice("REGION.1.out.0",
+                "<Test: int output>");
+        JsonObject feederSlice = emptySlice("REGION.1.out.1",
+                "<Test: int feeder>");
+        JsonArray causalEdges = demandedSlice.getAsJsonArray("causalEdgeIds");
+        for (JsonObject binding : bindings) {
+            if ("REGION.1.out.0".equals(
+                    binding.get("fromOutputPort").getAsString())) {
+                causalEdges.add(binding.get("edgeId").getAsString());
+            }
+        }
+        OutputClosureContract closure = OutputClosureCodec.merge(
+                Arrays.asList(
+                        OutputClosureCodec.singleton("REL.REGION.1",
+                                "REGION.1", Collections.<String>emptyList(),
+                                "REGION.1.out.0", "<Test: int output>",
+                                "REGION_OUTPUT", "int", demandedSlice),
+                        OutputClosureCodec.singleton("REL.REGION.1",
+                                "REGION.1", Collections.<String>emptyList(),
+                                "REGION.1.out.1", "<Test: int feeder>",
+                                "REGION_OUTPUT", "int", feederSlice)));
+
+        JsonObject row = new JsonObject();
+        row.addProperty("summaryId", "SUMMARY." + id);
+        row.addProperty("sourceKey", "TEST_DRIVER/test#epoch0");
+        row.addProperty("occurrenceId", instance);
+        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(row);
+        OutputClosureCodec.writeTo(row, closure);
+        JsonArray encodedBindings = new JsonArray();
+        for (JsonObject binding : bindings) {
+            encodedBindings.add(binding.deepCopy());
+        }
+        row.add("edgeBindings", encodedBindings);
+        JsonObject relation = new JsonObject();
+        relation.addProperty("schemaVersion", 1);
+        relation.addProperty("kind", "GUARDED_PATH_MERGE");
+        JsonObject path = new JsonObject();
+        path.addProperty("caseId", "CASE." + id);
+        path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
+        path.addProperty("sourceTaskId", "TASK." + id);
+        JsonObject guard = new JsonObject();
+        guard.addProperty("kind", "PATH_CONDITION");
+        guard.add("conditions", new JsonArray());
+        path.add("guard", guard);
+        JsonObject outputs = new JsonObject();
+        outputs.add("REGION.1.out.0", integer(value));
+        // Fail-closed: a declared port the run recorded no value for counts
+        // for nothing, so this producer cannot outrank one that produced
+        // something.
+        if (recordsFeeder) outputs.add("REGION.1.out.1", integer(value + 1));
+        path.add("outputExpressions", outputs);
+        JsonArray cases = new JsonArray();
+        cases.add(path);
+        relation.add("cases", cases);
+        row.add("regionRelation", relation);
+        row.addProperty("relationallyComplete", true);
+        row.addProperty("pathCoverageState", "CLOSED");
+        return RelationSummary.decode(row);
+    }
+
     private static RelationSummary summary(
             String id, String instance, int value,
             java.util.List<String> inputPorts,
@@ -2805,7 +3373,7 @@ public class ConcolicSmtComposerTest {
             }
         }
         OutputClosureContract closure = OutputClosureCodec.singleton(
-                "REL.REGION.1", "REGION.1", "REGION.1.out.0",
+                "REL.REGION.1", "REGION.1", Collections.<String>emptyList(), "REGION.1.out.0",
                 "<Test: " + outputJavaType + " output>", "REGION_OUTPUT",
                 outputJavaType, slice);
 
@@ -2825,6 +3393,8 @@ public class ConcolicSmtComposerTest {
         relation.addProperty("kind", "GUARDED_PATH_MERGE");
         JsonObject path = new JsonObject();
         path.addProperty("caseId", "CASE." + id);
+        path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         path.addProperty("sourceTaskId", "TASK." + id);
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "PATH_CONDITION");
@@ -2876,6 +3446,7 @@ public class ConcolicSmtComposerTest {
                 "RECORDED_TARGET_PREFIX_V1");
         JsonObject path = new JsonObject();
         path.add("constraints", constraints.deepCopy());
+        path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
         path.addProperty("desiredTakenOutcome", false);
         path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
                 TargetReachPathQueryBuilder.SOURCE_TARGET_REACH_EVENT);
@@ -2891,6 +3462,7 @@ public class ConcolicSmtComposerTest {
         JsonArray paths = new JsonArray();
         paths.add(path);
         fatal.add("paths", paths);
+        fatal.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
         JsonObject metadata = new JsonObject();
         metadata.addProperty("predicateNormalization", "IDENTITY");
         if (constraints.size() == 0) {
@@ -3049,22 +3621,7 @@ public class ConcolicSmtComposerTest {
         return count;
     }
 
-    private static String largeSmtTerm(String leaf) {
-        StringBuilder result = new StringBuilder("(snapshot");
-        for (int index = 0; index < 260; index++) {
-            result.append(' ').append(leaf).append('_').append(index);
-        }
-        return result.append(')').toString();
-    }
 
-    private static String largeBoundSmtTerm(String bound) {
-        StringBuilder result = new StringBuilder("(snapshot ")
-                .append(bound);
-        for (int index = 0; index < 300; index++) {
-            result.append(" padding_").append(index);
-        }
-        return result.append(')').toString();
-    }
 
     private static JsonObject integer(int value) {
         JsonObject result = new JsonObject();
@@ -3105,7 +3662,8 @@ public class ConcolicSmtComposerTest {
     }
 
     private static RelationSummary withProducerGuardAndInteraction(
-            RelationSummary summary, JsonObject condition, String portId) {
+            RelationSummary summary, JsonObject condition, String portId,
+            long exportEventId) {
         JsonObject row = summary.toJson();
         JsonObject path = row.getAsJsonObject("regionRelation")
                 .getAsJsonArray("cases").get(0).getAsJsonObject();
@@ -3121,6 +3679,10 @@ public class ConcolicSmtComposerTest {
         interaction.addProperty("authority",
                 "INSTRUMENTED_INTERACTION_SITE_V1");
         interaction.addProperty("portId", portId);
+        // README RPC-1: the producer's own export event is what identifies
+        // this case as the sender, so the fixture has to carry the id the
+        // matching handoff reference exports.
+        interaction.addProperty("exportEventId", exportEventId);
         JsonArray interactions = new JsonArray();
         interactions.add(interaction);
         path.add(RelationSummary.INTERACTION_EVENTS, interactions);

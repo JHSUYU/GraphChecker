@@ -134,7 +134,7 @@ public class ConcolicRegionRuntimeSharedStateTest {
                         versionsEnvelope().toString(),
                         ConcolicRegionRuntime.SharedCarrier.field(
                                 new Carrier(), OWNER_CLASS, "value", "I"),
-                        IDENTITY);
+                        IDENTITY, null);
         assertTrue(versions.ok());
         assertEquals("INSTANCE_FIELD/7#24", versions.locationKey());
         assertEquals(0, versions.gap().size());
@@ -157,7 +157,8 @@ public class ConcolicRegionRuntimeSharedStateTest {
         assertEquals(7L, stamp.get("snapshotOrdinal").getAsLong());
         assertFalse(SharedStateEvidence.isVersionsRecord(
                 ConcolicRegionRuntime.decodeVersionsEnvelope(
-                        versionsEnvelope().toString(), null, null).record()));
+                        versionsEnvelope().toString(), null, null,
+                        null).record()));
 
         // Folded Phase 2 field acceptance: a task declares its carriers and
         // the runtime selects exactly those, at region entry, from the region
@@ -189,7 +190,7 @@ public class ConcolicRegionRuntimeSharedStateTest {
         unselected.addProperty("selected", false);
         ConcolicRegionRuntime.SharedStateResult notSelected =
                 ConcolicRegionRuntime.decodeVersionsEnvelope(
-                        unselected.toString(), null, IDENTITY);
+                        unselected.toString(), null, IDENTITY, null);
         assertFalse(notSelected.ok());
         assertEquals(SharedStateEvidence.NOT_SELECTED, notSelected.status());
         assertEquals("SHARED_STATE_NOT_SELECTED", notSelected.reason());
@@ -205,13 +206,14 @@ public class ConcolicRegionRuntimeSharedStateTest {
             assertEquals(envelope.toString(),
                     SharedStateEvidence.MALFORMED_ENVELOPE,
                     ConcolicRegionRuntime.decodeVersionsEnvelope(
-                            envelope.toString(), null, IDENTITY).status());
+                            envelope.toString(), null, IDENTITY,
+                            null).status());
         }
         for (String serialized : new String[]{"", "   ", "not json",
                 "[1, 2]"}) {
             assertEquals(SharedStateEvidence.MALFORMED_ENVELOPE,
                     ConcolicRegionRuntime.decodeVersionsEnvelope(serialized,
-                            null, IDENTITY).status());
+                            null, IDENTITY, null).status());
             assertEquals(SharedStateEvidence.MALFORMED_ENVELOPE,
                     ConcolicRegionRuntime.decodeLedgerEnvelope(serialized,
                             IDENTITY).status());
@@ -317,7 +319,7 @@ public class ConcolicRegionRuntimeSharedStateTest {
                 nested));
         ConcolicRegionRuntime.SharedStateResult refused =
                 ConcolicRegionRuntime.decodeVersionsEnvelope(
-                        envelope.toString(), null, IDENTITY);
+                        envelope.toString(), null, IDENTITY, null);
         assertFalse(refused.ok());
         assertEquals(SharedStateEvidence.EXPRESSION_SERIALIZATION_TRUNCATED,
                 refused.status());
@@ -334,7 +336,7 @@ public class ConcolicRegionRuntimeSharedStateTest {
                 .add("pathGuard", marker.deepCopy());
         ConcolicRegionRuntime.SharedStateResult guardRefused =
                 ConcolicRegionRuntime.decodeVersionsEnvelope(
-                        truncatedGuard.toString(), null, IDENTITY);
+                        truncatedGuard.toString(), null, IDENTITY, null);
         assertEquals(SharedStateEvidence.EXPRESSION_SERIALIZATION_TRUNCATED,
                 guardRefused.status());
         assertTrue(guardRefused.gap().get("detail").getAsString()
@@ -347,7 +349,7 @@ public class ConcolicRegionRuntimeSharedStateTest {
                 .getAsJsonObject("expression").addProperty("_exp",
                 SharedStateEvidence.VM_SERIALIZATION_TRUNCATION_AUTHORITY);
         assertTrue(ConcolicRegionRuntime.decodeVersionsEnvelope(
-                ordinary.toString(), null, IDENTITY).ok());
+                ordinary.toString(), null, IDENTITY, null).ok());
         assertTrue(ConcolicRegionRuntime.decodeLedgerEnvelope(
                 ledgerEnvelope().toString(), IDENTITY).ok());
     }

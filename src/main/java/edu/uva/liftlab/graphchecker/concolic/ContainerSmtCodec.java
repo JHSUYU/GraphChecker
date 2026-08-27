@@ -15,13 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * The single SMT lowering for VM container operations.
- *
- * <p>Scalar expression decoding stays with the host solver.  This codec owns
- * only container algebra, so path solving and final composition cannot drift
- * into different select/store/size semantics.</p>
- */
+/** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {
     public static final String EXPRESSION_TYPE = "ContainerRelation";
 
@@ -30,23 +24,7 @@ public final class ContainerSmtCodec {
 
     /**
      * Both operations denote the exact empty container.  They state different
-     * facts - {@code CLEAR} is a {@code Collection.clear()} the program
-     * executed, {@code SNAPSHOT_BASE} is the recorder asserting that the
-     * container held exactly the members replayed above it - and keeping the
-     * names apart is what lets a consumer tell an observation from a program
-     * action.  Neither may keep its receiver.
-     *
-     * <p>A snapshot's receiver can carry recorded operations, a removal among
-     * them, which the empty base drops.  Retaining it does not recover them:
-     * the observed members are replayed with {@code assoc_put}, so a base
-     * holding {@code m} entries leaves the snapshot {@code N + m} of them and
-     * starts the observed iteration order at {@code m}.  A receiver that may
-     * hold anything therefore contradicts the very observation it was
-     * recorded for, and one provably empty changes no value the formula can
-     * read.  Since a container's chain is rooted in an unconstrained {@code
-     * STATE} unless an empty base already grounds it, retaining is only ever
-     * the first case - so the base stays empty, and a mutation that a
-     * snapshot supersedes is unobservable rather than lost.</p>
+     * provenance, which the caller keeps; the lowering is the same.
      */
     static boolean emptiesState(String operation) {
         return "CLEAR".equals(operation) || "SNAPSHOT_BASE".equals(operation);
@@ -67,10 +45,6 @@ public final class ContainerSmtCodec {
                 + " (VString (valueString String)))))";
     }
 
-    /**
-     * Integral scalars share SMT {@code Int}; only their container {@code
-     * Value} representation is tagged with the Java primitive kind.
-     */
     static String boxIntegral(String value, String javaType) {
         String constructor = integralValuePart(javaType, true);
         return constructor.isEmpty() ? "" : "(" + constructor + " "
@@ -120,10 +94,6 @@ public final class ContainerSmtCodec {
                 : (constructor ? "V" : "value") + name;
     }
 
-    /**
-     * Requires the host to declare {@code Ref}, {@code nullRef} and the
-     * canonical {@code Value} datatype.
-     */
     public static List<String> preamble() {
         return Collections.unmodifiableList(Arrays.asList(
                 "(declare-datatypes () ((IndexedState"
@@ -194,21 +164,6 @@ public final class ContainerSmtCodec {
 
     /**
      * Removal, written over the container bound rather than as a rewriting of
-     * the whole order.
-     *
-     * <p>Closing the gap a removed key leaves is a shift of every later
-     * position, which reads naturally as a function of the position — and a
-     * function is what it used to be. That costs the solver its first-order
-     * reasoning: on the first formula that actually applied a removal, Z3
-     * spent five minutes without deciding a query it settles in seconds once
-     * the shift is spelled out. Collections here are bounded, so spelling it
-     * out is available and nothing is approximated by doing so.</p>
-     *
-     * <p>Beyond the bound the shift is not written, so a container that grew
-     * past it keeps stale positions. That is the same edge the snapshot
-     * capacity already governs: an observation wider than the bound is not
-     * represented, rather than represented wrongly.</p>
-     */
     /** The slot a removal names, when the recorder named a constant one. */
     private static String literalSlot(String index) {
         String text = index.trim();
@@ -225,20 +180,7 @@ public final class ContainerSmtCodec {
         }
     }
 
-    /**
-     * Removal at a slot the recorder already knows.
-     *
-     * <p>Which slot moves is then not a question the solver has to answer, so
-     * the shift needs no test per slot -- and the test, not the length of the
-     * chain, is what it cannot afford. Measured on the composition carrying an
-     * eviction: a chain of the full bound costs seconds without one and does
-     * not finish in three minutes with one, even where every test is
-     * constantly false.</p>
-     *
-     * <p>Slots below the removed one keep their key; the rest take their
-     * successor's. Positions follow the same shift, and the removed key's own
-     * position is written last so a duplicate store cannot restore it.</p>
-     */
+    /** Removal at a slot the recorder already knows. */
     private static String removeAtSlot(String receiver, int removed) {
         int bound = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
         StringBuilder order = new StringBuilder("(assoc_order s)");
@@ -328,11 +270,6 @@ public final class ContainerSmtCodec {
                 && symbol(binary.get("_left"));
     }
 
-    /**
-     * VM array access contributes concrete bounds and symbolic read/size
-     * relations to the PC.  They constrain a source branch but are not
-     * branches themselves.
-     */
     public static boolean handlesAccessConstraint(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject binary = expression.getAsJsonObject();
@@ -403,14 +340,7 @@ public final class ContainerSmtCodec {
                 && owner.sort == Sort.INT;
     }
 
-    /**
-     * Rewrites an indexed read to the element it provably selects.
-     *
-     * <p>Structural readers - the java.lang codec proofs above all - inspect
-     * the recorded expression rather than the lowered term, so they need the
-     * same select-over-store identity {@link #term} applies.  An expression
-     * that decides nothing is returned unchanged.</p>
-     */
+    /** Rewrites an indexed read to the element it provably selects. */
     static JsonElement selectedIndexedElement(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) {
             return expression;
@@ -428,21 +358,7 @@ public final class ContainerSmtCodec {
         return stored == null ? expression : selectedIndexedElement(stored);
     }
 
-    /**
-     * Resolves {@code READ(WRITE(s, j, v), i)} to the stored {@code v}.
-     *
-     * <p>This is the ordinary select-over-store identity, decided only on
-     * exact integer literals: {@code i == j} selects the written value, and
-     * a literally different {@code j} cannot have written index {@code i},
-     * so the search continues into that write's receiver.  An index that is
-     * not an exact literal on either side decides nothing, so the ordinary
-     * select-over-store encoding is kept and the solver reasons about it.</p>
-     *
-     * <p>Resolving here rather than after lowering also keeps the write
-     * chain's unrelated element expressions out of the formula entirely,
-     * which is what {@code (store ... )} means: they cannot be observed
-     * through this read.</p>
-     */
+    /** Resolves {@code READ(WRITE(s, j, v), i)} to the stored {@code v}. */
     private static JsonElement storedIndexedWrite(JsonElement receiver,
                                                   JsonElement index) {
         Integer wanted = exactIndexLiteral(index);
@@ -467,14 +383,7 @@ public final class ContainerSmtCodec {
         return null;
     }
 
-    /**
-     * Skips the writes a size query cannot observe.
-     *
-     * <p>{@code indexed_write} rebuilds the state with {@code (indexed_size
-     * s)} unchanged, so a size taken over a write chain is the size of the
-     * state underneath it.  Only {@code WRITE} is size preserving; append,
-     * insert, and remove all change the size and stop the walk.</p>
-     */
+    /** Skips the writes a size query cannot observe. */
     private static JsonElement sizePreservingIndexedReceiver(
             JsonElement receiver) {
         JsonElement cursor = receiver;
@@ -666,8 +575,8 @@ public final class ContainerSmtCodec {
             if (receiver == null) return null;
             if ("ITERATOR".equals(operation)) return receiver;
             if ("SIZE".equals(operation)) {
-                return new Term("(indexed_size " + receiver.text + ")",
-                        Sort.INT);
+                return javaContainerSize("(indexed_size " + receiver.text
+                        + ")", host);
             }
             if ("READ".equals(operation) && arguments.size() == 1) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
@@ -773,17 +682,26 @@ public final class ContainerSmtCodec {
                         : new Term("(assoc_remove " + receiver.text + " "
                         + key.text + ")", Sort.ASSOCIATIVE);
             }
+            if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
+                // The map after a conditional remove is the map with the key
+                // gone when the guard holds, and unchanged otherwise: the
+                // symbolic branch the removeExpiredKeys it.remove() fired
+                // under, carried as the op's guard.  Read/has short-circuit
+                // this via the mutation walk; this state form is for a
+                // REMOVE_IF nested as another op's receiver.
+                Term key = host.box(arguments.get(0));
+                Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+                return key == null || guard == null ? null
+                        : new Term("(ite " + guard.text + " (assoc_remove "
+                        + receiver.text + " " + key.text + ") "
+                        + receiver.text + ")", Sort.ASSOCIATIVE);
+            }
         }
         host.unsupported("ContainerRelation:" + shape + ":"
                 + operation + ":arity=" + arguments.size());
         return null;
     }
 
-    /**
-     * Projects order-independent observations through associative mutations.
-     * Iterator operations still consume the full {@link AssocState}, including
-     * order and position, but a keyed lookup does not need either component.
-     */
     private static Term associativeHas(
             JsonElement expression, Term key, Host host) {
         Mutation mutation = associativeMutation(expression);
@@ -800,11 +718,29 @@ public final class ContainerSmtCodec {
         Term previous = associativeHas(mutation.receiver, key, host);
         if (mutatedKey == null || previous == null) return null;
         String sameKey = "(= " + key.text + " " + mutatedKey.text + ")";
-        return "PUT".equals(mutation.operation)
-                ? new Term("(or " + sameKey + " " + previous.text + ")",
-                Sort.BOOL)
-                : new Term("(and (not " + sameKey + ") "
-                + previous.text + ")", Sort.BOOL);
+        if ("PUT".equals(mutation.operation)) {
+            return new Term("(or " + sameKey + " " + previous.text + ")",
+                    Sort.BOOL);
+        }
+        if ("REMOVE_IF".equals(mutation.operation)) {
+            // The key is present unless the guard fired for exactly this key.
+            String guard = conditionalGuard(mutation, sameKey, host);
+            if (guard == null) return null;
+            return new Term("(and (not " + guard + ") " + previous.text
+                    + ")", Sort.BOOL);
+        }
+        return new Term("(and (not " + sameKey + ") " + previous.text + ")",
+                Sort.BOOL);
+    }
+
+    /** {@code guard AND key==removedKey}: the condition under which a
+     *  {@code REMOVE_IF} deletes the key being read.  The guard is the
+     *  recorded symbolic branch predicate, lowered as a boolean. */
+    private static String conditionalGuard(Mutation mutation, String sameKey,
+                                           Host host) {
+        Term guard = host.operand(mutation.guard, Sort.BOOL);
+        if (guard == null) return null;
+        return "(and " + guard.text + " " + sameKey + ")";
     }
 
     private static Term associativeRead(
@@ -823,21 +759,24 @@ public final class ContainerSmtCodec {
         Term mutatedKey = host.box(mutation.arguments.get(0));
         Term previous = associativeRead(mutation.receiver, key, host);
         if (mutatedKey == null || previous == null) return null;
+        String sameKey = "(= " + key.text + " " + mutatedKey.text + ")";
         Term mutatedValue = "PUT".equals(mutation.operation)
                 ? host.box(mutation.arguments.get(1))
                 : new Term("(VRef nullRef)", Sort.VALUE);
-        return mutatedValue == null ? null : new Term(
-                "(ite (= " + key.text + " " + mutatedKey.text + ") "
-                        + mutatedValue.text + " " + previous.text + ")",
-                Sort.VALUE);
+        if (mutatedValue == null) return null;
+        // A conditional remove deletes the read key only when its recorded
+        // guard holds; flipping the guard (z3's choice) turns a present key
+        // into null -- the removeExpiredKeys removal story.
+        String condition = "REMOVE_IF".equals(mutation.operation)
+                ? conditionalGuard(mutation, sameKey, host) : sameKey;
+        if (condition == null) return null;
+        return new Term("(ite " + condition + " " + mutatedValue.text + " "
+                + previous.text + ")", Sort.VALUE);
     }
 
     /**
      * Positional container projections are Java operations, not total SMT
-     * array reads.  Keep their definedness explicit so an out-of-range slot
-     * cannot become an unconstrained symbolic member.  The host decides how
-     * to scope the predicate: one replay path may assert it directly, while
-     * the composed query attaches it to the owning guarded path case.
+     * functions, so membership is required rather than assumed.
      */
     private static void requireIndexedMember(
             Term state, Term index, Host host) {
@@ -857,11 +796,6 @@ public final class ContainerSmtCodec {
                 + " (assoc_has s (assoc_key_at s i))))";
     }
 
-    /**
-     * Returns the real associative removals on one output's receiver spine.
-     * Arguments are deliberately not searched: a nested container passed as
-     * a value cannot explain a missing member in the output state itself.
-     */
     static List<AssociativeRemovalEffect> associativeRemovalEffects(
             JsonElement expression, Host host) {
         List<AssociativeRemovalEffect> result = new java.util.ArrayList<>();
@@ -904,15 +838,31 @@ public final class ContainerSmtCodec {
         return result;
     }
 
+    /**
+     * One Java container size.  {@code array.length} and
+     * {@code Collection.size()} are both {@code int} (JLS 10.7, 15.14), so
+     * the value carries that computational type; and a size is never negative
+     * and never exceeds {@code Integer.MAX_VALUE}, which the state the size is
+     * read from must satisfy for that type to be the one the JVM computed in.
+     */
+    private static Term javaContainerSize(String text, Host host) {
+        JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                JavaPrimitiveSmtSemantics.domainOfJavaType("I");
+        host.require("(and (<= 0 " + text + ") (<= " + text + " "
+                + domain.upper + "))");
+        return new Term(text, Sort.INT, IntegralWidth.JAVA_INT);
+    }
+
     private static Term associativeSize(JsonElement expression, Host host) {
         Mutation mutation = associativeMutation(expression);
         if (mutation == null) {
             Term state = host.operand(expression, Sort.ASSOCIATIVE);
             return state == null ? null
-                    : new Term("(assoc_size " + state.text + ")", Sort.INT);
+                    : javaContainerSize("(assoc_size " + state.text + ")",
+                    host);
         }
         if (emptiesState(mutation.operation)) {
-            return new Term("0", Sort.INT);
+            return new Term("0", Sort.INT, IntegralWidth.JAVA_INT);
         }
         Term key = host.box(mutation.arguments.get(0));
         Term previousSize = associativeSize(mutation.receiver, host);
@@ -926,7 +876,8 @@ public final class ContainerSmtCodec {
                 + ("PUT".equals(mutation.operation)
                 ? previousSize.text : changedSize) + " "
                 + ("PUT".equals(mutation.operation)
-                ? changedSize : previousSize.text) + ")", Sort.INT);
+                ? changedSize : previousSize.text) + ")", Sort.INT,
+                IntegralWidth.JAVA_INT);
     }
 
     private static Mutation associativeMutation(JsonElement expression) {
@@ -940,10 +891,19 @@ public final class ContainerSmtCodec {
         JsonArray arguments = array(relation, "arguments");
         int arity = emptiesState(operation) ? 0
                 : "REMOVE".equals(operation) ? 1
+                : "REMOVE_IF".equals(operation) ? 1
                 : "PUT".equals(operation) ? 2 : -1;
-        return arity >= 0 && arguments.size() == arity
-                ? new Mutation(operation, relation.get("receiver"), arguments)
-                : null;
+        if (arity < 0 || arguments.size() != arity) return null;
+        // A conditional remove must state its guard; without it the op is
+        // malformed and the codec refuses it rather than dropping the guard.
+        JsonElement guard = "REMOVE_IF".equals(operation)
+                ? relation.get("guard") : null;
+        if ("REMOVE_IF".equals(operation)
+                && (guard == null || guard.isJsonNull())) {
+            return null;
+        }
+        return new Mutation(operation, relation.get("receiver"), arguments,
+                guard);
     }
 
     private static Entry entry(JsonElement expression, Host host) {
@@ -989,6 +949,42 @@ public final class ContainerSmtCodec {
         }
         Term state = host.operand(cursor, Sort.ASSOCIATIVE);
         return kind.isEmpty() || state == null ? null : new View(kind, state);
+    }
+
+    /**
+     * The one lowering of a boxed container {@code Value} back to the Java
+     * sort it holds.  The caller resolves the Java type to {@code cellSort}
+     * because the two encoders answer that question differently.
+     */
+    static Term unboxValue(Term value, String javaType, Sort cellSort,
+                           Host host) {
+        if (value == null || value.sort != Sort.VALUE) return value;
+        String kind = valueKind(javaType);
+        if (!kind.isEmpty()) {
+            host.require("((_ is " + kind + ") " + value.text + ")");
+        }
+        String integralValue = unboxIntegral(value.text, javaType);
+        if (!integralValue.isEmpty()) {
+            return new Term(integralValue, Sort.INT,
+                    JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
+        }
+        if (cellSort == Sort.BOOL) {
+            return new Term("(valueBool " + value.text + ")", Sort.BOOL);
+        }
+        if (cellSort == Sort.REF) {
+            return new Term("(valueRef " + value.text + ")", Sort.REF);
+        }
+        if (cellSort == Sort.FLOAT32) {
+            return new Term("(valueFloat " + value.text + ")", Sort.FLOAT32);
+        }
+        if (cellSort == Sort.FLOAT64) {
+            return new Term("(valueDouble " + value.text + ")",
+                    Sort.FLOAT64);
+        }
+        if (cellSort == Sort.STRING) {
+            return new Term("(valueString " + value.text + ")", Sort.STRING);
+        }
+        return value;
     }
 
     public interface Host {
@@ -1055,12 +1051,18 @@ public final class ContainerSmtCodec {
         private final String operation;
         private final JsonElement receiver;
         private final JsonArray arguments;
+        /** The symbolic branch predicate a conditional remove fired under,
+         *  or {@code null} for an unconditional PUT/REMOVE.  Only
+         *  {@code REMOVE_IF} carries one: the recorded {@code expiry < now}
+         *  guard of a {@code removeExpiredKeys} {@code it.remove()}. */
+        private final JsonElement guard;
 
         private Mutation(String operation, JsonElement receiver,
-                         JsonArray arguments) {
+                         JsonArray arguments, JsonElement guard) {
             this.operation = operation;
             this.receiver = receiver;
             this.arguments = arguments;
+            this.guard = guard;
         }
     }
 

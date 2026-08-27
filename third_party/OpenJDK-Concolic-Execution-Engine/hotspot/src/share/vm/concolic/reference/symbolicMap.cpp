@@ -16,6 +16,84 @@ static bool is_scalar_map_iterator(oop receiver) {
       || name->equals("java/util/LinkedHashMap$LinkedValueIterator");
 }
 
+// An iterator whose next() yields the map *key*, so the element it returns is
+// exactly the removed key a conditional removal must name.  A value iterator
+// is deliberately excluded: it never surfaces the key.
+static bool is_key_map_iterator(oop receiver) {
+  if (receiver == NULL || receiver->klass() == NULL
+      || receiver->klass()->name() == NULL) return false;
+  Symbol *name = receiver->klass()->name();
+  return name->equals("java/util/HashMap$KeyIterator")
+      || name->equals("java/util/LinkedHashMap$LinkedKeyIterator");
+}
+
+// An iterator whose next() yields a Map.Entry.  This is the shape Hadoop's
+// removeExpiredKeys uses -- entrySet().iterator(), reading e.getValue() but
+// never e.getKey() -- so the removed key is not surfaced by any call and must
+// be read out of the returned entry node.
+static bool is_entry_map_iterator(oop receiver) {
+  if (receiver == NULL || receiver->klass() == NULL
+      || receiver->klass()->name() == NULL) return false;
+  Symbol *name = receiver->klass()->name();
+  return name->equals("java/util/HashMap$EntryIterator")
+      || name->equals("java/util/LinkedHashMap$LinkedEntryIterator");
+}
+
+// The key expression of the element a map iterator's next() just returned, or
+// NULL if this iterator does not name an element whose key we can recover.  A
+// key iterator returns the key itself; an entry iterator returns the node,
+// whose declared `key` field is read directly (removeExpiredKeys never calls
+// getKey()).  Either way the result is the same Y_I_<keyId> const the map's
+// PUT and get use for that key, so a REMOVE_IF argument compares like for like.
+static Expression *iterated_entry_key(oop cursor, oop result_object) {
+  if (result_object == NULL) return NULL;
+  if (is_key_map_iterator(cursor)) {
+    return ContainerSupport::concrete_value(result_object);
+  }
+  if (is_entry_map_iterator(cursor)) {
+    oop key_object = OopUtils::key_of_map_node(result_object);
+    return key_object == NULL ? NULL
+        : ContainerSupport::concrete_value(key_object);
+  }
+  return NULL;
+}
+
+// Records `REMOVE_IF(prev_state, key) under guard` as a new version of the map
+// the cursor walks.  The guard is oriented as the removal condition (true =>
+// the key is gone), so a concrete replay that folds it reproduces this run and
+// a solver that flips it removes (or restores) exactly this key.
+static void install_conditional_removal(oop cursor, Expression *prev_state,
+                                        Expression *key, Expression *guard) {
+  if (prev_state == NULL || key == NULL || guard == NULL) return;
+  exp_list_t arguments;
+  arguments.push_back(key);
+  Expression *next = new ContainerExpression(
+      "ASSOCIATIVE", "REMOVE_IF", prev_state, arguments, T_OBJECT,
+      std::string(), guard);
+  ConcolicMngr::ctx->set_container_state(cursor, next);
+  ContainerSupport::publish_state(cursor, next, "REMOVE_IF");
+}
+
+// Closes out the element an iterator returned last when the loop moved past it
+// without removing it.  If a marked symbolic branch guarded it, the removal
+// that did NOT fire is still recorded -- as the branch's other arm, which is
+// concretely false -- so the key is present on this run and flippable off it.
+static void dispose_conditional_removal(oop cursor) {
+  ThreadContext *ctx = ConcolicMngr::ctx;
+  if (ctx == NULL || !ctx->conditional_removal_active()) return;
+  if (ctx->conditional_removal_is_guarded()) {
+    Expression *guard = ctx->conditional_removal_guard()->logical_negation();
+    Expression *key = ctx->conditional_removal_key();
+    Expression *prev = ctx->container_state(cursor, "ASSOCIATIVE");
+    ctx->clear_conditional_removal();
+    // A guard with no relational complement yields NULL here; drop it rather
+    // than record a backwards removal -- install_conditional_removal no-ops.
+    install_conditional_removal(cursor, prev, key, guard);
+    return;
+  }
+  ctx->clear_conditional_removal();
+}
+
 std::set<std::string> SymMap::target_class_names = init_target_class_names();
 
 std::set<std::string> SymMap::init_target_class_names() {
@@ -154,6 +232,10 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   else if (method == "values") operation = "VALUE_VIEW";
   else if (method == "iterator") operation = "ITERATOR";
   else if (method == "next") {
+    // Advancing past the previous element disposes it: if it was visited under
+    // a marked symbolic branch and not removed, its (un-fired) conditional
+    // removal is recorded now.
+    dispose_conditional_removal(receiver_object);
     operation = "NEXT";
     arguments.clear();
     arguments.push_back(new ConExpression(
@@ -220,6 +302,22 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
           "ASSOCIATIVE_ITERATOR_REMOVE_WITHOUT_NEXT");
       return NULL;
     }
+    // This element WAS removed.  If a marked symbolic branch controlled the
+    // removal, record it as REMOVE_IF keyed by the entry with that branch's
+    // predicate as the guard -- concretely true here, so a replay removes the
+    // key exactly as this run did while a solver may flip it back.  The
+    // ordinal bookkeeping above still advances, so any position-keyed views of
+    // this cursor stay consistent.
+    if (ConcolicMngr::ctx->conditional_removal_is_guarded()) {
+      Expression *guard = ConcolicMngr::ctx->conditional_removal_guard();
+      Expression *key = ConcolicMngr::ctx->conditional_removal_key();
+      ConcolicMngr::ctx->clear_conditional_removal();
+      install_conditional_removal(receiver_object, root, key, guard);
+      return NULL;
+    }
+    // An unconditional iterator remove (no controlling symbolic branch) keeps
+    // the position-keyed REMOVE_AT exactly as before.
+    ConcolicMngr::ctx->clear_conditional_removal();
     exp_list_t remove_arguments;
     remove_arguments.push_back(new ConExpression((jint)position));
     Expression *next = new ContainerExpression(
@@ -265,6 +363,9 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     return NULL;
   }
   if (method == "hasNext" && arguments.empty()) {
+    // The final hasNext() of a while(it.hasNext()) loop disposes the last
+    // visited element, which no following next() would.
+    dispose_conditional_removal(receiver_object);
     arguments.push_back(new ConExpression((jint)
         ConcolicMngr::ctx->current_container_position(receiver_object)));
     Expression *result = new ContainerExpression(
@@ -283,6 +384,18 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   }
   const std::string result_java_type = ContainerSupport::java_type(
       result_object, handle.get_result_type());
+
+  // A map iterator's next() names the element now under consideration for a
+  // conditional removal.  Its concrete key expression is what a REMOVE_IF must
+  // carry so the composer compares the read key against the removed key; for an
+  // entry iterator that key is read out of the returned node, since the
+  // removeExpiredKeys shape never calls getKey().
+  if (method == "next") {
+    Expression *entry_key = iterated_entry_key(receiver_object, result_object);
+    if (entry_key != NULL) {
+      ConcolicMngr::ctx->begin_conditional_removal(entry_key);
+    }
+  }
 
   Expression *result = NULL;
   // Every observation of a selected root map binds to the state it may have

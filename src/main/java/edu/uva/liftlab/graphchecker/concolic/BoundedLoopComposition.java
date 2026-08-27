@@ -20,13 +20,10 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Declared loop bounds plus the path-local count vector of each guarded case.
- *
- * <p>A replay path is already one complete transition relation: its VM
- * output DAG contains the final scalar/container state after all iterations
- * that path ran.  Loop counts therefore qualify that case; they do not create
- * iteration-local ports, writer instances, or a second symbolic unrolling.
- * Different counts arrive as different guarded cases and extend the bounded
- * supergraph incrementally.</p>
+ * A replay path is already one complete transition relation, so counts
+ * qualify that case rather than creating iteration-local ports, writer
+ * instances or a second unrolling; different counts arrive as different
+ * guarded cases and extend the bounded supergraph incrementally.
  */
 public final class BoundedLoopComposition {
     public static final int SCHEMA_VERSION = 2;
@@ -49,8 +46,6 @@ public final class BoundedLoopComposition {
             "BOUNDED_LOOP_CLASSIFICATION_DISAGREES";
 
     private final List<BoundedLoop> loops = new ArrayList<>();
-    private final Map<String, BoundedLoop> byIdentity =
-            new LinkedHashMap<>();
     private final List<JsonObject> gaps = new ArrayList<>();
     private final Set<String> gapKeys = new LinkedHashSet<>();
 
@@ -106,20 +101,47 @@ public final class BoundedLoopComposition {
                             occurrence, "retained loop names no loopSiteId");
                     continue;
                 }
+                boolean demanded =
+                        LoopBoundPolicy.failureRelevantLoop(row);
                 if (policy == null || conflicting) {
-                    model.gap(policy == null
-                                    ? LOOP_BODY_BOUND_UNDECLARED
-                                    : LOOP_BODY_BOUND_DISAGREES,
-                            occurrence + "\n" + site,
-                            policy == null
-                                    ? "selected occurrence has retained loop "
-                                    + "but no task-derived loopBound authority"
-                                    : "selected summaries disagree on the "
-                                    + "same occurrence loopBound authority");
+                    // A loop whose trip count nothing the failure reads can
+                    // observe states no bound obligation, so an absent
+                    // authority for it is not a coverage gap.  A disagreement
+                    // still is: two contradictory declarations are wrong
+                    // about this loop whatever the failure reads.
+                    if (conflicting || demanded) {
+                        model.gap(policy == null
+                                        ? LOOP_BODY_BOUND_UNDECLARED
+                                        : LOOP_BODY_BOUND_DISAGREES,
+                                occurrence + "\n" + site,
+                                policy == null
+                                        ? "selected occurrence has retained "
+                                        + "loop but no task-derived loopBound "
+                                        + "authority"
+                                        : "selected summaries disagree on the "
+                                        + "same occurrence loopBound "
+                                        + "authority");
+                    }
                     continue;
                 }
                 if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(string(row,
                         LoopBoundPolicy.LOOP_CLASSIFICATION))) {
+                    // README LOOP-1: a retained condition loop that declares
+                    // no K_L does not quietly run under the core default,
+                    // which was never measured against it.  Named here;
+                    // Composer refuses it through LOOP_AUTHORITY_REFUSALS
+                    // when the loop lies inside the selected slice.
+                    if (!policy.declaredBounds().containsKey(site)) {
+                        if (demanded) {
+                            model.gap(LOOP_BODY_BOUND_UNDECLARED,
+                                    occurrence + "\n" + site,
+                                    "retained condition loop inherits the "
+                                            + "core default K_L="
+                                            + LoopBoundPolicy
+                                            .MAX_LOOP_BODY_ITERATIONS);
+                        }
+                        continue;
+                    }
                     int effective = policy.maxBackedgeTraversals(site);
                     JsonElement stated = row.get(
                             LoopBoundPolicy.LOOP_BODY_BOUND);
@@ -133,13 +155,13 @@ public final class BoundedLoopComposition {
                                         + effective);
                         continue;
                     }
+                    // Only a declared K_L reaches this point, so the row's
+                    // authority is the declaration itself and nothing else.
                     row.addProperty(LoopBoundPolicy.LOOP_BODY_BOUND,
                             effective);
                     row.addProperty(
                             LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY,
-                            policy.declaredBounds().containsKey(site)
-                                    ? LoopBoundPolicy.BOUND_FROM_DECLARATION
-                                    : LoopBoundPolicy.BOUND_FROM_POLICY);
+                            LoopBoundPolicy.BOUND_FROM_DECLARATION);
                 }
                 row.addProperty("occurrenceId", occurrence);
                 declarations.computeIfAbsent(occurrence + "\n" + site,
@@ -149,9 +171,7 @@ public final class BoundedLoopComposition {
         for (Map.Entry<String, List<JsonObject>> entry
                 : declarations.entrySet()) {
             BoundedLoop loop = model.admit(entry.getKey(), entry.getValue());
-            if (loop == null) continue;
-            model.loops.add(loop);
-            model.byIdentity.put(loop.identity, loop);
+            if (loop != null) model.loops.add(loop);
         }
         return model;
     }
@@ -227,12 +247,11 @@ public final class BoundedLoopComposition {
                                 + loop.bodyBound);
                 continue;
             }
-            // A coarse region may declare library loops that this particular
-            // path returned before reaching.  Their inferred zero body count
-            // is not a dynamic N observation and needs no array cardinality.
-            // The distinction must be stated by the fresh importer. Treating
-            // a missing legacy marker as reached or skipped would invent one
-            // of two materially different path-local loop claims.
+            // A coarse region may declare library loops this path returned
+            // before reaching.  Their inferred zero body count is not a
+            // dynamic N observation and needs no array cardinality, so the
+            // importer must state reachability: assuming either answer would
+            // invent one of two materially different path-local claims.
             JsonElement reached = row.get(
                     LoopBoundPolicy.PATH_LOOP_REACHED);
             if (reached == null || !reached.isJsonPrimitive()
@@ -289,14 +308,6 @@ public final class BoundedLoopComposition {
             }
         }
         return true;
-    }
-
-    public List<BoundedLoop> boundedLoops() {
-        return Collections.unmodifiableList(loops);
-    }
-
-    public BoundedLoop loopOf(String occurrenceId, String loopSiteId) {
-        return byIdentity.get(occurrenceId + "\n" + loopSiteId);
     }
 
     public List<JsonObject> gaps() {

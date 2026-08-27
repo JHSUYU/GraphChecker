@@ -1,35 +1,32 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Test;
 
 import java.util.Arrays;
-import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 public class ConfiguredSourcePhaseContractTest {
-    private static final Gson GSON = new Gson();
     private static final String METHOD = "<example.Keys: void rotate()>";
     private static final String FIELD = "<example.Key: int keyId>";
 
     @Test
     public void occurrenceCarriesStableExactPhaseAndCallAncestry() {
-        Map<String, Object> encoded = ConfiguredSourcePhaseContract.declaration(
+        JsonObject encoded = ConfiguredSourcePhaseContract.declaration(
                 ConfiguredSourcePhaseContract.Phase.PUBLISH,
                 "ROTATING.KEY", FIELD, METHOD, 7);
         ConfiguredSourcePhaseContract.Declaration declaration =
                 ConfiguredSourcePhaseContract.declarationsOf(
-                        Arrays.asList(encoded)).get(0);
+                        rows(encoded)).get(0);
 
-        Map<String, Object> first = ConfiguredSourcePhaseContract.occurrence(
+        JsonObject first = ConfiguredSourcePhaseContract.occurrence(
                 declaration, "node/nn0#epoch1/region/REGION.KEYS#3",
                 2, 101, 30, 91, "<example.Hook: void publish()>",
                 Arrays.asList(30L, 20L, 10L));
-        Map<String, Object> repeated =
+        JsonObject repeated =
                 ConfiguredSourcePhaseContract.occurrence(
                         declaration,
                         "node/nn0#epoch1/region/REGION.KEYS#3",
@@ -38,20 +35,20 @@ public class ConfiguredSourcePhaseContractTest {
                         Arrays.asList(30L, 20L, 10L));
 
         assertEquals(first.get("phaseId"), repeated.get("phaseId"));
-        assertEquals("PUBLISH", first.get("phaseKind"));
-        assertEquals("ROTATING.KEY", first.get("sourceId"));
-        assertEquals(FIELD, first.get("fieldSignature"));
-        assertEquals(METHOD + "#u7", first.get("siteId"));
-        assertEquals(101L, first.get("eventSeq"));
-        assertEquals(30L, first.get("ownerCallId"));
-        assertEquals(91L, first.get("invocationId"));
+        assertEquals("PUBLISH", first.get("phaseKind").getAsString());
+        assertEquals("ROTATING.KEY", first.get("sourceId").getAsString());
+        assertEquals(FIELD, first.get("fieldSignature").getAsString());
+        assertEquals(METHOD + "#u7", first.get("siteId").getAsString());
+        assertEquals(101L, first.get("eventSeq").getAsLong());
+        assertEquals(30L, first.get("ownerCallId").getAsLong());
+        assertEquals(91L, first.get("invocationId").getAsLong());
         assertEquals(Arrays.asList(30L, 20L, 10L),
-                first.get("enclosingCallIds"));
+                callIds(first.getAsJsonArray("enclosingCallIds")));
         ConfiguredSourcePhaseContract.Occurrence decoded =
                 ConfiguredSourcePhaseContract.occurrencesOf(
-                        Arrays.asList(first)).get(0);
+                        rows(first)).get(0);
         assertEquals("PUBLISH", decoded.phase().name());
-        assertEquals(first.get("phaseId"), decoded.phaseId());
+        assertEquals(first.get("phaseId").getAsString(), decoded.phaseId());
         assertEquals("ROTATING.KEY", decoded.sourceId());
         assertEquals(FIELD, decoded.fieldSignature());
         assertEquals(Arrays.asList(30L, 20L, 10L),
@@ -61,9 +58,9 @@ public class ConfiguredSourcePhaseContractTest {
     @Test(expected = IllegalArgumentException.class)
     public void rejectsAncestryThatDoesNotStartAtHookOwner() {
         ConfiguredSourcePhaseContract.Declaration declaration =
-                ConfiguredSourcePhaseContract.declarationsOf(Arrays.asList(
+                ConfiguredSourcePhaseContract.declarationsOf(rows(
                         ConfiguredSourcePhaseContract.declaration(
-                                ConfiguredSourcePhaseContract.Phase.CONSUME,
+                                ConfiguredSourcePhaseContract.Phase.PUBLISH,
                                 "ROTATING.KEY", FIELD, METHOD, 3))).get(0);
 
         ConfiguredSourcePhaseContract.occurrence(declaration,
@@ -75,11 +72,11 @@ public class ConfiguredSourcePhaseContractTest {
     @Test
     public void occurrencePhaseRowsAreCopiedIntoExecutionTask() {
         ConfiguredSourcePhaseContract.Declaration declaration =
-                ConfiguredSourcePhaseContract.declarationsOf(Arrays.asList(
+                ConfiguredSourcePhaseContract.declarationsOf(rows(
                         ConfiguredSourcePhaseContract.declaration(
                                 ConfiguredSourcePhaseContract.Phase.PUBLISH,
                                 "ROTATING.KEY", FIELD, METHOD, 7))).get(0);
-        Map<String, Object> occurrence =
+        JsonObject occurrence =
                 ConfiguredSourcePhaseContract.occurrence(declaration,
                         "test/source#epoch0/region/R#1", 1,
                         10, 30, 41, "<example.Hook: void publish()>",
@@ -90,8 +87,7 @@ public class ConfiguredSourcePhaseContractTest {
                 "test/source#epoch0/region/R#1");
         plan.addProperty("relationKey", "test/source/relation/R");
         plan.addProperty("regionId", "R");
-        JsonArray phaseRows = new JsonArray();
-        phaseRows.add(GSON.toJsonTree(occurrence));
+        JsonArray phaseRows = rows(occurrence);
         plan.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phaseRows);
         JsonObject goalRow = new JsonObject();
         goalRow.addProperty("goalId", "GOAL.1");
@@ -118,13 +114,11 @@ public class ConfiguredSourcePhaseContractTest {
                 task.json().getAsJsonArray(
                         ConfiguredSourcePhaseContract.PLAN_FIELD));
 
-        Map<String, Object> foreign =
+        JsonArray foreignRows = rows(
                 ConfiguredSourcePhaseContract.occurrence(declaration,
                         "test/source#epoch0/region/R#2", 1,
                         10, 30, 41, "<example.Hook: void publish()>",
-                        Arrays.asList(30L, 20L));
-        JsonArray foreignRows = new JsonArray();
-        foreignRows.add(GSON.toJsonTree(foreign));
+                        Arrays.asList(30L, 20L)));
         JsonObject foreignPlan = plan.deepCopy();
         foreignPlan.add(ConfiguredSourcePhaseContract.PLAN_FIELD,
                 foreignRows);
@@ -140,16 +134,16 @@ public class ConfiguredSourcePhaseContractTest {
     @Test
     public void completePlanRequiresContiguousSiteOrdinals() {
         ConfiguredSourcePhaseContract.Declaration declaration = declaration();
-        Map<String, Object> first = occurrence(declaration, 1, 10, 41);
-        Map<String, Object> third = occurrence(declaration, 3, 30, 43);
+        JsonObject first = occurrence(declaration, 1, 10, 41);
+        JsonObject third = occurrence(declaration, 3, 30, 43);
 
         // A task may intentionally retain only selected phases from the full
         // occurrence, so its strict subsequence need not start at one.
         assertEquals(1, ConfiguredSourcePhaseContract.occurrencesOf(
-                Arrays.asList(third), false).size());
+                rows(third), false).size());
         try {
             ConfiguredSourcePhaseContract.occurrencesOf(
-                    Arrays.asList(first, third), true);
+                    rows(first, third), true);
             fail("a complete occurrence may not skip a site ordinal");
         } catch (IllegalArgumentException expected) {
             assertEquals(true, expected.getMessage().contains(
@@ -160,13 +154,13 @@ public class ConfiguredSourcePhaseContractTest {
     @Test
     public void phaseLedgerRejectsDuplicateOrReorderedRuntimeIdentity() {
         ConfiguredSourcePhaseContract.Declaration declaration = declaration();
-        Map<String, Object> first = occurrence(declaration, 1, 10, 41);
-        Map<String, Object> duplicate = occurrence(declaration, 1, 20, 42);
-        Map<String, Object> second = occurrence(declaration, 2, 20, 42);
+        JsonObject first = occurrence(declaration, 1, 10, 41);
+        JsonObject duplicate = occurrence(declaration, 1, 20, 42);
+        JsonObject second = occurrence(declaration, 2, 20, 42);
 
         try {
             ConfiguredSourcePhaseContract.occurrencesOf(
-                    Arrays.asList(first, duplicate), false);
+                    rows(first, duplicate), false);
             fail("one phase id may not occur twice");
         } catch (IllegalArgumentException expected) {
             assertEquals(true, expected.getMessage().contains(
@@ -174,7 +168,7 @@ public class ConfiguredSourcePhaseContractTest {
         }
         try {
             ConfiguredSourcePhaseContract.occurrencesOf(
-                    Arrays.asList(second, first), false);
+                    rows(second, first), false);
             fail("runtime event order may not be reversed");
         } catch (IllegalArgumentException expected) {
             assertEquals(true, expected.getMessage().contains(
@@ -182,31 +176,29 @@ public class ConfiguredSourcePhaseContractTest {
         }
     }
 
-    @Test
-    public void selectedPhaseIdsMustBeAnArray() {
-        JsonObject task = new JsonObject();
-        task.addProperty(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD,
-                "SOURCE_PHASE.not-an-array");
-        try {
-            ConfiguredSourcePhaseContract.selectedPhaseIdsOf(task,
-                    java.util.Collections
-                            .<ConfiguredSourcePhaseContract.Occurrence>
-                                    emptyList());
-            fail("a malformed selected phase ledger must be rejected");
-        } catch (IllegalArgumentException expected) {
-            assertEquals(true, expected.getMessage().contains(
-                    "must be an array"));
+    /** The one wire form a phase catalog is decoded from. */
+    private static JsonArray rows(JsonObject... phases) {
+        JsonArray encoded = new JsonArray();
+        for (JsonObject phase : phases) encoded.add(phase);
+        return encoded;
+    }
+
+    private static java.util.List<Long> callIds(JsonArray encoded) {
+        java.util.List<Long> result = new java.util.ArrayList<>();
+        for (com.google.gson.JsonElement value : encoded) {
+            result.add(value.getAsLong());
         }
+        return result;
     }
 
     private static ConfiguredSourcePhaseContract.Declaration declaration() {
-        return ConfiguredSourcePhaseContract.declarationsOf(Arrays.asList(
+        return ConfiguredSourcePhaseContract.declarationsOf(rows(
                 ConfiguredSourcePhaseContract.declaration(
                         ConfiguredSourcePhaseContract.Phase.PUBLISH,
                         "ROTATING.KEY", FIELD, METHOD, 7))).get(0);
     }
 
-    private static Map<String, Object> occurrence(
+    private static JsonObject occurrence(
             ConfiguredSourcePhaseContract.Declaration declaration,
             int ordinal, long eventSeq, long invocationId) {
         return ConfiguredSourcePhaseContract.occurrence(declaration,

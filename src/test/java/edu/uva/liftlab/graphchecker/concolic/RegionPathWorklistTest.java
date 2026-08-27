@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -11,6 +12,9 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -19,6 +23,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class RegionPathWorklistTest {
+    private static final Gson GSON = new Gson();
 
     /**
      * A member's task allowance belongs to the campaign, not to one planner
@@ -38,7 +43,7 @@ public class RegionPathWorklistTest {
         RegionPathWorklist.Bounds oneCampaignTask =
                 new RegionPathWorklist.Bounds(64, 32, 1);
 
-        RegionPathWorklist.Result firstWave = RegionPathWorklist.plan(
+        RegionPathWorklist.Result firstWave = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(), oneCampaignTask);
@@ -49,7 +54,7 @@ public class RegionPathWorklistTest {
                 .get("queryKey").getAsString());
         record.addProperty("status",
                 "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY");
-        RegionPathWorklist.Result secondWave = RegionPathWorklist.plan(
+        RegionPathWorklist.Result secondWave = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.singletonList(record), oneCampaignTask);
@@ -72,7 +77,7 @@ public class RegionPathWorklistTest {
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
         RegionPathWorklist.Bounds oneFlip =
                 new RegionPathWorklist.Bounds(64, 1, 256);
-        RegionPathWorklist.Result firstWave = RegionPathWorklist.plan(
+        RegionPathWorklist.Result firstWave = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(), oneFlip);
@@ -82,7 +87,7 @@ public class RegionPathWorklistTest {
         record.addProperty("queryKey", firstWave.tasks.get(0)
                 .get("queryKey").getAsString());
         record.addProperty("status", "UNSAT");
-        RegionPathWorklist.Result secondWave = RegionPathWorklist.plan(
+        RegionPathWorklist.Result secondWave = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.singletonList(record), oneFlip);
@@ -112,7 +117,7 @@ public class RegionPathWorklistTest {
         JsonObject task = executionTask("ACT.PATH.BOUND",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
 
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+        RegionPathWorklist.Result result = worklist(
                 Arrays.asList(first, second), Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
                 new RegionPathWorklist.Bounds(1, 32, 256));
@@ -153,7 +158,7 @@ public class RegionPathWorklistTest {
             attachClosure(summary, closure);
             attachClosure(task, closure);
 
-            RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+            RegionPathWorklist.Result pending = worklist(
                     Collections.singletonList(summary),
                     Collections.singletonList(task),
                     Collections.<JsonObject>emptyList(),
@@ -165,7 +170,7 @@ public class RegionPathWorklistTest {
                     .get("queryKey").getAsString());
             record.addProperty("status", status);
 
-            RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+            RegionPathWorklist.Result closed = worklist(
                     Collections.singletonList(summary),
                     Collections.singletonList(task),
                     Collections.singletonList(record),
@@ -202,7 +207,7 @@ public class RegionPathWorklistTest {
         attachClosure(summary, closure);
         attachClosure(task, closure);
 
-        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+        RegionPathWorklist.Result pending = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -217,7 +222,7 @@ public class RegionPathWorklistTest {
         record.addProperty("queryKey", queryKey);
         record.addProperty("status", "MATERIALIZATION_GAP");
 
-        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+        RegionPathWorklist.Result closed = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.singletonList(record),
@@ -249,7 +254,7 @@ public class RegionPathWorklistTest {
                 "<P: int x>", "PROOF.UNSUPPORTED", "SITE.1");
         attachClosure(summary, closure);
         attachClosure(task, closure);
-        RegionPathWorklist.Result pending = RegionPathWorklist.plan(
+        RegionPathWorklist.Result pending = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -269,7 +274,7 @@ public class RegionPathWorklistTest {
         JsonArray unsupported = new JsonArray();
         unsupported.add("q_branch_0:METHOD_SEMANTICS_MISSING:test");
         record.add("unsupported", unsupported);
-        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+        RegionPathWorklist.Result closed = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.singletonList(record),
@@ -309,7 +314,7 @@ public class RegionPathWorklistTest {
                 "<P: int x>", "PROOF.REJECTED", "SITE.1");
         attachClosure(rejectedSummary, rejectedClosure);
         attachClosure(rejectedTask, rejectedClosure);
-        RegionPathWorklist.Result rejectedPending = RegionPathWorklist.plan(
+        RegionPathWorklist.Result rejectedPending = worklist(
                 Collections.singletonList(rejectedSummary),
                 Collections.singletonList(rejectedTask),
                 Collections.<JsonObject>emptyList(),
@@ -326,7 +331,7 @@ public class RegionPathWorklistTest {
         rejectedRecord.addProperty("status", "REPLAY_NOT_ADMITTED");
         rejectedRecord.addProperty("reason",
                 "bounded replay produced no output relation");
-        RegionPathWorklist.Result rejectedClosed = RegionPathWorklist.plan(
+        RegionPathWorklist.Result rejectedClosed = worklist(
                 Collections.singletonList(rejectedSummary),
                 Collections.singletonList(rejectedTask),
                 Collections.singletonList(rejectedRecord),
@@ -362,7 +367,7 @@ public class RegionPathWorklistTest {
         seededBranches.add(seedBranch("SITE.1", false));
         seededTask.add("branches", seededBranches);
 
-        RegionPathWorklist.Result seededResult = RegionPathWorklist.plan(
+        RegionPathWorklist.Result seededResult = worklist(
                 Collections.singletonList(seededSummary),
                 Collections.singletonList(seededTask),
                 Collections.<JsonObject>emptyList(),
@@ -410,7 +415,7 @@ public class RegionPathWorklistTest {
         alignmentGaps.add(published);
         summary.add("alignmentGaps", alignmentGaps);
 
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+        RegionPathWorklist.Result result = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -509,16 +514,8 @@ public class RegionPathWorklistTest {
         remoteAction.addProperty("selectedIncomingEdgeId", "EDGE.remote");
         actions.add(remoteAction);
         task.add("inputActions", actions);
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourceId", sourceId);
-        source.addProperty("sourcePhaseId", sourcePhaseId);
-        source.addProperty("fieldSignature", sourceField);
-        source.addProperty("requiredTargetInputPort", "REGION.3.in.local");
-        JsonArray sources = new JsonArray();
-        sources.add(source);
-        task.add(SymbolicSourceEvidence.TASK_FIELD, sources);
+        addMintSite(task, task.get("occurrenceId").getAsString(), sourceId,
+                sourceField, 1);
         JsonObject handoff = new JsonObject();
         handoff.addProperty("role", "ATTACH");
         handoff.addProperty("direction", "RESPONSE");
@@ -534,11 +531,11 @@ public class RegionPathWorklistTest {
         task.add("edgeBindings", bindings.deepCopy());
         summary.add("edgeBindings", bindings.deepCopy());
         VmHandoffEvidence.writeTo(summary, Collections.singletonList(
-                VmHandoffEvidence.event("REGION.3.in.rpc", 41L,
+                VmHandoffEvidence.event("REGION.3.in.rpc", 41L, 42L,
                         intSymbol(remoteRaw), "TASK.PRODUCER",
                         "REGION.PRODUCER/occurrence-1")));
 
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+        RegionPathWorklist.Result result = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -572,8 +569,6 @@ public class RegionPathWorklistTest {
         JsonObject replayTask = PathReplayTaskFactory.create(query, task,
                 assignments, replay, null);
         assertEquals(1, replayTask.getAsJsonArray(
-                SymbolicSourceEvidence.TASK_FIELD).size());
-        assertEquals(1, replayTask.getAsJsonArray(
                 "communicationHandoffs").size());
         assertEquals(1, replayTask.getAsJsonArray("edgeBindings").size());
         assertEquals(1, replayTask.getAsJsonArray("modelAssignments").size());
@@ -599,7 +594,7 @@ public class RegionPathWorklistTest {
         opposite.add("branchMappings", oppositeMappings);
         authorizeVmPcMappings(opposite);
 
-        RegionPathWorklist.Result bothOutcomes = RegionPathWorklist.plan(
+        RegionPathWorklist.Result bothOutcomes = worklist(
                 Arrays.asList(summary, opposite),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -685,14 +680,10 @@ public class RegionPathWorklistTest {
         actions.add(targetLocalAction("TARGET.in.second", secondField));
         task.add("inputActions", actions);
 
-        JsonArray sources = new JsonArray();
-        sources.add(targetLocalSource(firstPhaseId, firstSource, firstField,
-                "TARGET.in.first"));
-        sources.add(targetLocalSource(secondPhaseId, secondSource, secondField,
-                "TARGET.in.second"));
-        task.add(SymbolicSourceEvidence.TASK_FIELD, sources);
+        addMintSite(task, occurrence, firstSource, firstField, 1);
+        addMintSite(task, occurrence, secondSource, secondField, 2);
 
-        RegionPathWorklist.Result initial = RegionPathWorklist.plan(
+        RegionPathWorklist.Result initial = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -737,7 +728,7 @@ public class RegionPathWorklistTest {
         secondOpposite.add("branchMappings", oppositeMappings);
         authorizeVmPcMappings(secondOpposite);
 
-        RegionPathWorklist.Result afterSecond = RegionPathWorklist.plan(
+        RegionPathWorklist.Result afterSecond = worklist(
                 Arrays.asList(summary, secondOpposite),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -748,6 +739,281 @@ public class RegionPathWorklistTest {
                 afterSecond.tasks.get(0));
         assertEquals("SITE.FIRST", remaining.source().siteId());
         assertEquals(false, remaining.requiredTakenOutcome());
+    }
+
+    /**
+     * OCC-1: a task's address may be entered several times, and every
+     * compatible activation is published as its own occurrence instead of one
+     * being answered and the rest reported as an ambiguous address (which is
+     * what HDFS-11741 run 24 did for four of six tasks).
+     *
+     * <p>The activations are cases of ONE relation, closed on the planned
+     * address, and they are not alternatives: each carries its own occurrence
+     * so the composer can give it its own selector, ports and event scope.
+     * They are also one obligation -- a second activation of the same address
+     * ran the same code path again and buys no new exploration.</p>
+     */
+    @Test
+    public void severalActivationsAreOneRelationOfSeveralOccurrences() {
+        String planned = "REGION.3/occurrence-1";
+        JsonObject first = activation(planned, 1, true, "Y_I_7");
+        JsonObject second = activation(planned, 2, true, "Y_I_9");
+        JsonObject task = executionTask("ACT.OCC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+
+        RegionPathWorklist.Result result = worklist(
+                Arrays.asList(first, second), Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                new RegionPathWorklist.Bounds(64, 32, 256));
+        // The same task with only its first activation: the obligations the
+        // planner proposes must not grow because the address was entered a
+        // second time.
+        RegionPathWorklist.Result alone = worklist(
+                Collections.singletonList(first),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                new RegionPathWorklist.Bounds(64, 32, 256));
+
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                result.manifest.get("state").getAsString());
+        assertEquals("a task with several occurrence cases is still one "
+                        + "obligation",
+                alone.tasks.size(), result.tasks.size());
+        assertEquals("the planned address, not one activation of it",
+                planned, result.manifest.get("occurrenceId").getAsString());
+        assertEquals("two activations are one relation",
+                1, result.relations.size());
+
+        JsonObject relation = result.relations.get(0);
+        assertEquals(planned, relation.get("occurrenceId").getAsString());
+        JsonArray cases = relation.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases");
+        assertEquals("one case per activation", 2, cases.size());
+        Set<String> occurrences = new LinkedHashSet<>();
+        for (int index = 0; index < cases.size(); index++) {
+            JsonObject item = cases.get(index).getAsJsonObject();
+            occurrences.add(item.get("occurrenceId").getAsString());
+            assertTrue("every case names its activation",
+                    item.has("activationOrdinal"));
+        }
+        assertEquals("each case is its own occurrence",
+                new LinkedHashSet<>(Arrays.asList(planned + "#a1",
+                        planned + "#a2")), occurrences);
+    }
+
+    /**
+     * An activation that satisfied only part of its output boundary becomes a
+     * case of exactly what it captured, marked and named -- never dropped --
+     * as long as another activation of the task did satisfy it.
+     */
+    @Test
+    public void aPartialActivationIsAMarkedCaseNotADiscardedRelation() {
+        String planned = "REGION.3/occurrence-1";
+        JsonObject complete = activation(planned, 1, true, "Y_I_7");
+        JsonObject partial = activation(planned, 2, false, "Y_I_9");
+        partial.add("outputExpressions", new JsonObject());
+        JsonObject task = executionTask("ACT.OCC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+
+        RegionPathWorklist.Result result = worklist(
+                Arrays.asList(complete, partial),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                new RegionPathWorklist.Bounds(64, 32, 256));
+
+        assertEquals("one partial activation does not gap the relation",
+                RegionPathWorklist.State.PENDING.name(),
+                result.manifest.get("state").getAsString());
+        assertTrue("and it is named",
+                result.manifest.getAsJsonArray("coverageGaps").toString()
+                        .contains("ACTIVATION_BOUNDARY_NOT_COMPLETE"));
+        assertEquals(1, result.relations.size());
+        JsonArray cases = result.relations.get(0)
+                .getAsJsonObject("regionRelation").getAsJsonArray("cases");
+        assertEquals("the partial activation is still a case",
+                2, cases.size());
+        boolean marked = false;
+        for (int index = 0; index < cases.size(); index++) {
+            JsonObject item = cases.get(index).getAsJsonObject();
+            if (!item.get("relationallyComplete").getAsBoolean()) {
+                marked = true;
+                assertEquals("it carries only what it captured",
+                        0, item.getAsJsonObject("outputExpressions").size());
+            }
+        }
+        assertTrue("the partial case is marked", marked);
+    }
+
+    /**
+     * A task none of whose activations satisfied the boundary is the
+     * pre-OCC-1 case and stays the hard gap it always was.
+     */
+    @Test
+    public void aTaskWithNoCompleteActivationStaysGapped() {
+        String planned = "REGION.3/occurrence-1";
+        JsonObject partial = activation(planned, 1, false, "Y_I_7");
+        JsonObject task = executionTask("ACT.OCC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+
+        RegionPathWorklist.Result result = worklist(
+                Collections.singletonList(partial),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                new RegionPathWorklist.Bounds(64, 32, 256));
+
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
+        assertTrue(result.manifest.getAsJsonArray("gaps").toString()
+                .contains("RELATIONAL_INPUT_OUTPUT_SUMMARY_NOT_COMPLETE"));
+    }
+
+    /** One published activation of a task's planned address. */
+    private static JsonObject activation(String planned, int ordinal,
+                                         boolean complete, String value) {
+        JsonObject summary = summary("ACT.OCC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        summary.addProperty("summaryId", "SUMMARY.ACT.OCC.A" + ordinal);
+        summary.addProperty("occurrenceId", planned + "#a" + ordinal);
+        summary.addProperty("plannedOccurrenceId", planned);
+        summary.addProperty("activationOrdinal", ordinal);
+        summary.addProperty("relationallyComplete", complete);
+        JsonObject outputs = new JsonObject();
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_java_type", "I");
+        constant.addProperty("_exp", value);
+        outputs.add("REGION.3.out.0", constant);
+        summary.add("outputExpressions", outputs);
+        return summary;
+    }
+
+    /**
+     * Once-only-root rule (OutputCaptureSpec#INSTANCE_SCOPED_PRODUCER).  An
+     * instance-scoped once-only heap write's recorded version is decided once
+     * at instance scope, so an occurrence that never sampled it owes no
+     * per-occurrence production of that port.  The planner is the third owner
+     * of this completeness check -- after the recorder's exact output
+     * boundary and the importer's capture count -- and must not disagree with
+     * the other two by reporting the demand it did not owe as an
+     * OUTPUT_EXPRESSION_SET_MISMATCH.
+     */
+    @Test
+    public void onceOnlyInstanceScopedPortIsNotOwedByEveryOccurrence() {
+        RegionPathWorklist.Result relaxed = twoPortWave(
+                "ACT.ONCEONLY.RELAX", true, false);
+
+        assertFalse(relaxed.manifest.toString()
+                .contains("OUTPUT_EXPRESSION_SET_MISMATCH"));
+        assertEquals(RegionPathWorklist.State.PENDING.name(),
+                relaxed.manifest.get("state").getAsString());
+        // The occurrence still states the relation it did produce.
+        assertEquals(1, relaxed.relations.size());
+    }
+
+    /**
+     * Fail-closed, both directions.  A demanded port the contract does not
+     * name instance-scoped is the hard set mismatch it has always been, and
+     * so is a path that produced a port outside the demand -- the relaxation
+     * only ever removes an unproduced once-only port from the demand, and
+     * never admits a production the closure never asked for.
+     */
+    @Test
+    public void unflaggedOrWidenedOutputSetsStillMismatchTheDemand() {
+        // Same shape, but the second port's only writer never states the
+        // once-only flag: the occurrence does owe it.
+        RegionPathWorklist.Result unflagged = twoPortWave(
+                "ACT.ONCEONLY.UNFLAGGED", false, false);
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                unflagged.manifest.get("state").getAsString());
+        assertTrue(unflagged.manifest.toString().contains(
+                "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND"));
+        assertTrue(unflagged.relations.isEmpty());
+
+        // The flag is stated, but the path also produced a port the closure
+        // never demanded.  A relaxation of the missing side may not excuse a
+        // production outside the demand.
+        RegionPathWorklist.Result widened = twoPortWave(
+                "ACT.ONCEONLY.WIDENED", true, true);
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                widened.manifest.get("state").getAsString());
+        assertTrue(widened.manifest.toString().contains(
+                "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND"));
+        assertTrue(widened.relations.isEmpty());
+    }
+
+    /** One planning wave over a two-port closure whose second port is a
+     *  once-only heap write the observation never sampled. */
+    private static RegionPathWorklist.Result twoPortWave(
+            String id, boolean instanceScoped, boolean produceUndemanded) {
+        JsonObject summary = summary(id,
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject task = executionTask(id,
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        JsonObject closure = onceOnlyClosure(instanceScoped);
+        attachClosure(summary, closure);
+        attachClosure(task, closure);
+        if (produceUndemanded) {
+            JsonObject extra = new JsonObject();
+            extra.addProperty("_type", "ConstExpr");
+            extra.addProperty("_java_type", "I");
+            extra.addProperty("_exp", "Y_I_9");
+            summary.getAsJsonObject("outputExpressions")
+                    .add("REGION.3.out.9", extra);
+        }
+        return worklist(Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+    }
+
+    /** {@code REGION.3.out.0} as the fixtures already publish it, plus a
+     *  {@code REGION.3.out.1} written only by one exact heap write. */
+    private static JsonObject onceOnlyClosure(boolean instanceScoped) {
+        JsonObject closure = outputClosure("REGION.3.out.0",
+                "<P: int x>", "PROOF.ONCEONLY", "SITE.0", "SITE.1");
+
+        JsonObject output = new JsonObject();
+        output.addProperty("portId", "REGION.3.out.1");
+        output.addProperty("cell", "<P: int keys>");
+        output.addProperty("kind", "REGION_OUTPUT");
+        output.addProperty("javaTypeDescriptor", "I");
+        output.addProperty("selectionAuthority", "TEST_EXACT_DEMAND");
+
+        JsonObject binding = new JsonObject();
+        binding.addProperty("captureBindingId", "CAPTURE.ONCEONLY.0");
+        binding.addProperty("outputPort", "REGION.3.out.1");
+        binding.addProperty("outputCell", "<P: int keys>");
+        binding.addProperty("captureKind", "FIELD_WRITE_STATE");
+        binding.addProperty("fieldSignature", "<P: int keys>");
+        binding.addProperty("javaType", "int");
+        binding.addProperty("definitionMethod", "<P: void setKeys()>");
+        binding.addProperty("definitionUnitIndex", 3);
+        binding.addProperty("outputSiteId", "<P: void setKeys()>#u3");
+        binding.addProperty("outputOccurrence", 1);
+        binding.addProperty("occurrenceScope", "REGION_ACTIVATION");
+        if (instanceScoped) {
+            binding.addProperty("instanceScopedProducer", true);
+        }
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", "REGION.3.out.1");
+        slice.addProperty("outputCell", "<P: int keys>");
+        slice.add("inputPorts", new JsonArray());
+        slice.add("sites", new JsonArray());
+        slice.add("staticSites", new JsonArray());
+        slice.add("methods", new JsonArray());
+        slice.add("causalEdgeIds", new JsonArray());
+        slice.add("captureBindings", bindings);
+        slice.add("captureBindingIssues", new JsonArray());
+        slice.addProperty("proofTag", "PROOF.ONCEONLY.1");
+
+        JsonObject member = new JsonObject();
+        member.add("output", output);
+        member.add("slice", slice);
+        closure.getAsJsonArray("members").add(member);
+        return closure;
     }
 
     private static JsonObject outputClosure(
@@ -825,6 +1091,10 @@ public class RegionPathWorklistTest {
         LoopBoundPolicy.cfgBackedges(8).writeTo(summary);
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);
+        // C2: the census is required, never optional - a summary that
+        // never stated it is refused, so every fixture states it.
+        summary.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         goal.writeToTask(summary);
         attachClosure(summary, outputClosure("REGION.3.out.0",
                 "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
@@ -921,23 +1191,38 @@ public class RegionPathWorklistTest {
         return action;
     }
 
-    private static JsonObject targetLocalSource(
-            String sourcePhaseId, String sourceId, String field, String port) {
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourceId", sourceId);
-        source.addProperty("sourcePhaseId", sourcePhaseId);
-        source.addProperty("fieldSignature", field);
-        source.addProperty("requiredTargetInputPort", port);
-        return source;
-    }
 
     private static String sourcePhaseId(
             String occurrence, String sourceId) {
         return ConfiguredSourcePhaseContract.phaseId(occurrence,
                 "<fixture.Source." + sourceId + ": void publish()>#u0",
                 ConfiguredSourcePhaseContract.Phase.PUBLISH, 1);
+    }
+
+    /** The task's frozen catalog of declared mint SITES -- what a recorded
+     * VM source root is resolved against now that nothing predicts it. */
+    private static void addMintSite(JsonObject task, String occurrence,
+                                    String sourceId, String field,
+                                    int ordinal) {
+        JsonArray declarations = new JsonArray();
+        declarations.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                sourceId, field,
+                "<fixture.Source." + sourceId + ": void publish()>", 0));
+        JsonObject row = ConfiguredSourcePhaseContract.occurrence(
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        declarations).get(0),
+                occurrence, 1, ordinal, 10L, 100L + ordinal,
+                "<example.Hook: boolean symbolize(java.lang.String,"
+                        + "java.lang.Object,java.lang.String)>",
+                Collections.singletonList(10L));
+        JsonArray phases = task.has(
+                ConfiguredSourcePhaseContract.PLAN_FIELD)
+                ? task.getAsJsonArray(
+                        ConfiguredSourcePhaseContract.PLAN_FIELD)
+                : new JsonArray();
+        phases.add(row);
+        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
     }
 
     private static BranchReplayContract replayContract(JsonObject task) {
@@ -986,5 +1271,80 @@ public class RegionPathWorklistTest {
         symbol.addProperty("_java_type", "I");
         symbol.addProperty("_exp", raw);
         return symbol;
+    }
+
+    /**
+     * OCC-1: the delta names the planned address of what it classified,
+     * because that is the only occurrence identity a frozen plan states; a
+     * summary names the activation that ran.  The two are matched on the
+     * address here, exactly as the target reach query and the scheduler match
+     * them, so a diverged occurrence excludes its activations from the wave
+     * even when the divergence was recorded against another task id.
+     */
+    @Test
+    public void aDivergedOccurrenceExcludesItsActivations() {
+        String planned = "REGION.3/occurrence-1";
+        JsonObject first = activation(planned, 1, true, "Y_I_7");
+        JsonObject second = activation(planned, 2, true, "Y_I_9");
+        JsonObject task = executionTask("ACT.OCC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(first, second), Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                new RegionPathWorklist.Bounds(64, 32, 256),
+                Collections.singletonList(divergenceOf(
+                        "TASK.SOME.OTHER.MEMBER",
+                        "NAMENODE/active/epoch-0", planned)));
+
+        assertTrue("both activations belong to the next iteration",
+                result.tasks.isEmpty());
+        assertTrue(result.manifest.getAsJsonArray("coverageGaps").toString()
+                .contains("OBLIGATION_BELONGS_TO_THE_NEXT_ITERATION"));
+    }
+
+    /**
+     * The other half of the same rule: an occurrence the delta did not name
+     * is planned as usual, so matching on the address widens nothing.
+     */
+    @Test
+    public void anotherOccurrenceIsNotExcludedByThatDivergence() {
+        String planned = "REGION.3/occurrence-1";
+        JsonObject first = activation(planned, 1, true, "Y_I_7");
+        JsonObject task = executionTask("ACT.OCC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(first),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                new RegionPathWorklist.Bounds(64, 32, 256),
+                Collections.singletonList(divergenceOf(
+                        "TASK.SOME.OTHER.MEMBER",
+                        "NAMENODE/active/epoch-0",
+                        "REGION.3/occurrence-2")));
+
+        assertFalse("an unrelated occurrence still plans its obligations",
+                result.tasks.isEmpty());
+    }
+
+    /** One recorded {@code TOPOLOGY_DIVERGENCE} row of the delta. */
+    private static JsonObject divergenceOf(String taskId, String sourceKey,
+                                           String occurrenceId) {
+        JsonObject row = new JsonObject();
+        row.addProperty("deltaKind", TopologyDelta.TOPOLOGY_DIVERGENCE);
+        row.addProperty("taskId", taskId);
+        row.addProperty("sourceKey", sourceKey);
+        row.addProperty("occurrenceId", occurrenceId);
+        return row;
+    }
+
+    private static RegionPathWorklist.Result worklist(
+            List<JsonObject> summaries, List<JsonObject> executionTasks,
+            List<JsonObject> explorationRecords,
+            RegionPathWorklist.Bounds bounds) {
+        return RegionPathWorklist.plan(summaries, executionTasks,
+                explorationRecords, bounds,
+                Collections.<JsonObject>emptyList());
     }
 }

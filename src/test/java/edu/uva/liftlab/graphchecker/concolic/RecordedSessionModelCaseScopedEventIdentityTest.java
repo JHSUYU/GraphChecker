@@ -234,6 +234,8 @@ public class RecordedSessionModelCaseScopedEventIdentityTest {
 
         JsonObject row = new JsonObject();
         row.addProperty("caseId", caseId);
+        row.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         row.add(SharedStateEvidence.RECORDED_FIELD,
                 RecordedSharedStateFixtures.recordedMember(envelope,
                         RecordedSharedStateFixtures.twoWriterLedger(), FIELD));

@@ -1,5 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import soot.Body;
+import soot.Scene;
+import soot.SootClass;
+import soot.SootMethod;
 import soot.Unit;
 import soot.Value;
 import soot.ValueBox;
@@ -11,36 +15,31 @@ import soot.jimple.FieldRef;
 import soot.jimple.InstanceFieldRef;
 import soot.jimple.Stmt;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.UUID;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Immutable records and Soot decoding used by the static backward analysis.
- *
- * <p>This class is deliberately independent of the worklist and graph state:
- * it turns one exact Soot {@link Unit} into a stable {@link Fact}, parses
- * rendered call arguments without losing nested delimiters, and owns the
- * small typed records stored by the analyzer's global indices.  Keeping this
- * bytecode-facing model outside {@link CausynthPipeline} prevents the pipeline
- * orchestration class from also becoming the representation layer.</p>
  */
-final class CausynthStaticFacts {
+public final class CausynthStaticFacts {
     private static final Pattern FIELD_OWNER = Pattern.compile("<([^:]+):");
+    static final Pattern METHOD_SIGNATURE = Pattern.compile(
+            "<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>");
 
     private CausynthStaticFacts() {
     }
 
-    /**
-     * Canonical Java field identity is the actual declaring field, not the
-     * constant-pool owner through which inherited bytecode happened to refer
-     * to it.
-     */
+    /** Canonical Java field identity is the actual declaring field, not the
+     *  constant-pool owner inherited bytecode referred to it through. */
     static SootField declaredField(SootFieldRef reference) {
         if (reference == null) return null;
         try {
@@ -73,34 +72,16 @@ final class CausynthStaticFacts {
         }
     }
 
-    static final class ConstructorCallsite {
+    /** The frame, unit and operands every recorded call site carries. */
+    static final class Callsite {
         final String method;
-        final String constructor;
         final int unitIndex;
         final String receiver;
         final List<String> actuals;
 
-        ConstructorCallsite(String method, String constructor, int unitIndex,
-                            String receiver, List<String> actuals) {
+        Callsite(String method, int unitIndex, String receiver,
+                 List<String> actuals) {
             this.method = method;
-            this.constructor = constructor;
-            this.unitIndex = unitIndex;
-            this.receiver = receiver;
-            this.actuals = actuals;
-        }
-    }
-
-    static final class MethodCallsite {
-        final String method;
-        final String callee;
-        final int unitIndex;
-        final String receiver;
-        final List<String> actuals;
-
-        MethodCallsite(String method, String callee, int unitIndex,
-                       String receiver, List<String> actuals) {
-            this.method = method;
-            this.callee = callee;
             this.unitIndex = unitIndex;
             this.receiver = receiver;
             this.actuals = actuals;
@@ -123,15 +104,12 @@ final class CausynthStaticFacts {
         final Fact fact;
         final Boolean requiredOutcome;
         final List<Integer> reachingSuccessorIndices;
-        final CausynthBranchShape branchShape;
 
         ExceptionGuard(Fact fact, Boolean requiredOutcome,
-                       List<Integer> reachingSuccessorIndices,
-                       CausynthBranchShape branchShape) {
+                       List<Integer> reachingSuccessorIndices) {
             this.fact = fact;
             this.requiredOutcome = requiredOutcome;
             this.reachingSuccessorIndices = reachingSuccessorIndices;
-            this.branchShape = branchShape;
         }
     }
 
@@ -257,12 +235,71 @@ final class CausynthStaticFacts {
         }
     }
 
-    static String fieldOwner(String fieldSignature) {
+    /** The scene's method for a signature, or null when it is absent. */
+    static SootMethod method(String signature) {
+        try {
+            return Scene.v().getMethod(signature);
+        } catch (RuntimeException absent) {
+            return null;
+        }
+    }
+
+    /** A retrievable active body, or null: an unloadable body is not a fact. */
+    static Body activeBody(SootMethod method) {
+        if (method == null || !method.isConcrete()) return null;
+        try {
+            return method.retrieveActiveBody();
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+    }
+
+    /** The deterministic name UUID artifacts identify a row by. */
+    static String nameId(String prefix, String identity) {
+        return prefix + UUID.nameUUIDFromBytes(
+                identity.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** The one declared-field resolver: the first field {@code owner} itself
+     *  declares that {@code accepts} answers for.  Both call sites name the
+     *  declaring class, so this deliberately does not walk the hierarchy. */
+    static SootField field(SootClass owner, Predicate<SootField> accepts) {
+        if (owner == null) return null;
+        for (SootField candidate : owner.getFields()) {
+            if (accepts.test(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    /** Declaring type of a field signature, or {@code ""}. */
+    public static String fieldOwner(String fieldSignature) {
         if (fieldSignature == null) {
             return "";
         }
         Matcher matcher = FIELD_OWNER.matcher(fieldSignature);
         return matcher.find() ? matcher.group(1) : "";
+    }
+
+    /** Whether one method signature names an initializer. */
+    public static boolean constructor(String method) {
+        return method != null && (method.contains(" <init>(")
+                || method.contains(" <clinit>("));
+    }
+
+    /** Declaring type of a method signature, or {@code ""}. */
+    static String methodOwner(String methodSignature) {
+        return signatureGroup(methodSignature, 1);
+    }
+
+    /** Simple name of a method signature, or {@code ""}. */
+    static String methodName(String methodSignature) {
+        return signatureGroup(methodSignature, 3);
+    }
+
+    private static String signatureGroup(String signature, int group) {
+        Matcher matcher = METHOD_SIGNATURE.matcher(
+                signature == null ? "" : signature);
+        return matcher.matches() ? matcher.group(group) : "";
     }
 
     static List<String> actualInvokeArgs(String unit) {
@@ -277,7 +314,7 @@ final class CausynthStaticFacts {
         return splitTopLevelArgs(unit.substring(start + 2, end));
     }
 
-    static List<String> splitTopLevelArgs(String args) {
+    private static List<String> splitTopLevelArgs(String args) {
         if (args == null || args.trim().isEmpty()) {
             return Collections.emptyList();
         }

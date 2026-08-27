@@ -13,48 +13,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * Whether a replay realised the read-from arm the model selected.
- *
- * <p>The gate was compiled from one execution and the answer has to come from
- * another, so nothing session-local can be used to ask the question. A read
- * event id and a field version id name events of the run that recorded them -
- * a second session restarts the counter, and even within one JVM the second
- * session's first event is again event 1 - so keying validation on them would
- * compare two different runs' event 21. The identity that survives is the one
- * {@link RecordedReadFrom} joins on: the declared field and the two minted
- * activation occurrences. This class re-derives the provenance from the
- * replay's <em>own</em> version store under that key, and never from the
- * reference run's ids.</p>
- *
- * <p>Three things must hold before an arm counts as realised, and each is
- * checked separately so a partial answer says which part is missing:</p>
- *
- * <ul>
- *   <li>the replay's own evidence proves this reader took this writer - a
- *   guarded read proves nothing and stays undecided;</li>
- *   <li>the read observed a concrete version - the value came from the
- *   program, not from anything this checker supplied;</li>
- *   <li>the exchange happened in this run - the selected writer region really
- *   did publish a version of that field here.</li>
- * </ul>
- *
- * <p>Nothing here writes, replaces or supplies a value: validation reads the
- * evidence the run produced. An arm that cannot be decided is an honest
- * coverage gap, never a pass.</p>
- */
+/** Whether a replay realised the read-from arm the model selected. */
 public final class ReplayedReadCut {
-
-    public static final int SCHEMA_VERSION = 1;
-    public static final String KIND = "REPLAY_READ_CUT_REALISATION";
-    public static final String AUTHORITY = "REPLAY_READ_CUT_V1";
-
-    /** The replay's own evidence proves the selected read-from. */
-    public static final String REALISED = "REALISED";
-    /** The replay's own evidence names a different writer. */
-    public static final String NOT_REALISED = "NOT_REALISED";
-    /** The replay's evidence does not answer; the arm stays a gap. */
-    public static final String UNDECIDED = "UNDECIDED";
 
     /** The replay took a different writer for this read. */
     public static final String REPLAY_SELECTED_ANOTHER_WRITER =
@@ -72,7 +32,6 @@ public final class ReplayedReadCut {
     public static final String EXCHANGE_NOT_OBSERVED =
             "GATE_EXCHANGE_NOT_OBSERVED";
 
-    private final List<JsonObject> verdicts = new ArrayList<>();
     private final List<JsonObject> gaps = new ArrayList<>();
 
     private ReplayedReadCut() {
@@ -108,7 +67,6 @@ public final class ReplayedReadCut {
             gaps.add(SparseReadCutGate.refusal(unsafe, gate,
                     "the replay carried a gate this authority did not "
                             + "compile, so nothing validates it"));
-            verdicts.add(verdict(gate, UNDECIDED, unsafe, false, false));
             return;
         }
         String field = string(gate, "readFromField");
@@ -137,33 +95,12 @@ public final class ReplayedReadCut {
                     "writer region " + writer + " published no version of "
                             + field + " in this replay"));
         }
-        String state = state(decision, observedRead, observedExchange);
         String reason = reason(decision, observedRead, observedExchange);
         if (!reason.isEmpty() && !READ_VERSION_NOT_OBSERVED.equals(reason)
                 && !EXCHANGE_NOT_OBSERVED.equals(reason)) {
             gaps.add(SparseReadCutGate.refusal(reason, gate,
                     detail(decision, field, writer, reader)));
         }
-        verdicts.add(verdict(gate, state, reason, observedRead,
-                observedExchange));
-    }
-
-    /**
-     * The verdict of one gate.
-     *
-     * <p>Only a proven read-from with both observations counts as realised: a
-     * decision the replay left guarded says the run could not tell this writer
-     * from another, which is exactly the claim the whole mechanism refuses to
-     * make on equal values.</p>
-     */
-    private static String state(RecordedReadFrom.Decision decision,
-                                boolean observedRead,
-                                boolean observedExchange) {
-        if (decision == RecordedReadFrom.Decision.RECORDED_EXCLUDED) {
-            return NOT_REALISED;
-        }
-        return decision == RecordedReadFrom.Decision.RECORDED_EXACT
-                && observedRead && observedExchange ? REALISED : UNDECIDED;
     }
 
     private static String reason(RecordedReadFrom.Decision decision,
@@ -198,36 +135,10 @@ public final class ReplayedReadCut {
         }
     }
 
-    private JsonObject verdict(JsonObject gate, String state, String reason,
-                               boolean observedRead,
-                               boolean observedExchange) {
-        JsonObject row = new JsonObject();
-        row.addProperty("schemaVersion", SCHEMA_VERSION);
-        row.addProperty("kind", KIND);
-        row.addProperty("authority", AUTHORITY);
-        row.addProperty("gateId", string(gate, "gateId"));
-        row.addProperty("selector", string(gate, "selector"));
-        row.addProperty("readFromField", string(gate, "readFromField"));
-        row.addProperty("writerRegionId", string(gate, "writerRegionId"));
-        row.addProperty("readerRegionId", string(gate, "readerRegionId"));
-        row.addProperty("state", state);
-        row.addProperty("reason", reason);
-        row.addProperty("observedReadVersion", observedRead);
-        row.addProperty("observedExchange", observedExchange);
-        // The gate promised these; the verdict repeats what the validation
-        // actually did, so a reader never has to infer it from the promise.
-        row.addProperty("changedProgramValue", false);
-        row.addProperty("orderEnforced", false);
-        return row;
-    }
 
     /**
      * Whether some read of {@code field} by {@code reader} observed a
      * concrete version in this run.
-     *
-     * <p>A read with no observed fingerprint is a read the store knows of but
-     * whose value nothing witnessed, and a gate whose value was not witnessed
-     * validates nothing.</p>
      */
     private static boolean observedConcreteRead(
             List<JsonObject> versionRecords, String field, String reader) {
@@ -294,40 +205,9 @@ public final class ReplayedReadCut {
         return records;
     }
 
-    /** Whether every gate the replay carried was realised. */
-    public boolean allRealised() {
-        if (verdicts.isEmpty()) return false;
-        for (JsonObject verdict : verdicts) {
-            if (!REALISED.equals(string(verdict, "state"))) return false;
-        }
-        return true;
-    }
-
-    /** One verdict per gate the replay carried. */
-    public List<JsonObject> verdicts() {
-        return Collections.unmodifiableList(verdicts);
-    }
-
     /** Named coverage gaps, in the gate gap family. */
     public List<JsonObject> gaps() {
         return Collections.unmodifiableList(gaps);
     }
 
-    public boolean isEmpty() {
-        return verdicts.isEmpty();
-    }
-
-    /** The validation as one summary member. */
-    public JsonObject toJson() {
-        JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", SCHEMA_VERSION);
-        result.addProperty("kind", KIND);
-        result.addProperty("authority", AUTHORITY);
-        result.addProperty("gates", verdicts.size());
-        result.addProperty("allRealised", allRealised());
-        JsonArray rows = new JsonArray();
-        for (JsonObject verdict : verdicts) rows.add(verdict.deepCopy());
-        result.add("verdicts", rows);
-        return result;
-    }
 }

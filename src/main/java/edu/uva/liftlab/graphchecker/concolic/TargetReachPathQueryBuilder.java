@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
@@ -17,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -29,11 +29,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * Builds one failure-directed solver query from exact source-attested target
- * paths. The desired outcome is the witnessed source decision's complement;
- * it need not already have a concrete replay.
- */
 public final class TargetReachPathQueryBuilder {
     public static final int SCHEMA_VERSION = 2;
     static final String TARGET_ATTESTATION_ROLE =
@@ -74,11 +69,6 @@ public final class TargetReachPathQueryBuilder {
                     "target path worklist is not a target reach closure");
         }
         // Named, never silent, but never a reason to publish nothing: a
-        // worklist that stopped short or carried gaps is a partial region,
-        // and a partial region is what best effort merging produces. A
-        // satisfying path may still be accepted; the downstream UNSAT
-        // closure authority prevents absence in this set from becoming an
-        // unreachability claim.
         List<JsonObject> coverageGaps = new ArrayList<>();
         for (JsonElement element : array(manifest, "coverageGaps")) {
             if (element.isJsonObject()) {
@@ -195,8 +185,16 @@ public final class TargetReachPathQueryBuilder {
         List<JsonObject> summaries = ArtifactIO.readJsonl(arguments.summaries,
                 "Malformed target summary %1$s:%2$d",
                 "Non-object target summary %1$s:%2$d");
+        // One decode per summary for the whole build: each one runs
+        // Scope.decode, the loop-bound authority and the relation-path
+        // fixpoint, and the three passes below read the same rows.  Filled
+        // on first use, so a malformed row is still refused by the pass that
+        // first looks at it.
+        Map<JsonObject, PathObservation> observations =
+                new IdentityHashMap<>();
         TargetDecision progressed = progressedTargetDecision(seed,
-                summaries, region, occurrenceId, goalId, targetSite);
+                summaries, observations, region, occurrenceId, goalId,
+                targetSite);
         if (progressed != null) {
             targetSite = progressed.siteId;
             targetOccurrence = progressed.occurrence;
@@ -209,32 +207,20 @@ public final class TargetReachPathQueryBuilder {
         // Edges whose runtime evidence two target paths state differently.
         Map<String, String> contestedBindings = new LinkedHashMap<>();
         Map<String, JsonObject> symbolicSources = new LinkedHashMap<>();
+        // C2 coverage, unioned by symbol: the composer reads this ledger off
+        // the fatal query and off every fatal path it kept.
+        Map<String, JsonObject> freeSymbols = new LinkedHashMap<>();
         // One exact required-outcome execution is already an existential
-        // failure witness. Prefer one deterministic direct witness over the
-        // seed projection and over other direct witnesses. Hoisting several
-        // executions' RPC handoffs into one query would incorrectly require
-        // different producer cases to hold simultaneously at the same
-        // receiver port.
-        JsonObject directWitness = directRequiredWitness(summaries, region,
-                occurrenceId, goalId, targetSite, targetOccurrence,
-                fatalRequiredOutcome);
+        JsonObject directWitness = directRequiredWitness(summaries,
+                observations, region, occurrenceId, goalId, targetSite,
+                targetOccurrence, fatalRequiredOutcome);
         for (JsonObject summary : summaries) {
             if (directWitness != null && summary != directWitness) continue;
-            if (!region.equals(string(summary, "regionId"))
-                    || !occurrenceId.equals(string(summary,
-                    "occurrenceId"))
-                    || !goalId.equals(string(summary, "goalId"))
-                    || !ClosureGoalKind.fromTask(summary)
-                    .capturesTargetReach()
-                    || !bool(summary, "relationallyComplete", false)) {
-                continue;
-            }
+            if (!inScope(summary, region, occurrenceId, goalId)) continue;
             selected.requireExactDemandLedger(summary);
             // Parsing is the schema/admission boundary for branch-owned
             // predicates. The importer already normalized the PC; this check
-            // prevents a malformed mapping row from entering the path set.
-            PathObservation observation = PathObservation.decode(
-                    summary, null);
+            PathObservation observation = observed(observations, summary);
             if (!seedLoopBound.identity().equals(
                     observation.scope().loopBound().identity())) {
                 throw new IOException("target summary and seed query do not "
@@ -274,7 +260,6 @@ public final class TargetReachPathQueryBuilder {
             if (!sourceAttested && !requiredAttested) continue;
             // No side evidence from an unattested target path enters the
             // query either.  Bindings, shared state and handoff references
-            // belong to the same execution as this exact target event.
             collectRuntimeBindings(summary, runtimeBindings,
                     contestedBindings);
             JsonObject shared = object(summary,
@@ -296,8 +281,10 @@ public final class TargetReachPathQueryBuilder {
                         shared.deepCopy());
             }
             JsonArray constraints = requiredAttested
-                    ? witnessedTargetConstraints(summary, targetMapping)
-                    : flippedTargetConstraints(summary, targetMapping);
+                    ? witnessedTargetConstraints(summary, observation,
+                    targetMapping)
+                    : flippedTargetConstraints(summary, observation,
+                    targetMapping);
             path.addProperty("fatalBranchConditionAuthority",
                     requiredAttested
                             ? REQUIRED_FATAL_BRANCH_AUTHORITY
@@ -308,34 +295,22 @@ public final class TargetReachPathQueryBuilder {
             path.add(PathObservation.TargetReachEvent.FIELD,
                     targetReach.toJson());
             // The producer cases selected for this fresh replay may attach a
-            // different expression at the same RPC response port.  The
-            // target is still the same bytecode decision, but its exact VM
-            // predicate is consequently path-local.  Preserve that witness
-            // so the composer can validate the projected predicate against
-            // this execution instead of against the seed expression.
             path.add(TARGET_BRANCH_WITNESS,
                     targetMapping.witness().toJson());
             path.addProperty("desiredTakenOutcome",
                     fatalRequiredOutcome);
-            List<JsonObject> selectorEvidence =
-                    ConfiguredSourceSelectorContract.evidenceOf(summary);
-            if (!selectorEvidence.isEmpty()) {
-                JsonArray encodedSelectors = new JsonArray();
-                for (JsonObject evidence : selectorEvidence) {
-                    encodedSelectors.add(evidence.deepCopy());
-                }
-                // Unlike RPC/session catalogs, this value was consumed by
-                // one concrete target replay.  Hoisting it to the query root
-                // would let a different target prefix reuse that replay's
-                // selected application object.
-                path.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD,
-                        encodedSelectors);
-            }
             // The attached expression belongs to this exact target replay.
             // Hoisting it to the query root lets another target-prefix case
-            // reuse a delivery that did not occur in that replay.
             VmHandoffEvidence.writeTo(path,
                     VmHandoffEvidence.eventsOf(summary));
+            JsonArray pathFreeSymbols = new JsonArray();
+            for (JsonObject row
+                    : SymbolicSourceEvidence.freeSymbolsOf(summary)) {
+                freeSymbols.putIfAbsent(string(row, "symbol"), row);
+                pathFreeSymbols.add(row);
+            }
+            path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                    pathFreeSymbols);
             JsonArray loopCounts = observation.pathLoopCounts();
             if (loopCounts.size() > 0) {
                 path.add(LoopBoundPolicy.PATH_LOOP_COUNTS, loopCounts);
@@ -348,12 +323,6 @@ public final class TargetReachPathQueryBuilder {
             String pathKey = observation.pathKey();
             path.add("constraints", constraints.deepCopy());
             // PathObservation's key intentionally describes only the local
-            // branch prefix.  Several fresh distributed replays may execute
-            // that same prefix while attaching different producer cases at
-            // an RPC/shared-state boundary.  Those are distinct, exact
-            // causal cases, not contradictory descriptions of one case.
-            // Preserve each complete path payload and deduplicate only byte-
-            // equivalent semantic cases.
             String caseKey = pathKey + "\u0000"
                     + CanonicalJson.sha256(path);
             pathsByKey.putIfAbsent(caseKey, path);
@@ -394,9 +363,12 @@ public final class TargetReachPathQueryBuilder {
                 selected.exactBindings(runtimeBindings));
         SymbolicSourceEvidence.writeTo(result,
                 new ArrayList<>(symbolicSources.values()));
+        JsonArray queryFreeSymbols = new JsonArray();
+        for (JsonObject row : freeSymbols.values()) queryFreeSymbols.add(row);
+        result.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                queryFreeSymbols);
         // Named, never silent: an edge dropped from refinement is coverage
         // the query does not carry, and the composer folds these rows into
-        // the same coverage stream as every other named gap.
         for (Map.Entry<String, String> entry
                 : contestedBindings.entrySet()) {
             coverageGaps.add(CoverageDivergence.of(
@@ -462,15 +434,10 @@ public final class TargetReachPathQueryBuilder {
 
     /**
      * Promotes an observed outer target frontier to the next exact guard of
-     * the same annotated throw.
-     *
-     * <p>The compact catalog is static authority for membership and required
-     * polarity; the fresh summary is runtime authority that the successor was
-     * actually reached.  With a pending successor and no such summary the
-     * outer complement is not a fatal query and is refused.</p>
      */
     private static TargetDecision progressedTargetDecision(
             JsonObject seed, List<JsonObject> summaries,
+            Map<JsonObject, PathObservation> observations,
             String region, String occurrenceId, String goalId,
             String currentSite) throws IOException {
         JsonArray encoded = array(seed, "targetGuardCatalog");
@@ -505,17 +472,8 @@ public final class TargetReachPathQueryBuilder {
         String selectedPath = null;
         int selectedIndex = -1;
         for (JsonObject summary : summaries) {
-            if (!region.equals(string(summary, "regionId"))
-                    || !occurrenceId.equals(string(summary,
-                    "occurrenceId"))
-                    || !goalId.equals(string(summary, "goalId"))
-                    || !ClosureGoalKind.fromTask(summary)
-                    .capturesTargetReach()
-                    || !bool(summary, "relationallyComplete", false)) {
-                continue;
-            }
-            PathObservation observation = PathObservation.decode(
-                    summary, null);
+            if (!inScope(summary, region, occurrenceId, goalId)) continue;
+            PathObservation observation = observed(observations, summary);
             if (!observation.branchMappingIssue().isEmpty()) {
                 throw new IOException("Malformed target branch mapping: "
                         + observation.branchMappingIssue());
@@ -543,8 +501,6 @@ public final class TargetReachPathQueryBuilder {
                     summary, reach.siteId(), reach.occurrence());
             // A normal successor event is the source witness whose complement
             // final composition must solve.  An already-failing execution is
-            // a different direct-attestation protocol; never encode it as an
-            // opposite-polarity replay by accident.
             if (replay.requiredTakenOutcome() != required) continue;
             String pathKey = observation.pathKey();
             if (selected == null || index > selectedIndex
@@ -580,14 +536,20 @@ public final class TargetReachPathQueryBuilder {
         return result;
     }
 
-    private static Boolean requiredOutcome(JsonObject branch) {
-        JsonElement encoded = branch.get("requiredOutcome");
+    /** The outcome a branch row states reaches the failure, or null when it
+     * states none.  The single copy: the worklist and the discovery pass read
+     * this one. */
+    static Boolean requiredOutcome(JsonObject branch) {
+        JsonElement encoded = branch == null
+                ? null : branch.get("requiredOutcome");
         return encoded != null && encoded.isJsonPrimitive()
                 && encoded.getAsJsonPrimitive().isBoolean()
                 ? encoded.getAsBoolean() : null;
     }
 
-    private static Set<String> guardedTargetIdentities(JsonObject branch) {
+    /** The failure identities one branch row guards.  The single copy: the
+     * worklist reads this one. */
+    static Set<String> guardedTargetIdentities(JsonObject branch) {
         Set<String> result = new LinkedHashSet<>();
         for (JsonElement cell : array(branch, "failureTargetCells")) {
             if (!cell.isJsonPrimitive()) continue;
@@ -622,22 +584,16 @@ public final class TargetReachPathQueryBuilder {
 
     /** Selects one exact required-outcome target execution by stable key. */
     private static JsonObject directRequiredWitness(
-            List<JsonObject> summaries, String region, String occurrenceId,
+            List<JsonObject> summaries,
+            Map<JsonObject, PathObservation> observations,
+            String region, String occurrenceId,
             String goalId, String targetSite, int targetOccurrence,
             boolean requiredOutcome) throws IOException {
         JsonObject selected = null;
         String selectedKey = null;
         for (JsonObject summary : summaries) {
-            if (!region.equals(string(summary, "regionId"))
-                    || !occurrenceId.equals(string(summary, "occurrenceId"))
-                    || !goalId.equals(string(summary, "goalId"))
-                    || !ClosureGoalKind.fromTask(summary)
-                    .capturesTargetReach()
-                    || !bool(summary, "relationallyComplete", false)) {
-                continue;
-            }
-            PathObservation observation = PathObservation.decode(
-                    summary, null);
+            if (!inScope(summary, region, occurrenceId, goalId)) continue;
+            PathObservation observation = observed(observations, summary);
             if (!observation.branchMappingIssue().isEmpty()) continue;
             SummaryBranchMapping mapping = targetSiteMapping(observation,
                     targetSite, targetOccurrence);
@@ -665,17 +621,6 @@ public final class TargetReachPathQueryBuilder {
 
     /**
      * The one seed query that decides the target, or null when none does.
-     *
-     * <p>{@code if (p && q) throw} is lowered to two conditional sites.  Both
-     * are eligible failure targets carrying an exception guard into the
-     * <em>same</em> throw, so the scheduler plans a solver query per conjunct
-     * and this file legitimately holds several.  They are not rival targets:
-     * the conjunct the throw actually waited on carries every earlier one in
-     * its own {@code orderedPrefix}, because that is what the recording
-     * observed.  That containment is the selection - not file order, not the
-     * longest prefix, not the highest unit index - and a set in which no
-     * member waits on all the others names two unrelated failures and is
-     * refused by the caller.</p>
      */
     private static JsonObject decidingSeed(List<JsonObject> ready) {
         if (ready.size() == 1) return ready.get(0);
@@ -711,20 +656,7 @@ public final class TargetReachPathQueryBuilder {
     }
 
     /**
-     * Collects the runtime binding evidence the target paths agree on.
-     *
-     * <p>A region is merged best effort: not every path has to be usable, and
-     * one edge two paths describe differently is not a reason to publish no
      * query at all.  README: observed cases are an existential
-     * under-approximation, so a SAT witness may retain named coverage gaps;
-     * only an UNSAT conclusion requires a closed path set. The contested edge
-     * simply does not refine its seed and the query is still built.</p>
-     *
-     * <p>The contested edge is dropped rather than resolved.  Choosing one of
-     * two descriptions would be a pairing decision this class has no
-     * authority to make, and the field they disagree on is exactly the one a
-     * later stage keys the map carrier on.  Dropping keeps the seed's own
-     * binding and names what was lost.</p>
      */
     private static void collectRuntimeBindings(
             JsonObject summary, Map<String, JsonObject> bindings,
@@ -763,19 +695,57 @@ public final class TargetReachPathQueryBuilder {
 
     /**
      * The binding members two sessions must agree on.  The VM's own
-     * location triple is session-local by construction -- the rid counter
-     * restarts per replay session -- so it is retained as provenance beside
-     * the canonical key and deliberately differs between two recordings of
-     * one location.  Contesting on it would make every canonicalized edge
-     * disagree with itself.
+     * session-local location name is dropped, and the canonical name is read
+     * at its planned address, so that the two activation-local spellings of
+     * one location are the one member.  Every other member is compared
+     * exactly as recorded: a binding that disagrees on anything else is still
+     * contested.
      */
     private static JsonObject comparable(JsonObject binding) {
-        if (!binding.has(SharedStateEvidence.SESSION_LOCATION_FIELD)) {
+        String location = string(binding, LOCATION_FIELD);
+        String planned = plannedLocationKey(location);
+        boolean session =
+                binding.has(SharedStateEvidence.SESSION_LOCATION_FIELD);
+        if (!session && planned.equals(location)) {
             return binding;
         }
         JsonObject copy = binding.deepCopy();
         copy.remove(SharedStateEvidence.SESSION_LOCATION_FIELD);
+        if (!planned.equals(location)) {
+            copy.addProperty(LOCATION_FIELD, planned);
+        }
         return copy;
+    }
+
+    /** The member naming the shared location one binding read from. */
+    private static final String LOCATION_FIELD = "locationKey";
+
+    /**
+     * OCC-1: one canonical location name read at its planned address.
+     *
+     * <p>{@link SharedStateEvidence#canonicalLocationKey} names a location
+     * {@code <kind>/<occurrenceId>@receiver:<id>@<field>#<slot>}, and the
+     * occurrence it embeds is the per-activation name
+     * {@code <plannedAddress>#a<ordinal>}.  One task activated many times in
+     * an iteration therefore records the same location under one name per
+     * activation -- the VM's own session-local name for all of them is a
+     * single string -- while the reach query is stated over the planned
+     * address, exactly as {@code inScope} matches summaries.  Only the
+     * occurrence segment is re-read, and only by
+     * {@link PathObservation#plannedOccurrenceOf}: the receiver, the field
+     * and the slot are left as recorded, so two genuinely different
+     * locations still disagree.  A name this rule cannot read -- any key
+     * that is not a canonical location -- is returned unchanged.</p>
+     */
+    private static String plannedLocationKey(String locationKey) {
+        int kind = locationKey.indexOf('/');
+        if (kind <= 0) return locationKey;
+        int receiver = locationKey.indexOf('@', kind + 1);
+        if (receiver <= kind + 1) return locationKey;
+        String occurrence = PathObservation.plannedOccurrenceOf(
+                locationKey.substring(kind + 1, receiver));
+        return locationKey.substring(0, kind + 1) + occurrence
+                + locationKey.substring(receiver);
     }
 
     private static String disagreementDetail(JsonObject left,
@@ -794,6 +764,36 @@ public final class TargetReachPathQueryBuilder {
         return String.join(",", fields);
     }
 
+    /** A complete recorded case of the closed scope this query is stated
+     *  over; every pass below asks the same question of the same rows. */
+    private static boolean inScope(JsonObject summary, String region,
+                                   String occurrenceId, String goalId) {
+        // OCC-1: the reach query is keyed on the planned target address; the
+        // summaries are one per activation, named <address>#a<ordinal>.  A
+        // summary is in scope when it is an activation of that address, so
+        // the direct-throw witness and its non-failing siblings are all seen
+        // and the failure occurrence is selected among them by
+        // directRequiredWitness.
+        return region.equals(string(summary, "regionId"))
+                && occurrenceId.equals(PathObservation.plannedOccurrenceOf(
+                        string(summary, "occurrenceId")))
+                && goalId.equals(string(summary, "goalId"))
+                && ClosureGoalKind.fromTask(summary).capturesTargetReach()
+                && bool(summary, "relationallyComplete", false);
+    }
+
+    /** This build's one decode of {@code summary}. */
+    private static PathObservation observed(
+            Map<JsonObject, PathObservation> observations,
+            JsonObject summary) {
+        PathObservation decoded = observations.get(summary);
+        if (decoded == null) {
+            decoded = PathObservation.decode(summary, null);
+            observations.put(summary, decoded);
+        }
+        return decoded;
+    }
+
     /** The witnessed decision of the exact target site, or null. */
     private static SummaryBranchMapping targetSiteMapping(
             PathObservation observation, String siteId, int occurrence) {
@@ -810,36 +810,32 @@ public final class TargetReachPathQueryBuilder {
 
     /**
      * Projects one attested source path into the requested target flip.
-     *
-     * <p>The runtime event proves only that the exact source decision was
-     * reached with its recorded outcome.  It is not evidence that the
-     * opposite, failure-directed outcome has already been replayed.  Keep the
-     * recorded prefix, discard the source-only suffix, and make the exact
-     * witnessed target predicate's complement the final case condition.  The
-     * untouched {@code TARGET_REACH_EVENT} remains beside this projection as
-     * source attestation; no synthetic fatal event is created.</p>
      */
     private static JsonArray flippedTargetConstraints(
-            JsonObject summary, SummaryBranchMapping target) {
-        JsonArray recorded = array(summary, "pathCondition");
-        int targetPosition = target.summaryPcIndex();
-        if (!target.isWitnessed() || targetPosition < 0
-                || targetPosition >= recorded.size()) {
-            throw new IllegalArgumentException(
-                    "target witness is outside the recorded path");
-        }
-        JsonArray result = new JsonArray();
-        for (int index = 0; index < targetPosition; index++) {
-            result.add(recorded.get(index).deepCopy());
-        }
+            JsonObject summary, PathObservation observation,
+            SummaryBranchMapping target) {
+        JsonArray result = slicedTargetPrefix(summary, observation, target);
         result.add(BranchPredicateAlgebra.complement(
                 target.witness().sourceSatisfiedPredicate()));
         return result;
     }
 
-    /** Keeps the recorded prefix through an already-required target event. */
+    /** Keeps the sliced prefix through an already-required target event. */
     private static JsonArray witnessedTargetConstraints(
-            JsonObject summary, SummaryBranchMapping target) {
+            JsonObject summary, PathObservation observation,
+            SummaryBranchMapping target) {
+        JsonArray result = slicedTargetPrefix(summary, observation, target);
+        result.add(array(summary, "pathCondition")
+                .get(target.summaryPcIndex()).deepCopy());
+        return result;
+    }
+
+    /**
+     * <p>README PC-1: a case guard carries the decisions that are relevant
+     */
+    private static JsonArray slicedTargetPrefix(
+            JsonObject summary, PathObservation observation,
+            SummaryBranchMapping target) {
         JsonArray recorded = array(summary, "pathCondition");
         int targetPosition = target.summaryPcIndex();
         if (!target.isWitnessed() || targetPosition < 0
@@ -847,21 +843,20 @@ public final class TargetReachPathQueryBuilder {
             throw new IllegalArgumentException(
                     "target witness is outside the recorded path");
         }
-        JsonArray result = new JsonArray();
-        for (int index = 0; index <= targetPosition; index++) {
-            result.add(recorded.get(index).deepCopy());
+        JsonArray projected = observation.relationPathCondition();
+        List<Integer> positions =
+                observation.relationPathConditionPositions();
+        JsonArray prefix = new JsonArray();
+        for (int index = 0; index < positions.size(); index++) {
+            if (positions.get(index) < targetPosition) {
+                prefix.add(projected.get(index));
+            }
         }
-        return result;
+        return prefix;
     }
 
     /**
      * The activation the seed query selected.
-     *
-     * <p>Its {@code inputPorts} are the exact port ids of that one
-     * activation, so nothing here renames a canonical template port onto an
-     * exact one: the scheduler already emits the activation's own symbols and
-     * the decoder only admits ports that are minted for this occurrence --
-     * an input of its region, or a port the cut it sits behind declares.</p>
      */
     private static final class SelectedOccurrence {
         private final JsonObject encoded;
@@ -894,14 +889,7 @@ public final class TargetReachPathQueryBuilder {
                 }
                 String port = element.getAsString().trim();
                 // Two exact port id forms reach this decoder, and both are
-                // minted rather than resembled.  A region port is
-                // `<regionId>.in.<uuid>`.  A fragment behind a communication
-                // cut takes its input through the cut's declared port, which
-                // is named after the exchange *site* and carries no region id
                 // at all -- README section 3's `Req_in` is exactly that -- so
-                // the region test says nothing about it and the contract that
-                // mints it is asked instead.  A canonical template port is
-                // still neither, which is what this refuses.
                 if (port.isEmpty()
                         || !(port.startsWith(region + ".in.")
                         || CommunicationCatalogContract.declaredPortId(
@@ -932,23 +920,42 @@ public final class TargetReachPathQueryBuilder {
                     inputPorts, bindingIds);
         }
 
+        /**
+         * Whether one binding row feeds a mapped input port of this exact
+         * selected occurrence.  The two passes below read demand the same
+         * way, so a row can never be ledger demand for one and not for the
+         * other.
+         */
+        private boolean demandsMappedInput(JsonObject binding) {
+            return instance.equals(string(binding, "toOccurrenceId"))
+                    && exactInputPorts.contains(
+                            string(binding, "toInputPort"));
+        }
+
         private void requireExactDemandLedger(JsonObject summary)
                 throws IOException {
-            Set<String> exactInputs = exactInputPorts;
             Set<String> demanded = new LinkedHashSet<>();
             for (JsonElement element : array(summary, "edgeBindings")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject binding = element.getAsJsonObject();
-                if (!instance.equals(string(binding,
-                        "toOccurrenceId")) || !exactInputs.contains(
-                        string(binding, "toInputPort"))) {
-                    continue;
-                }
+                if (!demandsMappedInput(binding)) continue;
                 String id = string(binding, "edgeId");
                 if (id.isEmpty()) {
                     throw new IOException("selected target demand binding "
                             + "has no edgeId");
                 }
+                // An exchange pairing a replay recorded and the scheduler
+                // absorbed is, by construction, one this ledger does not
+                // hold: the ledger is the demand the baseline discovery
+                // saw, and the absorbed pairing is what it did not.  Its
+                // authority is the VM's own send and receive events, named
+                // on the row, so it is no ledger demand here -- and nothing
+                // else is: a row without that stamp still has to be in the
+                // ledger, so a plan that grew a binding on its own is still
+                // caught.  Exempt is not dropped: exactBindings below
+                // publishes the same row, so the pairing still reaches
+                // composition.
+                if (VmHandoffEvidence.absorbed(binding)) continue;
                 demanded.add(id);
             }
             if (!bindingIds.equals(demanded)) {
@@ -967,7 +974,22 @@ public final class TargetReachPathQueryBuilder {
 
         private JsonArray exactBindings(
                 Map<String, JsonObject> runtimeBindings) throws IOException {
-            List<String> ids = new ArrayList<>(bindingIds);
+            Set<String> demanded = new LinkedHashSet<>(bindingIds);
+            // The pairings the ledger could not name are demand on these
+            // same mapped input ports.  Dropping them would hand
+            // composition the producer the frozen plan guessed while the
+            // recorded handoff names another, so the fully stamped rows an
+            // attested target path carried are published beside the ledger's
+            // own -- and only those: an unstamped row is never here, because
+            // the ledger check above would already have refused it.
+            for (Map.Entry<String, JsonObject> entry
+                    : runtimeBindings.entrySet()) {
+                if (VmHandoffEvidence.absorbed(entry.getValue())
+                        && demandsMappedInput(entry.getValue())) {
+                    demanded.add(entry.getKey());
+                }
+            }
+            List<String> ids = new ArrayList<>(demanded);
             Collections.sort(ids);
             JsonArray result = new JsonArray();
             for (String id : ids) {

@@ -39,25 +39,14 @@ public final class RegionPathWorklist {
     private RegionPathWorklist() {
     }
 
-    public static Result plan(List<JsonObject> summaries,
-                              List<JsonObject> executionTasks,
-                              List<JsonObject> explorationRecords,
-                              Bounds bounds) {
-        return plan(summaries, executionTasks, explorationRecords, bounds,
-                Collections.<JsonObject>emptyList());
-    }
-
-    /**
-     * Plans the next obligations from the admitted local cases of one
+    /** Plans the next obligations from the admitted local cases of one
      * topology.
      *
      * <p>README "Delta ownership is also singular" makes this the consumer of
      * the importer's admitted cases: a path whose own occurrence the delta
      * classified as {@code TOPOLOGY_DIVERGENCE} belongs to the next
-     * iteration's plan, so no branch-flip obligation may be built across it.
-     * It is named as a coverage gap and never deleted - the evidence stays,
-     * it is only outside this iteration's target scope.</p>
-     */
+     * iteration's plan, so no branch-flip obligation may be built across
+     * it.</p> */
     public static Result plan(List<JsonObject> summaries,
                               List<JsonObject> executionTasks,
                               List<JsonObject> explorationRecords,
@@ -83,7 +72,13 @@ public final class RegionPathWorklist {
         private final Set<String> coverageGapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
-        private final List<JsonObject> abandonedFlips = new ArrayList<>();
+        /** OCC-1: tasks with at least one boundary-complete activation. */
+        private final Set<String> completeActivations = new LinkedHashSet<>();
+        /** OCC-1: path keys of activations carried as partial cases. */
+        private final Set<String> partialActivations = new LinkedHashSet<>();
+        /** OCC-1: tasks whose obligations have already been planned. */
+        private final Set<String> plannedActivationTasks =
+                new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
         private Planner(List<JsonObject> summaries,
@@ -123,6 +118,11 @@ public final class RegionPathWorklist {
 
         private Result run() {
             indexObservedCoverage();
+            for (PathObservation path : paths) {
+                if (path.relationallyComplete()) {
+                    completeActivations.add(path.sourceTaskId());
+                }
+            }
             Set<String> seenPaths = new LinkedHashSet<>();
             Set<String> observedRegions = new TreeSet<>();
             Map<String, PathObservation.Scope> observedScopes =
@@ -139,7 +139,21 @@ public final class RegionPathWorklist {
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
                 observedRegions.add(region);
                 observedScopes.put(path.scope().identity(), path.scope());
-                pathCountByRegion.merge(region, 1, Integer::sum);
+                // OCC-1: a task with several occurrence cases is still one
+                // obligation.  A further activation of the same address ran
+                // the same code path again; it is another occurrence, not
+                // another path, so it becomes a case of the relation and
+                // charges neither the region's path budget nor a second set
+                // of flip obligations.  Exploration is planned from the
+                // task's first activation.  A pre-OCC-1 row states no
+                // activation and keeps planning every path it publishes,
+                // which is what the exploration waves produce.
+                boolean plansObligations =
+                        plannedActivationTasks.add(path.sourceTaskId())
+                        || !path.statesActivation();
+                if (plansObligations) {
+                    pathCountByRegion.merge(region, 1, Integer::sum);
+                }
                 if (divergedTopology(path)) {
                     coverageGap(TopologyDelta.TOPOLOGY_DIVERGENCE,
                             "OBLIGATION_BELONGS_TO_THE_NEXT_ITERATION",
@@ -152,11 +166,26 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (!path.relationallyComplete()) {
+                    // OCC-1: a task publishes one observation per activation
+                    // of its address.  One activation that missed part of the
+                    // boundary does not make the task's relation incomplete
+                    // as long as another activation satisfied it -- it is one
+                    // partial occurrence, carried as its own case and named
+                    // here.  A task no activation of which is complete is the
+                    // pre-OCC-1 case and stays a hard gap.
+                    if (completeActivations.contains(path.sourceTaskId())) {
+                        coverageGap("INCOMPLETE_ACTIVATION",
+                                "ACTIVATION_BOUNDARY_NOT_COMPLETE",
+                                region, pathKey, "", -1);
+                        partialActivations.add(pathKey);
+                        continue;
+                    }
                     gap("INCOMPLETE_REGION_SUMMARY",
                             "RELATIONAL_INPUT_OUTPUT_SUMMARY_NOT_COMPLETE",
                             region, pathKey, "", -1);
                     continue;
                 }
+                if (!plansObligations) continue;
                 if (pathCountByRegion.get(region) > bounds.maxPathsPerRegion) {
                     coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION", region,
                             pathKey, "", -1);
@@ -184,9 +213,7 @@ public final class RegionPathWorklist {
                     observedRegions, observedScopes);
             String coverageState = string(manifest, "coverageState");
             String worklistState = string(manifest, "state");
-            // One relation artifact for both coverage states.  Every row
-            // states its own coverage in "pathCoverageState", so the closed
-            // and the observed merge no longer need separate files.
+            // One relation artifact for both coverage states.
             List<JsonObject> relations = new ArrayList<>();
             if (State.CLOSED.name().equals(worklistState)
                     && "CLOSED".equals(coverageState)) {
@@ -230,8 +257,13 @@ public final class RegionPathWorklist {
 
             String region = scope.outputClosure().producer().regionId();
             String outputIdentity = scope.outputClosureIdentity();
+            // The contract's own statement of which demanded ports are
+            // produced only by instance-scoped once-only heap writes, read
+            // once for the whole closure.  Empty for every closure the rule
+            // never fired on, so the demand below is unchanged there.
+            Set<String> onceOnlyPorts = scope.outputClosure()
+                    .onceOnlyInstanceScopedPorts();
             List<PathObservation> validPaths = new ArrayList<>();
-            List<JsonObject> bindings = new ArrayList<>();
             for (PathObservation path : paths) {
                 if (!path.scope().goalKind().capturesOutputRelation()) {
                     continue;
@@ -245,16 +277,42 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 if (!path.hasExactOutputSet(contract.outputPorts())) {
+                    // OCC-1: a partial activation is expected to carry fewer
+                    // members than the demand -- that is what makes it
+                    // partial.  It becomes a case of exactly what it captured
+                    // and is already named as an INCOMPLETE_ACTIVATION
+                    // coverage gap.  A complete path that misses a demanded
+                    // port is still the hard mismatch it always was.
+                    if (partialActivations.contains(path.pathKey())) {
+                        validPaths.add(path);
+                        continue;
+                    }
+                    // Once-only-root rule
+                    // (OutputCaptureSpec#INSTANCE_SCOPED_PRODUCER) -- the same
+                    // completeness question the recorder answers in
+                    // ConcolicRegionRuntime#completeExactOutputBoundary and
+                    // the importer answers in its output-capture count.  A
+                    // field belongs to the object, not to the seventh loop
+                    // iteration: an instance-scoped heap write's recorded
+                    // version is decided once at instance scope, so an
+                    // occurrence that never sampled the once-entered write
+                    // owes no per-occurrence production of that port and its
+                    // expression set is not a mismatch with the demand.  The
+                    // planner is the third owner of this check and must not
+                    // disagree with the other two.
+                    if (onlyOnceOnlyPortsMissing(path,
+                            contract.outputPorts(), onceOnlyPorts)) {
+                        validPaths.add(path);
+                        continue;
+                    }
                     gap("OUTPUT_EXPRESSION_SET_MISMATCH",
                             "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND",
                             region, path.pathKey(), "", -1);
                 } else {
                     validPaths.add(path);
                 }
-                for (JsonElement element : path.edgeBindings()) {
-                    if (!element.isJsonObject()) continue;
-                    bindings.add(element.getAsJsonObject());
-                }
+                // README CASE-1: a path's edge bindings travel with the path
+                // and are stated by the case its observation becomes.
             }
             if (!gaps.isEmpty()) {
                 return Collections.emptyList();
@@ -262,17 +320,18 @@ public final class RegionPathWorklist {
             // Two paths whose projected guards are equal and whose relations
             // are not are two cases the relation guard cannot tell apart, so
             // the merged summary's "exactly one case selector" would hold of
-            // neither.  README PC-1 imports the selected failure-slice
-            // witnesses for the whole occurrence and keeps no full ambient
-            // path condition to widen back to, so the collision is named
-            // here instead: restating the transport and startup decisions
-            // the projection exists to drop would separate these two cases
-            // by noise and let a later replay's guard read as this one's.
+            // neither.
             Map<String, String> relationByGuard = new LinkedHashMap<>();
             Map<String, PathObservation> caseByPath = new LinkedHashMap<>();
             for (PathObservation path : validPaths) {
+                // OCC-1: two activations of one address are two occurrences
+                // that both happened, not two alternatives one guard has to
+                // tell apart.  Equal guards across occurrences are normal --
+                // the same code ran twice.  Within one occurrence the
+                // separation requirement is unchanged.
                 String prior = relationByGuard.putIfAbsent(
-                        path.relationGuardKey(), path.relationKey());
+                        path.occurrenceId() + "\n" + path.relationGuardKey(),
+                        path.relationKey());
                 if (prior != null && !prior.equals(path.relationKey())) {
                     gap("RELATION_GUARD_DOES_NOT_SEPARATE_CASES",
                             "TWO_RELATIONS_SHARE_ONE_PROJECTED_GUARD",
@@ -293,19 +352,48 @@ public final class RegionPathWorklist {
 
             RelationSummary merged = observedOnly
                     ? RelationSummary.observedPathMerge(
-                    scope.outputClosure(), caseByPath.values(), bindings,
-                    coverageState, tasks.isEmpty()
-                            ? State.CLOSED.name() : State.PENDING.name())
+                    scope.outputClosure(), caseByPath.values(),
+                    coverageState)
                     : RelationSummary.guardedPathMerge(
-                    scope.outputClosure(), caseByPath.values(), bindings);
+                    scope.outputClosure(), caseByPath.values());
             return Collections.singletonList(merged.toJson());
         }
 
-        /** Whether the delta classified this path's own occurrence changed. */
+        /**
+         * Whether the only demanded ports this path did not produce are
+         * once-only instance-scoped heap writes.
+         *
+         * <p>Fail-closed: a path that produced a port outside the demand, or
+         * that is missing any port the contract does not name once-only, is
+         * the hard set mismatch it has always been.  A port that did produce
+         * an expression is never relaxed -- it is simply present on both
+         * sides.  {@code onceOnlyPorts} is empty for every closure with no
+         * such capture, which makes this exactly the old set equality.</p>
+         */
+        private static boolean onlyOnceOnlyPortsMissing(
+                PathObservation path, Set<String> demanded,
+                Set<String> onceOnlyPorts) {
+            if (onceOnlyPorts.isEmpty()) return false;
+            Set<String> produced = path.producedOutputPorts();
+            if (!demanded.containsAll(produced)) return false;
+            Set<String> missing = new TreeSet<>(demanded);
+            missing.removeAll(produced);
+            return !missing.isEmpty() && onceOnlyPorts.containsAll(missing);
+        }
+
+        /** Whether the delta classified this path's own occurrence changed.
+         *
+         * <p>OCC-1: the delta names the planned address of the task it
+         * classified, because that is the only occurrence identity a frozen
+         * plan states; a summary names the activation that ran.  The two are
+         * matched on the address, exactly as the target reach query and the
+         * scheduler match them.  Comparing the activation string instead
+         * left this half of the rule unable to fire at all, so a diverged
+         * occurrence was excluded only when its whole task was.</p> */
         private boolean divergedTopology(PathObservation path) {
             return divergentTasks.contains(path.sourceTaskId())
                     || divergentOccurrences.contains(occurrenceKey(
-                    path.sourceKey(), path.occurrenceId()));
+                    path.sourceKey(), path.plannedOccurrenceId()));
         }
 
         private void planSummary(PathObservation path) {
@@ -337,9 +425,7 @@ public final class RegionPathWorklist {
             }
             for (int index = 0; index < limit; index++) {
                 // path_exploration_records.jsonl is cumulative for this
-                // member.  A completed query consumed one campaign task even
-                // though this planner process starts a fresh wave, so only
-                // the unspent remainder may be published now.
+                // member.
                 if (campaignTaskCount() >= bounds.maxTasks) {
                     coverageGap("BOUND_REACHED", "MAX_TASKS",
                             path.regionId(),
@@ -376,17 +462,8 @@ public final class RegionPathWorklist {
             }
         }
 
-        /**
-         * Selects local predecessor decisions and a non-terminal target
-         * frontier.
-         *
-         * <p>A terminal failure predicate belongs to final composition.  An
-         * observed branch followed by another guard of the same annotated
-         * throw is different: complementing it in SMT would prove only that
-         * execution enters the nested block.  Such a locally writable
-         * frontier is replayed once, with the next guard as the demanded
-         * target event.  Remote-only predecessors remain companion state.</p>
-         */
+        /** Selects local predecessor decisions and a non-terminal target
+         * frontier. */
         private List<SummaryBranchMapping> targetPrefixCandidates(
                 PathObservation path, JsonObject task) {
             List<SummaryBranchMapping> result = new ArrayList<>();
@@ -419,15 +496,12 @@ public final class RegionPathWorklist {
                 return result;
             }
             SummaryBranchMapping fatal = fatalMappings.get(0);
-            PathObservation.TargetReachEvent reach;
+            PathObservation.TargetReachEvent reach = null;
             try {
                 reach = path.targetReachEvent();
             } catch (IllegalArgumentException malformed) {
-                gap("TARGET_PREFIX_FATAL_EVENT_INVALID",
-                        "TARGET_PREFIX_REQUIRES_EXACT_TARGET_REACH_EVENT",
-                        path.regionId(), path.pathKey(), targetSite,
-                        targetOccurrence);
-                return result;
+                // A malformed event is an absent one: the exact reach event
+                // is the only witness this prefix has of its fatal site.
             }
             if (reach == null || !reach.matches(fatal.siteId(),
                     fatal.occurrence(), fatal.sourceTakenOutcome())) {
@@ -483,17 +557,18 @@ public final class RegionPathWorklist {
                 }
             }
             if (current < 0 || currentBranch == null) return null;
-            Set<String> corridor = guardedTargetIdentities(currentBranch);
+            Set<String> corridor = TargetReachPathQueryBuilder
+                    .guardedTargetIdentities(currentBranch);
             if (corridor.isEmpty()) return null;
             for (int index = current + 1; index < branches.size(); index++) {
                 if (!branches.get(index).isJsonObject()) continue;
                 JsonObject candidate = branches.get(index).getAsJsonObject();
-                JsonElement required = candidate.get("requiredOutcome");
                 if (!bool(candidate, "failureTarget", false)
-                        || required == null || !required.isJsonPrimitive()
-                        || !required.getAsJsonPrimitive().isBoolean()
+                        || TargetReachPathQueryBuilder
+                        .requiredOutcome(candidate) == null
                         || Collections.disjoint(corridor,
-                        guardedTargetIdentities(candidate))) {
+                        TargetReachPathQueryBuilder
+                                .guardedTargetIdentities(candidate))) {
                     continue;
                 }
                 return candidate;
@@ -501,25 +576,6 @@ public final class RegionPathWorklist {
             return null;
         }
 
-        private Set<String> guardedTargetIdentities(JsonObject branch) {
-            Set<String> result = new LinkedHashSet<>();
-            for (JsonElement cell : array(branch,
-                    "failureTargetCells")) {
-                if (cell.isJsonPrimitive()) {
-                    String value = cell.getAsString();
-                    int suffix = value.indexOf("#exception:");
-                    result.add(suffix < 0 ? value
-                            : value.substring(0, suffix));
-                }
-            }
-            for (JsonElement element : array(branch,
-                    "guardedSiteOutcomes")) {
-                if (!element.isJsonObject()) continue;
-                String site = string(element.getAsJsonObject(), "siteId");
-                if (!site.isEmpty()) result.add(site);
-            }
-            return result;
-        }
 
         private Boolean requiredTargetOutcome(JsonObject task,
                                               String siteId) {
@@ -528,13 +584,11 @@ public final class RegionPathWorklist {
                 if (!element.isJsonObject()) continue;
                 JsonObject branch = element.getAsJsonObject();
                 if (!siteId.equals(string(branch, "siteId"))) continue;
-                JsonElement required = branch.get("requiredOutcome");
-                if (required == null || !required.isJsonPrimitive()
-                        || !required.getAsJsonPrimitive().isBoolean()) {
+                Boolean value = TargetReachPathQueryBuilder
+                        .requiredOutcome(branch);
+                if (value == null || result != null && !result.equals(value)) {
                     return null;
                 }
-                boolean value = required.getAsBoolean();
-                if (result != null && result != value) return null;
                 result = value;
             }
             return result;
@@ -563,13 +617,8 @@ public final class RegionPathWorklist {
             return records.size() + tasks.size();
         }
 
-        /**
-         * A task with a named fault input explores that controlled fault and
-         * keeps the rest of the producer path at its witnessed values.  This
-         * is the experiment's explicit degree of freedom; flipping unrelated
-         * service/configuration guards would create alternative causes that
-         * hide whether the requested RPC failure is load-bearing.
-         */
+        /** A task with a named fault input explores that controlled fault and
+         * keeps the rest of the producer path at its witnessed values. */
         private Set<String> explicitFaultSymbols(JsonObject task) {
             Set<String> result = new LinkedHashSet<>();
             for (JsonElement element : array(task, "inputActions")) {
@@ -595,19 +644,8 @@ public final class RegionPathWorklist {
             return false;
         }
 
-        /**
-         * True when the flipped successor provably cannot reach a site the
-         * demanded outputs are published at.  Such a flip walks a fresh path
-         * and then ends with the port never written, so the whole replay is
-         * spent to learn nothing; the runtime still fails closed on it
-         * ({@code OUTPUT_CAPTURE_COUNT:<port>:0}), which is what makes it
-         * cost a replay rather than a wrong answer.
-         *
-         * <p>Only the outcome the static analyzer proved is required to reach
-         * that exact site decides this.  A site with no proof, a branch with
-         * no recorded control dependence, and a demand published at no site
-         * at all all keep the candidate.</p>
-         */
+        /** True when the flipped successor provably cannot reach a site the
+         * demanded outputs are published at. */
         private boolean abandonsDemandedOutputSite(
                 PathObservation path, JsonObject task,
                 SummaryBranchMapping mapping) {
@@ -630,12 +668,9 @@ public final class RegionPathWorklist {
                     if (!demanded.contains(string(guarded, "siteId"))) {
                         continue;
                     }
-                    JsonElement outcome = guarded.get("requiredOutcome");
-                    if (outcome != null && outcome.isJsonPrimitive()
-                            && outcome.getAsJsonPrimitive().isBoolean()
-                            && outcome.getAsBoolean() != desired) {
-                        return true;
-                    }
+                    Boolean outcome = TargetReachPathQueryBuilder
+                            .requiredOutcome(guarded);
+                    if (outcome != null && outcome != desired) return true;
                 }
             }
             return false;
@@ -704,20 +739,7 @@ public final class RegionPathWorklist {
             tasks.add(task);
         }
 
-        /**
-         * Carries this path's recorded guarded reads into the query.
-         *
-         * <p>A solver can only report which competing writer it selected if
-         * the query states the choice, and the recorded evidence travels with
-         * the observation rather than with the plan - so this is the one place
-         * that holds both. Nothing is attached when the execution recorded no
-         * guarded read that reaches the flipped condition: an empty choice is
-         * not a choice, and a query should not declare one.</p>
-         *
-         * <p>The query consumes the recorded guarded read's own arms. Loop
-         * counts qualify whole guarded cases later; they do not create writer
-         * instances in this branch-flip query.</p>
-         */
+        /** Carries this path's recorded guarded reads into the query. */
         private void attachRecordedReadCut(PathObservation path,
                                            BranchReplayContract replay,
                                            JsonObject task) {
@@ -800,8 +822,11 @@ public final class RegionPathWorklist {
                 if (!path.sourceKey().isEmpty()) {
                     sources.add(path.sourceKey());
                 }
-                if (!path.occurrenceId().isEmpty()) {
-                    occurrences.add(path.occurrenceId());
+                // OCC-1: the worklist addresses one planned occurrence; its
+                // activations are cases inside it, so the manifest keeps
+                // naming the address the campaign scheduled.
+                if (!path.plannedOccurrenceId().isEmpty()) {
+                    occurrences.add(path.plannedOccurrenceId());
                 }
             }
             if (sources.size() == 1) {
@@ -841,7 +866,6 @@ public final class RegionPathWorklist {
                 }
                 pathCoverageGaps.add(gap);
             }
-            pathCoverageGaps.addAll(abandonedFlips);
             coverageGaps.addAll(pathCoverageGaps);
             result.add("coverageGaps", GSON.toJsonTree(coverageGaps));
             result.addProperty("coverageState",
@@ -887,20 +911,7 @@ public final class RegionPathWorklist {
                     ? inputRegions.iterator().next() : "";
         }
 
-        /**
-         * Names a flip this planner refuses to propose.  It joins the flips
-         * an execution explored and abandoned rather than the planning gaps,
-         * because it is charged to itself: the closure stays auditable and
-         * the run proceeds.
-         */
-        private void abandoned(String kind, String queryKey, String reason) {
-            JsonObject gap = new JsonObject();
-            gap.addProperty("kind", kind);
-            gap.addProperty("queryKey", queryKey);
-            gap.addProperty("reason", reason);
-            abandonedFlips.add(gap);
-        }
-
+        /** Names a flip this planner refuses to propose. */
         private void gap(String kind, String reason, String region,
                          String pathKey, String site, int occurrence) {
             addIssue(gaps, gapKeys, kind, reason, region, pathKey, site,
@@ -914,20 +925,8 @@ public final class RegionPathWorklist {
                     pathKey, site, occurrence);
         }
 
-        /**
-         * Forwards an imported summary's alignment gaps into the coverage
-         * gaps.
-         *
-         * <p>{@code coverageGaps} is what decides {@code CLOSED} against
-         * {@code PARTIAL}, and {@link CoverageDivergence} states the rule:
-         * only a target divergence with no usable target relation ends the
-         * result, and everything else must leave the coverage partial rather
-         * than closed.  So this list forwards exactly the kinds
-         * {@code CoverageDivergence.classOf} can classify.  A kind a producer
-         * raises and the classifier understands, dropped here, would let a
-         * run report {@code CLOSED} while that evidence stood -
-         * {@code READ_CUT_GATE_GAP} was doing precisely that.</p>
-         */
+        /** Forwards an imported summary's alignment gaps into the coverage
+         * gaps. */
         private void collectAlignmentGaps(JsonObject source) {
             for (JsonElement element : array(source, "alignmentGaps")) {
                 if (!element.isJsonObject()) continue;
@@ -1016,9 +1015,7 @@ public final class RegionPathWorklist {
             return "PATH_FLIP_REPLAY_NOT_ADMITTED";
         }
         // A flip whose replay never obtained the single symbolic engine was
-        // not refuted; it was never explored.  Charging it to the same gap as
-        // a replay that ran and missed the relation would make a scheduling
-        // outcome indistinguishable from an infeasible path.
+        // not refuted; it was never explored.
         if ("REPLAY_ENGINE_UNAVAILABLE".equals(status)) {
             return "PATH_FLIP_REPLAY_ENGINE_UNAVAILABLE";
         }
@@ -1029,12 +1026,7 @@ public final class RegionPathWorklist {
             return "PATH_FLIP_REPLAY_PRODUCED_NO_RESULT";
         }
         // The solver reached a verdict and it was "this flip cannot be
-        // materialized".  ConcolicPathFlipSolver already calls that a
-        // terminal exploration outcome and exits 0 on it; this is the same
-        // fact stated where the planner decides whether to propose the flip
-        // again.  Without it the worklist re-proposes a flip whose answer is
-        // already known, every wave, forever - the wave loop terminates only
-        // because a queryKey carrying a terminal record stops being emitted.
+        // materialized".
         if ("MATERIALIZATION_GAP".equals(status)) {
             return "PATH_FLIP_MATERIALIZATION_GAP";
         }

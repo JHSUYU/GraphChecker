@@ -31,9 +31,57 @@ public final class ConcolicPathFlipPlanner {
     }
 
     public static void main(String[] argv) throws Exception {
-        Arguments arguments = Arguments.parse(argv);
-        RegionPathWorklist.Result result = plan(arguments);
-        writeOutputs(arguments.outputDirectory, result);
+        Map<String, String> options = options(argv);
+        String regionId = optional(options, "region-id");
+        String goalId = requiredValue(options, "goal-id");
+        Path directory = requiredPath(options, "output-dir");
+
+        List<JsonObject> executionTasks = new ArrayList<>();
+        for (JsonObject task : ArtifactIO.readJsonl(
+                requiredPath(options, "task-plan"))) {
+            if ((regionId.isEmpty()
+                    || regionId.equals(string(task, "regionId")))
+                    && goalId.equals(string(task, "goalId"))) {
+                executionTasks.add(task.deepCopy());
+            }
+        }
+        Map<String, JsonObject> taskById = ArtifactIO.uniqueIndex(
+                executionTasks, "taskId");
+        List<JsonObject> summaries = new ArrayList<>();
+        for (JsonObject summary : ArtifactIO.readJsonl(
+                requiredPath(options, "summaries"))) {
+            if (taskById.containsKey(string(summary, "taskId"))
+                    && (regionId.isEmpty()
+                    || regionId.equals(string(summary, "regionId")))
+                    && goalId.equals(string(summary, "goalId"))) {
+                summaries.add(summary.deepCopy());
+            }
+        }
+
+        RegionPathWorklist.Bounds defaults =
+                RegionPathWorklist.Bounds.defaults();
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(summaries,
+                executionTasks, rows(options, "records"),
+                new RegionPathWorklist.Bounds(
+                        count(options, "max-paths-per-region",
+                                defaults.maxPathsPerRegion),
+                        count(options, "max-flips-per-path",
+                                defaults.maxFlipsPerPath),
+                        count(options, "max-tasks", defaults.maxTasks)),
+                // The importer's own delta.  Absent means "no classification
+                // was supplied"; an empty file means "classified, nothing
+                // changed".
+                rows(options, "topology-delta"));
+        Collections.sort(result.tasks, Comparator.comparing(
+                task -> string(task, "queryKey")));
+
+        ArtifactIO.replaceJsonl(directory.resolve(
+                "region_path_worklist.jsonl"), result.tasks);
+        ArtifactIO.replaceJsonl(directory.resolve(
+                "merged_region_summaries.jsonl"), result.relations);
+        ArtifactIO.replace(directory.resolve("region_path_manifest.json"),
+                PRETTY.toJson(result.manifest) + System.lineSeparator());
+
         JsonObject display = result.manifest.deepCopy();
         display.remove(OutputClosureContract.FIELD);
         System.out.println(PRETTY.toJson(display));
@@ -44,169 +92,55 @@ public final class ConcolicPathFlipPlanner {
         }
     }
 
-    static RegionPathWorklist.Result plan(Arguments arguments)
-            throws IOException {
-        List<JsonObject> allExecutionTasks = ArtifactIO.readJsonl(
-                arguments.executionTasks);
-        List<JsonObject> allSummaries = ArtifactIO.readJsonl(
-                arguments.summaries);
-        List<JsonObject> records = arguments.records == null
+    private static List<JsonObject> rows(Map<String, String> options,
+                                         String name) throws IOException {
+        String path = options.get(name);
+        return path == null || path.trim().isEmpty()
                 ? Collections.<JsonObject>emptyList()
-                : ArtifactIO.readJsonl(arguments.records);
-        // The importer's own delta.  Absent means "no classification was
-        // supplied"; an empty file means "classified, nothing changed".
-        List<JsonObject> topologyDelta = arguments.topologyDelta == null
-                ? Collections.<JsonObject>emptyList()
-                : ArtifactIO.readJsonl(arguments.topologyDelta);
-
-        List<JsonObject> executionTasks = filterExecutionTasks(
-                allExecutionTasks,
-                arguments.regionId, arguments.goalId);
-        Map<String, JsonObject> taskById = ArtifactIO.uniqueIndex(
-                executionTasks, "taskId");
-        List<JsonObject> summaries = filterSummaries(allSummaries,
-                taskById, arguments.regionId, arguments.goalId);
-        RegionPathWorklist.Result result = RegionPathWorklist.plan(
-                summaries, executionTasks, records, arguments.pathBounds,
-                topologyDelta);
-        Collections.sort(result.tasks, Comparator.comparing(
-                task -> string(task, "queryKey")));
-        return result;
+                : ArtifactIO.readJsonl(Paths.get(path));
     }
 
-    static void writeOutputs(Path directory, RegionPathWorklist.Result result)
-            throws IOException {
-        ArtifactIO.replaceJsonl(directory.resolve(
-                "region_path_worklist.jsonl"), result.tasks);
-        ArtifactIO.replaceJsonl(directory.resolve(
-                "merged_region_summaries.jsonl"), result.relations);
-        ArtifactIO.replace(directory.resolve("region_path_manifest.json"),
-                PRETTY.toJson(result.manifest) + System.lineSeparator());
+    private static int count(Map<String, String> options, String name,
+                             int fallback) {
+        return Math.toIntExact(number(options, name, fallback));
     }
 
-    private static List<JsonObject> filterExecutionTasks(
-            List<JsonObject> source, String regionId, String goalId) {
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonObject task : source) {
-            if (!regionId.isEmpty()
-                    && !regionId.equals(string(task, "regionId"))) {
-                continue;
+    /** The {@code --name value} pairs of one worker invocation; shared with
+     *  {@link ConcolicPathFlipSolver}, which is launched the same way. */
+    static Map<String, String> options(String[] argv) {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (int index = 0; index < argv.length; index++) {
+            String option = argv[index];
+            if (!option.startsWith("--") || index + 1 >= argv.length) {
+                throw new IllegalArgumentException(
+                        "Expected --name value, got " + option);
             }
-            if (!goalId.equals(string(task, "goalId"))) continue;
-            result.add(task.deepCopy());
+            values.put(option.substring(2), argv[++index]);
         }
-        return result;
+        return values;
     }
 
-    private static List<JsonObject> filterSummaries(
-            List<JsonObject> source, Map<String, JsonObject> executionTasks,
-            String regionId, String goalId) {
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonObject summary : source) {
-            if (!executionTasks.containsKey(string(summary, "taskId"))) {
-                continue;
-            }
-            if (!regionId.isEmpty()
-                    && !regionId.equals(string(summary, "regionId"))) {
-                continue;
-            }
-            if (!goalId.equals(string(summary, "goalId"))) continue;
-            result.add(summary.deepCopy());
-        }
-        return result;
+    static String optional(Map<String, String> options, String name) {
+        String value = options.get(name);
+        return value == null ? "" : value;
     }
 
-    static final class Arguments {
-        private final Path summaries;
-        private final Path executionTasks;
-        private final Path records;
-        private final Path topologyDelta;
-        private final Path outputDirectory;
-        private final RegionPathWorklist.Bounds pathBounds;
-        private final String regionId;
-        private final String goalId;
-
-        private Arguments(Path summaries, Path executionTasks, Path records,
-                          Path topologyDelta, Path outputDirectory,
-                          RegionPathWorklist.Bounds pathBounds,
-                          String regionId, String goalId) {
-            this.summaries = summaries;
-            this.executionTasks = executionTasks;
-            this.records = records;
-            this.topologyDelta = topologyDelta;
-            this.outputDirectory = outputDirectory;
-            this.pathBounds = pathBounds;
-            this.regionId = regionId;
-            this.goalId = goalId;
+    static String requiredValue(Map<String, String> options, String name) {
+        String value = optional(options, name);
+        if (value.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing --" + name);
         }
+        return value;
+    }
 
-        static Arguments parse(String[] argv) {
-            Map<String, String> values = new LinkedHashMap<>();
-            for (int index = 0; index < argv.length; index++) {
-                String option = argv[index];
-                if (!option.startsWith("--") || index + 1 >= argv.length) {
-                    throw new IllegalArgumentException(
-                            "Expected --name value, got " + option);
-                }
-                values.put(option.substring(2), argv[++index]);
-            }
-            Path summaries = required(values, "summaries");
-            Path executionTasks = required(values, "task-plan");
-            Path output = required(values, "output-dir");
-            Path records = optionalPath(values.get("records"));
-            Path topologyDelta = optionalPath(
-                    values.get("topology-delta"));
-            RegionPathWorklist.Bounds defaults =
-                    RegionPathWorklist.Bounds.defaults();
-            RegionPathWorklist.Bounds bounds =
-                    new RegionPathWorklist.Bounds(
-                            intValue(values, "max-paths-per-region",
-                                    defaults.maxPathsPerRegion),
-                            intValue(values, "max-flips-per-path",
-                                    defaults.maxFlipsPerPath),
-                            intValue(values, "max-tasks",
-                                    defaults.maxTasks));
-            return new Arguments(summaries, executionTasks, records,
-                    topologyDelta, output,
-                    bounds, value(values, "region-id"),
-                    requiredValue(values, "goal-id"));
-        }
+    static Path requiredPath(Map<String, String> options, String name) {
+        return Paths.get(requiredValue(options, name));
+    }
 
-        private static Path required(Map<String, String> values,
-                                     String name) {
-            String value = values.get(name);
-            if (value == null || value.trim().isEmpty()) {
-                throw new IllegalArgumentException("Missing --" + name);
-            }
-            return Paths.get(value);
-        }
-
-        private static Path optionalPath(String value) {
-            return value == null || value.trim().isEmpty()
-                    ? null : Paths.get(value);
-        }
-
-        private static String value(Map<String, String> values,
-                                    String name) {
-            String result = values.get(name);
-            return result == null ? "" : result;
-        }
-
-        private static String requiredValue(Map<String, String> values,
-                                            String name) {
-            String result = value(values, name);
-            if (result.trim().isEmpty()) {
-                throw new IllegalArgumentException("Missing --" + name);
-            }
-            return result;
-        }
-
-        private static int intValue(Map<String, String> values, String name,
-                                    int fallback) {
-            String value = values.get(name);
-            return value == null || value.trim().isEmpty()
-                    ? fallback : Integer.parseInt(value);
-        }
-
+    static long number(Map<String, String> options, String name,
+                       long fallback) {
+        String value = options.get(name);
+        return value == null || value.trim().isEmpty()
+                ? fallback : Long.parseLong(value);
     }
 }

@@ -168,6 +168,42 @@ campaign_write_coverage_gaps "${large_composition}" "${large_reach}" \
   || fail "file-backed coverage aggregation lost the large delta"
 [[ $(jq -r '.gaps[0].code' "${large_gaps}") == "BIG" ]] \
   || fail "file-backed coverage aggregation changed the large delta"
+# A coverage gap the worklist only forwarded from an imported summary names
+# no region of its own; the recorded evidence identity is the only subject it
+# has, and its free-text detail says more than the reason code alone.  A gap
+# row that names neither is not actionable, so the projection reads both.
+: >"${test_tmp}/empty-delta.jsonl"
+forwarded_closures="${test_tmp}/forwarded-closures.json"
+jq -n '[{schemaVersion: 1, kind: "REGION_PATH_WORKLIST",
+  coverageGaps: [
+    {kind: "RPC_HANDOFF_GAP", reason: "RPC_HANDOFF_UNKNOWN_HANDLE",
+     stage: "ATTACH",
+     detail: "required communication port carried no live VM handle: XCH.p",
+     evidenceIdentity: {taskId: "task-consumer",
+                        occurrenceId: "consumer#1#a1"}},
+    {kind: "OUTPUT_VERSION_ALIGNMENT_GAP", reason: "BOUND_EXCEEDED",
+     regionId: "REGION.own", pathKey: "", siteId: "s", occurrence: 9}]}]' \
+  >"${forwarded_closures}"
+forwarded_gaps="${test_tmp}/forwarded-gaps.json"
+campaign_write_coverage_gaps "${large_composition}" "${large_reach}" \
+  "${large_diagnostics}" "${test_tmp}/empty-delta.jsonl" \
+  "${forwarded_closures}" "${forwarded_gaps}"
+[[ $(jq -r '.gapCount' "${forwarded_gaps}") -eq 2 ]] \
+  || fail "forwarded coverage gaps were not both projected"
+[[ $(jq -r '.gaps[] | select(.code == "RPC_HANDOFF_GAP") | .subject' \
+      "${forwarded_gaps}") == "task-consumer" ]] \
+  || fail "a forwarded gap was projected without its evidence subject"
+[[ $(jq -r '.gaps[] | select(.code == "RPC_HANDOFF_GAP") | .detail' \
+      "${forwarded_gaps}") \
+    == "RPC_HANDOFF_UNKNOWN_HANDLE: required communication port carried no live VM handle: XCH.p" ]] \
+  || fail "a forwarded gap lost its detail"
+[[ $(jq -r '.gaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .subject' \
+      "${forwarded_gaps}") == "REGION.own" ]] \
+  || fail "a worklist gap stopped naming its own region"
+[[ $(jq -r '.gaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .detail' \
+      "${forwarded_gaps}") == "BOUND_EXCEEDED" ]] \
+  || fail "a worklist gap stopped naming its reason"
+
 malformed_composition="${test_tmp}/malformed-composition.json"
 printf '{bad}\n' >"${malformed_composition}"
 expect_failure campaign_write_coverage_gaps "${malformed_composition}" \
@@ -285,5 +321,181 @@ run_configured_workload
   || fail "the setup/replay adapter did not observe the private jar"
 [[ $(<"${workload_observed}") == "${private_jar}" ]] \
   || fail "the configured seed workload did not observe the private jar"
+
+
+# LOOP-1, shell half.  The per-loop K_L declarations are a required key rather
+# than an optional one: an unset key and a campaign whose declarations never
+# arrived are the same run -- every retained condition loop silently at the
+# core default -- and nothing in the published artifacts distinguishes them.
+loop_bounds_declared="${test_tmp}/loop-bounds.jsonl"
+printf '# this workload retains no condition-controlled loop\n' \
+  >"${loop_bounds_declared}"
+configure_minimal_workflow() {
+  project_repo="${test_tmp}"
+  project_module_dir="${test_tmp}"
+  project_classes_dir="${test_tmp}"
+  project_classpath="${test_tmp}"
+  causynth_output_dir="${test_tmp}/out"
+  causynth_target_spec="${test_tmp}/target.yaml"
+  causynth_protocol_stubs=""
+  causynth_symbolic_inputs=""
+  causynth_loop_bounds="${loop_bounds_declared}"
+  custom_jdk_home="${test_tmp}/jdk"
+  z3_bin=z3
+  workload_command=true
+  trace_test="a.B#c"
+  solver_timeout_ms=1000
+  schedule_max_jobs=1
+  reach_max_inputs=1
+  reach_max_valuations=1
+  concolic_worker_count=1
+  campaign_max_iterations=1
+  producer_max_paths_per_region=""
+  producer_max_flips_per_path=""
+  producer_max_path_tasks=""
+}
+
+configure_minimal_workflow
+validate_config >/dev/null \
+  || fail "a workflow that declares its loop bounds was rejected"
+
+# A declarations file holding no row is a statement, not an omission: the
+# fixtures that retain no condition loop still have to make it.
+: >"${loop_bounds_declared}"
+configure_minimal_workflow
+validate_config >/dev/null \
+  || fail "an empty loop bound declarations file was rejected"
+
+# Both refusals exit rather than return, so each is observed from its own
+# subshell with the rest of the workflow left valid.
+if ( configure_minimal_workflow; causynth_loop_bounds=""; \
+    validate_config ) >/dev/null 2>&1; then
+  fail "a workflow that names no loop bound declarations was accepted"
+fi
+if ( configure_minimal_workflow; \
+    causynth_loop_bounds="${test_tmp}/absent-loop-bounds.jsonl"; \
+    validate_config ) >/dev/null 2>&1; then
+  fail "a workflow naming absent loop bound declarations was accepted"
+fi
+
+# GATE-1, shell half.  Both properties under test are decisions campaign_emit
+# makes about artifacts it has just written, so the stage is exercised whole:
+# the frozen inputs are re-read before anything is published, the frozen
+# provenance travels in result.json, and a claim reached with named gaps still
+# open does not exit zero.
+emit_sequence=0
+emit_fixture() {
+  emit_sequence=$((emit_sequence + 1))
+  emit_root="${test_tmp}/emit-${emit_sequence}"
+  emit_iteration="${emit_root}/iteration-0000"
+  emit_config="${emit_root}/workflow.properties"
+  emit_bounds="${emit_root}/loop-bounds.jsonl"
+  emit_classes="${emit_root}/classes"
+  campaign_root="${emit_root}"
+  campaign_final="${emit_root}/final"
+  campaign_stage_metrics="${emit_root}/stage_metrics.tsv"
+  composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+  reach_report="${campaign_final}/z3-result.json"
+
+  mkdir -p "${campaign_final}" "${emit_classes}" \
+    "${emit_iteration}/seed-result" "${emit_iteration}/workers/task-target"
+  printf 'workflow_path_base=project\n' >"${emit_config}"
+  printf '# no retained condition loop\n' >"${emit_bounds}"
+  printf 'production class bytes\n' >"${emit_classes}/Frozen.class"
+  project_classpath="${emit_classes}"
+
+  campaign_provenance=$(jq -n \
+    --arg config "${emit_config}" \
+    --arg configSha "$(campaign_digest "${emit_config}")" \
+    --arg bounds "${emit_bounds}" \
+    --arg boundsSha "$(campaign_digest "${emit_bounds}")" \
+    --arg classes "${emit_classes}" \
+    --arg classesSha "$(campaign_tree_digest "${emit_classes}")" \
+    --arg classpath "${project_classpath}" \
+    --arg classpathSha "$(printf '%s' "${project_classpath}" \
+      | sha256sum | awk '{print $1}')" '
+    {config: {path: $config, sha256: $configSha},
+     loopBounds: {path: $bounds, sha256: $boundsSha},
+     protocolStubs: {path: "", sha256: ""},
+     productionClasses: {path: $classes, sha256: $classesSha},
+     workload: {testClasses: {path: $classes, sha256: $classesSha},
+                classpath: $classpath, classpathSha256: $classpathSha}}')
+
+  printf 'STAGE\t7\n' >"${campaign_stage_metrics}"
+  printf '(assert true)\n' >"${campaign_final}/candidate.smt2"
+  jq -n '{schemaVersion: 2, kind: "CONCOLIC_COMPOSED_SMT",
+    finalStatus: "FINAL_READY", finalStatusRefusals: [],
+    canonicalModel: {counts: {exactBindings: 1, guardedBindings: 0,
+      unknownArmBindings: 0, candidateBindings: 0, fieldVersions: 1,
+      fieldReads: 1}, gaps: []}}' >"${composition_manifest}"
+  jq -n '{schemaVersion: 3, kind: "BOOLEAN_REACH_CONDITION_REPORT",
+    state: "sat", reachCondition: {reachability: "REACHABLE"},
+    unsatClosureComplete: false, gaps: [], valuations: []}' >"${reach_report}"
+  printf '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[]}\n' \
+    >"${emit_iteration}/workers/task-target/path_closure.json"
+  printf '{"taskId":"task-target","published":true}\n' \
+    >"${emit_iteration}/seed-result/concolic_region_results.jsonl"
+  : >"${emit_iteration}/import_diagnostics.jsonl"
+  : >"${emit_iteration}/topology_delta.jsonl"
+  jq -n '{schemaVersion: 1, kind: "CAMPAIGN_ITERATION_MANIFEST",
+    iterationId: "iteration-0000", parentIterationId: "",
+    externalWorkerCount: 1, topologyDelta: {rows: 0, divergences: 0},
+    members: [{role: "TARGET", taskId: "task-target",
+               obligationDigests: []}]}' \
+    >"${emit_iteration}/iteration_manifest.json"
+}
+
+run_emit() {
+  emit_status=0
+  ( campaign_emit "${emit_iteration}" ) >"${emit_root}/emit.log" 2>&1 \
+    || emit_status=$?
+}
+
+emit_fixture
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a gapless accepted candidate did not exit zero (${emit_status}); $(<"${emit_root}/emit.log")"
+[[ $(jq -r '.claim' "${campaign_final}/result.json") == "SAT_CANDIDATE" ]] \
+  || fail "the accepted claim was not published"
+[[ $(jq -r '.provenance.loopBounds.sha256' "${campaign_final}/result.json") \
+    == "$(campaign_digest "${emit_bounds}")" ]] \
+  || fail "result.json does not carry the frozen provenance"
+[[ $(jq -r '.provenance.config.path' "${campaign_final}/result.json") \
+    == "${emit_config}" ]] \
+  || fail "result.json provenance names a different frozen config"
+
+# The gap count never re-scores the Composer's claim -- result.json still
+# reports exactly what the semantic owners decided -- but a run holding an
+# unresolved gap is not one an operator may stop on, so the stage refuses it.
+emit_fixture
+printf '{"code":"UNRESOLVED","taskId":"task-target","detail":"open"}\n' \
+  >"${emit_iteration}/import_diagnostics.jsonl"
+run_emit
+[[ "${emit_status}" -ne 0 ]] \
+  || fail "a candidate reached with an unresolved gap exited zero"
+[[ $(jq -r '.gapCount' "${campaign_final}/result.json") -eq 1 ]] \
+  || fail "the published result lost the named gap"
+[[ $(jq -r '.claim' "${campaign_final}/result.json") == "SAT_CANDIDATE" ]] \
+  || fail "the gap count re-scored the Composer's published claim"
+grep -q 'candidate withheld' "${emit_root}/emit.log" \
+  || fail "the withheld candidate was not named on stderr"
+
+# A frozen input that moved underneath the run is refused before anything is
+# published: provenance that was current at FREEZE is not provenance now.
+emit_fixture
+printf 'schedule_max_jobs=1\n' >>"${emit_config}"
+run_emit
+[[ "${emit_status}" -ne 0 ]] \
+  || fail "EMIT published a candidate whose frozen config had changed"
+[[ ! -e "${campaign_final}/result.json" ]] \
+  || fail "EMIT published a result for a drifted generation"
+grep -q 'changed after it was frozen' "${emit_root}/emit.log" \
+  || fail "the drifted frozen input was not named"
+
+emit_fixture
+rm -r -- "${emit_classes}"
+run_emit
+[[ "${emit_status}" -ne 0 ]] \
+  || fail "EMIT published a candidate whose production classes were removed"
 
 echo "run_engine campaign helper tests passed"

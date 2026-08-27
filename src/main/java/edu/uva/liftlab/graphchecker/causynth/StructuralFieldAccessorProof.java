@@ -27,13 +27,8 @@ final class StructuralFieldAccessorProof {
                 || method.getParameterCount() != 0) {
             return null;
         }
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return null;
-        }
-        if (!body.getTraps().isEmpty()) return null;
+        Body body = CausynthStaticFacts.activeBody(method);
+        if (body == null || !body.getTraps().isEmpty()) return null;
 
         Set<Local> receiverAliases = new LinkedHashSet<>();
         Set<Local> valueAliases = new LinkedHashSet<>();
@@ -57,25 +52,15 @@ final class StructuralFieldAccessorProof {
                 if (!(assignment.getLeftOp() instanceof Local)) return null;
                 Local target = (Local) assignment.getLeftOp();
                 Value source = assignment.getRightOp();
-                boolean receiverAlias = source instanceof Local
-                        && receiverAliases.contains((Local) source);
-                boolean valueAlias = source instanceof Local
-                        && valueAliases.contains((Local) source);
-                boolean castReceiver = source instanceof CastExpr
-                        && ((CastExpr) source).getOp() instanceof Local
-                        && receiverAliases.contains(
-                        (Local) ((CastExpr) source).getOp());
-                boolean castValue = source instanceof CastExpr
-                        && ((CastExpr) source).getOp() instanceof Local
-                        && valueAliases.contains(
-                        (Local) ((CastExpr) source).getOp());
+                boolean receiverAlias = aliasOf(source, receiverAliases);
+                boolean valueAlias = aliasOf(source, valueAliases);
                 receiverAliases.remove(target);
                 valueAliases.remove(target);
-                if (receiverAlias || castReceiver) {
+                if (receiverAlias) {
                     receiverAliases.add(target);
                     continue;
                 }
-                if (valueAlias || castValue) {
+                if (valueAlias) {
                     valueAliases.add(target);
                     continue;
                 }
@@ -112,5 +97,12 @@ final class StructuralFieldAccessorProof {
             return null;
         }
         return field;
+    }
+
+    /** True when {@code source}, through any cast, is one of the aliases. */
+    private static boolean aliasOf(Value source, Set<Local> aliases) {
+        Value operand = source instanceof CastExpr
+                ? ((CastExpr) source).getOp() : source;
+        return operand instanceof Local && aliases.contains((Local) operand);
     }
 }

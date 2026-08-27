@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -8,13 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 
-/**
- * Schema-preserving metadata support for static control-dependence edges.
- *
- * <p>The static analyzer remains responsible for proving control dependence;
- * this class only owns the common edge retention and serialization policy.</p>
- */
+/** Schema-preserving metadata support for static control-dependence edges. */
 final class ControlDependenceEdgeSupport {
     static final String PATH_GUARD_KIND = "path_guard_dependency";
     private ControlDependenceEdgeSupport() {
@@ -41,33 +39,24 @@ final class ControlDependenceEdgeSupport {
         String definitionSiteId = siteId(method,
                 controlledDefinitionUnitIndex, "controlled_definition");
         List<Integer> successorIndices = integerList(reachingSuccessors);
+        Boolean sameCell = Boolean.valueOf(
+                Objects.equals(guardCell, definitionCell));
         edge.put("guardSiteId", guardSiteId);
+        Map<String, Object> added = record(edge, "controlledDefinitions",
+                "controlledDefinitionSiteId", definitionSiteId, guardSiteId,
+                requiredOutcome, successorIndices,
+                "controlledDefinitionUnitIndex",
+                controlledDefinitionUnitIndex,
+                "controlledDefinitionUnit", controlledDefinitionUnit);
+        if (added != null) added.put("sameCellRedefinition", sameCell);
         List<Map<String, Object>> definitions = mapList(edge,
                 "controlledDefinitions");
-        boolean present = contains(definitions,
-                "controlledDefinitionSiteId", definitionSiteId,
-                requiredOutcome, successorIndices);
-        if (!present) {
-            Map<String, Object> definition = new LinkedHashMap<>();
-            definition.put("guardSiteId", guardSiteId);
-            definition.put("controlledDefinitionSiteId", definitionSiteId);
-            definition.put("controlledDefinitionUnitIndex",
-                    controlledDefinitionUnitIndex);
-            definition.put("controlledDefinitionUnit",
-                    controlledDefinitionUnit);
-            definition.put("requiredOutcome", requiredOutcome);
-            definition.put("reachingSuccessorIndices", successorIndices);
-            definition.put("sameCellRedefinition",
-                    Objects.equals(guardCell, definitionCell));
-            definitions.add(definition);
-        }
         if (definitions.size() == 1) {
             edge.put("controlledDefinitionSiteId", definitionSiteId);
             edge.put("controlledDefinitionUnitIndex",
                     controlledDefinitionUnitIndex);
             edge.put("controlledDefinitionUnit", controlledDefinitionUnit);
-            edge.put("sameCellRedefinition",
-                    Objects.equals(guardCell, definitionCell));
+            edge.put("sameCellRedefinition", sameCell);
         } else {
             edge.remove("controlledDefinitionSiteId");
             edge.remove("controlledDefinitionUnitIndex");
@@ -88,21 +77,12 @@ final class ControlDependenceEdgeSupport {
                 "field_mutation");
         List<Integer> successorIndices = integerList(reachingSuccessors);
         edge.put("guardSiteId", guardSiteId);
+        boolean added = record(edge, "guardedMutations",
+                "guardedMutationSiteId", mutationSiteId, guardSiteId,
+                requiredOutcome, successorIndices,
+                "method", method, "unitIndex", mutationUnitIndex) != null;
         List<Map<String, Object>> guardedMutations = mapList(edge,
                 "guardedMutations");
-        boolean present = contains(guardedMutations,
-                "guardedMutationSiteId", mutationSiteId, requiredOutcome,
-                successorIndices);
-        if (!present) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("guardSiteId", guardSiteId);
-            item.put("guardedMutationSiteId", mutationSiteId);
-            item.put("method", method);
-            item.put("unitIndex", mutationUnitIndex);
-            item.put("requiredOutcome", requiredOutcome);
-            item.put("reachingSuccessorIndices", successorIndices);
-            guardedMutations.add(item);
-        }
         if (guardedMutations.size() == 1) {
             edge.put("guardedMutationSiteId", mutationSiteId);
         } else {
@@ -110,7 +90,7 @@ final class ControlDependenceEdgeSupport {
         }
         syncCommonOutcome(edge, guardedMutations, requiredOutcome,
                 successorIndices);
-        return !present;
+        return added;
     }
 
     static boolean annotateGuardedReceiverEffect(
@@ -124,28 +104,41 @@ final class ControlDependenceEdgeSupport {
                 "method_receiver_field_effect");
         List<Integer> successorIndices = integerList(reachingSuccessors);
         edge.put("guardSiteId", guardSiteId);
-        edge.put("calleeMethod", calleeMethod);
-        edge.put("effectField", effectField);
         edge.put("effectSiteId", effectSiteId);
-        edge.put("effectAuthority",
-                "GLOBAL_WRITER_INDEX_AND_EXACT_CALLSITE_CONTROL_DEPENDENCE_V1");
-        List<Map<String, Object>> effects = mapList(edge, "guardedEffects");
-        boolean present = contains(effects, "effectSiteId", effectSiteId,
+        boolean added = record(edge, "guardedEffects", "effectSiteId",
+                effectSiteId, guardSiteId, requiredOutcome,
+                successorIndices, "calleeMethod", calleeMethod,
+                "effectField", effectField,
+                "unitIndex", effectUnitIndex) != null;
+        syncCommonOutcome(edge, mapList(edge, "guardedEffects"),
                 requiredOutcome, successorIndices);
-        if (!present) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("guardSiteId", guardSiteId);
-            item.put("effectSiteId", effectSiteId);
-            item.put("calleeMethod", calleeMethod);
-            item.put("effectField", effectField);
-            item.put("unitIndex", effectUnitIndex);
-            item.put("requiredOutcome", requiredOutcome);
-            item.put("reachingSuccessorIndices", successorIndices);
-            effects.add(item);
+        return added;
+    }
+
+    /**
+     * Appends one guarded row unless an equal one is already recorded; the
+     * {@code fields} pairs sit between the site id and the outcome pair.
+     * @return the row this call added, or {@code null}
+     */
+    private static Map<String, Object> record(
+            Map<String, Object> edge, String listField, String idField,
+            String siteId, String guardSiteId, Object requiredOutcome,
+            List<Integer> successorIndices, Object... fields) {
+        List<Map<String, Object>> rows = mapList(edge, listField);
+        if (contains(rows, idField, siteId, requiredOutcome,
+                successorIndices)) {
+            return null;
         }
-        syncCommonOutcome(edge, effects, requiredOutcome,
-                successorIndices);
-        return !present;
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("guardSiteId", guardSiteId);
+        row.put(idField, siteId);
+        for (int index = 0; index + 1 < fields.length; index += 2) {
+            row.put((String) fields[index], fields[index + 1]);
+        }
+        row.put("requiredOutcome", requiredOutcome);
+        row.put("reachingSuccessorIndices", successorIndices);
+        rows.add(row);
+        return row;
     }
 
     private static boolean contains(List<Map<String, Object>> rows,
@@ -207,15 +200,10 @@ final class ControlDependenceEdgeSupport {
 
     private static String siteId(String method, int unitIndex, String kind) {
         if (unitIndex >= 0) {
-            return method + "#u" + unitIndex;
+            return CommunicationCatalogContract.siteId(method, unitIndex);
         }
         String suffix = kind == null || kind.trim().isEmpty()
                 ? "edge" : kind.trim();
         return method + "#synthetic:" + suffix;
-    }
-
-    private static String stringValue(Object value) {
-        return value == null || "null".equals(String.valueOf(value))
-                ? "" : String.valueOf(value);
     }
 }

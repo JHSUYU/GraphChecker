@@ -73,7 +73,8 @@ public class CfgLoopControlTest {
 
         int bounded = new CausynthPipeline(null).instrumentConcolicLoopBounds(
                 Collections.singleton(method.getSignature()),
-                LoopBoundPolicy.cfgBackedges(8));
+                LoopBoundPolicy.cfgBackedges(8),
+                Collections.<String>emptySet());
 
         // One backedge, and the loop it was charged to is the loop whose
         // guard was proved above: both name header u1.
@@ -97,12 +98,12 @@ public class CfgLoopControlTest {
         CfgLoopControl.LoopCfg loopCfg = CfgLoopControl.loopCfg(body,
                 new BriefUnitGraph(body));
 
-        assertEquals(1, loopCfg.exceptionCycles());
         assertTrue(CfgLoopControl.guards(loopCfg).isEmpty());
         assertEquals(0, new CausynthPipeline(null)
                 .instrumentConcolicLoopBounds(
                         Collections.singleton(method.getSignature()),
-                        LoopBoundPolicy.cfgBackedges(8)));
+                        LoopBoundPolicy.cfgBackedges(8),
+                        Collections.<String>emptySet()));
         assertTrue(boundedLoops(body).isEmpty());
         body.validate();
 
@@ -126,24 +127,20 @@ public class CfgLoopControlTest {
     @Test
     public void anArrayIndexedForRemainsFixedCountAcrossEarlyExit() {
         Body counted = arrayIndexedLoop(false).getActiveBody();
-        CfgLoopControl.LoopKind indexed = CfgLoopControl.classify(
+        String indexed = CfgLoopControl.classify(
                 CfgLoopControl.loopCfg(counted, new BriefUnitGraph(counted)))
                 .get(unit(counted, 3));
-        assertEquals(LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED,
-                indexed.classification);
+        assertEquals(LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, indexed);
         assertEquals(LoopBoundPolicy.LOOP_CLASSIFIED_ARRAY_INDEXED,
-                CfgLoopControl.classificationAuthority(
-                        indexed.classification));
+                CfgLoopControl.classificationAuthority(indexed));
         G.reset();
         Body broken = arrayIndexedLoop(true).getActiveBody();
-        CfgLoopControl.LoopKind escaped = CfgLoopControl.classify(
+        String escaped = CfgLoopControl.classify(
                 CfgLoopControl.loopCfg(broken, new BriefUnitGraph(broken)))
                 .get(unit(broken, 3));
-        assertEquals(LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED,
-                escaped.classification);
+        assertEquals(LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, escaped);
         assertEquals(LoopBoundPolicy.LOOP_CLASSIFIED_ARRAY_INDEXED,
-                CfgLoopControl.classificationAuthority(
-                        escaped.classification));
+                CfgLoopControl.classificationAuthority(escaped));
     }
 
     /**

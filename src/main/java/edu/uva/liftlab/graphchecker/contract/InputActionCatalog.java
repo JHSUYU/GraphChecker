@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
 
 /**
  * The one execution-task catalog for declared, symbolic and concrete inputs.
@@ -47,24 +48,18 @@ public final class InputActionCatalog {
             JsonObject copy = action.deepCopy();
             all.add(copy);
             if (mode == Mode.SYMBOLIC) {
-                symbolic.add(copy.deepCopy());
+                symbolic.add(copy);
             }
             index++;
         }
         return new InputActionCatalog(all, symbolic);
     }
 
-    public JsonArray all() {
-        return all.deepCopy();
-    }
+    /** The catalog's own rows, not a copy: {@code decode} already isolated
+     *  them from the task json and {@link #symbolic()} aliases the same
+     *  objects, so a consumer reads them and never writes. */
+    public JsonArray all() { return all; }
 
-    public JsonArray symbolic() {
-        return symbolic.deepCopy();
-    }
-
-    private static String text(JsonObject object, String member) {
-        JsonElement value = object == null ? null : object.get(member);
-        return value != null && value.isJsonPrimitive()
-                ? value.getAsString().trim() : "";
-    }
+    /** The {@code SYMBOLIC} rows of {@link #all()}, aliased, never copied. */
+    public JsonArray symbolic() { return symbolic; }
 }

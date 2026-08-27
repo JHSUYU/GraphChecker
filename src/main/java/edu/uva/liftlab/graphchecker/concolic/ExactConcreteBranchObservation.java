@@ -4,15 +4,13 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requireText;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.textString;
 
 /**
  * Immutable VM-attested binary branch event that added no symbolic path
  * predicate.
- *
- * <p>This value records observation identity only.  It must never be promoted
- * into a {@link BranchWitness} or used to synthesize a solver predicate.</p>
  */
 public final class ExactConcreteBranchObservation {
     public static final int SCHEMA_VERSION = 1;
@@ -86,30 +84,13 @@ public final class ExactConcreteBranchObservation {
         return (JsonObject) CanonicalJson.copy(result);
     }
 
-    public String siteId() {
-        return siteId;
-    }
+    public String siteId() { return siteId; }
 
-    public String method() {
-        return method;
-    }
+    public String method() { return method; }
 
-    public int unitIndex() {
-        return unitIndex;
-    }
+    public int unitIndex() { return unitIndex; }
 
-    public int occurrence() {
-        return occurrence;
-    }
+    public int occurrence() { return occurrence; }
 
-    public boolean sourceTakenOutcome() {
-        return sourceTakenOutcome;
-    }
-
-    private static String requireText(String value, String name) {
-        if (value == null || value.trim().isEmpty()) {
-            throw new IllegalArgumentException(name + " is required");
-        }
-        return value;
-    }
+    public boolean sourceTakenOutcome() { return sourceTakenOutcome; }
 }

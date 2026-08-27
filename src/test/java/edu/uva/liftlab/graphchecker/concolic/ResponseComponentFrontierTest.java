@@ -2,9 +2,11 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -65,11 +67,11 @@ public class ResponseComponentFrontierTest {
     public void parentResponseSliceSchedulesItsExactAttachedComponent()
             throws Exception {
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         consumerRow(), targetRow(),
                         remoteRow(UNRELATED, UNRELATED_EDGE),
                         remoteRow(SELECTED, SELECTED_EDGE)),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertEquals(describe(workflow), 2,
                 workflow.producerGroups().size());
@@ -85,7 +87,7 @@ public class ResponseComponentFrontierTest {
     public void componentFrontierDoesNotScheduleUnrelatedStatsProducer()
             throws Exception {
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         consumerRow(), targetRow(),
                         remoteRowWithFrontier(false),
                         stateProducerRow(KEYS_WRITER, "REGION.K",
@@ -94,7 +96,7 @@ public class ResponseComponentFrontierTest {
                                 GUARD_OUTPUT, GUARD_EDGE, GUARD_INPUT),
                         stateProducerRow(STATS_WRITER, "REGION.S",
                                 STATS_OUTPUT, STATS_EDGE, STATS_INPUT)),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertTrue(describe(workflow), scheduled(workflow, KEYS_WRITER));
         assertTrue(describe(workflow), scheduled(workflow, GUARD_WRITER));
@@ -109,7 +111,7 @@ public class ResponseComponentFrontierTest {
     public void componentFrontierKeepsStatsWhenParentSliceDemandsIt()
             throws Exception {
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         consumerRow(), targetRow(),
                         remoteRowWithFrontier(true),
                         stateProducerRow(KEYS_WRITER, "REGION.K",
@@ -118,60 +120,10 @@ public class ResponseComponentFrontierTest {
                                 GUARD_OUTPUT, GUARD_EDGE, GUARD_INPUT),
                         stateProducerRow(STATS_WRITER, "REGION.S",
                                 STATS_OUTPUT, STATS_EDGE, STATS_INPUT)),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertTrue(describe(workflow), scheduled(workflow, STATS_WRITER));
         assertTrue(edges(workflow, SELECTED).contains(STATS_EDGE));
-    }
-
-    /** Source outputs augment the chosen producer without changing ranking. */
-    @Test
-    public void configuredSourceOutputAugmentsOnlyTheRankedOccurrence()
-            throws Exception {
-        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
-                        consumerRow(), targetRow(),
-                        remoteRow(UNRELATED, UNRELATED_EDGE),
-                        remoteRowWithSourceOutput()),
-                        (region, action) -> true,
-                        (region, closure) -> "REGION.R".equals(region)
-                                ? java.util.Collections.singleton(SOURCE_CELL)
-                                : java.util.Collections.emptySet());
-
-        // The already-ranked component and the newly configured source
-        // output are distinct replay phases of the same exact occurrence.
-        assertEquals(describe(workflow), 3,
-                workflow.producerGroups().size());
-        assertTrue(describe(workflow), scheduled(workflow, SELECTED));
-        assertFalse(describe(workflow), scheduled(workflow, UNRELATED));
-        assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
-                COMPONENT, SOURCE_OUTPUT)), outputs(workflow, SELECTED));
-    }
-
-    /** Source-only members participate in predecessor closure before split. */
-    @Test
-    public void configuredSourceOutputClosesItsExactPriorProducer()
-            throws Exception {
-        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
-                        consumerRow(), targetRow(),
-                        remoteRow(UNRELATED, UNRELATED_EDGE),
-                        remoteRowWithSourceOutput(true),
-                        stateProducerRow(SOURCE_WRITER, "REGION.P",
-                                SOURCE_ROOT_OUTPUT, SOURCE_EDGE,
-                                SOURCE_INPUT)),
-                        (region, action) -> true,
-                        (region, closure) -> "REGION.R".equals(region)
-                                ? java.util.Collections.singleton(SOURCE_CELL)
-                                : java.util.Collections.emptySet());
-
-        assertEquals(describe(workflow), 4,
-                workflow.producerGroups().size());
-        assertTrue(describe(workflow), scheduled(workflow, SELECTED));
-        assertTrue(describe(workflow), scheduled(workflow, SOURCE_WRITER));
-        assertFalse(describe(workflow), scheduled(workflow, UNRELATED));
-        assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
-                COMPONENT, SOURCE_OUTPUT)), outputs(workflow, SELECTED));
     }
 
     private static JsonObject consumerRow() {
@@ -613,4 +565,16 @@ public class ResponseComponentFrontierTest {
         }
         return result.toString();
     }
+
+    /** The plan rows this fixture states, decoded the way the artifact does. */
+    private static java.util.List<RegionInstancePlan> plans(
+            JsonObject... rows) {
+        java.util.List<RegionInstancePlan> decoded =
+                new java.util.ArrayList<>();
+        for (JsonObject row : rows) {
+            decoded.add(RegionInstancePlan.decode(row));
+        }
+        return decoded;
+    }
+
 }

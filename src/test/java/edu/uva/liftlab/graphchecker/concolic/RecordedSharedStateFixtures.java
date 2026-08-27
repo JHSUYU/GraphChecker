@@ -514,6 +514,7 @@ final class RecordedSharedStateFixtures {
         JsonObject row = summary.toJson();
         OutputClosureContract second = OutputClosureCodec.singleton(
                 "REL.REGION.1", "REGION.1",
+                java.util.Collections.singletonList("REGION.1.out.1"),
                 "REGION.1.out.1", "<Test: int competing>", "REGION_OUTPUT",
                 "int", outputSlice("REGION.1.out.1",
                         "<Test: int competing>"));
@@ -560,6 +561,7 @@ final class RecordedSharedStateFixtures {
                                                    JsonObject... edges) {
         OutputClosureContract closure = OutputClosureCodec.singleton(
                 "REL.REGION.1", "REGION.1",
+                java.util.Collections.singletonList("REGION.1.out.0"),
                 "REGION.1.out.0", "<Test: int output>", "REGION_OUTPUT",
                 "int", outputSlice("REGION.1.out.0", "<Test: int output>"));
         JsonObject row = new JsonObject();
@@ -573,6 +575,8 @@ final class RecordedSharedStateFixtures {
         row.add("edgeBindings", bindings);
         JsonObject path = new JsonObject();
         path.addProperty("caseId", "CASE." + id);
+        path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         path.addProperty("sourceTaskId", "TASK." + id);
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "PATH_CONDITION");
@@ -645,6 +649,7 @@ final class RecordedSharedStateFixtures {
         constraints.add(targetPredicate);
         JsonObject path = new JsonObject();
         path.add("constraints", constraints);
+        path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
         path.addProperty("desiredTakenOutcome", false);
         path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
                 TargetReachPathQueryBuilder.SOURCE_TARGET_REACH_EVENT);
@@ -660,6 +665,8 @@ final class RecordedSharedStateFixtures {
         JsonArray paths = new JsonArray();
         paths.add(path);
         fatal.add("paths", paths);
+        fatal.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         JsonObject metadata = new JsonObject();
         metadata.addProperty("predicateNormalization", "IDENTITY");
         BranchWitness witness = BranchWitness.vmPc(

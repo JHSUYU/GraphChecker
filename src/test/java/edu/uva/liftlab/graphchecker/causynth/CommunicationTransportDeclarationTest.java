@@ -27,7 +27,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -188,7 +187,8 @@ public class CommunicationTransportDeclarationTest {
     private CommunicationCatalogPlanner.Result plan(
             Set<String> adapterDeclared) {
         return CommunicationCatalogPlanner.plan(bodies.keySet(), bodies::get,
-                new StubAdapter(adapterDeclared));
+                new StubAdapter(adapterDeclared),
+                DeclaredLoopBodyBounds.none());
     }
 
     /**
@@ -206,11 +206,6 @@ public class CommunicationTransportDeclarationTest {
         @Override
         public String name() {
             return "STUB";
-        }
-
-        @Override
-        public void prepare(Collection<String> selectedMethods,
-                            Function<String, Body> resolver) {
         }
 
         @Override

@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
 
-import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import soot.RefLikeType;
@@ -34,10 +33,7 @@ import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
-import soot.jimple.ThisRef;
 import soot.jimple.ThrowStmt;
-import soot.toolkits.graph.BriefUnitGraph;
-import soot.toolkits.graph.UnitGraph;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -47,40 +43,36 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorCallsite;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Callsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorParam;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ArrayAccess;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ExceptionGuard;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Fact;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWrite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.InstanceFieldAccess;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.MethodCallsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.actualInvokeArgs;
+import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.activeBody;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwner;
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
 
 
 /** Static backward data-flow analysis from one annotated exception target. */
 final class SeedBackwardStaticAnalyzer {
     private static final Logger LOG = LoggerFactory.getLogger(
             CausynthPipeline.class);
-    /*
-     * Candidate discovery is deliberately cheap and over-approximating.
-     * Jimple already lowers a.b.c into receiver locals, so the worklist
-     * follows those ordinary def-use facts instead of manufacturing an
-     * access-path state. Exact receiver identities and REGION.IN ports are
-     * recovered only after runtime region selection.
-     */
+    /** Candidate discovery is deliberately cheap and over-approximating. */
     private static final Pattern LOCAL_NAME_PATTERN =
             Pattern.compile("[$]?[A-Za-z_][A-Za-z0-9_]*");
     private static final Pattern CAST_LOCAL_PATTERN =
@@ -92,8 +84,6 @@ final class SeedBackwardStaticAnalyzer {
             Pattern.compile(">\\.param(\\d+):");
     private static final Pattern FIELD_PATTERN =
             Pattern.compile("<[^:]+:\\s+.+\\s+[^\\s()]+>");
-    private static final Pattern METHOD_SIGNATURE_PATTERN = Pattern.compile(
-            "<([^:]+):\\s+(.+)\\s+([^\\s(]+)\\((.*)\\)>");
     private static final Pattern METHOD_PARAMETER_SEPARATOR_PATTERN =
             Pattern.compile("\\s*,\\s*");
     private static final Pattern METHOD_THIS_PATTERN = Pattern.compile(
@@ -108,6 +98,41 @@ final class SeedBackwardStaticAnalyzer {
             Pattern.compile("-?\\d+");
     private static final Pattern FIELD_NAME_PATTERN = Pattern.compile(
             "<[^:]+:\\s+.+\\s+([^\\s>]+)>");
+    /** The nullary unboxing accessors that pass their receiver's value on. */
+    private static final Set<String> VALUE_LIKE_UNBOXING = names(
+            "java.lang.Byte.byteValue", "java.lang.Short.shortValue",
+            "java.lang.Integer.intValue", "java.lang.Long.longValue",
+            "java.lang.Character.charValue", "java.lang.Float.floatValue",
+            "java.lang.Double.doubleValue");
+    /** Java collection APIs whose returned object stays backed by its
+     *  receiver, so a mutation of one is a mutation of the other. */
+    private static final Set<String> BACKED_MAP_VIEWS = names(
+            "entrySet", "keySet", "values", "navigableKeySet",
+            "descendingKeySet");
+    private static final Set<String> BACKED_ITERATORS = names(
+            "iterator", "listIterator", "descendingIterator");
+    /** Container calls that write their receiver. */
+    private static final Set<String> CONTAINER_MUTATORS = names(
+            "put", "putAll", "remove", "clear", "add", "addAll", "set",
+            "replace", "compute", "computeIfAbsent", "computeIfPresent",
+            "merge", "offer", "poll");
+    /** Numeric atomic read-modify-write calls: they mutate the receiver even
+     *  though their Jimple call site contains no field assignment. */
+    private static final Set<String> ATOMIC_NUMERIC_MUTATIONS = names(
+            "getAndIncrement", "getAndDecrement", "getAndAdd",
+            "incrementAndGet", "decrementAndGet", "addAndGet", "getAndSet",
+            "compareAndSet", "weakCompareAndSet", "lazySet");
+    /** Container reads whose result is an element of the receiver. */
+    private static final Set<String> REFERENCE_LOOKUPS = names(
+            "get", "element", "peek", "next", "getKey", "getValue");
+    private static final Set<String> MAP_CONTRACT_OWNERS = names(
+            "java.util.Map", "java.util.SortedMap", "java.util.NavigableMap",
+            "java.util.concurrent.ConcurrentMap",
+            "java.util.concurrent.ConcurrentNavigableMap");
+    private static final Set<String> COLLECTION_CONTRACT_OWNERS = names(
+            "java.util.Collection", "java.util.List", "java.util.Set",
+            "java.util.SortedSet", "java.util.NavigableSet",
+            "java.util.Queue", "java.util.Deque");
     private final CausynthTargetContext target;
     private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
     private final Map<String, SootMethod> allMethodsBySignature =
@@ -117,19 +142,13 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, List<Fact>> factsByMethod = new LinkedHashMap<>();
     private final Map<String, MethodControlFlow> controlFlowByMethod =
             new LinkedHashMap<>();
-    private final Map<String, Set<Unit>> loopControlGuardsByMethod =
-            new LinkedHashMap<>();
     private final Map<String, List<FieldWrite>> fieldWritersByField =
             new LinkedHashMap<>();
-    private final Map<String, List<ConstructorCallsite>> constructorCallersByCallee =
+    private final Map<String, List<Callsite>> constructorCallersByCallee =
             new LinkedHashMap<>();
-    private final Map<String, List<MethodCallsite>> methodCallersByCallee =
+    private final Map<String, List<Callsite>> methodCallersByCallee =
             new LinkedHashMap<>();
-    /**
-     * Methods whose Jimple mentions one declared field.  Collection-view
-     * mutations are resolved from this compact candidate set only after the
-     * failure slice actually demands that field.
-     */
+    /** Methods whose Jimple mentions one declared field. */
     private final Map<String, Set<String>> methodsReferencingField =
             new LinkedHashMap<>();
     private final Set<String> mutationIndexedFields = new LinkedHashSet<>();
@@ -137,7 +156,8 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
     private final Set<String> dirtyMethods = new LinkedHashSet<>();
-    private final Set<String> selectedMethods = new MethodWorkSet();
+    private final Set<String> selectedMethods =
+            new DirtyMarkingSet(null);
     private final Map<EdgeIdentity, Map<String, Object>> emittedEdgeRows =
             new LinkedHashMap<>();
     private final Set<String> expandedDemands = new LinkedHashSet<>();
@@ -169,14 +189,18 @@ final class SeedBackwardStaticAnalyzer {
             directlyMutatedContainerParametersCache = new LinkedHashMap<>();
     private final Map<String, Set<String>> hierarchyNamesCache =
             new LinkedHashMap<>();
+    /* Fact, Unit, SootMethod and SootClass all inherit Object.equals, so a
+     * LinkedHashMap/LinkedHashSet keeps identity semantics and adds insertion
+     * order: no collection on the path to an emitted row iterates in
+     * identity-hash order. */
     private final Map<Fact, List<String>> localValueUsesCache =
-            new IdentityHashMap<>();
+            new LinkedHashMap<>();
     private final Map<Fact, List<String>> nonInvokeUsesCache =
-            new IdentityHashMap<>();
+            new LinkedHashMap<>();
     private final Map<Fact, List<String>> canonicalDefsCache =
-            new IdentityHashMap<>();
+            new LinkedHashMap<>();
     private final Map<Fact, List<String>> canonicalLocalUsesCache =
-            new IdentityHashMap<>();
+            new LinkedHashMap<>();
     private final Map<String, List<ExceptionGuard>> requiredPathGuardsByFact =
             new LinkedHashMap<>();
     private final ConfiguredProtocolStubs protocolStubs;
@@ -221,35 +245,16 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private Set<String> hierarchyNames(SootClass root) {
-        Set<String> cached = hierarchyNamesCache.get(root.getName());
-        if (cached != null) {
-            return cached;
-        }
-        Set<String> names = new LinkedHashSet<>();
-        Set<SootClass> seen = Collections.newSetFromMap(
-                new IdentityHashMap<>());
-        Deque<SootClass> work = new ArrayDeque<>();
-        work.add(root);
-        while (!work.isEmpty()) {
-            SootClass sootClass = work.removeFirst();
-            if (sootClass == null || !seen.add(sootClass)) {
-                continue;
-            }
-            try {
+        return memoized(hierarchyNamesCache, root.getName(), ignored -> {
+            Set<String> names = new LinkedHashSet<>();
+            // A visitor that never answers visits the whole hierarchy, and
+            // ends on the same Soot resolution error the walk itself ends on.
+            walkHierarchy(root, sootClass -> {
                 names.add(sootClass.getName());
-                if (sootClass.hasSuperclass()) {
-                    work.addFirst(sootClass.getSuperclass());
-                }
-                for (SootClass iface : sootClass.getInterfaces()) {
-                    work.addLast(iface);
-                }
-            } catch (RuntimeException ignored) {
-                break;
-            }
-        }
-        Set<String> result = Collections.unmodifiableSet(names);
-        hierarchyNamesCache.put(root.getName(), result);
-        return result;
+                return null;
+            });
+            return Collections.unmodifiableSet(names);
+        });
     }
 
     StaticProgram analyze() throws IOException {
@@ -298,12 +303,7 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * README Step 1 items 1-3, over the methods the seed walk already
-     * selected.  The scanner therefore only ever resolves communication that
-     * occurs in the target slice; it never catalogs a protocol the slice
-     * does not use.
-     *
-     * <p>Hadoop's protocol declarations and the data-transfer SASL boundary
-     * are the communication authority for this workload.</p>
+     * selected.
      */
     private void planCommunicationCatalog(StaticProgram result) {
         List<String> selected = new ArrayList<>(selectedMethods);
@@ -339,32 +339,19 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * Resolves one method signature to its Jimple body, loading the method
-     * first when the seed walk has not already done so.  A server entry the
-     * slice reaches only through a cut has no ordinary call edge, so it is
-     * commonly not loaded yet.
+     * first when the seed walk has not already done so.
      */
     private Body jimpleBody(String signature) {
         MethodControlFlow cached = controlFlowByMethod.get(signature);
         if (cached != null) {
-            return cached.body;
+            return cached.cfg.body();
         }
         SootMethod method = concreteMethod(signature);
-        if (method == null) {
-            return null;
-        }
-        try {
-            return method.retrieveActiveBody();
-        } catch (RuntimeException unavailable) {
-            return null;
-        }
+        return method == null ? null : activeBody(method);
     }
 
     /**
      * Identifies execution-context entries from Java concurrency contracts.
-     * This deliberately does not classify a
-     * method from its spelling alone: an arbitrary helper named {@code run}
-     * is not a REGION root unless its declaring type implements the relevant
-     * runtime contract.
      */
     private String executionContextAuthority(String signature) {
         if (signature == null || signature.contains(" <init>(")
@@ -407,10 +394,8 @@ final class SeedBackwardStaticAnalyzer {
                 || factsByMethod.containsKey(method.getSignature())) {
             return false;
         }
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException exception) {
+        Body body = activeBody(method);
+        if (body == null) {
             return false;
         }
         List<Fact> facts = factsFromBody(method.getSignature(), body);
@@ -435,33 +420,23 @@ final class SeedBackwardStaticAnalyzer {
             String exceptionNode = factNode(throwFact) + "#exception:"
                     + target.seedException;
             Set<String> methodRelevant = relevant(method);
-            for (ExceptionGuard guard : targetPathBranches(method,
-                    throwFact)) {
-                for (String use : causalGuardUses(guard.fact)) {
-                    String node = canonical(method, use);
-                    if (ignoreNode(node)) {
-                        continue;
-                    }
-                    methodRelevant.add(node);
-                    addEdge("exception_guard", node, exceptionNode,
-                            method, guard.fact);
-                    Map<String, Object> edge = emittedEdgeRows.get(
-                            edgeKey("exception_guard", node,
-                                    exceptionNode, method,
-                                    guard.fact));
-                    if (edge != null) {
-                        ControlDependenceEdgeSupport
-                                .annotatePathGuard(edge, method,
-                                        guard.fact.unitIndex,
-                                        throwFact.unitIndex,
-                                        throwFact.unitText,
-                                        guard.requiredOutcome,
-                                        guard.reachingSuccessorIndices,
-                                        node, exceptionNode);
-                        guard.branchShape.annotate(edge);
-                    }
+            // Every branch on at least one path to the exact throw.
+            forEachGuardOperand(method, branchGuards(method, throwFact,
+                    false), (guard, node) -> {
+                methodRelevant.add(node);
+                Map<String, Object> edge = addEdge("exception_guard",
+                        node, exceptionNode, method, guard.fact);
+                if (edge != null) {
+                    ControlDependenceEdgeSupport
+                            .annotatePathGuard(edge, method,
+                                    guard.fact.unitIndex,
+                                    throwFact.unitIndex,
+                                    throwFact.unitText,
+                                    guard.requiredOutcome,
+                                    guard.reachingSuccessorIndices,
+                                    node, exceptionNode);
                 }
-            }
+            });
 
             selectedMethods.add(method);
             discoveredExceptionSeedCount++;
@@ -508,7 +483,7 @@ final class SeedBackwardStaticAnalyzer {
         for (int i = throwIndex - 1; i >= 0 && !work.isEmpty(); i--) {
             Fact fact = facts.get(i);
             Set<String> defs = localNames(fact.defs);
-            if (!intersectsLocal(work, defs)) {
+            if (!exactIntersects(work, defs)) {
                 continue;
             }
             if (target.seedException.equals(allocatedExceptionType(fact))) {
@@ -542,39 +517,13 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * Returns every dominating branch for which only a proper subset of
-     * successors can reach {@code targetFact}.  Consequently, each result
-     * is a path condition that must take one particular successor for the
-     * target statement to execute.
-     *
-     * <p>This is intentionally usable for more than the initial throw.
-     * Jimple commonly lowers a boolean expression to guarded constant
-     * assignments.  Following only local def-use edges would then stop at
-     * the constants and lose the source condition.  The normal worklist
-     * therefore reuses this query for relevant definitions as well.</p>
+     * successors can reach {@code targetFact}.
      */
     private List<ExceptionGuard> controllingGuards(String method,
                                                    Fact targetFact) {
-        String cacheKey = method + "\n" + targetFact.unitIndex;
-        List<ExceptionGuard> cached = requiredPathGuardsByFact.get(cacheKey);
-        if (cached != null) {
-            return cached;
-        }
-        List<ExceptionGuard> result = branchGuards(method, targetFact,
-                true);
-        requiredPathGuardsByFact.put(cacheKey, result);
-        return result;
-    }
-
-    /**
-     * Returns every branch in the annotated exception method which lies on
-     * at least one path to the exact throw.  This is intentionally broader
-     * than control dependence: javac lowers {@code a || b} to two branches,
-     * and both successors of the first branch can reach the throw even
-     * though that branch is still one alternative target-path decision.
-     */
-    private List<ExceptionGuard> targetPathBranches(String method,
-                                                    Fact targetFact) {
-        return branchGuards(method, targetFact, false);
+        return memoized(requiredPathGuardsByFact,
+                method + "\n" + targetFact.unitIndex,
+                ignored -> branchGuards(method, targetFact, true));
     }
 
     private List<ExceptionGuard> branchGuards(String method,
@@ -591,7 +540,7 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             CausynthBranchShape branchShape =
-                    CausynthBranchShape.from(controlFlow.body,
+                    CausynthBranchShape.from(controlFlow.cfg.body(),
                             candidate.unit);
             if (branchShape == null
                     || branchShape.successorCount() < 2) {
@@ -602,7 +551,7 @@ final class SeedBackwardStaticAnalyzer {
             List<Integer> reachingIndices = new ArrayList<>();
             for (int successorIndex = 0;
                 successorIndex < successors.size(); successorIndex++) {
-                if (canReachWithoutRevisiting(controlFlow.graph,
+                if (canReachWithoutRevisiting(controlFlow.cfg,
                         successors.get(successorIndex), targetFact.unit,
                         candidate.unit)) {
                     reachingSuccessors++;
@@ -610,42 +559,30 @@ final class SeedBackwardStaticAnalyzer {
                 }
             }
             // Control dependence does not require the branch itself to
-            // dominate the target.  In javac's lowering of `a && b || c`,
-            // an earlier short-circuit branch may be bypassed by another
-            // operand while still deciding whether a relevant definition is
-            // reached.  Requiring dominance dropped precisely those guards.
-            // The successor test is the actual bounded criterion: for an
-            // ordinary output definition, at least one but not every
-            // successor reaches it without revisiting the branch.
+            // dominate the target.
             boolean relevant = reachingSuccessors > 0
                     && (!controllingOnly
                     || reachingSuccessors < successors.size());
-            if (relevant) {
-                Fact guard = controlFlow.factsByUnit.get(candidate.unit);
-                if (guard != null) {
-                    Boolean requiredOutcome = null;
-                    if (candidate.unit instanceof IfStmt) {
-                        IfStmt ifStmt = (IfStmt) candidate.unit;
-                        boolean takenReaches = canReachWithoutRevisiting(
-                                controlFlow.graph, ifStmt.getTarget(),
-                                targetFact.unit,
-                                candidate.unit);
-                        Unit fallThrough = controlFlow.body.getUnits()
-                                .getSuccOf(candidate.unit);
-                        boolean fallThroughReaches = fallThrough != null
-                                && canReachWithoutRevisiting(
-                                controlFlow.graph,
-                                fallThrough, targetFact.unit,
-                                candidate.unit);
-                        if (takenReaches != fallThroughReaches) {
-                            requiredOutcome = takenReaches;
-                        }
-                    }
-                    guards.add(new ExceptionGuard(guard, requiredOutcome,
-                            reachingIndices,
-                            branchShape));
+            if (!relevant) {
+                continue;
+            }
+            Boolean requiredOutcome = null;
+            if (candidate.unit instanceof IfStmt) {
+                IfStmt ifStmt = (IfStmt) candidate.unit;
+                boolean takenReaches = canReachWithoutRevisiting(
+                        controlFlow.cfg, ifStmt.getTarget(),
+                        targetFact.unit, candidate.unit);
+                Unit fallThrough = controlFlow.cfg.body().getUnits()
+                        .getSuccOf(candidate.unit);
+                boolean fallThroughReaches = fallThrough != null
+                        && canReachWithoutRevisiting(controlFlow.cfg,
+                        fallThrough, targetFact.unit, candidate.unit);
+                if (takenReaches != fallThroughReaches) {
+                    requiredOutcome = takenReaches;
                 }
             }
+            guards.add(new ExceptionGuard(candidate, requiredOutcome,
+                    reachingIndices));
         }
         guards.sort(Comparator.comparingInt(guard -> guard.fact.unitIndex));
         return Collections.unmodifiableList(guards);
@@ -660,15 +597,8 @@ final class SeedBackwardStaticAnalyzer {
             return null;
         }
         try {
-            Body body = sootMethod.retrieveActiveBody();
-            UnitGraph graph = new BriefUnitGraph(body);
-            Map<Unit, Fact> factsByUnit = new IdentityHashMap<>();
-            for (Fact fact : factsByMethod.getOrDefault(method,
-                    Collections.emptyList())) {
-                factsByUnit.put(fact.unit, fact);
-            }
             MethodControlFlow controlFlow = new MethodControlFlow(
-                    body, graph, factsByUnit);
+                    CfgLoopControl.loopCfg(activeBody(sootMethod)));
             controlFlowByMethod.put(method, controlFlow);
             return controlFlow;
         } catch (RuntimeException ignored) {
@@ -677,18 +607,13 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Tests reachability within the current dynamic occurrence of a
-     * candidate branch.  A plain graph reachability query is insufficient
-     * inside a loop: the successor which skips a mutation in this
-     * iteration can revisit the same predicate on a later iteration and
-     * then reach the mutation, making both successors appear causal.
-     * Excluding the candidate after leaving it preserves the per-
-     * occurrence branch semantics consumed by the concolic scheduler.
+     * Tests reachability within the current dynamic occurrence of a candidate
+     * branch.
      */
-    private boolean canReachWithoutRevisiting(UnitGraph graph, Unit start,
-                                               Unit targetUnit,
-                                               Unit candidateBranch) {
-        Set<Unit> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    private boolean canReachWithoutRevisiting(CfgLoopControl.LoopCfg cfg,
+                                              Unit start, Unit targetUnit,
+                                              Unit candidateBranch) {
+        Set<Unit> seen = new LinkedHashSet<>();
         Deque<Unit> work = new ArrayDeque<>();
         work.add(start);
         while (!work.isEmpty()) {
@@ -699,16 +624,7 @@ final class SeedBackwardStaticAnalyzer {
             if (current == candidateBranch || !seen.add(current)) {
                 continue;
             }
-            work.addAll(graph.getSuccsOf(current));
-        }
-        return false;
-    }
-
-    private boolean intersectsLocal(Set<String> left, Set<String> right) {
-        for (String value : right) {
-            if (left.contains(value)) {
-                return true;
-            }
+            work.addAll(cfg.succsOf(current));
         }
         return false;
     }
@@ -749,8 +665,7 @@ final class SeedBackwardStaticAnalyzer {
 
     private void runWorklist() {
         // Monotone fixed point over finite Jimple cells, declared fields and
-        // explicit RPC/dispatch boundaries. No access path is part of
-        // worklist state.
+        // explicit RPC/dispatch boundaries.
         while (!dirtyMethods.isEmpty()) {
             String method = dirtyMethods.iterator().next();
             dirtyMethods.remove(method);
@@ -773,10 +688,7 @@ final class SeedBackwardStaticAnalyzer {
         }
         Set<String> relevant = relevant(method);
         MethodSig methodSig = parseMethodSig(method);
-        // This is a backward slice. Visiting Jimple in reverse program order
-        // lets a demanded use reach its preceding definition in the same
-        // pass; the old forward scan forced one whole-method rescan per
-        // definition layer.
+        // This is a backward slice.
         for (int factIndex = facts.size() - 1; factIndex >= 0; factIndex--) {
             Fact fact = facts.get(factIndex);
             List<String> defs = canonicalDefs(method, fact);
@@ -832,10 +744,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Adds intraprocedural control dependencies for a statement that
-     * defines an exactly relevant value.  This keeps the old def-use
-     * worklist intact while allowing it to cross Jimple's branch-based
-     * lowering of expressions such as {@code Time.now() > expiryDate}.
+     * Adds intraprocedural control dependencies for a statement that defines
+     * an exactly relevant value.
      */
     private void processRequiredPathGuards(String method, Fact targetFact,
                                            List<String> defs,
@@ -853,33 +763,24 @@ final class SeedBackwardStaticAnalyzer {
             return;
         }
 
-        for (ExceptionGuard guard : controllingGuards(method, targetFact)) {
-            for (String use : causalGuardUses(guard.fact)) {
-                String guardNode = canonical(method, use);
-                if (ignoreNode(guardNode)) {
-                    continue;
+        forEachGuardOperand(method, controllingGuards(method, targetFact),
+                (guard, guardNode) -> {
+            for (String def : relevantDefs) {
+                Map<String, Object> edge = addEdge(
+                        ControlDependenceEdgeSupport.PATH_GUARD_KIND,
+                        guardNode, def, method, guard.fact);
+                if (edge != null) {
+                    ControlDependenceEdgeSupport.annotatePathGuard(
+                            edge, method, guard.fact.unitIndex,
+                            targetFact.unitIndex,
+                            targetFact.unitText,
+                            guard.requiredOutcome,
+                            guard.reachingSuccessorIndices,
+                            guardNode, def);
                 }
-                for (String def : relevantDefs) {
-                    addEdge(
-                            ControlDependenceEdgeSupport.PATH_GUARD_KIND,
-                            guardNode, def, method, guard.fact);
-                    Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                            ControlDependenceEdgeSupport.PATH_GUARD_KIND,
-                            guardNode, def, method, guard.fact));
-                    if (edge != null) {
-                        ControlDependenceEdgeSupport.annotatePathGuard(
-                                edge, method, guard.fact.unitIndex,
-                                targetFact.unitIndex,
-                                targetFact.unitText,
-                                guard.requiredOutcome,
-                                guard.reachingSuccessorIndices,
-                                guardNode, def);
-                        guard.branchShape.annotate(edge);
-                    }
-                }
-                relevant.add(guardNode);
             }
-        }
+            relevant.add(guardNode);
+        });
     }
 
     private void processFieldReads(String method, Fact fact,
@@ -897,9 +798,8 @@ final class SeedBackwardStaticAnalyzer {
                 if (ignoreNode(def)) {
                     continue;
                 }
-                addEdge("field_read", fieldNode, def, method, fact);
-                annotateDirectDeclaredFieldEdge("field_read", fieldNode,
-                        def, method, fact, field);
+                annotateDirectDeclaredFieldEdge(addEdge("field_read",
+                        fieldNode, def, method, fact), field);
             }
             relevant.add(fieldNode);
         }
@@ -935,15 +835,7 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * Keeps array contents in the backward slice without turning the array
-     * index into a symbolic value.  Static analysis uses one element cell per
-     * Jimple array base; the runtime pass later resolves that over-approximate
-     * cell to the observed, bounded slots.
-     *
-     * <p>The two base/element directions are intentional.  A load is
-     * {@code base -> element -> value}, while a store is
-     * {@code value -> element -> base}.  Consequently, demanding either a
-     * loaded value or a returned/stored array base reaches the element values
-     * that define it.</p>
+     * index into a symbolic value.
      */
     private void processArrayAccesses(String method, Fact fact,
                                       List<String> defs,
@@ -1020,9 +912,7 @@ final class SeedBackwardStaticAnalyzer {
                 raw.add(use);
             }
         }
-        // FieldRef rendering contains the receiver expression.  Use the
-        // declared field identity captured by Fact instead of inventing that
-        // expression as a separate cell.
+        // FieldRef rendering contains the receiver expression.
         raw.removeIf(this::isFieldAccessValue);
         raw.addAll(fact.fieldUses);
         return canonicalList(method, raw);
@@ -1033,12 +923,9 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * A heap write may have no exactly relevant Jimple definition local, so the ordinary
-     * {@link #processRequiredPathGuards(String, Fact, List, Set)} path
-     * cannot reliably attach the branches that make the write execute.
-     * Treat the affected heap cell as the definition for control-dependence
-     * purposes. This covers ordinary field assignments and collection
-     * updates, including an {@code Iterator.remove()} guarded by a predicate.
+     * A heap write may have no exactly relevant Jimple definition local, so
+     * the ordinary {@link #processRequiredPathGuards(String, Fact, List, Set)}
+     * path cannot reliably attach the branches that make the write execute.
      */
     private void processHeapMutationPathGuards(
             String method, Fact mutation, String mutatedCell,
@@ -1046,34 +933,25 @@ final class SeedBackwardStaticAnalyzer {
         if (ignoreNode(mutatedCell)) {
             return;
         }
-        for (ExceptionGuard guard : controllingGuards(method, mutation)) {
-            for (String use : causalGuardUses(guard.fact)) {
-                String guardNode = canonical(method, use);
-                if (ignoreNode(guardNode)) {
-                    continue;
-                }
-                addHeapMutationPathGuardEdge(guardNode,
-                        mutatedCell, method, guard, mutation);
-                relevant.add(guardNode);
-            }
-        }
+        forEachGuardOperand(method, controllingGuards(method, mutation),
+                (guard, guardNode) -> {
+            addHeapMutationPathGuardEdge(guardNode, mutatedCell, method,
+                    guard, mutation);
+            relevant.add(guardNode);
+        });
     }
 
     private void addHeapMutationPathGuardEdge(
             String guardNode, String mutatedCell, String method,
             ExceptionGuard guard, Fact mutation) {
-        addEdge("heap_mutation_path_guard", guardNode,
-                mutatedCell, method, guard.fact);
-        EdgeIdentity key = edgeKey("heap_mutation_path_guard", guardNode,
-                mutatedCell, method, guard.fact);
-        Map<String, Object> edge = emittedEdgeRows.get(key);
+        Map<String, Object> edge = addEdge("heap_mutation_path_guard",
+                guardNode, mutatedCell, method, guard.fact);
         if (edge == null) {
             return;
         }
         ControlDependenceEdgeSupport.annotateGuardedMutation(
                 edge, method, guard.fact.unitIndex, mutation.unitIndex,
                 guard.requiredOutcome, guard.reachingSuccessorIndices);
-        guard.branchShape.annotate(edge);
     }
 
     private void processFieldWrite(String method, Fact fact,
@@ -1129,17 +1007,8 @@ final class SeedBackwardStaticAnalyzer {
                                 ignored -> new LinkedHashSet<>())
                         .add(writer.field);
                 selectedMethods.add(writer.method);
-                List<String> sources = writer.sources.isEmpty()
-                        ? Collections.singletonList(factNode(writerFact))
-                        : writer.sources;
-                for (String source : sources) {
-                    if (ignoreNode(source)) {
-                        continue;
-                    }
-                    addEdge(writer.kind, source, writer.field, writer.method,
-                            writerFact);
-                    writerRelevant.add(source);
-                }
+                processFieldWrite(writer.method, writerFact, writerRelevant,
+                        writer.field, writer.sources, writer.kind);
             }
         }
     }
@@ -1156,72 +1025,41 @@ final class SeedBackwardStaticAnalyzer {
             return;
         }
         buildGlobalStaticIndex();
-        Set<String> constructorsToExpand = new LinkedHashSet<>();
-        for (ConstructorParam param : params) {
-            constructorsToExpand.add(param.constructor);
-        }
-        if (thisRelevant) {
-            constructorsToExpand.add(method);
-        }
-        for (String constructor : constructorsToExpand) {
-            List<ConstructorCallsite> callsites = constructorCallersByCallee
-                    .get(constructor);
-            if (callsites == null || callsites.isEmpty()) {
-                continue;
-            }
-            if (constructor.equals(method)) {
-                for (ConstructorCallsite callsite : callsites) {
-                    Fact callsiteFact = indexedFact(callsite.method,
-                            callsite.unitIndex);
-                    if (callsiteFact == null) {
-                        continue;
-                    }
-                    expandConstructorReceiverFields(method, thisNode,
-                            callsite, callsiteFact);
-                }
-            }
+        // The receiver walk only ever runs on this constructor's own call
+        // sites: a demand on another constructor's receiver is that
+        // constructor's own expansion, not this one's.
+        if (thisRelevant || params.stream().anyMatch(
+                param -> method.equals(param.constructor))) {
+            forEachCallsite(constructorCallersByCallee, method,
+                    (callsite, callsiteFact) ->
+                            expandConstructorReceiverFields(method, thisNode,
+                                    callsite, callsiteFact));
         }
         for (ConstructorParam param : params) {
             if (!expandOnce("CONSTRUCTOR_PARAM", param.constructor,
                     param.index)) {
                 continue;
             }
-            List<ConstructorCallsite> callsites = constructorCallersByCallee
-                    .get(param.constructor);
-            if (callsites == null || callsites.isEmpty()) {
-                continue;
-            }
-            for (ConstructorCallsite callsite : callsites) {
-                Fact callsiteFact = indexedFact(callsite.method,
-                        callsite.unitIndex);
-                if (callsiteFact == null) {
-                    continue;
-                }
+            forEachCallsite(constructorCallersByCallee, param.constructor,
+                    (callsite, callsiteFact) -> {
                 if (param.index >= callsite.actuals.size()) {
-                    continue;
+                    return;
                 }
                 String actual = callsite.actuals.get(param.index);
                 if (ignoreNode(actual)) {
-                    MethodSig constructor = parseMethodSig(
-                            param.constructor);
-                    addTypedLiteralCallerArgument(
+                    if (addTypedLiteralCallerArgument(
                             "constructor_caller_literal_argument",
-                            constructor, param.index, callsite.method,
-                            callsiteFact);
-                    if (constructor != null
-                            && param.index < constructor.params.size()
-                            && isTypedLiteralArgument(callsiteFact,
-                            param.index,
-                            constructor.params.get(param.index))) {
+                            parseMethodSig(param.constructor), param.index,
+                            callsite.method, callsiteFact)) {
                         selectedMethods.add(callsite.method);
                     }
-                    continue;
+                    return;
                 }
                 addEdge("constructor_caller_argument", actual, param.formal,
                         callsite.method, callsiteFact);
                 relevant(callsite.method).add(actual);
                 selectedMethods.add(callsite.method);
-            }
+            });
         }
     }
 
@@ -1248,17 +1086,8 @@ final class SeedBackwardStaticAnalyzer {
         }
 
         buildGlobalStaticIndex();
-        List<MethodCallsite> callsites = methodCallersByCallee.get(method);
-        if (callsites == null || callsites.isEmpty()) {
-            return;
-        }
-
-        for (MethodCallsite callsite : callsites) {
-            Fact callsiteFact = indexedFact(callsite.method,
-                    callsite.unitIndex);
-            if (callsiteFact == null) {
-                continue;
-            }
+        forEachCallsite(methodCallersByCallee, method,
+                (callsite, callsiteFact) -> {
             Set<String> callerRelevant = relevant(callsite.method);
             for (int index : relevantParams) {
                 if (!expandOnce("METHOD_CALLER_PARAM", method, index,
@@ -1268,11 +1097,9 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 String actual = callsite.actuals.get(index);
                 if (ignoreNode(actual)) {
-                    addTypedLiteralCallerArgument(
+                    if (addTypedLiteralCallerArgument(
                             "method_caller_literal_argument", callee,
-                            index, callsite.method, callsiteFact);
-                    if (isTypedLiteralArgument(callsiteFact, index,
-                            callee.params.get(index))) {
+                            index, callsite.method, callsiteFact)) {
                         selectedMethods.add(callsite.method);
                     }
                     continue;
@@ -1289,7 +1116,7 @@ final class SeedBackwardStaticAnalyzer {
                 expandCallerReceiver(false, method, thisNode, callsite,
                         callsiteFact);
             }
-        }
+        });
     }
 
     private void selectActivationCaller(String kind, String targetMethod,
@@ -1311,49 +1138,36 @@ final class SeedBackwardStaticAnalyzer {
         }
         selectedMethods.add(callerMethod);
 
-        for (ExceptionGuard guard : controllingGuards(callerMethod,
-                callsite)) {
-            for (String use : causalGuardUses(guard.fact)) {
-                String guardNode = canonical(callerMethod, use);
-                if (ignoreNode(guardNode)) {
-                    continue;
-                }
-                addEdge("activation_path_guard", guardNode, activation,
-                        callerMethod, guard.fact);
-                relevant(callerMethod).add(guardNode);
-            }
-        }
+        forEachGuardOperand(callerMethod, controllingGuards(callerMethod,
+                callsite), (guard, guardNode) -> {
+            addEdge("activation_path_guard", guardNode, activation,
+                    callerMethod, guard.fact);
+            relevant(callerMethod).add(guardNode);
+        });
     }
 
-    private void addTypedLiteralCallerArgument(
+    /**
+     * Emits the constant a caller passes for an already relevant formal, and
+     * answers whether the argument is one: a typed literal makes its caller
+     * part of the slice even though no local carries the value.
+     */
+    private boolean addTypedLiteralCallerArgument(
             String kind, MethodSig callee, int argumentIndex,
             String callerMethod, Fact fact) {
         Value literal = invokeArgument(fact, argumentIndex);
         if (callee == null || !(literal instanceof Constant)
                 || argumentIndex < 0
-                || argumentIndex >= callee.params.size()) {
-            return;
+                || argumentIndex >= callee.params.size()
+                || typedLiteralValue(literal,
+                        callee.params.get(argumentIndex)).isEmpty()) {
+            return false;
         }
-        String formalType = callee.params.get(argumentIndex);
-        String literalValue = typedLiteralValue(literal, formalType);
-        if (literalValue.isEmpty()) {
-            return;
-        }
-        String source = factNode(fact);
-        String target = formalParam(callee, argumentIndex);
-        addEdge(kind, source, target, callerMethod, fact);
-        Map<String, Object> edge = emittedEdgeRows.get(edgeKey(kind, source, target,
-                callerMethod, fact));
+        Map<String, Object> edge = addEdge(kind, factNode(fact),
+                formalParam(callee, argumentIndex), callerMethod, fact);
         if (edge != null) {
             edge.put("argumentIndex", argumentIndex);
         }
-    }
-
-    private boolean isTypedLiteralArgument(Fact fact, int argumentIndex,
-                                           String formalType) {
-        Value value = invokeArgument(fact, argumentIndex);
-        return value instanceof Constant
-                && !typedLiteralValue(value, formalType).isEmpty();
+        return true;
     }
 
     private Value invokeArgument(Fact fact, int argumentIndex) {
@@ -1386,49 +1200,38 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * A relevant field-writing call is a heap effect even when its data
-     * argument is a constant.  Preserve the caller-side control
-     * dependence on the exact effect site so a condition such as
-     * shouldUpdateBlockKey re-enters the ordinary finite worklist.
+     * argument is a constant.
      */
     private void addReceiverFieldEffectPathGuards(
-            String calleeMethod, MethodCallsite callsite, Fact callsiteFact,
+            String calleeMethod, Callsite callsite, Fact callsiteFact,
             Set<String> callerRelevant) {
         Set<String> effectFields = relevantFieldEffectsByMethod.get(
                 calleeMethod);
         if (effectFields == null || effectFields.isEmpty()) {
             return;
         }
-        for (ExceptionGuard guard : controllingGuards(callsite.method,
-                callsiteFact)) {
-            for (String use : causalGuardUses(guard.fact)) {
-                String guardNode = canonical(callsite.method, use);
-                if (ignoreNode(guardNode)) {
-                    continue;
-                }
-                for (String effectField : effectFields) {
-                    if (!expandOnce("RECEIVER_EFFECT_GUARD", calleeMethod,
-                            callsite.method, callsite.unitIndex,
-                            guard.fact.unitIndex, guardNode, effectField)) {
-                        continue;
-                    }
+        forEachGuardOperand(callsite.method, controllingGuards(
+                callsite.method, callsiteFact), (guard, guardNode) -> {
+            for (String effectField : effectFields) {
+                if (expandOnce("RECEIVER_EFFECT_GUARD", calleeMethod,
+                        callsite.method, callsite.unitIndex,
+                        guard.fact.unitIndex, guardNode, effectField)) {
                     addReceiverFieldEffectPathGuardEdge(
                             guardNode, effectField, calleeMethod,
                             callsite, guard);
                 }
-                callerRelevant.add(guardNode);
-                selectedMethods.add(callsite.method);
             }
-        }
+            callerRelevant.add(guardNode);
+            selectedMethods.add(callsite.method);
+        });
     }
 
     private void addReceiverFieldEffectPathGuardEdge(
             String guardNode, String effectField, String calleeMethod,
-            MethodCallsite callsite, ExceptionGuard guard) {
+            Callsite callsite, ExceptionGuard guard) {
         String kind = "receiver_field_effect_path_guard";
-        addEdge(kind, guardNode, effectField,
+        Map<String, Object> edge = addEdge(kind, guardNode, effectField,
                 callsite.method, guard.fact);
-        Map<String, Object> edge = emittedEdgeRows.get(edgeKey(kind,
-                guardNode, effectField, callsite.method, guard.fact));
         if (edge == null) {
             return;
         }
@@ -1437,7 +1240,6 @@ final class SeedBackwardStaticAnalyzer {
                 callsite.unitIndex, guard.requiredOutcome,
                 guard.reachingSuccessorIndices, calleeMethod,
                 effectField);
-        guard.branchShape.annotate(edge);
     }
 
     private ConstructorParam constructorParam(String node) {
@@ -1465,6 +1267,15 @@ final class SeedBackwardStaticAnalyzer {
         return new ConstructorParam(constructor, index, formalParam(sig, index));
     }
 
+    /**
+     * One pass over the application tree, the first time a writer or caller
+     * demand arrives. README {@code PERF-1} asks whether a demanded-
+     * field/callee reverse lookup should replace its five demand triggers, if
+     * this pass is still the measured static bottleneck. Measured on the
+     * HDFS-11741 seed (hdfs + hdfs-client + common, 6121 application classes)
+     * it is not: the pass costs 14.1-14.8 s of a ~300 s analysis, while the
+     * seed walk it feeds costs 129-152 s.
+     */
     private void buildGlobalStaticIndex() {
         if (globalStaticIndexBuilt) {
             return;
@@ -1496,10 +1307,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private int indexGlobalMethod(SootMethod method) {
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException exception) {
+        Body body = activeBody(method);
+        if (body == null) {
             return 0;
         }
         String methodSignature = method.getSignature();
@@ -1537,13 +1346,14 @@ final class SeedBackwardStaticAnalyzer {
                     List<String> actuals = canonicalPositionList(
                             methodSignature, actualInvokeArgs(unitText));
                     if ("<init>".equals(sig.name)) {
-                        addIndexedConstructorCallsite(
-                                new ConstructorCallsite(methodSignature,
-                                        sig.raw, index, receiver, actuals));
+                        addIndexedCallsite(constructorCallersByCallee,
+                                sig.raw, new Callsite(
+                                        methodSignature, index, receiver,
+                                        actuals));
                     } else if (!"<clinit>".equals(sig.name)) {
-                        addIndexedMethodCallsite(new MethodCallsite(
-                                methodSignature, sig.raw, index,
-                                receiver, actuals));
+                        addIndexedCallsite(methodCallersByCallee, sig.raw,
+                                new Callsite(methodSignature, index,
+                                        receiver, actuals));
                     }
                     if (fieldDefs.isEmpty()) {
                         relevantUnits++;
@@ -1569,16 +1379,6 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         return fields;
-    }
-
-    private List<Fact> factsFromMethod(SootMethod method) {
-        Body body;
-        try {
-            body = method.retrieveActiveBody();
-        } catch (RuntimeException exception) {
-            return Collections.emptyList();
-        }
-        return factsFromBody(method.getSignature(), body);
     }
 
     private List<Fact> factsFromBody(String method, Body body) {
@@ -1615,23 +1415,15 @@ final class SeedBackwardStaticAnalyzer {
                 ignored -> new ArrayList<>()).add(write);
     }
 
-    private void addIndexedConstructorCallsite(ConstructorCallsite callsite) {
-        MethodSig sig = parseMethodSig(callsite.constructor);
+    /** Indexes one recorded call site under its application callee. */
+    private void addIndexedCallsite(Map<String, List<Callsite>> index,
+                                    String callee, Callsite callsite) {
+        MethodSig sig = parseMethodSig(callee);
         if (sig == null || !isApplicationClassName(sig.owner)) {
             return;
         }
-        constructorCallersByCallee
-                .computeIfAbsent(callsite.constructor, ignored -> new ArrayList<>())
+        index.computeIfAbsent(callee, ignored -> new ArrayList<>())
                 .add(callsite);
-    }
-
-    private void addIndexedMethodCallsite(MethodCallsite callsite) {
-        MethodSig sig = parseMethodSig(callsite.callee);
-        if (sig == null || !isApplicationClassName(sig.owner)) {
-            return;
-        }
-        methodCallersByCallee.computeIfAbsent(callsite.callee,
-                ignored -> new ArrayList<>()).add(callsite);
     }
 
     /**
@@ -1652,11 +1444,11 @@ final class SeedBackwardStaticAnalyzer {
                 Collections.emptySet())) {
             List<Fact> facts = factsByMethod.get(method);
             if (facts == null) {
-                SootMethod sootMethod = concreteMethod(method);
-                if (sootMethod == null) {
+                Body body = activeBody(concreteMethod(method));
+                if (body == null) {
                     continue;
                 }
-                facts = factsFromMethod(sootMethod);
+                facts = factsFromBody(method, body);
             }
             for (Fact fact : facts) {
                 if (!fieldsMutatedByInvoke(facts, fact.unitIndex)
@@ -1677,8 +1469,7 @@ final class SeedBackwardStaticAnalyzer {
         raw.addAll(fact.fieldUses);
         // In Jimple, the base of an instance-field assignment is a use box,
         // but it selects the destination object; it is not the value written
-        // into the field.  Keeping it as a value-flow predecessor creates a
-        // false alternative definition beside the assignment RHS.
+        // into the field.
         Set<String> destinationBases = new LinkedHashSet<>();
         for (InstanceFieldAccess access : fact.instanceFieldDefs) {
             if (field.equals(access.field)) {
@@ -1742,7 +1533,7 @@ final class SeedBackwardStaticAnalyzer {
         for (int i = beforeIndex - 1; i >= 0; i--) {
             Fact fact = facts.get(i);
             Set<String> defs = localNames(fact.defs);
-            if (!intersectsLocal(work, defs)) {
+            if (!exactIntersects(work, defs)) {
                 continue;
             }
             fields.addAll(fact.fieldUses);
@@ -1760,11 +1551,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Models only Java collection APIs whose returned object is specified
-     * to remain backed by the receiver.  Propagating aliases through every
-     * instance-call result would be unsound; these view/iterator methods
-     * are the narrow bridge needed to connect an iterator mutation back to
-     * the collection (and ultimately a receiver field) that owns it.
+     * Models only Java collection APIs whose returned object is specified to
+     * remain backed by the receiver.
      */
     private boolean returnsBackedCollectionView(Fact fact) {
         MethodSig invoked = parseMethodSig(fact.invoke);
@@ -1773,20 +1561,12 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         String owner = invoked.owner;
-        String name = invoked.name;
-        if (owner.startsWith("java.util.")
-                && (owner.contains("Map")
-                || "java.util.Hashtable".equals(owner))) {
-            return "entrySet".equals(name)
-                    || "keySet".equals(name)
-                    || "values".equals(name)
-                    || "navigableKeySet".equals(name)
-                    || "descendingKeySet".equals(name);
+        if (!owner.startsWith("java.util.")) {
+            return false;
         }
-        return owner.startsWith("java.util.")
-                && ("iterator".equals(name)
-                || "listIterator".equals(name)
-                || "descendingIterator".equals(name));
+        return owner.contains("Map") || "java.util.Hashtable".equals(owner)
+                ? BACKED_MAP_VIEWS.contains(invoked.name)
+                : BACKED_ITERATORS.contains(invoked.name);
     }
 
     private boolean isFieldMutator(Fact fact) {
@@ -1794,47 +1574,11 @@ final class SeedBackwardStaticAnalyzer {
         if (sig == null) {
             return false;
         }
-        String name = sig.name;
-        return isAtomicNumericMutation(sig)
-                || "put".equals(name)
-                || "putAll".equals(name)
-                || "remove".equals(name)
-                || "clear".equals(name)
-                || "add".equals(name)
-                || "addAll".equals(name)
-                || "set".equals(name)
-                || "replace".equals(name)
-                || "compute".equals(name)
-                || "computeIfAbsent".equals(name)
-                || "computeIfPresent".equals(name)
-                || "merge".equals(name)
-                || "offer".equals(name)
-                || "poll".equals(name);
-    }
-
-    /**
-     * Numeric atomic read-modify-write calls mutate the receiver even though
-     * their Jimple call site contains no ordinary field assignment.  Keep the
-     * contract owner-scoped so an application method with the same spelling
-     * is not treated as a heap mutation.
-     */
-    private static boolean isAtomicNumericMutation(MethodSig sig) {
-        if (!("java.util.concurrent.atomic.AtomicInteger".equals(sig.owner)
-                || "java.util.concurrent.atomic.AtomicLong".equals(
-                sig.owner))) {
-            return false;
-        }
-        String name = sig.name;
-        return "getAndIncrement".equals(name)
-                || "getAndDecrement".equals(name)
-                || "getAndAdd".equals(name)
-                || "incrementAndGet".equals(name)
-                || "decrementAndGet".equals(name)
-                || "addAndGet".equals(name)
-                || "getAndSet".equals(name)
-                || "compareAndSet".equals(name)
-                || "weakCompareAndSet".equals(name)
-                || "lazySet".equals(name);
+        return CONTAINER_MUTATORS.contains(sig.name)
+                || ("java.util.concurrent.atomic.AtomicInteger".equals(
+                        sig.owner)
+                || "java.util.concurrent.atomic.AtomicLong".equals(sig.owner))
+                && ATOMIC_NUMERIC_MUTATIONS.contains(sig.name);
     }
 
     private boolean isCanonicalField(String value) {
@@ -1903,7 +1647,7 @@ final class SeedBackwardStaticAnalyzer {
 
         if (!dynamicDispatch) {
             propagateCallArguments("call_argument",
-                    callerMethod, fact, callee, actuals,
+                    callerMethod, fact, callee, actuals, null,
                     callerRelevant, calleeRelevant, expandableCallee);
             if (!modeledContainerResult) {
                 propagateCallReturns("call_return",
@@ -1945,33 +1689,45 @@ final class SeedBackwardStaticAnalyzer {
         return ((StringConstant) invoke.getArg(0)).value;
     }
 
+    /**
+     * One forward argument walk. {@code ports} names the (actual, formal)
+     * index pairs a transport binds; a null {@code ports} binds index to
+     * index, which is what an ordinary Java call site does. A null {@code
+     * kind} is a transport the slice does not walk: the value crosses it
+     * unchanged, but no Java edge carries it.
+     */
     private boolean propagateCallArguments(
             String kind, String callerMethod, Fact fact,
             MethodSig target, List<String> actuals,
+            List<ProtocolPortMapping> ports,
             Set<String> callerRelevant, Set<String> targetRelevant,
             boolean targetExpandable) {
         boolean relevantFlow = false;
-        int count = Math.min(actuals.size(), target.params.size());
+        int count = ports == null
+                ? Math.min(actuals.size(), target.params.size())
+                : ports.size();
         for (int index = 0; index < count; index++) {
-            String actual = actuals.get(index);
+            ProtocolPortMapping port = ports == null ? null : ports.get(index);
+            String actual = actuals.get(
+                    port == null ? index : port.clientArgument);
             if (ignoreNode(actual)) {
                 continue;
             }
-            String formal = formalParam(target, index);
-            boolean formalExact = targetExpandable
-                    && targetRelevant.contains(formal);
-            if (!formalExact) {
+            String formal = formalParam(target,
+                    port == null ? index : port.serverParameter);
+            if (!targetExpandable || !targetRelevant.contains(formal)) {
                 continue;
             }
             relevantFlow = true;
-            addEdge(kind, actual, formal, callerMethod, fact);
-            if (formalExact) {
-                callerRelevant.add(actual);
+            if (kind != null) {
+                addEdge(kind, actual, formal, callerMethod, fact);
             }
+            callerRelevant.add(actual);
         }
         return relevantFlow;
     }
 
+    /** The same walk over a call's returned value; see the arguments above. */
     private void propagateCallReturns(
             String kind, String callerMethod, Fact fact,
             String targetMethod, List<String> defs,
@@ -1982,7 +1738,9 @@ final class SeedBackwardStaticAnalyzer {
             if (!callerRelevant.contains(def)) {
                 continue;
             }
-            addEdge(kind, returnNode, def, callerMethod, fact);
+            if (kind != null) {
+                addEdge(kind, returnNode, def, callerMethod, fact);
+            }
             if (targetExpandable) {
                 targetRelevant.add(returnNode);
                 selectedMethods.add(targetMethod);
@@ -2022,11 +1780,8 @@ final class SeedBackwardStaticAnalyzer {
         String dependencyRole = containerLookupDependencyRole(
                 callerMethod, fact, callee);
         for (String def : relevantDefs) {
-            addEdge("container_receiver", receiverNode, def,
-                    callerMethod, fact);
-            Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                    "container_receiver", receiverNode, def,
-                    callerMethod, fact));
+            Map<String, Object> edge = addEdge("container_receiver",
+                    receiverNode, def, callerMethod, fact);
             if (edge != null) {
                 edge.put("dependencyRole", dependencyRole);
             }
@@ -2045,9 +1800,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Proves the narrow case where a lookup result selects an already
-     * concrete owner but does not itself carry failure-relevant data.  Any
-     * unfamiliar use remains a value dependency.
+     * Proves the narrow case where a lookup result selects an already concrete
+     * owner but does not itself carry failure-relevant data.
      */
     private String containerLookupDependencyRole(
             String method, Fact lookup, MethodSig callee) {
@@ -2093,12 +1847,7 @@ final class SeedBackwardStaticAnalyzer {
     private boolean referenceLookup(Fact fact, MethodSig callee) {
         if (!(fact.unit instanceof Stmt)
                 || !((Stmt) fact.unit).containsInvokeExpr()
-                || !(callee.name.equals("get")
-                || callee.name.equals("element")
-                || callee.name.equals("peek")
-                || callee.name.equals("next")
-                || callee.name.equals("getKey")
-                || callee.name.equals("getValue"))) {
+                || !REFERENCE_LOOKUPS.contains(callee.name)) {
             return false;
         }
         return ((Stmt) fact.unit).getInvokeExpr().getType()
@@ -2206,11 +1955,7 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /**
-     * Bridges an application helper that mutates a container argument.  The
-     * edge is emitted only when the callee body directly applies an exact VM-
-     * modeled mutator to that formal parameter's Jimple identity local.
-     */
+    /** Bridges an application helper that mutates a container argument. */
     private void processContainerCallMutationEffects(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> actuals, Set<String> callerRelevant) {
@@ -2233,75 +1978,61 @@ final class SeedBackwardStaticAnalyzer {
     private Map<Integer, String> directlyMutatedContainerParameters(
             MethodSig callee) {
         if (callee == null) return Collections.emptyMap();
-        Map<Integer, String> cached =
-                directlyMutatedContainerParametersCache.get(
-                callee.raw);
-        if (cached != null) return cached;
-
-        SootMethod method = allMethodsBySignature.get(callee.raw);
-        if (method == null || !method.isConcrete()
-                || !method.getDeclaringClass().isApplicationClass()) {
-            directlyMutatedContainerParametersCache.put(callee.raw,
-                    Collections.emptyMap());
-            return Collections.emptyMap();
-        }
-        loadMethod(method);
-        List<Fact> facts = factsByMethod.get(callee.raw);
-        if (facts == null) {
-            directlyMutatedContainerParametersCache.put(callee.raw,
-                    Collections.emptyMap());
-            return Collections.emptyMap();
-        }
-
-        Map<String, Integer> parameterLocals = new LinkedHashMap<>();
-        for (Fact fact : facts) {
-            Matcher parameter = PARAMETER_REFERENCE_PATTERN.matcher(
-                    fact.unitText);
-            if (!parameter.find()) continue;
-            int index = Integer.parseInt(parameter.group(1));
-            for (String def : canonicalDefs(callee.raw, fact)) {
-                if (!ignoreNode(def)) parameterLocals.put(def, index);
+        return memoized(directlyMutatedContainerParametersCache,
+                callee.raw, ignored -> {
+            SootMethod method = allMethodsBySignature.get(callee.raw);
+            if (method == null || !method.isConcrete()
+                    || !method.getDeclaringClass().isApplicationClass()) {
+                return Collections.<Integer, String>emptyMap();
             }
-        }
+            loadMethod(method);
+            List<Fact> facts = factsByMethod.get(callee.raw);
+            if (facts == null) {
+                return Collections.<Integer, String>emptyMap();
+            }
 
-        Map<Integer, String> result = new LinkedHashMap<>();
-        for (Fact fact : facts) {
-            if (!JavaContainerTypes.modeledContainerMutator(fact.invoke)) {
-                continue;
+            Map<String, Integer> parameterLocals = new LinkedHashMap<>();
+            for (Fact fact : facts) {
+                Matcher parameter = PARAMETER_REFERENCE_PATTERN.matcher(
+                        fact.unitText);
+                if (!parameter.find()) continue;
+                int index = Integer.parseInt(parameter.group(1));
+                for (String def : canonicalDefs(callee.raw, fact)) {
+                    if (!ignoreNode(def)) parameterLocals.put(def, index);
+                }
             }
-            String receiver = invokeBaseLocal(fact.unitText);
-            Integer index = receiver == null ? null : parameterLocals.get(
-                    canonical(callee.raw, receiver));
-            if (index != null) {
-                result.put(index, canonical(callee.raw, receiver));
+
+            Map<Integer, String> result = new LinkedHashMap<>();
+            for (Fact fact : facts) {
+                if (!JavaContainerTypes.modeledContainerMutator(fact.invoke)) {
+                    continue;
+                }
+                String receiver = invokeBaseLocal(fact.unitText);
+                Integer index = receiver == null ? null : parameterLocals.get(
+                        canonical(callee.raw, receiver));
+                if (index != null) {
+                    result.put(index, canonical(callee.raw, receiver));
+                }
             }
-        }
-        Map<Integer, String> immutable = result.isEmpty()
-                ? Collections.emptyMap()
-                : Collections.unmodifiableMap(result);
-        directlyMutatedContainerParametersCache.put(callee.raw, immutable);
-        return immutable;
+            return result.isEmpty()
+                    ? Collections.<Integer, String>emptyMap()
+                    : Collections.unmodifiableMap(result);
+        });
     }
 
     private boolean isSemanticContainerView(MethodSig method) {
         if (method == null) return false;
-        if (javaMapContractOwner(method.owner)
+        if (MAP_CONTRACT_OWNERS.contains(method.owner)
                 && method.params.isEmpty()) {
             if ("values".equals(method.name)
-                    && "java.util.Collection".equals(
-                    method.returnType)) {
-                return true;
-            }
-            if ("keySet".equals(method.name)
-                    && "java.util.Set".equals(method.returnType)) {
-                return true;
-            }
-            if ("entrySet".equals(method.name)
+                    && "java.util.Collection".equals(method.returnType)
+                    || ("keySet".equals(method.name)
+                    || "entrySet".equals(method.name))
                     && "java.util.Set".equals(method.returnType)) {
                 return true;
             }
         }
-        return javaCollectionContractOwner(method.owner)
+        return COLLECTION_CONTRACT_OWNERS.contains(method.owner)
                 && "toArray".equals(method.name)
                 && method.returnType.endsWith("[]")
                 && (method.params.isEmpty()
@@ -2309,33 +2040,7 @@ final class SeedBackwardStaticAnalyzer {
                 && method.params.get(0).endsWith("[]")));
     }
 
-    private boolean javaMapContractOwner(String owner) {
-        return "java.util.Map".equals(owner)
-                || "java.util.SortedMap".equals(owner)
-                || "java.util.NavigableMap".equals(owner)
-                || "java.util.concurrent.ConcurrentMap".equals(owner)
-                || "java.util.concurrent.ConcurrentNavigableMap".equals(
-                owner);
-    }
-
-    private boolean javaCollectionContractOwner(String owner) {
-        return "java.util.Collection".equals(owner)
-                || "java.util.List".equals(owner)
-                || "java.util.Set".equals(owner)
-                || "java.util.SortedSet".equals(owner)
-                || "java.util.NavigableSet".equals(owner)
-                || "java.util.Queue".equals(owner)
-                || "java.util.Deque".equals(owner);
-    }
-
-    /**
-     * A Map.get result depends on both the lookup key and the map state.
-     * Ordinary instance-call handling intentionally ignores a concrete
-     * receiver identity; that rule is incorrect for a semantic container,
-     * where receiver contents are data.  Model that dependency here so an
-     * exception guard on the result can discover both the lookup key and
-     * the container without naming either variable in target.yaml.
-     */
+    /** A Map.get result depends on both the lookup key and the map state. */
     private void processConstructorObjectInvoke(String callerMethod, Fact fact,
                                                 MethodSig callee,
                                                 List<String> actuals,
@@ -2360,27 +2065,6 @@ final class SeedBackwardStaticAnalyzer {
                     callerMethod, fact);
             callerRelevant.add(actual);
         }
-    }
-
-    /** Returns the canonical local bound to {@code @this}. */
-    private String methodThisNode(String method, List<Fact> facts) {
-        String cached = methodThisNodeCache.get(method);
-        if (cached != null) {
-            return cached;
-        }
-        if (methodsWithoutThisNode.contains(method)) {
-            return null;
-        }
-        for (Fact fact : facts) {
-            Matcher matcher = METHOD_THIS_PATTERN.matcher(fact.unitText);
-            if (matcher.find()) {
-                String result = canonical(method, matcher.group(1));
-                methodThisNodeCache.put(method, result);
-                return result;
-            }
-        }
-        methodsWithoutThisNode.add(method);
-        return null;
     }
 
     private void processAccessorInvoke(String callerMethod, Fact fact,
@@ -2417,11 +2101,10 @@ final class SeedBackwardStaticAnalyzer {
             if (ignoreNode(def)) {
                 continue;
             }
-            addEdge("accessor_field_return", declaredFieldNode, def,
-                    callerMethod, fact);
-            annotateAccessorDeclaredFieldEdge(declaredFieldNode, def,
-                    callerMethod, fact, declaredField,
-                    accessor.implementation);
+            annotateAccessorDeclaredFieldEdge(
+                    addEdge("accessor_field_return", declaredFieldNode,
+                            def, callerMethod, fact),
+                    declaredField, accessor.implementation);
             addEdge("accessor_receiver", receiverNode, def,
                     callerMethod, fact);
         }
@@ -2430,10 +2113,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void annotateAccessorDeclaredFieldEdge(
-            String from, String to, String method, Fact fact,
-            SootField field, SootMethod accessor) {
-        Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                "accessor_field_return", from, to, method, fact));
+            Map<String, Object> edge, SootField field, SootMethod accessor) {
         if (edge == null || field == null) {
             return;
         }
@@ -2445,25 +2125,15 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Attaches the resolved Java declaration to one exact direct field
-     * read.  Requested-output planning intentionally refuses to turn a
-     * textual {@code <owner: type name>} cell into a replayable field
-     * input without this Soot authority: inherited fields, shadowing and
-     * receiver flows would otherwise be indistinguishable.
-     *
-     * <p>Both the canonical declared-field row and its receiver-sensitive
-     * companion are annotated.  The former is the materializable scalar
-     * frontier; the latter participates in exact alias/object proofs.
-     * No class or fixture names are consulted.</p>
+     * Attaches the resolved Java declaration to one exact direct field read.
      */
-    private void annotateDirectDeclaredFieldEdge(
-            String kind, String from, String to, String method, Fact fact,
-            String fieldSignature) {
-        Map<String, Object> edge = emittedEdgeRows.get(edgeKey(kind,
-                from, to, method, fact));
+    private void annotateDirectDeclaredFieldEdge(Map<String, Object> edge,
+                                                 String fieldSignature) {
         String owner = fieldOwner(fieldSignature);
-        String name = fieldNameFromSignature(fieldSignature);
-        SootField field = resolveDeclaredField(owner, name);
+        Matcher name = FIELD_NAME_PATTERN.matcher(
+                fieldSignature == null ? "" : fieldSignature);
+        SootField field = resolveDeclaredField(owner,
+                name.matches() ? name.group(1) : "");
         if (edge == null || field == null
                 || !field.getSignature().equals(fieldSignature)) {
             return;
@@ -2471,48 +2141,15 @@ final class SeedBackwardStaticAnalyzer {
         edge.put("declaredFieldSignature", field.getSignature());
     }
 
-    private String fieldNameFromSignature(String fieldSignature) {
-        if (fieldSignature == null) {
-            return "";
-        }
-        Matcher matcher = FIELD_NAME_PATTERN.matcher(fieldSignature);
-        return matcher.matches() ? matcher.group(1) : "";
-    }
-
-    /**
-     * Resolves one method declaration inherited by the invocation owner.
-     * This is declaration lookup only; callers that need virtual-dispatch
-     * uniqueness must additionally inspect application overrides.
-     */
+    /** Resolves one method declaration inherited by the invocation owner. */
     private SootMethod resolveDeclaredMethod(MethodSig methodSignature) {
         if (methodSignature == null || methodSignature.owner.isEmpty()) {
             return null;
         }
+        String subSignature = methodSubSignature(methodSignature);
         return resolveInHierarchy(methodSignature.owner, sootClass -> {
             for (SootMethod method : sootClass.getMethods()) {
-                if (!methodSignature.name.equals(method.getName())
-                        || !erasedTypeName(
-                        methodSignature.returnType).equals(
-                        erasedTypeName(method.getReturnType()
-                                .toString()))
-                        || method.getParameterCount()
-                        != methodSignature.params.size()) {
-                    continue;
-                }
-                boolean parametersMatch = true;
-                for (int index = 0;
-                     index < methodSignature.params.size();
-                     index++) {
-                    if (!erasedTypeName(
-                            methodSignature.params.get(index))
-                            .equals(erasedTypeName(method
-                                    .getParameterType(index)
-                                    .toString()))) {
-                        parametersMatch = false;
-                        break;
-                    }
-                }
-                if (parametersMatch) {
+                if (subSignature.equals(method.getSubSignature())) {
                     return method;
                 }
             }
@@ -2522,63 +2159,35 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * Returns the unique analyzable implementation that can receive this
-     * invocation in the closed Soot world.  An inherited declaration counts
-     * as the implementation, while every concrete override below the
-     * invocation owner is an additional candidate.  Ambiguity deliberately
-     * disables the accessor shortcut.
+     * invocation in the closed Soot world.
      */
     private SootMethod uniqueAnalyzableImplementation(MethodSig callee) {
         if (callee == null || callee.owner.isEmpty()) {
             return null;
         }
-        SootClass owner = classesByName.get(callee.owner);
-        if (owner == null) {
-            owner = Scene.v().getSootClassUnsafe(callee.owner);
-        }
-        if (owner == null) {
+        if (classesByName.get(callee.owner) == null
+                && Scene.v().getSootClassUnsafe(callee.owner) == null) {
             return null;
         }
-        Set<SootMethod> candidates = Collections.newSetFromMap(
-                new IdentityHashMap<SootMethod, Boolean>());
+        Set<SootMethod> candidates = new LinkedHashSet<>();
         SootMethod declared = resolveDeclaredMethod(callee);
         if (eligibleAnalyzableImplementation(declared)) {
             candidates.add(declared);
         }
-        List<SootMethod> implementations = concreteMethodsBySubSignature.get(
-                methodSubSignature(callee));
-        if (implementations != null) {
-            for (SootMethod implementation : implementations) {
-                if (eligibleAnalyzableImplementation(implementation)
-                        && classImplementsOrExtends(
-                        implementation.getDeclaringClass(), callee.owner)) {
-                    candidates.add(implementation);
-                }
-            }
-        }
+        candidates.addAll(concreteImplementations(callee,
+                this::eligibleAnalyzableImplementation));
         return candidates.size() == 1
                 ? candidates.iterator().next() : null;
     }
 
     private boolean eligibleAnalyzableImplementation(SootMethod method) {
-        if (method == null || !method.isConcrete() || method.isStatic()
-                || method.isNative()) {
-            return false;
-        }
-        try {
-            method.retrieveActiveBody();
-            return true;
-        } catch (RuntimeException unavailable) {
-            return false;
-        }
+        return method != null && method.isConcrete() && !method.isStatic()
+                && !method.isNative() && activeBody(method) != null;
     }
 
     /**
      * Recognizes a field accessor from its complete Jimple body, never from
-     * class or method spelling.  Accepted bodies contain exactly one
-     * {@code @this} identity, transparent local copies/checkcasts, one read
-     * of an instance field rooted at that receiver, and one return of the
-     * read value.  Every other unit or value shape falls back to ordinary
-     * application-method analysis.
+     * class or method spelling.
      */
     private StructuralFieldAccessor structuralFieldAccessor(
             MethodSig callee) {
@@ -2637,11 +2246,12 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             Set<String> targetRelevant = relevant(target);
-            propagateProtocolArguments(mapping, targetSig, actuals,
-                    callerRelevant, targetRelevant);
+            propagateCallArguments(null, callerMethod, fact, targetSig,
+                    actuals, mapping.request, callerRelevant, targetRelevant,
+                    true);
             if (mapping.response) {
-                propagateProtocolReturn(target, defs, callerRelevant,
-                        targetRelevant);
+                propagateCallReturns(null, callerMethod, fact, target, defs,
+                        callerRelevant, targetRelevant, true);
             }
         }
     }
@@ -2649,19 +2259,6 @@ final class SeedBackwardStaticAnalyzer {
     /**
      * Binds a configured client stub call site to the concrete stub that
      * actually runs on the caller's side of the transport.
-     *
-     * <p>A configured client stub is deliberately withheld from ordinary
-     * dispatch expansion so protocol compatibility cannot turn every
-     * interface call into an RPC edge.  The side effect is that the stub
-     * implementation which decodes the reply — and therefore rebuilds the
-     * transferred object graph in the caller's process — is reached by no
-     * call edge at all, so no execution envelope can ever contain it and the
-     * rebuilt state has no producer.  The transport itself remains a
-     * protocol transfer to the server stub; this edge only restores the
-     * ordinary call relation from the call site to the code it enters.</p>
-     *
-     * <p>An implementation the configuration already names as a server stub
-     * is excluded: it is entered by the transport, not by this call.</p>
      */
     private void expandProtocolClientImplementations(
             String callerMethod, Fact fact, MethodSig callee,
@@ -2686,37 +2283,6 @@ final class SeedBackwardStaticAnalyzer {
                         callerMethod, fact, true);
                 selectedMethods.add(implementation);
             }
-        }
-    }
-
-    private void propagateProtocolArguments(
-            ProtocolStubMapping mapping, MethodSig target,
-            List<String> actuals, Set<String> callerRelevant,
-            Set<String> targetRelevant) {
-        for (ProtocolPortMapping port : mapping.request) {
-            String actual = actuals.get(port.clientArgument);
-            if (ignoreNode(actual)) {
-                continue;
-            }
-            String formal = formalParam(target, port.serverParameter);
-            boolean formalExact = targetRelevant.contains(formal);
-            if (!formalExact) {
-                continue;
-            }
-            callerRelevant.add(actual);
-        }
-    }
-
-    private void propagateProtocolReturn(
-            String targetMethod, List<String> defs,
-            Set<String> callerRelevant, Set<String> targetRelevant) {
-        String returnNode = targetMethod + ".return";
-        for (String def : defs) {
-            if (!callerRelevant.contains(def)) {
-                continue;
-            }
-            targetRelevant.add(returnNode);
-            selectedMethods.add(targetMethod);
         }
     }
 
@@ -2746,7 +2312,7 @@ final class SeedBackwardStaticAnalyzer {
             Set<String> targetRelevant = relevant(targetMethod);
             boolean callRelevant = exactIntersects(callerRelevant, defs);
             callRelevant |= propagateCallArguments("dispatch_argument",
-                    callerMethod, fact, targetSig, actuals,
+                    callerMethod, fact, targetSig, actuals, null,
                     callerRelevant, targetRelevant, true);
             propagateCallReturns("dispatch_return",
                     callerMethod, fact, targetMethod, defs,
@@ -2770,77 +2336,35 @@ final class SeedBackwardStaticAnalyzer {
                 || protocolStubs.isClientOwner(callee.owner)) {
             return Collections.emptyList();
         }
-        List<String> cached = dispatchTargetsCache.get(callee.raw);
-        if (cached != null) {
-            return cached;
-        }
-        SootClass owner = classesByName.get(callee.owner);
-        if (owner == null || (!owner.isInterface() && !owner.isAbstract())) {
-            dispatchTargetsCache.put(callee.raw, Collections.emptyList());
-            return Collections.emptyList();
-        }
-        List<SootMethod> concreteMethods = concreteMethodsBySubSignature
-                .get(callee.returnType + " " + callee.name + "("
-                        + String.join(",", callee.params) + ")");
-        if (concreteMethods == null) {
-            concreteMethods = concreteMethodsBySubSignature
-                    .get(methodSubSignature(callee));
-        }
-        if (concreteMethods == null) {
-            dispatchTargetsCache.put(callee.raw, Collections.emptyList());
-            return Collections.emptyList();
-        }
-        List<String> targets = new ArrayList<>();
-        for (SootMethod concreteMethod : concreteMethods) {
-            SootClass concreteClass = concreteMethod.getDeclaringClass();
-            if (concreteClass.isApplicationClass()
-                    && classImplementsOrExtends(concreteClass, callee.owner)) {
-                targets.add(concreteMethod.getSignature());
+        return memoized(dispatchTargetsCache, callee.raw, ignored -> {
+            SootClass owner = classesByName.get(callee.owner);
+            if (owner == null
+                    || (!owner.isInterface() && !owner.isAbstract())) {
+                return Collections.<String>emptyList();
             }
-        }
-        List<String> result = targets.isEmpty()
-                ? Collections.emptyList()
-                : Collections.unmodifiableList(targets);
-        dispatchTargetsCache.put(callee.raw, result);
-        return result;
+            List<String> targets = applicationImplementationSignatures(
+                    callee);
+            return targets.isEmpty() ? Collections.<String>emptyList()
+                    : Collections.unmodifiableList(targets);
+        });
     }
 
     /**
      * Returns configured protocol entry methods that may be named at a Java
-     * callsite.  A protocol mapping commonly names an interface method while
-     * application code invokes a concrete translator directly.  This helper
-     * is intentionally separate from ordinary dispatch expansion: protocol
-     * compatibility must not turn every interface call into an RPC edge.
+     * callsite.
      */
     private List<String> protocolClientTargets(
             ProtocolStubMapping mapping) {
-        List<String> cached = protocolClientTargetsCache.get(
-                mapping.clientStub);
-        if (cached != null) {
-            return cached;
-        }
-        LinkedHashSet<String> targets = new LinkedHashSet<>();
-        targets.add(mapping.clientStub);
-        MethodSig client = parseMethodSig(mapping.clientStub);
-        if (client != null) {
-            List<SootMethod> implementations =
-                    concreteMethodsBySubSignature.get(
-                            methodSubSignature(client));
-            if (implementations != null) {
-                for (SootMethod implementation : implementations) {
-                    SootClass owner = implementation.getDeclaringClass();
-                    if (owner.isApplicationClass()
-                            && classImplementsOrExtends(owner,
-                            client.owner)) {
-                        targets.add(implementation.getSignature());
-                    }
-                }
+        return memoized(protocolClientTargetsCache, mapping.clientStub,
+                ignored -> {
+            LinkedHashSet<String> targets = new LinkedHashSet<>();
+            targets.add(mapping.clientStub);
+            MethodSig client = parseMethodSig(mapping.clientStub);
+            if (client != null) {
+                targets.addAll(applicationImplementationSignatures(client));
             }
-        }
-        List<String> result = Collections.unmodifiableList(
-                new ArrayList<>(targets));
-        protocolClientTargetsCache.put(mapping.clientStub, result);
-        return result;
+            return Collections.unmodifiableList(new ArrayList<>(targets));
+        });
     }
 
     private List<ProtocolStubMapping> protocolMappingsForClientTarget(
@@ -2848,27 +2372,49 @@ final class SeedBackwardStaticAnalyzer {
         if (callee == null) {
             return Collections.emptyList();
         }
-        List<ProtocolStubMapping> cached =
-                protocolMappingsByClientTargetCache.get(callee.raw);
-        if (cached != null) {
-            return cached;
-        }
-        LinkedHashSet<ProtocolStubMapping> matches = new LinkedHashSet<>(
-                protocolStubs.targets(callee.raw));
-        for (ProtocolStubMapping mapping : protocolStubs.mappings()) {
-            if (protocolClientTargets(mapping).contains(callee.raw)) {
-                matches.add(mapping);
+        return memoized(protocolMappingsByClientTargetCache, callee.raw,
+                ignored -> {
+            LinkedHashSet<ProtocolStubMapping> matches = new LinkedHashSet<>(
+                    protocolStubs.targets(callee.raw));
+            for (ProtocolStubMapping mapping : protocolStubs.mappings()) {
+                if (protocolClientTargets(mapping).contains(callee.raw)) {
+                    matches.add(mapping);
+                }
             }
-        }
-        List<ProtocolStubMapping> result = Collections.unmodifiableList(
-                new ArrayList<>(matches));
-        protocolMappingsByClientTargetCache.put(callee.raw, result);
-        return result;
+            return Collections.unmodifiableList(new ArrayList<>(matches));
+        });
     }
 
     private String methodSubSignature(MethodSig sig) {
         return sig.returnType + " " + sig.name + "("
                 + String.join(",", sig.params) + ")";
+    }
+
+    /** Indexed concrete methods below {@code sig.owner} that {@code accept}s. */
+    private List<SootMethod> concreteImplementations(
+            MethodSig sig, Predicate<SootMethod> accept) {
+        List<SootMethod> candidates = concreteMethodsBySubSignature.get(
+                methodSubSignature(sig));
+        if (candidates == null) {
+            return Collections.emptyList();
+        }
+        List<SootMethod> matches = new ArrayList<>();
+        for (SootMethod candidate : candidates) {
+            if (accept.test(candidate) && classImplementsOrExtends(
+                    candidate.getDeclaringClass(), sig.owner)) {
+                matches.add(candidate);
+            }
+        }
+        return matches;
+    }
+
+    private List<String> applicationImplementationSignatures(MethodSig sig) {
+        List<String> signatures = new ArrayList<>();
+        for (SootMethod implementation : concreteImplementations(sig,
+                method -> method.getDeclaringClass().isApplicationClass())) {
+            signatures.add(implementation.getSignature());
+        }
+        return signatures;
     }
 
     private boolean skipDispatchOwner(String owner) {
@@ -2894,53 +2440,20 @@ final class SeedBackwardStaticAnalyzer {
         for (ProtocolStubMapping mapping : mappings) {
             Set<String> visitedCallsites = new LinkedHashSet<>();
             for (String clientTarget : protocolClientTargets(mapping)) {
-                List<MethodCallsite> callsites =
-                        methodCallersByCallee.get(clientTarget);
-                if (callsites == null) {
-                    continue;
-                }
-                for (MethodCallsite callsite : callsites) {
-                    Fact callsiteFact = indexedFact(callsite.method,
-                            callsite.unitIndex);
-                    if (callsiteFact == null) {
-                        continue;
-                    }
-                    String callsiteIdentity = callsite.method + "\n"
-                            + callsite.unitIndex;
-                    if (!visitedCallsites.add(callsiteIdentity)) {
-                        continue;
+                forEachCallsite(methodCallersByCallee, clientTarget,
+                        (callsite, callsiteFact) -> {
+                    if (!visitedCallsites.add(callsite.method + "\n"
+                            + callsite.unitIndex)) {
+                        return;
                     }
                     selectActivationCaller("communication_activation",
                             targetMethod, callsite.method, callsiteFact, false);
-                    Set<String> callerRelevant = relevant(callsite.method);
-                    expandProtocolCallerArguments(mapping, targetMethod,
-                            targetSig, targetRelevant, callsite,
-                            callerRelevant);
-                }
+                    expandCallerArguments("RPC_CALLER_PARAM", null,
+                            targetMethod, mapping.clientStub, targetSig,
+                            targetRelevant, mapping.request, callsite,
+                            callsiteFact, relevant(callsite.method));
+                });
             }
-        }
-    }
-
-    private void expandProtocolCallerArguments(
-            ProtocolStubMapping mapping, String targetMethod,
-            MethodSig target, Set<String> targetRelevant,
-            MethodCallsite callsite,
-            Set<String> callerRelevant) {
-        for (ProtocolPortMapping port : mapping.request) {
-            String formal = formalParam(target, port.serverParameter);
-            if (!targetRelevant.contains(formal)
-                    || !expandOnce("RPC_CALLER_PARAM", targetMethod,
-                    mapping.clientStub, port.clientArgument,
-                    port.serverParameter, callsite.method,
-                    callsite.unitIndex)) {
-                continue;
-            }
-            String actual = callsite.actuals.get(port.clientArgument);
-            if (ignoreNode(actual)) {
-                continue;
-            }
-            callerRelevant.add(actual);
-            selectedMethods.add(callsite.method);
         }
     }
 
@@ -2959,22 +2472,14 @@ final class SeedBackwardStaticAnalyzer {
                 && targetRelevant.contains(targetThis);
         buildGlobalStaticIndex();
         for (String sourceMethod : sourceMethods) {
-            List<MethodCallsite> callsites = methodCallersByCallee.get(sourceMethod);
-            if (callsites == null) {
-                continue;
-            }
-            for (MethodCallsite callsite : callsites) {
-                Fact callsiteFact = indexedFact(callsite.method,
-                        callsite.unitIndex);
-                if (callsiteFact == null) {
-                    continue;
-                }
+            forEachCallsite(methodCallersByCallee, sourceMethod,
+                    (callsite, callsiteFact) -> {
                 Set<String> callerRelevant = relevant(callsite.method);
                 boolean relevantFlow = expandCallerArguments(
                         "DISPATCH_CALLER_PARAM",
                         "dispatch_caller_argument",
                         targetMethod, sourceMethod, targetSig, targetRelevant,
-                        callsite, callsiteFact, callerRelevant);
+                        null, callsite, callsiteFact, callerRelevant);
                 if (targetThisRelevant) {
                     relevantFlow |= expandCallerReceiver(true, targetMethod,
                             targetThis, callsite, callsiteFact);
@@ -2983,31 +2488,76 @@ final class SeedBackwardStaticAnalyzer {
                     selectActivationCaller("dispatch_activation",
                             targetMethod, callsite.method, callsiteFact, true);
                 }
+            });
+        }
+    }
+
+    /**
+     * The one walk every call-site expander takes: visit each recorded call
+     * site of {@code callee} the static index can name a fact for, in index
+     * order. Constructor, method, RPC and dispatch callers differ only in
+     * what they demand at a site, never in how the sites are found.
+     * ({@code expandFieldWriters} walks field-write rows, not call sites.)
+     */
+    private void forEachCallsite(
+            Map<String, List<Callsite>> index, String callee,
+            BiConsumer<Callsite, Fact> visit) {
+        List<Callsite> callsites = index.get(callee);
+        if (callsites == null) {
+            return;
+        }
+        for (Callsite callsite : callsites) {
+            Fact callsiteFact = indexedFact(callsite.method,
+                    callsite.unitIndex);
+            if (callsiteFact != null) {
+                visit.accept(callsite, callsiteFact);
             }
         }
     }
 
+    /**
+     * One backward argument expansion at one call site: for every (actual,
+     * formal) index pair the site binds, demand the caller's actual when the
+     * callee's formal is already relevant. {@code ports} names the pairs a
+     * transport binds and a null {@code ports} binds index to index; a null
+     * {@code edgeKind} is a transport the slice does not walk, so the demand
+     * crosses it but no Java edge does. {@code demandScope} is the second
+     * component of the demand key: the dispatch source for a virtual call,
+     * the client stub for a transport.
+     */
     private boolean expandCallerArguments(
             String demandKind, String edgeKind,
-            String targetMethod, String sourceMethod, MethodSig target,
-            Set<String> targetRelevant, MethodCallsite callsite,
+            String targetMethod, String demandScope, MethodSig target,
+            Set<String> targetRelevant, List<ProtocolPortMapping> ports,
+            Callsite callsite,
             Fact callsiteFact, Set<String> callerRelevant) {
         boolean expanded = false;
-        int count = Math.min(callsite.actuals.size(),
-                target.params.size());
+        int count = ports == null
+                ? Math.min(callsite.actuals.size(), target.params.size())
+                : ports.size();
         for (int index = 0; index < count; index++) {
-            String formal = formalParam(target, index);
+            ProtocolPortMapping port = ports == null ? null : ports.get(index);
+            String formal = formalParam(target,
+                    port == null ? index : port.serverParameter);
+            Object[] demand = port == null
+                    ? new Object[]{targetMethod, demandScope, index,
+                            callsite.method, callsite.unitIndex}
+                    : new Object[]{targetMethod, demandScope,
+                            port.clientArgument, port.serverParameter,
+                            callsite.method, callsite.unitIndex};
             if (!targetRelevant.contains(formal)
-                    || !expandOnce(demandKind, targetMethod, sourceMethod,
-                    index, callsite.method, callsite.unitIndex)) {
+                    || !expandOnce(demandKind, demand)) {
                 continue;
             }
-            String actual = callsite.actuals.get(index);
+            String actual = callsite.actuals.get(
+                    port == null ? index : port.clientArgument);
             if (ignoreNode(actual)) {
                 continue;
             }
-            addEdge(edgeKind, actual, formal, callsite.method,
-                    callsiteFact);
+            if (edgeKind != null) {
+                addEdge(edgeKind, actual, formal, callsite.method,
+                        callsiteFact);
+            }
             callerRelevant.add(actual);
             selectedMethods.add(callsite.method);
             expanded = true;
@@ -3017,7 +2567,7 @@ final class SeedBackwardStaticAnalyzer {
 
     private boolean expandCallerReceiver(
             boolean dispatch, String targetMethod, String targetThis,
-            MethodCallsite callsite, Fact callsiteFact) {
+            Callsite callsite, Fact callsiteFact) {
         if (targetThis == null || callsite == null
                 || ignoreNode(callsite.receiver)) {
             return false;
@@ -3039,41 +2589,36 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private List<String> resolveDispatchSources(String targetMethod) {
-        List<String> cached = dispatchSourcesCache.get(targetMethod);
-        if (cached != null) {
-            return cached;
-        }
-        MethodSig targetSig = parseMethodSig(targetMethod);
-        if (targetSig == null || skipDispatchOwner(targetSig.owner)) {
-            dispatchSourcesCache.put(targetMethod, Collections.emptyList());
-            return Collections.emptyList();
-        }
-        SootClass targetClass = classesByName.get(targetSig.owner);
-        if (targetClass == null) {
-            dispatchSourcesCache.put(targetMethod, Collections.emptyList());
-            return Collections.emptyList();
-        }
-        Set<String> sources = new LinkedHashSet<>();
-        String subSignature = methodSubSignature(targetSig);
-        for (String candidateName : hierarchyNames(targetClass)) {
-            SootClass candidate = classesByName.get(candidateName);
-            if (candidate == null || !candidate.isApplicationClass()
-                    || skipDispatchOwner(candidate.getName())
-                    || protocolStubs.isClientOwner(candidate.getName())
-                    || (!candidate.isInterface() && !candidate.isAbstract())) {
-                continue;
+        return memoized(dispatchSourcesCache, targetMethod, ignored -> {
+            MethodSig targetSig = parseMethodSig(targetMethod);
+            if (targetSig == null || skipDispatchOwner(targetSig.owner)) {
+                return Collections.<String>emptyList();
             }
-            for (SootMethod method : candidate.getMethods()) {
-                if (subSignature.equals(method.getSubSignature())) {
-                    sources.add(method.getSignature());
+            SootClass targetClass = classesByName.get(targetSig.owner);
+            if (targetClass == null) {
+                return Collections.<String>emptyList();
+            }
+            Set<String> sources = new LinkedHashSet<>();
+            String subSignature = methodSubSignature(targetSig);
+            for (String candidateName : hierarchyNames(targetClass)) {
+                SootClass candidate = classesByName.get(candidateName);
+                if (candidate == null || !candidate.isApplicationClass()
+                        || skipDispatchOwner(candidate.getName())
+                        || protocolStubs.isClientOwner(candidate.getName())
+                        || (!candidate.isInterface()
+                        && !candidate.isAbstract())) {
+                    continue;
+                }
+                for (SootMethod method : candidate.getMethods()) {
+                    if (subSignature.equals(method.getSubSignature())) {
+                        sources.add(method.getSignature());
+                    }
                 }
             }
-        }
-        List<String> result = sources.isEmpty()
-                ? Collections.emptyList()
-                : Collections.unmodifiableList(new ArrayList<>(sources));
-        dispatchSourcesCache.put(targetMethod, result);
-        return result;
+            return sources.isEmpty() ? Collections.<String>emptyList()
+                    : Collections.unmodifiableList(
+                            new ArrayList<>(sources));
+        });
     }
 
     private boolean isExpandableMethod(String signature) {
@@ -3088,7 +2633,36 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private Set<String> relevant(String method) {
-        return relevantByMethod.computeIfAbsent(method, DirtyRelevantSet::new);
+        return relevantByMethod.computeIfAbsent(method, DirtyMarkingSet::new);
+    }
+
+    /** One computation per key, taken on first demand and kept. */
+    private static <K, V> V memoized(Map<K, V> cache, K key,
+                                     Function<K, V> compute) {
+        V cached = cache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        V computed = compute.apply(key);
+        cache.put(key, computed);
+        return computed;
+    }
+
+    /**
+     * Visits every causal operand of {@code guards}, as the canonical node it
+     * names in {@code method}, skipping the ones no edge may name.
+     */
+    private void forEachGuardOperand(
+            String method, List<ExceptionGuard> guards,
+            BiConsumer<ExceptionGuard, String> visit) {
+        for (ExceptionGuard guard : guards) {
+            for (String use : causalGuardUses(guard.fact)) {
+                String guardNode = canonical(method, use);
+                if (!ignoreNode(guardNode)) {
+                    visit.accept(guard, guardNode);
+                }
+            }
+        }
     }
 
     private boolean expandOnce(String kind, Object... identity) {
@@ -3105,103 +2679,79 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    private final class MethodWorkSet extends LinkedHashSet<String> {
-        @Override
-        public boolean add(String method) {
-            if (!super.add(method)) return false;
-            markDirty(method);
-            return true;
-        }
-
-    }
-
-    private final class DirtyRelevantSet extends LinkedHashSet<String> {
+    private final class DirtyMarkingSet extends LinkedHashSet<String> {
+        /** The method to mark, or null to mark the added value itself. */
         private final String method;
 
-        private DirtyRelevantSet(String method) {
+        private DirtyMarkingSet(String method) {
             this.method = method;
         }
 
         @Override
-        public boolean add(String cell) {
-            if (!super.add(cell)) return false;
-            markDirty(method);
+        public boolean add(String value) {
+            if (!super.add(value)) return false;
+            markDirty(method == null ? value : method);
             return true;
         }
 
     }
 
     private List<String> nonInvokeUses(Fact fact) {
-        List<String> cached = nonInvokeUsesCache.get(fact);
-        if (cached != null) {
-            return cached;
-        }
-        List<String> uses = new ArrayList<>();
-        for (String use : fact.uses) {
-            if (!use.startsWith("virtualinvoke ")
-                    && !use.startsWith("interfaceinvoke ")
-                    && !use.startsWith("specialinvoke ")
-                    && !use.startsWith("staticinvoke ")) {
-                uses.add(use);
+        return memoized(nonInvokeUsesCache, fact, ignored -> {
+            List<String> uses = new ArrayList<>();
+            for (String use : fact.uses) {
+                if (!use.startsWith("virtualinvoke ")
+                        && !use.startsWith("interfaceinvoke ")
+                        && !use.startsWith("specialinvoke ")
+                        && !use.startsWith("staticinvoke ")) {
+                    uses.add(use);
+                }
             }
-        }
-        List<String> result = uses.isEmpty()
-                ? Collections.emptyList()
-                : Collections.unmodifiableList(uses);
-        nonInvokeUsesCache.put(fact, result);
-        return result;
+            return uses.isEmpty() ? Collections.<String>emptyList()
+                    : Collections.unmodifiableList(uses);
+        });
     }
 
     private List<String> localValueUses(Fact fact) {
-        List<String> cached = localValueUsesCache.get(fact);
-        if (cached != null) {
-            return cached;
-        }
-        String invokeBase = invokeBaseLocal(fact.unitText);
-        Set<String> applicationInvokeArgs = new LinkedHashSet<>();
-        MethodSig invoked = parseMethodSig(fact.invoke);
-        boolean applicationInvoke = invoked != null
-                && isApplicationClassName(invoked.owner);
-        boolean valueLikeLibraryInvoke = isValueLikeLibraryInvoke(invoked);
-        if (applicationInvoke) {
-            applicationInvokeArgs.addAll(actualInvokeArgs(fact.unitText));
-        }
-        Set<String> arrayStructureOperands = new LinkedHashSet<>();
-        if (fact.arrayDef != null) {
-            arrayStructureOperands.add(fact.arrayDef.base);
-            arrayStructureOperands.add(fact.arrayDef.index);
-        }
-        if (fact.arrayUse != null) {
-            arrayStructureOperands.add(fact.arrayUse.base);
-            arrayStructureOperands.add(fact.arrayUse.index);
-        }
-        Set<String> uses = new LinkedHashSet<>();
-        for (String use : nonInvokeUses(fact)) {
-            // Soot exposes both a composite expression and each of its
-            // leaf operands through Unit.getUseBoxes().  Only the leaves
-            // are data-flow cells.  Treating an expression such as
-            // "$l1 cmp $l0" as an additional cell creates a false
-            // external frontier even though $l1 and $l0 already define
-            // the comparison result.
-            if (!atomicDataflowUse(use)
-                    || (!valueLikeLibraryInvoke && use.equals(invokeBase))
-                    || applicationInvokeArgs.contains(use)
-                    || arrayStructureOperands.contains(use)
-                    || isFieldAccessValue(use)) {
-                continue;
+        return memoized(localValueUsesCache, fact, ignored -> {
+            String invokeBase = invokeBaseLocal(fact.unitText);
+            Set<String> applicationInvokeArgs = new LinkedHashSet<>();
+            MethodSig invoked = parseMethodSig(fact.invoke);
+            boolean applicationInvoke = invoked != null
+                    && isApplicationClassName(invoked.owner);
+            boolean valueLikeLibraryInvoke = isValueLikeLibraryInvoke(invoked);
+            if (applicationInvoke) {
+                applicationInvokeArgs.addAll(actualInvokeArgs(fact.unitText));
             }
-            // Unit.getUseBoxes() can report both a cast expression and
-            // its leaf local.  The cast is an in-region operation, not a
-            // second data-flow cell.  Preserve the leaf so the backward
-            // slice does not invent an unqualified "(T) local" live-in.
-            String leafLocal = localName(use);
-            uses.add(leafLocal == null ? use : leafLocal);
-        }
-        List<String> result = uses.isEmpty()
-                ? Collections.emptyList()
-                : Collections.unmodifiableList(new ArrayList<>(uses));
-        localValueUsesCache.put(fact, result);
-        return result;
+            Set<String> arrayStructureOperands = new LinkedHashSet<>();
+            if (fact.arrayDef != null) {
+                arrayStructureOperands.add(fact.arrayDef.base);
+                arrayStructureOperands.add(fact.arrayDef.index);
+            }
+            if (fact.arrayUse != null) {
+                arrayStructureOperands.add(fact.arrayUse.base);
+                arrayStructureOperands.add(fact.arrayUse.index);
+            }
+            Set<String> uses = new LinkedHashSet<>();
+            for (String use : nonInvokeUses(fact)) {
+                // Soot exposes both a composite expression and each of its leaf
+                // operands through Unit.getUseBoxes().
+                if (!atomicDataflowUse(use)
+                        || (!valueLikeLibraryInvoke && use.equals(invokeBase))
+                        || applicationInvokeArgs.contains(use)
+                        || arrayStructureOperands.contains(use)
+                        || isFieldAccessValue(use)) {
+                    continue;
+                }
+                // Unit.getUseBoxes() can report both a cast expression and its
+                // leaf local.
+                String leafLocal = localName(use);
+                uses.add(leafLocal == null ? use : leafLocal);
+            }
+            return uses.isEmpty() ? Collections.<String>emptyList()
+                    : Collections.unmodifiableList(
+                            new ArrayList<>(uses));
+        });
     }
 
     private boolean atomicDataflowUse(String value) {
@@ -3224,21 +2774,8 @@ final class SeedBackwardStaticAnalyzer {
             return false;
         }
         String owner = invoked.owner;
-        if (invoked.params.isEmpty()
-                && (("java.lang.Byte".equals(owner)
-                        && "byteValue".equals(invoked.name))
-                || ("java.lang.Short".equals(owner)
-                        && "shortValue".equals(invoked.name))
-                || ("java.lang.Integer".equals(owner)
-                        && "intValue".equals(invoked.name))
-                || ("java.lang.Long".equals(owner)
-                        && "longValue".equals(invoked.name))
-                || ("java.lang.Character".equals(owner)
-                        && "charValue".equals(invoked.name))
-                || ("java.lang.Float".equals(owner)
-                        && "floatValue".equals(invoked.name))
-                || ("java.lang.Double".equals(owner)
-                        && "doubleValue".equals(invoked.name)))) {
+        if (invoked.params.isEmpty() && VALUE_LIKE_UNBOXING.contains(
+                owner + "." + invoked.name)) {
             return true;
         }
         if ("java.lang.String".equals(owner)) {
@@ -3284,16 +2821,11 @@ final class SeedBackwardStaticAnalyzer {
     private List<String> cachedCanonicalList(
             Map<Fact, List<String>> cache, String method, Fact fact,
             Collection<String> values) {
-        List<String> cached = cache.get(fact);
-        if (cached != null) {
-            return cached;
-        }
-        List<String> canonical = canonicalList(method, values);
-        List<String> result = canonical.isEmpty()
-                ? Collections.emptyList()
-                : Collections.unmodifiableList(canonical);
-        cache.put(fact, result);
-        return result;
+        return memoized(cache, fact, ignored -> {
+            List<String> canonical = canonicalList(method, values);
+            return canonical.isEmpty() ? Collections.<String>emptyList()
+                    : Collections.unmodifiableList(canonical);
+        });
     }
 
     private List<String> canonicalPositionList(String method, Collection<String> values) {
@@ -3350,6 +2882,7 @@ final class SeedBackwardStaticAnalyzer {
         return fact.method + "#u" + fact.unitIndex;
     }
 
+    /** Returns the canonical local bound to {@code @this}. */
     private String methodThisNode(String method) {
         String cached = methodThisNodeCache.get(method);
         if (cached != null) {
@@ -3362,12 +2895,21 @@ final class SeedBackwardStaticAnalyzer {
         if (facts == null) {
             return null;
         }
-        return methodThisNode(method, facts);
+        for (Fact fact : facts) {
+            Matcher matcher = METHOD_THIS_PATTERN.matcher(fact.unitText);
+            if (matcher.find()) {
+                String result = canonical(method, matcher.group(1));
+                methodThisNodeCache.put(method, result);
+                return result;
+            }
+        }
+        methodsWithoutThisNode.add(method);
+        return null;
     }
 
     private void expandConstructorReceiverFields(String constructor,
                                                  String constructorThis,
-                                                 ConstructorCallsite callsite,
+                                                 Callsite callsite,
                                                  Fact callsiteFact) {
         if (constructorThis == null || ignoreNode(callsite.receiver)) {
             return;
@@ -3390,14 +2932,9 @@ final class SeedBackwardStaticAnalyzer {
                 || owner.endsWith("[]")) {
             return null;
         }
-        return resolveInHierarchy(owner, sootClass -> {
-            for (SootField field : sootClass.getFields()) {
-                if (fieldName.equals(field.getName())) {
-                    return field;
-                }
-            }
-            return null;
-        });
+        return resolveInHierarchy(owner, sootClass ->
+                CausynthStaticFacts.field(sootClass,
+                        field -> fieldName.equals(field.getName())));
     }
 
     private <T> T resolveInHierarchy(String owner,
@@ -3410,16 +2947,16 @@ final class SeedBackwardStaticAnalyzer {
                 return null;
             }
         }
+        return walkHierarchy(root, resolver);
+    }
+
+    /** The one hierarchy walk: first non-null answer, or null. */
+    private static <T> T walkHierarchy(SootClass root,
+                                       Function<SootClass, T> resolver) {
         if (root == null) {
             return null;
         }
-        return resolveInHierarchy(root, resolver);
-    }
-
-    private <T> T resolveInHierarchy(SootClass root,
-                                     Function<SootClass, T> resolver) {
-        Set<SootClass> seen = Collections.newSetFromMap(
-                new IdentityHashMap<>());
+        Set<SootClass> seen = new LinkedHashSet<>();
         Deque<SootClass> work = new ArrayDeque<>();
         work.add(root);
         while (!work.isEmpty()) {
@@ -3459,15 +2996,10 @@ final class SeedBackwardStaticAnalyzer {
         return erased;
     }
 
-    private void addEdge(String kind, Object from, Object to, String method,
-                         Fact fact) {
-        addEdgeInternal(kind, from, to, method, fact);
-    }
-
-    private void addEdgeInternal(String kind, Object from, Object to,
-                                 String method, Fact fact) {
+    private Map<String, Object> addEdge(String kind, Object from, Object to,
+                                        String method, Fact fact) {
         if (from == null || to == null) {
-            return;
+            return null;
         }
         String fromText = String.valueOf(from);
         String toText = String.valueOf(to);
@@ -3476,7 +3008,7 @@ final class SeedBackwardStaticAnalyzer {
                         fromText, toText, fact != null);
         if (ignoreNode(fromText) || ignoreNode(toText)
                 || fromText.equals(toText) && !sameCellPathGuard) {
-            return;
+            return null;
         }
         EdgeIdentity key = edgeKey(kind, fromText, toText, method, fact);
         Map<String, Object> edge = emittedEdgeRows.get(key);
@@ -3525,27 +3057,18 @@ final class SeedBackwardStaticAnalyzer {
             }
             emittedEdgeRows.put(key, edge);
         }
+        return edge;
     }
 
     private boolean loopControlGuard(String method, Unit unit) {
-        Set<Unit> guards = loopControlGuardsByMethod.get(method);
-        if (guards == null) {
-            MethodControlFlow controlFlow = controlFlow(method);
-            guards = controlFlow == null
-                    ? Collections.<Unit>emptySet()
-                    : CfgLoopControl.guards(controlFlow.loopCfg);
-            loopControlGuardsByMethod.put(method, guards);
-        }
-        return guards.contains(unit);
+        MethodControlFlow controlFlow = controlFlow(method);
+        return controlFlow != null
+                && controlFlow.loopControlGuards().contains(unit);
     }
 
     /**
-     * Proves that one ordinary {@code local_def_use} row is an exact JVM
-     * value copy.  A VALUE_PASS label alone is not evidence: field/array
-     * reads, casts, invokes, and other expressions can all look like a
-     * non-arithmetic pass in rendered Jimple.  Inspect the original Soot
-     * statement and require the emitted endpoint pair to be exactly the
-     * local operand and its local/return destination.
+     * Proves that one ordinary {@code local_def_use} row is an exact JVM value
+     * copy.
      */
     private boolean exactLocalDirectCopy(String kind, String fromText,
                                          String toText, String method,
@@ -3587,15 +3110,7 @@ final class SeedBackwardStaticAnalyzer {
 
     private EdgeIdentity edgeKey(String kind, Object from, Object to,
                                  String method, Fact fact) {
-        // A concrete Soot unit is part of a causal edge's identity.  The
-        // same value endpoints can occur at multiple bytecode/Jimple sites
-        // (for example, two branch arms reading the same field into the same
-        // merge local, or two calls supplying the same actual to one formal).
-        // Collapsing those rows loses exact capture/materialization choices
-        // and can make a genuinely ambiguous field read appear unique.
-        // Repeated fixed-point visits to the same unit still deduplicate via
-        // the stable method/unit site id. Synthetic edges use endpoint
-        // identity because they have no concrete site to distinguish.
+        // A concrete Soot unit is part of a causal edge's identity.
         return new EdgeIdentity(String.valueOf(kind), String.valueOf(from),
                 String.valueOf(to), String.valueOf(method),
                 fact != null, fact == null ? -1 : fact.unitIndex);
@@ -3653,11 +3168,7 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /**
-     * Exact replacement for the old newline-joined edge key.  Keeping the
-     * endpoint strings as tuple members avoids retaining a second, much
-     * larger concatenated char array for every emitted edge.
-     */
+    /** Exact replacement for the old newline-joined edge key. */
     private static final class EdgeIdentity {
         private final String kind;
         private final String from;
@@ -3708,28 +3219,20 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private static final class MethodControlFlow {
-        private final Body body;
-        /**
-         * The method's ordinary transfers.  Control dependence and the
-         * per-occurrence reachability queries read this graph: an abrupt
-         * transfer out of a protected range is not a decision a branch
-         * takes, so it must not widen those answers.
-         */
-        private final UnitGraph graph;
-        /**
-         * The same transfers as the method's one loop CFG, with dominance
-         * repaired for trapped bodies.  Every loop question about this
-         * method -- here and in the bound pass -- is answered from it.
-         */
-        private final CfgLoopControl.LoopCfg loopCfg;
-        private final Map<Unit, Fact> factsByUnit;
+        /** The method's one loop CFG: its ordinary transfers, and the
+         *  dominance its guards are proved on. */
+        private final CfgLoopControl.LoopCfg cfg;
+        private Set<Unit> loopControlGuards;
 
-        private MethodControlFlow(Body body, UnitGraph graph,
-                                  Map<Unit, Fact> factsByUnit) {
-            this.body = body;
-            this.graph = graph;
-            this.loopCfg = CfgLoopControl.loopCfg(body, graph);
-            this.factsByUnit = factsByUnit;
+        private MethodControlFlow(CfgLoopControl.LoopCfg cfg) {
+            this.cfg = cfg;
+        }
+
+        private Set<Unit> loopControlGuards() {
+            if (loopControlGuards == null) {
+                loopControlGuards = CfgLoopControl.guards(cfg);
+            }
+            return loopControlGuards;
         }
     }
 
@@ -3744,7 +3247,8 @@ final class SeedBackwardStaticAnalyzer {
         if (invalidMethodSignatures.contains(raw)) {
             return null;
         }
-        Matcher matcher = METHOD_SIGNATURE_PATTERN.matcher(raw);
+        Matcher matcher =
+                CausynthStaticFacts.METHOD_SIGNATURE.matcher(raw);
         if (!matcher.find()) {
             invalidMethodSignatures.add(raw);
             return null;
@@ -3767,13 +3271,9 @@ final class SeedBackwardStaticAnalyzer {
         return method + "#synthetic:" + firstNonBlank(kind, "edge");
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
-            }
-        }
-        return null;
+    private static Set<String> names(String... values) {
+        return Collections.unmodifiableSet(
+                new LinkedHashSet<>(Arrays.asList(values)));
     }
 
     private static Map<String, Object> object(Object... keyValues) {

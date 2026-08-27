@@ -366,13 +366,22 @@ print_normalized_config() {
 validate_config() {
   local key
   local missing=0
-  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test; do
+  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test causynth_loop_bounds; do
     if [[ -z "${!key}" ]]; then
       echo "Missing workflow config value: ${key}" >&2
       missing=1
     fi
   done
   [[ ${missing} -eq 0 ]] || return 1
+  # README section "Loops": no retained condition-controlled loop may inherit
+  # the core default, so the per-loop K_L declarations belong to the workload's
+  # frozen configuration. The key is required rather than optional because an
+  # absent key and a campaign whose declarations never arrived are the same
+  # run: every retained loop silently models an 8-body prefix and nothing in
+  # the published artifacts says so. A workload that retains no condition loop
+  # still names a file -- one holding no rows -- because "none" is a statement
+  # and an absent key is only silence.
+  require_file "loop body bound declarations" "${causynth_loop_bounds}"
   if [[ -n "${causynth_protocol_stubs}" ]]; then
     require_file "protocol stub mapping" "${causynth_protocol_stubs}"
   fi
@@ -463,13 +472,14 @@ do_analyze() {
   # loops, so they are named here rather than inherited from whatever
   # environment happened to reach the JVM: a campaign whose declarations
   # silently failed to arrive would model an 8-body prefix and report nothing
-  # about it. A configured file that does not exist is a die, not a fallback.
-  if [[ -n "${causynth_loop_bounds}" ]]; then
-    require_file "loop body bound declarations" "${causynth_loop_bounds}"
-    system_properties+=(
-      "-Dcausynth.loop.bounds=${causynth_loop_bounds}"
-    )
-  fi
+  # about it. The requirement is unconditional, like the target specification
+  # above it -- an unset key used to skip the check entirely, which is exactly
+  # the run this comment claimed to refuse. A configured file that does not
+  # exist is a die, not a fallback.
+  require_file "loop body bound declarations" "${causynth_loop_bounds}"
+  system_properties+=(
+    "-Dcausynth.loop.bounds=${causynth_loop_bounds}"
+  )
   if [[ -n "${CAUSYNTH_TRACE_MODE:-}" ]]; then
     system_properties+=(
       "-Dcausynth.trace.mode=${CAUSYNTH_TRACE_MODE}"
@@ -485,17 +495,6 @@ do_analyze() {
       "-Dcausynth.instrument.concolic=true"
       "-Dcausynth.concolic.task.plan=${concolic_plan}"
       "-Dcausynth.concolic.task.id=${concolic_task_ids}"
-    )
-  fi
-  # Where the concolic pass states what it rewrote: unique methods and hook
-  # sites, counted from the rewritten bodies. It is a static count and is
-  # deliberately separate from any trace event count -- a trace sequence
-  # number says how many times instrumented code ran, not how much code was
-  # instrumented, and reading one as the other is what made a replay that
-  # never left waitActive() look like a symbolic-execution cost.
-  if [[ -n "${CAUSYNTH_CONCOLIC_ENVELOPE_REPORT:-}" ]]; then
-    system_properties+=(
-      "-Dcausynth.concolic.envelope.report=${CAUSYNTH_CONCOLIC_ENVELOPE_REPORT}"
     )
   fi
   require_file "GraphChecker jar" "${graphchecker_jar}"
@@ -729,6 +728,13 @@ campaign_stage_metrics=""
 campaign_provenance=""
 campaign_delta_rows=0
 campaign_delta_divergences=0
+# This iteration's task-set membership, decoded once by PLAN from the frozen
+# schedule index (README "Minimal cross-stage contract": one owner per check).
+# IMPORT, EXPLORE, the iteration manifest and COMPOSE read these rows; they do
+# not re-decode the index, because re-deriving the same membership at five
+# stages is five chances to disagree about one frozen file that is written
+# once and never rewritten.
+campaign_member_rows=""
 
 campaign_log() {
   printf '[campaign] %s\n' "$*"
@@ -1097,6 +1103,8 @@ campaign_path_closures_json() {
 # Publish one checked snapshot of the immutable worker closures.  Validation
 # and EMIT then consume the same bytes; a later process-substitution failure
 # cannot silently turn a prefix of the worker tree into the reported set.
+# campaign_path_closures_json is the one place a closure row is checked; the
+# snapshot is written from its checked output and is not re-checked here.
 campaign_materialize_path_closures() {
   local workers=$1 output=$2 pending
   pending="${output}.tmp"
@@ -1105,11 +1113,6 @@ campaign_materialize_path_closures() {
     return 1
   }
   if ! campaign_path_closures_json "${workers}" >"${pending}"; then
-    return 1
-  fi
-  if ! jq -e 'type == "array" and all(.[];
-      .schemaVersion == 1 and .kind == "REGION_PATH_WORKLIST"
-      and (.coverageGaps | type == "array"))' "${pending}" >/dev/null; then
     return 1
   fi
   mv -- "${pending}" "${output}"
@@ -1296,7 +1299,11 @@ campaign_freeze() {
   if ! stubs_sha=$(campaign_optional_digest "${causynth_protocol_stubs}"); then
     campaign_fail FREEZE CAMPAIGN "${causynth_protocol_stubs}" "digest failed"
   fi
-  if ! bounds_sha=$(campaign_optional_digest "${causynth_loop_bounds}"); then
+  # Not campaign_optional_digest: that returns an empty digest for a file
+  # that is not there, and an empty loopBounds.sha256 in the frozen manifest
+  # is the one thing an accepted candidate must never be allowed to carry --
+  # it records "the bounds were whatever" as though it were provenance.
+  if ! bounds_sha=$(campaign_digest "${causynth_loop_bounds}"); then
     campaign_fail FREEZE CAMPAIGN "${causynth_loop_bounds}" "digest failed"
   fi
   if ! symbolic_inputs_sha=$(campaign_optional_digest \
@@ -1375,6 +1382,96 @@ campaign_freeze() {
   fi
 }
 
+# GATE-1: acceptance requires *current* frozen provenance, not provenance that
+# was current when the run started. A campaign is hours long, and every frozen
+# input except the tool jar lives outside the immutable root, so nothing stops
+# a rebuild, an editor, or a second agent from moving one underneath a running
+# generation. EMIT therefore re-reads what FREEZE stamped and refuses to
+# publish a candidate whose inputs no longer hash to the manifest that claims
+# to bind them.
+#
+# Scope is the FREEZE stage's inputs and only those: jar, VM and its three
+# libraries, config, target spec, protocol stubs, per-loop bounds, symbolic
+# input selection, the production/test class trees, and the workload classpath
+# string. The SEED additions (static catalog, region plan, refined graph) are
+# this campaign's own outputs rather than its inputs, and the INSTRUMENT stage
+# legitimately rewrites the analysis root they sit in; re-hashing them here
+# would report the run's own work as drift. The two checkout states are left
+# alone for the same reason -- campaign_checkout_state hashes every file git
+# reports as dirty or untracked, and a workload writes cluster scratch beneath
+# its working directory while it runs.
+campaign_verify_frozen_inputs() {
+  local rows kind label path expected actual classpath_sha
+  if ! rows=$(jq -r '
+      [{kind: "file", label: "jar", entry: .jar},
+       {kind: "file", label: "vm", entry: .vm},
+       {kind: "file", label: "vm.rtJar", entry: .vm.rtJar},
+       {kind: "file", label: "vm.libjava", entry: .vm.libjava},
+       {kind: "file", label: "vm.libjvm", entry: .vm.libjvm},
+       {kind: "file", label: "config", entry: .config},
+       {kind: "file", label: "targetSpec", entry: .targetSpec},
+       {kind: "file", label: "protocolStubs", entry: .protocolStubs},
+       {kind: "file", label: "loopBounds", entry: .loopBounds},
+       {kind: "file", label: "symbolicInputs", entry: .symbolicInputs},
+       {kind: "tree", label: "productionClasses", entry: .productionClasses},
+       {kind: "tree", label: "workload.testClasses",
+        entry: .workload.testClasses}]
+      | .[]
+      | select(.entry != null)
+      | [.kind, .label,
+         (if (.entry.path // "") == "" then "-" else .entry.path end),
+         (if (.entry.sha256 // "") == "" then "-" else .entry.sha256 end)]
+      | @tsv' <<<"${campaign_provenance}"); then
+    campaign_fail EMIT CAMPAIGN "${campaign_final}" \
+      "the frozen campaign provenance could not be read back"
+  fi
+  while IFS=$'\t' read -r kind label path expected; do
+    [[ -n "${label}" ]] || continue
+    # An input this workload never configured is frozen as an unnamed entry.
+    # It stays unnamed; a digest without a path is a provenance row nobody can
+    # re-derive, so it is refused rather than skipped.
+    if [[ "${path}" == "-" ]]; then
+      [[ "${expected}" == "-" ]] || campaign_fail EMIT CAMPAIGN "${label}" \
+        "the frozen provenance digests an input it names no path for"
+      continue
+    fi
+    case "${kind}" in
+      file)
+        [[ -f "${path}" ]] || campaign_fail EMIT CAMPAIGN "${path}" \
+          "frozen input ${label} no longer exists"
+        if ! actual=$(campaign_digest "${path}"); then
+          campaign_fail EMIT CAMPAIGN "${path}" \
+            "frozen input ${label} could not be re-digested"
+        fi
+        ;;
+      tree)
+        if ! actual=$(campaign_tree_digest "${path}"); then
+          campaign_fail EMIT CAMPAIGN "${path}" \
+            "frozen input ${label} could not be re-digested"
+        fi
+        ;;
+      *) campaign_fail EMIT CAMPAIGN "${label}" \
+          "unknown frozen provenance entry kind: ${kind}" ;;
+    esac
+    [[ "${actual}" == "${expected}" ]] || campaign_fail EMIT CAMPAIGN \
+      "${path}" \
+      "frozen input ${label} changed after it was frozen: manifest sha256=${expected} current sha256=${actual}"
+  done <<<"${rows}"
+
+  # The classpath is a string rather than a file, so its frozen digest is over
+  # the string the stages were actually handed. It cannot drift on disk, but it
+  # can drift in this process: a stage that rewrote it would leave every replay
+  # reading a classpath the manifest does not describe.
+  if ! classpath_sha=$(printf '%s' "${project_classpath}" | sha256sum \
+      | awk '{print $1}'); then
+    campaign_fail EMIT CAMPAIGN "project_classpath" "digest failed"
+  fi
+  [[ "${classpath_sha}" == \
+      "$(jq -r '.workload.classpathSha256 // ""' <<<"${campaign_provenance}")" ]] \
+    || campaign_fail EMIT CAMPAIGN "project_classpath" \
+      "the workload classpath changed after it was frozen"
+}
+
 # The stock-JVM seed: the static pass, then the two traced passes the workload
 # stage owns. Its outputs are the campaign's static catalog and target closure.
 campaign_seed() {
@@ -1430,7 +1527,7 @@ campaign_plan() {
   local plan="${iteration_dir}/execution_task_plan.jsonl"
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
   local frozen="${iteration_dir}/concolic_region_plan.jsonl"
-  local role campaign_id region occurrence goal task worker member_rows
+  local role campaign_id region occurrence goal task worker
   local plan_hash plan_size region_hash region_size
 
   require_nonempty "runtime region plan" "${runtime_region_plan}"
@@ -1438,7 +1535,7 @@ campaign_plan() {
   cp -f "${runtime_region_plan}" "${frozen}"
   schedule_output_dir="${iteration_dir}"
   schedule_summaries="${carry}"
-  do_schedule --target-first
+  do_schedule
   # Every later consumer reads this iteration's frozen copy, never the mutable
   # discovery output.
   runtime_region_plan="${frozen}"
@@ -1471,24 +1568,25 @@ campaign_plan() {
     || campaign_fail PLAN ConcolicScheduler "${index}" \
       "the target-first schedule index does not commit the canonical task plan"
 
-  if ! member_rows=$(campaign_decode_index_members "${index}"); then
+  # The one task-set membership decode of this iteration. Every later stage
+  # reads these rows; the index is frozen beside them and is never re-decoded.
+  if ! campaign_member_rows=$(campaign_decode_index_members "${index}"); then
     campaign_fail PLAN ConcolicScheduler "${index}" \
       "the target-first schedule index has an invalid membership schema"
   fi
-  [[ -n "${member_rows}" ]] || campaign_fail PLAN ConcolicScheduler \
+  [[ -n "${campaign_member_rows}" ]] || campaign_fail PLAN ConcolicScheduler \
     "${index}" "the target-first schedule index names no target member"
+  # No per-task re-check of the split below: the digest/membership assertion
+  # above already proved that the indexed task ids are exactly the plan's task
+  # ids and that no task id repeats in the plan, so each split holds exactly
+  # one row by construction.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     worker="${iteration_dir}/workers/${task}"
     mkdir -p "${worker}"
     jq -c --arg task "${task}" 'select(.taskId == $task)' "${plan}" \
       >"${worker}/execution_task_plan.jsonl"
-    jq -e -s --arg task "${task}" '
-        length == 1 and .[0].taskId == $task
-      ' "${worker}/execution_task_plan.jsonl" >/dev/null \
-      || campaign_fail PLAN ConcolicScheduler "${plan}" \
-        "indexed campaign task ${task} is absent from the canonical task plan"
     campaign_log "member ${role} task=${task} occurrence=${occurrence}"
-  done <<<"${member_rows}"
+  done <<<"${campaign_member_rows}"
   campaign_log "planned tasks: $(jq -s 'length' "${plan}") by goal $(jq -r -s '
     group_by(.goalKind) | map("\(.[0].goalKind)=\(length)") | join(" ")' \
     "${plan}")"
@@ -1577,7 +1675,7 @@ campaign_import_session() {
   local iteration_dir=$1 iteration_id=$2
   local seed="${iteration_dir}/seed-result"
   local summaries="${iteration_dir}/concolic_region_summaries.jsonl"
-  local role campaign_id region occurrence goal task member_rows
+  local role campaign_id region occurrence goal task
   local status=0
   raw_concolic_results="${seed}/concolic_region_results.jsonl"
   import_task_plan="${iteration_dir}/execution_task_plan.jsonl"
@@ -1598,22 +1696,13 @@ campaign_import_session() {
   # Fan the importer's own rows out to the member directories the workers use.
   # A member the importer wrote nothing for keeps an empty file and a named
   # gap; it is not admitted here and it does not stop the iteration.
-  if ! member_rows=$(campaign_decode_index_members \
-      "${iteration_dir}/runtime_workflow_schedule_index.json"); then
-    campaign_fail IMPORT ConcolicScheduler \
-      "${iteration_dir}/runtime_workflow_schedule_index.json" \
-      "the frozen schedule index has an invalid membership schema"
-  fi
-  [[ -n "${member_rows}" ]] || campaign_fail IMPORT ConcolicScheduler \
-    "${iteration_dir}/runtime_workflow_schedule_index.json" \
-    "the frozen schedule index names no target member"
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     campaign_json select-summary "${summaries}" "${task}" \
       >"${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl"
     [[ -s "${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl" ]] \
       || campaign_record_gap "${iteration_dir}" IMPORT_WITHOUT_SUMMARY \
         "${task}" "the importer published no summary for this member task"
-  done <<<"${member_rows}"
+  done <<<"${campaign_member_rows}"
   campaign_log "imported summaries: $(wc -l <"${summaries}")"
 }
 
@@ -1638,7 +1727,7 @@ campaign_seed_query() {
   # unconstrained schedule rebuilt unrelated candidates until max-jobs and
   # could truncate the selected target before its imported summary emitted
   # the one branch query this pass exists to publish.
-  do_schedule --target-first
+  do_schedule
   [[ -s "${query_dir}/branch_queries.jsonl" ]] || campaign_record_gap \
     "${iteration_dir}" TARGET_QUERY_ABSENT "${iteration_dir}" \
     "the scheduler published no branch query from the imported summaries"
@@ -1805,16 +1894,13 @@ campaign_worker_task() {
   fi
 
   # The replay member is durable. Import it together with exactly those live
-  # consumers that attest a schema-v3 handoff or an exact configured-source
-  # selector from this replay task. Matching by taskId is safe here because
-  # both pieces of evidence obtain that id from the accepted live producer
-  # occurrence; port/value identity remains VM-owned.
+  # consumers that attest a schema-v3 handoff from this replay task. Matching
+  # by taskId is safe here because that evidence obtains the id from the
+  # accepted live producer occurrence; port/value identity remains VM-owned.
   jq -c --arg task "${replay_task}" '
     select(.taskId == $task
       or any(.vmHandoffEvents[]?;
-        .producerTaskId == $task)
-      or any(.configuredSourceSelectorEvidence[]?;
-        .sourceTaskId == $task))
+        .producerTaskId == $task))
   ' "${session_raw}" >"${raw}"
   require_nonempty "path worker result and handoff companions" "${raw}"
   jq -c --slurpfile rows "${raw}" '
@@ -2068,17 +2154,8 @@ campaign_target_reach_query() {
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local role campaign_id region occurrence goal task target_task=""
-  local target_summaries="" member_rows
+  local target_summaries=""
   local -a target_summary_inputs=()
-  if ! member_rows=$(campaign_decode_index_members \
-      "${iteration_dir}/runtime_workflow_schedule_index.json"); then
-    campaign_fail EXPLORE ConcolicScheduler \
-      "${iteration_dir}/runtime_workflow_schedule_index.json" \
-      "the frozen schedule index has an invalid membership schema"
-  fi
-  [[ -n "${member_rows}" ]] || campaign_fail EXPLORE ConcolicScheduler \
-    "${iteration_dir}/runtime_workflow_schedule_index.json" \
-    "the frozen schedule index names no target member"
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     if [[ ! -s "${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl" ]]; then
       campaign_record_gap "${iteration_dir}" MEMBER_NOT_EXPLORED "${task}" \
@@ -2090,7 +2167,7 @@ campaign_explore() {
     if [[ "${role}" == "TARGET" ]]; then
       target_task=${task}
     fi
-  done <<<"${member_rows}"
+  done <<<"${campaign_member_rows}"
 
   # A producer replay can carry its expression through RPC and make the
   # already-selected target occurrence take the required outcome.  Those
@@ -2109,7 +2186,7 @@ campaign_explore() {
         || continue
       target_summary_inputs+=(
         "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl")
-    done <<<"${member_rows}"
+    done <<<"${campaign_member_rows}"
     campaign_json combine summaryId "${target_summaries}" \
       "${target_summary_inputs[@]}"
     campaign_target_reach_query "${iteration_dir}" "${target_task}"
@@ -2160,14 +2237,8 @@ campaign_publish_iteration_manifest() {
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
   local members="${iteration_dir}/.members.jsonl"
   local role campaign_id region occurrence goal task worker
-  local member_rows obligations plan_sha index_sha summaries_sha
+  local obligations plan_sha index_sha summaries_sha
   : >"${members}"
-  if ! member_rows=$(campaign_decode_index_members "${index}"); then
-    campaign_fail EMIT ConcolicScheduler "${index}" \
-      "the frozen schedule index has an invalid membership schema"
-  fi
-  [[ -n "${member_rows}" ]] || campaign_fail EMIT ConcolicScheduler \
-    "${index}" "the frozen schedule index names no target member"
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     worker="${iteration_dir}/workers/${task}"
     if ! obligations=$(find "${worker}" -mindepth 2 -maxdepth 2 \
@@ -2185,7 +2256,7 @@ campaign_publish_iteration_manifest() {
         occurrenceId: $occurrence, goalId: $goal, taskId: $task,
         workerDir: $dir, obligationDigests: $obligations}' \
       >>"${members}"
-  done <<<"${member_rows}"
+  done <<<"${campaign_member_rows}"
   if ! plan_sha=$(campaign_digest \
       "${iteration_dir}/execution_task_plan.jsonl"); then
     campaign_fail EMIT CAMPAIGN \
@@ -2249,17 +2320,8 @@ campaign_compose() {
   local iteration_dir=$1
   local role campaign_id region occurrence goal task
   local target_task="" target_region="" target_occurrence=""
-  local status=0 member_rows
+  local status=0
   local -a merged=()
-  if ! member_rows=$(campaign_decode_index_members \
-      "${iteration_dir}/runtime_workflow_schedule_index.json"); then
-    campaign_fail COMPOSE ConcolicScheduler \
-      "${iteration_dir}/runtime_workflow_schedule_index.json" \
-      "the frozen schedule index has an invalid membership schema"
-  fi
-  [[ -n "${member_rows}" ]] || campaign_fail COMPOSE ConcolicScheduler \
-    "${iteration_dir}/runtime_workflow_schedule_index.json" \
-    "the frozen schedule index names no target member"
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     if [[ "${role}" == "TARGET" ]]; then
       target_task=${task}
@@ -2272,7 +2334,7 @@ campaign_compose() {
     # second refusal here.
     [[ -s "${iteration_dir}/workers/${task}/merged_summary.jsonl" ]] || continue
     merged+=("${iteration_dir}/workers/${task}/merged_summary.jsonl")
-  done <<<"${member_rows}"
+  done <<<"${campaign_member_rows}"
   [[ -n "${target_task}" ]] || campaign_fail COMPOSE ConcolicScheduler \
     "${iteration_dir}/runtime_workflow_schedule_index.json" \
     "the frozen schedule index names no target member"
@@ -2316,26 +2378,10 @@ campaign_solve() {
     || die "the solver result has no valid symbolic variable model: ${reach_report}"
 }
 
-# The causal projection is a diagnostic drawing of a composition the Composer
-# already accepted or refused. It never gates the SMT: a projection that could
-# not be drawn says something about the projection.
-campaign_graph() {
-  local status=0
-  mkdir -p "${campaign_final}/graph"
-  set +e
-  run_java_main edu.uva.liftlab.graphchecker.concolic.CausalGraphWriter \
-    "${composition_manifest}" "${campaign_final}/graph" "${reach_report}"
-  status=$?
-  set -e
-  [[ "${status}" -eq 0 ]] \
-    || campaign_log "the causal projection was not drawn (exit ${status}); it is diagnostic"
-}
-
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
     z3-result.json path-closures.json gaps.json result.json)
-  local -a optional=(graph/causal_model.json)
   local -a names=()
   local -a rows=()
   for name in "${required[@]}"; do
@@ -2345,9 +2391,6 @@ campaign_artifact_digests() {
       return 1
     }
     names+=("${name}")
-  done
-  for name in "${optional[@]}"; do
-    [[ ! -f "${campaign_final}/${name}" ]] || names+=("${name}")
   done
   for name in "${names[@]}"; do
     path="${campaign_final}/${name}"
@@ -2401,10 +2444,17 @@ campaign_write_coverage_gaps() {
               detail: (.reason // .gap // "")}]
        + [$pathClosures[]? as $closure
            | $closure.coverageGaps[]?
+           # A worklist gap names its own region; a gap the worklist only
+           # forwarded from an imported summary names the recorded evidence
+           # identity instead, and that identity is the only subject it has.
+           # Both carry a free-text detail worth more than the reason code
+           # alone, so the row states the code and the detail it has.
            | {stage: "EXPLORE", source: "PATH_WORKLIST",
               code: (.kind // ""),
-              subject: (.queryKey // .regionId // ""),
-              detail: (.reason // "")}]
+              subject: (.queryKey // .regionId
+                        // .evidenceIdentity.taskId // ""),
+              detail: ([(.reason // ""), (.detail // "")]
+                       | map(select(. != "")) | join(": "))}]
        | unique_by([.stage, .source, .code, .subject, .detail]))}
     | .gapCount = (.gaps | length)
     | .byStage = (.gaps | group_by(.stage)
@@ -2420,6 +2470,9 @@ campaign_emit() {
   local path_closures_artifact="${campaign_final}/path-closures.json"
   local artifacts_json stages_json iterations_json
   local -a raw_results=()
+  # Before anything is published: the generation this run was frozen on must
+  # still be the generation on disk.
+  campaign_verify_frozen_inputs
   if ! raw_result_list=$(find "${iteration_dir}" -type f \
       -name 'concolic_region_results.jsonl' -print | LC_ALL=C sort); then
     campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
@@ -2430,30 +2483,17 @@ campaign_emit() {
   [[ ${#raw_results[@]} -gt 0 ]] || die \
     "the iteration published no raw replay result: ${iteration_dir}"
 
+  # One readable document each, because the reads below are jq invocations
+  # that would otherwise hide a producer's parse failure behind their own
+  # successful exit. What schemaVersion and kind those documents declare is
+  # the Composer's and the extractor's own contract, published by the layer
+  # that writes them; the shell does not restate it.
   campaign_require_json "candidate composition manifest" \
     "${composition_manifest}" || campaign_fail EMIT ConcolicSmtComposer \
       "${composition_manifest}" "required composition JSON is malformed"
   campaign_require_json "Z3 reachability result" "${reach_report}" \
     || campaign_fail EMIT BooleanReachConditionExtractor "${reach_report}" \
       "required reachability JSON is malformed"
-  if ! jq -e -s '
-      if length == 1 and .[0].schemaVersion == 2
-          and .[0].kind == "CONCOLIC_COMPOSED_SMT"
-      then true
-      else error("expected one canonical composition document") end' \
-      "${composition_manifest}" >/dev/null; then
-    campaign_fail EMIT ConcolicSmtComposer "${composition_manifest}" \
-      "failed to read the validated composition JSON"
-  fi
-  if ! jq -e -s '
-      if length == 1 and .[0].schemaVersion == 3
-          and .[0].kind == "BOOLEAN_REACH_CONDITION_REPORT"
-      then true
-      else error("expected one canonical reachability document") end' \
-      "${reach_report}" >/dev/null; then
-    campaign_fail EMIT BooleanReachConditionExtractor "${reach_report}" \
-      "failed to read the validated reachability JSON"
-  fi
   if ! campaign_jsonl_array "import diagnostics" \
       "${iteration_dir}/import_diagnostics.jsonl" >/dev/null; then
     campaign_fail EMIT ConcolicSummaryImporter \
@@ -2487,16 +2527,6 @@ campaign_emit() {
   campaign_require_json "campaign gaps" "${campaign_final}/gaps.json" \
     || campaign_fail EMIT CAMPAIGN "${campaign_final}/gaps.json" \
       "the generated gaps JSON is malformed"
-  if ! jq -e -s '
-      if length == 1 and .[0].schemaVersion == 1
-          and .[0].kind == "CAMPAIGN_COVERAGE_GAPS"
-          and (.[0].gaps | type == "array")
-          and (.[0].gapCount | type == "number")
-      then true else error("expected one campaign gaps document") end' \
-      "${campaign_final}/gaps.json" >/dev/null; then
-    campaign_fail EMIT CAMPAIGN "${campaign_final}/gaps.json" \
-      "failed to read the validated gaps JSON"
-  fi
 
   # The claim is copied, never reconstructed. The Composer publishes the sole
   # FINAL_READY decision and its selected blockers; the solver publishes the
@@ -2506,6 +2536,7 @@ campaign_emit() {
   # Importer/classifier coverage rows remain telemetry for the next
   # best-effort replay; they do not re-score the Composer's selected chain.
   jq -n \
+    --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile reachDocuments "${reach_report}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
@@ -2518,6 +2549,7 @@ campaign_emit() {
     ($c.finalStatus == "FINAL_READY") as $accepted |
     {schemaVersion: 1,
      kind: "CAMPAIGN_RESULT",
+     provenance: $provenance,
      claim: (
        if $accepted and $reachability == "REACHABLE" then "SAT_CANDIDATE"
        elif $accepted and $reachability == "UNREACHABLE"
@@ -2539,6 +2571,7 @@ campaign_emit() {
      solverState: ($r.state // ""),
      finalStatus: ($c.finalStatus // ""),
      finalStatusRefusals: $blockers,
+     freeSymbolCount: (($c.freeSymbols // []) | length),
      evidence: {
        exactBindings: ($c.canonicalModel.counts.exactBindings // 0),
        guardedBindings: ($c.canonicalModel.counts.guardedBindings // 0),
@@ -2600,8 +2633,6 @@ campaign_emit() {
   campaign_log "artifacts in ${campaign_final}"
   jq -r '"  claim=\(.claim) reachability=\(.reachability) gaps=\(.gapCount) finalStatus=\(.finalStatus)"' \
     "${campaign_final}/result.json"
-  [[ "${gapCount}" -eq 0 ]] \
-    || campaign_log "the run named ${gapCount} gap(s); see ${campaign_final}/gaps.json"
   # A published artifact set is not an accepted candidate. A run that reached
   # no witness and no closed refutation exits nonzero with its own named
   # reason, because a top-level zero exit is not completion.
@@ -2613,6 +2644,22 @@ campaign_emit() {
       exit 2
       ;;
   esac
+  # The claim belongs to the Composer and the solver; the gap count belongs to
+  # every owner that published one, and README "Completion criteria" requires
+  # both -- an accepted witness and no unresolved gap. The two stay apart on
+  # purpose: the gap rows never re-score the claim, so result.json still
+  # reports exactly what the semantic owners decided. But a claim reached with
+  # named gaps still open is not a run anybody may stop on, so the gate refuses
+  # it here, under its own exit code and its own reason. This is the exit half
+  # of the acceptance check README states against result.json; without it a
+  # campaign exits 0 on a run that README's own documented jq refuses.
+  [[ "${gapCount}" -eq 0 ]] || {
+    jq -r '"[campaign] candidate withheld: claim=\(.claim), but the run named "
+      + (.gapCount | tostring) + " unresolved gap(s)"' \
+      "${campaign_final}/result.json" >&2
+    echo "  named gaps: ${campaign_final}/gaps.json" >&2
+    exit 3
+  }
 }
 
 # A declared bound was reached with obligations still open. Publish the named
@@ -2668,6 +2715,9 @@ do_campaign() {
     [[ ! -e "${iteration_dir}" ]] || die \
       "iteration directory already exists; a campaign never rewrites one: ${iteration_dir}"
     mkdir -p "${iteration_dir}"
+    # Every iteration decodes its own membership in PLAN; nothing carries over
+    # from the previous one, so a stage can never read a stale member set.
+    campaign_member_rows=""
     campaign_stage "PLAN[${iteration}]" campaign_plan "${iteration_dir}" \
       "${carry}"
     campaign_stage "INSTRUMENT[${iteration}]" campaign_instrument \
@@ -2695,7 +2745,6 @@ do_campaign() {
     fi
     campaign_stage COMPOSE campaign_compose "${iteration_dir}"
     campaign_stage SOLVE campaign_solve
-    campaign_stage GRAPH campaign_graph
     campaign_stage EMIT campaign_emit "${iteration_dir}"
     return 0
   done

@@ -531,6 +531,20 @@ bool OpSymExpression::is_boolean_expression() {
       || _op == op_eq || _op == op_ne || _op == op_land || _op == op_lor;
 }
 
+Expression *OpSymExpression::logical_negation() {
+  // Only the six relational comparisons have a total complement expressible as
+  // another comparison; NotSymbolicOp maps exactly those and leaves the rest
+  // op_null.  op_land/op_lor could be pushed through De Morgan, but a recorded
+  // branch predicate is a single comparison, so refusing the compound case is
+  // enough and keeps the negation a leaf-simple flip.
+  SymbolicOp complement = NotSymbolicOp[_op];
+  if (complement == op_null) {
+    return NULL;
+  }
+  // cmp=true keeps `op` as given rather than re-negating it.
+  return new OpSymExpression(_left, _right, complement, true);
+}
+
 ConExpression::ConExpression(jboolean z) {
   _type = type2char(T_BOOLEAN);
   int ret = sprintf(_str, "Y_Z_%u", z);

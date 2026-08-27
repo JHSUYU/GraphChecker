@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -10,7 +11,9 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.nio.file.Paths;
+import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -19,6 +22,8 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class ConcolicConstraintSolverTest {
+    private static final Gson GSON = new Gson();
+
     /**
      * Java integral arithmetic wraps at the exact two's complement boundary
      * and non-finite floating point literals keep exact IEEE semantics; both
@@ -321,7 +326,7 @@ public class ConcolicConstraintSolverTest {
         VmHandoffEvidence.writeTo(fixture,
                 java.util.Collections.singletonList(
                         VmHandoffEvidence.event("REGION.3.in.rpc", 11L,
-                                numericSymbol(remoteRaw, "I"),
+                                12L, numericSymbol(remoteRaw, "I"),
                                 "TASK.REMOTE.PRODUCER",
                                 "REGION.REMOTE/occurrence-1")));
 
@@ -355,10 +360,10 @@ public class ConcolicConstraintSolverTest {
 
         JsonObject ambiguous = missing.deepCopy();
         java.util.List<JsonObject> events = new java.util.ArrayList<>();
-        events.add(VmHandoffEvidence.event("REGION.3.in.rpc", 11L,
+        events.add(VmHandoffEvidence.event("REGION.3.in.rpc", 11L, 21L,
                 numericSymbol(remoteRaw, "I"), "TASK.PRODUCER.A",
                 "REGION.A/occurrence-1"));
-        events.add(VmHandoffEvidence.event("REGION.3.in.rpc", 12L,
+        events.add(VmHandoffEvidence.event("REGION.3.in.rpc", 12L, 22L,
                 numericSymbol(remoteRaw, "I"), "TASK.PRODUCER.B",
                 "REGION.B/occurrence-1"));
         VmHandoffEvidence.writeTo(ambiguous, events);
@@ -383,7 +388,7 @@ public class ConcolicConstraintSolverTest {
         VmHandoffEvidence.writeTo(mixed,
                 java.util.Collections.singletonList(
                         VmHandoffEvidence.event("REGION.3.in.rpc", 11L,
-                                numericSymbol(remoteRaw, "I"),
+                                12L, numericSymbol(remoteRaw, "I"),
                                 "TASK.REMOTE.PRODUCER",
                                 "REGION.REMOTE/occurrence-1")));
 
@@ -679,18 +684,7 @@ public class ConcolicConstraintSolverTest {
         JsonObject activation = new JsonObject();
         activation.addProperty("occurrenceId", occurrence);
         activation.add("inputActions", new JsonArray());
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourceId", sourceId);
-        source.addProperty("sourcePhaseId",
-                sourcePhaseId(occurrence, sourceId));
-        source.addProperty("fieldSignature", fieldSignature);
-        source.addProperty("requiredOutputFieldSignature",
-                "<example.Source: long output>");
-        JsonArray sources = new JsonArray();
-        sources.add(source);
-        activation.add(SymbolicSourceEvidence.TASK_FIELD, sources);
+        addMintSite(activation, occurrence, sourceId, fieldSignature, 1);
         return activation;
     }
 
@@ -699,27 +693,48 @@ public class ConcolicConstraintSolverTest {
         JsonObject activation = new JsonObject();
         activation.addProperty("occurrenceId", occurrence);
         activation.add("inputActions", new JsonArray());
-        JsonArray sources = new JsonArray();
         for (int index = 0; index < sourceIds.length; index++) {
-            JsonObject source = new JsonObject();
-            source.addProperty("authority",
-                    SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-            source.addProperty("sourceId", sourceIds[index]);
-            source.addProperty("sourcePhaseId",
-                    sourcePhaseId(occurrence, sourceIds[index]));
-            source.addProperty("fieldSignature", "<example.Source: long value"
-                    + index + ">");
-            source.addProperty("requiredOutputFieldSignature",
-                    "<example.Source: long output>");
-            sources.add(source);
+            addMintSite(activation, occurrence, sourceIds[index],
+                    "<example.Source: long value" + index + ">", index + 1);
         }
-        activation.add(SymbolicSourceEvidence.TASK_FIELD, sources);
         return activation;
+    }
+
+    /** The task's catalog of declared mint SITES: what a VM source root
+     * resolves against now that no selection row predicts it. */
+    private static void addMintSite(JsonObject activation, String occurrence,
+                                    String sourceId, String fieldSignature,
+                                    int ordinal) {
+        JsonArray declarations = new JsonArray();
+        declarations.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                sourceId, fieldSignature, mintMethod(sourceId), 1));
+        JsonObject row = ConfiguredSourcePhaseContract.occurrence(
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        declarations).get(0),
+                occurrence, 1, ordinal, 10L, 100L + ordinal,
+                "<example.Hook: boolean symbolize(java.lang.String,"
+                        + "java.lang.Object,java.lang.String)>",
+                Collections.singletonList(10L));
+        JsonArray phases = activation.has(
+                ConfiguredSourcePhaseContract.PLAN_FIELD)
+                ? activation.getAsJsonArray(
+                        ConfiguredSourcePhaseContract.PLAN_FIELD)
+                : new JsonArray();
+        phases.add(row);
+        activation.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
+    }
+
+    private static String mintMethod(String sourceId) {
+        return "<example.Source: void mint"
+                + sourceId.replaceAll("[^A-Za-z0-9]", "_") + "()>";
     }
 
     private static String sourcePhaseId(
             String occurrence, String sourceId) {
-        return ConfiguredSourcePhaseContract.phaseId(occurrence, sourceId,
+        return ConfiguredSourcePhaseContract.phaseId(occurrence,
+                ConfiguredSourcePhaseContract.siteId(
+                        mintMethod(sourceId), 1),
                 ConfiguredSourcePhaseContract.Phase.PUBLISH, 1);
     }
 

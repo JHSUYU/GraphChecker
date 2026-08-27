@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import soot.ArrayType;
-import soot.PrimType;
 import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
@@ -28,19 +27,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
 
-/**
- * Explicit protocol-layer call bridges.  These rows describe remote or
- * transport-mediated value flow; they are never inferred from class names or
- * Java implementation relationships.
- *
- * <p>The rows are the static admission catalog for communication cuts.  They
- * declare endpoints and typed request/response correspondence; they never
- * identify a dynamic delivery.  Runtime exchange/attempt identity and VM
- * expression handoff remain the only authority for pairing two occurrences.
- * This deliberately avoids both extremes: scanning every protocol in a large
- * framework and guessing a delivery later from payload or call order.</p>
- */
+/** Explicit protocol-layer call bridges. */
 final class ConfiguredProtocolStubs {
     private final Map<String, List<ProtocolStubMapping>> byClient;
     private final Map<String, List<ProtocolStubMapping>> byServer;
@@ -197,8 +186,7 @@ final class ConfiguredProtocolStubs {
 
     /**
      * Validates configured response accessors once and lowers them to exact
-     * field declarations.  Runtime consumes only that lowered path and never
-     * invokes application getters.
+     * field declarations.
      */
     private static List<ResponseComponentMapping> responseComponents(
             JsonObject row, boolean response, Type responseType,
@@ -320,23 +308,23 @@ final class ConfiguredProtocolStubs {
     }
 
     private static boolean compatibleOwner(Type current, SootClass owner) {
-        if (!(current instanceof RefType) || owner == null) return false;
-        if (current.toString().equals(owner.getName())) return true;
-        try {
-            return Scene.v().getOrMakeFastHierarchy().canStoreType(
-                    current, owner.getType());
-        } catch (RuntimeException unavailableHierarchy) {
-            return false;
-        }
+        return current instanceof RefType && owner != null
+                && (current.toString().equals(owner.getName())
+                || canStore(current, owner.getType()));
     }
 
     private static boolean compatibleArrayElement(Type declared,
                                                    SootClass selected) {
-        if (!(declared instanceof RefType) || selected == null) return false;
-        if (declared.toString().equals(selected.getName())) return true;
+        return declared instanceof RefType && selected != null
+                && (declared.toString().equals(selected.getName())
+                || canStore(selected.getType(), declared));
+    }
+
+    /** An absent hierarchy answers "no", never an exception. */
+    private static boolean canStore(Type source, Type target) {
         try {
             return Scene.v().getOrMakeFastHierarchy().canStoreType(
-                    selected.getType(), declared);
+                    source, target);
         } catch (RuntimeException unavailableHierarchy) {
             return false;
         }
@@ -346,13 +334,10 @@ final class ConfiguredProtocolStubs {
         FieldPathSpec.DeclaredField declared =
                 FieldPathSpec.declaredField(signature);
         if (declared == null) return null;
-        SootClass owner = Scene.v().getSootClassUnsafe(declared.owner());
-        if (owner == null) return null;
-        for (SootField field : owner.getFields()) {
-            if (declared.signature().equals(field.getSignature())
-                    && !field.isStatic()) return field;
-        }
-        return null;
+        return CausynthStaticFacts.field(
+                Scene.v().getSootClassUnsafe(declared.owner()),
+                field -> declared.signature().equals(field.getSignature())
+                        && !field.isStatic());
     }
 
     private static ProtocolPortMapping port(
@@ -382,14 +367,6 @@ final class ConfiguredProtocolStubs {
         return object.get(field).getAsString().trim();
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
-            }
-        }
-        return null;
-    }
 }
 
 final class ProtocolStubMapping {

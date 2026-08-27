@@ -292,7 +292,7 @@ public class StaticSymbolicSourceDiscoveryTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    public void discoversOrderedPublishConsumeSitesAndRichTraceMethods()
+    public void discoversPublishMintSitesAndRichTraceMethods()
             throws Exception {
         SootClass hook = new SootClass(
                 "example.CausynthSymbolicSource", Modifier.PUBLIC);
@@ -352,12 +352,13 @@ public class StaticSymbolicSourceDiscoveryTest {
 
         StaticSymbolicSourceDiscovery.discover(program);
 
-        List<Map<String, Object>> phases =
-                (List<Map<String, Object>>) region.get(
-                        ConfiguredSourcePhaseContract.DECLARATION_FIELD);
-        assertEquals(2, phases.size());
-        assertEquals("CONSUME", phases.get(0).get("phase"));
-        assertEquals("PUBLISH", phases.get(1).get("phase"));
+        List<Map<String, Object>> phases = asMaps(region.get(
+                ConfiguredSourcePhaseContract.DECLARATION_FIELD));
+        // A selector read is no longer a phase: the only phase kind is the
+        // PUBLISH mint site, and a call beside it is ordinary application
+        // code the discovery walks through.
+        assertEquals(1, phases.size());
+        assertEquals("PUBLISH", phases.get(0).get("phase"));
         for (Map<String, Object> phase : phases) {
             assertEquals("ROTATING.KEY", phase.get("sourceId"));
             assertEquals(keyId.getSignature(),
@@ -429,5 +430,19 @@ public class StaticSymbolicSourceDiscoveryTest {
         region.put("methods", Collections.singletonList(
                 method.getSignature()));
         return region;
+    }
+    private static List<Map<String, Object>> asMaps(Object value) {
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        for (Object e : (List<?>) value) {
+            if (e instanceof com.google.gson.JsonElement) {
+                out.add(new com.google.gson.Gson().fromJson(
+                        (com.google.gson.JsonElement) e,
+                        new com.google.gson.reflect.TypeToken<
+                                LinkedHashMap<String, Object>>() {}.getType()));
+            } else {
+                out.add((Map<String, Object>) e);
+            }
+        }
+        return out;
     }
 }

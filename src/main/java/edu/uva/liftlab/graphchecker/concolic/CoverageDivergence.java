@@ -9,36 +9,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * How a run departed from the model, and what is left of the model when it
  * did.
- *
- * <p>Replay is best effort. A different worker thread, one more loop
- * iteration, an extra RPC attempt or an approximately compatible shape are all
- * accepted while the selected symbolic flow stays valid - but each is a
- * coverage fact, and collapsing them into one "failed" would hide which part
- * of the model the run stopped supporting. The six classes here are that
- * distinction:</p>
- *
- * <ul>
- *   <li>{@code TARGET} - the target relation itself was not reached or not
- *   captured;</li>
- *   <li>{@code FLOW} - a selected value flow was not the one the run
- *   exhibited, or its provenance could not be established;</li>
- *   <li>{@code SHAPE} - a container, array or message shape did not match;</li>
- *   <li>{@code IMPORT} - a symbolic handoff did not deliver;</li>
- *   <li>{@code GATE} - a read or message cut could not be enforced;</li>
- *   <li>{@code SOURCE_EPOCH} - a relation was about to bind across sources or
- *   restarts that never merge implicitly.</li>
- * </ul>
- *
- * <p>Only a target divergence with no usable target relation ends the result.
- * Everything else retains the partial relation, and the coverage state says
- * so: the formula is still emitted, and it is emitted as partial rather than
- * as closed. An unsatisfiable answer from a partial model is inconclusive, and
- * that is exactly what the state records.</p>
  */
 public final class CoverageDivergence {
 
@@ -66,9 +42,9 @@ public final class CoverageDivergence {
         row.addProperty("schemaVersion", SCHEMA_VERSION);
         row.addProperty("authority", AUTHORITY);
         row.addProperty("divergenceClass", kind.name());
-        row.addProperty("reason", text(reason));
-        row.addProperty("subject", text(subject));
-        row.addProperty("detail", text(detail));
+        row.addProperty("reason", nonNull(reason));
+        row.addProperty("subject", nonNull(subject));
+        row.addProperty("detail", nonNull(detail));
         return row;
     }
 
@@ -87,15 +63,7 @@ public final class CoverageDivergence {
         return null;
     }
 
-    /**
-     * Classifies one named gap from the existing coverage stream.
-     *
-     * <p>The gap families already say precisely what happened; what they do
-     * not say is which part of the model stopped being supported, which is
-     * the question a reader of the result asks first. Returns null for a row
-     * this vocabulary does not recognise - an unrecognised finding is not
-     * silently filed under a class it may not belong to.</p>
-     */
+    /** Classifies one named gap from the existing coverage stream. */
     public static Kind classify(JsonObject gap) {
         if (gap == null) return null;
         String kind = string(gap, "kind");
@@ -184,20 +152,10 @@ public final class CoverageDivergence {
     /**
      * The honest coverage state of a model with {@code divergenceCount}
      * departures.
-     *
-     * <p>{@code CLOSED} claims the selected model is complete over what it
-     * covers; one divergence of any class is enough to make that claim false.
-     * A model with no usable target relation is not partial either - there is
-     * no relation left to be partial about - and callers are expected to stop
-     * emitting rather than to downgrade the state.</p>
      */
     public static String coverageState(int divergenceCount,
                                        boolean targetRelationUsable) {
         if (!targetRelationUsable) return PARTIAL;
         return divergenceCount == 0 ? CLOSED : PARTIAL;
-    }
-
-    private static String text(String value) {
-        return value == null ? "" : value;
     }
 }

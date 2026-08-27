@@ -58,8 +58,7 @@ final class PathReplayTaskFactory {
 
     /**
      * Advances a nested target from the flipped frontier to the next exact
-     * failure guard.  The query may only select a branch already present in
-     * the immutable source catalog; it cannot introduce a site or outcome.
+     * failure guard.
      */
     private static void applyTargetBranchOverride(JsonObject result,
                                                   JsonObject query) {
@@ -116,9 +115,7 @@ final class PathReplayTaskFactory {
 
     /**
      * Keeps assignments that established the source prefix and overlays the
-     * newly solved flip.  A later flip may replace the same model variable,
-     * but it may not silently restore every earlier variable to its concrete
-     * workload value.
+     * newly solved flip.
      */
     private static JsonArray overlayAssignments(JsonArray source,
                                                 JsonArray current) {

@@ -5,12 +5,12 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/globalSymbolicSession.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
-#include "concolic/sharedFieldVersions.hpp"
 #include "concolic/threadContext.hpp"
 #include "webridge/utils/rapidjson/stringbuffer.h"
 #include "webridge/utils/rapidjson/writer.h"
 
 bool EventLedger::_open = false;
+bool EventLedger::_activated = false;
 EventLedger::ReleaseStore EventLedger::_releases;
 std::vector<EventLedger::Event> EventLedger::_events;
 bool EventLedger::_events_truncated = false;
@@ -38,6 +38,7 @@ private:
 
 void EventLedger::open_session() {
   LEDGER_LOCK;
+  _activated = false;
   _releases.clear();
   _events.clear();
   _events_truncated = false;
@@ -50,6 +51,7 @@ void EventLedger::open_session() {
 
 void EventLedger::close_session() {
   LEDGER_LOCK;
+  _activated = false;
   _releases.clear();
   _events.clear();
   _events_truncated = false;
@@ -60,8 +62,18 @@ void EventLedger::close_session() {
   _open = false;
 }
 
+void EventLedger::activate() {
+  LEDGER_LOCK;
+  _activated = true;
+}
+
 bool EventLedger::is_recording() {
-  return _open && SharedFieldVersions::has_carriers();
+  // README EVENT-1: selection is the gate, not the presence of a shared
+  // carrier.  A case that selects only RPC/SASL handoff sites has no carrier
+  // and still needs its thread-lifecycle, volatile and atomic order; gating
+  // on has_carriers() dropped exactly those edges for it while leaving its
+  // VALUE_HANDOFF edge in place, which reads as "nothing else happened".
+  return _open && _activated;
 }
 
 jlong EventLedger::record(int kind, sym_rid_t object, int slot,

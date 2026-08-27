@@ -322,6 +322,12 @@ void SymString::set_sym_exp(int field_offset, Expression *exp) {
   (void) exp;
 }
 
+bool SymString::has_sym_exp(int field_offset) {
+  // set_sym_exp above stores nothing per field, so no field ever carries one.
+  (void) field_offset;
+  return false;
+}
+
 bool SymString::get_condition_value(oop s1, oop s2, std::string comp) {
   return false;
 }

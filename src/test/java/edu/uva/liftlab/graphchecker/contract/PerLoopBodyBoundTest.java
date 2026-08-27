@@ -37,13 +37,19 @@ public class PerLoopBodyBoundTest {
     // The declaration
     // ------------------------------------------------------------------
 
-    /** A loop that declares nothing inherits the workload default. */
+    /**
+     * A loop that declares nothing inherits nothing.
+     *
+     * <p>README {@code LOOP-1} accepts no condition loop running under a
+     * bound the experiment did not state for it, so silence answers no
+     * {@code K_L} and has no authority to hand forward.  Reading the core
+     * default out of an absent field is the one step that turned an
+     * undeclared loop into an accepted one.</p>
+     */
     @Test
-    public void undeclaredLoopInheritsTheDefault() {
-        assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
+    public void undeclaredLoopInheritsNothing() {
+        assertEquals(LoopBoundPolicy.NO_DECLARED_BOUND,
                 LoopBoundPolicy.bodyBound(null));
-        assertEquals(LoopBoundPolicy.BOUND_FROM_POLICY,
-                LoopBoundPolicy.boundAuthority(null));
     }
 
     /**
@@ -61,8 +67,6 @@ public class PerLoopBodyBoundTest {
                 <= LoopBoundPolicy.MAX_DECLARED_LOOP_BODY_ITERATIONS);
         assertEquals(declared,
                 LoopBoundPolicy.bodyBound(Integer.valueOf(declared)));
-        assertEquals(LoopBoundPolicy.BOUND_FROM_DECLARATION,
-                LoopBoundPolicy.boundAuthority(Integer.valueOf(declared)));
         assertEquals(LoopBoundPolicy.MAX_DECLARED_LOOP_BODY_ITERATIONS,
                 LoopBoundPolicy.bodyBound(Integer.valueOf(
                         LoopBoundPolicy.MAX_DECLARED_LOOP_BODY_ITERATIONS)));
@@ -191,13 +195,16 @@ public class PerLoopBodyBoundTest {
     // The encoded contract
     // ------------------------------------------------------------------
 
-    /** A campaign that declares nothing encodes exactly as it did before. */
+    /** A campaign that declares nothing states only its derived limit: the
+     *  kind, scope, limit action and inherited bound are one value each for
+     *  every contract that has ever existed, so they live in
+     *  {@link LoopBoundPolicy#identity()} and not on the wire. */
     @Test
     public void anUndeclaredContractKeepsItsEncoding() {
         LoopBoundPolicy policy = LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS);
         JsonObject encoded = policy.toJson();
-        assertEquals(5, encoded.entrySet().size());
+        assertEquals(2, encoded.entrySet().size());
         assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                 encoded.get("maxBackedgeTraversals").getAsInt());
         assertEquals("CFG_BACKEDGE:"

@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -20,30 +21,16 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * Compares one raw VM result with the frozen task that planned it and records
+/** Compares one raw VM result with the frozen task that planned it and records
  * the normalized {@code topology_delta.jsonl} row.
  *
  * <p>README "Delta ownership is also singular" gives this comparison to
  * {@link ConcolicSummaryImporter}, while it imports the row and not as a
- * second pass over a second graph store.  This class is only the vocabulary,
- * the comparison and the deterministic order; it holds no evidence of its own
- * and never mutates or deletes a historical row.  "Failure to observe an old
- * relation" is therefore a {@link #COVERAGE_GAP} and never a removal.</p>
- *
- * <p>Both digest pairs are written so that equality is meaningful: a schema or
- * identity component the raw result does not state falls back to the planned
- * value and is named in {@code unobservedIdentityFields} /
- * {@code unobservedSchemaFields}, so a differing digest always means an
- * observed contradiction rather than a missing observation.  The classification
- * itself is decided by the explicit {@code divergences} list, never by digest
- * equality alone.</p>
- */
+ * second pass over a second graph store.</p> */
 public final class TopologyDelta {
 
     public static final int SCHEMA_VERSION = 1;
@@ -67,15 +54,28 @@ public final class TopologyDelta {
     public static final String PLANNED_BRANCH_EVENT_NOT_OBSERVED =
             "PLANNED_BRANCH_EVENT_NOT_OBSERVED";
 
+    /** The one schema member set the union instrumentation shares. */
+    private static final String CAPTURE_BINDINGS = "captureBindings";
+
     private static final String[] IDENTITY_FIELDS = {
             "sourceKey", "occurrenceId", "relationKey", "regionId"
     };
 
-    /**
-     * README "Results merge in the stable order ...; completion order is never
-     * semantic."  {@code deltaKind} only breaks the final tie so that two rows
-     * of one case still have one order.
-     */
+    /** The schema member sets a new member of which is a topology change, and
+     * the divergence field each is reported under. */
+    private static final String[][] SCHEMA_SETS = {
+            {"inputSymbols", "inputSchema"},
+            {"outputPorts", "outputSchema"},
+            {CAPTURE_BINDINGS, "outputSchema"},
+            // README Step 1: topology is judged at the RPC exchange event.
+            // A (sender occurrence, receiver occurrence, port) triple the
+            // frozen catalog never declared is the change that re-plans.
+            {"exchangeEvents", "exchangeSchema"},
+    };
+
+    /** README "Results merge in the stable order ...; completion order is
+     * never semantic." {@code deltaKind} only breaks the final tie so that
+     * two rows of one case still have one order. */
     private static final Comparator<JsonObject> ROW_ORDER =
             new Comparator<JsonObject>() {
                 @Override
@@ -122,17 +122,44 @@ public final class TopologyDelta {
 
     private final String iterationId;
     private final String planDigest;
+    /** Every capture binding id the frozen plan of this iteration declares,
+     * on any of its tasks.
+     *
+     * <p>OCC-1's sibling of the capture side.  Instrumentation is installed
+     * once per iteration over the <em>union</em> of the planned task ids
+     * ({@code run_engine.sh campaign_instrument}), and a capture binding id
+     * reaches the VM only as a string literal compiled into that one class
+     * set.  So an activation reports every binding installed at the bytecode
+     * sites it ran, not only the bindings of the task it was scheduled for:
+     * two occurrences of one region that declare the same output site put two
+     * ids on that one site, and both fire in whichever activation runs it.
+     *
+     * <p>A capture binding id is therefore judged against what the frozen
+     * plan declares, not against what one task declares.  Nothing is
+     * suppressed by widening the scope: the VM never mints a capture id, so
+     * an observed id outside this set can only come from a class set this
+     * plan did not instrument, and that still diverges.</p> */
+    private final Set<String> sessionCaptureBindings = new LinkedHashSet<>();
     private final List<JsonObject> rows = new ArrayList<>();
     private final Set<String> casedOccurrences = new LinkedHashSet<>();
     private final Set<String> namedTasks = new LinkedHashSet<>();
 
-    TopologyDelta(String iterationId, String planDigest) {
+    TopologyDelta(String iterationId, Collection<ExecutionTask> planned) {
         if (iterationId == null || iterationId.trim().isEmpty()) {
             throw new IllegalArgumentException(
                     "topology delta iteration id must be non-blank");
         }
+        if (planned == null) {
+            throw new IllegalArgumentException(
+                    "topology delta needs the frozen plan it compares against");
+        }
         this.iterationId = iterationId.trim();
-        this.planDigest = planDigest == null ? "" : planDigest;
+        this.planDigest = planDigest(planned);
+        for (ExecutionTask task : planned) {
+            for (OutputCaptureSpec spec : task.outputCaptures()) {
+                sessionCaptureBindings.add(spec.captureBindingId());
+            }
+        }
     }
 
     /** The frozen plan digest, in taskId order and independent of file order. */
@@ -147,26 +174,27 @@ public final class TopologyDelta {
     }
 
     /**
-     * Classifies one raw result against its frozen task.
+     * Classifies one decoded result against its frozen task.
      *
      * @param task the frozen task, or {@code null} when the frozen plan does
      *             not contain this result at all
-     * @param line zero-based result line, or negative when there is no result
+     * @param row  the importer's one decode of the raw result
      */
-    void classify(ExecutionTask task, JsonObject raw, int line,
+    void classify(ExecutionTask task, ConcolicSummaryImporter.ResultRow row,
                   Observation observation) {
         JsonObject plannedIdentity = plannedIdentity(task);
         List<String> unobservedIdentity = new ArrayList<>();
-        JsonObject observedIdentity = observedIdentity(raw, plannedIdentity,
+        JsonObject observedIdentity = observedIdentity(plannedIdentity,
                 unobservedIdentity);
         JsonObject plannedSchema = plannedSchema(task);
         List<String> unobservedSchema = new ArrayList<>();
-        JsonObject observedSchema = observedSchema(task, raw, observation,
+        JsonObject observedSchema = observedSchema(task, row, observation,
                 plannedSchema, unobservedSchema);
+        List<String> siblingCaptures = new ArrayList<>();
         JsonArray divergences = task == null || observation.unplanned
-                ? notInFrozenPlan(raw, plannedIdentity, observation.gap)
-                : divergences(raw, plannedIdentity, observedIdentity,
-                plannedSchema, observedSchema);
+                ? notInFrozenPlan(row, plannedIdentity, observation.gap)
+                : divergences(plannedIdentity, observedIdentity,
+                plannedSchema, observedSchema, siblingCaptures);
 
         JsonObject base = new JsonObject();
         base.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -174,7 +202,7 @@ public final class TopologyDelta {
         base.addProperty("iterationId", iterationId);
         base.addProperty("planDigest", planDigest);
         base.addProperty("taskId", task == null
-                ? string(raw, "taskId") : task.taskId());
+                ? row.taskId : task.taskId());
         for (String field : IDENTITY_FIELDS) {
             base.add(field, plannedIdentity.get(field));
         }
@@ -186,7 +214,7 @@ public final class TopologyDelta {
                 CanonicalJson.sha256(plannedSchema));
         base.addProperty("observedSchemaDigest",
                 CanonicalJson.sha256(observedSchema));
-        base.addProperty("resultLine", line + 1);
+        base.addProperty("resultLine", row.line + 1);
         base.addProperty("summaryId", observation.summary == null ? ""
                 : string(observation.summary, "summaryId"));
         base.addProperty("caseDigest", caseDigest(observation, observedIdentity,
@@ -197,13 +225,17 @@ public final class TopologyDelta {
         if (!unobservedSchema.isEmpty()) {
             base.add("unobservedSchemaFields", strings(unobservedSchema));
         }
+        // Never silent: the ids this activation reported for a site another
+        // task of the same frozen plan also binds are named on the row.
+        if (!siblingCaptures.isEmpty()) {
+            base.add("siblingDeclaredCaptureBindings",
+                    strings(siblingCaptures));
+        }
         if (task != null) namedTasks.add(task.taskId());
 
         if (divergences.size() > 0) {
             // README Step 1: "a different cut, output schema, source,
-            // occurrence, or loop slot may not" add a case.  The relation
-            // belongs to the next iteration's plan, so no case is published
-            // here and no obligation may be built across it.
+            // occurrence, or loop slot may not" add a case.
             emit(base, TOPOLOGY_DIVERGENCE, "").add("divergences", divergences);
         } else if (observation.summary != null) {
             emit(base, casedOccurrences.add(occurrenceKey(plannedIdentity))
@@ -212,9 +244,7 @@ public final class TopologyDelta {
             if (observation.effect) emit(base, NEW_EFFECT, "");
         }
         // Import admission failures already have one authoritative diagnostic
-        // row. Re-emitting them here doubled every refused replay in the
-        // campaign gap report. The only coverage fact owned solely by this
-        // classifier is a frozen task for which no raw row existed at all.
+        // row.
         if (PLANNED_TASK_PRODUCED_NO_RESULT.equals(observation.gap)) {
             emit(base, COVERAGE_GAP, observation.gap);
         }
@@ -224,7 +254,8 @@ public final class TopologyDelta {
     void classifyUnobservedTasks(Collection<ExecutionTask> planned) {
         for (ExecutionTask task : planned) {
             if (namedTasks.contains(task.taskId())) continue;
-            classify(task, new JsonObject(), -1,
+            classify(task, new ConcolicSummaryImporter.ResultRow(
+                            new JsonObject(), -1),
                     Observation.refused(PLANNED_TASK_PRODUCED_NO_RESULT));
         }
     }
@@ -262,11 +293,9 @@ public final class TopologyDelta {
                 + string(identity, "occurrenceId");
     }
 
-    // ---------------------------------------------------------------- identity
 
     private static JsonObject plannedIdentity(ExecutionTask task) {
         JsonObject result = new JsonObject();
-        JsonObject encoded = task == null ? new JsonObject() : task.json();
         result.addProperty("sourceKey", task == null ? "" : task.sourceKey());
         result.addProperty("occurrenceId",
                 task == null ? "" : task.occurrenceId());
@@ -276,30 +305,20 @@ public final class TopologyDelta {
         return result;
     }
 
-    /**
-     * The identity this execution actually stated.  The VM echoes the region
+    /** The identity this execution actually stated. The VM echoes the region
      * occurrence through its own frame binding; it never restates the source,
      * relation or region, so those carry the planned value and are named as
-     * unobserved rather than being silently reported as agreement.
-     */
-    private static JsonObject observedIdentity(JsonObject raw,
-                                               JsonObject planned,
+     * unobserved rather than being silently reported as agreement. */
+    private static JsonObject observedIdentity(JsonObject planned,
                                                List<String> unobserved) {
         JsonObject result = planned.deepCopy();
-        JsonObject binding = object(raw, "regionFrameBinding");
-        String occurrence = string(binding, "occurrenceId");
-        if (occurrence.isEmpty()) {
-            unobserved.add("occurrenceId");
-        } else {
-            result.addProperty("occurrenceId", occurrence);
-        }
+        unobserved.add("occurrenceId");
         unobserved.add("sourceKey");
         unobserved.add("relationKey");
         unobserved.add("regionId");
         return result;
     }
 
-    // ------------------------------------------------------------------ schema
 
     private static JsonObject plannedSchema(ExecutionTask task) {
         JsonObject result = new JsonObject();
@@ -309,6 +328,7 @@ public final class TopologyDelta {
             result.add("captureBindings", new JsonArray());
             result.add("branchSites", new JsonArray());
             result.add("configuredSourcePhases", new JsonArray());
+            result.add("exchangeEvents", new JsonArray());
             result.addProperty("loopBound", "");
             return result;
         }
@@ -336,79 +356,104 @@ public final class TopologyDelta {
                 : task.outputClosure().outputPorts()));
         result.add("captureBindings", strings(captures));
         result.add("branchSites", strings(sites));
-        List<ConfiguredSourcePhaseContract.Occurrence> phaseCatalog =
-                ConfiguredSourcePhaseContract.occurrencesOf(array(
-                        task.json(),
-                        ConfiguredSourcePhaseContract.PLAN_FIELD));
-        result.add("configuredSourcePhases", strings(
-                ConfiguredSourcePhaseContract.selectedPhaseIdsOf(
-                        task.json(), phaseCatalog)));
+        // The catalog of mint SITES is the frozen schema: an execution of a
+        // site the plan never declared is the topology change, and which
+        // site a value came from is decided at replay, not here.
+        SortedSet<String> mintSites = new TreeSet<>();
+        for (ConfiguredSourcePhaseContract.Occurrence phase
+                : task.configuredSourcePhases()) {
+            mintSites.add(phase.phaseId());
+        }
+        result.add("configuredSourcePhases", strings(mintSites));
+        // One RPC exchange is one (sender occurrence, receiver occurrence,
+        // port) triple.  Both port names of a declared edge are admitted so a
+        // request/response naming difference is not read as a new exchange.
+        SortedSet<String> exchanges = new TreeSet<>();
+        for (JsonElement element : task.edgeBindings()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject edge = element.getAsJsonObject();
+            String from = string(edge, "fromOccurrenceId");
+            String to = string(edge, "toOccurrenceId");
+            for (String port : new String[]{string(edge, "toInputPort"),
+                    string(edge, "fromOutputPort")}) {
+                if (from.isEmpty() || to.isEmpty() || port.isEmpty()) continue;
+                exchanges.add(exchangeKey(from, to, port));
+            }
+        }
+        result.add("exchangeEvents", strings(exchanges));
         result.addProperty("loopBound", task.loopBound().identity());
         return result;
     }
 
-    private static JsonObject observedSchema(ExecutionTask task,
-                                             JsonObject raw,
-                                             Observation observation,
-                                             JsonObject planned,
-                                             List<String> unobserved) {
+    private static JsonObject observedSchema(
+            ExecutionTask task, ConcolicSummaryImporter.ResultRow row,
+            Observation observation, JsonObject planned,
+            List<String> unobserved) {
         JsonObject result = planned.deepCopy();
 
         // An input the run left unresolved is not part of the schema this
         // execution actually carried.
         SortedSet<String> resolved = new TreeSet<>(
                 textSet(array(planned, "inputSymbols")));
-        String unresolved = array(raw, "unresolvedInputs").toString();
+        String unresolved = row.unresolvedInputs.toString();
         for (String symbol : new ArrayList<>(resolved)) {
             if (unresolved.contains(symbol)) resolved.remove(symbol);
         }
-        result.add("inputSymbols", strings(resolved));
+        recordObservedSet(result, "inputSymbols", planned, resolved,
+                unobserved);
 
         if (observation.summary == null) {
             unobserved.add("outputPorts");
         } else {
             SortedSet<String> ports = new TreeSet<>(object(observation.summary,
                     "outputExpressions").keySet());
-            result.add("outputPorts", strings(ports));
+            recordObservedSet(result, "outputPorts", planned, ports,
+                    unobserved);
         }
 
-        JsonArray captures = array(raw, "outputCaptures");
-        if (captures.size() == 0 && array(planned, "captureBindings")
-                .size() > 0 && observation.summary == null) {
-            unobserved.add("captureBindings");
-        } else {
-            SortedSet<String> observedCaptures = new TreeSet<>();
-            for (JsonElement element : captures) {
-                if (!element.isJsonObject()) continue;
-                String id = string(element.getAsJsonObject(),
-                        "captureBindingId");
-                if (!id.isEmpty()) observedCaptures.add(id);
-            }
-            result.add("captureBindings", strings(observedCaptures));
-        }
+        recordObservedSet(result, "captureBindings", planned,
+                row.observedCaptureBindings, unobserved);
 
-        if (raw.has("branchMappings") || raw.has("concreteBranchWitnesses")) {
-            result.add("branchSites", strings(observedBranchSites(raw)));
+        if (row.statesBranchEvidence) {
+            result.add("branchSites", strings(row.observedBranchSites));
         } else {
             unobserved.add("branchSites");
         }
 
-        if (raw.has("configuredSourcePhaseObservations")) {
+        // A VM value handoff names the sender occurrence and the port; the
+        // receiver is this task's own occurrence.
+        if (row.vmHandoffs != null) {
+            SortedSet<String> observedExchanges = new TreeSet<>();
+            for (JsonElement element : row.vmHandoffs) {
+                if (!element.isJsonObject()) continue;
+                JsonObject handoff = element.getAsJsonObject();
+                String producer = string(handoff,
+                        VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
+                String port = string(handoff, "portId");
+                if (producer.isEmpty() || port.isEmpty() || task == null) {
+                    continue;
+                }
+                observedExchanges.add(exchangeKey(producer,
+                        task.occurrenceId(), port));
+            }
+            recordObservedSet(result, "exchangeEvents", planned,
+                    observedExchanges, unobserved);
+        } else if (array(planned, "exchangeEvents").size() > 0) {
+            unobserved.add("exchangeEvents");
+        }
+
+        if (row.sourcePhaseObservations != null) {
             result.add("configuredSourcePhases",
-                    observedSourcePhases(raw));
+                    strings(row.observedSourcePhases()));
         } else if (array(planned, "configuredSourcePhases").size() > 0) {
-            // An older/malformed runtime did not state phase evidence at all.
-            // Preserve the planned digest and name it unobserved; Importer
-            // owns the coverage refusal. A present but shorter/different
-            // ledger below is an observed causal-topology contradiction.
             unobserved.add("configuredSourcePhases");
         }
 
-        String loopSite = boundedLoopSite(raw);
+        String loopSite = boundedLoopSite(row);
         if (loopSite.isEmpty() || task == null) {
             unobserved.add("loopBound");
         } else {
-            int observedMax = integer(object(raw, "pathCut"),
+            int observedMax = integer(row.pathCut,
                     "maxBackedgeTraversals", -1);
             if (observedMax != task.loopBound()
                     .maxBackedgeTraversals(loopSite)) {
@@ -420,64 +465,71 @@ public final class TopologyDelta {
         return result;
     }
 
-    private static SortedSet<String> observedBranchSites(JsonObject raw) {
-        SortedSet<String> result = new TreeSet<>();
-        for (String field : new String[]{"branchMappings",
-                "concreteBranchWitnesses"}) {
-            for (JsonElement element : array(raw, field)) {
-                if (!element.isJsonObject()) continue;
-                String site = string(element.getAsJsonObject(), "siteId");
-                if (!site.isEmpty()) result.add(site);
-            }
+    /** Records one observed member set of the schema against its planned set.
+     *
+     * <p>README {@code GRAPH-1} starts the next immutable iteration on a new
+     * "slot/schema", so only a member the frozen plan never declared is an
+     * observed contradiction.</p> */
+    private static void recordObservedSet(JsonObject result, String field,
+                                          JsonObject planned,
+                                          SortedSet<String> observed,
+                                          List<String> unobserved) {
+        Set<String> declared = textSet(array(planned, field));
+        if (declared.containsAll(observed)) {
+            // Nothing this execution stated is outside the frozen schema, so
+            // only coverage can differ and the planned value stands.
+            if (observed.size() < declared.size()) unobserved.add(field);
+            return;
         }
-        return result;
+        result.add(field, strings(observed));
     }
 
     /** The loop the VM cut this path at under the frozen backedge bound. */
-    private static String boundedLoopSite(JsonObject raw) {
-        JsonObject cut = object(raw, "pathCut");
-        return "LOOP_BOUND".equals(string(cut, "kind"))
-                ? string(cut, "backedgeId") : "";
+    private static String boundedLoopSite(
+            ConcolicSummaryImporter.ResultRow row) {
+        return "LOOP_BOUND".equals(string(row.pathCut, "kind"))
+                ? string(row.pathCut, "backedgeId") : "";
     }
 
-    // ------------------------------------------------------------- comparison
 
     /** A result the frozen plan or its runtime regions do not contain. */
-    private static JsonArray notInFrozenPlan(JsonObject raw,
-                                             JsonObject plannedIdentity,
-                                             String reason) {
+    private static JsonArray notInFrozenPlan(
+            ConcolicSummaryImporter.ResultRow row,
+            JsonObject plannedIdentity, String reason) {
         JsonArray result = new JsonArray();
         result.add(divergence(reason.isEmpty() ? "taskId" : reason,
-                string(plannedIdentity, "regionId"), string(raw, "taskId")));
+                string(plannedIdentity, "regionId"), row.taskId));
         return result;
     }
 
-    private static JsonArray divergences(
-            JsonObject raw, JsonObject plannedIdentity,
-            JsonObject observedIdentity, JsonObject plannedSchema,
-            JsonObject observedSchema) {
+    private JsonArray divergences(
+            JsonObject plannedIdentity, JsonObject observedIdentity,
+            JsonObject plannedSchema, JsonObject observedSchema,
+            List<String> siblingCaptures) {
         JsonArray result = new JsonArray();
         for (String field : IDENTITY_FIELDS) {
-            String planned = text(plannedIdentity, field);
-            String observed = text(observedIdentity, field);
+            String planned = string(plannedIdentity, field);
+            String observed = string(observedIdentity, field);
             if (!planned.equals(observed)) {
                 result.add(divergence(field, planned, observed));
             }
         }
-        // A capture the frozen closure never requested is a new output schema.
-        Set<String> plannedCaptures =
-                textSet(array(plannedSchema, "captureBindings"));
-        for (String observed : textSet(array(observedSchema,
-                "captureBindings"))) {
-            if (!plannedCaptures.contains(observed)) {
-                result.add(divergence("outputSchema", "", observed));
+        // README GRAPH-1: a new "slot/schema" starts the next immutable
+        // iteration.
+        for (String[] set : SCHEMA_SETS) {
+            Set<String> declared = textSet(array(plannedSchema, set[0]));
+            boolean sessionScoped = CAPTURE_BINDINGS.equals(set[0]);
+            for (String observed : textSet(array(observedSchema, set[0]))) {
+                if (declared.contains(observed)) continue;
+                if (sessionScoped
+                        && sessionCaptureBindings.contains(observed)) {
+                    siblingCaptures.add(observed);
+                    continue;
+                }
+                result.add(divergence(set[1], "", observed));
             }
         }
-        // Extra branch decisions are new guarded local cases. They stay in
-        // the admitted summary for branch exploration and supergraph
-        // refinement; they do not change the task's stable identity, output
-        // schema, or declared loop bound and therefore are not topology
-        // divergences.
+        // Extra branch decisions are new guarded local cases.
         String plannedLoop = string(plannedSchema, "loopBound");
         String observedLoop = string(observedSchema, "loopBound");
         if (!plannedLoop.equals(observedLoop)) {
@@ -485,43 +537,41 @@ public final class TopologyDelta {
         }
         JsonArray plannedPhases = array(plannedSchema,
                 "configuredSourcePhases");
-        JsonArray observedPhases = array(observedSchema,
-                "configuredSourcePhases");
-        if (!plannedPhases.equals(observedPhases)) {
+        Set<String> declaredPhases = textSet(plannedPhases);
+        for (String observed : textSet(array(observedSchema,
+                "configuredSourcePhases"))) {
+            if (declaredPhases.contains(observed)) continue;
             result.add(divergence("configuredSourcePhases",
-                    CanonicalJson.render(plannedPhases),
-                    CanonicalJson.render(observedPhases)));
+                    CanonicalJson.render(plannedPhases), observed));
         }
         return result;
     }
 
-    /** Stable replay observation vocabulary, excluding replay-local call ids. */
-    private static JsonArray observedSourcePhases(JsonObject raw) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : array(raw,
-                "configuredSourcePhaseObservations")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject observation = element.getAsJsonObject();
-            String matched = string(observation, "matchedPhaseId");
-            if (bool(observation, "exactMatch", false)
-                    && bool(observation, "selectedPhase", false)
-                    && !matched.isEmpty()) {
-                result.add(matched);
-                continue;
-            }
-            if (bool(observation, "exactMatch", false)) {
-                // A known replay-call landmark outside the task-required
-                // subsequence is retained for audit but is not a selected
-                // source-version topology endpoint.
-                continue;
-            }
-            result.add("UNMATCHED:" + string(observation, "phaseKind")
-                    + ":" + string(observation, "sourceId")
-                    + ":" + string(observation, "siteId")
-                    + "#" + integer(observation, "replayOrdinal", 0)
-                    + ":" + matched);
-        }
-        return result;
+    /** One RPC exchange event, as the frozen plan and the raw result both
+     * name it: who sent, who received, and over which declared port.
+     *
+     * <p>OCC-1: both endpoints are named at their planned address.  The
+     * frozen plan is a region plan and can only ever declare the address the
+     * campaign scheduled; a VM handoff names the activation that ran, which
+     * is that same address plus an ordinal minted at replay.  The exchange
+     * README Step 1 judges topology at is the (sender occurrence, receiver
+     * occurrence, port) triple, and the activation ordinal is no member of
+     * it, so it is not part of the comparison
+     * ({@link PathObservation#plannedOccurrenceOf} is the one rule for that,
+     * shared with the target reach query and the scheduler).</p>
+     *
+     * <p>Comparing the raw activation string instead makes the comparison
+     * unfalsifiable rather than strict: no plan can declare an ordinal that
+     * does not exist until the run happens, so every declared exchange is
+     * reported as a new member on every iteration and the campaign never
+     * reaches a fixed point.  Nothing is suppressed by normalizing -- a
+     * sender occurrence, a receiver occurrence or a port the plan did not
+     * declare still differs after it, and is still reported.</p> */
+    private static String exchangeKey(String fromOccurrenceId,
+                                      String toOccurrenceId, String portId) {
+        return PathObservation.plannedOccurrenceOf(fromOccurrenceId) + "\n"
+                + PathObservation.plannedOccurrenceOf(toOccurrenceId) + "\n"
+                + portId;
     }
 
     private static JsonObject divergence(String field, String planned,
@@ -533,13 +583,6 @@ public final class TopologyDelta {
         return result;
     }
 
-    // ------------------------------------------------------------------ json
-
-    private static String text(JsonObject owner, String field) {
-        JsonElement value = owner == null ? null : owner.get(field);
-        return value == null || !value.isJsonPrimitive() ? ""
-                : value.getAsString();
-    }
 
     private static Set<String> textSet(JsonArray values) {
         Set<String> result = new LinkedHashSet<>();

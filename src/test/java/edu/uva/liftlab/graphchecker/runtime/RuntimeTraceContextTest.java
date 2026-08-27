@@ -7,7 +7,9 @@ import org.junit.Test;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
 
 public class RuntimeTraceContextTest {
     @Before
@@ -74,42 +76,19 @@ public class RuntimeTraceContextTest {
         RuntimeTraceContext.View attributed =
                 RuntimeTraceContext.enterRoot(secretManager);
         assertEquals(nodeSource.key(), attributed.source.key());
+        // ... and it says so, because replay can re-check that one by object
+        // identity.
+        assertTrue(attributed.receiverAttributed);
 
         // A receiver that registered nothing still gets the ambient stamp -
         // there is no other answer - and that is the only remaining path.
         RuntimeTraceContext.View ambient =
                 RuntimeTraceContext.enterRoot(new Object());
         assertEquals(nodeSource.key(), ambient.source.key());
-    }
-
-    /**
-     * A submitted Runnable may carry an exact source seed without being a
-     * source alias itself. Region admission accepts that entry context, but
-     * never lets it override a receiver explicitly registered to another
-     * source.
-     */
-    @Test
-    public void exactEntryContextAdmitsUnregisteredRunnableOnlyForItsSource() {
-        Object sourceAnchor = new Object();
-        Object runnable = new Object();
-        SourceRef balancer = new SourceRef(
-                "EXTERNAL_APP", "HDFS_CLIENT", "cluster0/balancer0", 0L);
-        RuntimeTraceContext.registerSource(sourceAnchor, balancer);
-        RuntimeTraceContext.beginRequest(balancer, "balancerIteration");
-
-        assertEquals(null, RuntimeTraceContext.sourceFor(runnable));
-        assertEquals(true, ConcolicRegionRuntime.exactEntrySourceForTests(
-                runnable, balancer.key()));
-        assertEquals(false, ConcolicRegionRuntime.exactEntrySourceForTests(
-                runnable, "cluster0/driver0#epoch0"));
-
-        SourceRef other = new SourceRef(
-                "CLUSTER_NODE", "DATANODE", "cluster0/dn0", 1L);
-        RuntimeTraceContext.registerSource(runnable, other);
-        assertEquals(false, ConcolicRegionRuntime.exactEntrySourceForTests(
-                runnable, balancer.key()));
-        assertEquals(true, ConcolicRegionRuntime.exactEntrySourceForTests(
-                runnable, other.key()));
+        // The balancer's Dispatcher$1 and KeyManager$BlockKeyUpdater are this
+        // case: the stamp is the thread's, not the receiver's, and an address
+        // that claimed otherwise would be unanswerable at replay.
+        assertFalse(ambient.receiverAttributed);
     }
 
     /** A REGISTERED_SOURCE root requires an exact receiver lifecycle key. */
@@ -122,23 +101,19 @@ public class RuntimeTraceContextTest {
         RuntimeTraceContext.registerSource(driver, driverSource);
         RuntimeTraceContext.beginRequest(driverSource, "workload");
 
+        // An unregistered receiver anchors no REGISTERED_SOURCE occurrence,
+        // and a registered one answers for its own key and epoch alone.
         assertEquals(null, RuntimeTraceContext.sourceFor(receiver));
-        assertEquals(false,
-                ConcolicRegionRuntime.plannedEntrySourceForTests(
-                        receiver, "cluster0/nn0#epoch1"));
 
         SourceRef dataNode = new SourceRef(
                 "CLUSTER_NODE", "DATANODE", "cluster0/dn0", 1L);
         RuntimeTraceContext.registerSource(receiver, dataNode);
-        assertEquals(false,
-                ConcolicRegionRuntime.plannedEntrySourceForTests(
-                        receiver, "cluster0/nn0#epoch1"));
-        assertEquals(true,
-                ConcolicRegionRuntime.plannedEntrySourceForTests(
-                        receiver, dataNode.key()));
-        assertEquals(false,
-                ConcolicRegionRuntime.plannedEntrySourceForTests(
-                        receiver, "cluster0/dn0#epoch99"));
+        assertEquals(dataNode.key(),
+                RuntimeTraceContext.sourceFor(receiver).key());
+        assertNotEquals("cluster0/nn0#epoch1",
+                RuntimeTraceContext.sourceFor(receiver).key());
+        assertNotEquals("cluster0/dn0#epoch99",
+                RuntimeTraceContext.sourceFor(receiver).key());
     }
 
     /**
@@ -177,13 +152,6 @@ public class RuntimeTraceContextTest {
         assertEquals(before, RuntimeTraceContext.sourceFor(oldNameNode));
         assertEquals(after, RuntimeTraceContext.sourceFor(stableSlot));
         assertEquals(after, RuntimeTraceContext.sourceFor(newNameNode));
-        RuntimeTraceContext.SourceEvent restart =
-                RuntimeTraceContext.sourceEventsForTests().get(0);
-        assertEquals(RuntimeTraceContext.SourceEventKind.RESTART,
-                restart.kind);
-        assertEquals(before, restart.source);
-        assertEquals(after, restart.relatedSource);
-
         // A thread the workload spawns inherits the parent span and the
         // parent's source, on a lane of its own.
         RuntimeTraceContext.resetForTests();

@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
-import soot.Body;
 import soot.SootMethod;
 import soot.Type;
 
@@ -9,60 +8,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * Hadoop-specific recognition of communication call sites.
- *
- * <p>All Hadoop knowledge in the Step 1 static half lives here.  The
- * catalog algorithm consumes only {@link CommunicationCallSite}, so a
- * different transport can be supported by adding an adapter and touching no
- * CFG code.</p>
- *
- * <p>The configured protocol catalog is the admission authority.  The
- * adapter resolves an endpoint, and the SASL component leaves when needed,
- * only after the declared callee appears in that catalog.  Loading Hadoop
- * therefore never turns every protocol-like method in the process into a
- * communication boundary.</p>
- *
- * <h2>Where the cuts are</h2>
- *
- * <p>The client cut is the outer application call on the protocol interface
- * ({@code NamenodeProtocol.getBlockKeys}, {@code DatanodeProtocol
- * .sendHeartbeat}).  The server cut is the post-deserialization semantic
- * entry: the unique non-transport application implementation of the same
- * sub-signature ({@code NameNodeRpcServer}).  Translator, ProtoBuf and
- * transport frames ({@code *TranslatorPB}, {@code *ProtocolPB},
- * {@code org.apache.hadoop.ipc.*}, dynamic proxies) are implementation
- * sites: they neither open a cut nor receive one, so one Hadoop RPC yields
- * exactly one client cut and one server cut.</p>
- *
- * <h2>SASL</h2>
- *
- * <p>The encrypted HDFS data-transfer handshake is a single named pair rather
- * than an annotated protocol: {@code getEncryptedStreams} calls
- * {@code SaslDataTransferClient.doSaslHandshake}, and the server semantic
- * entry is {@code SaslDataTransferServer.getEncryptionKeyFromUserName}, the
- * site that parses the key id, block-pool id and nonce and delegates the
- * lookup.  The ordinary token-based {@code getSaslStreams} branch calls the
- * same helper but has a different server credential path, so it is not this
- * pair.  Request correspondence is derived by unique erased-type match
- * against the server parameters; an ambiguous or missing match is a named
- * gap, never a positional guess.</p>
- *
- * <p>That match yields one port, because the handshake carries one argument:
- * the encoded SASL user name.  The three values that actually cross - the key
- * id, the block-pool id and the nonce - are components of that one string, so
- * they are declared as component ports of it.  Without them the cut would
- * declare a name and the runtime handoff would transport three leaves that no
- * region catalog knows, which is README section 3's requirement that SASL move
- * onto the same cut and handoff abstraction rather than beside it.</p>
+ * Hadoop-specific recognition of communication call sites, including the SASL
+ * handshake README section 3 requires to move onto the same cut and handoff
+ * abstraction rather than beside it.
  */
 final class HadoopCommunicationAdapter implements
         CommunicationCallSiteAdapter {
@@ -80,28 +35,11 @@ final class HadoopCommunicationAdapter implements
     static final String SASL_SERVER_METHOD =
             "getEncryptionKeyFromUserName";
     static final String SASL_PROTOCOL = "HDFS_DATA_TRANSFER_SASL";
-    /**
-     * The handshake's own control plane, which lives in Hadoop's tree.
-     *
-     * <p>It allocates the exchange, declares the handshake's {@code SEND} and
-     * {@code RECEIVE} legs and carries the three encoded leaves across them.
-     * That is transport work by the same rule {@code org.apache.hadoop.ipc.*}
-     * is transport work; it just happens to sit in a package prefix no
-     * structural rule names.  Left undeclared it reads as ordinary state of
-     * whichever region holds the handshake, which is a different claim from
-     * the true one.</p>
-     */
+    /** The handshake's own control plane, which lives in Hadoop's tree. */
     static final String SASL_CONTROL_PLANE_CLASS =
             "org.apache.hadoop.hdfs.protocol.datatransfer.sasl"
                     + ".CausynthSaslHandoff";
-    /**
-     * The three leaves the encrypted handshake flattens into one user name.
-     *
-     * <p>These are the component names of the encoded name, and they are also
-     * what the server entry calls its own parsed values.  The runtime adapter
-     * states the same leaf names, so one declared port and one transported
-     * leaf are the same port.</p>
-     */
+    /** The three leaves the encrypted handshake flattens into one name. */
     static final String[] SASL_LEAF_NAMES =
             {"keyId", "blockPoolId", "nonce"};
     static final String[] SASL_LEAF_TYPES =
@@ -118,13 +56,12 @@ final class HadoopCommunicationAdapter implements
     /** Namespace the SASL handshake's broker leaf paths are stated under. */
     static final String SASL_HANDOFF_LEAF_PREFIX = "HANDSHAKE/";
 
-    private static final Pattern SIGNATURE = Pattern.compile(
-            "<([^:]+):\\s+(\\S+)\\s+([^\\s(]+)\\((.*)\\)>");
-
     private final Map<String, SootMethod> methodsBySignature;
     private final ConfiguredProtocolStubs configured;
     /** The slice this run scans, kept so the transport half can be named. */
     private final Set<String> selectedMethods = new LinkedHashSet<>();
+    /** Loaded entries by {@code class.name}, built once on first demand. */
+    private Map<String, SootMethod> entriesByOwnerAndName;
 
     HadoopCommunicationAdapter(Map<String, SootMethod> methodsBySignature,
                                ConfiguredProtocolStubs configured) {
@@ -146,36 +83,19 @@ final class HadoopCommunicationAdapter implements
     }
 
     @Override
-    public void prepare(Collection<String> selected,
-                        Function<String, Body> bodies) {
+    public void prepare(Collection<String> selected) {
         selectedMethods.clear();
         if (selected != null) {
             selectedMethods.addAll(selected);
         }
     }
 
-    /**
-     * The selected frames Hadoop's own transport owns.
-     *
-     * <p>{@link #transportImplementationClass} is already the rule this
-     * adapter applies to keep one remote call to one cut; it refuses to open a
-     * cut inside such a frame and refuses to let one stand in for the semantic
-     * server entry.  The same rule read forward names the frames themselves,
-     * which is what a consumer needs in order to tell a frame on the far side
-     * of a cut from a frame nothing has attributed yet.</p>
-     *
-     * <p>{@link #SASL_CLIENT_CLASS} is added because the HDFS data-transfer
-     * handshake is a named pair rather than an annotated protocol: the class
-     * carries the handshake and matches no naming rule above.  Its server
-     * counterpart is deliberately absent - {@link #SASL_SERVER_METHOD} is a
-     * semantic server entry, not transport - and the planner subtracts every
-     * resolved entry from this set in any case.</p>
-     */
+    /** The selected frames Hadoop's own transport owns. */
     @Override
     public Collection<String> transportImplementationMethods() {
         Set<String> transport = new LinkedHashSet<>();
         for (String method : selectedMethods) {
-            String owner = declaringClassOf(method);
+            String owner = CausynthStaticFacts.methodOwner(method);
             if (transportImplementationClass(owner)
                     || SASL_CLIENT_CLASS.equals(owner)
                     || saslControlPlaneClass(owner)) {
@@ -197,16 +117,14 @@ final class HadoopCommunicationAdapter implements
         if (admitted.isEmpty()) {
             return CommunicationResolution.none();
         }
-        Matcher matcher = SIGNATURE.matcher(declaredCallee);
-        if (!matcher.matches()) {
+        String owner = CausynthStaticFacts.methodOwner(declaredCallee);
+        String name = CausynthStaticFacts.methodName(declaredCallee);
+        if (owner.isEmpty()) {
             return CommunicationResolution.none();
         }
-        String owner = matcher.group(1);
-        String name = matcher.group(3);
-        // A transport frame is an implementation site.  Recognising a cut
-        // inside one would split the same remote call twice.
+        // A transport frame is an implementation site.
         if (transportImplementationClass(
-                declaringClassOf(enclosingMethod))) {
+                CausynthStaticFacts.methodOwner(enclosingMethod))) {
             return CommunicationResolution.none();
         }
         if (SASL_CLIENT_CLASS.equals(owner)
@@ -217,13 +135,7 @@ final class HadoopCommunicationAdapter implements
             return resolveSasl(enclosingMethod, unitIndex, declaredCallee);
         }
         // In production the explicit catalog has already named both semantic
-        // endpoints.  Do not run that fact back through protocol-interface
-        // discovery: Hadoop application code often calls a concrete PB
-        // translator (for example BPServiceActor's heartbeat), whose class is
-        // intentionally not itself annotated as a protocol interface.  The
-        // old second gate admitted the row and then silently discarded the
-        // real call site, leaving only unrelated test helpers that happened
-        // to invoke the interface type directly.
+        // endpoints.
         if (admitted.size() != 1) {
             return CommunicationResolution.gap(
                     CommunicationCatalogContract.GAP_CALL_SITE_UNRESOLVED,
@@ -271,10 +183,6 @@ final class HadoopCommunicationAdapter implements
                 responseComponents));
     }
 
-    // ------------------------------------------------------------------
-    // HDFS data-transfer SASL
-    // ------------------------------------------------------------------
-
     private CommunicationResolution resolveSasl(String enclosingMethod,
                                                 int unitIndex,
                                                 String declaredCallee) {
@@ -284,7 +192,8 @@ final class HadoopCommunicationAdapter implements
                     CommunicationCatalogContract.GAP_CALL_SITE_UNRESOLVED,
                     "SASL_CLIENT_METHOD_NOT_LOADED", declaredCallee);
         }
-        SootMethod server = saslServerEntry();
+        SootMethod server = uniqueEntry(SASL_SERVER_CLASS,
+                SASL_SERVER_METHOD);
         if (server == null) {
             return CommunicationResolution.gap(
                     CommunicationCatalogContract.GAP_SERVER_CUT_UNRESOLVED,
@@ -333,29 +242,9 @@ final class HadoopCommunicationAdapter implements
         return CommunicationResolution.site(site);
     }
 
-    /**
-     * Declares the three handshake leaves as component ports of the encoded
-     * SASL user name.
-     *
-     * <p>README section 3: "The existing SASL adapter exposes selected
-     * {@code keyId}, {@code blockPoolId} and nonce leaves across their
-     * concrete encoding.  Step 1 must move it onto the same cut and handoff
-     * abstraction."  The cut itself carries a single {@code String} argument -
-     * the client flattens the key into one name and the server splits, parses
-     * and Base64-decodes it back out - so without this the three leaves the
-     * runtime adapter really transports have no declared port to be equal
-     * over, and every SASL handoff equality is stated about a name no region
-     * catalog knows.</p>
-     *
-     * <p>The encoding is a real value transformation, not a serialization
-     * detail, so nothing here claims to execute it: the ports state which
-     * leaves cross and what type each has, and the runtime handoff states the
-     * expression each one carried.  Their names are the components the
-     * handshake defines, which is also what the server entry's own parameters
-     * are called, so the runtime adapter can name the very same leaf.</p>
-     *
-     * @return the components no declared string port could host, if any
-     */
+    /** Declares the three handshake leaves as component ports of the encoded
+     *  SASL user name (README section 3), and returns the components no
+     *  declared string port could host, if any. */
     private static List<String> saslComponentPorts(
             List<CommunicationCallSite.RequestPort> request) {
         String encoded = "";
@@ -385,41 +274,31 @@ final class HadoopCommunicationAdapter implements
         return Collections.emptyList();
     }
 
-    private SootMethod saslServerEntry() {
-        SootMethod resolved = null;
-        for (SootMethod candidate : methodsBySignature.values()) {
-            if (!SASL_SERVER_METHOD.equals(candidate.getName())
-                    || !SASL_SERVER_CLASS.equals(
-                    candidate.getDeclaringClass().getName())) {
-                continue;
+    /** The one loaded {@code class.name} entry, or null when the catalog
+     *  holds none or more than one. */
+    private SootMethod uniqueEntry(String owner, String name) {
+        if (entriesByOwnerAndName == null) {
+            entriesByOwnerAndName = new LinkedHashMap<>();
+            for (SootMethod candidate : methodsBySignature.values()) {
+                String key = candidate.getDeclaringClass().getName() + "."
+                        + candidate.getName();
+                entriesByOwnerAndName.put(key,
+                        entriesByOwnerAndName.containsKey(key)
+                                ? null : candidate);
             }
-            if (resolved != null) {
-                return null;
-            }
-            resolved = candidate;
         }
-        return resolved;
+        return entriesByOwnerAndName.get(owner + "." + name);
     }
 
     /** True only at the encrypted-key caller of the shared SASL helper. */
     private static boolean encryptedSaslCaller(String enclosingMethod) {
-        if (enclosingMethod == null) {
-            return false;
-        }
-        Matcher matcher = SIGNATURE.matcher(enclosingMethod);
-        return matcher.matches()
-                && SASL_CLIENT_CLASS.equals(matcher.group(1))
-                && SASL_ENCRYPTED_CALLER_METHOD.equals(matcher.group(3));
+        return SASL_CLIENT_CLASS.equals(
+                CausynthStaticFacts.methodOwner(enclosingMethod))
+                && SASL_ENCRYPTED_CALLER_METHOD.equals(
+                CausynthStaticFacts.methodName(enclosingMethod));
     }
 
-    // ------------------------------------------------------------------
-    // Structural indices
-    // ------------------------------------------------------------------
-
-    /**
-     * True for the frames that carry a remote call rather than decide it.
-     * These are implementation sites: they never open or receive a cut.
-     */
+    /** True for the frames that carry a remote call rather than decide it. */
     static boolean transportImplementationClass(String className) {
         if (className == null || className.isEmpty()) {
             return false;
@@ -437,14 +316,6 @@ final class HadoopCommunicationAdapter implements
         return className != null
                 && (SASL_CONTROL_PLANE_CLASS.equals(className)
                 || className.startsWith(SASL_CONTROL_PLANE_CLASS + "$"));
-    }
-
-    private static String declaringClassOf(String methodSignature) {
-        if (methodSignature == null) {
-            return "";
-        }
-        Matcher matcher = SIGNATURE.matcher(methodSignature);
-        return matcher.matches() ? matcher.group(1) : "";
     }
 
 }

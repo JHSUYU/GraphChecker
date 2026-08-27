@@ -111,6 +111,10 @@ public:
     ShouldNotCallThis();
   }
   virtual void set_sym_exp(int field_offset, Expression *exp) = 0;
+  // True when this shadow already carries an expression for the field.  The
+  // field symbolizer asks this before minting a fresh symbol: an expression
+  // that reached the field by propagation is never overwritten by one.
+  virtual bool has_sym_exp(int field_offset) = 0;
 
   virtual void print() = 0;
   virtual bool need_recursive() { return true; }

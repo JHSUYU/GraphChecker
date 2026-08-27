@@ -89,9 +89,9 @@ public class SeedBackwardStaticAnalyzerTest {
         ExceptionTargetSite site = new ExceptionTargetSite(
                 "receiver-def-use", owner.getName(), consume.getName(),
                 "(" + rootType.getName().replace('.', '/') + ")V",
-                consume.getSignature(), failure.getName(), 0, -1);
+                consume.getSignature(), failure.getName(), 0);
         StaticProgram program = new SeedBackwardStaticAnalyzer(
-                new CausynthTargetContext(null, null, site.id, site,
+                new CausynthTargetContext(null, site.id, site,
                         "TEST")).analyze();
 
         assertTrue(program.traceMethods.contains(component.getSignature()));
@@ -171,9 +171,9 @@ public class SeedBackwardStaticAnalyzerTest {
         ExceptionTargetSite site = new ExceptionTargetSite(
                 "lazy-mutation", owner.getName(), target.getName(),
                 "(" + state.getName().replace('.', '/') + ")V",
-                target.getSignature(), failure.getName(), 0, -1);
+                target.getSignature(), failure.getName(), 0);
         StaticProgram program = new SeedBackwardStaticAnalyzer(
-                new CausynthTargetContext(null, null, site.id, site,
+                new CausynthTargetContext(null, site.id, site,
                         "TEST")).analyze();
 
         assertTrue(program.traceMethods.contains(writer.getSignature()));

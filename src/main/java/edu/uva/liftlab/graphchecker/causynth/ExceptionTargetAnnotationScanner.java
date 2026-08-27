@@ -8,7 +8,6 @@ import org.objectweb.asm.TypeReference;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeAnnotationNode;
 import org.objectweb.asm.tree.TypeInsnNode;
@@ -35,7 +34,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,14 +42,7 @@ import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-/**
- * Finds exact {@link CausynthExceptionTarget} NEW instructions in inputs.
- *
- * <p>{@link #scan} is public because it needs nothing but ASM: an integration
- * layer can ask which targets a set of class outputs declares without
- * starting Soot. {@link #select} stays package-private - it resolves the Soot
- * signature and is only meaningful inside a running analysis.</p>
- */
+/** Finds exact {@link CausynthExceptionTarget} NEW instructions in inputs. */
 public final class ExceptionTargetAnnotationScanner {
     private static final String ANNOTATION_DESCRIPTOR =
             Type.getDescriptor(CausynthExceptionTarget.class);
@@ -94,8 +85,7 @@ public final class ExceptionTargetAnnotationScanner {
                 unresolved.className, unresolved.methodName,
                 unresolved.methodDescriptor, signature,
                 unresolved.exceptionClass,
-                unresolved.exceptionConstructionOrdinal,
-                unresolved.sourceLine);
+                unresolved.exceptionConstructionOrdinal);
     }
 
     public static List<ExceptionTargetSite> scan(List<String> inputs)
@@ -137,16 +127,11 @@ public final class ExceptionTargetAnnotationScanner {
                 && (input.toString().endsWith(".jar")
                 || input.toString().endsWith(".zip"))) {
             try (JarFile jar = new JarFile(input.toFile())) {
-                List<JarEntry> entries = new ArrayList<>();
-                Enumeration<JarEntry> enumeration = jar.entries();
-                while (enumeration.hasMoreElements()) {
-                    JarEntry entry = enumeration.nextElement();
-                    if (!entry.isDirectory()
-                            && entry.getName().endsWith(".class")) {
-                        entries.add(entry);
-                    }
-                }
-                entries.sort(Comparator.comparing(JarEntry::getName));
+                List<JarEntry> entries = jar.stream()
+                        .filter(entry -> !entry.isDirectory()
+                                && entry.getName().endsWith(".class"))
+                        .sorted(Comparator.comparing(JarEntry::getName))
+                        .collect(Collectors.toList());
                 for (JarEntry entry : entries) {
                     try (InputStream bytes = jar.getInputStream(entry)) {
                         scanClass(bytes, sites);
@@ -177,12 +162,8 @@ public final class ExceptionTargetAnnotationScanner {
                                    Map<String, ExceptionTargetSite> sites)
             throws IOException {
         Map<String, Integer> newOrdinals = new LinkedHashMap<>();
-        int line = -1;
         for (AbstractInsnNode instruction = method.instructions.getFirst();
              instruction != null; instruction = instruction.getNext()) {
-            if (instruction instanceof LineNumberNode) {
-                line = ((LineNumberNode) instruction).line;
-            }
             if (!(instruction instanceof TypeInsnNode)
                     || instruction.getOpcode() != Opcodes.NEW) {
                 continue;
@@ -210,8 +191,7 @@ public final class ExceptionTargetAnnotationScanner {
                 String id = annotationString(annotation, "value");
                 ExceptionTargetSite site = new ExceptionTargetSite(id,
                         className, method.name, method.desc, "",
-                        creation.desc.replace('/', '.'), ordinal,
-                        line);
+                        creation.desc.replace('/', '.'), ordinal);
                 ExceptionTargetSite previous = sites.putIfAbsent(
                         site.stableIdentity(), site);
                 if (previous != null && !previous.id.equals(site.id)) {

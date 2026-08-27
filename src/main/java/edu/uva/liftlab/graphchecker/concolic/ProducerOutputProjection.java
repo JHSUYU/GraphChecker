@@ -11,6 +11,7 @@ import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.required;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Exact target-first projection of one reusable producer relation. */
@@ -116,14 +117,6 @@ public final class ProducerOutputProjection {
         JsonArray result = new JsonArray();
         for (String value : new TreeSet<>(source)) {
             result.add(required(value, field));
-        }
-        return result;
-    }
-
-    private static String required(String value, String field) {
-        String result = value == null ? "" : value.trim();
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(field + " is required");
         }
         return result;
     }

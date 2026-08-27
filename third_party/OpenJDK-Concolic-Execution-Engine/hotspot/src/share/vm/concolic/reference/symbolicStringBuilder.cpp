@@ -62,6 +62,12 @@ void SymStrBuilder::set_sym_exp(int field_offset, Expression *exp) {
   (void) exp;
 }
 
+bool SymStrBuilder::has_sym_exp(int field_offset) {
+  // set_sym_exp above stores nothing per field, so no field ever carries one.
+  (void) field_offset;
+  return false;
+}
+
 bool SymStrBuilder::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
   bool need_symbolize = false;

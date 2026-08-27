@@ -7,6 +7,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
@@ -26,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.concurrent.TimeUnit;
 
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
@@ -37,6 +39,18 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.arithmetic;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.arithmeticOperator;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.bitwiseOperator;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.comparison;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.constantPayload;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.exactIntLiteral;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.flattenConcat;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.isJavaParseInt;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.isJavaSplitElement;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.isPrimitiveIntExpression;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.quote;
+import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.shiftOperator;
 
 /** Solves one canonical path flip and maps its model to real input actions. */
 public final class ConcolicConstraintSolver {
@@ -67,23 +81,23 @@ public final class ConcolicConstraintSolver {
                 encoder.addConstraint(constraint, "q_context_" + index);
             }
         }
-        List<Set<String>> branchSymbolSets = new ArrayList<>();
+        // The replay-control frontier is the union of the branch
+        // predicates, not of every semantic support expression they rest on.
+        Set<String> replayFrontier = new LinkedHashSet<>();
         Set<String> targetSymbols = new LinkedHashSet<>();
         for (int index = 0; index < branchConstraints.size(); index++) {
             if (targetReachQuery
-                    && targetReplayPlan.isExternalCompanion(index)) {
+                    && targetReplayPlan.externalCompanionPredicates
+                    .contains(index)) {
                 // This witnessed predecessor is fixed by the full-session
-                // replay's exact RPC/shared-state companion.  It remains in
-                // BranchReplayContract for runtime prefix validation, but no
-                // unconstrained remote source is introduced into the local
-                // flip SMT query.
-                branchSymbolSets.add(Collections.<String>emptySet());
+                // replay's exact RPC/shared-state companion, so it
+                // contributes no symbol this query has to control.
                 continue;
             }
             Set<String> symbols = encoder.addConstraint(
                     branchConstraints.get(index),
                     "q_branch_" + index);
-            branchSymbolSets.add(symbols);
+            replayFrontier.addAll(symbols);
             if (index + 1 == branchConstraints.size()) {
                 targetSymbols.addAll(symbols);
             }
@@ -91,8 +105,7 @@ public final class ConcolicConstraintSolver {
         ReplaySupport targetSupport = classifyReplaySupport(
                 encoder, targetSymbols, actions, activation);
         ReplaySupport replaySupport = classifyReplaySupport(
-                encoder, replayControlFrontier(branchSymbolSets),
-                actions, activation);
+                encoder, replayFrontier, actions, activation);
         Set<String> writableReplayControlSymbols =
                 replaySupport.writableSymbols;
         Set<String> nullableReplaySymbols = referencesComparedWithNull(
@@ -130,11 +143,11 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        if (targetReachQuery && targetReplayPlan.hasGap()) {
+        if (targetReachQuery && !targetReplayPlan.gapReason.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason", targetReplayPlan.reason());
+            record.addProperty("reason", targetReplayPlan.gapReason);
             record.add("unresolvedCompanionSupportSymbols",
-                    strings(targetReplayPlan.gapSymbols()));
+                    strings(targetReplayPlan.gapSymbols));
             return new Result(record, smt, new JsonArray(),
                     replayContract);
         }
@@ -185,18 +198,12 @@ public final class ConcolicConstraintSolver {
         Map<String, String> values = parseGetValues(output.stdout);
         // Which writer the model chose is part of the model, not a footnote
         // to it: without reading the selectors back, a replay could not know
-        // which read-from arm it is supposed to confirm.
         SelectedReadCut readCut = SelectedReadCut.of(query.recordedReadCut,
                 values);
         if (!readCut.isEmpty()) {
             record.add("selectedReadCut", readCut.toJson());
         }
         // The SMT model satisfies the complete required prefix plus target.
-        // Every writable root in that conjunction must therefore be replayed
-        // from the same model. A derived field alias is represented by the
-        // unique writable root that the recorded field bindings equate with
-        // it. Free environment support was refused above; sparse container
-        // values are projected by their dedicated path below.
         ModelProjection projection = modelAssignments(encoder, values,
                 actions, activation, writableReplayControlSymbols,
                 referenceDomains);
@@ -500,52 +507,11 @@ public final class ConcolicConstraintSolver {
 
                 @Override
                 public ContainerSmtCodec.Term unbox(
-                        ContainerSmtCodec.Term value, String javaType) {
-                    if (value == null
-                            || value.sort != ContainerSmtCodec.Sort.VALUE) {
-                        return value;
-                    }
-                    String kind = ContainerSmtCodec.valueKind(javaType);
-                    if (!kind.isEmpty()) {
-                        require("((_ is " + kind + ") "
-                                + value.text + ")");
-                    }
-                    String integralValue =
-                            ContainerSmtCodec.unboxIntegral(
-                                    value.text, javaType);
-                    if (!integralValue.isEmpty()) {
-                        return new ContainerSmtCodec.Term(
-                                integralValue, ContainerSmtCodec.Sort.INT,
-                                JavaPrimitiveSmtSemantics.widthOfJavaType(
-                                        javaType));
-                    }
-                    Sort sort = sortOfJava(javaType);
-                    if (sort == Sort.BOOL) {
-                        return new ContainerSmtCodec.Term(
-                                "(valueBool " + value.text + ")",
-                                ContainerSmtCodec.Sort.BOOL);
-                    }
-                    if (sort == Sort.REF) {
-                        return new ContainerSmtCodec.Term(
-                                "(valueRef " + value.text + ")",
-                                ContainerSmtCodec.Sort.REF);
-                    }
-                    if (sort == Sort.FLOAT32) {
-                        return new ContainerSmtCodec.Term(
-                                "(valueFloat " + value.text + ")",
-                                ContainerSmtCodec.Sort.FLOAT32);
-                    }
-                    if (sort == Sort.FLOAT64) {
-                        return new ContainerSmtCodec.Term(
-                                "(valueDouble " + value.text + ")",
-                                ContainerSmtCodec.Sort.FLOAT64);
-                    }
-                    if (sort == Sort.STRING) {
-                        return new ContainerSmtCodec.Term(
-                                "(valueString " + value.text + ")",
-                                ContainerSmtCodec.Sort.STRING);
-                    }
-                    return value;
+                        ContainerSmtCodec.Term value,
+                        String javaType) {
+                    return ContainerSmtCodec.unboxValue(value,
+                            javaType, unboxedCellSort(javaType),
+                            this);
                 }
 
                 @Override
@@ -586,14 +552,20 @@ public final class ConcolicConstraintSolver {
             };
         }
 
+        /** The one codec-sort to solver-sort direction. */
         private static Sort containerSort(ContainerSmtCodec.Sort sort) {
-            return sort == ContainerSmtCodec.Sort.BOOL ? Sort.BOOL
-                    : sort == ContainerSmtCodec.Sort.INT ? Sort.INT
-                    : sort == ContainerSmtCodec.Sort.FLOAT32 ? Sort.FLOAT32
-                    : sort == ContainerSmtCodec.Sort.FLOAT64 ? Sort.FLOAT64
-                    : sort == ContainerSmtCodec.Sort.STRING ? Sort.STRING
-                    : sort == ContainerSmtCodec.Sort.REF ? Sort.REF
-                    : Sort.UNKNOWN;
+            if (sort == null) return Sort.UNKNOWN;
+            switch (sort) {
+                case BOOL: return Sort.BOOL;
+                case INT: return Sort.INT;
+                case FLOAT32: return Sort.FLOAT32;
+                case FLOAT64: return Sort.FLOAT64;
+                case STRING: return Sort.STRING;
+                case REF: return Sort.REF;
+                case VALUE: return Sort.VALUE;
+                case INDEXED: return Sort.INDEXED;
+                default: return Sort.ASSOCIATIVE;
+            }
         }
 
         private ContainerSmtCodec.Term toContainerTerm(Term value) {
@@ -624,24 +596,7 @@ public final class ConcolicConstraintSolver {
         private Term fromContainerTerm(
                 ContainerSmtCodec.Term value, String origin) {
             if (value == null) return null;
-            Sort sort = value.sort == ContainerSmtCodec.Sort.BOOL
-                    ? Sort.BOOL
-                    : value.sort == ContainerSmtCodec.Sort.INT
-                    ? Sort.INT
-                    : value.sort == ContainerSmtCodec.Sort.FLOAT32
-                    ? Sort.FLOAT32
-                    : value.sort == ContainerSmtCodec.Sort.FLOAT64
-                    ? Sort.FLOAT64
-                    : value.sort == ContainerSmtCodec.Sort.STRING
-                    ? Sort.STRING
-                    : value.sort == ContainerSmtCodec.Sort.REF
-                    ? Sort.REF
-                    : value.sort == ContainerSmtCodec.Sort.VALUE
-                    ? Sort.VALUE
-                    : value.sort == ContainerSmtCodec.Sort.INDEXED
-                    ? Sort.INDEXED
-                    : value.sort == ContainerSmtCodec.Sort.ASSOCIATIVE
-                    ? Sort.ASSOCIATIVE : Sort.UNKNOWN;
+            Sort sort = containerSort(value.sort);
             if (sort == Sort.UNKNOWN) {
                 unsupported.add(origin + ":CONTAINER_STATE_USED_AS_VALUE");
                 return null;
@@ -694,7 +649,8 @@ public final class ConcolicConstraintSolver {
                 }
             }
             if (symbolNames.sort == Sort.STRING) {
-                return Term.javaString(name, symbolNames.nullness, raw);
+                return new Term(name, Sort.STRING, IntegralWidth.NONE,
+                        symbolNames.nullness, raw);
             }
             return new Term(name, symbolNames.sort, symbolNames.width);
         }
@@ -703,17 +659,7 @@ public final class ConcolicConstraintSolver {
             return names.get(raw);
         }
 
-        /**
-         * Declares the recorded read cut this query carries.
-         *
-         * <p>The positions and the selectors are the recorded session's own
-         * variables and cannot collide with a port or symbol term. Adding them
-         * can never turn a satisfiable query unsatisfiable: the recorded order
-         * is acyclic, so the positions always have an assignment, and the
-         * unknown-writer arm of every choice carries no order constraint at
-         * all. What they add is the one thing the model could not otherwise
-         * report - which writer the solver picked.</p>
-         */
+        /** Declares the recorded read cut this query carries. */
         private void bindRecordedReadCut(JsonObject payload) {
             if (!RecordedSessionModel.isQueryPayload(payload)) return;
             for (JsonElement element : array(payload, "positions")) {
@@ -735,21 +681,11 @@ public final class ConcolicConstraintSolver {
             }
             // README section 6's event-existence Booleans.  Declared, and
             // deliberately not added to the model read-back: they are facts
-            // the recorded session already decided, so a solver assignment
-            // for them would be a second answer to a question the run
-            // answered.
             for (JsonElement element : array(payload, "existenceSymbols")) {
                 String symbol = element.getAsString();
                 if (!symbol.isEmpty()) declarations.put(symbol, Sort.BOOL);
             }
             // README READ-1's other half.  The recorded model gates each
-            // read's exactly-one choice on that read existing and leaves the
-            // Boolean to whoever knows which cases contain the load.  This
-            // query is stated over one observed target path, and every read
-            // in its slice is a load that path performed, so the answer here
-            // is that they exist - asserted by name rather than left free,
-            // which would let a model report no chosen arm for a read the
-            // run watched.
             for (JsonElement element : array(payload, "readChoices")) {
                 if (!element.isJsonObject()) continue;
                 String symbol = string(element.getAsJsonObject(),
@@ -788,8 +724,6 @@ public final class ConcolicConstraintSolver {
             if (currentConstraintSymbols != null) {
                 // SolverPathContext records only this identity, not an exact
                 // concrete value or provenance that would make it replay
-                // invariant. Track it as path support so it cannot stay a
-                // free SMT variable while replay materializes only others.
                 currentConstraintSymbols.add(
                         "ENVIRONMENT_PLACEHOLDER:" + identity);
             }
@@ -853,12 +787,7 @@ public final class ConcolicConstraintSolver {
             return null;
         }
 
-        /**
-         * Lowers only casts whose value relation is the identity in the
-         * current mathematical primitive model.  In particular, an expected
-         * sort must never be used to redeclare the source symbol: doing so
-         * turns a Java conversion into an unrelated free value.
-         */
+        /** Lowers only casts whose value relation the SMT sorts preserve. */
         private Term typeCast(JsonObject expression, String origin) {
             JsonElement sourceExpression = expression.get("_exp");
             Term source = term(sourceExpression, null, origin + ":castSource");
@@ -1006,8 +935,6 @@ public final class ConcolicConstraintSolver {
                     }
                     // A BinaryExpression over Java Strings comes from JVM
                     // reference comparison.  SMT string equality is content
-                    // equality and would therefore be unsound here.  Content
-                    // equality is lowered separately from OpStrExpression.
                     unsupported.add(origin
                             + ":JAVA_STRING_REFERENCE_IDENTITY_"
                             + "MATERIALIZATION_UNMODELED");
@@ -1163,21 +1090,13 @@ public final class ConcolicConstraintSolver {
             for (Set<String> aliases : fieldSymbols.values()) {
                 if (!aliases.contains(raw)) continue;
                 for (String alias : aliases) {
-                    SymbolNames aliasNames = names(alias);
-                    ActionMatch action = aliasNames == null ? null
-                            : materializationResolution(alias, actions,
-                            aliasNames.sort);
-                    ConfiguredSourceMatch source = aliasNames == null ? null
-                            : configuredSourceResolution(alias, activation,
-                            aliasNames.sort);
-                    if (aliasNames == null
-                            || (action == null) == (source == null)) {
+                    if (!exactlyOneWritableBinding(this, alias, actions,
+                            activation)) {
                         continue;
                     }
                     // Two distinct writable roots bound to the same field
-                    // need coordinated replay writes. The compact context
-                    // does not prove which one owns that write, so refuse
-                    // instead of selecting one by iteration order.
+                    // would need coordinated replay writes, which this
+                    // query cannot express, so neither is a representative.
                     if (selected != null && !selected.equals(alias)) {
                         return null;
                     }
@@ -1266,7 +1185,7 @@ public final class ConcolicConstraintSolver {
             for (String raw : frontier) {
                 SymbolNames symbol = names(raw);
                 if (symbol == null || symbol.sort != Sort.REF) continue;
-                ActionMatch target = materializationResolution(raw, actions,
+                ActionMatch target = bestAction(raw, actions,
                         Sort.REF);
                 if (target == null) continue;
                 String domainKey = referenceDomainKey(target.action);
@@ -1324,9 +1243,7 @@ public final class ConcolicConstraintSolver {
 
         /**
          * Lowers the Java reference-null view of a String without confusing
-         * it with the String's SMT character-content view.  Constants and
-         * derived String values carry the exact literal {@code false}; a
-         * symbolic input carries its companion nullness Bool.
+         * it with the empty string.
          */
         private Term stringNullComparison(Term left, Term right,
                                           String operator) {
@@ -1520,8 +1437,6 @@ public final class ConcolicConstraintSolver {
             for (int index = 0; index < parameters.size(); index++) {
                 // Do not pass STRING as an expected sort here. Symbol terms
                 // use that hint when choosing their declaration sort, which
-                // would silently coerce a malformed numeric operand into a
-                // string and make an inexact lowering look well-sorted.
                 Term value = term(parameters.get(index), null,
                         origin + ":" + operation + ":parameter" + index);
                 if (value == null) return null;
@@ -1547,10 +1462,8 @@ public final class ConcolicConstraintSolver {
         }
 
         /**
-         * Evaluation of an instance String operation proves its receiver
-         * (and each Java-required String argument) non-null.  Keeping that
-         * proof separate from the content predicate prevents a null model
-         * from satisfying, for example, {@code str.contains}.
+         * Evaluation of an instance String operation proves its receiver was
+         * non-null, so the query may assert it; unknown nullability refuses.
          */
         private boolean requireNonNullString(Term value, String origin,
                                              String operation, int index) {
@@ -1591,9 +1504,6 @@ public final class ConcolicConstraintSolver {
                     "unknown_method");
             // splitElement and parseInt carry the same structural round-trip
             // semantics the composition encoder proves; this mirrors
-            // ConcolicSmtComposer.parseIntTerm / splitElementTerm so the two
-            // encoders agree on these java.lang methods.  Every other method
-            // stays fail-closed as METHOD_SEMANTICS_MISSING.
             if (isJavaParseInt(method)) {
                 return parseIntTerm(expression, origin);
             }
@@ -1604,13 +1514,7 @@ public final class ConcolicConstraintSolver {
             return null;
         }
 
-        /**
-         * Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}.
-         * Recognizes {@code parseInt(splitElement(concat(toString(i), delim,
-         * suffix...), delim, [limit], 0)[, 10]) == i} and returns {@code i}.
-         * A free parse/split UF would permit models Java cannot execute, so a
-         * structural proof is required; anything else is a codec gap.
-         */
+        /** Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}. */
         private Term parseIntTerm(JsonObject expression, String origin) {
             JsonArray params = array(expression, "_param_list");
             if (params.size() != 1 && params.size() != 2) {
@@ -1663,10 +1567,6 @@ public final class ConcolicConstraintSolver {
 
         /**
          * Mirror of {@link ConcolicSmtComposer}'s {@code exactSplitPrefix}.
-         * The composer first chases cross-region String equality edges before
-         * matching; the path-flip solver works inside a single region and has
-         * no such edge index, so the split receiver must already be a
-         * syntactic {@code concat(toString(int), delim, suffix...)}.
          */
         private SplitPrefix exactSplitPrefix(JsonElement expression) {
             if (expression == null || !expression.isJsonObject()) {
@@ -1685,14 +1585,14 @@ public final class ConcolicConstraintSolver {
             if (index == null || index != 0) {
                 return SplitPrefix.gap("INDEX_NOT_LITERAL_0");
             }
-            String delimiter = exactStringLiteral(params.get(1));
+            String delimiter = VmExpressionIr.exactStringLiteral(
+                    params.get(1), STRING_TYPED);
             String delimiterGap = decimalDelimiterGap(delimiter);
             if (!delimiterGap.isEmpty()) return SplitPrefix.gap(delimiterGap);
             if (params.size() == 4) {
                 Integer limit = exactIntLiteral(params.get(2));
                 // Java split(..., 1) returns the entire receiver and therefore
                 // does not preserve the decimal prefix as element zero.  Zero,
-                // negative limits, and positive limits greater than one do.
                 if (limit == null || limit == 1) {
                     return SplitPrefix.gap("LIMIT_DOES_NOT_PRESERVE_PREFIX");
                 }
@@ -1703,10 +1603,10 @@ public final class ConcolicConstraintSolver {
             }
             // Concatenation commonly starts from the builder identity "".
             // Removing only exact empty literals is semantics-preserving;
-            // symbolic or non-empty prefixes remain proof gaps.
             List<JsonElement> parts = new ArrayList<>();
             for (JsonElement part : flattened) {
-                if (!"".equals(exactStringLiteral(part))) parts.add(part);
+                if (!"".equals(VmExpressionIr.exactStringLiteral(part,
+                        STRING_TYPED))) parts.add(part);
             }
             if (parts.size() < 3) {
                 return SplitPrefix.gap("CONCAT_PREFIX_AND_SUFFIX_REQUIRED");
@@ -1724,112 +1624,20 @@ public final class ConcolicConstraintSolver {
                     || !isPrimitiveIntExpression(toStringParams.get(0))) {
                 return SplitPrefix.gap("PREFIX_NOT_PRIMITIVE_INT_TO_STRING");
             }
-            String concatenatedDelimiter = exactStringLiteral(parts.get(1));
+            String concatenatedDelimiter = VmExpressionIr
+                    .exactStringLiteral(parts.get(1), STRING_TYPED);
             if (concatenatedDelimiter == null
                     || !delimiter.equals(concatenatedDelimiter)) {
                 return SplitPrefix.gap("SPLIT_CONCAT_DELIMITER_MISMATCH");
             }
             for (int indexOfSuffix = 2; indexOfSuffix < parts.size();
                  indexOfSuffix++) {
-                if (!provablyStringValued(parts.get(indexOfSuffix))) {
+                if (!VmExpressionIr.provablyStringValued(
+                        parts.get(indexOfSuffix), STRING_TYPED)) {
                     return SplitPrefix.gap("SUFFIX_NOT_STRING_VALUED");
                 }
             }
             return SplitPrefix.complete(toStringParams.get(0));
-        }
-
-        private boolean flattenConcat(JsonElement expression,
-                                      List<JsonElement> result) {
-            if (expression == null || !expression.isJsonObject()) {
-                return false;
-            }
-            JsonObject object = expression.getAsJsonObject();
-            if (!"OpStrExpression".equals(string(object, "_type"))
-                    || !"concat".equals(string(object, "_name"))
-                    || bool(object, "_is_not", false)) {
-                return false;
-            }
-            JsonArray params = array(object, "_param_list");
-            if (params.size() == 0) return false;
-            for (JsonElement parameter : params) {
-                if (parameter != null && parameter.isJsonObject()
-                        && "OpStrExpression".equals(string(
-                        parameter.getAsJsonObject(), "_type"))
-                        && "concat".equals(string(
-                        parameter.getAsJsonObject(), "_name"))) {
-                    if (!flattenConcat(parameter, result)) return false;
-                } else {
-                    result.add(parameter);
-                }
-            }
-            return true;
-        }
-
-        private boolean provablyStringValued(JsonElement expression) {
-            if (expression == null || !expression.isJsonObject()) return false;
-            JsonObject object = expression.getAsJsonObject();
-            String type = string(object, "_type");
-            if ("ConStringSymbolExp".equals(type)) return true;
-            if ("SymbolExpression".equals(type)
-                    || "ConSymbolExp".equals(type)
-                    || "ConstExpr".equals(type)) {
-                return sortOfJava(string(object, "_java_type")) == Sort.STRING;
-            }
-            if (!"OpStrExpression".equals(type)
-                    || bool(object, "_is_not", false)) return false;
-            String operation = string(object, "_name");
-            if ("toString".equals(operation)) {
-                JsonArray params = array(object, "_param_list");
-                return params.size() == 1
-                        && isPrimitiveIntExpression(params.get(0));
-            }
-            if (!"concat".equals(operation)) return false;
-            JsonArray params = array(object, "_param_list");
-            if (params.size() == 0) return false;
-            for (JsonElement parameter : params) {
-                if (!provablyStringValued(parameter)) return false;
-            }
-            return true;
-        }
-
-        private boolean isPrimitiveIntExpression(JsonElement expression) {
-            if (expression == null || !expression.isJsonObject()) return false;
-            String javaType = string(expression.getAsJsonObject(),
-                    "_java_type");
-            return "I".equals(javaType) || "int".equals(javaType);
-        }
-
-        private Integer exactIntLiteral(JsonElement expression) {
-            if (expression == null || !expression.isJsonObject()) return null;
-            JsonObject object = expression.getAsJsonObject();
-            String type = string(object, "_type");
-            if (!("ConstExpr".equals(type) || "ConSymbolExp".equals(type))) {
-                return null;
-            }
-            String javaType = string(object, "_java_type");
-            if (!("I".equals(javaType) || "int".equals(javaType))) {
-                return null;
-            }
-            String value = constantPayload(string(object, "_exp"));
-            if (!value.matches("-?[0-9]+")) return null;
-            try {
-                return Integer.valueOf(value);
-            } catch (NumberFormatException ignored) {
-                return null;
-            }
-        }
-
-        private String exactStringLiteral(JsonElement expression) {
-            if (expression == null || !expression.isJsonObject()) return null;
-            JsonObject object = expression.getAsJsonObject();
-            String type = string(object, "_type");
-            if (!("ConStringSymbolExp".equals(type)
-                    || "ConstExpr".equals(type)
-                    || "ConSymbolExp".equals(type))) return null;
-            if (sortOfJava(string(object, "_java_type")) != Sort.STRING) {
-                return null;
-            }
-            return constantPayload(string(object, "_exp"));
         }
 
         private String decimalDelimiterGap(String value) {
@@ -1866,7 +1674,6 @@ public final class ConcolicConstraintSolver {
             result.append("(set-option :produce-models true)\n");
             // Z3's default arithmetic engine can spend minutes branching on
             // exact Java mod/div identities introduced by constant masks.
-            // Solver 2 decides the same bounded integer formulas directly.
             result.append("(set-option :smt.arith.solver 2)\n");
             result.append("(set-logic ALL)\n");
             result.append("(declare-sort Ref 0)\n");
@@ -1882,10 +1689,7 @@ public final class ConcolicConstraintSolver {
                     .append('\n');
             if (usesJavaIntString) {
                 // SMT-LIB's str.from_int is defined only for non-negative
-                // integers; Java's decimal Integer.toString additionally emits
                 // a leading '-'.  Mirrors ConcolicSmtComposer's preamble so the
-                // split/parseInt round trip is ordinary string semantics rather
-                // than an unconstrained UF.
                 result.append("(define-fun java_int_to_string ((i Int)) "
                         + "String (ite (< i 0) (str.++ \"-\" "
                         + "(str.from_int (- i))) (str.from_int i)))\n");
@@ -2014,13 +1818,6 @@ public final class ConcolicConstraintSolver {
                     ? "" : stringReferenceKey;
         }
 
-        private static Term javaString(String content,
-                                       String nullness,
-                                       String referenceKey) {
-            return new Term(content, Sort.STRING, IntegralWidth.NONE,
-                    nullness, referenceKey);
-        }
-
         private static Term nonNullString(String content) {
             return new Term(content, Sort.STRING, IntegralWidth.NONE,
                     "false", "");
@@ -2064,7 +1861,7 @@ public final class ConcolicConstraintSolver {
                     || reference
                     && !("true".equals(nullValue)
                     || "false".equals(nullValue))) continue;
-            ActionMatch match = materializationResolution(raw, actions, sort);
+            ActionMatch match = bestAction(raw, actions, sort);
             ConfiguredSourceMatch source = configuredSourceResolution(
                     raw, activation, sort);
             if ((match == null) == (source == null)) continue;
@@ -2270,17 +2067,7 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    /**
-     * Classifies target-prefix support before the real encoder is built.
-     *
-     * <p>A target path flip is a local replay of one predecessor decision.
-     * Exact remote predecessors remain in {@link BranchReplayContract} and
-     * are checked by the full-session replay, but they are deliberately not
-     * asserted as free variables in the local SMT query.  No such omission is
-     * allowed for a predicate that also contains a writable local root: that
-     * would require a typed concrete snapshot of the companion value, which
-     * the current handoff/read-from evidence does not carry.</p>
-     */
+    /** Classifies target-prefix support before the real encoder is built. */
     private static final class TargetReplaySupportPlan {
         private final Set<Integer> externalCompanionPredicates;
         private final String gapReason;
@@ -2399,21 +2186,6 @@ public final class ConcolicConstraintSolver {
                     Collections.<String>emptySet());
         }
 
-        private boolean isExternalCompanion(int index) {
-            return externalCompanionPredicates.contains(index);
-        }
-
-        private boolean hasGap() {
-            return !gapReason.isEmpty();
-        }
-
-        private String reason() {
-            return gapReason;
-        }
-
-        private Set<String> gapSymbols() {
-            return gapSymbols;
-        }
     }
 
     private enum CompanionResolution {
@@ -2858,10 +2630,6 @@ public final class ConcolicConstraintSolver {
         private final String queryKey;
         private final BranchReplayContract replayContract;
         private final SolverPathContext pathContext;
-        /**
-         * The recorded guarded reads this query may select among, or the
-         * empty object when the session recorded none that reach it.
-         */
         private final JsonObject recordedReadCut;
 
         private PathQuery(String queryKey,
@@ -2942,17 +2710,11 @@ public final class ConcolicConstraintSolver {
         return best;
     }
 
-    private static ActionMatch materializationResolution(
-            String raw, List<JsonObject> actions, Sort expectedSort) {
-        return bestAction(raw, actions, expectedSort);
-    }
-
     /**
      * Resolves one VM source root to the exact configured Java field whose
-     * concrete value replay may change before minting that same source root.
-     * This is deliberately separate from ordinary input actions: turning a
-     * configured source into every matching getfield would mint a different
-     * symbol at each access and destroy its cross-case identity.
+     * mint site produced it.  Every occurrence of a declared site is its own
+     * symbol, so the task's PUBLISH catalog of mint SITES is the authority;
+     * the engine label already names one exact site execution.
      */
     private static ConfiguredSourceMatch configuredSourceResolution(
             String raw, JsonObject activation, Sort expectedSort) {
@@ -2962,29 +2724,28 @@ public final class ConcolicConstraintSolver {
                 || expectedSort.containerState()) {
             return null;
         }
+        final List<ConfiguredSourcePhaseContract.Occurrence> mintSites;
+        try {
+            mintSites = ConfiguredSourcePhaseContract.occurrencesOf(
+                    activation == null ? null : activation.get(
+                            ConfiguredSourcePhaseContract.PLAN_FIELD));
+        } catch (IllegalArgumentException malformed) {
+            return null;
+        }
         ConfiguredSourceMatch selected = null;
-        for (JsonElement element : array(activation,
-                SymbolicSourceEvidence.TASK_FIELD)) {
-            if (!element.isJsonObject()) return null;
-            JsonObject declaration = element.getAsJsonObject();
-            String sourceId = string(declaration, "sourceId");
-            String sourcePhaseId = string(declaration, "sourcePhaseId");
-            String fieldSignature = string(declaration, "fieldSignature");
+        for (ConfiguredSourcePhaseContract.Occurrence phase : mintSites) {
             FieldPathSpec.DeclaredField field =
-                    FieldPathSpec.declaredField(fieldSignature);
-            if (!SymbolicSourceEvidence.DECLARATION_AUTHORITY.equals(
-                    string(declaration, "authority"))
-                    || sourceId.isEmpty() || sourcePhaseId.isEmpty()
-                    || field == null
+                    FieldPathSpec.declaredField(phase.fieldSignature());
+            if (field == null
                     || sortOfJava(field.type()) != expectedSort
                     || !matchesEngineSymbol(raw,
                     SymbolicSourceEvidence.engineLabelForPhase(
-                            sourcePhaseId, sourceId))) {
+                            phase.phaseId(), phase.sourceId()))) {
                 continue;
             }
             if (selected != null) return null;
-            selected = new ConfiguredSourceMatch(sourcePhaseId, sourceId,
-                    field.signature());
+            selected = new ConfiguredSourceMatch(phase.phaseId(),
+                    phase.sourceId(), field.signature());
         }
         return selected;
     }
@@ -3035,50 +2796,43 @@ public final class ConcolicConstraintSolver {
                     && fixedNonNullPlaceholder(symbol, names.sort)) {
                 continue;
             }
-            ActionMatch action = names == null ? null
-                    : materializationResolution(symbol, actions,
-                    names.sort);
-            ConfiguredSourceMatch source = names == null ? null
-                    : configuredSourceResolution(symbol, activation,
-                    names.sort);
-            if (names != null && (action == null) != (source == null)) {
+            if (exactlyOneWritableBinding(encoder, symbol, actions,
+                    activation)) {
                 writable.add(symbol);
                 encoder.controlledSymbols.add(symbol);
                 continue;
             }
-
             String representative = encoder
                     .materializableFieldRepresentative(
                             symbol, actions, activation);
-            SymbolNames representativeNames = encoder.names(representative);
-            ActionMatch representativeAction = representativeNames == null
-                    ? null : materializationResolution(representative,
-                    actions, representativeNames.sort);
-            ConfiguredSourceMatch representativeSource =
-                    representativeNames == null ? null
-                    : configuredSourceResolution(representative, activation,
-                    representativeNames.sort);
-            if (representativeNames != null
-                    && (representativeAction == null)
-                    != (representativeSource == null)) {
+            if (exactlyOneWritableBinding(encoder, representative, actions,
+                    activation)) {
                 writable.add(representative);
                 encoder.controlledSymbols.add(representative);
                 continue;
             }
-
-            // NON_BRANCH_SOLVER_PATH_CONTEXT proves dependency and aliasing,
-            // but carries no exact concrete snapshot provenance. Therefore a
-            // remaining symbol (including time/environment placeholders)
-            // cannot be safely pinned here.
+            // NON_BRANCH_SOLVER_PATH_CONTEXT proves dependency and aliasing
+            // but carries no exact concrete snapshot provenance, so a symbol
+            // that reaches here is not one this query can materialize.
             unresolved.add(symbol);
         }
         return new ReplaySupport(writable, unresolved);
     }
 
     /**
-     * Cheap worklist-side admission probe.  It shares the solver's exact
-     * writable-root rules and performs no solve or external process launch.
+     * Whether one raw symbol is writable through exactly one authority: a
+     * materialization action or a configured source mint, never both.
      */
+    private static boolean exactlyOneWritableBinding(
+            Encoder encoder, String raw, List<JsonObject> actions,
+            JsonObject activation) {
+        SymbolNames names = encoder.names(raw);
+        return names != null
+                && (bestAction(raw, actions, names.sort) == null)
+                != (configuredSourceResolution(raw, activation,
+                names.sort) == null);
+    }
+
     static boolean hasLocallyWritableReplayRoot(
             JsonElement predicate, JsonObject activation) {
         if (predicate == null || activation == null) return false;
@@ -3129,23 +2883,6 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    /**
-     * Branch predicates, rather than every semantic support expression in
-     * the PC, define replay's writable inputs. Every predicate in the
-     * contract participates: a later worklist wave still restarts from the
-     * fixed workload seed and must reconstruct the previously discovered
-     * prefix before it can flip the selected decision.
-     */
-    static Set<String> replayControlFrontier(
-            List<Set<String>> branchSymbols) {
-        Set<String> result = new LinkedHashSet<>();
-        if (branchSymbols == null) return result;
-        for (Set<String> predicate : branchSymbols) {
-            result.addAll(predicate);
-        }
-        return result;
-    }
-
     private static boolean containsNullReference(JsonElement expression) {
         if (expression == null || expression.isJsonNull()) return false;
         if (expression.isJsonArray()) {
@@ -3166,12 +2903,8 @@ public final class ConcolicConstraintSolver {
         return false;
     }
 
-    /**
-     * Null is a legal replay value only for the exact reference operand of a
-     * witnessed null comparison.  A null literal elsewhere in the query must
-     * not widen every reference domain.
-     */
-    static Set<String> referencesComparedWithNull(JsonArray constraints) {
+    private static Set<String> referencesComparedWithNull(
+            JsonArray constraints) {
         Set<String> result = new LinkedHashSet<>();
         if (constraints != null) {
             for (JsonElement constraint : constraints) {
@@ -3377,11 +3110,7 @@ public final class ConcolicConstraintSolver {
 
     }
 
-    static Map<String, String> getValues(String output) {
-        return parseGetValues(output);
-    }
-
-    private static Map<String, String> parseGetValues(String output) {
+    static Map<String, String> parseGetValues(String output) {
         Map<String, String> result = new LinkedHashMap<>();
         int newline = output.indexOf('\n');
         if (newline < 0) return result;
@@ -3395,14 +3124,6 @@ public final class ConcolicConstraintSolver {
             }
         }
         return result;
-    }
-
-    private static boolean isJavaParseInt(String name) {
-        return "java/lang/Integer parseInt".equals(firstNonBlank(name));
-    }
-
-    private static boolean isJavaSplitElement(String name) {
-        return "java/lang/String splitElement".equals(firstNonBlank(name));
     }
 
     /** Mirror of {@link ConcolicSmtComposer}'s {@code SplitPrefix}. */
@@ -3448,13 +3169,15 @@ public final class ConcolicConstraintSolver {
 
     /**
      * A VM {@code PlaceHolderSymbolExp} is created from an already allocated
-     * object and names only its runtime class.  It is therefore fixed support
-     * state, not a writable replay input; the only identity fact carried by
-     * this compact IR is that the referenced object is non-null.
+     * object, so its reference is known non-null.
      */
     private static boolean fixedNonNullPlaceholder(String raw, Sort sort) {
         return sort == Sort.REF && raw != null && raw.startsWith("P_L");
     }
+
+    /** This encoder's own answer to "is this Java type a String?". */
+    private static final Predicate<String> STRING_TYPED =
+            type -> sortOfJava(type) == Sort.STRING;
 
     private static Sort sortOfJava(String javaType) {
         String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
@@ -3472,39 +3195,19 @@ public final class ConcolicConstraintSolver {
                 ? Sort.REF : Sort.UNKNOWN;
     }
 
+    /** The Java sort one boxed container cell unboxes to. */
+    private static ContainerSmtCodec.Sort unboxedCellSort(String javaType) {
+        Sort sort = sortOfJava(javaType);
+        return sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
+                : sort == Sort.REF ? ContainerSmtCodec.Sort.REF
+                : sort == Sort.FLOAT32 ? ContainerSmtCodec.Sort.FLOAT32
+                : sort == Sort.FLOAT64 ? ContainerSmtCodec.Sort.FLOAT64
+                : sort == Sort.STRING ? ContainerSmtCodec.Sort.STRING
+                : ContainerSmtCodec.Sort.VALUE;
+    }
+
     private static boolean numeric(Sort sort) {
         return sort == Sort.INT || sort.floating();
-    }
-
-    private static String comparison(String operator) {
-        if ("<".equals(operator)) return "<";
-        if ("<=".equals(operator)) return "<=";
-        if (">".equals(operator)) return ">";
-        if (">=".equals(operator)) return ">=";
-        return "";
-    }
-
-    private static String arithmetic(String operator) {
-        if ("+".equals(operator)) return "+";
-        if ("-".equals(operator)) return "-";
-        if ("*".equals(operator)) return "*";
-        return "";
-    }
-
-    private static boolean arithmeticOperator(String operator) {
-        return "+".equals(operator) || "-".equals(operator)
-                || "*".equals(operator) || "@".equals(operator)
-                || "/".equals(operator) || "%".equals(operator);
-    }
-
-    private static boolean bitwiseOperator(String operator) {
-        return "&".equals(operator) || "|".equals(operator)
-                || "^".equals(operator);
-    }
-
-    private static boolean shiftOperator(String operator) {
-        return "<<".equals(operator) || ">>".equals(operator)
-                || ">>>".equals(operator);
     }
 
     private static Sort castSort(String descriptor) {
@@ -3522,15 +3225,6 @@ public final class ConcolicConstraintSolver {
         JsonObject object = expression.getAsJsonObject();
         return string("MethodExpression".equals(string(object, "_type"))
                 ? object(object, "_res_exp") : object, "_java_type");
-    }
-
-    private static String constantPayload(String raw) {
-        int second = raw.indexOf('_', raw.indexOf('_') + 1);
-        return second < 0 ? raw : raw.substring(second + 1);
-    }
-
-    private static String quote(String value) {
-        return "\"" + value.replace("\"", "\"\"") + "\"";
     }
 
     private static String safeName(String value) {

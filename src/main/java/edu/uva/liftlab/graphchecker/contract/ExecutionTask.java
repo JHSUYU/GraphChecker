@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -11,131 +10,74 @@ import java.util.List;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Scheduled work for one causal-skeleton occurrence and one relation. */
-public final class ExecutionTask {
+public final class ExecutionTask extends PlanRow {
     /** Planner-selected function entry for one concrete interaction corridor. */
     public static final String REPLAY_ENTRY = "replayEntry";
+    /** Member a scheduler declares this task's symbolic carriers in. */
+    public static final String SHARED_CARRIERS = "sharedCarriers";
 
-    private final JsonObject encoded;
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
     private final OutputClosureContract outputClosure;
     private final List<OutputCaptureSpec> outputCaptures;
+    private final String rootLoopMethod;
+    private final int rootLoopHeaderUnitIndex;
+    private final String rootLoopSiteId;
+    private final Set<String> rootLoopControlSites;
+    private final Set<String> fixedCountLoopSites;
 
-    private ExecutionTask(JsonObject source) {
-        encoded = source.deepCopy();
+    /** {@code bound}, {@code closure} and {@code phases} are the values
+     *  {@link #create} just encoded; a decoder passes null and the wire is
+     *  parsed instead. */
+    private ExecutionTask(JsonObject source, LoopBoundPolicy bound,
+                          OutputClosureContract closure,
+                          List<ConfiguredSourcePhaseContract.Occurrence>
+                                  phases) {
+        super(source, "execution task", false, phases);
         require(taskId(), "taskId");
         require(goalId(), "goalId");
-        require(sourceKey(), "sourceKey");
-        require(occurrenceId(), "occurrenceId");
-        require(relationKey(), "relationKey");
-        require(regionId(), "regionId");
-        List<ConfiguredSourcePhaseContract.Occurrence> sourcePhases =
-                ConfiguredSourcePhaseContract.occurrencesOf(
-                        encoded.get(
-                        ConfiguredSourcePhaseContract.PLAN_FIELD));
-        List<String> selectedSourcePhases =
-                ConfiguredSourcePhaseContract.selectedPhaseIdsOf(encoded,
-                        sourcePhases);
-        for (ConfiguredSourcePhaseContract.Occurrence phase : sourcePhases) {
-            if (!occurrenceId().equals(phase.sourceOccurrenceId())) {
-                throw new IllegalArgumentException(
-                        "configured source phase belongs to another "
-                                + "occurrence: " + phase.phaseId());
-            }
-        }
-        validateConfiguredSourceBindings(sourcePhases,
-                selectedSourcePhases);
-
         inputActions = InputActionCatalog.decode(encoded);
-        loopBound = LoopBoundPolicy.decode(encoded);
-        outputClosure = encoded.has(OutputClosureContract.FIELD)
+        loopBound = bound == null ? LoopBoundPolicy.decode(encoded) : bound;
+        outputClosure = closure != null ? closure
+                : encoded.has(OutputClosureContract.FIELD)
                 ? OutputClosureCodec.decode(encoded) : null;
         outputCaptures = outputClosure == null
-                ? Collections.emptyList()
+                ? Collections.<OutputCaptureSpec>emptyList()
                 : OutputClosureCodec.captureSpecs(outputClosure);
         if (goalKind().capturesOutputRelation() != (outputClosure != null)) {
             throw new IllegalArgumentException(
                     "execution task goalKind and outputClosure disagree");
         }
-    }
-
-    /**
-     * A selected phase is an execution obligation, not just a trace marker.
-     * Every selected PUBLISH must materialize one configured field and every
-     * selected CONSUME must resolve one exact selector.  The reverse equality
-     * also rejects task rows that try to materialize an unselected phase.
-     */
-    private void validateConfiguredSourceBindings(
-            List<ConfiguredSourcePhaseContract.Occurrence> catalog,
-            List<String> selectedPhaseIds) {
-        Set<String> selectedPublish = new LinkedHashSet<>();
-        Set<String> selectedConsume = new LinkedHashSet<>();
-        Set<String> selected = new LinkedHashSet<>(selectedPhaseIds);
-        for (ConfiguredSourcePhaseContract.Occurrence phase : catalog) {
-            if (!selected.contains(phase.phaseId())) continue;
-            if (phase.phase()
-                    == ConfiguredSourcePhaseContract.Phase.PUBLISH) {
-                selectedPublish.add(phase.phaseId());
-            } else {
-                selectedConsume.add(phase.phaseId());
-            }
+        // The once-only-root rule: a region rooted on a service loop is
+        // entered once per iteration, at the loop body rather than at the
+        // frame above it.
+        JsonObject rootLoop = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
+                rootAuthority()) ? object(encoded, LoopBoundPolicy.ROOT_LOOP)
+                : new JsonObject();
+        rootLoopMethod = string(rootLoop, LoopBoundPolicy.ROOT_LOOP_METHOD);
+        rootLoopHeaderUnitIndex = rootLoopMethod.isEmpty() ? -1
+                : integer(rootLoop, LoopBoundPolicy.HEADER_UNIT_INDEX, -1);
+        if (!rootLoopMethod.isEmpty() && rootLoopHeaderUnitIndex < 0) {
+            throw new IllegalArgumentException("execution task " + taskId()
+                    + " roots a region at a loop body with no "
+                    + LoopBoundPolicy.HEADER_UNIT_INDEX);
         }
-
-        Set<String> declaredPublish = new LinkedHashSet<>();
-        JsonArray sourceRows;
-        if (!encoded.has(SymbolicSourceEvidence.TASK_FIELD)) {
-            sourceRows = new JsonArray();
-        } else if (!encoded.get(
-                SymbolicSourceEvidence.TASK_FIELD).isJsonArray()) {
-            throw new IllegalArgumentException(
-                    SymbolicSourceEvidence.TASK_FIELD
-                            + " must be an array");
-        } else {
-            sourceRows = encoded.getAsJsonArray(
-                    SymbolicSourceEvidence.TASK_FIELD);
-        }
-        for (JsonElement element : sourceRows) {
-            if (!element.isJsonObject()
-                    || !element.getAsJsonObject().has("sourcePhaseId")
-                    || !element.getAsJsonObject().get("sourcePhaseId")
-                    .isJsonPrimitive()
-                    || !element.getAsJsonObject().getAsJsonPrimitive(
-                    "sourcePhaseId").isString()) {
-                throw new IllegalArgumentException(
-                        SymbolicSourceEvidence.TASK_FIELD
-                                + " entries require sourcePhaseId");
-            }
-            String phaseId = element.getAsJsonObject()
-                    .get("sourcePhaseId").getAsString().trim();
-            if (phaseId.isEmpty() || !declaredPublish.add(phaseId)) {
-                throw new IllegalArgumentException(
-                        SymbolicSourceEvidence.TASK_FIELD
-                                + " repeats or omits sourcePhaseId");
-            }
-        }
-
-        Set<String> declaredConsume = new LinkedHashSet<>();
-        for (ConfiguredSourceSelectorContract.Selector selector
-                : ConfiguredSourceSelectorContract.decode(encoded)) {
-            declaredConsume.add(selector.consumePhaseId());
-        }
-        if (!selectedPublish.equals(declaredPublish)
-                || !selectedConsume.equals(declaredConsume)) {
-            throw new IllegalArgumentException(
-                    "selected configured source phases do not match exact "
-                            + "PUBLISH/CONSUME task bindings");
-        }
+        rootLoopControlSites = textSet(rootLoop,
+                LoopBoundPolicy.LOOP_CONTROL_SITE_IDS);
+        rootLoopSiteId = string(rootLoop, LoopBoundPolicy.LOOP_SITE_ID);
+        fixedCountLoopSites = fixedCountLoopSites(encoded);
     }
 
     public static ExecutionTask decode(JsonObject encoded) {
         if (encoded == null) {
             throw new IllegalArgumentException("execution task is required");
         }
-        return new ExecutionTask(encoded);
+        return new ExecutionTask(encoded.deepCopy(), null, null, null);
     }
 
     /** Creates the one task for a scheduler-selected occurrence union. */
@@ -153,17 +95,12 @@ public final class ExecutionTask {
             throw new IllegalArgumentException(
                     "goal and task contract values are required");
         }
-        if (goal.kind().capturesOutputRelation()
-                != (selectedClosure != null)) {
-            throw new IllegalArgumentException(
-                    "goal kind and selected output closure disagree");
-        }
         JsonObject task = new JsonObject();
-        goal.writeTaskIdentityTo(task);
+        goal.plan().writeTaskIdentityTo(task);
         goal.writeTaskPayloadTo(task);
         if (selectedClosure != null) {
-            task.add(OutputClosureContract.FIELD,
-                    selectedClosure.toJson());
+            // Also the producer-against-task-scope check the decode would run.
+            OutputClosureCodec.writeTo(task, selectedClosure);
         }
         task.addProperty("taskId", taskId);
         goal.kind().writeToTask(task);
@@ -175,18 +112,87 @@ public final class ExecutionTask {
         }
         retainSelectedCommunicationHandoffs(task, inputActions,
                 edgeBindings, selectedClosure);
+        promoteSelectedReplayEntry(task, selectedClosure);
         JsonObject admission = new JsonObject();
         admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
         task.add("admission", admission);
-        return new ExecutionTask(task);
+        return new ExecutionTask(task, loopBound, selectedClosure,
+                goal.plan().configuredSourcePhases());
+    }
+
+    /** Promotes the one exact continuation shared by the selected output
+     *  members, and re-addresses the accessor reads it re-bases. */
+    private static void promoteSelectedReplayEntry(
+            JsonObject task, OutputClosureContract closure) {
+        if (closure == null) return;
+        // A loop-body root replays one iteration of the service loop, so
+        // every selected member of that body shares that continuation; the
+        // per-member call continuations are not promoted (they would name
+        // different calls of one body) and nothing is re-based.
+        if (LoopBoundPolicy.LOOP_BODY_ROOT.equals(
+                string(task, LoopBoundPolicy.ROOT_AUTHORITY))) {
+            return;
+        }
+        JsonObject selected = null;
+        boolean missing = false;
+        boolean conflicting = false;
+        for (OutputClosureContract.Member member : closure.members()) {
+            JsonObject entry = object(member.slice(), REPLAY_ENTRY);
+            if (entry.size() == 0) {
+                missing = true;
+                continue;
+            }
+            if (string(entry, "method").isEmpty()
+                    || string(entry, "receiverClass").isEmpty()) {
+                throw new IllegalArgumentException(
+                        "selected output replay entry is incomplete: "
+                                + member.portId());
+            }
+            if (selected == null) {
+                selected = entry.deepCopy();
+            } else if (!selected.equals(entry)) {
+                conflicting = true;
+            }
+        }
+        if (selected == null) return;
+        // One coarse occurrence may publish its selected outputs from several
+        // frames of one activation -- a cached value written in the frame
+        // that minted it and a wire leaf exported further down the same
+        // dispatch. There is then no continuation the members share, so none
+        // is promoted and nothing is re-based: the task replays from its own
+        // root, exactly as a loop-body root already does above. Promoting one
+        // member's frame would enter the occurrence past the others.
+        if (conflicting || missing) return;
+        JsonObject held = object(task, REPLAY_ENTRY);
+        if (held.size() > 0 && !held.equals(selected)) {
+            throw new IllegalArgumentException(
+                    "selected output continuation conflicts with goal "
+                            + "replay entry");
+        }
+        task.add(REPLAY_ENTRY, selected);
+        // Repeated accessor reads are re-addressed from that continuation.
+        for (JsonElement element : array(task, InputActionCatalog.FIELD)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject();
+            int localOccurrence = integer(action,
+                    "helperActivationBoundedOccurrence", -1);
+            if (localOccurrence > 0
+                    && "SYMBOLIC".equals(string(action, "mode"))
+                    && "FIELD_ACCESS".equals(string(action, "bindingMode"))
+                    && !string(action, "accessorCallerMethod").isEmpty()
+                    && !string(action,
+                            "accessorImplementationMethod").isEmpty()) {
+                action.addProperty("replayOccurrence", localOccurrence);
+            }
+        }
     }
 
     /**
      * Keeps only cut ports the selected task actually consumes or produces.
-     * A region occurrence can observe many RPC parameters, but copying all of
-     * them into every task instruments unrelated payload and lets concrete
-     * service traffic grow the VM expression session.  The selected edge and
-     * closure are already the task's complete interaction frontier.
+     * Copying every observed RPC parameter into every task instruments
+     * unrelated payload and lets concrete service traffic grow the VM
+     * expression session; the selected edge and closure are already the
+     * task's complete interaction frontier.
      */
     private static void retainSelectedCommunicationHandoffs(
             JsonObject task, JsonArray inputActions, JsonArray edgeBindings,
@@ -267,26 +273,15 @@ public final class ExecutionTask {
         return result;
     }
 
-    public JsonObject json() { return encoded; }
-
     public String goalId() { return string(encoded, "goalId"); }
 
     public String taskId() { return string(encoded, "taskId"); }
 
-    public String sourceKey() { return string(encoded, "sourceKey"); }
-
-    public String occurrenceId() { return string(encoded, "occurrenceId"); }
-
-    public String relationKey() { return string(encoded, "relationKey"); }
-
-    public String regionId() { return string(encoded, "regionId"); }
-
     /**
-     * Stable identity of the instrumentation owned by this plan row.
-     *
-     * <p>A replay gets a new task id, while the occurrence remains the same.
-     * Goal ids and capture alternatives are case-obligation labels inside the
-     * one coarse result, so neither may create another injected root hook.</p>
+     * Stable identity of the instrumentation owned by this plan row.  A
+     * replay gets a new task id while the occurrence remains the same; goal
+     * ids and capture alternatives are case-obligation labels inside the one
+     * coarse result, so neither may create another injected root hook.
      */
     public String instrumentationSelector() {
         StringBuilder selector = new StringBuilder();
@@ -319,6 +314,64 @@ public final class ExecutionTask {
 
     public String targetMethod() { return string(encoded, "targetMethod"); }
 
+    /**
+     * Which activation this task's region is rooted on. {@link
+     * LoopBoundPolicy#LOOP_BODY_ROOT} names a region re-rooted at a service
+     * loop's body, whose activation is one iteration rather than the one
+     * entry above it; anything else leaves the root method's own entry.
+     */
+    public String rootAuthority() {
+        return string(encoded, LoopBoundPolicy.ROOT_AUTHORITY);
+    }
+
+    /** True when this region's activation is one loop-body iteration. */
+    public boolean loopBodyRoot() { return !rootLoopMethod.isEmpty(); }
+
+    /** The method holding the loop body this region is rooted at, else "". */
+    public String rootLoopMethod() { return rootLoopMethod; }
+
+    /** Original unit index of that loop's dominance-proved header. */
+    public int rootLoopHeaderUnitIndex() { return rootLoopHeaderUnitIndex; }
+
+    /** Iteration-control sites the region's exits are installed on. */
+    public Set<String> rootLoopControlSites() { return rootLoopControlSites; }
+
+    /** The root loop's own {@code loopSiteId} -- the key its declared
+     *  {@code K_L} is under in {@link #loopBound()} -- or "" for a
+     *  non-loop-body region. */
+    public String rootLoopSiteId() { return rootLoopSiteId; }
+
+    /** Retained loops whose concrete cardinality is exact, not a {@code K_L}. */
+    public Set<String> fixedCountLoopSites() { return fixedCountLoopSites; }
+
+    private static Set<String> fixedCountLoopSites(JsonObject task) {
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonElement element : array(task, "retainedLoops")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject loop = element.getAsJsonObject();
+            if (!LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(string(loop,
+                    LoopBoundPolicy.LOOP_CLASSIFICATION))) {
+                continue;
+            }
+            String primary = string(loop, LoopBoundPolicy.LOOP_SITE_ID);
+            if (!primary.isEmpty()) result.add(primary);
+            result.addAll(textSet(loop,
+                    LoopBoundPolicy.LOOP_CONTROL_SITE_IDS));
+        }
+        return Collections.unmodifiableSet(result);
+    }
+
+    /** Non-blank strings of a JSON array member, in wire order. */
+    private static Set<String> textSet(JsonObject row, String field) {
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonElement element : array(row, field)) {
+            if (!element.isJsonPrimitive()) continue;
+            String value = element.getAsString().trim();
+            if (!value.isEmpty()) result.add(value);
+        }
+        return Collections.unmodifiableSet(result);
+    }
+
     public JsonObject rootSelector() {
         JsonObject selector = object(encoded, "rootSelector").deepCopy();
         JsonObject replay = object(encoded, REPLAY_ENTRY);
@@ -349,27 +402,12 @@ public final class ExecutionTask {
         return array(encoded, "edgeBindings").deepCopy();
     }
 
-    /** Member a scheduler declares this task's symbolic carriers in. */
-    public static final String SHARED_CARRIERS = "sharedCarriers";
-
-    /**
-     * Shared locations this task asks the runtime to select at region entry.
-     *
-     * <p>Selection is what makes a location's writes publish versions and its
-     * reads resolve to a writer, and it is deliberately bounded: nothing is
-     * versioned until a task names it. The list is carried verbatim and
-     * unparsed, exactly like a read-cut plan - the runtime owns what a carrier
-     * declaration means, and rebuilding it here would let the two disagree.
-     * An absent or empty list means this task selects nothing, which is the
-     * honest default and never an invitation to guess a carrier.</p>
-     */
     /**
      * Where this occurrence hands a declared communication port to the VM.
-     *
-     * <p>An export site sends the port's live expression; an attach site
-     * takes it.  The VM's successful attach and its {@code VALUE_HANDOFF}
-     * edge are the whole value relation across the cut, so these sites are
-     * declarations of where the propagation happens and never a pairing.</p>
+     * An export site sends the port's live expression; an attach site takes
+     * it.  The VM's successful attach and its {@code VALUE_HANDOFF} edge are
+     * the whole value relation across the cut, so these sites declare where
+     * the propagation happens and are never a pairing.
      */
     public List<CommunicationHandoffSpec> communicationHandoffs() {
         return CommunicationHandoffSpec.decode(encoded);
@@ -386,16 +424,5 @@ public final class ExecutionTask {
 
     public OutputClosureContract outputClosure() { return outputClosure; }
 
-    public List<OutputCaptureSpec> outputCaptures() {
-        return outputCaptures;
-    }
-
-    private static String require(String value, String field) {
-        String result = value == null ? "" : value.trim();
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "execution task requires " + field);
-        }
-        return result;
-    }
+    public List<OutputCaptureSpec> outputCaptures() { return outputCaptures; }
 }

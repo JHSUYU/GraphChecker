@@ -4,7 +4,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -12,54 +11,41 @@ import java.util.List;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Execution goals for one causal-skeleton region occurrence. */
-public final class RegionInstancePlan {
-    /**
-     * Task members the runtime stamped on one coarse region occurrence, in a
-     * fixed order.  A field with no direct evidence stays absent, never
-     * defaulted.
-     */
+public final class RegionInstancePlan extends PlanRow {
+    /** Task members the runtime stamped on one coarse region occurrence, in a
+     *  fixed order.  A field with no direct evidence stays absent. */
     private static final String[] OCCURRENCE_FIELDS = {
-            // The recorded root call this occurrence ran in.  Carried
-            // explicitly because a task has no other route to it: the
-            // identity block writes sourceKey/occurrenceId/relationKey/
-            // regionId and no traceEvidence, and an activationId is a
-            // different shape from an occurrenceId.
+            // The recorded root call this occurrence ran in.
             "activationId",
-            // Exact dynamic executions of configured-source publish/consume
-            // hook sites inside this coarse occurrence.  A scheduler may split
-            // logical source versions by these phases without changing the
-            // replay root identity.
+            // Exact dynamic executions of configured-source hook sites in
+            // this coarse occurrence.
             ConfiguredSourcePhaseContract.PLAN_FIELD,
-            // The declared communication ports this occurrence exports or
-            // attaches, with the site each is handed to the VM at.
+            // Declared communication ports this occurrence exports/attaches.
             CommunicationHandoffSpec.FIELD,
             edu.uva.liftlab.graphchecker.concolic.BoundedLoopComposition
                     .PLAN_FIELD
     };
-    private final JsonObject encoded;
     private final List<Goal> goals;
+    private final String admissionBasis;
+    private final Set<String> demandedByRegionIds;
 
     private RegionInstancePlan(JsonObject source) {
-        encoded = source.deepCopy();
-        require(sourceKey(), "sourceKey");
-        require(occurrenceId(), "occurrenceId");
-        require(relationKey(), "relationKey");
-        require(regionId(), "regionId");
-        for (ConfiguredSourcePhaseContract.Occurrence phase
-                : ConfiguredSourcePhaseContract.occurrencesOf(
-                encoded.get(ConfiguredSourcePhaseContract.PLAN_FIELD), true)) {
-            if (!occurrenceId().equals(phase.sourceOccurrenceId())) {
-                throw new IllegalArgumentException(
-                        "configured source phase belongs to another "
-                                + "occurrence: " + phase.phaseId());
+        super(source, "region plan", true);
+        // Present only when the admission half declared a basis; a region
+        // admitted by target reachability states none.
+        admissionBasis = string(encoded, "admissionBasis");
+        Set<String> consumers = new LinkedHashSet<>();
+        for (JsonElement element : array(encoded, "demandedByRegionIds")) {
+            if (element.isJsonPrimitive()
+                    && !element.getAsString().isEmpty()) {
+                consumers.add(element.getAsString());
             }
         }
-
+        demandedByRegionIds = Collections.unmodifiableSet(consumers);
         List<Goal> decoded = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>();
         for (JsonElement element : array(encoded, "closureGoals")) {
@@ -76,9 +62,13 @@ public final class RegionInstancePlan {
             }
             decoded.add(goal);
         }
-        if (decoded.isEmpty()) {
+        // README REGION-1: one local occurrence is one coarse task and one
+        // guarded summary.  Bounded write versions of one port belong inside
+        // the single closure, not in a second goal.
+        if (decoded.size() != 1) {
             throw new IllegalArgumentException(
-                    "region occurrence requires at least one closure goal: "
+                    "region occurrence requires exactly one closure goal, "
+                            + "found " + decoded.size() + ": "
                             + occurrenceId());
         }
         goals = Collections.unmodifiableList(decoded);
@@ -88,43 +78,17 @@ public final class RegionInstancePlan {
         if (encoded == null) {
             throw new IllegalArgumentException("region plan is required");
         }
-        return new RegionInstancePlan(encoded);
-    }
-
-    public JsonObject json() { return encoded.deepCopy(); }
-
-    /**
-     * Read-only view for whole-plan indexing.  Callers must not mutate it.
-     * Large runtime plans are immutable after decoding; copying the complete
-     * output closure for every target-ranking pass is pure overhead.
-     */
-    public JsonObject jsonView() { return encoded; }
-
-    public String sourceKey() { return string(encoded, "sourceKey"); }
-
-    public String occurrenceId() { return string(encoded, "occurrenceId"); }
-
-    public String relationKey() { return string(encoded, "relationKey"); }
-
-    public String regionId() { return string(encoded, "regionId"); }
-
-    /**
-     * The identity one plan row is unique under.
-     *
-     * <p>A region is coarse - one selected execution-context entry and the
-     * selected nested calls executed in it - so one region occurrence is one
-     * plan row, and the occurrence alone is that identity.</p>
-     */
-    public String occurrenceKey() {
-        return occurrenceId();
-    }
-
-    public boolean containsOccurrence(String candidate) {
-        return occurrenceId().equals(candidate == null ? ""
-                : candidate.trim());
+        return new RegionInstancePlan(encoded.deepCopy());
     }
 
     public List<Goal> goals() { return goals; }
+
+    /** Why this occurrence was admitted, or empty when it was admitted by
+     *  target reachability. */
+    public String admissionBasis() { return admissionBasis; }
+
+    /** The consumer regions a shared-location admission serves. */
+    public Set<String> demandedByRegionIds() { return demandedByRegionIds; }
 
     void writeTaskIdentityTo(JsonObject target) {
         target.addProperty("sourceKey", sourceKey());
@@ -136,6 +100,11 @@ public final class RegionInstancePlan {
         }
         copyIfPresent(encoded, target, "rootSelector");
         copyIfPresent(encoded, target, "targetMethod");
+        // The once-only-root rule travels to the task row under the names the
+        // region row published: instrumentation and the runtime see the task,
+        // never the region plan it came from.
+        copyIfPresent(encoded, target, LoopBoundPolicy.ROOT_AUTHORITY);
+        copyIfPresent(encoded, target, LoopBoundPolicy.ROOT_LOOP);
     }
 
     public static final class Goal {
@@ -148,7 +117,7 @@ public final class RegionInstancePlan {
         private Goal(RegionInstancePlan plan, JsonObject source) {
             this.plan = plan;
             this.encoded = source.deepCopy();
-            require(goalId(), "goalId");
+            plan.require(goalId(), "goalId");
             try {
                 kind = ClosureGoalKind.fromGoal(encoded);
             } catch (RuntimeException invalid) {
@@ -188,74 +157,31 @@ public final class RegionInstancePlan {
             return runtimeDefinitionMethods;
         }
 
-        public OutputClosureContract outputClosure() {
-            return outputClosure;
-        }
-
-        public void rejectOutputClosure() {
-            if (outputClosure != null) {
-                throw new IllegalArgumentException(
-                        "outputClosure requires OUTPUT_RELATION_CLOSURE");
-            }
-        }
+        public OutputClosureContract outputClosure() { return outputClosure; }
 
         public JsonArray symbolize() {
             return array(encoded, "symbolize").deepCopy();
-        }
-
-        /** Read-only traversal view for target/producer graph discovery. */
-        public JsonArray symbolizeView() {
-            return array(encoded, "symbolize");
         }
 
         public JsonArray branches() {
             return array(encoded, "branches").deepCopy();
         }
 
-        /** Read-only traversal view for target ranking and guard counting. */
-        public JsonArray branchesView() {
-            return array(encoded, "branches");
-        }
-
         public JsonArray edgeBindings() {
             return array(encoded, "edgeBindings").deepCopy();
-        }
-
-        /**
-         * Read-only traversal view for graph discovery.  The canonical plan
-         * owns this array; callers must copy individual rows before storing
-         * or changing them.  Avoiding a deep copy here matters because one
-         * bounded supergraph can contain the same edge ledger on hundreds of
-         * occurrence goals.
-         */
-        public JsonArray edgeBindingsView() {
-            return array(encoded, "edgeBindings");
-        }
-
-        /** Shared locations this goal asks its replay to select as carriers. */
-        public JsonArray sharedCarriers() {
-            return array(encoded, ExecutionTask.SHARED_CARRIERS).deepCopy();
-        }
-
-        void writeTaskIdentityTo(JsonObject target) {
-            plan.writeTaskIdentityTo(target);
         }
 
         void writeTaskPayloadTo(JsonObject target) {
             target.addProperty("goalId", goalId());
             copyIfPresent(encoded, target, ExecutionTask.REPLAY_ENTRY);
-            if (outputClosure != null) {
-                target.add(OutputClosureContract.FIELD,
-                        outputClosure.toJson());
-            }
-            // Carrier declarations are the planner's, and only the replay can
-            // act on them, so they pass through untouched.  An absent member
-            // stays absent: a task that declares no carrier selects none, and
-            // inventing one here would version a location the target slice
-            // never asked about.
-            JsonArray carriers = sharedCarriers();
+            // Carrier declarations are the planner's and only the replay can
+            // act on them.  An absent member stays absent: inventing one would
+            // version a location the target slice never asked about.
+            JsonArray carriers =
+                    array(encoded, ExecutionTask.SHARED_CARRIERS);
             if (carriers.size() > 0) {
-                target.add(ExecutionTask.SHARED_CARRIERS, carriers);
+                target.add(ExecutionTask.SHARED_CARRIERS,
+                        carriers.deepCopy());
             }
         }
 
@@ -290,16 +216,6 @@ public final class RegionInstancePlan {
             }
             return Collections.unmodifiableSet(methods);
         }
-
-    }
-
-    private static String require(String value, String field) {
-        String result = value == null ? "" : value.trim();
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "region plan requires " + field);
-        }
-        return result;
     }
 
     private static void copyIfPresent(

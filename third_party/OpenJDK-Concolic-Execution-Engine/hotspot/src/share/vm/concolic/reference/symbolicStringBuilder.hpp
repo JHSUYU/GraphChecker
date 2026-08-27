@@ -31,6 +31,7 @@ public:
   bool need_recursive() { return false; }
   void print();
   virtual void set_sym_exp(int field_offset, Expression *exp);
+  virtual bool has_sym_exp(int field_offset);
 
 public:
   static bool invoke_method_helper(MethodSymbolizerHandle &handle);

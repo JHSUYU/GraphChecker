@@ -105,7 +105,10 @@ public class BooleanReachConditionExtractorSolverTest {
         assertEquals("RPC_COMPARE.A", a.get("sourceId").getAsString());
         assertEquals("7", a.get("value").getAsString());
         assertTrue(a.get("displayName").getAsString().startsWith(
-                "cluster/dn0#epoch0::RPC_COMPARE.A::SOURCE_PHASE."));
+                "cluster/dn0#epoch0::RPC_COMPARE.A::"));
+        // Wave 3: the entry, not only the site, names the root.
+        assertTrue(a.get("displayName").getAsString().contains(
+                "::SOURCE_PHASE."));
         assertEquals("cluster/dn1#epoch0",
                 b.get("sourceKey").getAsString());
         assertEquals("RPC_COMPARE.B", b.get("sourceId").getAsString());

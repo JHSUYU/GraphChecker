@@ -32,6 +32,11 @@ void SymObj::set_sym_exp(int field_offset, Expression *exp) {
   }
 }
 
+bool SymObj::has_sym_exp(int field_offset) {
+  FieldLock guard(this);
+  return _exps.find(field_offset) != _exps.end();
+}
+
 void SymObj::print() {
   FieldLock guard(this);
   exp_map_t::iterator iter;

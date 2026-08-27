@@ -141,15 +141,18 @@ public final class RegionEventOrderLedgerSmoke {
                 "I", "HANDOFF.SEED");
         sender.exported = sender.seed + 1;
 
+        long[] exportEvent = new long[1];
         long handle = System.exportExpression(
-                sender, Carrier.class.getName(), "exported", "I");
+                sender, Carrier.class.getName(), "exported", "I",
+                exportEvent);
         require(handle > 0L, "export rejected with status " + handle);
 
         Landing receiver = new Landing();
         receiver.value = sender.exported;
+        long[] attachEvent = new long[1];
         require(System.attachExpression(
-                receiver, Landing.class.getName(), "value", "I", handle)
-                > 0L, "attach rejected");
+                receiver, Landing.class.getName(), "value", "I", handle,
+                attachEvent) == exportEvent[0], "attach rejected");
 
         String ledger = System.getEventLedger();
         require(ledger.contains("\"eventKind\":\"HANDOFF_EXPORT\""), ledger);
@@ -161,6 +164,15 @@ public final class RegionEventOrderLedgerSmoke {
                         + ",\"afterEventId\":" + attached
                         + ",\"edgeKind\":\"VALUE_HANDOFF\"}"),
                 ledger);
+        // The VM names both endpoints itself, so nothing downstream has to
+        // find the attach by searching the domain for an edge out of the
+        // export.  README RPC-1.
+        require(exportEvent[0] == exported,
+                "export reported event " + exportEvent[0] + ", ledger has "
+                        + exported);
+        require(attachEvent[0] == attached,
+                "attach reported event " + attachEvent[0] + ", ledger has "
+                        + attached);
     }
 
     /** (2) Exact reads make edges; guarded reads deliberately do not. */

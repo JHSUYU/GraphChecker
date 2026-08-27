@@ -110,11 +110,11 @@ public class WorkloadClasspathTest {
         // Naming it hdfs-site.xml would hide the checkout's own test
         // hdfs-site.xml, which is what allows the balancer test's 100-byte
         // block size.
-        assertFalse(WorkloadConfiguration.RESOURCE_NAME.equals(
+        assertFalse(SourceTestLauncher.CONFIG_RESOURCE_NAME.equals(
                 "hdfs-site.xml"));
-        assertFalse(WorkloadConfiguration.RESOURCE_NAME.equals(
+        assertFalse(SourceTestLauncher.CONFIG_RESOURCE_NAME.equals(
                 "core-site.xml"));
-        assertTrue(WorkloadConfiguration.RESOURCE_NAME.endsWith(".xml"));
+        assertTrue(SourceTestLauncher.CONFIG_RESOURCE_NAME.endsWith(".xml"));
 
         // -Xint belongs to the concolic image.  Forcing a stock JVM to
         // interpret does not merely slow a tracing pass down; it moves the

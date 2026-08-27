@@ -5,16 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Shared SMT semantics for Java's integral computational types.
- *
- * <p>Both concolic encoders use SMT {@code Int} as their transport sort.  A
- * width therefore has to travel beside the SMT sort: otherwise an {@code
- * iadd} and an {@code ladd} are indistinguishable and silently acquire
- * unbounded mathematical-integer semantics.  Widths are admitted only from
- * explicit Java types (or from operations whose operands already carry such
- * widths).</p>
- */
+/** Shared SMT semantics for Java's integral computational types. */
 public final class JavaPrimitiveSmtSemantics {
     static final String INT_WRAP_DEFINITION =
             "(define-fun java_int_wrap ((i Int)) Int"
@@ -160,9 +151,7 @@ public final class JavaPrimitiveSmtSemantics {
     /**
      * Encodes the VM's decimal F/D literal by first asking Java to perform
      * exactly the same decimal-to-binary conversion used by replay, then
-     * supplying those raw IEEE bits to SMT.  This preserves NaN, infinities,
-     * subnormals and the sign of zero; no mathematical-Real approximation is
-     * involved.
+     * supplying those raw IEEE bits to SMT.
      */
     static String floatingLiteral(String value, FloatingKind kind) {
         if (kind == null || kind == FloatingKind.NONE || value == null) {
@@ -220,14 +209,7 @@ public final class JavaPrimitiveSmtSemantics {
         return "(" + operation + " RNE " + left + " " + right + ")";
     }
 
-    /**
-     * Exact JVM {@code fcmp*}/{@code dcmp*} result.  These bytecodes produce
-     * the Java {@code int} trichotomy value -1/0/1; their two variants differ
-     * only in the value chosen when either operand is NaN.  Keeping that
-     * result as an SMT term lets the following {@code if*} opcode express its
-     * real guard instead of freezing the one concrete comparison witnessed
-     * during tracing.
-     */
+    /** Exact JVM {@code fcmp*}/{@code dcmp*} result. */
     static String floatingCompareResult(String left, String right,
                                         boolean nanIsGreater) {
         String nanResult = nanIsGreater ? "1" : "(- 1)";
@@ -269,16 +251,7 @@ public final class JavaPrimitiveSmtSemantics {
 
     /**
      * Lowers one Java primitive conversion without introducing a fresh SMT
-     * value.  The source and target descriptors are part of the operation's
-     * semantics: the common SMT {@code Int} transport sort alone cannot
-     * distinguish {@code l2i}, {@code i2b}, and {@code i2l}.
-     *
-     * <p>The returned term implements the JVM conversion instructions (and
-     * the corresponding JLS narrowing conversions) exactly.  Integral
-     * narrowing retains the low bits, IEEE-754 conversions use round-to-
-     * nearest/ties-to-even, and floating-to-integral conversion uses Java's
-     * NaN-zero, round-toward-zero, and saturation rules.  {@code null} means
-     * the descriptor pair is not a supported primitive conversion.</p>
+     * value.
      */
     static String primitiveCast(String value, String sourceJavaType,
                                 String targetJavaType) {
@@ -509,6 +482,51 @@ public final class JavaPrimitiveSmtSemantics {
         return wrap("(bv2int (" + smtOperator + " ((_ int2bv " + bits
                 + ") " + left + ") ((_ int2bv " + bits + ") (mod "
                 + right + " " + bits + "))))", width);
+    }
+
+    /**
+     * Exact Java integral division (JLS 15.17.2): the quotient is truncated
+     * toward zero, not floored as SMT-LIB's Euclidean {@code div} is, so the
+     * negative dividend is reflected through zero.  {@code MIN_VALUE / -1}
+     * needs no special case: it produces the mathematical {@code 2^(n-1)},
+     * which the width's wrap turns back into {@code MIN_VALUE}, exactly as
+     * the JVM's overflow rule states.
+     */
+    static String integralDivision(String left, String right,
+                                   IntegralWidth width) {
+        return wrap("(let ((java_idiv_a " + left + ")"
+                + " (java_idiv_b " + right + "))"
+                + " (ite (>= java_idiv_a 0) (div java_idiv_a java_idiv_b)"
+                + " (- (div (- java_idiv_a) java_idiv_b))))", width);
+    }
+
+    /**
+     * Exact Java integral remainder (JLS 15.17.3): {@code a % b} takes the
+     * sign of the dividend, where SMT-LIB's Euclidean {@code mod} is always
+     * non-negative.  Reflecting a negative dividend through zero gives Java's
+     * {@code a - (a / b) * b} for every pair, {@code MIN_VALUE % -1 == 0}
+     * included, and the result never leaves the width.
+     */
+    static String integralRemainder(String left, String right,
+                                    IntegralWidth width) {
+        return wrap("(let ((java_irem_a " + left + ")"
+                + " (java_irem_b " + right + "))"
+                + " (ite (>= java_irem_a 0) (mod java_irem_a java_irem_b)"
+                + " (- (mod (- java_irem_a) java_irem_b))))", width);
+    }
+
+    /**
+     * Definedness of one Java integral {@code /} or {@code %}: a zero divisor
+     * throws {@code ArithmeticException} instead of producing a value, while
+     * SMT-LIB leaves division by zero uninterpreted, so the divisor must be
+     * stated non-zero rather than left for the solver to choose.
+     */
+    static String integralDivisorDefined(String right) {
+        BigInteger literal = integerLiteral(right);
+        if (literal != null) {
+            return literal.signum() == 0 ? "false" : "true";
+        }
+        return "(not (= " + right + " 0))";
     }
 
     /** Exact Java integral complement. */

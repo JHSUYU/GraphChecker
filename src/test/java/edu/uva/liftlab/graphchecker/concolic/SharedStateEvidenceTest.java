@@ -309,6 +309,55 @@ public class SharedStateEvidenceTest {
         return summary;
     }
 
+    /**
+     * README {@code EVENT-1}: selected ledger truncation and saturation are
+     * gaps in their own right.  Both fail closed, but they fail closed for
+     * different reasons - one execution outran a bound, the other never
+     * admitted the edges - and a blocker that calls either a malformed
+     * envelope sends the reader to look at the VM answer instead.
+     */
+    @Test
+    public void ledgerTruncationAndSaturationAreNamedApartFromMalformed() {
+        JsonArray events = new JsonArray();
+        events.add(RecordedSharedStateFixtures.event(11L, "VOLATILE_WRITE",
+                101L, "REGION.shared"));
+        JsonObject sound = RecordedSharedStateFixtures.ledgerEnvelope(
+                events, new JsonArray());
+        assertEquals("", SharedStateEvidence.ledgerFault(sound));
+        assertEquals(SharedStateEvidence.OK,
+                SharedStateEvidence.ledgerFaultStatus(sound,
+                        SharedStateEvidence.ledgerFault(sound)));
+
+        JsonObject truncated = sound.deepCopy();
+        truncated.addProperty("truncated", true);
+        String truncatedFault = SharedStateEvidence.ledgerFault(truncated);
+        assertFalse(truncatedFault.isEmpty());
+        assertEquals(SharedStateEvidence.LEDGER_LOG_TRUNCATED,
+                SharedStateEvidence.ledgerFaultStatus(truncated,
+                        truncatedFault));
+
+        JsonObject saturated = sound.deepCopy();
+        saturated.addProperty("domainSaturated", true);
+        String saturatedFault = SharedStateEvidence.ledgerFault(saturated);
+        assertFalse(saturatedFault.isEmpty());
+        assertEquals(SharedStateEvidence.LEDGER_DOMAIN_SATURATED,
+                SharedStateEvidence.ledgerFaultStatus(saturated,
+                        saturatedFault));
+
+        JsonObject cyclic = sound.deepCopy();
+        cyclic.addProperty("acyclic", false);
+        assertEquals(SharedStateEvidence.MALFORMED_ENVELOPE,
+                SharedStateEvidence.ledgerFaultStatus(cyclic,
+                        SharedStateEvidence.ledgerFault(cyclic)));
+
+        assertEquals("SHARED_STATE_LEDGER_LOG_TRUNCATED",
+                SharedStateEvidence.reason(
+                        SharedStateEvidence.LEDGER_LOG_TRUNCATED));
+        assertEquals("SHARED_STATE_LEDGER_DOMAIN_SATURATED",
+                SharedStateEvidence.reason(
+                        SharedStateEvidence.LEDGER_DOMAIN_SATURATED));
+    }
+
     private static JsonObject versionOf(JsonObject summary) {
         return summary.getAsJsonObject(SharedStateEvidence.RECORDED_FIELD)
                 .getAsJsonArray("versions").get(0).getAsJsonObject();

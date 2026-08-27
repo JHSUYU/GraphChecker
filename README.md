@@ -10,7 +10,8 @@
 The current milestone is deliberately concrete:
 
 ```text
-checkout: /opt/hadoop
+checkout: the Hadoop checkout carrying the Causynth commits
+          (project_repo / CAUSYNTH_REPO; not /opt/hadoop, which has none)
 workload: TestBalancerWithEncryptedTransfer#testEncryptedBalancer1
 target:   HDFS-11741 / BlockTokenSecretManager.allKeys.get(keyId) == null
 output:   a fresh generated candidate.smt2 and a captured Z3 result
@@ -65,8 +66,13 @@ The checkpoint spans two repositories:
 
 | Repository | Role |
 |---|---|
-| `/opt/GraphChecker` | static selection, instrumentation, concolic replay, case import, composition, solver reporting, experiment scripts |
-| `/opt/hadoop` | the two test RPCs, five manually declared DataNode source fields, MiniDFSCluster workload, HDFS-11741 source/target hooks, Hadoop IPC-header carrier, and encrypted-SASL carrier |
+| this GraphChecker checkout | static selection, instrumentation, concolic replay, case import, composition, solver reporting, experiment scripts |
+| the Hadoop checkout named by `project_repo` | the two test RPCs, five manually declared DataNode source fields, MiniDFSCluster workload, HDFS-11741 source/target hooks, Hadoop IPC-header carrier, and encrypted-SASL carrier |
+
+Neither is `/opt/GraphChecker` or `/opt/hadoop`: the first is an unrelated
+project and the second is a stale Hadoop checkout with none of the Causynth
+commits, so a run pointed at it compiles, passes, and answers about different
+source.
 
 ### Fixed MiniDFSCluster RPC workload
 
@@ -133,7 +139,7 @@ old or duplicate directory from being mistaken for the selected evidence.
 | 7 | three-way conjunction and cross-field comparisons | 4 | 108 ms | `e6025430f69f` |
 | 8 | boolean disjunction, equality, inequality, and negation | 10 | 170 ms | `3dd2b9864c43` |
 | 9 | arithmetic guard sums plus `Integer.MAX_VALUE` arm | 1 | 102 ms | `6941c64b40ff` |
-| 10 | three-level short-circuit condition with nested `||` | 4 | 93 ms | `46cc1e733fce` |
+| 10 | three-level short-circuit condition with nested `||` | 2 (was 4 before EVENT-1; see below) | 86 ms | `d84793dc2dbf` |
 | 11 | a `long` range strictly above `Integer.MAX_VALUE` | 1 | 72 ms | `7da8ec6a4186` |
 | 12 | exact `Long.MIN/MAX` and `Integer.MIN/MAX` cases | 1 | 65 ms | `f4c68e0ab952` |
 | 13 | mixed relational alternatives using all scalar types | 4 | 86 ms | `ca8b6ce771e5` |
@@ -156,6 +162,87 @@ The selected local evidence is under:
 
 These directories are diagnostic run products, not checked-in truth. A new
 agent should use the committed workload and generate a new immutable root.
+
+The matrix was reproduced in full on 2026-08-25 from a rebuilt toolchain — a
+fresh Hadoop build, a rebuilt Zero VM, and the current `src/main/java` — under
+
+```text
+/proj/silentfailure-PG0/gc-rpc-compare/matrix/matrix-20260825T044357Z
+```
+
+All twenty rows published `FINAL_READY`, `SAT_CANDIDATE`, `REACHABLE` and zero
+final gaps; `matrix-summary.json` records the per-row candidate digests. That
+run is again a diagnostic product and not truth: it is cited here because it
+establishes that the matrix reproduces, not so a later agent can import it.
+
+Two observations from it are worth carrying forward. Nineteen rows reproduced
+the Z3 model count recorded above exactly, which is a stronger signal than
+`sat` alone — the count is a property of the composed formula, so matching it
+says the composition is the same shape rather than merely satisfiable. Row 16
+returned two models where one is recorded; both agree on every root and differ
+only in `RPC_COMPARE.E`, a boolean that scenario's overflow relation never
+constrains. A model count *above* the recorded one is therefore not a
+regression. A count *below* it is the alarming direction, because that is what
+an over-narrow case guard or a dropped control decision produces.
+
+Row 20 also reproduced candidate digest `43500eb3e4c3` byte for byte. Do not
+generalise from that: a fresh generation normally re-hashes, and nineteen rows
+did.
+
+Two things changed the matrix after that run, both worth knowing before
+reading a later one against it. First, the RPC-1 follow-up in
+`ConcolicSmtComposer.exactHandoffProducerCase` was changed to match a handoff
+to its producer case on an `exportEventId` the importer never writes on
+interaction rows (the field exists only on the VM handoff event); every
+handoff then missed its producer and the whole matrix went to
+`FINAL_REFUSED`, 0/20, without any test noticing because the fixtures had been
+given the field. The port-observation match was restored the same day. Second,
+EVENT-1 activates the session event ledger from selected event sites instead
+of from the presence of a shared-state carrier, so RPC-only cases now record
+their real `PROGRAM_ORDER`/`REGION` edges. Row 10 is the one row sensitive to
+that: with the ledger live it records three more order edges and returns two
+models instead of four — a strict subset of the earlier four, differing only
+in an ordering the program never allowed. That is the "count below the
+record" case the previous paragraph warns about, and it is the one legitimate
+instance of it: the earlier four were recorded without the ledger. The table
+above now carries the corrected count.
+
+The reference run from here on is
+
+```text
+/proj/silentfailure-PG0/gc-rpc-compare/matrix/matrix-20260825T152212Z
+```
+
+built from the tree after the first reduction wave (86,102 nonblank lines in
+`src/main`): 20/20, every row's set of symbolic variables
+`(inputKind, sourceId, fieldSignature)` identical to `matrix-20260825T044357Z`,
+and every model count identical except row 10 as explained.
+`experiments/shrink/gate.sh --matrix <new> --baseline <this run>` is the
+comparison to run after each later wave.
+
+The second reduction wave was gated the same way on
+
+```text
+/proj/silentfailure-PG0/gc-rpc-compare/matrix/matrix-20260825T173609Z
+```
+
+(`src/main` 84,186 nonblank; rebuilt Zero VM with the propagated-expression
+guard): 20/20, symbolic variable sets identical to the first-wave run on all
+twenty rows, every row faster (−4.1% total wall time, PLAN within noise), and
+two cheaper checks that now precede every matrix run — recomposing all twenty
+`candidate.smt2` from their recorded inputs (`experiments/shrink/recompose-matrix.sh`,
+20/20 byte-identical) and replaying all 175 recorded path-flip queries through
+the solver (`experiments/shrink/replay-flips.sh`, 175/175 identical). Row 16
+returned one model where the first-wave run had two; one is the recorded
+count, and the two runs differ only in `RPC_COMPARE.E`, exactly as described
+above — the row oscillates between one and two on that unconstrained boolean
+and neither direction is a regression for it. This run is the baseline from
+here on.
+
+Reproduce with `experiments/hdfs/causynth-rpc-compare/run-matrix.sh`, which
+leases one Hadoop worktree per lane rather than per row — only
+`DataNode.CAUSYNTH_RPC_SCENARIO` changes between a lane's rows, so its Hadoop
+rebuild stays incremental.
 
 The solver report, rather than directory existence, is authoritative:
 
@@ -209,16 +296,21 @@ if a standalone default-strategy replay is required.
 To rerun the currently selected scenario 1:
 
 ```bash
-cd /opt/GraphChecker
+cd <this GraphChecker checkout>
 CAUSYNTH_RPC_SCENARIO=1 \
-CAUSYNTH_RPC_HADOOP_ROOT=/opt/hadoop \
+CAUSYNTH_RPC_HADOOP_ROOT='<Hadoop checkout carrying the Causynth commits>' \
 CAUSYNTH_RPC_RUN_BASE='<fresh-output-root>' \
 experiments/hdfs/causynth-rpc-compare/run-z3.sh
 ```
 
+`CAUSYNTH_RPC_HADOOP_ROOT` defaults to the checkout beside this repository
+(`../hadoop`) and `CAUSYNTH_RPC_PROTOC` to the pinned protobuf 2.5 compiler.
+
 For scenario `N`, use an isolated Hadoop worktree, change only
 `DataNode.CAUSYNTH_RPC_SCENARIO` to `N`, and pass both that worktree and `N` to
-the command. `run-z3.sh` refuses a mismatch. The setup stage incrementally
+the command. `run-z3.sh` refuses a mismatch.
+`experiments/hdfs/causynth-rpc-compare/run-matrix.sh` does that leasing for
+every row. The setup stage incrementally
 rebuilds Hadoop; it does not require a clean full Hadoop build for every row.
 
 ## Hadoop modifications that GraphChecker relies on
@@ -367,9 +459,17 @@ schedule-forced reproduction.
   and did not contain the current three HDFS-11741 source IDs. It is useful
   only for diagnosing array-cardinality, coverage, occurrence-prefix, and
   endpoint/order pressure.
-- `workflow.properties` still contains a concrete old output root. Replace
-  every generated-output path with one new root; never resume an old plan,
+- `workflow.properties` now names exactly one generation root
+  (`causynth_output_dir`); the instrumented classes, runtime region plan and
+  campaign root all derive from it, and the campaign root is
+  `<causynth_output_dir>/schedule`. Change that one line, or override
+  `CAUSYNTH_OUTPUT_DIR`, for each new generation; never resume an old plan,
   worker summary, candidate, or frozen JAR.
+- The absolute paths this document once used are not the paths on this
+  machine. `/opt/GraphChecker` is an unrelated project and `/opt/hadoop` is a
+  stale Hadoop checkout with none of the Causynth commits. Read every path
+  below as relative to this GraphChecker checkout, and take the Hadoop
+  checkout from `project_repo`/`CAUSYNTH_REPO`.
 
 The immediate post-refactor sequence is therefore:
 
@@ -662,8 +762,14 @@ condition-controlled loop:
 
 Every failure-relevant while loop on the selected cache, rotation, heartbeat,
 state-install, or target chain must have exactly one explicit `K_L`; no retained
-condition loop may inherit the core default. A declaration for an absent/stale
-site is also an error. Fixed array loops do not use this file: their exact `N`
+condition loop may inherit the core default. `causynth_loop_bounds` is a
+required workflow key for that reason: `run_engine.sh` refuses a configuration
+that names no declarations file at all, because an unset key and a campaign
+whose declarations never arrived are the same run at the inherited bound, and
+the frozen manifest would carry an empty `loopBounds` digest rather than a
+missing one. A workload that retains no condition loop still names a file --
+one with no rows -- because "none" is a claim and silence is not. A declaration
+for an absent/stale site is also an error. Fixed array loops do not use this file: their exact `N`
 is frozen in the occurrence plan from the selected execution evidence.
 
 ## Guarded causal composition and refinement
@@ -887,7 +993,10 @@ The redesign must preserve the optimizations and working semantic components:
   cardinality, target/output capture, and named gaps;
 - target-first scheduling, immutable iteration lineage, external worker
   parallelism, and deterministic merge; and
-- failure-directed bounded writer selection and sparse causal partial order.
+- every executed writer of a declared shared field or container recorded as
+  a version, so a read's writer arms are the session's real writes (bounded
+  by declared fields × executed writes, not by planned producers), and the
+  sparse causal partial order that decides which arms are admissible.
 
 After P0, remeasure static analysis. Do not restore the full test tree,
 duplicate full-fact indexes, whole-program eager body loading, per-task
@@ -914,7 +1023,7 @@ generated-artifact assumption together before another HDFS campaign.
 | import/summary | segment path-condition windows, cross-segment merge refusal, continuation-only relation role, full-path compatibility fallback, and top-level union of `recordedRpcHandoff`/`recordedSharedState` in `PathObservation`, `ConcolicSummaryImporter`, and `RelationSummary` | project selected branch witnesses for the whole occurrence; move typed RPC/state/order evidence and loop-count vector into each guarded case |
 | composition | `SegmentComposition`, continuation port equality, segment identity lowering, tuple-based handoff lookup, duplicate send/receive attestation gates, and synthetic per-iteration loop ports/state in `ConcolicSmtComposer` | consume case-local VM handoff edge references, state read-from choices, final container expressions, loop-count-qualified cases, partial order, and target predicate directly |
 | artifacts/tests | legacy segment JSON fields, generated segment plans/summaries, segment golden fixtures, and tests whose only purpose is preserving those schemas | compile/smoke checks may cover the minimal retained VM/container contracts, but only the fixed HDFS workload is milestone acceptance |
-| orchestration/gates | shell re-decoding of Java closure/output/terminal schemas; repeated scheduler filters; `member.tsv`; acceptance of old selection authorities; global telemetry-as-gap; causal-graph parity as an SMT gate | shell validates immutable paths/digests/task-set membership and launches stages; importer owns case admission, Composer owns final selected-input admission, graph output is diagnostic |
+| orchestration/gates | shell re-decoding of Java closure/output/terminal schemas; repeated scheduler filters; `member.tsv`; acceptance of old selection authorities; global telemetry-as-gap; causal-graph parity as an SMT gate | shell validates immutable paths/digests/task-set membership and launches stages; importer owns case admission, Composer owns final selected-input admission; graph output was removed outright in the second reduction wave (2026-08-25: `CausalGraphWriter`, `campaign_graph()`, `graph/causal_model.json`) — `canonicalModel` in the composition manifest keeps only `gaps` and the six `counts.*` that `run_engine.sh` reads |
 
 Also keep the following compatibility residue deleted:
 
@@ -940,9 +1049,14 @@ the iteration before the semantic owner can classify it. Only blockers inside
 the frozen selected target closure affect acceptance. Unselected VM/catalog
 telemetry remains diagnostic.
 
-Delete the old `artifact-provenance.sh` schema parser after its necessary
-source/JAR/VM/config/production-class/loop-bound digests are emitted directly
-in the immutable campaign manifest. Do not keep two provenance authorities.
+The old `artifact-provenance.sh` schema parser is gone (it no longer exists in
+the tree); `campaign_freeze` emits every source/JAR/VM/config/production-class/
+loop-bound digest into `campaign_provenance`, bound into `iteration_manifest.json`,
+`run-manifest.json` and `result.json` — one provenance authority. In the third
+reduction wave the shell also stopped re-decoding the Composer's and solver's
+document schemas at EMIT: the Composer now owns `candidate_composition_manifest.json`'s
+`schemaVersion`/`kind` tripwire, and `result.json` carries `freeSymbolCount` read
+from the manifest's `freeSymbols` (fail-open: reported, never a refusal).
 
 These searches are the zero-hit guard:
 
@@ -1105,6 +1219,275 @@ Compilation and focused smoke checks are useful engineering checks, but they
 do not define the workload or justify retaining legacy fixtures. The only
 milestone acceptance run is the fixed HDFS workload.
 
+## Reduction plan: src/main to 30,000 lines
+
+This section is the execution plan for the 30,000-line target stated under
+"Refactor boundary for the next agent". It was written on 2026-08-25 from a
+measured inventory, not from impression, and it is ordered by what the
+inventory found. Priority order for the work is: **shrink first; the 20-row
+RPC matrix must stay 20/20 after every wave; HDFS-11741 runs last** as the
+final acceptance, not as a per-wave gate.
+
+### Metric and gate
+
+Two counts, both reported by `experiments/shrink/gate.sh --count-only`:
+
+| metric | 2026-08-25 | target |
+|---|---|---|
+| `src/main` nonblank lines (comments included) | 97,810 | 30,000 |
+| `src/main` code-only lines (comments stripped) | 82,131 | 30,000 |
+
+The earlier 92,870 figure in "Refactor boundary" was counted with a different
+stripper; the gate's counts are the reference from here on. `src/test` is not
+counted, but tests that exist only to pin deleted code are deleted with it.
+
+One gate per wave, run once after the whole wave lands — never after each
+small cut: `experiments/shrink/gate.sh --matrix <matrix-root>` = P0 tombstone
+zero-hit, compile, the unit suite, and 20/20 in `matrix-summary.json` from a
+fresh `experiments/hdfs/causynth-rpc-compare/run-matrix.sh`. A failed gate is
+bisected over the wave's diff, not answered by smaller waves.
+`experiments/shrink/scan/run_all.sh` re-measures dead/test-only/shim/duplicate
+helper lines in ~70 s and is re-run after each wave.
+
+### What the inventory found
+
+A javap-validated liveness scan over all 127 files, plus five per-package
+inventories, agree on one fact: **only ~1.4% of `src/main` is dead or
+test-only**. Unreferenced members total 198 lines; test-only-reachable code
+1,157; delegate-only shims 882; duplicated private JSON helpers ~400 (302
+removable); comment-only lines 15,679 (16%). No schema-compatibility reader
+branches exist at all — every `SCHEMA_VERSION` reader is a strict equality
+against the value the writer emits.
+
+The bloat is structural. The top 15 classes hold 65,883 lines (67%); 32
+methods over 150 lines hold 7,532. The same shape is implemented in parallel:
+`ConcolicConstraintSolver.Encoder` and `ConcolicSmtComposer.Emitter` carry a
+parallel `binary` (241/239 lines), parallel anonymous `ContainerSmtCodec.Host`
+implementations (197/198), and 298 byte-identical operator-helper lines;
+`RuntimeRegionPlanner` has five `*OutputClosure` methods over 150 lines each;
+`ConcolicRegionRuntime` runs the same commit/validate/publish lifecycle four
+times (map, field, source symbol, selector value; token similarity 0.95–0.98),
+keeps seven parallel gap ledgers, three result envelopes, and a 625-line
+reflective table for 32 VM entry points; `CausynthPipeline` emits the same
+eight Jimple hook families twice (discovery trace vs replay region);
+`SeedBackwardStaticAnalyzer` has five caller expanders and six propagation
+walks on one skeleton; `RuntimeSelectedRegionFinalizer` and
+`SymbolicRegionPlanner` contain thirteen identical deque-BFS drivers and eight
+rebuilds of the same adjacency index; 69 hand-rolled index builds recur across
+57 methods. Per-slice deletion ceilings were measured at 14–16%.
+
+Therefore the plan is three waves of increasing depth, and the third is the
+rewrite the "Refactor boundary" section already calls for.
+
+### Wave 1 — mechanical (in flight; budget ≈ −15,000)
+
+Five lanes partitioned by file, one executor each, one gate at the end.
+Every item has file:line evidence in the inventory.
+
+| lane | files | budget | content |
+|---|---|---|---|
+| runtime | `ConcolicRegionRuntime`, `CausynthTraceRecorder`, `RuntimeTraceContext` | −3,400 | dead members; 22 EngineApi forwarders + 19 single-caller wrappers + 6 default-argument overloads; `*ForTests` entry points whose tests can assert through a real path; seven gap ledgers → one kind-keyed ledger; six occurrence counters → one; three result envelopes → one; the four-fold lifecycle → one parameterised; recorder Lite/full → one; `FlatJsonRow` → Gson; runtime copies of contract-owned validations; Javadoc capped at one third |
+| contract | `contract/**`, `launcher/**`, `concolic/JsonFields` | −2,000 | dead members and write-only fields; duplicate validations (keep the decode point); `declaredOutputPorts` dual wire shape → one; `LoopBoundPolicy` constant-only fields and two-shape writer → one; `junitFailure` stack scraper + its 448-line test; `launcher-outcome.json` serialized duplicates; 27 private JSON helper copies → `JsonFields`; Javadoc capped |
+| static | `causynth/**`, `option/analysis/util/transformer`, `GraphCheckerMain` | −3,000 | trace-skip knobs never set; three delegate `finalizeRegions`; the finalizer gap channel whose only artifact nobody reads; `CampaignEnvelope` report with zero consumers; 18 write-only region/edge keys; helper copies → one `MapFields`; 4 signature regexes, 8 hierarchy walks, 6 body loaders, 7 ad-hoc hook refs → one each; the one-transform plugin registry (235 → 35); 13 BFS drivers → one; 4 callee/field resolvers → one; Javadoc capped |
+| smt | `ConcolicSmtComposer`, `ConcolicConstraintSolver`, `ContainerSmtCodec`, `TargetReachPathQueryBuilder`, `BooleanReachConditionExtractor`, `RecordedSessionModel`, `CanonicalSessionModel`, `RecordedReadFrom`, `SharedStateEvidence` | −3,800 | dead `edgeEvidence` cluster; manifest members nobody reads (`droppedEdgeEvidenceAudit`, `fatalAbsenceMutationWitness`, `finalStatusEvidence`); 13 delegating overloads; test-only seams; `recorded == null` fallbacks (compose always sets it); legacy unscoped-name passes; composer re-validation of the query the builder just built; five derivable read maps; `CanonicalSessionModel` 780 → a `counts()` (its only contractual consumer is `canonicalModel.counts`); `CaseLocalLetCse` 351 (a pure size optimisation of `candidate.smt2`); Javadoc capped |
+| planning | `RuntimeRegionPlanner`, `RuntimeRefinedGraphBuilder`, `ConcolicScheduler`, `RuntimeWorkflowDiscovery`, `RegionPathWorklist`, `ConcolicSummaryImporter`, `TopologyDelta` | −2,700 | 14 delegating constructors/overloads no production caller uses; orphan reads of ten fields no writer emits; a refusal that guards a provably impossible state; the non-target-first `schedule()` path `run_engine.sh` never takes; second `Map` row reader → one `RuntimeRows`; two number-folding copies → one; six typed audit ledgers → one `notes` array; duplicate phase-observation decode in the importer and topology delta; Javadoc capped |
+
+Comments are roughly 8,000 of the 15,000: behaviour-free, but they are in the
+count the owner reads. The per-slice deletion ceilings (6–20%) are the reason
+wave 1 cannot be larger; everything past it is a merge.
+
+### Wave 2 — in-file parallel implementations (budget ≈ −8,000 to −10,000)
+
+Merges whose two halves live in one file or one package, so the 20-row matrix
+alone can catch a regression:
+
+- **SMT**: one operator/term lowering shared by `ConcolicConstraintSolver` and
+  `ConcolicSmtComposer` (`binary`, `ContainerSmtCodec.Host`, the identical
+  helper block); one emitter per SMT construct; readers of fields no writer
+  emits (P0 leftovers) deleted.
+- **runtime**: map/field/element planned admission → one, keyed by the
+  existing `SharedCarrier.shape`; the 32-entry reflective table → one map;
+  the eight materialize/symbolize hook bodies → one matcher behind the fixed
+  hook signatures.
+- **static**: the eight discovery/replay emitter pairs → one emitter per hook
+  family (prerequisite: every hook ref through `HookCatalog`); natural-loop
+  derivation in `CausynthPipeline` → consume `CfgLoopControl.LoopCfg`; the
+  five caller expanders and six propagation walks → one, preserving FIFO
+  dequeue order so `DF.<n>` edge ids stay stable.
+- **planning**: the five `*OutputClosure` shapes in `RuntimeRegionPlanner` →
+  one; the 69 index builds → indexes built once per artifact.
+
+This wave changes bytecode the matrix executes; the gate's 20/20 with the
+recorded Z3 model counts is the acceptance.
+
+### Wave 3 — one causal IR (budget: the remaining ≈ −50,000)
+
+Waves 1–2 land at roughly 75,000. The rest is not a cleanup; it is the
+"Refactor boundary" rewrite, and its design center is a decision taken on
+2026-08-25 that takes "Symbolic propagation is the authority" literally:
+
+> **Every occurrence of a declared field is its own symbolic variable.** Each
+> entry of a mint site mints a fresh symbol. At a read, if the value the VM
+> holds carries a symbolic expression — propagated through the heap or a
+> `VALUE_HANDOFF` — that expression is the authority; if it carries none, the
+> read is a new free symbol. Manual input is only *which fields*, never which
+> occurrence, owner, or selector. `allKeys.get(K)` is a symbolic map read
+> that `ContainerSmtCodec` already expresses.
+
+This removes the scheduler's offline prediction layer —
+`ConcolicScheduler.SymbolicInputSelection` (2,615 lines: rotation, causal
+version propagation, per-version boundaries, phase ownership, two-pass
+un-selection), the runtime's one-producer-per-phase selector admission, the
+planner's per-version boundary ledger, and the Hadoop-side selector hooks —
+because all of it predicts at PLAN time what the VM records at replay.
+
+The accepted cost is fail-open: a value that reaches a read through an
+uninstrumented path the VM never observed becomes a free symbol, and Z3 may
+return a witness the concrete system cannot realize. The composition manifest
+must therefore name every free symbol that has no recorded lineage, so a
+witness carries the list of what it assumes unconstrained and stays
+auditable. This replaces the fail-closed refusals, and it is why several of
+the HDFS-11741 scheduler fixes made earlier the same day become unnecessary
+rather than wrong.
+
+Parallel replay is untouched by this rule: eight-worker external replay,
+target-first scheduling, immutable iteration lineage, and deterministic merge
+stay as listed under "What must be retained". The rule removes symbol-to-read
+*selection*, not task-to-worker *scheduling*. It composes with worker
+isolation because expressions propagate only within one JVM and causally
+dependent occurrences already share one worker workload, so a read sees
+either an in-JVM propagated expression or a fresh symbol — never another
+worker's expression.
+
+Two consequences of the same principle, settled the same day, close the
+"causal-graph change" question without new machinery. **Topology change is
+observed, not predicted:** a new RPC entering the workload is a new region
+appearing, and `TopologyDelta` judges divergence at the RPC exchange-event
+level — a (sender occurrence, receiver occurrence, port) not in the frozen
+catalog is `TOPOLOGY_DIVERGENCE`, and the next campaign iteration re-plans;
+`planDigest` is the skeleton signature. **Concurrency does not depend on a
+replay happening to hit the interleaving:** for a declared shared field or
+container the VM records every symbolic write of the session as a version,
+a read yields the version it actually saw, and the composer's read-from
+lowering emits `(exactly-one RF_w)` over all recorded versions with each arm
+guarded by the ledger's order constraint — Z3 chooses the writer, order
+excludes the impossible ones, and no replay confirmation of a read-from
+choice is needed. The planner's writer selection and the runtime's
+planned-producer-only shared-state admission go; `RecordedReadFrom`,
+`BoundedWriterUniverse`, and the `sharedFieldVersions` capture stay as the
+mechanism. Fault injection is then a forced selector on the composed formula,
+not a feature.
+
+The execution plan for this — the three contracts (mint, read, compose),
+the per-layer deletion list, and the four-step sequencing with its gates —
+is `experiments/shrink/wave3-plan.md`. Its first gate is a specific
+prediction: on the 20-row matrix every value a row reads is propagated, so
+the new `freeSymbols` manifest array must be **empty on all twenty rows**;
+that emptiness is the proof the fail-open read rule does not fire where
+lineage exists.
+
+The remaining wave-3 items:
+
+1. **Decode once.** `ExecutionTask` and `RegionInstancePlan` become the only
+   parsers of their rows; today `configuredSourcePhases` is re-decoded at ten
+   sites, `outputClosure` at seven, path summaries in four passes, plan rows
+   three times. Consumers take typed objects, never `task.json()`.
+2. **One session model.** Collapse `RecordedSessionModel`,
+   `CanonicalSessionModel`, and the selected-evidence views into one
+   deduplicated evidence table with case-local typed references ("Minimal
+   cross-stage contract").
+3. **One planner layer.** `RuntimeRegionPlanner`, `RuntimeSelectedRegionFinalizer`,
+   `SymbolicRegionPlanner`, `RuntimeWorkflowDiscovery`, and `RegionPathWorklist`
+   become one target-first planner over one occurrence-scoped catalog. This
+   is where the remaining HDFS-11741 blocker is fixed properly: root a region
+   on the per-iteration boundary inside a once-entered service loop instead
+   of on the loop method, and union all selected demands for one occurrence
+   into one task so `phaseProjections()` no longer needs
+   `resolveSourcePhaseOwnership` to repair the split after the fact.
+4. **One instrumentation pass.** Discovery-trace and replay-region emitters
+   share one Jimple builder; the trace recorder and region runtime share one
+   hook table.
+5. **One owner per check.** Delete every validation that "Minimal cross-stage
+   contract" assigns to another layer, and the shell-side semantic
+   revalidation in `run_engine.sh`.
+6. **Derived fields off the wire.** `phaseKind`, `siteId`, `enclosingCallIds[0]`,
+   `replayOccurrence`, `closure.producer.{regionId,relationKey}`,
+   `slice.outputPort/outputCell`, the constant `schemaVersion/kind/authority`
+   triplets on 18 row kinds, and the 17 same-value-two-names pairs are
+   computed, not stored.
+
+The retained-logic floor after wave 3 is not yet measured. If it lands above
+30,000, the gap is reported with the list of what remains and why, rather than
+closed by weakening HDFS-11741's selected causal closure — that boundary from
+"Refactor boundary" still holds.
+
+**Wave-4 gate (2026-08-26 00:09–01:35 UTC):** fresh matrix `matrix-20260826T000947Z` **20/20 PASS** on the
+post-wave tree (unit suite 431/0/0, replay-flips 175/175). Against 173609Z every row keeps every
+symbolic variable and several rows GAIN variables (`RPC_COMPARE.A/B/E` on rows 9, 11, 12, 15, 16)
+because every configured field of every occurrence is now a root; model counts rose accordingly
+(e.g. row 9: 1 → 16); `freeSymbols` is empty on all 20 rows. The gate's variable rule is now
+"none lost"; gained variables are noted. This matrix is the new replay baseline (the 2026-08-25
+artifacts are refused by the importer, by design). One defect was found by the first run
+(0/20): the VM answers a concrete primitive with a `ConstExpr`, which the read rule took for a
+propagated expression — fixed (`ConcolicRegionRuntime.isSymbolicExpression`).
+
+### Decision 2026-08-25 (late): the design floor is ≈ 75,000, and the stage boundaries stay
+
+After waves 3–4 every large file was clone-scanned by its executor: no repeated
+block over 19 lines remains in `RuntimeRegionPlanner`, none over 10 in
+`ConcolicRegionRuntime`, the analyzer has zero dead members. The remaining
+duplication is the stage boundary itself — one fact encoded per artifact
+(skeleton → plan → task → result → case → manifest), each with a decoder,
+validation and refusal codes. That duplication is what makes the campaign
+debuggable (dumps, per-stage re-entry, loud refusal when a producer changes
+shape), and it is kept on purpose. The 30,000 target is therefore given up;
+the tree is at its design floor (~76,000 nonblank after wave 4), with one
+agreed further cut — `ConcolicConstraintSolver.Encoder` (≈ −700, a port onto the
+composer's `Emitter`) once HDFS-11741 has produced its first witness. Merging
+the per-iteration stages into one JVM (−15,000 to −20,000) is documented as
+an option, not planned.
+
+### Wave 4 — the IR rewrite proper (no gate between waves 3 and 4)
+
+Contract: `experiments/shrink/ir-contract.md` — five row families
+(`RegionRow`, `PlanRow`, `ResultRow`, `CaseEvidence`, manifest/z3-result),
+exactly one decoder each, no layer re-parses another layer's JSON; refusal
+codes and coverage-gap kinds move to their owner and are never deleted.
+Decided 2026-08-25: wave 4 starts the moment wave 3 is written, with NO gate
+between them — one gate for both waves (`mvn test` → fresh matrix →
+variable-set compare by `inputKind|sourceId|fieldSignature` → FREE-SYMBOLS
+empty), then HDFS-11741 from a fresh campaign root. Every legacy/compat path
+is deleted in the same wave: decode refuses old artifact shapes (no
+`ordinal 0 → sourcePhaseId` identity fallback, no string entries in
+`symbolizedInputs`, no missing-`reused`/`freeSymbols` defaults, no tolerated
+derived observation keys, no `CausynthJson`). Consequence: the 2026-08-25
+matrix is no longer replayable by `recompose-matrix.sh`/`replay-flips.sh`;
+the fresh matrix becomes the replay baseline. Expected landing: 58,000–63,000;
+the remainder is design-required checks and is reported, not cut.
+
+### Rules that apply to every wave
+
+- Delete, never deprecate: no `@Deprecated`, no forwarding shim, no
+  commented-out code, no "kept for compatibility".
+- Do not add: no helper class, abstraction, or field "to make the merge
+  cleaner" (wave 1 permits exactly two: `causynth/MapFields` and methods on
+  `concolic/JsonFields`).
+- Never touch: the 51 `Hook` names and 7 ad-hoc-bound hook names
+  `CausynthPipeline` emits into Hadoop bytecode; the Hadoop-adapter reflection
+  targets (`beginSourceRequest`, `endSourceRequest`, `recordRpc`,
+  `registerSource`, `registerSourceAlias`, `restartSource`,
+  `rejectConfiguredSourceField`, `symbolizeConfiguredSourceField`,
+  `selectedConfiguredSourceIntValue`, `exportSymbolicLeaf`,
+  `receiveSymbolicLeaf`, `completeResponseHandoff`,
+  `HandoffResult.status/reason/handle`); the 32 VM entry-point names; the
+  `HandoffLeafCarrier` single-letter fields; the three `java.lang.System`
+  natives; the acceptance fields listed under "Completion criteria"; the
+  artifact schema numbers pinned by files on disk. A name-based scan reports
+  all of these as dead; they are not.
+- Planner/executor split: the plan names file:line items with evidence;
+  executors cut exactly that, batch the whole wave, gate once, and report
+  what they did not cut and why.
+
 ## Completion criteria
 
 The milestone is complete only when a single fresh frozen generation produces:
@@ -1161,23 +1544,28 @@ fixture is introduced.
 After rebuilding the custom VM from the retained ABI, use a new output root:
 
 ```bash
-cd /opt/GraphChecker
+cd <this GraphChecker checkout>
 
 export GRAPH_CHECKER_JAVA='<analysis-heap Java wrapper>'
 export CAUSYNTH_CLASSPATH='<fresh Hadoop test-scope classpath>'
-export CAUSYNTH_LOOP_BOUNDS=/opt/GraphChecker/experiments/hdfs/hdfs-11741/loop-bounds.jsonl
-export CAUSYNTH_SCHEDULE_OUTPUT_DIR='<fresh-output-root>'
+export CAUSYNTH_OUTPUT_DIR='<fresh generation root on the project volume>'
 
 CAUSYNTH_SCHEDULE_MAX_JOBS=128 CAUSYNTH_CONCOLIC_JOBS=8 \
 ./run_engine.sh --config experiments/hdfs/hdfs-11741/workflow.properties campaign
 ```
 
-Do not reuse any old plan, summary, VM image, or campaign directory.
+`CAUSYNTH_OUTPUT_DIR` is the whole "new output root" ceremony: the instrumented
+classes, the runtime region plan and the campaign root derive from it, and the
+campaign root is `<root>/schedule`, so `<root>/schedule/final` holds the
+artifacts below. The workflow already names
+`experiments/hdfs/hdfs-11741/loop-bounds.jsonl`, `target.yaml` and the Hadoop
+checkout; override the checkout with `CAUSYNTH_REPO` rather than editing the
+file. Do not reuse any old plan, summary, VM image, or campaign directory.
 
 After `GATE-1` is implemented, the minimum executable acceptance check is:
 
 ```bash
-final='<fresh-output-root>/final'
+final='<fresh generation root>/schedule/final'
 
 jq -e '
   .finalStatus == "FINAL_READY"
@@ -1195,6 +1583,16 @@ jq -e '
 
 test "$(z3 "$final/candidate.smt2" | sed -n '1p')" = sat
 ```
+
+`run_engine.sh campaign` applies the same gate itself and does not exit zero
+on a run these commands would refuse: a claim other than `SAT_CANDIDATE`/
+`UNSAT_CLOSED` exits `2`, and an accepted claim reached with `gapCount > 0`
+exits `3` with the named gaps. The two stay separate on purpose -- the gap rows
+never re-score the claim, so `result.json` still reports exactly what the
+Composer and the solver decided -- but an accepted candidate and an unresolved
+gap are not a run anybody may stop on. `result.json` also carries the frozen
+`provenance`, which EMIT re-verifies against the inputs on disk before it
+publishes anything.
 
 These commands are necessary but not a replacement for the manifest checks
 above: the composition manifest must contain the target assertion and every

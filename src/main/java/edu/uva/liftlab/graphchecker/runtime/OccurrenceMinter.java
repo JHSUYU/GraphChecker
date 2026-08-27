@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import java.util.ArrayList;
+import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -12,38 +12,18 @@ import java.util.Set;
  * Mints the one dynamic activation identity of the pipeline and stamps it onto
  * the rows a recorded trace call named.
  *
- * <p>{@code occurrenceId} is {@code sourceKey/region/<regionId>#<ordinal>}.
- * The prefix is the <em>semantic</em> source of the activation: for a target
- * region that is the source of the event the selected failure branch was
- * observed on, which may differ from the source current when the root method
- * was entered.  The ordinal is counted over that same semantic source: its
- * counter namespace must be the namespace encoded in the occurrence ID.
- * The root source remains separate causal-anchor evidence used for replay
- * admission.</p>
- *
- * <p>This ordinal is an identity inside one frozen plan and never a replay
- * address.  Replay addresses an occurrence by the stable selected source,
- * region root and incoming causal anchor its plan row carries; an ordinal
- * names a position in a sequence of activations, and a flipped branch that
- * adds or removes an earlier activation moves every position after it.</p>
- *
- * <p>An ordinal is reserved for every observed activation of a region, not
- * only for the ones a later failure closure retains: at replay every observed
- * root entry happens again, so a discarded activation still consumes its
- * position in the count.  Reservation is therefore independent of retention,
- * which is what lets the region finalizer and the region planner mint the same
- * identity from the same seed list at two different pipeline stages.</p>
- *
- * <p>Both stages hold their own minter over the same ordered activation seeds.
- * Ordinals are scoped by region, so a region only one stage knows about can
- * never shift another region's count.</p>
+ * <p>{@code occurrenceId} is {@code sourceKey/region/<regionId>#<ordinal>},
+ * where the prefix is the <em>semantic</em> source of the activation (for a
+ * target region, the source of the event the selected failure branch was
+ * observed on) and the ordinal counts over that same source.  It is an
+ * identity inside one frozen plan and never a replay address: replay addresses
+ * an occurrence by the stable source, region root and causal anchor its plan
+ * row carries.  An ordinal is reserved for every observed activation, retained
+ * or not, so the finalizer and the planner mint the same identity from the
+ * same seed list at two stages.</p>
  */
 public final class OccurrenceMinter {
-    /**
-     * Logical source of a workload whose tracing never registered one.  An
-     * activation row that carries no source key was recorded under exactly
-     * this declared default, never under an inferred one.
-     */
+    /** Declared source of a workload whose tracing registered none. */
     public static final String UNREGISTERED_SOURCE_KEY =
             RuntimeRegionPlanner.UNREGISTERED_SOURCE.key();
 
@@ -52,19 +32,15 @@ public final class OccurrenceMinter {
     private final Set<String> mintedOccurrences = new LinkedHashSet<>();
 
     /**
-     * Reserves this activation's ordinal inside its semantic-source scope.  Call
-     * it once per observed activation, in the recorded seed order, before any
-     * retention decision is applied.
-     *
-     * <p>The counter is scoped by source and region and by nothing else,
-     * which is the same pair {@link #occurrenceId} names.  An occurrence is
-     * one dynamic activation of one region on one source; the plan defines no
-     * per-request layer under that, so a request scope in the counter would
-     * restart the count inside one source and mint one identity twice.</p>
+     * Reserves this activation's ordinal, once per observed activation, in
+     * recorded seed order and before any retention decision.  The counter is
+     * scoped by source and region and by nothing else - the same pair
+     * {@link #occurrenceId} names - because a narrower scope would restart the
+     * count inside one source and mint one identity twice.
      */
     public int reserveOrdinal(String semanticSourceKey, String regionId) {
-        return ordinals.merge(safe(semanticSourceKey) + "\n"
-                        + safe(regionId), 1,
+        return ordinals.merge(MapFields.safe(semanticSourceKey) + "\n"
+                        + MapFields.safe(regionId), 1,
                 Integer::sum);
     }
 
@@ -78,7 +54,7 @@ public final class OccurrenceMinter {
                        String semanticSourceKey, int ordinal) {
         String occurrenceId = occurrenceId(semanticSourceKey, regionId,
                 ordinal);
-        if (!mintedActivations.add(safe(regionId) + "\n" + rootCallId)
+        if (!mintedActivations.add(MapFields.safe(regionId) + "\n" + rootCallId)
                 || !mintedOccurrences.add(occurrenceId)) {
             throw new IllegalArgumentException("duplicate runtime activation: "
                     + regionId + "#call" + rootCallId);
@@ -89,26 +65,21 @@ public final class OccurrenceMinter {
     /** The identity string, with no reservation or duplicate bookkeeping. */
     public static String occurrenceId(String semanticSourceKey,
                                       String regionId, int ordinal) {
-        return safe(semanticSourceKey) + "/region/" + safe(regionId)
+        return MapFields.safe(semanticSourceKey) + "/region/" + MapFields.safe(regionId)
                 + "#" + ordinal;
     }
 
     /**
-     * Stamps a freshly minted occurrence onto every row the recorded root
-     * call named for this activation: ports on both directions, the concrete
-     * accesses they retain, and the boundary-scalar gaps observed inside it.
-     *
-     * <p>This is the one place a recorded trace call id selects rows.  After
-     * it runs, an activation is addressed by {@code occurrenceId} alone, so
-     * no later port, edge, slice, or demand decision can distinguish two
-     * activations by a transient trace id.</p>
+     * Stamps a freshly minted occurrence onto every row the recorded root call
+     * named.  This is the one place a trace call id selects rows: afterwards
+     * an activation is addressed by {@code occurrenceId} alone.
      */
     public static void bindOccurrence(Map<String, Object> region,
                                       long rootCallId, String occurrenceId) {
         if (region == null) return;
-        bindPorts(rows(region.get("symbolicInputs")), rootCallId,
+        bindPorts(MapFields.rows(region.get("symbolicInputs")), rootCallId,
                 occurrenceId);
-        bindPorts(rows(region.get("outputs")), rootCallId, occurrenceId);
+        bindPorts(MapFields.rows(region.get("outputs")), rootCallId, occurrenceId);
     }
 
     /** Stamps the occurrence onto the ports and accesses it owns. */
@@ -116,15 +87,15 @@ public final class OccurrenceMinter {
                                  long rootCallId, String occurrenceId) {
         for (Map<String, Object> port : ports) {
             boolean owned = false;
-            if (longNumber(port.get("rootCallId"), -1L) == rootCallId) {
+            if (MapFields.longNumber(port.get("rootCallId"), -1L) == rootCallId) {
                 port.put("occurrenceId", occurrenceId);
                 owned = true;
             }
-            if (longNumber(port.get("toRootCallId"), -1L) == rootCallId) {
+            if (MapFields.longNumber(port.get("toRootCallId"), -1L) == rootCallId) {
                 port.put("toOccurrenceId", occurrenceId);
                 owned = true;
             }
-            if (longNumber(port.get("fromRootCallId"), -1L) == rootCallId) {
+            if (MapFields.longNumber(port.get("fromRootCallId"), -1L) == rootCallId) {
                 port.put("fromOccurrenceId", occurrenceId);
                 owned = true;
             }
@@ -132,9 +103,9 @@ public final class OccurrenceMinter {
             // A retained access inherits the port's occurrence unless it
             // recorded a different activation of its own.
             for (Map<String, Object> access
-                    : rows(port.get("runtimeAccesses"))) {
+                    : MapFields.rows(port.get("runtimeAccesses"))) {
                 if (!(access.get("rootCallId") instanceof Number)
-                        || longNumber(access.get("rootCallId"), -1L)
+                        || MapFields.longNumber(access.get("rootCallId"), -1L)
                         == rootCallId) {
                     access.put("occurrenceId", occurrenceId);
                 }
@@ -142,52 +113,22 @@ public final class OccurrenceMinter {
         }
     }
 
-    /**
-     * Stamps the same occurrence onto the endpoints of every observed flow
-     * that named this activation, so an edge resolves its producer and
-     * consumer occurrences without ever looking up a trace call id.
-     */
+    /** Stamps the occurrence onto the endpoints of the flows it named. */
     public static void bindEdges(Collection<Map<String, Object>> regionEdges,
                                  String regionId, long rootCallId,
                                  String occurrenceId) {
         for (Map<String, Object> edge : regionEdges) {
-            if (regionId.equals(text(edge.get("fromRegion")))
-                    && longNumber(edge.get("fromRootCallId"), -1L)
+            if (regionId.equals(MapFields.stringValue(edge.get("fromRegion")))
+                    && MapFields.longNumber(edge.get("fromRootCallId"), -1L)
                     == rootCallId) {
                 edge.put("fromOccurrenceId", occurrenceId);
             }
-            if (regionId.equals(text(edge.get("toRegion")))
-                    && longNumber(edge.get("toRootCallId"), -1L)
+            if (regionId.equals(MapFields.stringValue(edge.get("toRegion")))
+                    && MapFields.longNumber(edge.get("toRootCallId"), -1L)
                     == rootCallId) {
                 edge.put("toOccurrenceId", occurrenceId);
             }
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> rows(Object value) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        if (value instanceof Collection<?>) {
-            for (Object item : (Collection<?>) value) {
-                if (item instanceof Map<?, ?>) {
-                    result.add((Map<String, Object>) item);
-                }
-            }
-        }
-        return result;
-    }
-
-    private static long longNumber(Object value, long fallback) {
-        return value instanceof Number ? ((Number) value).longValue()
-                : fallback;
-    }
-
-    private static String text(Object value) {
-        return value == null || "null".equals(String.valueOf(value))
-                ? "" : String.valueOf(value);
-    }
-
-    private static String safe(String value) {
-        return value == null ? "" : value;
-    }
 }

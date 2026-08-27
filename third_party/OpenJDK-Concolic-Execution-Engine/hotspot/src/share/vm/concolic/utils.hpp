@@ -60,6 +60,10 @@ jdouble java_double_to_c(oop double_obj);
 oop bigd_to_java_string(oop bigd);
 
 oop value_of_map_node(oop node_obj);
+// The KEY oop of a Map.Entry node (HashMap$Node / LinkedHashMap$Entry).
+// removeExpiredKeys iterates entrySet() and never calls e.getKey(), so a
+// conditional removal recovers the map key from the entry directly.
+oop key_of_map_node(oop node_obj);
 
 } // namespace OopUtils
 

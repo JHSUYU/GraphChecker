@@ -19,37 +19,17 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
- * The bounded writer universe of one selected read.
- *
- * <p>The design states the set a read chooses from as</p>
- *
- * <pre>
- * materialized local path case
- *   x bounded semantic occurrence
- *   x compatible field, map owner and symbolic key
- * </pre>
- *
- * <p>and adds the rule that makes it a set rather than a wish: a merely
- * static may-write site is not an executable writer until its local relation
- * has been materialized. This class is where that rule is enforced. It reads
- * the recorded version store of the read's own location and the arms the VM
- * lowered, and answers three things - which writer cases the model actually
- * offers, which ones it cannot offer and why, and whether the universe is
- * closed.</p>
- *
- * <p>It enumerates; it does not fabricate. A candidate expression is the VM's,
- * because only the VM knows what a writer installed, and a recorded write this
- * layer can see but no arm carries becomes a named gap rather than an arm this
- * layer invents a value for. In the other direction nothing is narrowed: an
- * arm whose writer cannot be placed is reported and left selectable-by-refusal
- * to the order domain, never quietly deleted.</p>
- *
- * <p>Both halves of the universe that this build cannot yet close are stated
- * rather than assumed away. Bounded semantic occurrences are Step 3's input;
- * until they exist the occurrences here are the ones this run materialized,
- * and that shortfall is a gap on every enumerated read. The unconditional
- * {@code rf_unknown} arm therefore stays, which is exactly what an open
- * universe means.</p>
+ * The bounded writer universe of one selected read: materialized local path
+ * case x bounded semantic occurrence x compatible field, map owner and
+ * symbolic key. A merely static may-write site is not an executable writer
+ * until its local relation has been materialized, and this is where that rule
+ * is enforced - over the recorded version store of the read's own location and
+ * the arms the VM lowered. It enumerates and does not fabricate: a recorded
+ * write no arm carries is a named gap, and an arm whose writer cannot be
+ * placed is reported rather than deleted. Bounded semantic occurrences are
+ * Step 3's input; until they exist the occurrences are the ones this run
+ * materialized, which is a gap on every read and why the unconditional
+ * {@code rf_unknown} arm stays.
  */
 public final class BoundedWriterUniverse {
 
@@ -68,13 +48,9 @@ public final class BoundedWriterUniverse {
     /** An arm names a write the recorded version store does not hold. */
     public static final String UNRECORDED_WRITER_CASE =
             "WRITER_UNIVERSE_UNRECORDED_WRITER_CASE";
-    /**
-     * A recorded write carries no materialized local case.
-     *
-     * <p>Either its writer path guard was never captured, or its activation
-     * has no cross-run address. Both mean the same thing for this set: the
-     * site is a static possibility, not an executable writer.</p>
-     */
+    /** A recorded write carries no materialized local case: no captured
+     * writer path guard, or no cross-run address, so it is a static
+     * possibility and not an executable writer. */
     public static final String UNMATERIALIZED_WRITER_CASE =
             "WRITER_UNIVERSE_UNMATERIALIZED_WRITER_CASE";
     /** A recorded compatible write that no arm of this read carries. */
@@ -89,15 +65,9 @@ public final class BoundedWriterUniverse {
     /** The VM already reported that this location has lost writers. */
     public static final String RECORDED_WRITER_SET_INCOMPLETE =
             "WRITER_UNIVERSE_RECORDED_WRITER_SET_INCOMPLETE";
-    /**
-     * The occurrence axis of the product is this run's, not a declared bound.
-     *
-     * <p>Named on every enumerated read whose writers this composition cannot
-     * place on README section 5's loop axis. Reporting only the occurrences
-     * that happened to execute, without saying that is what they are, would
-     * read as a closed loop universe; and a closed universe is the one claim
-     * that would turn this under-approximation into a global one.</p>
-     */
+    /** The occurrence axis of the product is this run's, not a declared
+     * bound: named on every read whose writers cannot be placed on README
+     * section 5's loop axis, so the set is never read as closed. */
     public static final String SEMANTIC_OCCURRENCE_COVERAGE_OPEN =
             "WRITER_UNIVERSE_SEMANTIC_OCCURRENCE_COVERAGE_OPEN";
     /** How the occurrence axis of the product was supplied. */
@@ -240,14 +210,10 @@ public final class BoundedWriterUniverse {
     }
 
     /**
-     * The two structural facts that keep a map arm a real alternative.
-     *
-     * <p>A map arm is {@code READ(stateAfter(W), key)}. Its receiver must be
-     * the state <em>its own</em> writer published - an arm reading someone
-     * else's state would hand the reader another writer's value under this
-     * writer's order, which is the exact failure a selector must not have -
-     * and every arm of one read must query the same key, because the choice
-     * is over writers and not over what was asked.</p>
+     * The two structural facts that keep a map arm {@code READ(stateAfter(W),
+     * key)} a real alternative: its receiver must be the state its own writer
+     * published, and every arm of one read must query the same key, because
+     * the choice is over writers and not over what was asked.
      */
     private String admitMapArm(JsonObject candidate, JsonObject recorded,
                                long version, JsonObject row,
@@ -336,29 +302,14 @@ public final class BoundedWriterUniverse {
         gaps.add(gap);
     }
 
-    // ----- answers --------------------------------------------------------
-
-    public long readEventId() {
-        return readEventId;
-    }
-
     public String locationKey() {
         return locationKey;
     }
 
-    /** Whether this read's location is one selected map's whole state. */
-    public boolean mapState() {
-        return mapState;
-    }
-
     /**
-     * Whether the enumerated set is the whole bounded universe.
-     *
-     * <p>Never true in this build: the occurrence axis is not yet declared,
-     * so the answer is honest rather than aspirational. It is a method and
-     * not a constant because everything else it depends on is already
-     * checked, and the day the occurrence input arrives this is the one place
-     * that changes.</p>
+     * Whether the enumerated set is the whole bounded universe. Never true in
+     * this build: the occurrence axis is not yet declared. It stays a method
+     * because the day that input arrives this is the one place that changes.
      */
     public boolean closed() {
         return closed;
@@ -367,16 +318,6 @@ public final class BoundedWriterUniverse {
     /** Whether the read must retain its unconditional unknown-writer arm. */
     public boolean retainsUnknownArm() {
         return !closed;
-    }
-
-    /** One row per enumerated writer case, arms and unknown alike. */
-    public JsonArray cases() {
-        return cases.deepCopy();
-    }
-
-    /** How many arms rest on a materialized local case and activation. */
-    public int materializedCases() {
-        return materializedCases;
     }
 
     /** Named coverage findings of this enumeration. */

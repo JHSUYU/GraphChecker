@@ -133,8 +133,6 @@ public class NestedTargetSelectedRpcHandoffTest {
 
     private static JsonObject responseAttach(String port) {
         JsonObject site = new JsonObject();
-        site.addProperty("schemaVersion",
-                CommunicationHandoffSpec.SCHEMA_VERSION);
         site.addProperty("kind", CommunicationHandoffSpec.KIND);
         site.addProperty("role", CommunicationHandoffSpec.ROLE_ATTACH);
         site.addProperty("portId", port);

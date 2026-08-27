@@ -547,10 +547,17 @@ public final class System {
      * the session that issued it; session close reclaims it.  A positive
      * result is a handle; a negative result is a handoff status code, the
      * same vocabulary {@link #attachExpression} returns.
+     *
+     * <p>{@code eventOut} may be {@code null}.  When it is a {@code long[]}
+     * with room for one element, a successful export writes its own VM ledger
+     * event id into {@code eventOut[0]}.  That is the {@code exportEvent}
+     * endpoint of every {@code VALUE_HANDOFF} edge this handle later
+     * produces, so the sender can name the exact export its interaction
+     * recorded instead of leaving a consumer to infer it.
      */
     public static native long exportExpression(
             Object owner, String declaringClass, String fieldName,
-            String descriptor);
+            String descriptor, long[] eventOut);
 
     /**
      * Attaches an already-exported expression to an existing value, addressed
@@ -574,10 +581,18 @@ public final class System {
      * <p>Returns the positive VM export event id joined by the resulting
      * {@code VALUE_HANDOFF} edge, or a negative status naming the handoff
      * gap. A rejected attach leaves the target unchanged.
+     *
+     * <p>{@code eventOut} may be {@code null}.  When it is a {@code long[]}
+     * with room for one element, a successful attach writes its own VM ledger
+     * event id into {@code eventOut[0]}.  Both endpoints therefore leave the
+     * VM together, which is the only way to name <em>this</em> receive: the
+     * export id alone does not, because the same export may be attached at
+     * several receivers, and picking one of its edges afterwards would name a
+     * different receiver's attach.
      */
     public static native long attachExpression(
             Object owner, String declaringClass, String fieldName,
-            String descriptor, long handle);
+            String descriptor, long handle, long[] eventOut);
 
     /**
      * Serializes the half-open path-condition index range
@@ -735,12 +750,27 @@ public final class System {
      * Serializes the session's event-order ledger: every recorded monitor,
      * volatile, thread-lifecycle and atomic action, in one event-id space.
      *
-     * The ledger records only while at least one carrier is selected.  The
-     * order domain exists to decide provenance for selected shared state, and
+     * The ledger records only once it has been activated - see
+     * {@link #activateConcolicEventLedger}.  Selection is the gate, because
      * monitorenter is far too hot a bytecode to pay for an answer nobody
-     * asked for.
+     * asked for; the presence of a shared carrier is not, because a task that
+     * selects only communication or synchronization sites needs exactly the
+     * same order domain and has no carrier to switch it on with.
      */
     public static native String getEventLedger();
+
+    /**
+     * Activates the session's event-order ledger for a task that declares at
+     * least one selected event site - a shared carrier, a communication port,
+     * a synchronization site, or the selected region itself.
+     *
+     * <p>Idempotent, and never switched back off inside a session: a later
+     * activation of the same session adds sites, and dropping the recording
+     * mid-session would leave a partial order domain that reads as an absence
+     * of order rather than an absence of recording.  Returns whether the
+     * ledger is recording afterwards.
+     */
+    public static native boolean activateConcolicEventLedger();
 
     /**
      * Offers one candidate order edge to the session's event-order domain.

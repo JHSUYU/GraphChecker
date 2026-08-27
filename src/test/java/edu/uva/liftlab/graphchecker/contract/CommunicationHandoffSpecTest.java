@@ -67,8 +67,6 @@ public class CommunicationHandoffSpecTest {
     @Test
     public void responseFieldPathIsAnEntryReturnExportNotAManualCarrier() {
         JsonObject site = new JsonObject();
-        site.addProperty("schemaVersion",
-                CommunicationHandoffSpec.SCHEMA_VERSION);
         site.addProperty("kind", CommunicationHandoffSpec.KIND);
         site.addProperty("role", CommunicationHandoffSpec.ROLE_EXPORT);
         site.addProperty("portId", RESPONSE_KEY_ID);
@@ -133,8 +131,6 @@ public class CommunicationHandoffSpecTest {
 
     private static JsonObject component(String portId, String leafPath) {
         JsonObject site = new JsonObject();
-        site.addProperty("schemaVersion",
-                CommunicationHandoffSpec.SCHEMA_VERSION);
         site.addProperty("kind", CommunicationHandoffSpec.KIND);
         site.addProperty("role", CommunicationHandoffSpec.ROLE_EXPORT);
         site.addProperty("portId", portId);

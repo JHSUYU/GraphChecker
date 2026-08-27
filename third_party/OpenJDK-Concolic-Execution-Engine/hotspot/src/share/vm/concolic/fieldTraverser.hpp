@@ -31,8 +31,12 @@ public:
   void do_once();
 
 private:
-  virtual bool do_field_helper(fieldDescriptor *fd, oop obj) {}
-  virtual bool do_element_helper(int index, arrayOop array_obj) {}
+  // A traverser that declares no interest in fields or elements descends into
+  // neither.  These have to say so: falling off the end of a bool function is
+  // undefined, and a compiler that turns that into a trap aborts the VM at the
+  // first traversal rather than at the first subclass that forgot to override.
+  virtual bool do_field_helper(fieldDescriptor *fd, oop obj) { return false; }
+  virtual bool do_element_helper(int index, arrayOop array_obj) { return false; }
   virtual void after_field_helper(unsigned offset, oop temp_obj) {}
   virtual void after_element_helper(int index, oop temp_obj) {}
   virtual bool before_instance_helper() { return true; }

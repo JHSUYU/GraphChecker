@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requireText;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 
 /**
@@ -144,45 +145,27 @@ public final class BranchWitness {
                 primitiveInteger(json, "decisionOrdinal", 0));
     }
 
-    public JsonObject toJson() {
-        return coreJson();
-    }
+    public JsonObject toJson() { return coreJson(); }
 
-    public String siteId() {
-        return siteId;
-    }
+    public String siteId() { return siteId; }
 
-    public String method() {
-        return method;
-    }
+    public String method() { return method; }
 
-    public int unitIndex() {
-        return unitIndex;
-    }
+    public int unitIndex() { return unitIndex; }
 
-    public int occurrence() {
-        return occurrence;
-    }
+    public int occurrence() { return occurrence; }
 
-    public boolean sourceTakenOutcome() {
-        return sourceTakenOutcome;
-    }
+    public boolean sourceTakenOutcome() { return sourceTakenOutcome; }
 
     public JsonElement sourceSatisfiedPredicate() {
         return CanonicalJson.copy(sourceSatisfiedPredicate);
     }
 
-    public int vmPcIndex() {
-        return vmPcIndex;
-    }
+    public int vmPcIndex() { return vmPcIndex; }
 
-    public int decisionOrdinal() {
-        return decisionOrdinal;
-    }
+    public int decisionOrdinal() { return decisionOrdinal; }
 
-    public boolean isPcPredicateDecision() {
-        return decisionOrdinal > 0;
-    }
+    public boolean isPcPredicateDecision() { return decisionOrdinal > 0; }
 
     BranchWitness atPcIndex(int pcIndex) {
         return new BranchWitness(siteId, method, unitIndex, occurrence,
@@ -215,12 +198,5 @@ public final class BranchWitness {
             result.addProperty("decisionOrdinal", decisionOrdinal);
         }
         return (JsonObject) CanonicalJson.copy(result);
-    }
-
-    private static String requireText(String value, String name) {
-        if (value == null || value.trim().isEmpty()) {
-            throw new IllegalArgumentException(name + " is required");
-        }
-        return value;
     }
 }

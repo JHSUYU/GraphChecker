@@ -78,6 +78,7 @@
 
 #include "concolic/concolicMngr.hpp"
 #include "concolic/expressionBroker.hpp"
+#include "concolic/eventLedger.hpp"
 #ifdef TARGET_OS_FAMILY_linux
 # include "jvm_linux.h"
 #endif
@@ -725,9 +726,32 @@ JVM_ENTRY(jboolean, JVM_SnapshotContainerExpression(
 #endif
 JVM_END
 
+#ifdef ENABLE_CONCOLIC
+// Publishes the ledger event one handoff call recorded into the caller's
+// optional out-array.  README RPC-1: both endpoints of the VALUE_HANDOFF edge
+// are the VM's answer, so the exporter learns its export event and the
+// receiver learns its attach event rather than either being re-derived from
+// the order domain later.
+//
+// The array is resolved after the symbolic work has finished, so no oop is
+// held across a call that may safepoint.  A caller that passes anything other
+// than a long[] with room for the answer simply does not get one; there is no
+// status for it, because the call itself already succeeded.
+static void publish_handoff_event(jobject events, jlong event_id) {
+  if (events == NULL || event_id <= 0) return;
+  oop out = JNIHandles::resolve(events);
+  if (out == NULL || !out->is_typeArray()
+      || out->klass() != Universe::longArrayKlassObj()) {
+    return;
+  }
+  typeArrayOop slots = typeArrayOop(out);
+  if (slots->length() >= 1) slots->long_at_put(0, event_id);
+}
+#endif
+
 JVM_ENTRY(jlong, JVM_ExportExpression(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
-    jstring field_name, jstring descriptor))
+    jstring field_name, jstring descriptor, jlongArray events))
   JVMWrapper("JVM_ExportExpression");
 #ifdef ENABLE_CONCOLIC
   // No broker means there is no session-owned expression to forward.  Do not
@@ -749,7 +773,11 @@ JVM_ENTRY(jlong, JVM_ExportExpression(
   const char *type = descriptor == NULL ? NULL
       : java_lang_String::as_utf8_string(
           JNIHandles::resolve_non_null(descriptor));
-  return ConcolicMngr::exportExpression(field_owner, holder, name, type);
+  jlong export_event = 0;
+  jlong handle = ConcolicMngr::exportExpression(field_owner, holder, name,
+                                                type, &export_event);
+  publish_handoff_event(events, export_event);
+  return handle;
 #else
   return -1;
 #endif
@@ -757,7 +785,8 @@ JVM_END
 
 JVM_ENTRY(jlong, JVM_AttachExpression(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
-    jstring field_name, jstring descriptor, jlong handle))
+    jstring field_name, jstring descriptor, jlong handle,
+    jlongArray events))
   JVMWrapper("JVM_AttachExpression");
 #ifdef ENABLE_CONCOLIC
   HandleMark hm;
@@ -772,8 +801,11 @@ JVM_ENTRY(jlong, JVM_AttachExpression(
   const char *type = descriptor == NULL ? NULL
       : java_lang_String::as_utf8_string(
           JNIHandles::resolve_non_null(descriptor));
-  return ConcolicMngr::attachExpression(
-      field_owner, holder, name, type, handle);
+  jlong attach_event = 0;
+  jlong export_event = ConcolicMngr::attachExpression(
+      field_owner, holder, name, type, handle, &attach_event);
+  publish_handoff_event(events, attach_event);
+  return export_event;
 #else
   return -1;
 #endif
@@ -793,7 +825,8 @@ JVM_ENTRY(jstring, JVM_GetConcolicPathConditionRange(
       "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_PATH_CONDITION_RANGE\","
       "\"active\":false,\"startIndex\":0,\"endIndex\":0,"
       "\"pathConditionWatermark\":0,\"conditionCount\":0,"
-      "\"conditions\":[],\"conjunctionInline\":false,"
+      "\"conditions\":[],\"emittedConditionCount\":0,"
+      "\"conjunctionInline\":false,"
       "\"conjunctionSource\":"
       "\"conditions[0,conditionCount) folded left with &&\","
       "\"conjunctionAuthority\":"
@@ -1009,6 +1042,21 @@ JVM_ENTRY(jint, JVM_ProposeEventOrder(JNIEnv *env, jclass ignored,
   return ConcolicMngr::proposeEventOrder(before_event_id, after_event_id);
 #else
   return -1;
+#endif
+JVM_END
+
+JVM_ENTRY(jboolean, JVM_ActivateConcolicEventLedger(JNIEnv *env,
+                                                    jclass ignored))
+  JVMWrapper("JVM_ActivateConcolicEventLedger");
+#ifdef ENABLE_CONCOLIC
+  // README EVENT-1: the order domain records because a task selected event
+  // sites, not because some location happens to be a shared carrier.  The
+  // caller has already decided that its activation declares one; this only
+  // tells the ledger.
+  EventLedger::activate();
+  return EventLedger::is_recording() ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
 #endif
 JVM_END
 

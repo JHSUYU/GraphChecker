@@ -24,11 +24,6 @@ public final class JavaContainerTypes {
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "java.util.Set",
                     "java.util.HashSet", "java.util.LinkedHashSet")));
-    private static final Set<String> STRUCTURAL_TRAVERSAL =
-            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                    "java.util.Iterator", "java.util.ListIterator",
-                    "java.util.Map$Entry", "java.util.Map.Entry",
-                    "java.util.Enumeration")));
     private static final Set<String> CARDINALITY_OWNERS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "java.util.Collection", "java.util.List",
@@ -107,21 +102,8 @@ public final class JavaContainerTypes {
         return Shape.NONE;
     }
 
-    /**
-     * Returns whether calls on this type select structure owned by a Java
-     * container. Their reference results are projections of that structure,
-     * not independent external inputs.
-     */
-    public static boolean structuralTraversalOwner(String type) {
-        String value = normalize(type);
-        return shape(value) != Shape.NONE
-                || STRUCTURAL_TRAVERSAL.contains(value);
-    }
-
-    /**
-     * Returns whether the exact Soot signature names a result-bearing
-     * operation modeled by the custom JDK container algebra.
-     */
+    /** Whether the exact Soot signature names a result-bearing operation
+     *  modeled by the custom JDK container algebra. */
     public static boolean symbolicResultOperation(String signature) {
         MethodSignature method = MethodSignature.parse(signature);
         if (method == null) return false;
@@ -171,11 +153,10 @@ public final class JavaContainerTypes {
     }
 
     /**
-     * Exact predicates whose value is the position of a structural traversal,
-     * rather than an element's semantic state.  These are useful to the
-     * failure-directed branch policy: a loop may observe them, but changing
-     * them would change the frozen container shape instead of exercising a
-     * data decision inside the loop.
+     * Exact predicates whose value is the position of a structural traversal
+     * rather than an element's semantic state.  A failure-directed loop may
+     * observe them, but changing one would change the frozen container shape
+     * instead of exercising a data decision inside the loop.
      */
     public static boolean structuralIterationPredicate(String signature) {
         MethodSignature method = MethodSignature.parse(signature);

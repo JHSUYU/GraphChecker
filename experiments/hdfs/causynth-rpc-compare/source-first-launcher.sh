@@ -3,7 +3,20 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 graphchecker_jar=${GRAPHCHECKER_JAR:-${repo_root}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar}
-hadoop_home=${HADOOP_HOME_DIR:-/opt/hadoop}
+# The Hadoop checkout carrying the Causynth commits. HADOOP_HOME_DIR overrides
+# it, and run-z3.sh/run-matrix.sh always pass the leased worktree; the default
+# is the checkout beside this repository rather than an absolute path, because
+# a stale checkout is not an error here -- it is a scenario that compiles,
+# runs, and answers about different source.
+hadoop_home=${HADOOP_HOME_DIR:-}
+if [[ -z "${hadoop_home}" ]]; then
+  hadoop_home=$(cd -- "${repo_root}/../hadoop" 2>/dev/null && pwd -P) || true
+fi
+[[ -n "${hadoop_home}" && -d "${hadoop_home}" ]] || {
+  echo "no Hadoop checkout: set HADOOP_HOME_DIR" \
+    "(tried ${repo_root}/../hadoop)" >&2
+  exit 2
+}
 jdk_home=${CAUSYNTH_JDK_HOME:-${CAUSYNTH_CUSTOM_JDK_HOME:-${repo_root}/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image}}
 output_dir=${LAUNCHER_OUTPUT:-${repo_root}/experiments-output/causynth-rpc-compare}
 gson_jar=${GRAPHCHECKER_GSON_JAR:-${HOME}/.m2/repository/com/google/code/gson/gson/2.10.1/gson-2.10.1.jar}

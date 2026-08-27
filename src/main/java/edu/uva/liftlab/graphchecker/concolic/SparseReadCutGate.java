@@ -314,11 +314,6 @@ public final class SparseReadCutGate {
         return new ArrayList<>(outside);
     }
 
-    /** Gates this plan can enforce, one per enforceable candidate arm. */
-    public List<JsonObject> gates() {
-        return Collections.unmodifiableList(gates);
-    }
-
     /** Named refusals, one per arm that cannot be gated safely. */
     public List<JsonObject> refusals() {
         return Collections.unmodifiableList(refusals);
@@ -334,16 +329,6 @@ public final class SparseReadCutGate {
         for (JsonObject gate : gates) {
             if (string(gate, "selector").equals(selector)) {
                 return gate.deepCopy();
-            }
-        }
-        return new JsonObject();
-    }
-
-    /** The named refusal of one selector, or an empty object. */
-    public JsonObject refusalFor(String selector) {
-        for (JsonObject gap : refusals) {
-            if (string(gap, "selector").equals(selector)) {
-                return gap.deepCopy();
             }
         }
         return new JsonObject();

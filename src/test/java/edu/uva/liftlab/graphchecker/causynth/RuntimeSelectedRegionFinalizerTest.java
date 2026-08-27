@@ -32,38 +32,6 @@ public class RuntimeSelectedRegionFinalizerTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
-    public void oppositeDemandedOutcomesRemainAnExplorableProducerSplit() {
-        String method = "<example.Producer: int output(int)>";
-        String site = method + "#u4";
-        List<Map<String, Object>> edges = new ArrayList<>();
-        for (boolean required : new boolean[]{false, true}) {
-            Map<String, Object> guard = new LinkedHashMap<>();
-            guard.put("transferKind", "GUARD");
-            guard.put("guardSiteId", site);
-            guard.put("siteId", site);
-            guard.put("method", method);
-            guard.put("unitIndex", 4);
-            guard.put("fromCell", method + "::$condition");
-            guard.put("toCell", method + (required
-                    ? "::$leftOutput" : "::$rightOutput"));
-            guard.put("requiredOutcome", required);
-            edges.add(guard);
-        }
-
-        List<Map<String, Object>> policies =
-                RuntimeSelectedRegionFinalizer.branchPoliciesForTests(
-                        edges, new LinkedHashSet<>(
-                                Collections.singletonList(method)));
-
-        assertEquals(1, policies.size());
-        assertEquals("EXPLORE", policies.get(0).get("policy"));
-        assertEquals("ALTERNATIVE_DEMANDED_OUTCOMES",
-                policies.get(0).get("policyReason"));
-        assertFalse(policies.get(0).containsKey("requiredOutcome")
-                && policies.get(0).get("requiredOutcome") != null);
-    }
-
-    @Test
     public void onlyTheActivationThatObservedTheFatalSiteIsAClosureTarget()
             throws Exception {
         // One thread-entry region with three concurrent activations.
@@ -107,9 +75,13 @@ public class RuntimeSelectedRegionFinalizerTest {
                 observedFatalTarget(root + "#u9", root, 50L, 3L, false)));
 
         RuntimeSelectedRegionFinalizer.Result result =
-                RuntimeSelectedRegionFinalizer.finalizeRegions(refined,
-                        skeleton, Collections.singleton(root),
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeleton,
+                        Collections.singleton(root),
                         Arrays.asList(producerOne, producerTwo, consumer),
+                        Collections.<Map<String, Object>>emptyList(),
                         Collections.<Map<String, Object>>emptyList());
 
         assertEquals(1, result.regions.size());
@@ -216,9 +188,14 @@ public class RuntimeSelectedRegionFinalizerTest {
                         "callSourceKey", "cluster0/client0#epoch0"));
 
         RuntimeSelectedRegionFinalizer.Result result =
-                RuntimeSelectedRegionFinalizer.finalizeRegions(refined,
-                        skeleton, Collections.singleton(root),
-                        Arrays.asList(dn0, dn1), observations);
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeleton,
+                        Collections.singleton(root),
+                        Arrays.asList(dn0, dn1),
+                        observations,
+                        Collections.<Map<String, Object>>emptyList());
 
         assertEquals("cluster0/client0#epoch0/region/REGION.worker#1",
                 dn0.get("occurrenceId"));
@@ -262,10 +239,14 @@ public class RuntimeSelectedRegionFinalizerTest {
                 "callSourceKey", "cluster0/client0#epoch0");
 
         RuntimeSelectedRegionFinalizer.Result result =
-                RuntimeSelectedRegionFinalizer.finalizeRegions(refined,
-                        skeleton, Collections.singleton(root),
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeleton,
+                        Collections.singleton(root),
                         Arrays.asList(activation, reordered),
-                        Collections.singletonList(observation));
+                        Collections.singletonList(observation),
+                        Collections.<Map<String, Object>>emptyList());
 
         String occurrence = "cluster0/client0#epoch0/region/" + region + "#1";
         assertEquals(occurrence, activation.get("occurrenceId"));
@@ -288,10 +269,14 @@ public class RuntimeSelectedRegionFinalizerTest {
         conflicting.put("sourceKey", "cluster0/dn1#epoch0");
 
         try {
-            RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
-                    Collections.singleton(root),
-                    Arrays.asList(first, conflicting),
-                    Collections.<Map<String, Object>>emptyList());
+            RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeleton,
+                        Collections.singleton(root),
+                        Arrays.asList(first, conflicting),
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.<Map<String, Object>>emptyList());
             throw new AssertionError("conflicting activation must fail closed");
         } catch (IOException expected) {
             assertTrue(expected.getMessage(), expected.getMessage().startsWith(
@@ -365,17 +350,72 @@ public class RuntimeSelectedRegionFinalizerTest {
                 fatalGuard(root, local));
 
         try {
-            RuntimeSelectedRegionFinalizer.finalizeRegions(refined, skeleton,
-                    Collections.singleton(root), Arrays.asList(
+            RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeleton,
+                        Collections.singleton(root),
+                        Arrays.asList(
                             exceptionContextActivation("REGION.worker", 1,
                                     root),
                             exceptionContextActivation("REGION.worker", 2,
                                     root)),
-                    Collections.<Map<String, Object>>emptyList());
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.<Map<String, Object>>emptyList());
             throw new AssertionError("unreached target must fail closed");
         } catch (IOException expected) {
             assertTrue(expected.getMessage(), expected.getMessage()
                     .startsWith("FATAL_TARGET_OBSERVATION_GAP:"));
+        }
+    }
+
+    @Test
+    public void anUndeclaredFatalTargetFailsClosedByName() throws Exception {
+        // The same region, this time with no exception guard at all: nothing
+        // in it declares a failureTarget site.  README TARGET-1 binds target
+        // existence to a selected concrete branch event, and a region that
+        // names no site has no event to bind to, so every one of its
+        // exception-context activations used to become a closure target on
+        // the strength of its `selection` label alone - a target with zero
+        // observed branch evidence, whose slice was then the activation's
+        // whole observed input set.  The absent declaration is the gap.
+        String root = "<example.Worker: void run()>";
+        String field = "<example.Shared: int value>";
+        String local = root + "::$value";
+        File skeleton = writeRows("undeclared-target-skeleton.jsonl",
+                threadEntrySkeleton(root));
+        File refined = writeRows("undeclared-target-refined.jsonl",
+                sharedFieldWrite(root, field, Collections.singletonList(
+                        fieldBinding("REGION.worker", 1, root, 5, field,
+                                "7", 100))),
+                sharedFieldRead(root, field, local,
+                        fieldBinding("REGION.worker", 2, root, 8, field,
+                                "7", 100)));
+        Map<String, Object> observing = exceptionContextActivation(
+                "REGION.worker", 2, root);
+        // Recorded branch evidence does not rescue it either: with no
+        // declared site the evidence names no target predicate.
+        observing.put("observedFatalTargets", Collections.singletonList(
+                observedFatalTarget(root + "#u9", root, 50L, 2L, false)));
+
+        try {
+            RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeleton,
+                        Collections.singleton(root),
+                        Arrays.asList(
+                            exceptionContextActivation("REGION.worker", 1,
+                                    root),
+                            observing),
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.<Map<String, Object>>emptyList());
+            throw new AssertionError("undeclared target must fail closed");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage()
+                    .startsWith("FATAL_TARGET_POLICY_ABSENT:"));
+            assertTrue(expected.getMessage(), expected.getMessage()
+                    .contains("REGION.worker"));
         }
     }
 
@@ -424,9 +464,13 @@ public class RuntimeSelectedRegionFinalizerTest {
                 observedFatalTarget(root + "#u9", root, 50L, 2L, false)));
 
         RuntimeSelectedRegionFinalizer.Result result =
-                RuntimeSelectedRegionFinalizer.finalizeRegions(refined,
-                        skeletonFile, Collections.singleton(root),
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeletonFile,
+                        Collections.singleton(root),
                         Arrays.asList(producer, consumer),
+                        Collections.<Map<String, Object>>emptyList(),
                         Collections.<Map<String, Object>>emptyList());
 
         assertEquals(1, result.regions.size());
@@ -479,9 +523,13 @@ public class RuntimeSelectedRegionFinalizerTest {
                         false)));
 
         RuntimeSelectedRegionFinalizer.Result result =
-                RuntimeSelectedRegionFinalizer.finalizeRegions(refined,
-                        skeleton, Collections.singleton(root),
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        MapFields.readRows(refined),
+                        refined,
+                        skeleton,
+                        Collections.singleton(root),
                         Arrays.asList(producer, consumer),
+                        Collections.<Map<String, Object>>emptyList(),
                         Collections.<Map<String, Object>>emptyList());
 
         for (Map<String, Object> edge : result.regionEdges) {
@@ -723,6 +771,19 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertEquals(60L, targetEvent);
     }
 
+    /**
+     * Each bounded write version of a repeated output keeps the delivery that
+     * preceded it, so the late version's own protocol edge exists as a region
+     * edge of its own.
+     *
+     * <p>This is a requirement about versions staying distinguishable, not
+     * about how they are scheduled.  Under README REGION-1 the two versions
+     * are two guarded cases of one coarse producer occurrence rather than two
+     * producer goals, and both deliveries stay on that one occurrence's
+     * binding ledger - which is exactly what this asserts.  If the late edge
+     * ever stopped being published here, the later version would have no
+     * incoming evidence to guard its case with.</p>
+     */
     @Test
     public void repeatedOutputVersionsExpandTheirOwnPriorDelivery()
             throws Exception {

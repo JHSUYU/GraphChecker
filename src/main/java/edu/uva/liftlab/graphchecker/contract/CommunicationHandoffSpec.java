@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -13,27 +12,17 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * One site where this occurrence hands a declared communication port to the
- * VM, or takes one from it.
- *
- * <p>The VM is the single propagation authority: a sender exports the live
- * expression of a declared port and a receiver attaches it, after which the
- * receiver's own arithmetic builds on the sender's term and the session
- * ledger holds one {@code VALUE_HANDOFF} edge.  Both halves need a
- * <em>site</em> before any of that can happen, and both sites are already
- * declared by static discovery - the client's cut argument and cut return,
- * the server entry's parameter and return.  This is that declaration in the
- * form the instrumentation and the replay read it.</p>
- *
- * <p>Nothing here pairs anything.  The port id, the leaf path and the
- * direction are the port's own static identity, stated so that an attach has
- * a declared port to land on and a case has something to state; they are
- * never matched against a recorded export to recover a delivery.</p>
+ * VM, or takes one from it.  The VM is the single propagation authority: a
+ * sender exports the live expression and a receiver attaches it, after which
+ * the session ledger holds one {@code VALUE_HANDOFF} edge.  Nothing here pairs
+ * anything: the port id, leaf path and direction are the port's own static
+ * identity, never matched against a recorded export to recover a delivery.
  */
 public final class CommunicationHandoffSpec {
 
-    public static final int SCHEMA_VERSION = 2;
-    /** Task member carrying these declarations. */
     public static final String FIELD = "communicationHandoffs";
+    /** This row kind's one name, in {@link #toString()}; never a wire
+     *  member, because one kind per row is a constant, not a fact. */
     public static final String KIND = "COMMUNICATION_HANDOFF_SITE";
     /** This occurrence sends the port's value across the cut. */
     public static final String ROLE_EXPORT = "EXPORT";
@@ -44,7 +33,6 @@ public final class CommunicationHandoffSpec {
     private final String portId;
     private final String leafPath;
     private final String direction;
-    private final String exchangeSiteKey;
     private final String componentOfPortId;
     private final String encodingAuthority;
     private final String carrierClass;
@@ -63,8 +51,6 @@ public final class CommunicationHandoffSpec {
                 CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH);
         direction = string(encoded,
                 CommunicationCatalogContract.PORT_DIRECTION);
-        exchangeSiteKey = string(encoded,
-                CommunicationCatalogContract.EXCHANGE_SITE_KEY);
         componentOfPortId = string(encoded,
                 CommunicationCatalogContract.PORT_COMPONENT_OF);
         encodingAuthority = string(encoded,
@@ -161,7 +147,6 @@ public final class CommunicationHandoffSpec {
         return Collections.unmodifiableList(result);
     }
 
-    /** The declarations of one task, in plan order; never {@code null}. */
     public static List<CommunicationHandoffSpec> decode(JsonObject task) {
         List<CommunicationHandoffSpec> sites = new ArrayList<>();
         if (task == null) return sites;
@@ -184,13 +169,8 @@ public final class CommunicationHandoffSpec {
 
     public String direction() { return direction; }
 
-    public String exchangeSiteKey() { return exchangeSiteKey; }
-
     /** Structured carrier port this exact leaf crosses inside, or empty. */
     public String componentOfPortId() { return componentOfPortId; }
-
-    /** Authority declaring the component encoding, or empty. */
-    public String encodingAuthority() { return encodingAuthority; }
 
     /** True for an adapter-carried component, never a generic Java cut value. */
     public boolean component() { return !componentOfPortId.isEmpty(); }
@@ -237,39 +217,32 @@ public final class CommunicationHandoffSpec {
 
     public String carrierDescriptor() { return carrierDescriptor; }
 
-    /** The method whose body holds this site. */
     public String method() { return method; }
 
     /** Callee of the cut invoke, or {@code ""} at a server-entry site. */
     public String declaredCallee() { return declaredCallee; }
 
-    /** Jimple unit index of the cut invoke, or {@code -1}. */
     public int unitIndex() { return unitIndex; }
 
-    /** Argument or parameter position of this port, or {@code -1}. */
     public int argumentIndex() { return argumentIndex; }
 
     public boolean exports() { return ROLE_EXPORT.equals(role); }
 
-    /** Exports the value bound into one argument of the cut invoke. */
     public boolean exportsCutArgument() {
         return !manualCarrier() && exports() && unitIndex >= 0
                 && argumentIndex >= 0
                 && !declaredCallee.isEmpty();
     }
 
-    /** Exports the value this occurrence's server entry returns. */
     public boolean exportsEntryReturn() {
         return !manualCarrier() && exports() && unitIndex < 0;
     }
 
-    /** Attaches onto one parameter of this occurrence's server entry. */
     public boolean attachesEntryParameter() {
         return !manualCarrier() && !exports() && argumentIndex >= 0
                 && unitIndex < 0;
     }
 
-    /** Attaches onto the value the cut invoke returned. */
     public boolean attachesCutReturn() {
         return !manualCarrier() && !exports() && unitIndex >= 0
                 && !declaredCallee.isEmpty();

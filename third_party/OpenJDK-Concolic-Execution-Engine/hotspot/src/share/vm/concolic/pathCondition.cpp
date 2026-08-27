@@ -2,8 +2,67 @@
 
 #include "concolic/concolicMngr.hpp"
 #include "concolic/pathCondition.hpp"
+#include "runtime/arguments.hpp"
 #include "utilities/ostream.hpp"
 #include "webridge/utils/rapidjson/document.h"
+
+#include <errno.h>
+#include <stdlib.h>
+
+/**
+ * Resolves the serialization byte bound, once.
+ *
+ * `-Dcausynth.vm.pathcondition.bytes` accepts a decimal count with an
+ * optional k/m/g suffix; anything unparseable, negative or overflowing leaves
+ * the default in place rather than silently choosing a bound nobody asked
+ * for.  Zero is honoured and means "truncate everything", which is how the
+ * smoke forces the marker path at a cost of a few kilobytes.
+ *
+ * The memo is a benign race: concurrent resolvers compute the same value from
+ * an immutable property list and store a word.  A sentinel distinct from every
+ * legal bound keeps zero configurable.
+ */
+static const size_t PATH_CONDITION_BYTES_UNRESOLVED = ~(size_t) 0;
+static size_t _path_condition_max_bytes = PATH_CONDITION_BYTES_UNRESOLVED;
+
+size_t PathCondition::max_serialized_range_bytes() {
+  size_t resolved = _path_condition_max_bytes;
+  if (resolved != PATH_CONDITION_BYTES_UNRESOLVED) {
+    return resolved;
+  }
+
+  resolved = DEFAULT_MAX_SERIALIZED_RANGE_BYTES;
+  const char *configured =
+      Arguments::get_property("causynth.vm.pathcondition.bytes");
+  if (configured != NULL && *configured != '\0') {
+    char *tail = NULL;
+    errno = 0;
+    unsigned long long value = strtoull(configured, &tail, 10);
+    bool ok = errno == 0 && tail != configured;
+    if (ok && tail != NULL && *tail != '\0') {
+      switch (*tail) {
+        case 'k': case 'K': value *= 1024ull;               tail++; break;
+        case 'm': case 'M': value *= 1024ull * 1024ull;      tail++; break;
+        case 'g': case 'G': value *= 1024ull * 1024ull * 1024ull;
+                                                             tail++; break;
+        default: ok = false; break;
+      }
+      if (ok && *tail != '\0') ok = false;
+    }
+    // Never let a bound of ~0 be configured: serialize_range() computes
+    // `max_bytes - emitted_bytes`, and the sentinel would re-resolve forever.
+    if (ok && value < (unsigned long long) PATH_CONDITION_BYTES_UNRESOLVED) {
+      resolved = (size_t) value;
+    } else {
+      tty->print_cr("[causynth] ignoring causynth.vm.pathcondition.bytes=%s"
+                    " (unparseable); keeping " SIZE_FORMAT " bytes",
+                    configured, resolved);
+    }
+  }
+
+  _path_condition_max_bytes = resolved;
+  return resolved;
+}
 
 int __attribute__((optimize("O0"))) PathCondition::add(Expression *exp) {
   // getPathCondition() may be queried repeatedly by Java branch hooks while

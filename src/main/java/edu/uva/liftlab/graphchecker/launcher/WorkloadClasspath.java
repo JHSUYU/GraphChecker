@@ -17,45 +17,21 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Assembles the workload JVM classpath from an existing Hadoop build.
+ * Assembles the workload JVM classpath from an existing Hadoop build.  Order
+ * is the whole point, so it is fixed here: instrumented outputs first so a
+ * rewritten class shadows its original, then the configuration directory, the
+ * named GraphChecker libraries, the Hadoop module outputs (tests before
+ * main), the module's test-scope dependencies, and GraphChecker last.
  *
- * <p>Order is the whole point of this class, so it is fixed here rather than
- * left to a caller:</p>
- *
- * <ol>
- *   <li>instrumented outputs, so a rewritten class shadows its original;</li>
- *   <li>the generated configuration directory;</li>
- *   <li>the named GraphChecker libraries, the one exception to the rule
- *   below;</li>
- *   <li>the Hadoop module outputs, tests before main;</li>
- *   <li>the module's test-scope dependencies;</li>
- *   <li>GraphChecker itself, because the Hadoop source resolves the trace
- *   recorder reflectively and silently disables tracing when it is absent.</li>
- * </ol>
- *
- * <p>GraphChecker is last, and that position is the load-bearing part. It is
- * shipped here as a jar-with-dependencies, so putting it first does not merely
- * add the recorder: it also puts Guava 31, Protobuf 3 and Gson 2.10 in front of
- * the versions Hadoop pins, and the workload then dies inside Hadoop rather
- * than inside anything GraphChecker did - a DataNode fails to start with
- * {@code NoSuchMethodError: Futures.addCallback(ListenableFuture,
- * FutureCallback)} because Hadoop 3.0.0-alpha4 compiles against Guava 11.
- * Tracing needs GraphChecker to be <em>present</em>, not to win a version
- * conflict, so every library both sides carry resolves to Hadoop's copy and the
- * workload behaves like Hadoop.</p>
- *
- * <p>A flat classpath cannot give one library to Hadoop and another to
- * GraphChecker, so where the recorder genuinely requires a newer version the
- * caller names that library and it is prepended. Naming what GraphChecker
- * needs is the smaller and safer list: the recorder fails loudly and latches
- * off when a library it needs is too old - Hadoop's Gson 2.2.4 turns the very
- * first traced RPC into {@code NoSuchMethodError:
- * GsonBuilder.setObjectToNumberStrategy} and every later one into silence -
- * while the set Hadoop must keep is most of its dependency tree.</p>
- *
- * <p>Reading an existing build is deliberately independent of producing one,
- * so a run needs only module outputs on disk and not the Hadoop toolchain
- * {@link HadoopSourceBuild} requires.</p>
+ * <p>GraphChecker's last position is load-bearing.  It ships as a
+ * jar-with-dependencies, so putting it first also puts Guava 31, Protobuf 3
+ * and Gson 2.10 ahead of the versions Hadoop pins and the workload dies
+ * inside Hadoop - {@code NoSuchMethodError: Futures.addCallback}, because
+ * Hadoop 3.0.0-alpha4 compiles against Guava 11.  Tracing needs GraphChecker
+ * <em>present</em>, not winning a version conflict.  Where the recorder does
+ * require a newer library the caller names it and it is prepended: Hadoop's
+ * Gson 2.2.4 turns the first traced RPC into a {@code NoSuchMethodError} and
+ * every later one into silence.</p>
  */
 public final class WorkloadClasspath {
 
@@ -73,8 +49,8 @@ public final class WorkloadClasspath {
 
     /**
      * @param confDir generated configuration directory, or null
-     * @param graphCheckerLibs libraries GraphChecker's runtime needs at a
-     *                         version the workload does not provide
+     * @param graphCheckerLibs libraries the recorder needs at a version the
+     *                         workload does not provide
      * @param graphCheckerCode GraphChecker's own classes directory or jar
      */
     public static List<String> assemble(Path hadoopHome,
@@ -126,14 +102,7 @@ public final class WorkloadClasspath {
             }
             entries.add(directory.toString());
         }
-        entries.addAll(readDependencyEntries(classpathFile));
-        entries.add(graphCheckerCode.toString());
-        return Collections.unmodifiableList(new ArrayList<>(entries));
-    }
 
-    /** Reads and validates the classpath file the build wrote. */
-    public static List<String> readDependencyEntries(Path classpathFile)
-            throws LauncherException {
         if (classpathFile == null || !Files.isRegularFile(classpathFile)) {
             throw new LauncherException(
                     LauncherDiagnostic.TEST_CLASSPATH_MISSING,
@@ -149,7 +118,7 @@ public final class WorkloadClasspath {
                     LauncherDiagnostic.TEST_CLASSPATH_MISSING,
                     "cannot read " + classpathFile, failure);
         }
-        List<String> entries = new ArrayList<>();
+        int dependencies = 0;
         for (String line : text.split("\\R")) {
             for (String entry : line.split(File.pathSeparator)) {
                 String trimmed = entry.trim();
@@ -163,14 +132,16 @@ public final class WorkloadClasspath {
                                     + trimmed);
                 }
                 entries.add(trimmed);
+                dependencies++;
             }
         }
-        if (entries.isEmpty()) {
+        if (dependencies == 0) {
             throw new LauncherException(
                     LauncherDiagnostic.TEST_CLASSPATH_MISSING,
                     classpathFile + " is empty");
         }
-        return entries;
+        entries.add(graphCheckerCode.toString());
+        return Collections.unmodifiableList(new ArrayList<>(entries));
     }
 
     /** Locates the classes or jar this launcher itself was loaded from. */

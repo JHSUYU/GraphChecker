@@ -199,7 +199,11 @@ const char *ExpressionBroker::status_name(HandoffStatus status) {
 
 jlong ConcolicMngr::exportExpression(
     Handle owner, const char *declaring_class, const char *field_name,
-    const char *descriptor) {
+    const char *descriptor, jlong *export_event_out) {
+  // README RPC-1: the exporter is an endpoint of the VALUE_HANDOFF edge and
+  // has to be able to name its own event, or its interaction row cannot say
+  // which export it published and the Composer is left counting ports.
+  if (export_event_out != NULL) *export_event_out = 0;
   int session_members = 0;
   bool workload_open = false;
   SessionState session_state = SESSION_CLOSED;
@@ -283,14 +287,22 @@ jlong ConcolicMngr::exportExpression(
             EventLedger::EVENT_HANDOFF_EXPORT, NULL_SYM_RID, field.offset(),
             "");
 
-  return ExpressionBroker::publish(shadow, std::string(descriptor),
-                                   export_event, leaf_kind, container_shape,
-                                   array_class, array_length);
+  jlong handle = ExpressionBroker::publish(shadow, std::string(descriptor),
+                                           export_event, leaf_kind,
+                                           container_shape, array_class,
+                                           array_length);
+  if (handle > 0 && export_event_out != NULL) *export_event_out = export_event;
+  return handle;
 }
 
 jlong ConcolicMngr::attachExpression(
     Handle owner, const char *declaring_class, const char *field_name,
-    const char *descriptor, jlong handle) {
+    const char *descriptor, jlong handle, jlong *attach_event_out) {
+  // README RPC-1: one export may be attached at several explicit receivers,
+  // so the export id alone does not name *this* receive.  Both endpoints of
+  // the edge leave the VM together; nothing downstream may re-derive the
+  // attach by scanning the order domain for the first edge out of the export.
+  if (attach_event_out != NULL) *attach_event_out = 0;
   if (!can_explicitly_symbolize() || !ExpressionBroker::is_open()) {
     return ExpressionBroker::HANDOFF_NO_ACTIVE_REGION;
   }
@@ -378,6 +390,7 @@ jlong ConcolicMngr::attachExpression(
       field.offset(), "");
   EventLedger::add_observed_edge(leaf.export_event_id, attach_event,
                                  EventLedger::EDGE_VALUE_HANDOFF);
+  if (attach_event_out != NULL) *attach_event_out = attach_event;
   return leaf.export_event_id;
 }
 

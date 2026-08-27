@@ -65,6 +65,15 @@ public:
   // RTTI, so the downcast is declared here instead of guessed at.
   virtual ContainerExpression *as_container_expression() { return NULL; }
 
+  // The boolean negation of this predicate as a *new* node, or NULL when this
+  // node is not a negatable relational comparison.  A conditional container
+  // removal recorded on the branch that skipped it needs the branch's other
+  // arm -- the removal condition -- and a relational comparison negates
+  // exactly by flipping its operator (< <-> >=, == <-> !=), which keeps the
+  // result a comparison the SMT codec already lowers rather than introducing a
+  // unary `not` it might not.
+  virtual Expression *logical_negation() { return NULL; }
+
   static void print_on_maybe_null(Expression *exp) {
     if (exp) {
       exp->print();
@@ -129,6 +138,7 @@ public:
   OpSymExpression(Expression *r, SymbolicOp op);
   virtual std::string get_name();
   virtual bool is_boolean_expression();
+  virtual Expression *logical_negation();
 
 public:
   void print();

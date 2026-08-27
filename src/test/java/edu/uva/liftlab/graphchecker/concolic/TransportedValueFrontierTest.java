@@ -2,9 +2,11 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -44,6 +46,17 @@ public class TransportedValueFrontierTest {
     private static final String REMOTE_METHOD = "<R: Object serve()>";
     private static final String HEAP_EDGE = "RF.heap";
     private static final String DELIVERY_EDGE = "RPC.delivery";
+    private static final String ANCHORED_OCCURRENCE =
+            "cluster/remote#epoch0/region/REGION.R#1";
+    private static final String ACAUSAL_OCCURRENCE =
+            "cluster/remote#epoch0/region/REGION.R#2";
+    private static final String ANCHORED_EDGE =
+            "RPC.11111111-1111-1111-1111-111111111111";
+    private static final String ACAUSAL_EDGE =
+            "RPC.ffffffff-ffff-ffff-ffff-ffffffffffff";
+    /** Sorts after {@link #EARLIER_GOAL} in the identity order. */
+    private static final String LATER_GOAL = "GOAL.OUTPUT_RELATION.r-zzz";
+    private static final String EARLIER_GOAL = "GOAL.OUTPUT_RELATION.r-aaa";
 
     /**
      * The demanded write reads a transported structure whose incoming edge
@@ -54,11 +67,11 @@ public class TransportedValueFrontierTest {
     public void aTransportedValueFrontierSchedulesItsRemoteProducer()
             throws Exception {
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         producerRow(), targetRow(),
                         remoteRow(REMOTE_OCCURRENCE, DELIVERY_EDGE,
                                 "VALUE_FRONTIER")),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertEquals(describe(workflow), 2,
                 workflow.producerGroups().size());
@@ -75,11 +88,11 @@ public class TransportedValueFrontierTest {
     public void aTransportedCarrierWithoutTheValueRoleIsNotFollowed()
             throws Exception {
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         producerRow(), targetRow(),
                         remoteRow(REMOTE_OCCURRENCE, DELIVERY_EDGE,
                                 "CONCRETE_STRUCTURE_CARRIER")),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertEquals(describe(workflow), 1,
                 workflow.producerGroups().size());
@@ -107,9 +120,9 @@ public class TransportedValueFrontierTest {
                 .add("edgeBindings", one(edge));
 
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         producer, targetRow(), remote),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertEquals(describe(workflow), 1,
                 workflow.producerGroups().size());
@@ -145,9 +158,9 @@ public class TransportedValueFrontierTest {
                 .add("edgeBindings", one(edge));
 
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         producer, targetRow(), remote),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertEquals(describe(workflow), 2,
                 workflow.producerGroups().size());
@@ -159,10 +172,10 @@ public class TransportedValueFrontierTest {
     public void unselectedFailureInputDoesNotDemandItsProducer()
             throws Exception {
         try {
-            RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+            RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                     producerRow(), targetRow()),
                     (region, action) -> !TARGET_INPUT.equals(
-                            action.get("symbol").getAsString()));
+                            action.get("symbol").getAsString()), (regionId, closure) -> Collections.<String>emptySet());
             fail("an unselected target input must not retain its writer");
         } catch (java.io.IOException expected) {
             assertTrue(expected.getMessage(), expected.getMessage()
@@ -187,7 +200,7 @@ public class TransportedValueFrontierTest {
         String selectedEdge = "RPC.ffffffff-ffff-ffff-ffff-ffffffffffff";
 
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(Arrays.asList(
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
                         producerRowSelecting(selectedOccurrence,
                                 selectedEdge),
                         targetRow(),
@@ -195,7 +208,7 @@ public class TransportedValueFrontierTest {
                                 "VALUE_FRONTIER"),
                         remoteRow(selectedOccurrence, selectedEdge,
                                 "VALUE_FRONTIER")),
-                        (region, action) -> true);
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
 
         assertEquals(describe(workflow), 2,
                 workflow.producerGroups().size());
@@ -209,11 +222,118 @@ public class TransportedValueFrontierTest {
                 selectedOccurrence).contains(olderEdge));
     }
 
+    /**
+     * Two remote executions deliver the same declared response port to one
+     * coarse client occurrence, and the member pins neither.  The client
+     * produced the demanded value at event 10; one delivery arrived at 5 and
+     * the other at 50.  Only the first can have been read, so it is the one
+     * addressed -- even though the identity order below would have taken the
+     * other.  The occurrence is addressed by the exchange it carries.
+     */
+    @Test
+    public void theOccurrenceCarryingTheDemandedExchangeIsAddressed()
+            throws Exception {
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        producerRow(), targetRow(),
+                        arrivingRemoteRow(ANCHORED_OCCURRENCE,
+                                ANCHORED_EDGE, LATER_GOAL, 5L),
+                        arrivingRemoteRow(ACAUSAL_OCCURRENCE,
+                                ACAUSAL_EDGE, EARLIER_GOAL, 50L)),
+                        (region, action) -> true,
+                        (regionId, closure) ->
+                                Collections.<String>emptySet());
+
+        assertTrue(describe(workflow), scheduled(workflow,
+                ANCHORED_OCCURRENCE));
+        assertTrue(describe(workflow), !scheduled(workflow,
+                ACAUSAL_OCCURRENCE));
+        assertTrue(describe(workflow), selectedEdges(workflow,
+                ANCHORED_OCCURRENCE).contains(ANCHORED_EDGE));
+    }
+
+    /**
+     * FAIL-CLOSED: the same two deliveries with no recorded arrival anchor
+     * nothing, and the selection is exactly the identity order it always
+     * was.  An occurrence the trace did not time is never promoted on a
+     * guess.
+     */
+    @Test
+    public void anUnrecordedArrivalKeepsTodaysOccurrenceOrder()
+            throws Exception {
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        producerRow(), targetRow(),
+                        goalRemoteRow(ANCHORED_OCCURRENCE,
+                                ANCHORED_EDGE, LATER_GOAL),
+                        goalRemoteRow(ACAUSAL_OCCURRENCE,
+                                ACAUSAL_EDGE, EARLIER_GOAL)),
+                        (region, action) -> true,
+                        (regionId, closure) ->
+                                Collections.<String>emptySet());
+
+        assertTrue(describe(workflow), scheduled(workflow,
+                ACAUSAL_OCCURRENCE));
+        assertTrue(describe(workflow), !scheduled(workflow,
+                ANCHORED_OCCURRENCE));
+    }
+
+    /**
+     * NO OVER-APPROXIMATION: both deliveries arrived after the client had
+     * already produced the demanded value, so neither can explain it.  A late
+     * arrival is refused rather than stretched into an anchor, and the
+     * identity order stands exactly as it did before this key existed.
+     */
+    @Test
+    public void anArrivalAfterTheProductionAnchorsNothing()
+            throws Exception {
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        producerRow(), targetRow(),
+                        arrivingRemoteRow(ANCHORED_OCCURRENCE,
+                                ANCHORED_EDGE, LATER_GOAL, 50L),
+                        arrivingRemoteRow(ACAUSAL_OCCURRENCE,
+                                ACAUSAL_EDGE, EARLIER_GOAL, 60L)),
+                        (region, action) -> true,
+                        (regionId, closure) ->
+                                Collections.<String>emptySet());
+
+        assertTrue(describe(workflow), scheduled(workflow,
+                ACAUSAL_OCCURRENCE));
+        assertTrue(describe(workflow), !scheduled(workflow,
+                ANCHORED_OCCURRENCE));
+    }
+
     // ---------------------------------------------------------------
     // Fixture: a client fragment whose demanded write reads a transported
     // response, the target that demands that write, and the remote fragment
     // that exported the response.
     // ---------------------------------------------------------------
+
+    /** A remote fragment whose delivery states when it reached the client. */
+    private static JsonObject arrivingRemoteRow(String occurrenceId,
+                                                String edgeId, String goalId,
+                                                long arrivalEventSeq) {
+        JsonObject row = goalRemoteRow(occurrenceId, edgeId, goalId);
+        for (com.google.gson.JsonElement binding
+                : row.getAsJsonArray("closureGoals").get(0).getAsJsonObject()
+                .getAsJsonArray("edgeBindings")) {
+            binding.getAsJsonObject().addProperty("senderEventSeq",
+                    arrivalEventSeq - 1L);
+            binding.getAsJsonObject().addProperty("receiverEventSeq",
+                    arrivalEventSeq);
+        }
+        return row;
+    }
+
+    /** The same remote fragment under a stated goal identity. */
+    private static JsonObject goalRemoteRow(String occurrenceId,
+                                            String edgeId, String goalId) {
+        JsonObject row = remoteRow(occurrenceId, edgeId, "VALUE_FRONTIER");
+        row.getAsJsonArray("closureGoals").get(0).getAsJsonObject()
+                .addProperty("goalId", goalId);
+        return row;
+    }
 
     private static String describe(
             RuntimeWorkflowDiscovery.RankedWorkflow workflow) {
@@ -557,4 +677,16 @@ public class TransportedValueFrontierTest {
         encoded.add("slice", slice);
         return encoded;
     }
+
+    /** The plan rows this fixture states, decoded the way the artifact does. */
+    private static java.util.List<RegionInstancePlan> plans(
+            JsonObject... rows) {
+        java.util.List<RegionInstancePlan> decoded =
+                new java.util.ArrayList<>();
+        for (JsonObject row : rows) {
+            decoded.add(RegionInstancePlan.decode(row));
+        }
+        return decoded;
+    }
+
 }

@@ -8,16 +8,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 
-/**
- * Evidence gate shared by graph discovery and SMT preparation.
- *
- * <p>A port map may be useful for locating another region without proving a
- * value relation. Protocol equality is admitted only where the VM itself
- * handed the sender's expression to the receiver; a correlated exchange
- * locates the boundary and never proves what crossed it. Shared state
- * requires a confirmed concrete write/read pair as evidence that the channel
- * exists; its observed event sequence is not an SMT schedule.</p>
- */
+/** Evidence gate shared by graph discovery and SMT preparation. */
 public final class AutomaticRegionEdge {
     static final int RUNTIME_EDGE_SCHEMA_VERSION = 3;
     static final String RUNTIME_EDGE_KIND =
@@ -27,33 +18,18 @@ public final class AutomaticRegionEdge {
     /**
      * What application tracing proves about an RPC boundary on its own: the
      * two endpoints named one exchange and one delivery of it was observed.
-     * That is scope and identity, never a value relation, so it admits
-     * nothing here - it only marks an edge as a candidate whose expression
-     * the session may still attest.
      */
     public static final String TRACED_EXCHANGE_AUTHORITY =
             "TRACED_RPC_EXCHANGE_CORRELATION_V1";
     /**
      * Scheduling-only proof that a concrete reference field carried a
      * configured VM-handoff component into a later occurrence.
-     *
-     * <p>The reference itself remains concrete.  The exact runtime field
-     * write/read pair only keeps the two occurrences in the causal closure;
-     * the VM {@code VALUE_HANDOFF} edge remains the sole authority for the
-     * component value.</p>
      */
     public static final String TRANSPORTED_VALUE_FRONTIER_FIELD =
             "transportedValueFrontierAuthority";
     public static final String TRANSPORTED_VALUE_FRONTIER_AUTHORITY =
             "EXACT_RUNTIME_REFERENCE_CARRIER_OF_VM_COMPONENT_V1";
-    /**
-     * A read-from relation the session itself recorded.  The version store
-     * says which write the read resolved to, and the event ledger carries the
-     * matching {@code FIELD_READ_FROM} edge in the one order domain.  That is
-     * strictly more than a confirmed concrete write/read pair proves - which
-     * only shows that a channel exists - so it is admitted as its own state
-     * rather than by relaxing the existing one.
-     */
+    /** A read-from relation the session itself recorded. */
     static final String CONFIRMED_VM_RECORDED_READ_FROM =
             "CONFIRMED_VM_RECORDED_READ_FROM";
     static final String FIELD_ASSIGNMENT_READ_FROM =
@@ -62,10 +38,6 @@ public final class AutomaticRegionEdge {
             "CONTAINER_MUTATION_READ_FROM_V1";
 
     private AutomaticRegionEdge() {
-    }
-
-    public static boolean composable(JsonObject edge) {
-        return !relation(edge).isEmpty();
     }
 
     static String relation(JsonObject edge) {
@@ -95,24 +67,7 @@ public final class AutomaticRegionEdge {
         return "";
     }
 
-    /**
-     * Validates one VM-recorded read-from relation.
-     *
-     * <p>Admission needs both halves of the session's own answer and they
-     * must agree. The version store half is an <em>exact</em> resolution: it
-     * names the field version the read took, with the rule it was decided by.
-     * The ledger half is the order domain's own {@code FIELD_READ_FROM} edge
-     * from that version to that read - which the VM draws only when the
-     * provenance was proved, and never for a guarded read, because an
-     * undecided choice has no causal edge. The plan half is the endpoint
-     * attribution the VM cannot know.</p>
-     *
-     * <p>A location whose writer set is already incomplete is refused here.
-     * Losing writers is what turns "this read took that write" into "this
-     * read took that write, unless an untracked one wrote it too", and an
-     * equality is not the shape in which to state that doubt; such a read
-     * stays a guarded choice.</p>
-     */
+    /** Validates one VM-recorded read-from relation. */
     public static boolean trustedVmRecordedReadFromEvidence(
             JsonObject evidence) {
         return evidence != null
@@ -144,27 +99,12 @@ public final class AutomaticRegionEdge {
 
     /**
      * Validates one runtime summary binding before it is admitted downstream.
-     * Direct field assignments require exact channel endpoints. Container
-     * mutations additionally require a completed mutator call and concrete
-     * container endpoints. A recorded writer must precede the read it claims
-     * to supply even across lanes: event sequence is the trace's global
-     * observation order, while a later replay is free to publish a different
-     * ordered edge into the growing causal supergraph.
      */
     public static boolean trustedRuntimeReadFromBinding(JsonObject binding) {
         return trustedReadFromEvidence(binding);
     }
 
-    /**
-     * Whether one edge is a candidate delivery the trace correlated.
-     *
-     * <p>It says a message crossed this declared boundary between these two
-     * activations. Dynamic exchange identity and event order are trace
-     * provenance, not admission constraints: requiring them would reject a
-     * valid best-effort replay merely because the transport minted different
-     * ids or interleaved differently. The row stays scheduling evidence; only
-     * a case-local VM {@code VALUE_HANDOFF} edge supplies the value.</p>
-     */
+    /** Whether one edge is a candidate delivery the trace correlated. */
     public static boolean tracedExchangeCandidate(JsonObject edge) {
         if (edge == null
                 || integer(edge, "schemaVersion", -1) != 3
@@ -187,55 +127,18 @@ public final class AutomaticRegionEdge {
         return trustedRuntimeReadFromBinding(binding);
     }
 
-    /**
-     * Runtime evidence a producer may be <em>scheduled</em> on.
-     *
-     * <p>Deliberately a wider door than {@link
-     * #trustedRuntimeCompositionBinding}, and deliberately a different one.
-     * Composition asks what the model may state; scheduling asks what has to
-     * run for the session to be able to answer that at all.  A recorded
-     * delivery answers the second question and not the first: it names the
-     * declared boundary and the two region occurrences, so it says which
-     * fragment has to execute before the receiving one can be given anything
-     * - but it says nothing about the value, so it is still
-     * refused by {@link #relation} and by {@link #composable}.</p>
-     *
-     * <p>The chicken-and-egg this opens is real: the VM handoff edge that
-     * makes the crossing a value relation is produced by running the slice,
-     * and the slice cannot be scheduled without a producer.  Admitting the
-     * candidate here breaks that cycle in the only direction that stays
-     * honest - more execution, not more claim.  A consumer that needs a value
-     * relation must keep asking {@link #trustedRuntimeCompositionBinding}.</p>
-     */
+    /** Runtime evidence a producer may be <em>scheduled</em> on. */
     public static boolean schedulableProducerBinding(JsonObject binding) {
         return summaryTraversalBinding(binding);
     }
 
-    /**
-     * Evidence that may select the two recorded interaction summaries.
-     *
-     * <p>This is deliberately not value authority.  Exact shared-container
-     * identity and a recorded RPC delivery both locate the producer and
-     * consumer occurrences; the selected container expression or the VM
-     * {@code VALUE_HANDOFF} edge supplies the value.  Java topology never
-     * manufactures an equality.</p>
-     */
+    /** Evidence that may select the two recorded interaction summaries. */
     public static boolean summaryTraversalBinding(JsonObject binding) {
         return trustedRuntimeCompositionBinding(binding)
                 || tracedExchangeCandidate(binding);
     }
 
-    /**
-     * Evidence that may recursively enter the composed SMT summary graph.
-     *
-     * <p>Scheduling deliberately keeps the wider {@link
-     * #summaryTraversalBinding} gate: a concrete/candidate shared-state edge
-     * can still identify work worth replaying.  Composition is narrower.  A
-     * shared-state edge may demand/select a producer only after the VM has
-     * classified it as exact or guarded; a traced RPC delivery may still
-     * locate the two summaries whose case-local VM handoff supplies the
-     * value.</p>
-     */
+    /** Evidence that may recursively enter the composed SMT summary graph. */
     static boolean composerTraversalBinding(JsonObject binding) {
         return selectedReadFromCompositionBinding(binding)
                 || tracedExchangeCandidate(binding);

@@ -14,61 +14,54 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
+/**
+ * The frozen schema is the catalog of mint SITES.  Executing any of them is a
+ * local case -- every occurrence of a declared site is its own symbol, so
+ * nothing predicts which of them one replay runs -- while a mint at a site
+ * the plan never declared is still a topology divergence.
+ */
 public class TopologyDeltaConfiguredSourcePhaseTest {
     private static final Gson GSON = new Gson();
     private static final String OCCURRENCE =
             "test/nn0#epoch0/region/REGION.TARGET#1";
 
     @Test
-    public void exactPhaseSequenceIsLocalCaseButMissingPhaseIsDivergence() {
+    public void anyDeclaredMintSiteExecutionIsALocalCase() {
         ExecutionTask task = ExecutionTask.decode(task());
-        String phaseId = task.json().getAsJsonArray(
-                ConfiguredSourcePhaseContract.PLAN_FIELD).get(1)
-                .getAsJsonObject().get("phaseId").getAsString();
-
         TopologyDelta exact = new TopologyDelta("iteration-1",
-                TopologyDelta.planDigest(Collections.singletonList(task)));
-        JsonObject exactRaw = raw();
-        JsonObject observation = new JsonObject();
-        observation.addProperty("exactMatch", true);
-        observation.addProperty("selectedPhase", false);
-        observation.addProperty("matchedPhaseId", task.json()
-                .getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
-                .get(0).getAsJsonObject().get("phaseId").getAsString());
-        observation.addProperty("phaseKind", "PUBLISH");
-        observation.addProperty("sourceId", "TARGET.LOCAL");
-        observation.addProperty("siteId", "<Target: void run()>#u3");
-        observation.addProperty("replayOrdinal", 1);
+                Collections.singletonList(task));
+        JsonObject raw = raw();
         JsonArray observations = new JsonArray();
-        observations.add(observation);
-        observation = new JsonObject();
-        observation.addProperty("exactMatch", true);
-        observation.addProperty("selectedPhase", true);
-        observation.addProperty("matchedPhaseId", phaseId);
-        observation.addProperty("phaseKind", "PUBLISH");
-        observation.addProperty("sourceId", "TARGET.LOCAL");
-        observation.addProperty("siteId", "<Target: void run()>#u3");
-        observation.addProperty("replayOrdinal", 1);
-        observations.add(observation);
-        exactRaw.add("configuredSourcePhaseObservations", observations);
+        for (int index = 0; index < 2; index++) {
+            observations.add(observation(task.json().getAsJsonArray(
+                    ConfiguredSourcePhaseContract.PLAN_FIELD).get(index)
+                    .getAsJsonObject().get("phaseId").getAsString()));
+        }
+        raw.add("configuredSourcePhaseObservations", observations);
         TopologyDelta.Observation admitted = new TopologyDelta.Observation();
         admitted.summary = new JsonObject();
-        exact.classify(task, exactRaw, 0, admitted);
+        exact.classify(task,
+                new ConcolicSummaryImporter.ResultRow(raw, 0), admitted);
         assertEquals(TopologyDelta.NEW_OCCURRENCE,
                 exact.rows().get(0).get("deltaKind").getAsString());
+    }
 
-        TopologyDelta missing = new TopologyDelta("iteration-1",
-                TopologyDelta.planDigest(Collections.singletonList(task)));
-        JsonObject missingRaw = raw();
-        missingRaw.add("configuredSourcePhaseObservations",
-                new JsonArray());
+    @Test
+    public void mintObservedAtAnUndeclaredSiteIsADivergence() {
+        ExecutionTask task = ExecutionTask.decode(task());
+        TopologyDelta unknown = new TopologyDelta("iteration-1",
+                Collections.singletonList(task));
+        JsonObject raw = raw();
+        JsonArray observations = new JsonArray();
+        observations.add(observation("SOURCE_PHASE.not-in-plan"));
+        raw.add("configuredSourcePhaseObservations", observations);
         TopologyDelta.Observation refused =
                 TopologyDelta.Observation.refused(
                         "CONFIGURED_SOURCE_PHASE_MISSING");
-        missing.classify(task, missingRaw, 0, refused);
-        JsonObject divergence = missing.rows().get(0);
+        unknown.classify(task,
+                new ConcolicSummaryImporter.ResultRow(raw, 0), refused);
+        JsonObject divergence = unknown.rows().get(0);
         assertEquals(TopologyDelta.TOPOLOGY_DIVERGENCE,
                 divergence.get("deltaKind").getAsString());
         assertTrue(divergence.getAsJsonArray("divergences").toString(),
@@ -76,17 +69,12 @@ public class TopologyDeltaConfiguredSourcePhaseTest {
                         .contains("configuredSourcePhases"));
     }
 
-    @Test
-    public void selectedPublishWithoutMaterializationBindingIsRejected() {
-        JsonObject malformed = task();
-        malformed.remove(SymbolicSourceEvidence.TASK_FIELD);
-        try {
-            ExecutionTask.decode(malformed);
-            fail("selected PUBLISH without symbolicSourceFields must fail");
-        } catch (IllegalArgumentException expected) {
-            assertTrue(expected.getMessage(), expected.getMessage()
-                    .contains("do not match exact PUBLISH/CONSUME"));
-        }
+    /** The observation names the catalog row it matched; every other member
+     * it could carry restates that row and is not written. */
+    private static JsonObject observation(String matchedPhaseId) {
+        JsonObject observation = new JsonObject();
+        observation.addProperty("matchedPhaseId", matchedPhaseId);
+        return observation;
     }
 
     private static JsonObject task() {
@@ -103,53 +91,56 @@ public class TopologyDeltaConfiguredSourcePhaseTest {
         LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(task);
 
-        Map<String, Object> declaration =
-                ConfiguredSourcePhaseContract.declaration(
-                        ConfiguredSourcePhaseContract.Phase.PUBLISH,
-                        "TARGET.LOCAL", "<Target: long local>",
-                        "<Target: void run()>", 3);
+        JsonArray declarations = new JsonArray();
+        declarations.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                "TARGET.LOCAL", "<Target: long local>",
+                "<Target: void run()>", 3));
         ConfiguredSourcePhaseContract.Declaration decoded =
                 ConfiguredSourcePhaseContract.declarationsOf(
-                        Collections.singletonList(declaration)).get(0);
-        Map<String, Object> first =
-                ConfiguredSourcePhaseContract.occurrence(decoded,
-                        OCCURRENCE, 1, 10L, 20L, 30L,
-                        "<Target: void run()>",
-                        Collections.singletonList(20L));
-        Map<String, Object> phase =
-                ConfiguredSourcePhaseContract.occurrence(decoded,
-                        OCCURRENCE, 2, 11L, 20L, 31L,
-                        "<Target: void run()>",
-                        Collections.singletonList(20L));
+                        declarations).get(0);
         JsonArray phases = new JsonArray();
-        phases.add(GSON.toJsonTree(first));
-        phases.add(GSON.toJsonTree(phase));
+        phases.add(ConfiguredSourcePhaseContract.occurrence(decoded,
+                OCCURRENCE, 1, 10L, 20L, 30L, "<Target: void run()>",
+                Collections.singletonList(20L)));
+        phases.add(ConfiguredSourcePhaseContract.occurrence(decoded,
+                OCCURRENCE, 2, 11L, 20L, 31L, "<Target: void run()>",
+                Collections.singletonList(20L)));
         task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
-        JsonArray selected = new JsonArray();
-        selected.add(String.valueOf(phase.get("phaseId")));
-        task.add(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD,
-                selected);
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourcePhaseId",
-                String.valueOf(phase.get("phaseId")));
-        source.addProperty("sourceId", "TARGET.LOCAL");
-        source.addProperty("fieldSignature", "<Target: long local>");
-        source.addProperty("sourceRole", "TARGET_REACH");
-        source.addProperty("requiredTargetInputPort", "TARGET.local");
-        JsonArray sources = new JsonArray();
-        sources.add(source);
-        task.add(SymbolicSourceEvidence.TASK_FIELD, sources);
         return task;
+    }
+
+    /** An RPC value handed to this occurrence over an edge the frozen plan
+     * declared is a local case; one from an occurrence or port the plan never
+     * declared is the topology change that re-plans. */
+    @Test
+    public void handoffFromAnUndeclaredExchangeIsADivergence() {
+        ExecutionTask task = ExecutionTask.decode(task());
+        TopologyDelta unknown = new TopologyDelta("iteration-1",
+                Collections.singletonList(task));
+        JsonObject raw = raw();
+        JsonArray handoffs = new JsonArray();
+        JsonObject handoff = new JsonObject();
+        handoff.addProperty("producerOccurrenceId",
+                "test/dn9#epoch0/region/REGION.UNKNOWN#1");
+        handoff.addProperty("portId", "XCH.unknown.resp");
+        handoffs.add(handoff);
+        raw.add("vmHandoffEvents", handoffs);
+        TopologyDelta.Observation admitted = new TopologyDelta.Observation();
+        admitted.summary = new JsonObject();
+        unknown.classify(task,
+                new ConcolicSummaryImporter.ResultRow(raw, 0), admitted);
+        JsonObject divergence = unknown.rows().get(0);
+        assertEquals(TopologyDelta.TOPOLOGY_DIVERGENCE,
+                divergence.get("deltaKind").getAsString());
+        assertTrue(divergence.getAsJsonArray("divergences").toString(),
+                divergence.getAsJsonArray("divergences").toString()
+                        .contains("exchangeSchema"));
     }
 
     private static JsonObject raw() {
         JsonObject raw = new JsonObject();
         raw.addProperty("taskId", "TASK.TARGET");
-        JsonObject binding = new JsonObject();
-        binding.addProperty("occurrenceId", OCCURRENCE);
-        raw.add("regionFrameBinding", binding);
         return raw;
     }
 }

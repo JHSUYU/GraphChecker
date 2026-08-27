@@ -16,7 +16,10 @@
 #
 # Environment:
 #   GRAPHCHECKER_JAR   GraphChecker jar-with-dependencies (default: target/)
-#   HADOOP_HOME_DIR    Hadoop checkout        (default: /opt/hadoop)
+#   HADOOP_HOME_DIR    Hadoop checkout        (default: the checkout beside
+#                      this one, ../hadoop). Absolute defaults age badly: a
+#                      wrong checkout is not an error, it is a run that
+#                      analyzes different source and says nothing about it.
 #   CAUSYNTH_JDK_HOME  concolic JDK image     (default: the in-tree build)
 #   LAUNCHER_OUTPUT    launcher output dir    (default: experiments-output/...)
 #   HADOOP_PROTOC_PATH protoc matching the checkout's protobuf.version
@@ -56,7 +59,15 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 
 graphchecker_jar=${GRAPHCHECKER_JAR:-${repo_root}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar}
-hadoop_home=${HADOOP_HOME_DIR:-/opt/hadoop}
+hadoop_home=${HADOOP_HOME_DIR:-}
+if [[ -z "${hadoop_home}" ]]; then
+  hadoop_home=$(cd -- "${repo_root}/../hadoop" 2>/dev/null && pwd -P) || true
+fi
+[[ -n "${hadoop_home}" && -d "${hadoop_home}" ]] || {
+  echo "no Hadoop checkout: set HADOOP_HOME_DIR" \
+    "(tried ${repo_root}/../hadoop)" >&2
+  exit 2
+}
 jdk_home=${CAUSYNTH_JDK_HOME:-${CAUSYNTH_CUSTOM_JDK_HOME:-${repo_root}/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image}}
 output_dir=${LAUNCHER_OUTPUT:-${repo_root}/experiments-output/hdfs-11741-source-first}
 # Hadoop pins gson 2.2.4 and the trace recorder needs the 2.10 GsonBuilder API.
@@ -69,6 +80,28 @@ read -r -a launcher_jvm_args <<< "${LAUNCHER_JVM_ARGS:-}"
 heartbeat_expire_interval_ms=""
 socket_timeout_ms=""
 key_update_interval_ms=""
+# Minutes, because dfs.block.access.token.lifetime is declared in minutes and
+# one is its floor.  Unlike the three causynth.hdfs.* budgets this one is a
+# Configuration key rather than a live setter: BlockTokenSecretManager reads
+# its lifetime once, in its constructor, so the value has to be in the
+# workload's Configuration before the cluster is built -- and it then applies
+# to the NameNode, DataNode and Balancer key maps alike.
+#
+# It is deliberately outside the concolic-only block below.  allKeys is walked
+# by removeExpiredKeys() and by the two updateKeys() mint walks, and the length
+# of each walk is the map size, so the map size is what the declared loop
+# bounds (K_L) in loop-bounds.jsonl are measured against.  Discovery mints
+# those counts and the expiry lineage the plan carries; if replay used a
+# different lifetime the two would disagree about how many keys a walk sees.
+#
+# Sizing: allKeys holds roughly lifetime/keyUpdateInterval + 3 live keys, so
+# 1 min against the 5 s rotation settles at about fifteen -- inside the K=24
+# declarations -- and removeExpiredKeys() starts removing instead of walking a
+# map that only ever grows.  campaign-takeover-21 ran with the 600 min default:
+# nothing expired inside a 15 minute replay, every walk of allKeys exceeded
+# even K=64 (MAX_DECLARED_LOOP_BODY_ITERATIONS), and the NameNode monitor
+# region published no terminal at all.
+token_lifetime_min=${CAUSYNTH_HDFS_TOKEN_LIFETIME_MIN:-600}
 instrumented_conf_args=()
 
 if [[ $# -lt 1 ]]; then
@@ -155,10 +188,26 @@ reconcile_artifact_and_jdk() {
       # instrumented NameNode pause, so a healthy node can be removed before
       # the target is reached.  The workload bridge applies this test-only
       # expiry budget after cluster construction; it does not change heartbeat
-      # polling, key rotation, RPC traffic, or the selected causal state.
+      # polling, RPC traffic, or the selected causal state.
       heartbeat_expire_interval_ms=${CAUSYNTH_HDFS_HEARTBEAT_EXPIRE_MS:-600000}
       socket_timeout_ms=${CAUSYNTH_HDFS_SOCKET_TIMEOUT_MS:-300000}
-      key_update_interval_ms=${CAUSYNTH_HDFS_KEY_UPDATE_MS:-60000}
+      # The key-update budget DOES change key rotation, and it is the one
+      # timing the HDFS-11741 plan depends on: every selected occurrence is
+      # rooted on a block-key rotation (the monitor's updateKeys(), the
+      # KeyUpdateCommand the heartbeat response carries, the DataNode addKeys()
+      # that consumes it).  The workload configures
+      # dfs.block.access.key.update.interval=0, so upstream rotates on every
+      # heartbeat-monitor iteration -- about every 5 s -- and that is the
+      # cadence the discovery pass recorded and the plan addresses.  It must
+      # still be non-zero: the Balancer's KeyManager refreshes every
+      # interval/4 ms and a zero budget turns its updater into a spin.  Above
+      # the monitor's own 5 s period the rotation leaves the addressed epoch's
+      # window entirely: campaign-takeover-17 ran with 60 s and its second
+      # cluster lived 32 s, so no rotation happened after the epoch became
+      # addressable and all three key-rotation tasks were abandoned with
+      # "compatible root ended before every demanded semantic output boundary
+      # was observed".
+      key_update_interval_ms=${CAUSYNTH_HDFS_KEY_UPDATE_MS:-600000}
       test_wait_timeout_ms=${CAUSYNTH_HDFS_TEST_WAIT_TIMEOUT_MS:-180000}
       locate_following_block_retries=${CAUSYNTH_HDFS_LOCATE_FOLLOWING_BLOCK_RETRIES:-8}
       launcher_jvm_args+=(
@@ -231,11 +280,24 @@ case "${command}" in
     # (BlockManager.createBlockTokenSecretManager, conf.getLong * 60 * 1000),
     # and the NameNode monitor turns about every 5 s, so 1 is already too
     # coarse to rotate twice inside one Balancer episode; 0 makes every
-    # monitor turn rotate. Concolic replay keeps the original token lifetime
-    # and instead time-dilates that periodic update through the typed test
-    # bridge, because Zero makes unrelated cluster setup last minutes. This
-    # removes replay-only stutter rotations without deleting a key version or
-    # changing Map store/remove semantics.
+    # monitor turn rotate. Concolic replay then time-dilates that periodic
+    # update through the typed test bridge, because Zero makes unrelated
+    # cluster setup last minutes, without deleting a key version or changing
+    # Map store/remove semantics.
+    #
+    # token.lifetime is the bound on how many key versions that rotation
+    # leaves behind. It is set here, in both modes, because allKeys is walked
+    # by removeExpiredKeys() and by both updateKeys() mint walks and each walk
+    # is as long as the map: at the stock 600 minutes nothing expires inside a
+    # replay, so the map only grows and every walk eventually exceeds its
+    # declared K_L. campaign-takeover-21 is the measurement -- the NameNode
+    # monitor region published no terminal at all, at K=64, which is
+    # MAX_DECLARED_LOOP_BODY_ITERATIONS. One minute against the bridge's 5 s
+    # rotation settles allKeys at about lifetime/interval + 3 = fifteen live
+    # keys, inside the K=24 declarations, and lets removeExpiredKeys() remove
+    # instead of walk. Discovery takes the same value: the plan's loop counts
+    # and expiry lineage are minted from that pass, so a replay with a
+    # different lifetime would disagree with the plan about how long a walk is.
     #
     # The other two stretch the Balancer's episode, and they are here because
     # rotating faster is not possible: HeartbeatManager$Monitor.run() sleeps a
@@ -267,6 +329,7 @@ case "${command}" in
       --conf dfs.encrypt.data.transfer=true \
       --conf dfs.block.access.token.enable=true \
       --conf dfs.block.access.key.update.interval=0 \
+      --conf "dfs.block.access.token.lifetime=${token_lifetime_min}" \
       --conf dfs.datanode.balance.max.concurrent.moves=1 \
       --conf dfs.datanode.balance.bandwidthPerSec=100 \
       ${instrumented_conf_args[@]+"${instrumented_conf_args[@]}"} \

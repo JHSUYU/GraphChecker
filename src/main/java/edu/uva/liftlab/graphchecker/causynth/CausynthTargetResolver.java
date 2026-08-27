@@ -11,6 +11,7 @@ import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
 
 /** Resolves workflow properties and target YAML into a target context. */
 final class CausynthTargetResolver {
@@ -19,17 +20,12 @@ final class CausynthTargetResolver {
 
     static CausynthTargetContext resolve(GraphCheckerOptions options)
             throws IOException {
-        return resolve(options.getConfigFilePath());
-    }
-
-    static CausynthTargetContext resolve(String configPath)
-            throws IOException {
-        Map<String, String> config = readConfig(configPath);
+        Map<String, String> config = readConfig(options.getConfigFilePath());
         Path specPath = Paths.get(firstNonBlank(
                 System.getProperty("causynth.target.spec"),
                 config.get("causynth_target_spec"),
                 "target.yaml")).toAbsolutePath().normalize();
-        TargetSpec spec = TargetSpec.load(specPath);
+        String exceptionTargetId = exceptionTargetId(specPath);
         Path output = Paths.get(firstNonBlank(
                 System.getProperty("causynth.output.dir"),
                 config.get("causynth_output_dir"),
@@ -39,11 +35,11 @@ final class CausynthTargetResolver {
                 System.getProperty("causynth.analysis.scope"),
                 config.get("causynth_analysis_scope"),
                 "");
-        return new CausynthTargetContext(output, specPath,
-                spec.exceptionTargetId, null, scope);
+        return new CausynthTargetContext(output, exceptionTargetId,
+                null, scope);
     }
 
-    static Map<String, String> readConfig(String configPath)
+    private static Map<String, String> readConfig(String configPath)
             throws IOException {
         if (configPath == null || configPath.trim().isEmpty()) {
             return Collections.emptyMap();
@@ -70,57 +66,40 @@ final class CausynthTargetResolver {
         return values;
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value.trim();
+    /** The single {@code exception_target_id} of a target specification, or
+     *  null when the file is absent. */
+    private static String exceptionTargetId(Path path) throws IOException {
+        if (!Files.isRegularFile(path)) {
+            return null;
+        }
+        String exceptionTargetId = null;
+        for (String line : Files.readAllLines(path,
+                StandardCharsets.UTF_8)) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                continue;
+            }
+            int separator = trimmed.indexOf(':');
+            if (line.startsWith(" ") || separator <= 0
+                    || trimmed.endsWith(":")) {
+                throw new IOException("Unsupported target specification "
+                        + "entry: " + trimmed);
+            }
+            if (!"exception_target_id".equals(
+                    trimmed.substring(0, separator).trim())
+                    || exceptionTargetId != null) {
+                throw new IOException("Target specification accepts only "
+                        + "one exception_target_id");
+            }
+            exceptionTargetId = trimmed.substring(separator + 1).trim();
+            if ((exceptionTargetId.startsWith("\"")
+                    && exceptionTargetId.endsWith("\""))
+                    || (exceptionTargetId.startsWith("'")
+                    && exceptionTargetId.endsWith("'"))) {
+                exceptionTargetId = exceptionTargetId.substring(1,
+                        exceptionTargetId.length() - 1);
             }
         }
-        return null;
-    }
-
-    private static final class TargetSpec {
-        private final String exceptionTargetId;
-
-        private TargetSpec(String exceptionTargetId) {
-            this.exceptionTargetId = exceptionTargetId;
-        }
-
-        private static TargetSpec load(Path path) throws IOException {
-            if (!Files.isRegularFile(path)) {
-                return new TargetSpec(null);
-            }
-            String exceptionTargetId = null;
-            for (String line : Files.readAllLines(path,
-                    StandardCharsets.UTF_8)) {
-                String trimmed = line.trim();
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    continue;
-                }
-                int separator = trimmed.indexOf(':');
-                if (line.startsWith(" ") || separator <= 0
-                        || trimmed.endsWith(":")) {
-                    throw new IOException("Unsupported target specification "
-                            + "entry: " + trimmed);
-                }
-                String key = trimmed.substring(0, separator).trim();
-                if (!"exception_target_id".equals(key)
-                        || exceptionTargetId != null) {
-                    throw new IOException("Target specification accepts only "
-                            + "one exception_target_id");
-                }
-                exceptionTargetId = unquote(trimmed.substring(
-                        separator + 1).trim());
-            }
-            return new TargetSpec(exceptionTargetId);
-        }
-
-        private static String unquote(String value) {
-            if ((value.startsWith("\"") && value.endsWith("\""))
-                    || (value.startsWith("'") && value.endsWith("'"))) {
-                return value.substring(1, value.length() - 1);
-            }
-            return value;
-        }
+        return exceptionTargetId;
     }
 }

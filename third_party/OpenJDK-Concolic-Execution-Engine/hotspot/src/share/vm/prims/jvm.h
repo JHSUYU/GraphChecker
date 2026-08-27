@@ -219,12 +219,12 @@ JVM_SnapshotContainerExpression(JNIEnv *env, jclass ignored,
 JNIEXPORT jlong JNICALL
 JVM_ExportExpression(JNIEnv *env, jclass ignored, jobject owner,
                      jstring declaring_class, jstring field_name,
-                     jstring descriptor);
+                     jstring descriptor, jlongArray events);
 
 JNIEXPORT jlong JNICALL
 JVM_AttachExpression(JNIEnv *env, jclass ignored, jobject owner,
                      jstring declaring_class, jstring field_name,
-                     jstring descriptor, jlong handle);
+                     jstring descriptor, jlong handle, jlongArray events);
 
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicPathConditionRange(JNIEnv *env, jclass ignored,
@@ -278,6 +278,9 @@ JVM_ProposeEventOrder(JNIEnv *env, jclass ignored, jlong before_event_id,
 
 JNIEXPORT jstring JNICALL
 JVM_GetEventLedger(JNIEnv *env, jclass ignored);
+
+JNIEXPORT jboolean JNICALL
+JVM_ActivateConcolicEventLedger(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored);

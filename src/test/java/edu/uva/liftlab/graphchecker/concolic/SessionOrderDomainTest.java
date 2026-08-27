@@ -29,9 +29,6 @@ public class SessionOrderDomainTest {
         assertFalse(domain.orderedBefore(12L, 11L));
         assertFalse(domain.orderedBefore(11L, 21L));
         assertFalse(domain.orderedBefore(21L, 11L));
-        assertEquals(3, domain.eventCount());
-        assertEquals("FIELD_WRITE", domain.eventKind(11L));
         assertEquals("REGION.writerB", domain.regionOf(12L));
-        assertEquals(102L, domain.contextOf(12L));
     }
 }

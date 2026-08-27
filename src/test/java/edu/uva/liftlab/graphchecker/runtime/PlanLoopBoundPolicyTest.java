@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * The plan stage measures every demanded branch replay stream against the
@@ -70,17 +72,53 @@ public class PlanLoopBoundPolicyTest {
      * A run that declares nothing states exactly that.  Rows without a
      * {@code loopBodyBound} declare nothing, so reading the inherited
      * default out of them would turn silence into a declaration.
+     *
+     * <p>What the contract then holds for those sites is nothing at all.
+     * README {@code LOOP-1} accepts no retained condition loop running under
+     * the core default, so the executor ceiling the run still enforces is not
+     * an authority any case may be qualified by: the composition asks
+     * {@link LoopBoundPolicy#declaredBounds()}, finds neither site, and names
+     * both loops undeclared.</p>
      */
     @Test
-    public void rowsThatDeclareNothingInheritTheDefault() {
+    public void rowsThatDeclareNothingDeclareNothing() {
         LoopBoundPolicy policy = RuntimeRegionPlanner.declaredLoopBounds(
                 Collections.singletonList(region(Arrays.asList(
                         loop(null, ADD_KEYS), loop(null, NEST_A)))));
 
+        assertTrue(policy.declaredBounds().toString(),
+                policy.declaredBounds().isEmpty());
+        assertFalse(policy.declaredBounds().containsKey(ADD_KEYS));
+        assertFalse(policy.declaredBounds().containsKey(NEST_A));
         assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                 policy.maxBackedgeTraversals());
-        assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
-                policy.maxBackedgeTraversals(ADD_KEYS));
+    }
+
+    /**
+     * A declared bound equal to the inherited one survives as a declaration.
+     *
+     * <p>The plan stage used to drop it as redundant.  Once an undeclared
+     * condition loop is refused rather than run under the core default, that
+     * drop is what refuses it: HDFS-11741's {@code offerService} nest
+     * declares exactly {@link LoopBoundPolicy#MAX_LOOP_BODY_ITERATIONS}, and
+     * a contract that forgot the declaration cannot tell it from silence.</p>
+     */
+    @Test
+    public void aDeclaredBoundEqualToTheInheritedOneIsStillDeclared() {
+        int inherited = LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+        LoopBoundPolicy policy = RuntimeRegionPlanner.declaredLoopBounds(
+                Collections.singletonList(region(Arrays.asList(
+                        loop(Integer.valueOf(inherited), ADD_KEYS),
+                        loop(Integer.valueOf(inherited), NEST_A, NEST_B)))));
+
+        String nest = LoopBoundPolicy.loopSiteId(
+                Arrays.asList(NEST_A, NEST_B));
+        assertEquals(2, policy.declaredBounds().size());
+        assertEquals(Integer.valueOf(inherited),
+                policy.declaredBounds().get(ADD_KEYS));
+        assertEquals(Integer.valueOf(inherited),
+                policy.declaredBounds().get(nest));
+        assertEquals(inherited, policy.maxBackedgeTraversals());
     }
 
     /**

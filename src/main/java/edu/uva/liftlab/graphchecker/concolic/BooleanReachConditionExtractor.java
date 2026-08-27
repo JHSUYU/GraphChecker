@@ -36,18 +36,7 @@ import java.util.regex.Pattern;
 
 /**
  * Projects a structurally complete candidate bug-path SMT formula onto its
- * finite Boolean root-input domain.
- *
- * <p>The extractor never accepts caller-authored reachability formulas.  It
- * discovers Java Boolean input ports from the static region IR, joins them to
- * the exact canonical terms already emitted by {@link ConcolicSmtComposer},
- * removes inputs supplied by composed producer outputs, and asks
- * Z3 about every remaining Boolean valuation.  The resulting truth table and
- * canonical DNF are therefore derived candidate artifacts of the composed
- * SMT. For integral non-Boolean roots it may additionally perturb one value
- * in a satisfying witness; a rejected neighboring tuple proves the complete
- * root space is constrained without pretending to enumerate it. This class
- * never promotes either result to a trusted final result.</p>
+ * free Boolean roots, and reports the reach condition as a DNF over them.
  */
 public final class BooleanReachConditionExtractor {
     private static final int MAX_EXISTENTIAL_PERTURBATIONS = 32;
@@ -141,8 +130,6 @@ public final class BooleanReachConditionExtractor {
 
         String base = SmtLibQueries.stripSolverCommands(
                 composedSmt);
-        String domainBase = appendBooleanDomain(base,
-                discovery.booleanDomainInputs);
         List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         JsonArray existentialPerturbations = new JsonArray();
@@ -152,7 +139,7 @@ public final class BooleanReachConditionExtractor {
         int count = (int) valuationCount;
         for (int ordinal = 0; ordinal < count; ordinal++) {
             boolean[] values = valuation(ordinal, inputs.size());
-            String query = valuationQuery(domainBase, inputs, values,
+            String query = valuationQuery(base, inputs, values,
                     discovery.existentialNonBooleanRootInputs);
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
@@ -212,15 +199,11 @@ public final class BooleanReachConditionExtractor {
             report.add("existentialRootProbe", probe);
         }
 
-        // Every Boolean assignment was queried above; the DNF is built from
-        // exactly the SAT rows.  A second "base implies DNF" solver call only
-        // rechecks that exhaustive table and adds no admission evidence.
+        // Every Boolean assignment was queried above and the DNF is built
+        // from exactly the SAT rows, so no confirming solver call is needed.
         boolean complete = solverErrors == 0;
-        // Best-effort branch replay never proves that all program paths were
-        // explored.  A satisfying selected case is still a bounded witness;
-        // any open selected read-from, producer-path, target-path or
-        // composition coverage authority makes an unsatisfiable answer
-        // inconclusive.
+        // Best-effort branch replay never proves every program path was
+        // explored, so an empty SAT set is UNKNOWN and not UNREACHABLE.
         boolean observedUnderapproximation = !unsatClosureComplete;
         String reachability = !complete
                 ? "UNKNOWN" : !satisfyingValuations.isEmpty()
@@ -258,40 +241,7 @@ public final class BooleanReachConditionExtractor {
         return report;
     }
 
-    /**
-     * States whether the degeneracy question was decided, and on what.
-     *
-     * <p>A satisfying model is worth nothing when the reach condition admits
-     * the whole root space: it then says only that the target's method runs,
-     * which the recording already showed.  The formula alone cannot be read
-     * for that.  It is a DNF over the Boolean roots only, so it collapses to
-     * the constant {@code "true"} both when every enumerated valuation is
-     * admitted - the degenerate case - and when there was no Boolean root to
-     * enumerate at all, where {@code "true"} is the DNF's arity and not a
-     * measurement.  An empty {@code values} vector is the same arity restated
-     * and is likewise not evidence.  So the verdict is published, not left to
-     * be inferred from a constant that has two meanings.</p>
-     *
-     * <p>Only two verdicts are provable from an exhaustive Boolean table:
-     * some enumerated valuation is refused, so the condition demonstrably
-     * cuts the root space; or that space is non-empty, was enumerated whole,
-     * and every point of it reaches.  A surviving existential root makes the
-     * space infinite and unenumerated, so an exhaustive verdict is not
-     * available.  A rejected scalar tuple adjacent to a satisfying witness is
-     * nevertheless a complete counterexample to the claim that every root
-     * assignment reaches, and therefore proves the space is constrained.  If
-     * no such counterexample is found, the check remains undecided rather
-     * than treating a finite probe as an exhaustive pass.</p>
-     *
-     * <p>A root is an input no composed producer supplies - a freedom.  Where
-     * there is none the condition has nothing it could be a tautology over,
-     * and satisfiability of the whole composed system is the strongest answer
-     * available rather than the weakest.  That is not degeneracy either, and
-     * it is named too, so it can never be mistaken for a check that ran.  An
-     * unsupplied input whose encoding this report cannot decode is a freedom
-     * it never enumerated, so it blocks the same claim: the space was not
-     * covered whole and the exhaustive reading of it would be a fiction.</p>
-     */
+    /** States whether the degeneracy question was decided, and on what. */
     private static String degeneracyCheck(String formula,
                                           String reachability,
                                           int booleanRootCount,
@@ -321,14 +271,9 @@ public final class BooleanReachConditionExtractor {
 
     private static void validateCompositionAuthority(
             JsonObject manifest, List<String> gaps) {
-        // What this stage needs is a composition that produced a usable
-        // model: the Composer's own artifact, and its own "CANDIDATE_READY".
-        // An under-approximate model is still one - its formula is the run's
-        // evidence, and the only thing its openness forbids is reading UNSAT
-        // as unreachability, which the reach condition states.  Whether the
-        // model may be accepted as the milestone artifact is finalStatus, and
-        // it is decided by the Composer alone; re-deriving an eligibility of
-        // our own out of its members is the second gate README forbids.
+        // This stage needs a composition that already declared itself
+        // candidate-ready; re-deriving that verdict from its members would
+        // be the second gate README forbids.
         boolean commonManifest = manifest != null
                 && integer(manifest, "schemaVersion", -1) == 2
                 && "CONCOLIC_COMPOSED_SMT".equals(string(manifest, "kind"));
@@ -381,13 +326,10 @@ public final class BooleanReachConditionExtractor {
                                       ConfiguredSourceCatalog sources,
                                       List<String> gaps) {
         List<RootInput> roots = new ArrayList<>();
-        List<RootInput> domainInputs = new ArrayList<>();
         List<RootInput> scalarRoots = new ArrayList<>();
         // An unsupplied input this extractor cannot decode is still a freedom
-        // of the model; it is only one this report cannot name.  Counting it
-        // is what keeps "the root space was enumerated whole" honest, because
-        // a silently dropped freedom would make that claim of an
-        // under-counted space.
+        // of the model, only one this report cannot name, so it is counted
+        // and surfaced through degeneracyCheck rather than dropped.
         Set<String> undecoded = new LinkedHashSet<>();
         for (PortOccurrenceInfo occurrence : occurrences.sorted()) {
             PortInfo port = ports.input(occurrence.portId);
@@ -410,14 +352,10 @@ public final class BooleanReachConditionExtractor {
                 continue;
             }
             if (port.javaBoolean) {
-                RootInput input = new RootInput(port,
-                        occurrence.occurrenceId, occurrence.solverTerm,
-                        "");
-                domainInputs.add(input);
-                if (occurrence.supplied) {
-                    continue;
+                if (!occurrence.supplied) {
+                    roots.add(new RootInput(port, occurrence.occurrenceId,
+                            occurrence.solverTerm, ""));
                 }
-                roots.add(input);
             } else if (occurrence.supplied) {
                 continue;
             } else {
@@ -444,27 +382,26 @@ public final class BooleanReachConditionExtractor {
                     source.sourceOccurrenceId, source.solverTerm,
                     source.nullnessSolverTerm, source.sourcePhaseId,
                     source.sourceKey);
-            if (source.asPortInfo().javaBoolean) {
+            if (input.port.javaBoolean) {
                 roots.add(input);
-                domainInputs.add(input);
             } else {
                 scalarRoots.add(input);
             }
         }
+        // The solver term is the tiebreaker one mint site now needs: two
+        // entries of one site share id, occurrence and phase and differ only
+        // in the root they minted.
         Comparator<RootInput> byOccurrence = Comparator
                 .comparing((RootInput value) -> value.port.id)
                 .thenComparing(value -> value.occurrenceId)
-                .thenComparing(value -> value.sourcePhaseId);
+                .thenComparing(value -> value.sourcePhaseId)
+                .thenComparing(value -> value.solverTerm);
         Collections.sort(roots, byOccurrence);
-        Collections.sort(domainInputs, Comparator.comparing(
-                (RootInput value) -> value.port.id).thenComparing(
-                value -> value.occurrenceId).thenComparing(
-                value -> value.sourcePhaseId));
         Collections.sort(scalarRoots, byOccurrence);
-        return new Discovery(roots, domainInputs, scalarRoots,
-                undecoded.size());
+        return new Discovery(roots, scalarRoots, undecoded.size());
     }
 
+    /** Whether the formula really declares the source term claimed. */
     private static boolean configuredSourceBindingDeclared(
             String smt, ConfiguredSourceInfo source,
             ScalarEncoding encoding) {
@@ -526,16 +463,6 @@ public final class BooleanReachConditionExtractor {
             query.append("))").append(System.lineSeparator());
         }
         return query.toString();
-    }
-
-    private static String appendBooleanDomain(String base,
-                                              List<RootInput> inputs) {
-        StringBuilder result = new StringBuilder(base);
-        for (RootInput input : inputs) {
-            result.append("(assert ").append(input.domainFormula())
-                    .append(")").append(System.lineSeparator());
-        }
-        return result.toString();
     }
 
     private static boolean[] valuation(int ordinal, int width) {
@@ -696,16 +623,13 @@ public final class BooleanReachConditionExtractor {
 
     private static final class Discovery {
         private final List<RootInput> rootInputs;
-        private final List<RootInput> booleanDomainInputs;
         private final List<RootInput> existentialNonBooleanRootInputs;
         private final int undecodedFreeInputCount;
 
         private Discovery(List<RootInput> rootInputs,
-                          List<RootInput> booleanDomainInputs,
                           List<RootInput> existentialNonBooleanRootInputs,
                           int undecodedFreeInputCount) {
             this.rootInputs = rootInputs;
-            this.booleanDomainInputs = booleanDomainInputs;
             this.existentialNonBooleanRootInputs =
                     existentialNonBooleanRootInputs;
             this.undecodedFreeInputCount = undecodedFreeInputCount;
@@ -723,15 +647,8 @@ public final class BooleanReachConditionExtractor {
         private RootInput(PortInfo port, String occurrenceId,
                           String solverTerm,
                           String nullnessSolverTerm) {
-            this(port, occurrenceId, solverTerm, nullnessSolverTerm, "");
-        }
-
-        private RootInput(PortInfo port, String occurrenceId,
-                          String solverTerm,
-                          String nullnessSolverTerm,
-                          String sourcePhaseId) {
             this(port, occurrenceId, solverTerm, nullnessSolverTerm,
-                    sourcePhaseId, "");
+                    "", "");
         }
 
         private RootInput(PortInfo port, String occurrenceId,
@@ -751,10 +668,6 @@ public final class BooleanReachConditionExtractor {
                     + (value ? "true" : "false") + ")";
         }
 
-        private String domainFormula() {
-            return "true";
-        }
-
         private List<String> neighboringLiterals(String value) {
             ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
             return encoding == null ? Collections.<String>emptyList()
@@ -770,8 +683,12 @@ public final class BooleanReachConditionExtractor {
                 result.addProperty("sourceOccurrenceId", occurrenceId);
                 result.addProperty("sourcePhaseId", sourcePhaseId);
                 result.addProperty("fieldSignature", port.fieldSignature);
+                // Named by the entry, not by the site: two entries of one
+                // site (the NameNode's key expiry and the DataNode's) share
+                // every other component of this name.
                 result.addProperty("displayName", sourceKey + "::"
-                        + port.id + "::" + sourcePhaseId);
+                        + port.id + "::" + occurrenceId + "::"
+                        + sourcePhaseId);
             } else {
                 result.addProperty("inputKind", "REGION_INPUT_PORT");
                 result.addProperty("portId", port.id);
@@ -886,18 +803,7 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    /**
-     * The values that make this valuation satisfiable.
-     *
-     * <p>Reachability is stated existentially over the non-boolean roots, so
-     * the verdict is complete without them — but a report that says a failure
-     * is reachable and cannot say on what is a claim the reader has to take on
-     * trust. Ask the solver, once, for the assignment it already found.</p>
-     *
-     * <p>The witness is evidence, never a premise: it is read off a query that
-     * was already answered, and nothing downstream constrains anything by it.
-     * A solver that will not answer leaves the row as it was.</p>
-     */
+    /** The values that make this valuation satisfiable. */
     private static JsonArray existentialWitness(
             ConcolicConstraintSolver.SolverOutput answer,
             List<RootInput> roots) {
@@ -905,7 +811,7 @@ public final class BooleanReachConditionExtractor {
         if (roots.isEmpty() || answer == null
                 || !"sat".equals(answer.status())) return witness;
         Map<String, String> assigned =
-                ConcolicConstraintSolver.getValues(answer.stdout);
+                ConcolicConstraintSolver.parseGetValues(answer.stdout);
         for (RootInput root : roots) {
             String value = assigned.get(root.solverTerm);
             if (value == null) continue;
@@ -948,14 +854,7 @@ public final class BooleanReachConditionExtractor {
 
     /**
      * Looks for a rejected point adjacent to an already satisfying scalar
-     * root assignment.
-     *
-     * <p>This does not pretend to enumerate an infinite Java scalar domain.
-     * Each query fixes the complete non-boolean root tuple to the solver's
-     * witnessed values and changes exactly one integral root by one.  One
-     * UNSAT result is enough to disprove that the composed candidate admits
-     * the whole root space.  SAT results prove nothing about the rest of the
-     * domain and are never treated as exhaustive.</p>
+     * witness: one unsat neighbour proves the root space is constrained.
      */
     private static JsonArray existentialPerturbations(
             Z3Solver solver, String query, List<RootInput> roots,
@@ -1097,9 +996,14 @@ public final class BooleanReachConditionExtractor {
                 gaps.add("CONFIGURED_SOURCE_MATERIALIZATIONS_MISSING");
                 return result;
             }
+            // Wave 3 C1: one mint site mints once per entry, so the same
+            // (sourceKey, sourcePhaseId, sourceId) legitimately materialises
+            // several roots - the NameNode's key expiry and the DataNode's
+            // are two of them.  The root itself is the identity: the Composer
+            // keeps the map from VM symbol to root name injective, so one
+            // solver term names exactly one mint.
             Map<String, ConfiguredSourceInfo> byIdentity =
                     new LinkedHashMap<>();
-            Map<String, String> identityByTerm = new LinkedHashMap<>();
             int ordinal = 0;
             for (JsonElement element : encoded.getAsJsonArray()) {
                 if (!element.isJsonObject()) {
@@ -1114,14 +1018,9 @@ public final class BooleanReachConditionExtractor {
                             + ordinal++);
                     continue;
                 }
-                String identity = source.sourceKey + "\u0000"
-                        + source.sourcePhaseId + "\u0000" + source.sourceId;
                 ConfiguredSourceInfo held = byIdentity.putIfAbsent(
-                        identity, source);
-                String heldIdentity = identityByTerm.putIfAbsent(
-                        source.solverTerm, identity);
-                if (held != null || heldIdentity != null
-                        && !heldIdentity.equals(identity)) {
+                        source.solverTerm, source);
+                if (held != null) {
                     gaps.add("CONFIGURED_SOURCE_MATERIALIZATION_CONFLICT:"
                             + ordinal);
                 } else {
@@ -1140,7 +1039,10 @@ public final class BooleanReachConditionExtractor {
                     .thenComparing(value -> value.sourceId)
                     .thenComparing(value -> value.sourcePhaseId)
                     .thenComparing(value -> value.sourceOccurrenceId)
-                    .thenComparing(value -> value.fieldSignature));
+                    .thenComparing(value -> value.fieldSignature)
+                    // The root name is what separates two entries of one
+                    // site; without it this order is not total.
+                    .thenComparing(value -> value.solverTerm));
             return result;
         }
     }
@@ -1365,11 +1267,6 @@ public final class BooleanReachConditionExtractor {
         }
     }
 
-    /**
-     * Rejects cross-wired CLI artifacts before any solver process starts.
-     * The composer manifest is the trust root: it fingerprints the exact SMT,
-     * and static-region ledger.
-     */
     static void validateArtifactBindings(Path smtPath, Path runtimePlanPath,
                                          JsonObject manifest)
             throws IOException {

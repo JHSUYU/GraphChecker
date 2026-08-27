@@ -3,30 +3,10 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonObject;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * Named vocabulary for the VM symbolic expression handoff bridge.
- *
- * <p>The VM exports an expression at a send site and attaches it to a
- * deserialized value at a receive site.  Every call answers with either
- * success or one declared negative status, and this class names that answer:
- * a failure becomes an explicit {@code RPC_HANDOFF_GAP} whose {@code reason}
- * names the status, and a success is recorded with the exact VM event ids the
- * session ledger relates through its own {@code VALUE_HANDOFF} edge.</p>
- *
- * <p>The bridge owns no edge artifact and no pairing schema.  A successful
- * attach already means the receiver holds the sender's expression; nothing
- * here re-pairs an export with a receive, narrows a tuple, or recovers a
- * delivery ordinal.  Failure rows name only the failed broker operation and
- * status.  Communication provenance stays in the ordinary interaction trace
- * and is never copied into a second handoff identity.</p>
- *
- * <p>The layer is protocol-free: it addresses a leaf exactly the way the
-     * existing exact-field APIs do, by
-     * {@code (owner, declaringClass, fieldName, descriptor)}. It knows no
-     * endpoint, schema or transport name.</p>
- */
+/** Named vocabulary for the VM symbolic expression handoff bridge. */
 public final class RpcExpressionHandoff {
 
     public static final int SCHEMA_VERSION = 1;
@@ -49,14 +29,7 @@ public final class RpcExpressionHandoff {
     // of the deleted duplicate validation.  The broker no longer answers
     // them; the numbers stay unassigned because the codes are a shared ABI.
 
-    /**
-     * Bridge-local statuses.  They are deliberately far outside the VM's
-     * contiguous range so they can never be confused with a broker answer, and
-     * they exist because the three conditions they name are real failures that
-     * must not be reported as a silent no-op: the running JDK has no such
-     * native at all, the reflective call itself threw, or the VM answered with
-     * a result this bridge cannot read.
-     */
+    /** Bridge-local statuses. */
     public static final int API_UNAVAILABLE = -1000;
     public static final int INVOCATION_FAILED = -1001;
     public static final int MALFORMED_RESULT = -1002;
@@ -71,22 +44,14 @@ public final class RpcExpressionHandoff {
     public static final String STAGE_ATTACH = "ATTACH";
 
     private static final String REASON_PREFIX = "RPC_HANDOFF_";
-    /**
-     * Reason used for any negative status this build does not declare.  A
-     * future VM code must not silently read as one of the known ones, and it
-     * must not read as success either.
-     */
+    /** Reason used for any negative status this build does not declare. */
     public static final String UNDECLARED_REASON =
             REASON_PREFIX + "UNDECLARED_STATUS";
 
     private RpcExpressionHandoff() {
     }
 
-    /**
-     * Names one handoff status.  Every declared status maps to its own
-     * reason, so the recorded gaps stay distinguishable; {@link #OK} has no
-     * reason because a success is never a gap.
-     */
+    /** Names one handoff status. */
     public static String reason(int status) {
         switch (status) {
             case OK:
@@ -118,13 +83,7 @@ public final class RpcExpressionHandoff {
         }
     }
 
-    /**
-     * Builds one named coverage gap.  It follows the existing gap discipline
-     * of this codebase - a {@code kind} naming the family and a {@code reason}
-     * naming the exact condition - so a handoff failure joins the same
-     * alignment/coverage gap stream as a loop, read-from or output-version
-     * gap.
-     */
+    /** Builds one named coverage gap. */
     public static JsonObject gap(String stage, int status, long handle,
                                  String detail) {
         if (status == OK) {
@@ -136,10 +95,10 @@ public final class RpcExpressionHandoff {
         gap.addProperty("schemaVersion", SCHEMA_VERSION);
         gap.addProperty("reason", reason(status));
         gap.addProperty("authority", GAP_AUTHORITY);
-        gap.addProperty("stage", text(stage));
+        gap.addProperty("stage", nonNull(stage));
         gap.addProperty("statusCode", status);
         gap.addProperty("handle", handle);
-        gap.addProperty("detail", text(detail));
+        gap.addProperty("detail", nonNull(detail));
         return gap;
     }
 
@@ -150,9 +109,5 @@ public final class RpcExpressionHandoff {
                 && GAP_AUTHORITY.equals(string(row, "authority"))
                 && !string(row, "reason").isEmpty()
                 && integer(row, "statusCode", OK) != OK;
-    }
-
-    private static String text(String value) {
-        return value == null ? "" : value;
     }
 }

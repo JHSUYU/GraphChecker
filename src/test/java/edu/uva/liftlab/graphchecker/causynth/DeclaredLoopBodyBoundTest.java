@@ -90,10 +90,11 @@ public class DeclaredLoopBodyBoundTest {
     /**
      * A retained loop that declares nothing omits the field.
      *
-     * <p>Writing the inherited value instead would flip the slot's bound
-     * authority from {@link LoopBoundPolicy#BOUND_FROM_POLICY} to
-     * {@link LoopBoundPolicy#BOUND_FROM_DECLARATION} for a loop that declared
-     * nothing.</p>
+     * <p>Writing the inherited value instead would hand a loop that declared
+     * nothing the {@link LoopBoundPolicy#BOUND_FROM_DECLARATION} authority of
+     * one that did, which is exactly what README {@code LOOP-1} refuses: an
+     * absent field declares no {@code K_L} and carries no authority at
+     * all.</p>
      */
     @Test
     public void aRetainedLoopThatDeclaresNothingOmitsTheFieldEntirely()
@@ -110,11 +111,8 @@ public class DeclaredLoopBodyBoundTest {
 
         assertFalse(String.valueOf(undeclared), undeclared.containsKey(
                 LoopBoundPolicy.LOOP_BODY_BOUND));
-        assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
+        assertEquals(LoopBoundPolicy.NO_DECLARED_BOUND,
                 LoopBoundPolicy.bodyBound(undeclared.get(
-                        LoopBoundPolicy.LOOP_BODY_BOUND)));
-        assertEquals(LoopBoundPolicy.BOUND_FROM_POLICY,
-                LoopBoundPolicy.boundAuthority(undeclared.get(
                         LoopBoundPolicy.LOOP_BODY_BOUND)));
         // The declared row is the undeclared row plus exactly one key, at the
         // end: nothing else about the artifact moved.

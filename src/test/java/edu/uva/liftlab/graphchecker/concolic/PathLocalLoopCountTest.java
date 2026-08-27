@@ -34,8 +34,16 @@ public class PathLocalLoopCountTest {
         assertEquals(0, model.gaps().size());
     }
 
+    /**
+     * A retained condition loop that declares no {@code K_L} is refused.
+     *
+     * <p>README {@code LOOP-1}: no retained condition loop inherits the core
+     * default.  So the zero-body case is no longer accepted for free, and the
+     * above-K case never reaches its count check - the loop is named
+     * undeclared where the plan is read, and nothing is admitted for it.</p>
+     */
     @Test
-    public void inheritedBoundAcceptsZeroButStillRejectsAboveK() {
+    public void anInheritedBoundIsRefusedForZeroAndAboveK() {
         BoundedLoopComposition zero = BoundedLoopComposition.ofPlanRows(
                 Collections.singletonList(plan(
                         LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 0)),
@@ -43,14 +51,15 @@ public class PathLocalLoopCountTest {
                         LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 0)));
         zero.observeCase(OCCURRENCE, pathCase(0, -1));
 
-        assertEquals(0, zero.gaps().size());
-        JsonObject retained = zero.manifest()
-                .getAsJsonArray("boundedLoops").get(0).getAsJsonObject();
-        assertEquals(LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
-                retained.get(LoopBoundPolicy.LOOP_BODY_BOUND).getAsInt());
-        assertEquals(LoopBoundPolicy.BOUND_FROM_POLICY,
-                retained.get(LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY)
-                        .getAsString());
+        assertEquals(zero.gaps().toString(), 1, zero.gaps().size());
+        JsonObject undeclared = zero.gaps().get(0);
+        assertEquals(BoundedLoopComposition.LOOP_BODY_BOUND_UNDECLARED,
+                undeclared.get("reason").getAsString());
+        assertTrue(undeclared.toString(),
+                undeclared.get("detail").getAsString().contains("K_L="
+                        + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS));
+        assertEquals(0, zero.manifest()
+                .getAsJsonArray("boundedLoops").size());
 
         BoundedLoopComposition beyond = BoundedLoopComposition.ofPlanRows(
                 Collections.singletonList(plan(
@@ -60,7 +69,43 @@ public class PathLocalLoopCountTest {
         beyond.observeCase(OCCURRENCE, pathCase(
                 LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS + 1, -1));
         assertTrue(beyond.gaps().toString().contains(
-                LoopBoundPolicy.PATH_LOOP_COUNT_OUT_OF_BOUND));
+                BoundedLoopComposition.LOOP_BODY_BOUND_UNDECLARED));
+        assertEquals(0, beyond.manifest()
+                .getAsJsonArray("boundedLoops").size());
+    }
+
+    /**
+     * A declared {@code K_L} that equals the core default is a declaration.
+     *
+     * <p>Four of HDFS-11741's thirteen rows declare exactly
+     * {@link LoopBoundPolicy#MAX_LOOP_BODY_ITERATIONS} for the
+     * {@code offerService()} nest.  A stage that dropped them as redundant
+     * with the inherited bound would hand this model a loop that declares
+     * nothing, and every case of that loop would then be refused as
+     * undeclared - so an explicit bound has to survive as its own
+     * declaration whatever its value.</p>
+     */
+    @Test
+    public void anExplicitlyDeclaredDefaultStaysADeclaration() {
+        int declared = LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+        BoundedLoopComposition model = BoundedLoopComposition.ofPlanRows(
+                Collections.singletonList(plan(
+                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED, declared)),
+                Collections.singletonList(plan(
+                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED, declared)));
+        model.observeCase(OCCURRENCE, pathCase(declared, -1));
+
+        assertEquals(model.gaps().toString(), 0, model.gaps().size());
+        JsonObject retained = model.manifest()
+                .getAsJsonArray("boundedLoops").get(0).getAsJsonObject();
+        assertEquals(declared,
+                retained.get(LoopBoundPolicy.LOOP_BODY_BOUND).getAsInt());
+        assertEquals(LoopBoundPolicy.BOUND_FROM_DECLARATION,
+                retained.get(LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY)
+                        .getAsString());
+        assertEquals(declared, retained.getAsJsonArray("caseCounts").get(0)
+                .getAsJsonObject().get(LoopBoundPolicy.LOOP_BODY_COUNT)
+                .getAsInt());
     }
 
     @Test
@@ -72,6 +117,8 @@ public class PathLocalLoopCountTest {
                         LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 3)));
         JsonObject noCount = new JsonObject();
         noCount.addProperty("caseId", "CASE.missing");
+        noCount.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         missing.observeCase(OCCURRENCE, noCount);
         assertTrue(missing.gaps().toString().contains(
                 LoopBoundPolicy.PATH_LOOP_COUNT_MISSING));
@@ -156,7 +203,8 @@ public class PathLocalLoopCountTest {
                         Collections.singletonList(plan),
                         Collections.<JsonObject>emptyList());
 
-        assertEquals(0, model.boundedLoops().size());
+        assertEquals(0, model.manifest()
+                .getAsJsonArray("boundedLoops").size());
         assertEquals(0, model.gaps().size());
     }
 
@@ -178,7 +226,9 @@ public class PathLocalLoopCountTest {
                         Collections.singletonList(selectedSummary));
 
         assertEquals(0, model.gaps().size());
-        assertEquals(3, model.loopOf(OCCURRENCE, SITE).bodyBound);
+        assertEquals(3, model.manifest().getAsJsonArray("boundedLoops")
+                .get(0).getAsJsonObject()
+                .get(LoopBoundPolicy.LOOP_BODY_BOUND).getAsInt());
     }
 
     @Test
@@ -205,6 +255,63 @@ public class PathLocalLoopCountTest {
                 .getAsJsonObject();
         assertEquals("TARGET_PATH.0", count.get("caseId").getAsString());
         assertEquals(2, count.get(LoopBoundPolicy.LOOP_BODY_COUNT).getAsInt());
+    }
+
+    /**
+     * README {@code LOOP-1} is a statement about the witness, not about every
+     * loop the run walked: a retained condition loop whose trip count nothing
+     * the failure reads can observe states no bound obligation, so its
+     * missing declaration is not a coverage gap.  Only an explicit decision
+     * under the planner's authority says so; silence stays required.
+     */
+    @Test
+    public void anUndeclaredBoundOutsideTheFailureDemandIsNotAGap() {
+        JsonObject undeclared = plan(
+                LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 0);
+        assertEquals(1, BoundedLoopComposition.ofPlanRows(
+                Collections.singletonList(undeclared),
+                Collections.singletonList(undeclared)).gaps().size());
+
+        JsonObject immaterial = plan(
+                LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 0);
+        JsonObject loop = immaterial.getAsJsonArray(
+                BoundedLoopComposition.PLAN_FIELD).get(0).getAsJsonObject();
+        loop.addProperty(LoopBoundPolicy.LOOP_FAILURE_RELEVANT, false);
+        loop.addProperty(LoopBoundPolicy.LOOP_RELEVANCE_AUTHORITY,
+                LoopBoundPolicy.FAILURE_DEMANDED_LOOP_SCOPE);
+
+        assertEquals(0, BoundedLoopComposition.ofPlanRows(
+                Collections.singletonList(immaterial),
+                Collections.singletonList(immaterial)).gaps().size());
+
+        // A decision under an unknown authority relaxes nothing.
+        loop.addProperty(LoopBoundPolicy.LOOP_RELEVANCE_AUTHORITY,
+                "SOMETHING_ELSE_V9");
+        assertEquals(1, BoundedLoopComposition.ofPlanRows(
+                Collections.singletonList(immaterial),
+                Collections.singletonList(immaterial)).gaps().size());
+    }
+
+    /** The same answer never silences a missing bound authority for a loop
+     * the failure does read, nor a disagreement about any loop at all. */
+    @Test
+    public void anImmaterialLoopStillNamesADisagreement() {
+        JsonObject immaterial = plan(
+                LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 3);
+        JsonObject loop = immaterial.getAsJsonArray(
+                BoundedLoopComposition.PLAN_FIELD).get(0).getAsJsonObject();
+        loop.addProperty(LoopBoundPolicy.LOOP_FAILURE_RELEVANT, false);
+        loop.addProperty(LoopBoundPolicy.LOOP_RELEVANCE_AUTHORITY,
+                LoopBoundPolicy.FAILURE_DEMANDED_LOOP_SCOPE);
+        JsonObject other = plan(LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 4);
+
+        BoundedLoopComposition model = BoundedLoopComposition.ofPlanRows(
+                Collections.singletonList(immaterial),
+                java.util.Arrays.asList(immaterial, other));
+
+        assertEquals(model.gaps().toString(), 1, model.gaps().size());
+        assertEquals(BoundedLoopComposition.LOOP_BODY_BOUND_DISAGREES,
+                model.gaps().get(0).get("reason").getAsString());
     }
 
     private static JsonObject plan(String classification, int bound) {
@@ -260,6 +367,8 @@ public class PathLocalLoopCountTest {
         counts.add(row);
         JsonObject item = new JsonObject();
         item.addProperty("caseId", "CASE." + count + "." + cardinality);
+        item.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         item.add(LoopBoundPolicy.PATH_LOOP_COUNTS, counts);
         return item;
     }

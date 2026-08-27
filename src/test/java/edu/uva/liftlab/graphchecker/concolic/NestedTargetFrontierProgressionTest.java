@@ -17,6 +17,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
@@ -63,7 +65,7 @@ public class NestedTargetFrontierProgressionTest {
         JsonObject summary = outerOnlySummary();
         JsonObject task = outerFrontierTask();
 
-        RegionPathWorklist.Result worklist = RegionPathWorklist.plan(
+        RegionPathWorklist.Result worklist = worklist(
                 Collections.singletonList(summary),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -139,7 +141,7 @@ public class NestedTargetFrontierProgressionTest {
     public void threeNestedGuardsAdvanceOneFrontierAtATimeWithTwoLocalSources()
             throws Exception {
         JsonObject task = threeFrontierTask();
-        RegionPathWorklist.Result first = RegionPathWorklist.plan(
+        RegionPathWorklist.Result first = worklist(
                 Collections.singletonList(outerOnlySummary()),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
@@ -156,7 +158,7 @@ public class NestedTargetFrontierProgressionTest {
         JsonObject middle = middleFrontierSummary();
         middle.addProperty("taskId", afterOuter.get("taskId").getAsString());
 
-        RegionPathWorklist.Result second = RegionPathWorklist.plan(
+        RegionPathWorklist.Result second = worklist(
                 Collections.singletonList(middle),
                 Collections.singletonList(afterOuter),
                 Collections.<JsonObject>emptyList(),
@@ -183,9 +185,6 @@ public class NestedTargetFrontierProgressionTest {
                 deepestFlip.getAsJsonObject("replayContract"));
         JsonObject deepestTask = PathReplayTaskFactory.create(deepestFlip,
                 afterOuter, one(limitModelAssignment(6)), secondReplay, null);
-        assertEquals(2, deepestTask
-                .getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD).size());
-
         JsonObject query = build(deepestFrontierSummary(), seedQuery(OUTER,
                 true, outerPredicate(), false, new JsonArray(),
                 threeFrontierBranches()));
@@ -237,16 +236,7 @@ public class NestedTargetFrontierProgressionTest {
         actions.add(action);
         task.add("inputActions", actions);
 
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourceId", "TARGET.GATE");
-        source.addProperty("sourcePhaseId", GATE_PHASE);
-        source.addProperty("fieldSignature",
-                "<example.Target: int gate>");
-        source.addProperty("requiredTargetInputPort",
-                REGION + ".in.gate");
-        task.add(SymbolicSourceEvidence.TASK_FIELD, one(source));
+        addMintSite(task, "TARGET.GATE", "<example.Target: int gate>", 1, 1);
         task.add("branches", frontierBranches(false));
         task.add("edgeBindings", new JsonArray());
         JsonObject target = new JsonObject();
@@ -268,16 +258,7 @@ public class NestedTargetFrontierProgressionTest {
                 "<example.Target: int limit>");
         action.addProperty("javaType", "int");
         task.getAsJsonArray("inputActions").add(action);
-        JsonObject source = new JsonObject();
-        source.addProperty("authority",
-                SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-        source.addProperty("sourceId", "TARGET.LIMIT");
-        source.addProperty("sourcePhaseId", LIMIT_PHASE);
-        source.addProperty("fieldSignature",
-                "<example.Target: int limit>");
-        source.addProperty("requiredTargetInputPort",
-                REGION + ".in.limit");
-        task.getAsJsonArray(SymbolicSourceEvidence.TASK_FIELD).add(source);
+        addMintSite(task, "TARGET.LIMIT", "<example.Target: int limit>", 2, 2);
         task.add("branches", threeFrontierBranches());
         return task;
     }
@@ -361,6 +342,10 @@ public class NestedTargetFrontierProgressionTest {
         symbolic.add("SOURCE_PHASE:" + GATE_PHASE);
         summary.add("symbolicInputs", symbolic);
         summary.add("edgeBindings", new JsonArray());
+        // C2: the census is required, never optional - a summary that
+        // never stated it is refused, so every fixture states it.
+        summary.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         return summary;
     }
 
@@ -598,6 +583,30 @@ public class NestedTargetFrontierProgressionTest {
         return result;
     }
 
+    /** The task's frozen catalog of declared mint SITES. */
+    private static void addMintSite(JsonObject task, String sourceId,
+                                    String field, int unitIndex,
+                                    int ordinal) {
+        JsonArray declarations = new JsonArray();
+        declarations.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                sourceId, field, METHOD, unitIndex));
+        JsonObject row = ConfiguredSourcePhaseContract.occurrence(
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        declarations).get(0),
+                OCCURRENCE, 1, ordinal, 10L, 100L + ordinal,
+                "<example.Hook: boolean symbolize(java.lang.String,"
+                        + "java.lang.Object,java.lang.String)>",
+                Collections.singletonList(10L));
+        JsonArray phases = task.has(
+                ConfiguredSourcePhaseContract.PLAN_FIELD)
+                ? task.getAsJsonArray(
+                        ConfiguredSourcePhaseContract.PLAN_FIELD)
+                : new JsonArray();
+        phases.add(JSON.toJsonTree(row));
+        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
+    }
+
     private static String sourcePhaseId(String sourceId, int unitIndex) {
         return ConfiguredSourcePhaseContract.phaseId(OCCURRENCE,
                 ConfiguredSourcePhaseContract.siteId(METHOD, unitIndex),
@@ -609,5 +618,14 @@ public class NestedTargetFrontierProgressionTest {
         Files.write(file.toPath(),
                 (JSON.toJson(row) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static RegionPathWorklist.Result worklist(
+            List<JsonObject> summaries, List<JsonObject> executionTasks,
+            List<JsonObject> explorationRecords,
+            RegionPathWorklist.Bounds bounds) {
+        return RegionPathWorklist.plan(summaries, executionTasks,
+                explorationRecords, bounds,
+                Collections.<JsonObject>emptyList());
     }
 }

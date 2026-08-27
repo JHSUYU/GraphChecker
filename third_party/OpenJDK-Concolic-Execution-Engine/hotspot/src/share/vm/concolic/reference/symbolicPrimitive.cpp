@@ -54,6 +54,11 @@ void SymPrimitive<T>::set_sym_exp(int field_offset, Expression *exp) {
   _exp = exp;
 }
 
+// One slot serves every offset, exactly as get() and set_sym_exp() treat it.
+template <class T> bool SymPrimitive<T>::has_sym_exp(int field_offset) {
+  return _exp != NULL;
+}
+
 template <class T> void SymPrimitive<T>::print() {
   tty->print_cr("SymPrimitive: ");
   _exp->print();

@@ -252,6 +252,14 @@ JVM_ProposeEventOrder(JNIEnv *env, jclass ignored, jlong before_event_id,
 JNIEXPORT jstring JNICALL
 JVM_GetEventLedger(JNIEnv *env, jclass ignored);
 
+/*
+ * The JDK keeps its own copy of this header, and System.c compiles against
+ * this one rather than hotspot's.  A concolic entry point therefore has to be
+ * declared in both or the native method table fails to link.
+ */
+JNIEXPORT jboolean JNICALL
+JVM_ActivateConcolicEventLedger(JNIEnv *env, jclass ignored);
+
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored);
 

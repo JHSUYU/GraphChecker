@@ -18,16 +18,12 @@ import java.util.Properties;
 import java.util.TreeMap;
 
 /**
- * Builds and runs the child JVM that executes the workload.
- *
- * <p>The workload runs in the custom concolic JDK, interpreted. Its location
- * is an input, never a constant: the image is rebuilt out of band, may live
- * anywhere, and a launcher that hardcoded one path would silently run the
- * stock JVM the moment that assumption broke - producing a green run with no
- * symbolic state at all.</p>
- *
- * <p>Command assembly is separated from execution so the exact invocation can
- * be asserted without a JDK image present.</p>
+ * Builds and runs the child JVM that executes the workload, interpreted, in
+ * the custom concolic JDK.  The image's location is an input, never a
+ * constant: a hardcoded path would silently run the stock JVM the moment that
+ * assumption broke, producing a green run with no symbolic state at all.
+ * Command assembly is separated from execution so the exact invocation can be
+ * asserted with no JDK image present.
  */
 public final class WorkloadJvm {
 
@@ -38,18 +34,10 @@ public final class WorkloadJvm {
     public static final List<String> INTERPRETED_JVM_OPTIONS =
             Collections.singletonList("-Xint");
 
-    /**
-     * What the concolic image calls itself in its own {@code -version} banner.
-     *
-     * <p>The engine is built from the {@code zero} OpenJDK configuration, so
-     * the image reports {@code OpenJDK 64-Bit Zero VM ... interpreted mode}
-     * where a stock JDK reports {@code Server VM ... mixed mode}. Asking the
-     * JVM is the honest test: the image's location is an input and may be any
-     * path, a name check would pass for a symlink to the stock JDK, and the
-     * banner is the VM's own statement about whether it has a compiled path
-     * at all - which is the only reason {@code -Xint} exists here.</p>
-     */
-    public static final String CONCOLIC_VM_MARKER = "Zero VM";
+    /** What the concolic image calls itself in its own {@code -version}
+     *  banner.  Asking the JVM is the honest test: a name check would pass for
+     *  a symlink to the stock JDK. */
+    private static final String CONCOLIC_VM_MARKER = "Zero VM";
 
     /** Written into the launcher output directory by {@link #run}. */
     public static final String OUTPUT_FILE_NAME = "workload-output.log";
@@ -59,31 +47,13 @@ public final class WorkloadJvm {
 
     /**
      * The JVM options the launcher owns for a workload on {@code jdkHome}.
-     *
-     * <p>{@code -Xint} belongs to the concolic image and to nothing else. A
-     * tracing pass executes rewritten bytecode on a stock JVM and needs no
-     * symbolic interpreter; forcing that JVM to interpret slows the workload
-     * by more than an order of magnitude, and a distributed workload whose
-     * own timeouts are wall-clock does not merely take longer under it - it
-     * changes outcome. Applying the flag unconditionally therefore turned a
-     * 112-second balancer test into a 30-minute run whose DataNodes were
-     * declared dead faster than they could re-register.</p>
+     * {@code -Xint} belongs to the concolic image and nothing else: applying
+     * it unconditionally turned a 112-second balancer test into a 30-minute
+     * run whose DataNodes were declared dead faster than they could
+     * re-register, because a distributed workload's timeouts are wall-clock.
+     * An unreadable {@code -version} is a prerequisite failure, not a default.
      */
     public static List<String> jvmOptions(Path jdkHome)
-            throws LauncherException {
-        return isConcolicImage(jdkHome) ? INTERPRETED_JVM_OPTIONS
-                : Collections.<String>emptyList();
-    }
-
-    /**
-     * Whether {@code jdkHome} is the concolic image, asked of the image.
-     *
-     * <p>A JDK whose {@code -version} cannot be read is a prerequisite
-     * failure, not a default: guessing either way is silent, and the two
-     * mistakes are a workload with no symbolic path and a tracing pass that
-     * takes half an hour.</p>
-     */
-    public static boolean isConcolicImage(Path jdkHome)
             throws LauncherException {
         Path java = javaBinary(jdkHome);
         ProcessBuilder builder = new ProcessBuilder(java.toString(),
@@ -96,7 +66,8 @@ public final class WorkloadJvm {
                 throw new LauncherException(LauncherDiagnostic.JDK_MISSING,
                         java + " -version exited " + status + ": " + banner);
             }
-            return banner.contains(CONCOLIC_VM_MARKER);
+            return banner.contains(CONCOLIC_VM_MARKER)
+                    ? INTERPRETED_JVM_OPTIONS : Collections.<String>emptyList();
         } catch (IOException failure) {
             throw new LauncherException(LauncherDiagnostic.JDK_MISSING,
                     "cannot run " + java + " -version", failure);
@@ -118,7 +89,6 @@ public final class WorkloadJvm {
         return new String(collected.toByteArray(), StandardCharsets.UTF_8);
     }
 
-    /** Locates {@code bin/java} inside a JDK image. */
     public static Path javaBinary(Path jdkHome) throws LauncherException {
         if (jdkHome == null || !Files.isDirectory(jdkHome)) {
             throw new LauncherException(LauncherDiagnostic.JDK_MISSING,
@@ -132,9 +102,7 @@ public final class WorkloadJvm {
         return java;
     }
 
-    /**
-     * The JDK image's native library directory, or null when it has none.
-     */
+    /** The JDK image's native library directory, or null when it has none. */
     public static Path nativeLibraryDirectory(Path jdkHome) {
         for (String candidate
                 : Arrays.asList("jre/lib/amd64", "lib/amd64", "lib/server")) {
@@ -146,16 +114,9 @@ public final class WorkloadJvm {
         return null;
     }
 
-    /**
-     * Merges the properties the launcher owns with the {@code causynth.*}
-     * properties set on the launcher's own JVM.
-     *
-     * <p>Forwarding the rest is what keeps the input list short: knobs such as
-     * the trace event cap or a concolic task selection reach the workload
-     * without the launcher growing a flag - and without a configuration
-     * grammar - while the handful of properties the launcher must control
-     * cannot be overridden from outside.</p>
-     */
+    /** Merges the launcher-owned properties with the {@code causynth.*} ones
+     *  set on the launcher's JVM.  Forwarding the rest keeps the input list
+     *  short; the handful the launcher must control cannot be overridden. */
     public static Map<String, String> systemProperties(
             Map<String, String> owned, Properties inherited) {
         Map<String, String> merged = new LinkedHashMap<>(owned);
@@ -172,7 +133,6 @@ public final class WorkloadJvm {
         return Collections.unmodifiableMap(merged);
     }
 
-    /** The complete child command line. */
     public static List<String> command(Path javaBinary,
                                        List<String> jvmOptions,
                                        Map<String, String> systemProperties,
@@ -194,19 +154,11 @@ public final class WorkloadJvm {
 
     /**
      * Runs the child to completion, copying its output to {@code outputLog},
-     * and returns its exit status.
-     *
-     * <p>A non-zero status is returned, not thrown: the JUnit verdict is an
-     * observation the outcome record carries, and refusing to look at the
-     * trace because a test assertion failed would throw away the run.</p>
-     *
-     * <p>The output is captured rather than inherited because the exit status
-     * alone is a dead end. {@code junitExitCode: 1} in the outcome record says
-     * only that something failed; the exception that failed it lives in the
-     * child's stderr, and with {@code inheritIO} that text belonged to
-     * whatever shell happened to be watching. Both streams are merged so the
-     * failure keeps its position relative to the workload's own log, and the
-     * copy is a tee so an interactive run still shows progress.</p>
+     * and returns its exit status.  A non-zero status is returned, not thrown:
+     * the JUnit verdict is an observation the outcome record carries.  Output
+     * is captured rather than inherited because the exception that failed the
+     * run lives in the child's stderr; both streams are merged so the failure
+     * keeps its position in the workload's log, and the copy is a tee.
      */
     public static int run(List<String> command, Path workingDirectory,
                           Path nativeLibraryDirectory, Path outputLog)

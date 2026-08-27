@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker;
 
-import edu.uva.liftlab.graphchecker.analysis.AnalysisManager;
-import edu.uva.liftlab.graphchecker.analysis.PhaseInfo;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.option.OptionError;
@@ -14,14 +12,12 @@ import soot.PhaseOptions;
 import soot.Scene;
 import soot.SootClass;
 import soot.Timers;
+import soot.Transform;
 import soot.options.Options;
 
 import java.io.File;
-import java.io.IOException;
 import java.io.PrintStream;
-import java.io.Reader;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Date;
 import java.util.ArrayList;
@@ -30,8 +26,6 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -52,9 +46,16 @@ public class GraphCheckerMain {
     }
 
     public void initialize() {
-        registerAnalyses();
+        Transform phase = new Transform(GraphCheckerTransformer.PHASE_NAME,
+                new GraphCheckerTransformer(options));
+        phase.setDeclaredOptions("enabled");
+        phase.setDefaultOptions("enabled:false");
+        PackManager.v().getPack(GraphCheckerTransformer.PHASE_PACK).add(phase);
         configureSoot();
-        enableAnalyses();
+        // One whole-program phase, no call graph: the pipeline builds its own.
+        PhaseOptions.v().setPhaseOption(
+                GraphCheckerTransformer.PHASE_NAME, "enabled:true");
+        PhaseOptions.v().setPhaseOption("cg", "off");
         loadClasses();
     }
 
@@ -84,9 +85,7 @@ public class GraphCheckerMain {
 
             Scene.v().loadNecessaryClasses();
             PackManager.v().runPacks();
-            if (!options.noOutput()) {
-                PackManager.v().writeOutput();
-            }
+            PackManager.v().writeOutput();
 
             Timers.v().totalTimer.end();
             if (Options.v().time()) {
@@ -110,12 +109,6 @@ public class GraphCheckerMain {
         }
     }
 
-    private void registerAnalyses() {
-        GraphCheckerTransformer transformer =
-                new GraphCheckerTransformer(options);
-        AnalysisManager.getInstance().registerAnalysis(transformer, GraphCheckerTransformer.PHASE_INFO);
-    }
-
     private void configureSoot() {
         Options.v().set_allow_phantom_refs(true);
         Options.v().set_prepend_classpath(true);
@@ -128,12 +121,8 @@ public class GraphCheckerMain {
                 processDirs, options.getClassPath()));
         collectTestClassOutputs(classPath, testClassOutputDirs);
         Options.v().set_soot_classpath(classPath);
-        Options.v().set_keep_line_number(options.keepDebug());
+        Options.v().set_keep_line_number(true);
         Options.v().set_whole_program(true);
-
-        if (options.getMainClass() != null) {
-            Options.v().set_main_class(options.getMainClass());
-        }
         concolicInstrumentation = ConcolicInstrumentationSelections
                 .instrumentationRequested();
         if (concolicInstrumentation) {
@@ -158,9 +147,7 @@ public class GraphCheckerMain {
             Options.v().set_output_dir(options.getOutputDir());
         }
 
-        if (options.noOutput()) {
-            Options.v().set_output_format(Options.output_format_none);
-        } else if (options.isOutputJar()) {
+        if (options.isOutputJar()) {
             Options.v().set_output_jar(true);
         } else {
             Options.v().set_output_format(Options.output_format_class);
@@ -171,47 +158,7 @@ public class GraphCheckerMain {
         }
     }
 
-    private void enableAnalyses() {
-        String[] analyses = options.getAnalyses();
-        if (analyses.length == 0) {
-            analyses = new String[] {GraphCheckerTransformer.PHASE_INFO.getFullName()};
-        }
-
-        boolean needCallGraph = false;
-        for (String analysis : analyses) {
-            AnalysisManager.getInstance().enableAnalysis(analysis);
-            PhaseOptions.v().setPhaseOption(analysis, "enabled:true");
-            PhaseInfo phaseInfo = AnalysisManager.getInstance().getPhaseInfo(analysis);
-            if (phaseInfo != null && phaseInfo.needCallGraph()) {
-                needCallGraph = true;
-            }
-        }
-
-        Map<String, List<String>> phaseOptions = options.getPhaseOptions();
-        for (Map.Entry<String, List<String>> entry : phaseOptions.entrySet()) {
-            String phase = entry.getKey();
-            if (AnalysisManager.getInstance().isAnalysisEnabled(phase)) {
-                PhaseOptions.v().setPhaseOption(phase, "enabled:true");
-            }
-            for (String option : entry.getValue()) {
-                if (!PhaseOptions.v().setPhaseOption(phase, option)) {
-                    System.err.println("Failed to set Soot phase option: "
-                            + phase + " " + option);
-                }
-            }
-        }
-
-        if (!needCallGraph) {
-            PhaseOptions.v().setPhaseOption("cg", "off");
-        }
-    }
-
     private void loadClasses() {
-        String[] classes = options.getClasses();
-        for (String className : classes) {
-            LOG.info("Adding input class {}", className);
-            Options.v().classes().add(className);
-        }
         for (String className : explicitApplicationClasses) {
             Options.v().classes().add(className);
         }
@@ -258,16 +205,9 @@ public class GraphCheckerMain {
         }
     }
 
-    /**
-     * Raw Soot arguments are parsed after GraphChecker's own options. Reapply
-     * the production-only boundary here so a trailing {@code -process-dir}
-     * or {@code -c} cannot turn runtime-only test classes into application
-     * classes.
-     */
+    /** Raw Soot arguments are parsed after GraphChecker's own options. */
     private void enforceProductionApplicationScope() {
-        // Soot parses a trailing -cp after configureSoot(). Discover test
-        // outputs from that final classpath too, before accepting any raw
-        // -c/main-class entry from it.
+        // Soot parses a trailing -cp after configureSoot().
         collectTestClassOutputs(Options.v().soot_classpath(),
                 testClassOutputDirs);
         Options.v().set_process_dir(concolicInstrumentation
@@ -325,88 +265,45 @@ public class GraphCheckerMain {
         return String.join(File.pathSeparator, expanded);
     }
 
+    /** The input directories plus the roots {@code causynth.process.dirs}
+     *  names.  {@code run_engine.sh} resolves that list from the workflow
+     *  configuration, so this is the one place it is read. */
     private List<String> expandProcessDirs(List<String> inputDirs) {
         LinkedHashSet<String> dirs = new LinkedHashSet<>();
         for (String inputDir : inputDirs) {
             dirs.add(new File(inputDir).getAbsolutePath());
         }
-
-        Properties config = loadGraphCheckerConfig();
-        String configuredDirs = System.getProperty(
-                "causynth.process.dirs");
-        if (configuredDirs == null || configuredDirs.trim().isEmpty()) {
-            configuredDirs = config.getProperty("causynth_process_dirs");
+        String configured = System.getProperty("causynth.process.dirs");
+        if (configured != null && !configured.trim().isEmpty()) {
+            for (String dir : configured.split(
+                    Pattern.quote(File.pathSeparator))) {
+                File file = new File(dir.trim());
+                if (!file.isDirectory()) {
+                    throw new IllegalStateException(
+                            "Configured Soot process directory not found: "
+                                    + dir);
+                }
+                dirs.add(file.getAbsolutePath());
+            }
         }
-        addConfiguredProcessDirs(dirs, configuredDirs);
-
         if (dirs.size() > inputDirs.size()) {
             LOG.info("Expanded Soot process dirs to {}", dirs);
         }
         return new ArrayList<>(dirs);
     }
 
-    private void addConfiguredProcessDirs(Set<String> dirs, String configuredDirs) {
-        if (configuredDirs == null || configuredDirs.trim().isEmpty()) {
-            return;
-        }
-        for (String dir : configuredDirs.split(
-                Pattern.quote(File.pathSeparator))) {
-            File file = new File(dir.trim());
-            if (!file.isDirectory()) {
-                throw new IllegalStateException(
-                        "Configured Soot process directory not found: "
-                                + dir);
-            }
-            dirs.add(file.getAbsolutePath());
-        }
-    }
-
-    private Properties loadGraphCheckerConfig() {
-        Properties properties = new Properties();
-        String configPath = options.getConfigFilePath();
-        if (configPath == null || configPath.trim().isEmpty()) {
-            return properties;
-        }
-        Path path = Paths.get(configPath);
-        if (!Files.isRegularFile(path)) {
-            throw new IllegalStateException(
-                    "GraphChecker config file not found: " + path);
-        }
-        try {
-            try (Reader reader = Files.newBufferedReader(path)) {
-                properties.load(reader);
-            }
-        } catch (IOException exception) {
-            throw new IllegalStateException(
-                    "Unable to read GraphChecker config " + path, exception);
-        }
-        return properties;
-    }
-
-    /**
-     * Put the authoritative project outputs ahead of dependency jars.  Maven
-     * classpaths commonly contain an older installed copy of the project; if
-     * that jar wins, Soot can rewrite stale bytecode even though the matching
-     * process directory contains the current class.
-     */
+    /** Put the authoritative project outputs ahead of dependency jars. */
     private static String prependClasspathEntries(
             List<String> entries, String classPath) {
         StringBuilder builder = new StringBuilder();
-        for (String entry : entries) {
-            appendClasspathEntry(builder, entry);
+        List<String> ordered = new ArrayList<>(entries);
+        ordered.add(classPath);
+        for (String entry : ordered) {
+            if (entry == null || entry.isEmpty()) continue;
+            if (builder.length() > 0) builder.append(File.pathSeparator);
+            builder.append(entry);
         }
-        appendClasspathEntry(builder, classPath);
         return builder.toString();
-    }
-
-    private static void appendClasspathEntry(StringBuilder classPath, String entry) {
-        if (entry == null || entry.isEmpty()) {
-            return;
-        }
-        if (classPath.length() > 0) {
-            classPath.append(File.pathSeparator);
-        }
-        classPath.append(entry);
     }
 
     public static void main(String[] args) {
@@ -421,22 +318,12 @@ public class GraphCheckerMain {
             return;
         }
 
-        if (options.isSootHelp()) {
-            parser.printHelp();
-            System.out.println("\nSoot OPTIONS:\n");
-            System.out.println(Options.v().getUsage());
-            System.exit(0);
-        }
         if (options.isHelp()) {
             parser.printHelp();
             System.exit(0);
         }
-        if (options.listAnalysis()) {
-            parser.listAnalyses();
-            System.exit(0);
-        }
-        if (options.isInputListEmpty() && options.getClasses().length == 0) {
-            System.out.println("Must set either an input jar/input directory or a list of classes.");
+        if (options.getInputList().isEmpty()) {
+            System.out.println("Must set an input jar or input directory.");
             parser.printHelp();
             System.exit(1);
         }

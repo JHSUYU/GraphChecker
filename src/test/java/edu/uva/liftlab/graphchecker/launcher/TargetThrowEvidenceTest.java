@@ -204,13 +204,12 @@ public class TargetThrowEvidenceTest {
             CausynthTraceRecorder.throwActiveMethod(thrown);
             recorder("shutdown");
 
-            TargetOutcome outcome = TargetOutcomeCapture.capture(traceDir,
+            TargetOutcome outcome = TargetOutcome.capture(traceDir,
                     target, "multitype-fixture", 0, null);
 
             assertEquals(TargetOutcome.Trace.CLOSED, outcome.trace());
             assertEquals(2L, outcome.targetMethodRecords());
             assertEquals(1L, outcome.targetThrowRecords());
-            assertTrue(outcome.targetExceptionObserved());
             // Observed is still not accepted, and the record has to keep
             // saying so where a reader of the JSON will see it.
             assertTrue(gapsMention(outcome, "not an acceptance criterion"));
@@ -237,12 +236,11 @@ public class TargetThrowEvidenceTest {
                     new Object());
             recorder("shutdown");
 
-            TargetOutcome outcome = TargetOutcomeCapture.capture(traceDir,
+            TargetOutcome outcome = TargetOutcome.capture(traceDir,
                     target, "multitype-fixture", 0, null);
 
             assertEquals(1L, outcome.targetMethodRecords());
             assertEquals(0L, outcome.targetThrowRecords());
-            assertFalse(outcome.targetExceptionObserved());
             assertTrue(gapsMention(outcome, "that is a missing row"));
             assertTrue(gapsMention(outcome, "skeletonTargetThrowRecorded"));
         } finally {

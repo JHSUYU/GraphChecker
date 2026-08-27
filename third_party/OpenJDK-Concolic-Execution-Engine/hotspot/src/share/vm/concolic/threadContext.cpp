@@ -112,7 +112,17 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
   writer.Key("conditionCount");
   writer.Int(end - start);
   writer.Key("conditions");
-  _path_condition.serialize_range(writer, start, end);
+  const int emitted_range_conditions =
+      _path_condition.serialize_range(writer, start, end);
+  // What `conditions` actually holds.  serialize_range() emits one entry per
+  // index it visits -- a truncated or absent expression becomes a named
+  // TruncatedExpression rather than a hole -- so this equals conditionCount
+  // whenever the requested window lies inside the recorded prefix, and is
+  // short only when the caller asked past the watermark.  A reader that
+  // checks cardinality checks it against this, and never has to infer
+  // truncation from a length.
+  writer.Key("emittedConditionCount");
+  writer.Int(emitted_range_conditions);
   // Where this window's conjunction is, rather than a second copy of it.
   //
   // The fold used to be inlined here as `conjunction`, and it is by
@@ -167,7 +177,17 @@ std::string ThreadContext::get_auxiliary_path_conditions() {
   }
   writer.EndArray();
   writer.Key("conditions");
-  _auxiliary_path_condition.serialize(writer);
+  const int emitted_auxiliary_conditions =
+      _auxiliary_path_condition.serialize(writer);
+  // conditionCount above is the length of pathConditionIndices; this is the
+  // length of `conditions`.  They are recorded in lockstep by
+  // record_path_condition(), and serialize() emits one entry per recorded
+  // condition even when it will not expand the expression, so the two agree
+  // by construction.  Reporting it makes that an assertion the reader can
+  // make rather than an invariant it has to trust -- the byte bound used to
+  // break it silently (240 declared, 200 emitted).
+  writer.Key("emittedConditionCount");
+  writer.Int(emitted_auxiliary_conditions);
   writer.Key("authority");
   writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
   writer.EndObject();
@@ -253,11 +273,22 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     // The full path condition above keeps every solver fact.  The writer
     // guard is a distinct channel: only a branch marker owned by this frame
     // proves that these predicates selected control flow in the region.
+    Expression *guard = NULL;
     for (size_t index = 0; index < expressions.size(); ++index) {
       if (expressions[index] != NULL) {
         _branch_path_condition.add(expressions[index]);
+        // The guard of a control-dependent container removal is this marked
+        // branch's predicate.  A site with several conjuncts folds to their
+        // conjunction; the common case is a single comparison.
+        guard = guard == NULL ? expressions[index]
+            : (Expression *) new OpSymExpression(guard, expressions[index],
+                                                 op_land);
       }
     }
+    // Arm the current iteration element (if any) with this predicate.  Only a
+    // marked branch reaches here, so an unmarked internal comparison during
+    // iteration never turns an ordinary remove into a conditional one.
+    note_conditional_removal_guard(guard);
     BranchEvent event;
     event.event_id = _pending_branch_event_id;
     event.context_id = _context_id;

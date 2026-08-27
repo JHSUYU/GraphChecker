@@ -174,6 +174,9 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
         if (sym_inst != NULL) {
           assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
                  "should be equal");
+          // Invariant: a field that already carries a symbolic expression is
+          // never overwritten by a fresh symbol, and no equation is recorded.
+          if (sym_inst->has_sym_exp(fd->offset())) return false;
           Expression *symbol = new FieldSymbolExp(
               sym_inst->get_sym_rid(), symbolic_name, T_OBJECT);
           sym_inst->set_sym_exp(fd->offset(), symbol);
@@ -200,6 +203,9 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
       }
       assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
              "should be equal");
+      // Invariant: a field that already carries a symbolic expression is
+      // never overwritten by a fresh symbol, and no equation is recorded.
+      if (sym_inst->has_sym_exp(fd->offset())) return false;
       Expression *symbol = new StringSymbolExp(
           sym_inst->get_sym_rid(), symbolic_name);
       sym_inst->set_sym_exp(fd->offset(), symbol);
@@ -219,6 +225,10 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
       }
       assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
              "should be equal");
+      // Invariant: a field that already carries a symbolic expression is
+      // never overwritten by a fresh symbol; the child keeps its own
+      // reference expression, and no equation is recorded.
+      if (sym_inst->has_sym_exp(fd->offset())) return false;
       SymInstance *field_instance = this->_ctx.get_or_alloc_sym_inst(fld_oop);
       if (field_instance != NULL) {
         Expression *symbol = new FieldSymbolExp(
@@ -252,6 +262,9 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     }
     assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
            "should be equal");
+    // Invariant: a field that already carries a symbolic expression is
+    // never overwritten by a fresh symbol, and no equation is recorded.
+    if (sym_inst->has_sym_exp(fd->offset())) return false;
     Expression *symbol = new FieldSymbolExp(
         sym_inst->get_sym_rid(), symbolic_name, type);
     sym_inst->set_sym_exp(fd->offset(), symbol);
@@ -443,6 +456,7 @@ bool SimpleFieldPrinter::do_element_helper(int index, arrayOop array_obj) {
   /**
    * TODO: complete this
    */
+  return false;
 }
 
 bool CompositeKeyGenerator::do_field_helper(fieldDescriptor *fd, oop obj) {
@@ -490,6 +504,7 @@ bool FieldSymbolizer::print_field(fieldDescriptor *fd, oop obj)  {
   tty->indent().print("symbolize field %s rid:%lu index:%d type:%s offset:%d\n",
               fd->name()->as_C_string(), obj->get_sym_rid(), fd->index(),
                       fd->signature()->as_C_string(), fd->offset());
+  return false;
 }
 
 bool FieldSymbolizer::print_element(int index, arrayOop array_obj)  {
@@ -497,6 +512,7 @@ bool FieldSymbolizer::print_element(int index, arrayOop array_obj)  {
     BasicType T = ak->element_type();
     tty->indent().print("symbolize element rid:%lu index:%d type:%c\n",
                          array_obj->get_sym_rid(), index,type2char(T));
+  return false;
 }
 
 

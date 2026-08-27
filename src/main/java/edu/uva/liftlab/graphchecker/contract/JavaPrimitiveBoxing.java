@@ -25,10 +25,9 @@ public final class JavaPrimitiveBoxing {
     }
 
     /**
-     * A wrapper {@code valueOf(primitive)} result is computed by the call;
-     * it is not an independent region live-in. Reference identity remains
-     * concrete, so this does not reinterpret wrapper {@code ==} as value
-     * equality.
+     * A wrapper {@code valueOf(primitive)} result is computed by the call and
+     * is not an independent region live-in.  Reference identity stays
+     * concrete, so wrapper {@code ==} is not reinterpreted as value equality.
      */
     public static boolean deterministicValueOfReturn(String cell) {
         String signature = returnMethod(cell);
@@ -54,7 +53,6 @@ public final class JavaPrimitiveBoxing {
         return false;
     }
 
-    /** JVM descriptor of a boxed primitive, or the empty string. */
     public static String primitiveDescriptor(String wrapperType) {
         Primitive primitive = BY_WRAPPER.get(normalize(wrapperType));
         return primitive == null ? "" : primitive.descriptor;

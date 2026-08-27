@@ -3,10 +3,16 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
+import edu.uva.liftlab.graphchecker.concolic.RecordedSessionModel;
+import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.NavigableMap;
 import java.util.Set;
 import java.util.TreeMap;
@@ -29,8 +35,7 @@ public class RelationSummaryTest {
         PathObservation path = PathObservation.decode(summary, null);
         RelationSummary merged = RelationSummary.guardedPathMerge(
                 OutputClosureCodec.decode(summary),
-                Collections.singletonList(path),
-                Collections.<JsonObject>emptyList());
+                Collections.singletonList(path));
 
         assertEquals(ClosureGoalKind.OUTPUT_RELATION_CLOSURE.name(),
                 merged.toJson().get(ClosureGoalKind.TASK_FIELD)
@@ -70,8 +75,7 @@ public class RelationSummaryTest {
         JsonObject partialMerged = RelationSummary.observedPathMerge(
                 OutputClosureCodec.decode(partialSummary),
                 Collections.singletonList(partialPath),
-                Collections.<JsonObject>emptyList(),
-                "PARTIAL", "CLOSED").toJson();
+                "PARTIAL").toJson();
 
         assertEquals("PARTIAL",
                 partialMerged.get("pathCoverageState").getAsString());
@@ -85,6 +89,122 @@ public class RelationSummaryTest {
                 .getAsJsonObject("outputExpressions").has(port()));
         assertEquals("RELATION.V",
                 RelationSummary.decode(partialMerged).relationKey());
+    }
+
+    /**
+     * README CASE-1's acceptance condition, for the last evidence family that
+     * was still unioned at row level.
+     *
+     * <p>Two paths of one occurrence resolved the same {@code edgeId}
+     * differently -- the importer resolves every edge against that path's own
+     * recorded read-from, so each stamped its own writer and location onto it
+     * -- and both rows survived the merge's payload dedup precisely because
+     * they differ.  Neither resolution may reach the other case: the merged
+     * row states only what every case agreed on, and each divergent row is
+     * offered under exactly the case selector of the case that observed it,
+     * which is the selector that case's own guard is lowered against.</p>
+     */
+    @Test
+    public void divergentEdgeResolutionsStayInTheCaseThatObservedThem() {
+        JsonObject agreed = binding("EDGE.AGREED", 40L,
+                RecordedReadFrom.PROVENANCE_EXACT, "INSTANCE_FIELD/7#24");
+        JsonObject firstArm = binding("EDGE.SHARED", 51L,
+                RecordedReadFrom.PROVENANCE_EXACT, "INSTANCE_FIELD/7#31");
+        JsonObject secondArm = binding("EDGE.SHARED", 52L,
+                RecordedReadFrom.PROVENANCE_GUARDED, "INSTANCE_FIELD/9#31");
+
+        RelationSummary merged = RelationSummary.guardedPathMerge(
+                OutputClosureCodec.decode(versionedSummary(1)),
+                Arrays.asList(
+                        PathObservation.decode(pathSummary(1,
+                                Arrays.asList(agreed, firstArm)), null),
+                        PathObservation.decode(pathSummary(2,
+                                Arrays.asList(agreed, secondArm)), null)));
+        JsonObject row = merged.toJson();
+
+        // Only the resolution both executions made is a fact of the whole
+        // relation; the two that disagree never reach row level.
+        JsonArray rowLevel = row.getAsJsonArray("edgeBindings");
+        assertEquals(1, rowLevel.size());
+        assertEquals("EDGE.AGREED", rowLevel.get(0).getAsJsonObject()
+                .get("edgeId").getAsString());
+
+        JsonArray cases = row.getAsJsonObject("regionRelation")
+                .getAsJsonArray("cases");
+        assertEquals(2, cases.size());
+        List<String> selectors = new ArrayList<>();
+        for (int index = 0; index < cases.size(); index++) {
+            JsonObject item = cases.get(index).getAsJsonObject();
+            JsonArray caseBindings = item.getAsJsonArray("edgeBindings");
+            assertEquals(1, caseBindings.size());
+            assertEquals("EDGE.SHARED", caseBindings.get(0).getAsJsonObject()
+                    .get("edgeId").getAsString());
+            selectors.add(RecordedSessionModel.caseSelector(
+                    RecordedSessionModel.caseOwner(
+                            row.get("regionId").getAsString(),
+                            row.get("occurrenceId").getAsString(),
+                            item.get("caseId").getAsString(), index)));
+        }
+        assertEquals(2, new LinkedHashSet<>(selectors).size());
+
+        // The acceptance condition itself: each resolution of EDGE.SHARED is
+        // offered under its own case's selector and under no other, so no
+        // case guard can enable the writer the other case resolved.
+        int attributed = 0;
+        for (JsonObject offered : merged.edgeBindings()) {
+            String edgeId = offered.get("edgeId").getAsString();
+            if ("EDGE.AGREED".equals(edgeId)) {
+                assertFalse(offered.has(RelationSummary.CASE_SELECTORS));
+                continue;
+            }
+            assertEquals("EDGE.SHARED", edgeId);
+            JsonArray owners = offered.getAsJsonArray(
+                    RelationSummary.CASE_SELECTORS);
+            assertEquals(1, owners.size());
+            String owner = owners.get(0).getAsString();
+            assertTrue(selectors.contains(owner));
+            String other = selectors.get(1 - selectors.indexOf(owner));
+            for (JsonElement named : owners) {
+                assertFalse(other.equals(named.getAsString()));
+            }
+            attributed++;
+        }
+        assertEquals(2, attributed);
+        assertEquals(3, merged.edgeBindings().size());
+    }
+
+    /** One resolved read-from row of the shape the importer stamps. */
+    private static JsonObject binding(String edgeId, long writerEventSeq,
+                                      String provenance, String location) {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("edgeId", edgeId);
+        binding.addProperty("fromRegion", "REGION.U");
+        binding.addProperty("toRegion", "REGION.V");
+        binding.addProperty("fromOccurrenceId", "REGION.U/occurrence-1");
+        binding.addProperty("toOccurrenceId", "REGION.V/occurrence-1");
+        binding.addProperty("fromOutputPort", "REGION.U.out.0");
+        binding.addProperty("toInputPort", "REGION.V.in.0");
+        binding.addProperty("evidenceKind",
+                "FIELD_ASSIGNMENT_READ_FROM_V1");
+        binding.addProperty(RecordedReadFrom.EDGE_PROVENANCE, provenance);
+        binding.addProperty("locationKey", location);
+        binding.addProperty("writerEventSeq", writerEventSeq);
+        binding.addProperty("readerEventSeq", 60L);
+        return binding;
+    }
+
+    /** One imported path of the shared occurrence, with its own bindings. */
+    private static JsonObject pathSummary(int outputValue,
+                                          List<JsonObject> bindings) {
+        JsonObject summary = versionedSummary(1);
+        summary.addProperty("taskId", "TASK.V." + outputValue);
+        JsonObject outputs = new JsonObject();
+        outputs.add(port(), constant(outputValue));
+        summary.add("outputExpressions", outputs);
+        JsonArray encoded = new JsonArray();
+        for (JsonObject binding : bindings) encoded.add(binding.deepCopy());
+        summary.add("edgeBindings", encoded);
+        return summary;
     }
 
     private static String port() {
@@ -117,9 +237,11 @@ public class RelationSummaryTest {
         LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(summary);
         OutputClosureCodec.writeTo(summary, OutputClosureCodec.singleton(
-                "RELATION.V", region, port(), cell,
+                "RELATION.V", region, Collections.<String>emptyList(), port(), cell,
                 "HEAP_STATE", "int", slice));
         summary.add("symbolicInputs", new JsonArray());
+        summary.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
+                new JsonArray());
         summary.add("edgeBindings", new JsonArray());
         summary.add("pathCondition", new JsonArray());
         summary.add("branchMappings", new JsonArray());

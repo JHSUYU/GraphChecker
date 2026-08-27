@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
 import org.junit.Test;
@@ -24,12 +25,14 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class CausynthPipelineTest {
@@ -96,7 +99,8 @@ public class CausynthPipelineTest {
         int bounded = new CausynthPipeline(null)
                 .instrumentConcolicLoopBounds(
                         Collections.singleton(loops.getSignature()),
-                        LoopBoundPolicy.cfgBackedges(8));
+                        LoopBoundPolicy.cfgBackedges(8),
+                        Collections.<String>emptySet());
 
         assertEquals(2, bounded);
         assertEquals(2, count(hookNames(body), "checkLoopBackedge"));
@@ -116,6 +120,116 @@ public class CausynthPipelineTest {
                     .getArg(1)).value);
         }
         body.validate();
+    }
+
+    /**
+     * A loop-body root closes its frame on the loop's backedge, and not only
+     * on the exits the plan names.
+     *
+     * <p>HDFS-11741 campaign run 16 entered {@code
+     * BPServiceActor.offerService()}'s service loop once per thread instead of
+     * once per iteration.  The bound pass routes each backedge through an
+     * inserted bridge, so the backedge's source carries no original unit index
+     * and none of the plan's iteration control sites - all original guard
+     * sites - can name it.  Excluding it left the region frame open for the
+     * whole loop, and {@code enterRegionFrame} answered every later iteration
+     * from the frame the first one had pushed, so the one activation that ever
+     * reached admission was the one entered before the workload aliased its
+     * receiver.</p>
+     */
+    @Test
+    public void aLoopBodyRootClosesItsFrameOnEveryBackedge() throws Exception {
+        SootMethod method = methodWithOneGuardedLoop();
+        Body body = method.getActiveBody();
+        List<Unit> original = new ArrayList<>(body.getUnits());
+        tagOriginalUnits(original);
+        Unit guard = original.get(2);
+        String guardSite = CommunicationCatalogContract.siteId(
+                method.getSignature(), 2);
+
+        assertEquals(1, new CausynthPipeline(null)
+                .instrumentConcolicLoopBounds(
+                        Collections.singleton(method.getSignature()),
+                        LoopBoundPolicy.cfgBackedges(8),
+                        Collections.<String>emptySet()));
+
+        CfgLoopControl.NaturalLoop loop = onlyLoop(body);
+        assertEquals(1, loop.backedges.size());
+        // The bound pass already made the backedge's source a unit no control
+        // site can name, which is why filtering on control sites dropped it.
+        assertFalse(hasOriginalUnitTag(loop.backedges.get(0).source));
+
+        List<CfgLoopControl.Edge> closing =
+                CausynthPipeline.loopBodyClosingEdges(method, loop,
+                        Collections.singleton(guardSite));
+
+        assertEquals(2, closing.size());
+        // The iteration boundary first, then the one exit the plan names.
+        assertSame(loop.backedges.get(0).source, closing.get(0).source);
+        assertSame(loop.header, closing.get(0).target);
+        assertSame(guard, closing.get(1).source);
+        assertFalse(loop.members().contains(closing.get(1).target));
+
+        // A plan that names no control site keeps the same two edges.
+        assertEquals(2, CausynthPipeline.loopBodyClosingEdges(method, loop,
+                Collections.<String>emptySet()).size());
+        body.validate();
+    }
+
+    /** {@code while (guard) { body }} over one static int field. */
+    private static SootMethod methodWithOneGuardedLoop() {
+        G.reset();
+        SootClass runtime = new SootClass(
+                "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime",
+                Modifier.PUBLIC);
+        runtime.addMethod(new SootMethod("checkLoopBackedge",
+                Arrays.asList(RefType.v("java.lang.String"), IntType.v()),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC));
+        Scene.v().addClass(runtime);
+        SootClass owner = new SootClass("example.Service", Modifier.PUBLIC);
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootMethod method = new SootMethod("offerService",
+                Collections.emptyList(), VoidType.v(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local i = Jimple.v().newLocal("i", IntType.v());
+        body.getLocals().add(i);
+
+        Unit header = Jimple.v().newNopStmt();
+        Unit exit = Jimple.v().newReturnVoidStmt();
+        body.getUnits().add(Jimple.v().newAssignStmt(i, IntConstant.v(0)));
+        body.getUnits().add(header);
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(i, IntConstant.v(1)), exit));
+        body.getUnits().add(Jimple.v().newAssignStmt(i,
+                Jimple.v().newAddExpr(i, IntConstant.v(1))));
+        body.getUnits().add(Jimple.v().newGotoStmt(header));
+        body.getUnits().add(exit);
+        return method;
+    }
+
+    /** The one natural loop of {@code body}, proved on positions. */
+    private static CfgLoopControl.NaturalLoop onlyLoop(Body body) {
+        List<Unit> order = new ArrayList<>(body.getUnits());
+        Map<Unit, Integer> positions = new IdentityHashMap<>();
+        for (int index = 0; index < order.size(); index++) {
+            positions.put(order.get(index), index);
+        }
+        List<CfgLoopControl.NaturalLoop> loops = CfgLoopControl.naturalLoops(
+                CfgLoopControl.loopCfg(body),
+                unit -> positions.getOrDefault(unit, -1));
+        assertEquals(loops.toString(), 1, loops.size());
+        return loops.get(0);
+    }
+
+    private static void tagOriginalUnits(List<Unit> units) throws Exception {
+        Method tag = CausynthPipeline.class.getDeclaredMethod(
+                "tagOriginalUnits", List.class);
+        tag.setAccessible(true);
+        tag.invoke(null, units);
     }
 
     private static SootMethod targetMethod() {

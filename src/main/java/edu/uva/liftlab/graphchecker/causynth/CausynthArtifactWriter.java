@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -20,17 +22,14 @@ final class CausynthArtifactWriter {
                                         StaticProgram program)
             throws IOException {
         Files.createDirectories(outputDir);
-        writeJson(outputDir.resolve("target_resolved.json"),
-                program.targetResolved);
-        Files.deleteIfExists(outputDir.resolve(
-                "candidate_dataflow_edges.jsonl"));
+        Files.write(outputDir.resolve("target_resolved.json"),
+                JsonFields.WRITER.toJson(program.targetResolved)
+                        .getBytes(StandardCharsets.UTF_8));
         writeGzipJsonl(outputDir.resolve(
                 "candidate_dataflow_edges.jsonl.gz"), program.edges);
-        Files.deleteIfExists(outputDir.resolve("region_skeletons.jsonl"));
         writeGzipJsonl(outputDir.resolve("region_skeletons.jsonl.gz"),
                 program.regions);
-        // Static communication and loop discovery.  The schema is
-        // contract/CommunicationCatalogContract and contract/LoopBoundPolicy.
+        // Static communication and loop discovery.
         writeGzipJsonl(outputDir.resolve(
                         "communication_call_sites.jsonl.gz"),
                 program.communicationCallSites);
@@ -40,12 +39,6 @@ final class CausynthArtifactWriter {
                 program.communicationGaps);
     }
 
-    private static void writeJson(Path output, Object value)
-            throws IOException {
-        Files.write(output,
-                CausynthJson.write(value).getBytes(StandardCharsets.UTF_8));
-    }
-
     private static void writeGzipJsonl(Path output, List<?> values)
             throws IOException {
         try (BufferedWriter writer = new BufferedWriter(
@@ -53,7 +46,7 @@ final class CausynthArtifactWriter {
                         Files.newOutputStream(output)),
                         StandardCharsets.UTF_8))) {
             for (Object value : values) {
-                writer.write(CausynthJson.write(value));
+                writer.write(JsonFields.WRITER.toJson(value));
                 // Keep artifact hashes stable across host platforms.
                 writer.write('\n');
             }

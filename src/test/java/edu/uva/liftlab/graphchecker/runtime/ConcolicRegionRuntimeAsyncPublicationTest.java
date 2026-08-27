@@ -444,61 +444,56 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
     }
 
     private static void installFakeEngine() throws Exception {
-        Class<?> handoffType = nested("HandoffApi");
-        Constructor<?> handoffConstructor = handoffType.getDeclaredConstructor(
-                Method.class, Method.class);
-        handoffConstructor.setAccessible(true);
-        Object handoff = handoffConstructor.newInstance(null, null);
+        Object engine = newEngine();
+        bind(engine, "closeWorkloadSession", fake("closeWorkloadSession"));
+        bind(engine, "getExpression", fake("expression", Object.class));
+        bind(engine, "getFieldExpression", fake("fieldExpression",
+                Object.class, String.class, String.class, String.class,
+                Object.class));
+        bind(engine, "finishRegion", fake("finish"));
+        bind(engine, "pausePathCondition", fake("pause"));
+        bind(engine, "resumePathCondition", fake("resume"));
+        bind(engine, "cleanupEnd", fake("cleanup"));
+        bind(engine, "selectField", fake("selectField", Object.class,
+                String.class, String.class, String.class));
+        bind(engine, "selectElement", fake("selectElement", Object.class,
+                int.class));
+        bind(engine, "selectMap", fake("selectMap", Object.class));
+        bind(engine, "fieldVersions", fake("fieldVersions", Object.class,
+                String.class, String.class, String.class));
+        bind(engine, "elementVersions", fake("elementVersions", Object.class,
+                int.class));
+        bind(engine, "mapVersions", fake("mapVersions", Object.class));
+        bind(engine, "currentMapVersion", fake("currentMapVersion",
+                Object.class));
+        bind(engine, "admitMapVersion", fake("admitMapVersion", Object.class,
+                long.class, String.class));
+        bind(engine, "currentFieldVersion", fake("currentFieldVersion",
+                Object.class, String.class, String.class, String.class));
+        bind(engine, "admitFieldVersion", fake("admitFieldVersion",
+                Object.class, String.class, String.class, String.class,
+                long.class, String.class));
+        bind(engine, "eventLedger", fake("eventLedger"));
+        install(engine);
+    }
 
-        Class<?> pathType = nested("PathConditionApi");
-        Constructor<?> pathConstructor = pathType.getDeclaredConstructor(
-                Method.class);
-        pathConstructor.setAccessible(true);
-        Object path = pathConstructor.newInstance(new Object[]{null});
+    /** A stock EngineApi with every VM method absent, for selective binding. */
+    private static Object newEngine() throws Exception {
+        Constructor<?> constructor = Class.forName(
+                ConcolicRegionRuntime.class.getName() + "$EngineApi")
+                .getDeclaredConstructor();
+        constructor.setAccessible(true);
+        return constructor.newInstance();
+    }
 
-        Class<?> sharedType = nested("SharedStateApi");
-        Constructor<?> sharedConstructor = sharedType.getDeclaredConstructor(
-                Method.class, Method.class, Method.class, Method.class,
-                Method.class, Method.class, Method.class, Method.class,
-                Method.class, Method.class, Method.class);
-        sharedConstructor.setAccessible(true);
-        Object shared = sharedConstructor.newInstance(
-                fake("selectField", Object.class, String.class,
-                        String.class, String.class),
-                fake("selectElement", Object.class, int.class),
-                fake("selectMap", Object.class),
-                fake("fieldVersions", Object.class, String.class,
-                        String.class, String.class),
-                fake("elementVersions", Object.class, int.class),
-                fake("mapVersions", Object.class),
-                fake("currentMapVersion", Object.class),
-                fake("admitMapVersion", Object.class, long.class,
-                        String.class),
-                fake("currentFieldVersion", Object.class, String.class,
-                        String.class, String.class),
-                fake("admitFieldVersion", Object.class, String.class,
-                        String.class, String.class, long.class, String.class),
-                fake("eventLedger"));
+    private static void bind(Object engine, String name, Method target)
+            throws Exception {
+        Field field = engine.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(engine, target);
+    }
 
-        Class<?> engineType = nested("EngineApi");
-        Constructor<?> engineConstructor =
-                engineType.getDeclaredConstructors()[0];
-        engineConstructor.setAccessible(true);
-        Object[] arguments = new Object[engineConstructor
-                .getParameterTypes().length];
-        arguments[10] = fake("expression", Object.class);
-        arguments[11] = fake("fieldExpression", Object.class,
-                String.class, String.class, String.class, Object.class);
-        arguments[12] = fake("finish");
-        arguments[14] = fake("pause");
-        arguments[15] = fake("resume");
-        arguments[18] = fake("cleanup");
-        arguments[19] = handoff;
-        arguments[20] = path;
-        arguments[21] = shared;
-        arguments[1] = fake("closeWorkloadSession");
-        Object engine = engineConstructor.newInstance(arguments);
-
+    private static void install(Object engine) throws Exception {
         Field engineApi = ConcolicRegionRuntime.class.getDeclaredField(
                 "engineApi");
         engineApi.setAccessible(true);
@@ -508,11 +503,6 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
     private static Method fake(String name, Class<?>... parameters)
             throws Exception {
         return FakeVm.class.getDeclaredMethod(name, parameters);
-    }
-
-    private static Class<?> nested(String name) throws Exception {
-        return Class.forName(ConcolicRegionRuntime.class.getName()
-                + "$" + name);
     }
 
     private static Object configuration() throws Exception {

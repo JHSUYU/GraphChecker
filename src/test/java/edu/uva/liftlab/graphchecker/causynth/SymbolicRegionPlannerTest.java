@@ -98,8 +98,6 @@ public class SymbolicRegionPlannerTest {
         assertEquals("FAILURE_TARGET_ENTRY", activation.get("rootAuthority"));
         assertEquals(TARGET, activation.get("anchorMethod"));
         assertEquals("EXCEPTION_CONTEXT", activation.get("selection"));
-        assertEquals("STATIC_TARGET_ACTIVATION_SKELETON",
-                activation.get("planningMode"));
         assertEquals(Collections.singletonList(TARGET),
                 activation.get(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
 

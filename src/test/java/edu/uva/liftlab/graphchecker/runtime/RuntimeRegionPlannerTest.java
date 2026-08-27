@@ -1,13 +1,18 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 
 import java.io.File;
@@ -15,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -42,13 +48,13 @@ public class RuntimeRegionPlannerTest {
         String writer = "<example.Keys: void publish()>";
         List<RuntimeRegionPlanner.MethodEvent> chain = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "actor", 7,
-                        serviceLoop, 11, "example.Actor", 10, 0, 0),
+                        serviceLoop, 11, "example.Actor", 10, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "actor", 7,
-                        interaction, 11, "example.Actor", 11, 10, 0),
+                        interaction, 11, "example.Actor", 11, 10, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(3, "test", "actor", 7,
-                        protocol, 11, "example.Actor", 12, 11, 0),
+                        protocol, 11, "example.Actor", 12, 11, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(4, "test", "actor", 7,
-                        writer, 22, "example.Keys", 13, 12, 0));
+                        writer, 22, "example.Keys", 13, 12, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
 
         RuntimeRegionPlanner.MethodEvent selected = RuntimeRegionPlanner
                 .firstCompatibleReplayContinuation(chain,
@@ -82,10 +88,10 @@ public class RuntimeRegionPlannerTest {
         String unobserved = "<example.Actor: void configuredOnly()>";
         List<RuntimeRegionPlanner.MethodEvent> chain = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "actor", 7,
-                        root, 11, "example.Actor", 10, 0, 0),
+                        root, 11, "example.Actor", 10, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "actor", 7,
                         "<example.Actor: void helper()>", 11,
-                        "example.Actor", 11, 10, 0));
+                        "example.Actor", 11, 10, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
 
         assertEquals(null, RuntimeRegionPlanner
                 .firstCompatibleReplayContinuation(chain,
@@ -117,13 +123,13 @@ public class RuntimeRegionPlannerTest {
         List<RuntimeRegionPlanner.MethodEvent> trace = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "rpc-worker",
                         7, dispatch, 0, "", 100, 0, 0,
-                        7, 10, 0, 0, server),
+                        7, 10, 0, 0, server, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "rpc-worker",
                         7, receiver, 0, "", 101, 100, 0,
-                        7, 10, 0, 0, server),
+                        7, 10, 0, 0, server, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(3, "test", "rpc-worker",
                         7, helper, 0, "", 102, 101, 0,
-                        7, 10, 0, 0, server));
+                        7, 10, 0, 0, server, false, "", ""));
 
         RuntimeRegionPlanner.Result result =
                 RuntimeRegionPlanner.planSkeletonGraph(skeletons, trace,
@@ -140,7 +146,6 @@ public class RuntimeRegionPlannerTest {
                 activation.get("callIds"));
         assertFalse(activation.containsKey("parentActivationId"));
         assertTrue(result.occurrenceLinks.isEmpty());
-        assertTrue(result.gaps.isEmpty());
     }
 
     /**
@@ -175,7 +180,7 @@ public class RuntimeRegionPlannerTest {
         refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
         File refinedFile = jsonl("component-refined.jsonl", refined);
 
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+        RuntimeRegionPlanner.Result result = planFiles(
                 regions, edges, refinedFile, Collections.singletonList(
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L))),
@@ -218,6 +223,116 @@ public class RuntimeRegionPlannerTest {
         assertFalse(sites.get(1).attachesEntryParameter());
     }
 
+    /**
+     * A declared output port the trace shows no consumer for states a named
+     * blocker, and a declared port a consumer did demand states none.
+     *
+     * <p>The failure bound can only ever speak about an endpoint some
+     * recorded consumer demanded, so a port whose consumer was never traced
+     * used to leave no blocker, no gap and no row of any kind - a coverage
+     * hole that reads exactly like a closed relation.</p>
+     */
+    @Test
+    public void aDeclaredOutputPortNoConsumerDemandedIsNamed()
+            throws Exception {
+        String producerRoot = "<example.Producer: void publish()>";
+        String callee = "<example.Transport: void send(java.lang.String)>";
+        String consumedExchange = "XCH.00000000-0000-3000-8000-00000000000a";
+        String silentExchange = "XCH.00000000-0000-3000-8000-00000000000b";
+        String consumedPort = consumedExchange + ".req.p0";
+        String silentPort = silentExchange + ".req.p0";
+        String producerOccurrence = retained("REGION.P", 1).get(0);
+        String targetOccurrence = retained("REGION.1", 1).get(0);
+
+        Map<String, Object> target = fullRegion();
+        target.put("symbolicInputs", Collections.singletonList(
+                communicationParent(consumedPort, consumedExchange, "IN",
+                        "CONCRETE_STRUCTURE_CARRIER", "ENTRY_PARAMETER",
+                        TARGET, -1, "", 0)));
+        Map<String, Object> producer = object(
+                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", "REGION.P", "rootMethod", producerRoot,
+                "anchorMethod", "",
+                "selection", "STATE_CONTEXT",
+                "runtimeOccurrenceIds", retained("REGION.P", 1),
+                "methods", Collections.singletonList(producerRoot),
+                "symbolicInputs", Collections.emptyList(),
+                "outputs", Arrays.asList(
+                        ownedByRootCall(communicationParent(consumedPort,
+                                consumedExchange, "OUT",
+                                "CONCRETE_STRUCTURE_CARRIER",
+                                "CALL_ARGUMENT", producerRoot, 7, callee, 3),
+                                3),
+                        ownedByRootCall(communicationParent(silentPort,
+                                silentExchange, "OUT",
+                                "CONCRETE_STRUCTURE_CARRIER",
+                                "CALL_ARGUMENT", producerRoot, 8, callee, 3),
+                                3)),
+                "branchPolicies", Collections.emptyList());
+        File regions = jsonl("declared-without-consumer-regions.jsonl",
+                target, producer);
+        Map<String, Object> flow = object("schemaVersion", 3,
+                "kind", "RUNTIME_FIELD_FLOW",
+                "edgeId", "DF.consumed",
+                "fromOccurrenceId", producerOccurrence,
+                "toOccurrenceId", targetOccurrence,
+                "fromPort", consumedPort,
+                "toPort", consumedPort,
+                "receiverObjectId", 17,
+                "writerEventSeq", 1,
+                "readerEventSeq", 2,
+                "writerLaneId", "1",
+                "readerLaneId", "2",
+                "programOrderRequired", false);
+        File edges = jsonl("declared-without-consumer-edges.jsonl", flow);
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl(
+                "declared-without-consumer-refined.jsonl", refined);
+        List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
+                        7, ROOT, 10, "example.Root", 1, 0, 0,
+                        0L, 0L, 0L, 0L, null, false, "", ""),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "t",
+                        7, TARGET, 20, "example.Target", 2, 1, 0,
+                        0L, 0L, 0L, 0L, null, false, "", ""),
+                new RuntimeRegionPlanner.MethodEvent(3, "test", "p",
+                        8, producerRoot, 30, "example.Producer", 3, 0, 0,
+                        0L, 0L, 0L, 0L, null, false, "", ""));
+
+        RuntimeRegionPlanner.Result result = planFiles(
+                regions, edges, refinedFile, Arrays.asList(
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L)),
+                        activation("REGION.P", 3, producerRoot,
+                                Collections.singletonList(3L))),
+                events, runtime(), Collections.emptyList());
+
+        Map<String, Object> producerPlan = null;
+        for (Map<String, Object> plan : result.regionPlans) {
+            if ("REGION.P".equals(plan.get("regionId"))) producerPlan = plan;
+        }
+        assertTrue(String.valueOf(result.regionPlans),
+                producerPlan != null);
+        Map<String, Object> goal = rows(
+                producerPlan.get("closureGoals")).get(0);
+        assertEquals("OUTPUT_RELATION_CLOSURE", goal.get("kind"));
+        Set<Object> stated = new LinkedHashSet<>();
+        stated.addAll((List<Object>) goal.get("excludedOutputBlockers"));
+        stated.addAll((List<Object>) ((Map<String, Object>)
+                goal.get("admission")).get("blockers"));
+        assertTrue(String.valueOf(stated), stated.contains(
+                "OUTPUT_DECLARED_WITHOUT_CONSUMER:" + silentPort));
+        // The demanded port states the reason its own closure failed, and
+        // never this one: it had a consumer.
+        assertFalse(String.valueOf(stated), stated.contains(
+                "OUTPUT_DECLARED_WITHOUT_CONSUMER:" + consumedPort));
+        assertTrue(String.valueOf(stated), stated.contains(
+                "CUT_ARGUMENT_PORT_INCOMPLETE:" + consumedPort));
+    }
+
     @Test
     public void responseComponentIsDistinctFromConcreteResponseEffect() {
         String occurrence = "cluster0/server0#epoch1/region/REGION.1#3";
@@ -247,8 +362,15 @@ public class RuntimeRegionPlannerTest {
                 "outputCaptureKind", "ENTRY_RETURN",
                 "definitionMethod", definition,
                 "occurrenceId", occurrence);
-        Map<String, Object> region = object("outputs",
-                Arrays.asList(parent, component));
+        StaticProgram.RegionRow region = StaticProgram.regionRows(
+                Collections.singletonList(object(
+                        "schemaVersion", 3,
+                        "kind", "SYMBOLIC_REGION",
+                        "regionId", "REGION.semantic-endpoint",
+                        "rootMethod", definition,
+                        "methods", Collections.singletonList(definition),
+                        "outputs", Arrays.asList(parent, component))),
+                "SYMBOLIC_REGION", "test").get(0);
 
         String parentEndpoint = RuntimeRegionPlanner.semanticOutputEndpoint(
                 object("fromOutputPort", parentId), region, occurrence);
@@ -421,21 +543,21 @@ public class RuntimeRegionPlannerTest {
         File refinedFile = jsonl("per-activation-refined.jsonl", refined);
         List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "producer",
-                        7, ROOT, 10, "example.Root", 1, 0, 0),
+                        7, ROOT, 10, "example.Root", 1, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "producer",
-                        7, TARGET, 20, "example.Target", 2, 1, 0),
+                        7, TARGET, 20, "example.Target", 2, 1, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(3, "test", "consumer",
-                        8, ROOT, 30, "example.Root", 3, 0, 0),
+                        8, ROOT, 30, "example.Root", 3, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(4, "test", "consumer",
-                        8, TARGET, 40, "example.Target", 4, 3, 0));
+                        8, TARGET, 40, "example.Target", 4, 3, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
         // The fatal site executed in the second activation only.
         List<RuntimeRegionPlanner.RuntimeEvent> observed =
                 Collections.singletonList(
                         new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH",
-                                TARGET, 4, 0, 0, TARGET + "#u4", -1, "", 0,
-                                "", true, false));
+                                TARGET, 4, 0, 0, TARGET + "#u4", "", -1, "", 0,
+                                "", Boolean.FALSE, null, "", ""));
 
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+        RuntimeRegionPlanner.Result result = planFiles(
                 regions, edges, refinedFile, Arrays.asList(
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L)),
@@ -465,7 +587,7 @@ public class RuntimeRegionPlannerTest {
         region.put(ConfiguredSourcePhaseContract.DECLARATION_FIELD,
                 Arrays.asList(
                         ConfiguredSourcePhaseContract.declaration(
-                                ConfiguredSourcePhaseContract.Phase.CONSUME,
+                                ConfiguredSourcePhaseContract.Phase.PUBLISH,
                                 "ROTATING.KEY", field, helper, 3),
                         ConfiguredSourcePhaseContract.declaration(
                                 ConfiguredSourcePhaseContract.Phase.PUBLISH,
@@ -479,43 +601,42 @@ public class RuntimeRegionPlannerTest {
 
         List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "t", 7,
-                        ROOT, 10, "example.Root", 1, 0, 0),
+                        ROOT, 10, "example.Root", 1, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "t", 7,
-                        TARGET, 20, "example.Target", 2, 1, 0),
+                        TARGET, 20, "example.Target", 2, 1, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 // The phase helper is in the recorded root subtree, but not
                 // in activation.callIds: it is selected for rich tracing only.
                 new RuntimeRegionPlanner.MethodEvent(3, "test", "t", 7,
-                        helper, 30, "example.Keys", 3, 2, 0),
+                        helper, 30, "example.Keys", 3, 2, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 // Same static site in another, unrelated activation must not
                 // be admitted merely because its event is later in the trace.
                 new RuntimeRegionPlanner.MethodEvent(9, "test", "other", 8,
-                        helper, 40, "example.Keys", 99, 0, 0));
+                        helper, 40, "example.Keys", 99, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
         List<RuntimeRegionPlanner.RuntimeEvent> runtime = Arrays.asList(
                 new RuntimeRegionPlanner.RuntimeEvent(4,
                         "CALL_SITE_ENTER", helper, 3, 301, 0,
                         consumeSite, "<example.Hook: int consume()>",
-                        -1, "", 0, "", false, false),
+                        -1, "", 0, "", null, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(5,
                         "CALL_SITE_ENTER", helper, 3, 302, 0,
                         publishSite, "<example.Hook: void publish()>",
-                        -1, "", 0, "", false, false),
+                        -1, "", 0, "", null, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(6,
                         "CALL_SITE_ENTER", helper, 3, 303, 0,
                         consumeSite, "<example.Hook: int consume()>",
-                        -1, "", 0, "", false, false),
+                        -1, "", 0, "", null, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(7,
                         "CALL_SITE_ENTER", helper, 3, 304, 0,
                         publishSite, "<example.Hook: void publish()>",
-                        -1, "", 0, "", false, false),
+                        -1, "", 0, "", null, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(8, "BRANCH", TARGET,
-                        2, 0, 0, TARGET + "#u4", -1, "", 0, "",
-                        true, false),
+                        2, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.FALSE, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(10,
                         "CALL_SITE_ENTER", helper, 99, 901, 0,
                         consumeSite, "<example.Hook: int consume()>",
-                        -1, "", 0, "", false, false));
+                        -1, "", 0, "", null, null, "", ""));
 
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+        RuntimeRegionPlanner.Result result = planFiles(
                 regions, edges, refinedFile,
                 Collections.singletonList(activation("REGION.1", 1, ROOT,
                         Arrays.asList(1L, 2L))), methods, runtime,
@@ -526,7 +647,7 @@ public class RuntimeRegionPlannerTest {
         List<Map<String, Object>> phases = rows(plan.get(
                 ConfiguredSourcePhaseContract.PLAN_FIELD));
         assertEquals(4, phases.size());
-        assertEquals(Arrays.asList("CONSUME", "PUBLISH", "CONSUME",
+        assertEquals(Arrays.asList("PUBLISH", "PUBLISH", "PUBLISH",
                         "PUBLISH"),
                 Arrays.asList(phases.get(0).get("phaseKind"),
                         phases.get(1).get("phaseKind"),
@@ -544,7 +665,7 @@ public class RuntimeRegionPlannerTest {
                 phases.get(0).get("enclosingCallIds"));
         assertEquals(ConfiguredSourcePhaseContract.phaseId(
                         String.valueOf(plan.get("occurrenceId")), consumeSite,
-                        ConfiguredSourcePhaseContract.Phase.CONSUME, 1),
+                        ConfiguredSourcePhaseContract.Phase.PUBLISH, 1),
                 phases.get(0).get("phaseId"));
         List<Map<String, Object>> plannedBranches = rows(
                 ((List<Map<String, Object>>) plan.get("closureGoals"))
@@ -596,27 +717,25 @@ public class RuntimeRegionPlannerTest {
         List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
                         7, ROOT, 10, "example.Root", 1, 0, 0,
-                        7, 101, 0, 0),
+                        7, 101, 0, 0, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "t",
                         7, TARGET, 20, "example.Target", 2, 1, 0,
-                        7, 102, 101, 0),
+                        7, 102, 101, 0, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(3, "test", "t2",
                         7, ROOT, 30, "example.Root", 3, 0, 0,
-                        8, 201, 0, 0),
+                        8, 201, 0, 0, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(4, "test", "t2",
                         7, TARGET, 40, "example.Target", 4, 3, 0,
-                        8, 202, 201, 0));
+                        8, 202, 201, 0, null, false, "", ""));
         // The two activations decided the same branch site the two opposite
         // ways, so their bounded paths are not the same path.
         List<RuntimeRegionPlanner.RuntimeEvent> runtime = Arrays.asList(
                 new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH", TARGET,
-                        2, 0, 0, TARGET + "#u4", -1, "", 0, "", true,
-                        false),
+                        2, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.FALSE, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH", TARGET,
-                        4, 0, 0, TARGET + "#u4", -1, "", 0, "", true,
-                        true));
+                        4, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.TRUE, null, "", ""));
 
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+        RuntimeRegionPlanner.Result result = planFiles(
                 regions, edges, refinedFile, Arrays.asList(
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L)),
@@ -690,19 +809,19 @@ public class RuntimeRegionPlannerTest {
         List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
                         7, ROOT, 10, "example.Root", 1, 0, 0,
-                        7, 101, 0, 0, client, "request#1", "api"),
+                        7, 101, 0, 0, client, true, "request#1", "api"),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "t",
                         7, TARGET, 20, "example.Target", 2, 1, 0,
-                        8, 202, 101, 150, server,
+                        8, 202, 101, 150, server, false,
                         "request#1", "api"));
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+        RuntimeRegionPlanner.Result result = planFiles(
                 regions, edges, refinedFile, Collections.singletonList(
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L))), events,
                 Collections.singletonList(
                         new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH",
-                                TARGET, 2, 0, 0, TARGET + "#u4", -1,
-                                "", 0, "", true, false)),
+                                TARGET, 2, 0, 0, TARGET + "#u4", "", -1,
+                                "", 0, "", Boolean.FALSE, null, "", "")),
                 Collections.emptyList());
 
         Map<String, Object> plan = result.regionPlans.get(0);
@@ -718,6 +837,8 @@ public class RuntimeRegionPlannerTest {
         assertEquals(client.key(), anchor.get("sourceKey"));
         // The address is the stable source and nothing else: a request scope
         // is ambient context a replay of a long-lived service never republishes.
+        // REGISTERED_SOURCE because this root's own receiver named that
+        // source; see the INHERITED_CONTEXT case below for the other half.
         assertEquals("REGISTERED_SOURCE", anchor.get("kind"));
         assertFalse(anchor.containsKey("requestKeys"));
         assertFalse(((Map<?, ?>) plan.get("rootSelector"))
@@ -735,20 +856,20 @@ public class RuntimeRegionPlannerTest {
         File discardedRefined = jsonl("discarded-refined.jsonl", refined);
         List<RuntimeRegionPlanner.MethodEvent> repeated = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
-                        7, ROOT, 10, "example.Root", 1, 0, 0),
+                        7, ROOT, 10, "example.Root", 1, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "t",
-                        7, TARGET, 20, "example.Target", 2, 1, 0),
+                        7, TARGET, 20, "example.Target", 2, 1, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(3, "test", "t",
-                        7, ROOT, 30, "example.Root", 3, 0, 0),
+                        7, ROOT, 30, "example.Root", 3, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(4, "test", "t",
-                        7, TARGET, 40, "example.Target", 4, 3, 0));
+                        7, TARGET, 40, "example.Target", 4, 3, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
         List<RuntimeRegionPlanner.RuntimeEvent> observed = Arrays.asList(
                 new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH", TARGET,
-                        2, 0, 0, TARGET + "#u4", -1, "", 0, "", true, false),
+                        2, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.FALSE, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH", TARGET,
-                        4, 0, 0, TARGET + "#u4", -1, "", 0, "", true, false));
+                        4, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.FALSE, null, "", ""));
 
-        RuntimeRegionPlanner.Result discarded = RuntimeRegionPlanner.plan(
+        RuntimeRegionPlanner.Result discarded = planFiles(
                 discardedRegions, discardedEdges, discardedRefined,
                 Arrays.asList(
                         activation("REGION.1", 1, ROOT,
@@ -769,6 +890,64 @@ public class RuntimeRegionPlannerTest {
         assertEquals(RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
                 retainedAnchor.get("sourceKey"));
         assertEquals("UNREGISTERED_SOURCE", retainedAnchor.get("kind"));
+    }
+
+    /**
+     * A root whose source is the context its thread inherited is addressed as
+     * {@code INHERITED_CONTEXT}, not as a registration it does not have.
+     *
+     * <p>HDFS-11741 campaign-takeover-19 planned the balancer's own
+     * {@code Dispatcher$1} and {@code KeyManager$BlockKeyUpdater} activations
+     * on {@code cluster0/client0#epoch0}.  That trace registers exactly one
+     * object for that source -- the test's client anchor -- and aliases no
+     * balancer class at all, so the stamp came from the thread the test
+     * started.  Addressing it as {@code REGISTERED_SOURCE} asked replay to
+     * match an alias that never existed and skipped all three tasks.</p>
+     */
+    @Test
+    public void aContextStampedRootIsAddressedAsInheritedContext()
+            throws Exception {
+        Map<String, Object> region = fullRegion();
+        rows(region.get("branchPolicies")).get(0).put(
+                "failureTarget", true);
+        region.put("runtimeOccurrenceIds", Collections.singletonList(
+                "cluster0/dn1#epoch1/region/REGION.1#1"));
+        File regions = jsonl("inherited-regions.jsonl", region);
+        File edges = jsonl("inherited-edges.jsonl");
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl("inherited-refined.jsonl", refined);
+        SourceRef client = new SourceRef("EXTERNAL_APP", "CLIENT",
+                "cluster0/client0", 0);
+        SourceRef server = new SourceRef("CLUSTER_NODE", "DATANODE",
+                "cluster0/dn1", 1);
+        // The same fixture as the REGISTERED_SOURCE case above, and the only
+        // difference is the one that matters: this root's receiver named no
+        // source of its own.
+        List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
+                        7, ROOT, 10, "example.Root", 1, 0, 0,
+                        7, 101, 0, 0, client, false, "request#1", "api"),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "t",
+                        7, TARGET, 20, "example.Target", 2, 1, 0,
+                        8, 202, 101, 150, server, false,
+                        "request#1", "api"));
+
+        RuntimeRegionPlanner.Result result = planFiles(
+                regions, edges, refinedFile, Collections.singletonList(
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L))), events,
+                Collections.singletonList(
+                        new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH",
+                                TARGET, 2, 0, 0, TARGET + "#u4", "", -1,
+                                "", 0, "", Boolean.FALSE, null, "", "")),
+                Collections.emptyList());
+
+        Map<?, ?> anchor = (Map<?, ?>) ((Map<?, ?>) result.regionPlans.get(0)
+                .get("rootSelector")).get("causalAnchor");
+        assertEquals(client.key(), anchor.get("sourceKey"));
+        assertEquals("INHERITED_CONTEXT", anchor.get("kind"));
     }
 
     @Test
@@ -796,25 +975,23 @@ public class RuntimeRegionPlannerTest {
         List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "dn0",
                         7, ROOT, 10, "example.Root", 1, 0, 0,
-                        7, 101, 0, 0, dn0, "request#1", "api"),
+                        7, 101, 0, 0, dn0, false, "request#1", "api"),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "dn0",
                         7, TARGET, 20, "example.Target", 2, 1, 0,
-                        7, 101, 0, 0, client, "request#1", "api"),
+                        7, 101, 0, 0, client, false, "request#1", "api"),
                 new RuntimeRegionPlanner.MethodEvent(3, "test", "dn1",
                         8, ROOT, 30, "example.Root", 3, 0, 0,
-                        8, 202, 0, 0, dn1, "request#1", "api"),
+                        8, 202, 0, 0, dn1, false, "request#1", "api"),
                 new RuntimeRegionPlanner.MethodEvent(4, "test", "dn1",
                         8, TARGET, 40, "example.Target", 4, 3, 0,
-                        8, 202, 0, 0, client, "request#1", "api"));
+                        8, 202, 0, 0, client, false, "request#1", "api"));
         List<RuntimeRegionPlanner.RuntimeEvent> observed = Arrays.asList(
                 new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH", TARGET,
-                        2, 0, 0, TARGET + "#u4", -1, "", 0, "", true,
-                        false),
+                        2, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.FALSE, null, "", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH", TARGET,
-                        4, 0, 0, TARGET + "#u4", -1, "", 0, "", true,
-                        false));
+                        4, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.FALSE, null, "", ""));
 
-        RuntimeRegionPlanner.Result result = RuntimeRegionPlanner.plan(
+        RuntimeRegionPlanner.Result result = planFiles(
                 regions, edges, refinedFile, Arrays.asList(
                         activation("REGION.1", 1, ROOT,
                                 Arrays.asList(1L, 2L)),
@@ -838,22 +1015,317 @@ public class RuntimeRegionPlannerTest {
     }
 
     @SuppressWarnings("unchecked")
+    /**
+     * README {@code OCC-1}, ambiguity half.  Two activations of one root on
+     * one source inside one request scope produce two occurrence identities
+     * and <em>one</em> replay address; the plan carries both rows.
+     */
+    @Test
+    public void repeatedActivationsSharingOneReplayAddressStayTwoPlans()
+            throws Exception {
+        Map<String, Object> region = fullRegion();
+        region.put("runtimeOccurrenceIds", retained("REGION.1", 1, 2));
+        File regions = jsonl("ambiguous-address-regions.jsonl", region);
+        File edges = jsonl("ambiguous-address-edges.jsonl");
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl("ambiguous-address-refined.jsonl", refined);
+        List<RuntimeRegionPlanner.MethodEvent> events = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
+                        7, ROOT, 10, "example.Root", 1, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "t",
+                        7, TARGET, 20, "example.Target", 2, 1, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
+                new RuntimeRegionPlanner.MethodEvent(3, "test", "t2",
+                        7, ROOT, 30, "example.Root", 3, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
+                new RuntimeRegionPlanner.MethodEvent(4, "test", "t2",
+                        7, TARGET, 40, "example.Target", 4, 3, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
+        List<RuntimeRegionPlanner.RuntimeEvent> observed = Arrays.asList(
+                new RuntimeRegionPlanner.RuntimeEvent(5, "BRANCH", TARGET,
+                        2, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.FALSE, null, "", ""),
+                new RuntimeRegionPlanner.RuntimeEvent(6, "BRANCH", TARGET,
+                        4, 0, 0, TARGET + "#u4", "", -1, "", 0, "", Boolean.TRUE, null, "", ""));
+
+        RuntimeRegionPlanner.Result result = planFiles(
+                regions, edges, refinedFile, Arrays.asList(
+                        activation("REGION.1", 1, ROOT,
+                                Arrays.asList(1L, 2L)),
+                        activation("REGION.1", 3, ROOT,
+                                Arrays.asList(3L, 4L))),
+                events, observed, Collections.emptyList());
+
+        assertEquals(2, result.regionPlans.size());
+        Map<String, Object> first = result.regionPlans.get(0);
+        Map<String, Object> second = result.regionPlans.get(1);
+        // Two identities, one address: the exact shape the gap is about.
+        assertFalse(first.get("occurrenceId").equals(
+                second.get("occurrenceId")));
+        assertEquals(first.get("rootSelector"), second.get("rootSelector"));
+    }
+
+    /**
+     * README {@code STATE-1}: two receiver paths to one declared field are
+     * two locations.  Deduping carrier declarations by
+     * {@code declaringClass#fieldName} kept whichever port was enumerated
+     * first and dropped the other with no row of any kind - the HDFS-11741
+     * {@code allKeys} shape, where the dropped owner is as likely to be the
+     * one the target reads.
+     */
+    @Test
+    public void twoReceiverPathsToOneFieldStayTwoDeclaredCarriers()
+            throws Exception {
+        String allKeys = "<example.Node: java.util.Map allKeys>";
+        Map<String, Object> region = fullRegion();
+        region.put("symbolicInputs", Arrays.asList(
+                object("portId", "REGION.1.in.nn", "rootCallId", 1,
+                        "rootKind", "RECEIVER", "sourceKind",
+                        "RECEIVER_FIELD",
+                        "fieldPath", Arrays.asList("nn", "allKeys"),
+                        "fieldPathDeclarations", Arrays.asList(
+                                "<example.Holder: example.Node nn>",
+                                allKeys)),
+                object("portId", "REGION.1.in.dn", "rootCallId", 1,
+                        "rootKind", "RECEIVER", "sourceKind",
+                        "RECEIVER_FIELD",
+                        "fieldPath", Arrays.asList("dn", "allKeys"),
+                        "fieldPathDeclarations", Arrays.asList(
+                                "<example.Holder: example.Node dn>",
+                                allKeys))));
+        File regions = jsonl("two-owner-carrier-regions.jsonl", region);
+        File edges = jsonl("two-owner-carrier-edges.jsonl");
+        Map<String, Object> refined = candidateEdge();
+        refined.put("refinementSchemaVersion", 1);
+        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        File refinedFile = jsonl("two-owner-carrier-refined.jsonl", refined);
+        Map<String, Object> seed = activation("REGION.1", 1, ROOT,
+                Arrays.asList(1L, 2L));
+        seed.put(RuntimeRegionPlanner.ADMISSION_BASIS,
+                RuntimeRegionPlanner.SHARED_LOCATION_DEMAND_ADMISSION);
+        seed.put(RuntimeRegionPlanner.DEMANDED_SHARED_LOCATIONS,
+                Collections.singletonList("example.Node#allKeys"));
+
+        RuntimeRegionPlanner.Result result = planFiles(
+                regions, edges, refinedFile,
+                Collections.singletonList(seed), methods(), runtime(),
+                Collections.emptyList());
+
+        assertEquals(1, result.regionPlans.size());
+        Map<String, Object> goal = rows(result.regionPlans.get(0)
+                .get("closureGoals")).get(0);
+        List<Map<String, Object>> carriers = rows(goal.get("sharedCarriers"));
+        assertEquals(String.valueOf(carriers), 2, carriers.size());
+        Set<Object> paths = new LinkedHashSet<>();
+        for (Map<String, Object> carrier : carriers) {
+            assertEquals("example.Node", carrier.get("declaringClass"));
+            assertEquals("allKeys", carrier.get("fieldName"));
+            paths.add(carrier.get("fieldPath"));
+        }
+        assertEquals(2, paths.size());
+        assertTrue(paths.contains(Arrays.asList("nn", "allKeys")));
+        assertTrue(paths.contains(Arrays.asList("dn", "allKeys")));
+
+    }
+
+
+    /**
+     * README REGION-1: a port written in several bounded phases of one local
+     * occurrence stays one demand of one coarse task.  Every recorded write
+     * version is still modelled - in recorded write order - and the versions
+     * a declared bound cannot hold are counted rather than dropped in
+     * silence.
+     */
+    @Test
+    public void repeatedWritesOfOneOccurrenceStayVersionsOfOneDemand() {
+        String endpoint = "HEAP\nDECLARED_FIELD_ACCESS\n" + ROOT
+                + "#u5\n\n<example.Node: int state>";
+        Map<String, Object> first = object("edgeId", "RF.first",
+                "fromOutputPort", "REGION.1.out.state",
+                "writerEventSeq", 30L);
+        Map<String, Object> second = object("edgeId", "RF.second",
+                "fromOutputPort", "REGION.1.out.state",
+                "writerEventSeq", 90L);
+        Map<String, List<Map<String, Object>>> byEndpoint =
+                new LinkedHashMap<>();
+        byEndpoint.put(endpoint, Arrays.asList(second, first));
+
+        Map<String, List<List<Map<String, Object>>>> versions =
+                RuntimeRegionPlanner.demandedBindingVersions(
+                        Collections.singletonList(endpoint), byEndpoint, 8);
+
+        assertEquals(2, versions.get(endpoint).size());
+        assertEquals("RF.first", versions.get(endpoint).get(0).get(0)
+                .get("edgeId"));
+        assertEquals("RF.second", versions.get(endpoint).get(1).get(0)
+                .get("edgeId"));
+
+        Map<String, List<List<Map<String, Object>>>> boundedVersions =
+                RuntimeRegionPlanner.demandedBindingVersions(
+                        Collections.singletonList(endpoint), byEndpoint, 1);
+
+        assertEquals(1, boundedVersions.get(endpoint).size());
+    }
+
+    /**
+     * The bounded versions of one endpoint fold into the single closure
+     * member REGION-1 requires, and the fold subtracts nothing: every
+     * version's causal delivery edge, input port and method stays in the
+     * demand, the member stays anchored on the last recorded write - the
+     * only single boundary that covers all of them - and every version's own
+     * dynamic boundary is carried beside it in recorded write order.
+     *
+     * <p>The anchor alone was the loss the {@code OUTPUT_VERSION_ALIGNMENT_GAP}
+     * declared.  With the whole ledger carried there is nothing left for it
+     * to declare, so it is no longer published.</p>
+     */
+    @Test
+    public void foldedOutputVersionsKeepEveryVersionsOwnEvidence() {
+        OutputClosureContract early = versionClosure("RF.first",
+                "REGION.1.in.early", "<example.Node: void early()>", 1, 30L);
+        OutputClosureContract late = versionClosure("RF.second",
+                "REGION.1.in.late", "<example.Node: void late()>", 2, 90L);
+
+        OutputClosureContract folded =
+                RuntimeRegionPlanner.coarseOccurrenceOutputVersions(
+                        Arrays.asList(early, late));
+
+        assertEquals(1, folded.members().size());
+        assertTrue(String.valueOf(folded.toJson()),
+                folded.executionScope().causalEdgeIds().containsAll(
+                        Arrays.asList("RF.first", "RF.second")));
+        assertTrue(String.valueOf(folded.toJson()),
+                folded.executionScope().inputPorts().containsAll(
+                        Arrays.asList("REGION.1.in.early",
+                                "REGION.1.in.late")));
+        assertTrue(String.valueOf(folded.toJson()),
+                folded.executionScope().methods().containsAll(
+                        Arrays.asList("<example.Node: void early()>",
+                                "<example.Node: void late()>")));
+
+        OutputClosureContract.Member member = folded.members().get(0);
+        assertEquals(90L, member.slice().get("selectedRuntimeEventSeq")
+                .getAsLong());
+        assertEquals(2, member.slice().get("activationLocalOccurrence")
+                .getAsInt());
+        assertFalse(String.valueOf(member.slice()),
+                member.slice().has("alignmentGaps"));
+
+        // One version is still one member, byte for byte what it was before
+        // any fold existed.
+        assertEquals(late.closureFingerprint(),
+                RuntimeRegionPlanner.coarseOccurrenceOutputVersions(
+                        Collections.singletonList(late))
+                        .closureFingerprint());
+    }
+
+    /** One recorded write version of one demanded heap output port. */
+    private static OutputClosureContract versionClosure(
+            String edgeId, String inputPort, String method,
+            int occurrence, long writeSeq) {
+        return versionClosure(edgeId, inputPort, method, occurrence,
+                writeSeq, 7L);
+    }
+
+    private static OutputClosureContract versionClosure(
+            String edgeId, String inputPort, String method,
+            int occurrence, long writeSeq, long callId) {
+        String port = "REGION.1.out.state";
+        String cell = "<example.Node: int state>";
+        String site = OutputCaptureSpec.FIELD_WRITE_STATE + ":"
+                + ROOT + "#u5:" + cell;
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", cell);
+        slice.add("inputPorts", strings(inputPort));
+        slice.add("sites", strings(method + "#u1"));
+        slice.add("staticSites", strings(ROOT + "#u5"));
+        slice.add("methods", strings(method));
+        slice.add("causalEdgeIds", strings(edgeId));
+        slice.add("captureBindingIssues", new JsonArray());
+        slice.addProperty("activationLocalOccurrence", occurrence);
+        slice.addProperty("selectedRuntimeEventSeq", writeSeq);
+        slice.addProperty("selectedRuntimeCallId", callId);
+        slice.addProperty("outputBoundaryKind",
+                "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
+
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureBindingId", "CAPTURE.state");
+        capture.addProperty("captureKind",
+                OutputCaptureSpec.FIELD_WRITE_STATE);
+        capture.addProperty("outputPort", port);
+        capture.addProperty("outputCell", cell);
+        capture.addProperty("fieldSignature", cell);
+        capture.add("fieldPath", strings("state"));
+        capture.addProperty("javaType", "int");
+        capture.addProperty("definitionMethod", ROOT);
+        capture.addProperty("definitionUnitIndex", 5);
+        capture.addProperty("outputSiteId", site);
+        capture.addProperty("outputOccurrence", occurrence);
+        capture.addProperty("replayOccurrence", occurrence);
+        capture.addProperty("occurrenceScope",
+                OutputCaptureSpec.REGION_ACTIVATION_SCOPE);
+        capture.addProperty("outputBoundaryKind",
+                "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
+        JsonArray captures = new JsonArray();
+        captures.add(capture);
+        slice.add("captureBindings", captures);
+
+        return OutputClosureCodec.singleton("REL.REGION.1", "REGION.1", Collections.<String>emptyList(),
+                port, cell, "HEAP_STATE", "int", slice);
+    }
+
+    private static JsonArray strings(String... values) {
+        JsonArray result = new JsonArray();
+        for (String value : values) result.add(value);
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object integral(Object value) {
+        if (value instanceof Double && ((Double) value) % 1 == 0) {
+            return ((Double) value).longValue();
+        }
+        if (value instanceof Map) {
+            for (Map.Entry<String, Object> entry
+                    : ((Map<String, Object>) value).entrySet()) {
+                entry.setValue(integral(entry.getValue()));
+            }
+        } else if (value instanceof List) {
+            List<Object> list = (List<Object>) value;
+            for (int i = 0; i < list.size(); i++) {
+                list.set(i, integral(list.get(i)));
+            }
+        }
+        return value;
+    }
+
     private static List<Map<String, Object>> rows(Object value) {
-        return (List<Map<String, Object>>) value;
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        for (Object e : (List<?>) value) {
+            if (e instanceof com.google.gson.JsonElement) {
+                Map<String, Object> row = new com.google.gson.Gson().fromJson(
+                        (com.google.gson.JsonElement) e,
+                        new com.google.gson.reflect.TypeToken<
+                                LinkedHashMap<String, Object>>() {}.getType());
+                out.add((Map<String, Object>) integral(row));
+            } else {
+                out.add((Map<String, Object>) e);
+            }
+        }
+        return out;
     }
 
     private static List<RuntimeRegionPlanner.MethodEvent> methods() {
         return Arrays.asList(
                 new RuntimeRegionPlanner.MethodEvent(1, "test", "t",
-                        7, ROOT, 10, "example.Root", 1, 0, 0),
+                        7, ROOT, 10, "example.Root", 1, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
                 new RuntimeRegionPlanner.MethodEvent(2, "test", "t",
-                        7, TARGET, 20, "example.Target", 2, 1, 0));
+                        7, TARGET, 20, "example.Target", 2, 1, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
     }
 
     private static List<RuntimeRegionPlanner.RuntimeEvent> runtime() {
         return Collections.singletonList(new RuntimeRegionPlanner.RuntimeEvent(
-                3, "BRANCH", TARGET, 2, 0, 0, TARGET + "#u4", -1,
-                "", 0, "", true, false));
+                3, "BRANCH", TARGET, 2, 0, 0, TARGET + "#u4", "", -1,
+                "", 0, "", Boolean.FALSE, null, "", ""));
     }
 
     private static Map<String, Object> activation(
@@ -978,11 +1450,145 @@ public class RuntimeRegionPlannerTest {
         return file;
     }
 
+    /** The recorded root call the finalizer stamps this port's owner from. */
+    private static Map<String, Object> ownedByRootCall(
+            Map<String, Object> port, long rootCallId) {
+        port.put("rootCallId", rootCallId);
+        return port;
+    }
+
     private static Map<String, Object> object(Object... values) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (int index = 0; index < values.length; index += 2) {
             result.put(String.valueOf(values[index]), values[index + 1]);
         }
         return result;
+    }
+
+    private static RuntimeRegionPlanner.Result planFiles(
+            File regionFile, File regionEdgeFile, File refinedGraphFile,
+            Collection<Map<String, Object>> runtimeSeeds,
+            List<RuntimeRegionPlanner.MethodEvent> methods,
+            List<RuntimeRegionPlanner.RuntimeEvent> runtimeEvents,
+            List<RuntimeRegionPlanner.FieldAccessEvent> fieldEvents) {
+        return RuntimeRegionPlanner.plan(
+                RuntimeRegionPlanner.read(regionFile),
+                RuntimeRegionPlanner.read(regionEdgeFile),
+                RuntimeRegionPlanner.RefinedFlowIndex.read(refinedGraphFile),
+                String.valueOf(regionFile), String.valueOf(regionEdgeFile),
+                runtimeSeeds, methods, runtimeEvents, fieldEvents,
+                Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList());
+    }
+
+    /**
+     * The failure-directed bound on heap-write capture demands.
+     *
+     * <p>A write is demanded when the fatal occurrence reads it, or when a
+     * producer of something the fatal occurrence reads states it in the
+     * dependency slice that closed that output, or when it writes an object
+     * some already demanded write also states.  A write on no such chain is
+     * not demanded, and with no fatal occurrence at all nothing is bounded.
+     * </p>
+     */
+    @Test
+    public void heapWriteDemandIsBoundedByWhatTheFailureReads() {
+        List<Map<String, Object>> plans = Arrays.asList(
+                targetPlan("occ.T", "R.T.in.key"),
+                producerPlan("occ.P"), producerPlan("occ.C"),
+                producerPlan("occ.N"), producerPlan("occ.M"),
+                producerPlan("occ.X"));
+        List<Map<String, Object>> edges = Arrays.asList(
+                // The fatal occurrence reads this write.
+                flowEdge("occ.P", "R.P.out.key", "occ.T", "R.T.in.key",
+                        11L, 12L),
+                // Same object as the demanded write: one object's state.
+                flowEdge("occ.P", "R.P.out.sibling", "occ.X", "R.X.in.s",
+                        11L, 0L),
+                // Publishes the demanded object to its reader.
+                flowEdge("occ.C", "R.C.out.holder", "occ.X", "R.X.in.h",
+                        31L, 11L),
+                // The demanded output's own slice states this input.
+                flowEdge("occ.C", "R.C.out.v", "occ.P", "R.P.in.v",
+                        21L, 0L),
+                // An input of the same producer its slice does not state.
+                flowEdge("occ.N", "R.N.out.noise", "occ.P", "R.P.in.noise",
+                        41L, 0L),
+                // Read only by an occurrence nothing fatal depends on.
+                flowEdge("occ.M", "R.M.out.metric", "occ.X", "R.X.in.m",
+                        99L, 0L));
+        Map<String, List<String>> sliceInputs = new LinkedHashMap<>();
+        sliceInputs.put("occ.P\nR.P.out.key",
+                Collections.singletonList("R.P.in.v"));
+        sliceInputs.put("occ.P\nR.P.out.sibling",
+                Collections.<String>emptyList());
+        sliceInputs.put("occ.C\nR.C.out.v", Collections.<String>emptyList());
+        sliceInputs.put("occ.C\nR.C.out.holder",
+                Collections.<String>emptyList());
+        sliceInputs.put("occ.N\nR.N.out.noise",
+                Collections.<String>emptyList());
+        sliceInputs.put("occ.M\nR.M.out.metric",
+                Collections.<String>emptyList());
+        List<String> heapOutputs = new ArrayList<>(sliceInputs.keySet());
+
+        Set<String> demanded = RuntimeRegionPlanner.failureDemandedOutputs(
+                plans, edges, sliceInputs, heapOutputs);
+
+        assertTrue(String.valueOf(demanded),
+                demanded.contains("occ.P\nR.P.out.key"));
+        assertTrue(String.valueOf(demanded),
+                demanded.contains("occ.C\nR.C.out.v"));
+        assertTrue(String.valueOf(demanded),
+                demanded.contains("occ.P\nR.P.out.sibling"));
+        assertTrue(String.valueOf(demanded),
+                demanded.contains("occ.C\nR.C.out.holder"));
+        assertFalse(String.valueOf(demanded),
+                demanded.contains("occ.N\nR.N.out.noise"));
+        assertFalse(String.valueOf(demanded),
+                demanded.contains("occ.M\nR.M.out.metric"));
+
+        // No fatal occurrence, so no failure to direct the bound: every
+        // demand stands, exactly as it did before the bound existed.
+        List<Map<String, Object>> withoutTarget = new ArrayList<>(plans);
+        withoutTarget.set(0, producerPlan("occ.T"));
+        assertEquals(null, RuntimeRegionPlanner.failureDemandedOutputs(
+                withoutTarget, edges, sliceInputs, heapOutputs));
+    }
+
+    private static Map<String, Object> targetPlan(String occurrenceId,
+                                                  String inputPort) {
+        Map<String, Object> symbol = new LinkedHashMap<>();
+        symbol.put("portId", inputPort);
+        Map<String, Object> goal = new LinkedHashMap<>();
+        goal.put("kind", "TARGET_REACH_CLOSURE");
+        goal.put("symbolize", Collections.singletonList(symbol));
+        return occurrencePlan(occurrenceId, goal);
+    }
+
+    private static Map<String, Object> producerPlan(String occurrenceId) {
+        Map<String, Object> goal = new LinkedHashMap<>();
+        goal.put("kind", "OUTPUT_RELATION_CLOSURE");
+        return occurrencePlan(occurrenceId, goal);
+    }
+
+    private static Map<String, Object> occurrencePlan(String occurrenceId,
+                                                     Map<String, Object> goal) {
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("occurrenceId", occurrenceId);
+        plan.put("closureGoals", Collections.singletonList(goal));
+        return plan;
+    }
+
+    private static Map<String, Object> flowEdge(
+            String producer, String output, String consumer, String input,
+            long receiverObjectId, long valueObjectId) {
+        Map<String, Object> edge = new LinkedHashMap<>();
+        edge.put("kind", "RUNTIME_FIELD_FLOW");
+        edge.put("fromOccurrenceId", producer);
+        edge.put("fromOutputPort", output);
+        edge.put("toOccurrenceId", consumer);
+        edge.put("toInputPort", input);
+        edge.put("receiverObjectId", receiverObjectId);
+        edge.put("valueObjectId", valueObjectId);
+        return edge;
     }
 }

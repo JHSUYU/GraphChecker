@@ -42,10 +42,26 @@
  * When it records
  * ---------------------------------------------------------------------------
  *
- * Only while the session has at least one selected carrier.  The order domain
- * exists to relate accesses to selected shared state; with nothing selected
- * there is no provenance question for it to answer. The check is one relaxed
- * load, so a workload that selects nothing keeps exactly its old cost.
+ * Only once the session has been *activated*: some task declared a selected
+ * event site -- a shared carrier, a communication port, a synchronization
+ * site, or the selected region itself -- and said so through `activate()`.
+ *
+ * The gate used to be `SharedFieldVersions::has_carriers()`, and that was a
+ * correctness bug, not a cheaper spelling of the same rule (README EVENT-1).
+ * A case whose selected sites are all RPC/SASL handoffs selects no carrier,
+ * so every SYNCHRONIZATION channel silently went unrecorded for it: thread
+ * start and join, volatile reads and writes, atomic RMW and CAS.  Those are
+ * not decoration for such a case -- a sparse causal chain across a heartbeat
+ * or a key rotation is made of exactly those edges -- so the case ended up
+ * with its VALUE_HANDOFF edge and an order domain that claimed nothing else
+ * happened.  The handoff and region recorders never consulted this gate,
+ * which is why the loss was invisible.
+ *
+ * Activation is one-way inside a session.  Turning recording off partway
+ * would leave a domain that reads as an absence of order rather than an
+ * absence of recording, and no consumer can tell those apart.  The check is
+ * still one relaxed load, so a workload that selects nothing keeps exactly
+ * its old cost.
  *
  * ---------------------------------------------------------------------------
  * What creates order, and what deliberately does not
@@ -158,6 +174,12 @@ public:
   static void open_session();
   static void close_session();
 
+  /**
+   * Declares that a selected event site exists in this session, so the hot
+   * hooks may record.  Idempotent; see "when it records" above.
+   */
+  static void activate();
+
   /** See "when it records" above.  One relaxed load on the hot path. */
   static bool is_recording();
 
@@ -266,6 +288,12 @@ private:
   static const size_t MAX_EDGES = 16384;
 
   static bool _open;
+  // Whether any selected event site has been declared for this session.
+  // Read without the lock on purpose: it only ever goes false -> true inside
+  // a session, so a stale read costs one unrecorded event at the moment of
+  // activation and never a wrong one.  open_session()/close_session() reset
+  // it under the lock with everything else the session owns.
+  static bool _activated;
   static ReleaseStore _releases;
   static std::vector<Event> _events;
   static bool _events_truncated;

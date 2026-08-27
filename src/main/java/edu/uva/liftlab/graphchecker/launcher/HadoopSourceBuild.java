@@ -15,19 +15,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Builds the Hadoop checkout and emits its test-scope classpath.
- *
- * <p>This is the only launcher step that needs a working Hadoop toolchain:
- * Hadoop 3.0.0-alpha4 generates its Protobuf sources with a pinned
- * {@code protoc}, which has to be supplied. The step is separated from
- * everything else so that a missing or mismatched one is a named
- * {@link LauncherDiagnostic} raised by {@link #preflight} rather than a Maven
- * stack trace in the middle of a run, and so that the parts of the launcher
- * that do not need Hadoop stay testable without it.</p>
- *
- * <p>{@link #mavenCommands} is pure: it returns the command lines without
- * running them, so the invocation the launcher would issue can be inspected
- * and asserted on a machine where it cannot be executed.</p>
+ * Builds the Hadoop checkout and emits its test-scope classpath.  The only
+ * launcher step needing a Hadoop toolchain - 3.0.0-alpha4 generates its
+ * Protobuf sources with a pinned {@code protoc} - so it is separated: a
+ * missing one is a named {@link LauncherDiagnostic} before Maven starts rather
+ * than a stack trace mid-run, and the rest of the launcher stays testable
+ * without Hadoop.  {@link #mavenCommands} is pure.
  */
 public final class HadoopSourceBuild {
 
@@ -40,9 +33,8 @@ public final class HadoopSourceBuild {
 
     /**
      * Modules the workload needs compiled, in reactor dependency order.
-     *
-     * <p>{@code hadoop-hdfs} is last on purpose: the classpath command below
-     * relies on it being the final module of the {@code -am} reactor.</p>
+     * {@code hadoop-hdfs} is last on purpose: the classpath command below
+     * relies on it being the final module of the {@code -am} reactor.
      */
     public static final List<String> MODULES =
             Collections.unmodifiableList(Arrays.asList(
@@ -65,56 +57,6 @@ public final class HadoopSourceBuild {
     private HadoopSourceBuild() {
     }
 
-    /**
-     * Reads the protoc version the checkout pins.
-     *
-     * <p>The version is read from the checkout rather than hardcoded, because
-     * a different Hadoop revision pins a different one and a launcher that
-     * asserted a constant would silently accept the wrong toolchain.</p>
-     */
-    public static String requiredProtocVersion(Path hadoopHome)
-            throws LauncherException {
-        Path pom = hadoopHome.resolve(VERSION_POM);
-        String text;
-        try {
-            text = new String(Files.readAllBytes(pom), StandardCharsets.UTF_8);
-        } catch (IOException failure) {
-            throw new LauncherException(LauncherDiagnostic.HADOOP_HOME_MISSING,
-                    "cannot read " + pom, failure);
-        }
-        Matcher matcher = PROTOBUF_VERSION.matcher(text);
-        if (!matcher.find()) {
-            throw new LauncherException(LauncherDiagnostic.HADOOP_HOME_MISSING,
-                    pom + " declares no <protobuf.version>");
-        }
-        return matcher.group(1);
-    }
-
-    /**
-     * Validates every prerequisite of a Hadoop build and returns the resolved
-     * protoc executable.
-     *
-     * @param protoc the configured protoc path, or null to search {@code PATH}
-     */
-    public static Path preflight(Path hadoopHome, String maven, String protoc)
-            throws LauncherException {
-        requireHadoopHome(hadoopHome);
-        resolveExecutable(maven, LauncherDiagnostic.MAVEN_MISSING,
-                "Maven executable");
-        Path resolved = resolveExecutable(protoc == null ? "protoc" : protoc,
-                LauncherDiagnostic.PROTOC_MISSING, "protoc executable");
-        String required = requiredProtocVersion(hadoopHome);
-        String actual = protocVersion(resolved);
-        if (!required.equals(actual)) {
-            throw new LauncherException(
-                    LauncherDiagnostic.PROTOC_VERSION_MISMATCH,
-                    resolved + " reports " + actual + ", but " + hadoopHome
-                            + " pins protobuf.version " + required);
-        }
-        return resolved;
-    }
-
-    /** Fails unless the checkout holds every module the workload needs. */
     public static void requireHadoopHome(Path hadoopHome)
             throws LauncherException {
         if (hadoopHome == null || !Files.isDirectory(hadoopHome)) {
@@ -132,17 +74,12 @@ public final class HadoopSourceBuild {
     }
 
     /**
-     * The two Maven invocations the build issues, in order.
-     *
-     * <p>The first compiles the reactor that {@code hadoop-hdfs} needs,
-     * including its test sources, so the workload's own test classes exist.
-     * The second asks the same reactor for the module's test-scope dependency
-     * classpath; because {@code hadoop-hdfs} is the last module of that
-     * reactor, its classpath is the one left in {@code outputFile}. The run
-     * step re-validates the file rather than trusting the ordering.</p>
-     *
-     * <p>Both are offline: the machine has no network, and a build that
-     * silently reached for a remote artifact would not be reproducible.</p>
+     * The two Maven invocations the build issues: the first compiles the
+     * reactor {@code hadoop-hdfs} needs including test sources, the second
+     * asks that reactor for the module's test-scope classpath.  Because
+     * {@code hadoop-hdfs} is the reactor's last module its classpath is the
+     * one left in {@code outputFile}.  Both are offline: the machine has no
+     * network, and a silent remote fetch would not be reproducible.
      */
     public static List<List<String>> mavenCommands(String maven, Path protoc,
                                                    Path outputFile) {
@@ -168,10 +105,44 @@ public final class HadoopSourceBuild {
         return Collections.unmodifiableList(commands);
     }
 
-    /** Runs the build, after {@link #preflight} has accepted the toolchain. */
+    /**
+     * Validates every prerequisite, then compiles and writes the classpath
+     * file.  The pinned protoc version is read from the checkout rather than
+     * hardcoded, because a different Hadoop revision pins a different one and
+     * a constant would silently accept the wrong toolchain.
+     *
+     * @param protoc the configured protoc path, or null to search {@code PATH}
+     */
     public static Path build(Path hadoopHome, String maven, String protoc,
                              Path outputDir) throws LauncherException {
-        Path resolvedProtoc = preflight(hadoopHome, maven, protoc);
+        requireHadoopHome(hadoopHome);
+        resolveExecutable(maven, LauncherDiagnostic.MAVEN_MISSING,
+                "Maven executable");
+        Path resolvedProtoc = resolveExecutable(protoc == null
+                        ? "protoc" : protoc,
+                LauncherDiagnostic.PROTOC_MISSING, "protoc executable");
+        Path pom = hadoopHome.resolve(VERSION_POM);
+        String pomText;
+        try {
+            pomText = new String(Files.readAllBytes(pom),
+                    StandardCharsets.UTF_8);
+        } catch (IOException failure) {
+            throw new LauncherException(LauncherDiagnostic.HADOOP_HOME_MISSING,
+                    "cannot read " + pom, failure);
+        }
+        Matcher pinned = PROTOBUF_VERSION.matcher(pomText);
+        if (!pinned.find()) {
+            throw new LauncherException(LauncherDiagnostic.HADOOP_HOME_MISSING,
+                    pom + " declares no <protobuf.version>");
+        }
+        String actual = protocVersion(resolvedProtoc);
+        if (!pinned.group(1).equals(actual)) {
+            throw new LauncherException(
+                    LauncherDiagnostic.PROTOC_VERSION_MISMATCH,
+                    resolvedProtoc + " reports " + actual + ", but " + hadoopHome
+                            + " pins protobuf.version " + pinned.group(1));
+        }
+
         Path classpathFile = outputDir.resolve(CLASSPATH_FILE_NAME);
         try {
             Files.createDirectories(outputDir);
@@ -255,11 +226,10 @@ public final class HadoopSourceBuild {
         }
     }
 
-    /**
-     * Resolves a command that is either a path or a bare name on {@code PATH}.
-     */
-    static Path resolveExecutable(String command, LauncherDiagnostic absent,
-                                  String description)
+    /** Resolves a command that is either a path or a bare name on PATH. */
+    private static Path resolveExecutable(String command,
+                                          LauncherDiagnostic absent,
+                                          String description)
             throws LauncherException {
         if (command == null || command.trim().isEmpty()) {
             throw new LauncherException(absent, description + " is not set");

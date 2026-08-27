@@ -6,7 +6,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourceSelectorContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import org.junit.Rule;
@@ -60,6 +59,21 @@ public class TargetReachCutPortTest {
             "XCH.dc98a244-08b8-370c-9cc0-7cc5320c0089";
     private static final String CUT_PORT =
             CommunicationCatalogContract.requestPortId(EXCHANGE_SITE, "p0");
+    /** OCC-1: the read-from edge two activations of the target both record. */
+    private static final String SHARED_EDGE =
+            "RF.4c7de5b1-3a02-3f6b-9d21-5ba0f1e83c74";
+    /** The exchange edge a replay recorded and the frozen plan lacked. */
+    private static final String ABSORBED_EDGE =
+            "RPC.1d5f0b6c-7a44-3e18-8c0b-2f2e5b7a91d0";
+    private static final String PRODUCER_OCCURRENCE =
+            "slice/client#epoch0/region/REGION.9c1a7f20-2d61-3b55-a4de-"
+            + "6f30b1c8d47e#1";
+    private static final String STORE_FIELD =
+            "example.store.KeyStore#allKeys";
+    private static final long RECEIVER = 78517L;
+    private static final long OTHER_RECEIVER = 78901L;
+    private static final int SLOT = -3;
+    private static final int OTHER_SLOT = -4;
 
     @Test
     public void theDeclaredCutPortIsAdmittedAsTheTargetFragmentsInput()
@@ -250,46 +264,6 @@ public class TargetReachCutPortTest {
     }
 
     @Test
-    public void configuredSelectorEvidenceRemainsOnItsTargetPath()
-            throws Exception {
-        String sourceOccurrence = "slice/nn#source-key#1";
-        String sourceId = "TEST.TARGET.KEY";
-        String field = "<Test: int keyId>";
-        String consumePhase = "SOURCE_PHASE.target-consume";
-        String producerPhase = "SOURCE_PHASE.source-publish";
-        String raw = ConfiguredSourceSelectorContract
-                .expectedRawSymbolPrefix(producerPhase, sourceId, field)
-                + "Test";
-        JsonObject witnessed = summary();
-        JsonObject selectorTask = new JsonObject();
-        JsonArray selectors = new JsonArray();
-        selectors.add(ConfiguredSourceSelectorContract.exactInt(
-                consumePhase, producerPhase, sourceOccurrence, sourceId,
-                field));
-        selectorTask.add(ConfiguredSourceSelectorContract.TASK_FIELD,
-                selectors);
-        JsonArray evidence = new JsonArray();
-        evidence.add(ConfiguredSourceSelectorContract.evidence(
-                ConfiguredSourceSelectorContract.decode(selectorTask).get(0),
-                "TASK.SOURCE.KEY", raw, 17));
-        witnessed.add(ConfiguredSourceSelectorContract.EVIDENCE_FIELD,
-                evidence);
-
-        JsonObject query = build(CUT_PORT, witnessed);
-
-        assertTrue(query.toString(), !query.has(
-                ConfiguredSourceSelectorContract.EVIDENCE_FIELD));
-        JsonObject path = query.getAsJsonArray("paths").get(0)
-                .getAsJsonObject();
-        assertEquals(1, path.getAsJsonArray(
-                ConfiguredSourceSelectorContract.EVIDENCE_FIELD).size());
-        assertEquals(17, path.getAsJsonArray(
-                        ConfiguredSourceSelectorContract.EVIDENCE_FIELD)
-                .get(0).getAsJsonObject().get("selectedIntValue")
-                .getAsInt());
-    }
-
-    @Test
     public void vmHandoffEvidenceRemainsOnItsTargetPath()
             throws Exception {
         JsonObject witnessed = summary();
@@ -299,7 +273,7 @@ public class TargetReachCutPortTest {
         attached.addProperty("_exp", "M_I_field_REMOTE.VALUE_Test");
         VmHandoffEvidence.writeTo(witnessed,
                 java.util.Collections.singletonList(VmHandoffEvidence.event(
-                        CUT_PORT, 41L, attached, "TASK.PRODUCER",
+                        CUT_PORT, 41L, 42L, attached, "TASK.PRODUCER",
                         "slice/producer#epoch0/region/R#1")));
 
         JsonObject query = build(CUT_PORT, witnessed);
@@ -309,7 +283,13 @@ public class TargetReachCutPortTest {
                 .getAsJsonObject();
         assertEquals(1, path.getAsJsonArray(VmHandoffEvidence.FIELD).size());
         assertEquals(41L, path.getAsJsonArray(VmHandoffEvidence.FIELD)
-                .get(0).getAsJsonObject().get("exportEventId").getAsLong());
+                .get(0).getAsJsonObject()
+                .get(VmHandoffEvidence.EXPORT_EVENT_ID).getAsLong());
+        // README RPC-1: the receive endpoint travels with the export, so the
+        // path keeps the whole edge rather than half of it.
+        assertEquals(42L, path.getAsJsonArray(VmHandoffEvidence.FIELD)
+                .get(0).getAsJsonObject()
+                .get(VmHandoffEvidence.ATTACH_EVENT_ID).getAsLong());
     }
 
     @Test
@@ -326,11 +306,13 @@ public class TargetReachCutPortTest {
         secondExpression.addProperty("_java_type", "I");
         secondExpression.addProperty("_exp", "M_I_field_REMOTE_B");
         VmHandoffEvidence.writeTo(first, Collections.singletonList(
-                VmHandoffEvidence.event(CUT_PORT, 41L, firstExpression,
-                        "TASK.PRODUCER.A", "slice/dnA#epoch0/region/R#1")));
+                VmHandoffEvidence.event(CUT_PORT, 41L, 42L,
+                        firstExpression, "TASK.PRODUCER.A",
+                        "slice/dnA#epoch0/region/R#1")));
         VmHandoffEvidence.writeTo(second, Collections.singletonList(
-                VmHandoffEvidence.event(CUT_PORT, 42L, secondExpression,
-                        "TASK.PRODUCER.B", "slice/dnB#epoch0/region/R#1")));
+                VmHandoffEvidence.event(CUT_PORT, 51L, 52L,
+                        secondExpression, "TASK.PRODUCER.B",
+                        "slice/dnB#epoch0/region/R#1")));
 
         JsonObject query = build(CUT_PORT, Arrays.asList(first, second));
 
@@ -461,6 +443,192 @@ public class TargetReachCutPortTest {
         }
     }
 
+    @Test
+    public void twoActivationsOfOneLocationAreOneRuntimeBinding()
+            throws Exception {
+        JsonObject query = buildActivations(
+                activation(1, location(1, RECEIVER, SLOT)),
+                activation(2, location(2, RECEIVER, SLOT)));
+
+        JsonArray bound = query.getAsJsonArray("selectedTargetBindings");
+        assertEquals(bound.toString(), 1, bound.size());
+        // The recorded name travels as recorded: only the comparison reads
+        // the location at its planned address.
+        assertEquals(location(1, RECEIVER, SLOT),
+                bound.get(0).getAsJsonObject().get("locationKey")
+                        .getAsString());
+    }
+
+    @Test
+    public void activationsOnDifferentReceiversAreStillContested()
+            throws Exception {
+        assertContested(activation(1, location(1, RECEIVER, SLOT)),
+                activation(2, location(2, OTHER_RECEIVER, SLOT)));
+    }
+
+    @Test
+    public void activationsOnDifferentSlotsAreStillContested()
+            throws Exception {
+        assertContested(activation(1, location(1, RECEIVER, SLOT)),
+                activation(2, location(2, RECEIVER, OTHER_SLOT)));
+    }
+
+    @Test
+    public void activationsThatDisagreeOffTheLocationAreStillContested()
+            throws Exception {
+        JsonObject second = activation(2, location(2, RECEIVER, SLOT));
+        second.getAsJsonArray("edgeBindings").get(0).getAsJsonObject()
+                .addProperty("primitiveValue", "13");
+        assertContested(activation(1, location(1, RECEIVER, SLOT)), second);
+    }
+
+    @Test
+    public void theSessionLocalNameIsStillNotCompared() throws Exception {
+        JsonObject second = activation(2, location(2, RECEIVER, SLOT));
+        second.getAsJsonArray("edgeBindings").get(0).getAsJsonObject()
+                .addProperty(SharedStateEvidence.SESSION_LOCATION_FIELD,
+                        "MAP_STATE/611#-3");
+
+        JsonArray bound = buildActivations(
+                activation(1, location(1, RECEIVER, SLOT)), second)
+                .getAsJsonArray("selectedTargetBindings");
+
+        assertEquals(bound.toString(), 1, bound.size());
+    }
+
+    /**
+     * An exchange pairing a replay recorded and the scheduler absorbed is
+     * demand this ledger cannot hold: the ledger is what the baseline
+     * discovery saw, and the absorbed pairing is what it did not.  It is
+     * still published, so composition sees the producer the VM named rather
+     * than the one the frozen plan guessed.
+     */
+    @Test
+    public void anAbsorbedPairingIsDemandTheLedgerNeedNotHold()
+            throws Exception {
+        JsonObject summary = summary();
+        summary.getAsJsonArray("edgeBindings").add(
+                absorbed(exchangeBinding()));
+
+        JsonArray bound = build(CUT_PORT, summary)
+                .getAsJsonArray("selectedTargetBindings");
+
+        assertEquals(bound.toString(), 1, bound.size());
+        JsonObject row = bound.get(0).getAsJsonObject();
+        assertEquals(ABSORBED_EDGE, row.get("edgeId").getAsString());
+        assertTrue(row.toString(), VmHandoffEvidence.absorbed(row));
+    }
+
+    /** Without the stamps the same row is a ledger the plan grew on its own. */
+    @Test
+    public void anUnstampedPairingOutsideTheLedgerIsStillRefused()
+            throws Exception {
+        assertLedgerRefused(exchangeBinding());
+    }
+
+    /** Three of the four stamps state no send and no receive, so they decide
+     * nothing: the row is judged as any other binding. */
+    @Test
+    public void aPartiallyStampedPairingIsStillRefused() throws Exception {
+        JsonObject noAttach = absorbed(exchangeBinding());
+        noAttach.remove(VmHandoffEvidence.ABSORBED_ATTACH_EVENT_ID);
+        assertLedgerRefused(noAttach);
+
+        JsonObject noExport = absorbed(exchangeBinding());
+        noExport.remove(VmHandoffEvidence.ABSORBED_EXPORT_EVENT_ID);
+        assertLedgerRefused(noExport);
+
+        JsonObject noTask = absorbed(exchangeBinding());
+        noTask.addProperty(VmHandoffEvidence.ABSORBED_FROM_TASK_ID, "");
+        assertLedgerRefused(noTask);
+
+        JsonObject otherAuthority = absorbed(exchangeBinding());
+        otherAuthority.addProperty(
+                VmHandoffEvidence.ABSORBED_AUTHORITY_FIELD, "SOMETHING_ELSE");
+        assertLedgerRefused(otherAuthority);
+    }
+
+    private void assertLedgerRefused(JsonObject binding) throws Exception {
+        JsonObject summary = summary();
+        summary.getAsJsonArray("edgeBindings").add(binding);
+        try {
+            build(CUT_PORT, summary);
+            fail("a binding outside the demand ledger must be refused");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage().contains(
+                    "selected target demand ledger does not exactly cover"));
+        }
+    }
+
+    /** One traced exchange row feeding the selected occurrence's cut port. */
+    private static JsonObject exchangeBinding() {
+        JsonObject binding = new JsonObject();
+        binding.addProperty("edgeId", ABSORBED_EDGE);
+        binding.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
+        binding.addProperty("fromOccurrenceId", PRODUCER_OCCURRENCE);
+        binding.addProperty("fromOutputPort", CUT_PORT);
+        binding.addProperty("toOccurrenceId", OCCURRENCE);
+        binding.addProperty("toInputPort", CUT_PORT);
+        return binding;
+    }
+
+    /** The four fields that re-derive one row from the carry file. */
+    private static JsonObject absorbed(JsonObject binding) {
+        binding.addProperty(VmHandoffEvidence.ABSORBED_AUTHORITY_FIELD,
+                VmHandoffEvidence.ABSORBED_AUTHORITY);
+        binding.addProperty(VmHandoffEvidence.ABSORBED_FROM_TASK_ID,
+                "TASK.SEED.PRODUCER");
+        binding.addProperty(VmHandoffEvidence.ABSORBED_EXPORT_EVENT_ID, 217L);
+        binding.addProperty(VmHandoffEvidence.ABSORBED_ATTACH_EVENT_ID, 220L);
+        return binding;
+    }
+
+    private void assertContested(JsonObject first, JsonObject second)
+            throws Exception {
+        try {
+            buildActivations(first, second);
+            fail("two locations must not be read as one");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage().contains(
+                    "binding " + SHARED_EDGE + " has no runtime evidence"));
+        }
+    }
+
+    private JsonObject buildActivations(JsonObject first, JsonObject second)
+            throws IOException {
+        JsonObject seed = seedQuery(CUT_PORT);
+        JsonArray demanded = new JsonArray();
+        demanded.add(SHARED_EDGE);
+        seed.getAsJsonObject("selectedTargetOccurrence")
+                .add("bindingIds", demanded);
+        return build(CUT_PORT, Arrays.asList(first, second), manifest(),
+                seed);
+    }
+
+    /** One activation of the selected occurrence reading {@code location}. */
+    private static JsonObject activation(int ordinal, String location) {
+        JsonObject row = summary();
+        row.addProperty("occurrenceId", OCCURRENCE + "#a" + ordinal);
+        JsonObject binding = new JsonObject();
+        binding.addProperty("edgeId", SHARED_EDGE);
+        binding.addProperty("kind", "RUNTIME_FIELD_FLOW");
+        binding.addProperty("toOccurrenceId", OCCURRENCE);
+        binding.addProperty("toInputPort", CUT_PORT);
+        binding.addProperty("locationKey", location);
+        binding.addProperty(SharedStateEvidence.SESSION_LOCATION_FIELD,
+                "MAP_STATE/229#-3");
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        row.add("edgeBindings", bindings);
+        return row;
+    }
+
+    /** The canonical name one activation records for a map's whole state. */
+    private static String location(int ordinal, long receiver, int slot) {
+        return "MAP_STATE/" + OCCURRENCE + "#a" + ordinal + "@receiver:"
+                + receiver + "@" + STORE_FIELD + "#" + slot;
+    }
+
     private JsonObject build(String inputPort) throws IOException {
         return build(inputPort, summary());
     }
@@ -547,7 +715,7 @@ public class TargetReachCutPortTest {
                 + SymbolicSourceEvidence.engineLabelForPhase(
                 phase, sourceId) + "_Target_" + constant);
         return SymbolicSourceEvidence.event(phase, sourceId, OCCURRENCE,
-                "<Target: long local>", expression);
+                "<Target: long local>", expression, 1, false, null);
     }
 
     private static JsonObject manifest() {
@@ -639,6 +807,7 @@ public class TargetReachCutPortTest {
         targetReach.addProperty("outcome", true);
         row.add(PathObservation.TargetReachEvent.FIELD, targetReach);
         row.add("edgeBindings", new JsonArray());
+        row.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
         return row;
     }
 

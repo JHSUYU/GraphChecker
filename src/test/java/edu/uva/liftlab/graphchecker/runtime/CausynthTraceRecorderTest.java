@@ -213,11 +213,13 @@ public class CausynthTraceRecorderTest {
             // Clear and re-read: the in-memory binding is gone, exactly as it
             // is when the aggregation path plans.
             Map<String, String> sources = new LinkedHashMap<>();
+            Map<String, Boolean> receiverOwned = new LinkedHashMap<>();
             for (RuntimeRegionPlanner.MethodEvent event
                     : CausynthTraceRecorder.reattributedFramesForTests(
                             output.resolve("runtime_trace.jsonl").toFile(),
                             null)) {
                 sources.put(event.method, event.sourceKey);
+                receiverOwned.put(event.method, event.receiverAttributed);
             }
             assertEquals("cluster0/dn0#epoch1", sources.get(actorRun));
             assertEquals("an unregistered synchronous descendant inherits "
@@ -225,6 +227,16 @@ public class CausynthTraceRecorderTest {
                     "cluster0/dn0#epoch1", sources.get(helperRun));
             assertEquals("a descendant's own registered receiver wins",
                     "cluster0/dn1#epoch1", sources.get(otherRun));
+
+            // Which authority answered is recorded, because replay can
+            // re-check a receiver's own registration by object identity and
+            // can only re-check an inherited one by context.
+            assertEquals("the actor's own alias named it",
+                    Boolean.TRUE, receiverOwned.get(actorRun));
+            assertEquals("the helper was named by its caller's registration",
+                    Boolean.FALSE, receiverOwned.get(helperRun));
+            assertEquals("the other service's own alias named it",
+                    Boolean.TRUE, receiverOwned.get(otherRun));
         } finally {
             shutdown();
             clear();

@@ -17,30 +17,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * The read-from arm a solved model selected, and the gate a replay carries.
- *
- * <p>A model is only a selection if something reads it. The query declares one
- * Boolean {@code rf_selector__*} per candidate arm of each guarded read, and an
- * {@code recorded_read_choice__*} assertion saying exactly one of them holds;
- * this class reads the assignment back and says which writer the solver chose.
- * The assertion is a <em>name</em> on a constraint, not a variable, so it never
- * appears in a model: the exactly-one property it states is therefore checked
- * here against the values, rather than trusted because the query asserted
- * it.</p>
- *
- * <p>Every way the answer can fail to be an answer is a named refusal:</p>
- *
- * <ul>
- *   <li>a selector the model does not assign - the query declared a choice the
- *   solver never valued, so there is nothing to enforce;</li>
- *   <li>no arm true, or several - the values do not determine one writer, and
- *   picking the first is a guess;</li>
- *   <li>an arm the compiler already refused - the refusal is re-emitted with
- *   its own reason rather than collapsed into a generic "no gate" result.</li>
- * </ul>
- *
- * <p>Every refusal is filed under the gate gap family, so it reaches the
- * coverage stream as a {@code GATE} divergence rather than as a dropped
- * selection.</p>
  */
 public final class SelectedReadCut {
 
@@ -52,14 +28,7 @@ public final class SelectedReadCut {
     /** Task member one replay carries its selected cut in. */
     public static final String TASK_FIELD = "readCutPlan";
 
-    /**
-     * What an installed gate is allowed to do.
-     *
-     * <p>The plan states it, so a replay cannot silently do more. Observing
-     * and confirming needs no scheduling at all; enforcing the order would
-     * need a wait, and a wait this layer cannot prove safe is not installed.
-     * </p>
-     */
+    /** What an installed gate is allowed to do. */
     public static final String OBSERVE_AND_CONFIRM = "OBSERVE_AND_CONFIRM";
 
     /** The model assigned no value to one of the read's selectors. */
@@ -86,9 +55,7 @@ public final class SelectedReadCut {
     }
 
     /** The cut of a query that declared no read choice at all. */
-    public static SelectedReadCut none() {
-        return new SelectedReadCut();
-    }
+    public static SelectedReadCut none() { return new SelectedReadCut(); }
 
     /**
      * Reads one solved model's read-from selectors.
@@ -258,19 +225,9 @@ public final class SelectedReadCut {
         return selections.isEmpty() && refusals.isEmpty();
     }
 
-    /** Gates a replay may install, one per selected and enforceable arm. */
-    public List<JsonObject> gates() {
-        return Collections.unmodifiableList(gates);
-    }
-
     /** Named gate refusals, in the coverage stream's own gap family. */
     public List<JsonObject> refusals() {
         return Collections.unmodifiableList(refusals);
-    }
-
-    /** One row per guarded read, saying which arm the model chose. */
-    public List<JsonObject> selections() {
-        return Collections.unmodifiableList(selections);
     }
 
     /** The selection as one record member. */
@@ -290,11 +247,6 @@ public final class SelectedReadCut {
     /**
      * The plan one replay task carries: the gates to install, and the one
      * thing installing them means.
-     *
-     * <p>The refusals stay on the solve record. A replay that also carried
-     * them would report the reference run's findings as its own, and the same
-     * gap would be counted twice in the coverage of two different
-     * executions.</p>
      */
     public JsonObject replayPlan() {
         if (gates.isEmpty()) return new JsonObject();

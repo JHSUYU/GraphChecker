@@ -291,6 +291,11 @@ Expression *SymBigDecimal::get(int field_offset) {
   return found == _internal_fields.end() ? NULL : found->second;
 }
 
+bool SymBigDecimal::has_sym_exp(int field_offset) {
+  FieldLock guard(this);
+  return _internal_fields.find(field_offset) != _internal_fields.end();
+}
+
 void SymBigDecimal::symbolize_bigDecimal(oop decimalOOp, Expression *parentExp) {
   this->set_bigDecimal_symbolic(decimalOOp, parentExp->get_name());
 }

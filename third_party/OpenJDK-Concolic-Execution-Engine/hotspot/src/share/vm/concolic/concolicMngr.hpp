@@ -197,12 +197,19 @@ public:
   // or a negative status. Session close reclaims every handle; no VM pointer
   // ever reaches Java.
   //
+  // Each call also reports the ledger event it recorded through its optional
+  // out-parameter: the export event for exportExpression, the attach event
+  // for attachExpression.  README RPC-1: both endpoints of the
+  // VALUE_HANDOFF edge are the VM's answer, because one export may be
+  // attached at several explicit receivers and no consumer may recover the
+  // matching attach by searching the order domain.  The out-parameter is
+  // written only on success and may be NULL.
   static jlong exportExpression(
       Handle owner, const char *declaring_class, const char *field_name,
-      const char *descriptor);
+      const char *descriptor, jlong *export_event_out);
   static jlong attachExpression(
       Handle owner, const char *declaring_class, const char *field_name,
-      const char *descriptor, jlong handle);
+      const char *descriptor, jlong handle, jlong *attach_event_out);
   // One half-open index range of this thread's single append-only path
   // condition, as its conditions.  This is how a selected branch hook reads
   // back the exact predicate its recorded condition indices name; the region

@@ -1,13 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-/**
- * Immutable class-file identity for one annotated exception construction.
- *
- * <p>Public so that an integration layer - a workload launcher, say - can
- * resolve the same annotated site the analysis resolves, instead of growing a
- * second way to name a target. The fields stay package-private; callers
- * outside this package read the accessors.</p>
- */
+/** Immutable class-file identity for one annotated exception construction. */
 public final class ExceptionTargetSite {
     final String id;
     final String className;
@@ -16,13 +9,11 @@ public final class ExceptionTargetSite {
     final String methodSignature;
     final String exceptionClass;
     final int exceptionConstructionOrdinal;
-    final int sourceLine;
 
     ExceptionTargetSite(String id, String className, String methodName,
                         String methodDescriptor, String methodSignature,
                         String exceptionClass,
-                        int exceptionConstructionOrdinal,
-                        int sourceLine) {
+                        int exceptionConstructionOrdinal) {
         this.id = id == null ? "" : id;
         this.className = className;
         this.methodName = methodName;
@@ -30,7 +21,6 @@ public final class ExceptionTargetSite {
         this.methodSignature = methodSignature;
         this.exceptionClass = exceptionClass;
         this.exceptionConstructionOrdinal = exceptionConstructionOrdinal;
-        this.sourceLine = sourceLine;
     }
 
     public String stableIdentity() {
@@ -56,9 +46,5 @@ public final class ExceptionTargetSite {
 
     public String exceptionClass() {
         return exceptionClass;
-    }
-
-    public int sourceLine() {
-        return sourceLine;
     }
 }

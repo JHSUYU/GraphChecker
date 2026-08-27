@@ -11,14 +11,7 @@ import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * The single polarity algebra for binary concolic branch predicates.
- *
- * <p>Every predicate accepted or returned here is detached from its caller's
- * JSON tree and has recursively sorted object keys.  This gives witness hashes
- * and replay comparisons one representation independent of Gson insertion
- * order.</p>
- */
+/** The single polarity algebra for binary concolic branch predicates. */
 public final class BranchPredicateAlgebra {
     private static final Map<String, String> COMPLEMENTS = complements();
     private BranchPredicateAlgebra() {
@@ -28,23 +21,7 @@ public final class BranchPredicateAlgebra {
         return CanonicalJson.copy(withoutNullMembers(predicate));
     }
 
-    /**
-     * Drops object members whose value is JSON null.
-     *
-     * <p>One predicate reaches a comparison by two routes. The VM's own
-     * serialization of the recorded path condition is spliced into a result
-     * verbatim, so an optional member the VM emitted as {@code null} -- an
-     * absent path guard on a read-from arm is the ordinary case -- survives.
-     * The same predicate copied through the Java runtime and written back out
-     * loses that member, because a JSON writer that does not serialize nulls
-     * treats "present and null" and "absent" as the same thing. They do mean
-     * the same thing, and a canonical form that disagrees turns one predicate
-     * into two and rejects a branch witness that matches its own recording
-     * exactly.</p>
-     *
-     * <p>Only object members are dropped. A null inside an array is a
-     * position, and removing it would renumber every element after it.</p>
-     */
+    /** Drops object members whose value is JSON null. */
     private static JsonElement withoutNullMembers(JsonElement value) {
         if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
             return value == null ? JsonNull.INSTANCE : value;

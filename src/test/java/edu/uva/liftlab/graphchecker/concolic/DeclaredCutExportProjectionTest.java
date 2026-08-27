@@ -4,13 +4,16 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -96,33 +99,9 @@ public class DeclaredCutExportProjectionTest {
 
     @Test
     public void selectedPhasePromotesOnlyItsExactContinuation() {
-        JsonObject catalog = outputClosure();
-        JsonArray members = catalog.getAsJsonArray("members");
-        members.get(0).getAsJsonObject().getAsJsonObject("slice")
-                .add(ExecutionTask.REPLAY_ENTRY,
-                        replayEntry("<C: void heartbeat()>", "C"));
-        members.get(1).getAsJsonObject().getAsJsonObject("slice")
-                .add(ExecutionTask.REPLAY_ENTRY,
-                        replayEntry("<C: void registration()>", "C"));
-        OutputClosureContract selected = OutputClosureCodec.project(
-                OutputClosureCodec.decodeEnvelope(catalog),
-                java.util.Collections.singleton(HEAP_PORT));
-        JsonObject task = new JsonObject();
-
-        ConcolicScheduler.promoteSelectedReplayEntry(task, selected);
-
-        assertEquals("<C: void heartbeat()>", task
-                .getAsJsonObject(ExecutionTask.REPLAY_ENTRY)
-                .get("method").getAsString());
-    }
-
-    @Test
-    public void incompatibleExactContinuationsBecomeBoundedPhaseTasks()
-            throws Exception {
-        JsonObject producer = producerRow();
-        JsonArray members = producer.getAsJsonArray("closureGoals")
-                .get(0).getAsJsonObject()
-                .getAsJsonObject("outputClosure")
+        JsonObject row = producerRow();
+        JsonArray members = row.getAsJsonArray("closureGoals").get(0)
+                .getAsJsonObject().getAsJsonObject("outputClosure")
                 .getAsJsonArray("members");
         members.get(0).getAsJsonObject().getAsJsonObject("slice")
                 .add(ExecutionTask.REPLAY_ENTRY,
@@ -130,21 +109,21 @@ public class DeclaredCutExportProjectionTest {
         members.get(1).getAsJsonObject().getAsJsonObject("slice")
                 .add(ExecutionTask.REPLAY_ENTRY,
                         replayEntry("<C: void registration()>", "C"));
+        RegionInstancePlan.Goal goal =
+                RegionInstancePlan.decode(row).goals().get(0);
+        OutputClosureContract selected = OutputClosureCodec.project(
+                goal.outputClosure(),
+                java.util.Collections.singleton(HEAP_PORT));
 
-        List<RuntimeWorkflowDiscovery.ProducerGroup> groups =
-                RuntimeWorkflowDiscovery.rankedWorkflow(
-                        Arrays.asList(producer, targetRow()),
-                        (region, action) -> true)
-                        .producerGroups();
+        ExecutionTask task = ExecutionTask.create(goal, "TASK.SEED.CUT",
+                new JsonArray(), new JsonArray(), new JsonArray(),
+                LoopBoundPolicy.cfgBackedges(
+                        LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS),
+                true, selected);
 
-        assertEquals(2, groups.size());
-        assertEquals(1, groups.get(0).outputPorts().size());
-        assertEquals(1, groups.get(1).outputPorts().size());
-        java.util.LinkedHashSet<String> outputs = new java.util.LinkedHashSet<>();
-        outputs.addAll(groups.get(0).outputPorts());
-        outputs.addAll(groups.get(1).outputPorts());
-        assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
-                HEAP_PORT, REQUEST_PORT)), outputs);
+        assertEquals("<C: void heartbeat()>", task.json()
+                .getAsJsonObject(ExecutionTask.REPLAY_ENTRY)
+                .get("method").getAsString());
     }
 
     // ---------------------------------------------------------------
@@ -155,8 +134,8 @@ public class DeclaredCutExportProjectionTest {
             throws Exception {
         List<RuntimeWorkflowDiscovery.ProducerGroup> groups =
                 RuntimeWorkflowDiscovery.rankedWorkflow(
-                        Arrays.asList(producerRow(), targetRow()),
-                        (region, action) -> true)
+                        plans(producerRow(), targetRow()),
+                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet())
                         .producerGroups();
         assertEquals(String.valueOf(groups.size()), 1, groups.size());
         return groups.get(0);
@@ -420,4 +399,16 @@ public class DeclaredCutExportProjectionTest {
         entry.addProperty("receiverClass", receiverClass);
         return entry;
     }
+
+    /** The plan rows this fixture states, decoded the way the artifact does. */
+    private static java.util.List<RegionInstancePlan> plans(
+            JsonObject... rows) {
+        java.util.List<RegionInstancePlan> decoded =
+                new java.util.ArrayList<>();
+        for (JsonObject row : rows) {
+            decoded.add(RegionInstancePlan.decode(row));
+        }
+        return decoded;
+    }
+
 }

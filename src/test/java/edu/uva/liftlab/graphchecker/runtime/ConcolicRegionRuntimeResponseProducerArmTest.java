@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
@@ -17,8 +18,10 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -44,6 +47,9 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
             "<example.Server: example.Response serveB()>";
     private static final String PORT = "XCH.response.resp.keyId";
     private static final String PORT_B = "XCH.response-b.resp.keyId";
+    private static final String EFFECT_BINDING =
+            "CAPTURE.response-producer.effect";
+    private static final String EFFECT_PORT = "SERVER.out.keyId";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -100,6 +106,47 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 ConcolicRegionRuntime.admitCampaignTaskForTests(PRODUCER_TASK,
                         PRODUCER_ROOT, server("test/server"),
                         new Object[0]));
+    }
+
+    /**
+     * A response producer nothing armed says so, instead of saying nothing.
+     *
+     * <p>HDFS-11741 campaign-takeover-16 and -19 lost a whole task this way:
+     * the NameNode's {@code sendHeartbeat} and {@code getBlockKeys} regions
+     * are response producers, their callers were not admitted, and this gate
+     * refused every compatible activation without noting a candidate.  With
+     * no candidate noted the run published no row at all, so the campaign
+     * reported {@code REPLAY_TASK_WITHOUT_RESULT} and named no reason -- and
+     * the reason was two layers away, in the caller.</p>
+     */
+    @Test
+    public void anUnarmedResponseProducerPublishesANamedSkip()
+            throws Exception {
+        loadCampaign();
+
+        assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
+                PRODUCER_TASK, PRODUCER_ROOT, server("test/server"),
+                new Object[0]));
+
+        ConcolicRegionRuntime.publishRunTotals();
+
+        String reason = "";
+        for (String line : Files.readAllLines(Paths.get(
+                System.getProperty("causynth.concolic.results")),
+                StandardCharsets.UTF_8)) {
+            if (line.trim().isEmpty()) continue;
+            JsonObject row = new JsonParser().parse(line).getAsJsonObject();
+            if (!"CONCOLIC_REGION_SKIPPED".equals(
+                    row.get("event").getAsString())
+                    || !PRODUCER_TASK.equals(
+                    row.get("taskId").getAsString())) {
+                continue;
+            }
+            reason = row.get("reason").getAsString();
+        }
+        assertTrue(reason, reason.contains(
+                "served no request this campaign armed as its response "
+                        + "producer"));
     }
 
     @Test
@@ -217,10 +264,10 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         expression.addProperty("_exp", "RPC_VALUE");
         Method accept = ConcolicRegionRuntime.class.getDeclaredMethod(
                 "acceptVmHandoffExpression", active.getClass(),
-                CommunicationHandoffSpec.class, long.class,
+                CommunicationHandoffSpec.class, long.class, long.class,
                 JsonElement.class, String.class, String.class);
         accept.setAccessible(true);
-        accept.invoke(null, active, communicationHandoff(active), 17L,
+        accept.invoke(null, active, communicationHandoff(active), 17L, 18L,
                 expression, PRODUCER_TASK, PRODUCER_OCCURRENCE);
 
         assertTrue(pathRecordingStarted(active));
@@ -254,6 +301,201 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 folder.getRoot().toPath().resolve("results.jsonl").toString());
         assertEquals(2,
                 ConcolicRegionRuntime.campaignTaskIdsForTests().size());
+    }
+
+    /**
+     * README {@code RPC-1}: the producer's interaction row names the exact VM
+     * export it published.
+     *
+     * <p>Without it the only way from a consumer's handoff reference back to
+     * its producer case is a Java-side count of how often each case observed
+     * the port, which is a pairing decision and has no answer at all when two
+     * cases observed it equally often.  The exact export event is the pairing
+     * the VM already made.</p>
+     */
+    @Test
+    public void communicationEffectNamesTheExportItPublished()
+            throws Exception {
+        loadProducerCaptureCampaign();
+        Object active = activate(PRODUCER_TASK, 71L);
+
+        rememberExport(active, EFFECT_PORT, 41L);
+        ConcolicRegionRuntime.recordCommunicationEffect(EFFECT_BINDING);
+
+        JsonObject row = onlyOutputCapture(active);
+        assertEquals("COMMUNICATION_EFFECT",
+                row.get("interactionKind").getAsString());
+        assertEquals(41L, row.get("exportEventId").getAsLong());
+    }
+
+    /**
+     * An occurrence that exported nothing at this port stamps no event, so a
+     * missing export reads as an absence rather than as some other export.
+     */
+    @Test
+    public void communicationEffectWithoutAnExportNamesNoEvent()
+            throws Exception {
+        loadProducerCaptureCampaign();
+        Object active = activate(PRODUCER_TASK, 72L);
+
+        rememberExport(active, "XCH.other.resp.keyId", 41L);
+        ConcolicRegionRuntime.recordCommunicationEffect(EFFECT_BINDING);
+
+        JsonObject row = onlyOutputCapture(active);
+        assertFalse(row.toString(), row.has("exportEventId"));
+    }
+
+    /**
+     * Versions past the bounded capacity are one named structural gap on the
+     * result, not a sentence in {@code unresolvedInputs} for a later layer to
+     * parse back.  README's resource rule: truncation of selected evidence is
+     * named, never read as the evidence being absent.
+     */
+    @Test
+    public void versionsPastTheBoundedCapacityAreOneStructuralGap()
+            throws Exception {
+        loadProducerCaptureCampaign();
+        Object active = activate(PRODUCER_TASK, 73L);
+
+        int capacity = LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+        for (int entry = 0; entry < capacity + 3; entry++) {
+            ConcolicRegionRuntime.recordCommunicationEffect(EFFECT_BINDING);
+        }
+
+        assertEquals(capacity, outputCaptures(active).size());
+        Map<String, JsonObject> gaps = outputVersionGaps(active);
+        assertEquals(1, gaps.size());
+        JsonObject gap = gaps.get(EFFECT_BINDING);
+        assertEquals("OUTPUT_VERSION_ALIGNMENT_GAP",
+                gap.get("kind").getAsString());
+        assertEquals("BOUNDED_OUTPUT_VERSION_CAPACITY_V1",
+                gap.get("authority").getAsString());
+        assertEquals(1, gap.get("schemaVersion").getAsInt());
+        assertEquals(EFFECT_BINDING,
+                gap.get("captureBindingId").getAsString());
+        assertEquals(capacity, gap.get("versionCapacity").getAsInt());
+        assertEquals(capacity + 3, gap.get("versionsObserved").getAsInt());
+        assertTrue(gap.get("reason").getAsString(), gap.get("reason")
+                .getAsString().contains("bounded output version capacity"));
+        // The prose notice the importer used to parse is gone.
+        for (String unresolved : unresolvedInputs(active)) {
+            assertFalse(unresolved,
+                    unresolved.contains("bounded output version capacity"));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<JsonObject> outputCaptures(Object active)
+            throws Exception {
+        Field field = active.getClass().getDeclaredField("outputCaptures");
+        field.setAccessible(true);
+        return (List<JsonObject>) field.get(active);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, JsonObject> outputVersionGaps(Object active)
+            throws Exception {
+        Field field = active.getClass().getDeclaredField(
+                "outputVersionGaps");
+        field.setAccessible(true);
+        return (Map<String, JsonObject>) field.get(active);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Set<String> unresolvedInputs(Object active)
+            throws Exception {
+        Field field = active.getClass().getDeclaredField("unresolved");
+        field.setAccessible(true);
+        return (Set<String>) field.get(active);
+    }
+
+    private void loadProducerCaptureCampaign() throws Exception {
+        JsonObject producer = task(PRODUCER_TASK, "SERVER",
+                PRODUCER_OCCURRENCE, PRODUCER_ROOT, Server.class.getName(),
+                handoff(true));
+        producer.addProperty("goalKind", "OUTPUT_RELATION_CLOSURE");
+        producer.add("outputClosure", communicationEffectClosure());
+        Path plan = folder.newFile("producer_capture_plan.jsonl").toPath();
+        Files.write(plan, (producer + "\n").getBytes(
+                StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id", PRODUCER_TASK);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve("captures.jsonl")
+                        .toString());
+        assertEquals(1,
+                ConcolicRegionRuntime.campaignTaskIdsForTests().size());
+    }
+
+    /** One producer closure whose single member is a communication effect. */
+    private static JsonObject communicationEffectClosure() {
+        String cell = PRODUCER_ROOT + ".communication.response";
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureBindingId", EFFECT_BINDING);
+        capture.addProperty("captureKind", "COMMUNICATION_EFFECT");
+        capture.addProperty("outputPort", EFFECT_PORT);
+        capture.addProperty("outputCell", cell);
+        capture.addProperty("javaType", "int");
+        capture.addProperty("definitionMethod", PRODUCER_ROOT);
+        capture.addProperty("outputSiteId", "COMMUNICATION_EFFECT:"
+                + PRODUCER_ROOT);
+        capture.addProperty("outputOccurrence", 1);
+        capture.addProperty("replayOccurrence", 1);
+        capture.addProperty("occurrenceScope", "REGION_ACTIVATION");
+
+        JsonObject output = new JsonObject();
+        output.addProperty("portId", EFFECT_PORT);
+        output.addProperty("cell", cell);
+        output.addProperty("kind", "INTERACTION_EVENT");
+        output.addProperty("javaTypeDescriptor", "I");
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", EFFECT_PORT);
+        slice.addProperty("outputCell", cell);
+        slice.add("inputPorts", new JsonArray());
+        slice.add("sites", new JsonArray());
+        slice.add("staticSites", new JsonArray());
+        JsonArray methods = new JsonArray();
+        methods.add(PRODUCER_ROOT);
+        slice.add("methods", methods);
+        slice.add("causalEdgeIds", new JsonArray());
+        JsonArray captures = new JsonArray();
+        captures.add(capture);
+        slice.add("captureBindings", captures);
+        slice.add("captureBindingIssues", new JsonArray());
+        JsonObject member = new JsonObject();
+        member.add("output", output);
+        member.add("slice", slice);
+
+        JsonObject producer = new JsonObject();
+        producer.addProperty("relationKey", "RELATION.SERVER");
+        producer.addProperty("regionId", "SERVER");
+        JsonObject closure = new JsonObject();
+        closure.addProperty("schemaVersion", 3);
+        closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
+        closure.add("producer", producer);
+        JsonArray members = new JsonArray();
+        members.add(member);
+        closure.add("members", members);
+        return closure;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void rememberExport(Object active, String portId,
+                                       long exportEventId) throws Exception {
+        Field field = active.getClass().getDeclaredField("exportEventByPort");
+        field.setAccessible(true);
+        ((Map<String, Long>) field.get(active)).put(portId,
+                Long.valueOf(exportEventId));
+    }
+
+    private static JsonObject onlyOutputCapture(Object active)
+            throws Exception {
+        Field field = active.getClass().getDeclaredField("outputCaptures");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<JsonObject> rows = (List<JsonObject>) field.get(active);
+        assertEquals(rows.toString(), 1, rows.size());
+        return rows.get(0);
     }
 
     private void loadTwoProducerCampaign() throws Exception {

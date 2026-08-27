@@ -17,6 +17,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionBranchEventApiSmoke.java \
   test/causynth/RegionFieldApiSmoke.java \
   test/causynth/RegionFieldExpressionApiSmoke.java \
+  test/causynth/RegionPropagatedFieldGuardSmoke.java \
   test/causynth/RegionExpressionHandoffApiSmoke.java \
   test/causynth/RegionContainerLiveInApiSmoke.java \
   test/causynth/RegionCompetingWritersSmoke.java \
@@ -45,7 +46,9 @@ cd "$JDK_ROOT"
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
   test/causynth/RegionStringSplitParseMapApiSmoke.java \
-  test/causynth/RegionTableSwitchApiSmoke.java
+  test/causynth/RegionTableSwitchApiSmoke.java \
+  test/causynth/RegionPathConditionTruncationSmoke.java \
+  test/causynth/RegionConditionalRemovalApiSmoke.java
 
 for smoke in \
   RegionApiSmoke \
@@ -55,12 +58,14 @@ for smoke in \
   RegionBranchEventApiSmoke \
   RegionFieldApiSmoke \
   RegionFieldExpressionApiSmoke \
+  RegionPropagatedFieldGuardSmoke \
   RegionExpressionHandoffApiSmoke \
   RegionContainerLiveInApiSmoke \
   RegionCompetingWritersSmoke \
   RegionDeepExpressionSerializeSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \
+  RegionConditionalRemovalApiSmoke \
   RegionMapValuesToObjectArrayApiSmoke \
   RegionNumericLoopApiSmoke \
   RegionNumericSemanticsApiSmoke \
@@ -85,3 +90,17 @@ for smoke in \
   RegionTableSwitchApiSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done
+
+# The path-condition serializer's byte bound, on all three of its arms.  The
+# shipped bound is 256 MB, so the truncation path is unreachable from a smoke
+# unless the bound is lowered for the run -- which is the whole reason it is a
+# property.  Each arm asserts that `conditions` is exactly as long as the
+# `conditionCount` beside it, which is what the bound used to break.
+#   (unset) nothing truncates and the 240 conditions come back whole
+#   0       nothing fits, so every index is a named marker
+#   16384   a prefix of expressions, then a marker for every remaining index
+"$JDK_HOME/bin/java" -Xint -cp "$OUT" RegionPathConditionTruncationSmoke
+"$JDK_HOME/bin/java" -Xint -Dcausynth.vm.pathcondition.bytes=0 \
+  -cp "$OUT" RegionPathConditionTruncationSmoke
+"$JDK_HOME/bin/java" -Xint -Dcausynth.vm.pathcondition.bytes=16384 \
+  -cp "$OUT" RegionPathConditionTruncationSmoke

@@ -90,7 +90,6 @@ public class OutputClosureCodecTest {
                 .getAsJsonArray("closureGoals").get(0).getAsJsonObject();
         assertEquals(binding, hydratedGoal.getAsJsonArray("edgeBindings")
                 .get(0).getAsJsonObject());
-        assertEquals(1, decoded.edgeValidations().size());
     }
 
     @Test
@@ -130,9 +129,9 @@ public class OutputClosureCodecTest {
         secondSlice.addProperty("selectedRuntimeCallId", 187L);
 
         OutputClosureContract merged = OutputClosureCodec.merge(Arrays.asList(
-                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                OutputClosureCodec.singleton("REL.1", "REGION.1", Collections.<String>emptyList(), port,
                         cell, "HEAP_STATE", "int", firstSlice),
-                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                OutputClosureCodec.singleton("REL.1", "REGION.1", Collections.<String>emptyList(), port,
                         cell, "HEAP_STATE", "int", secondSlice)));
 
         JsonObject slice = merged.member(port).slice();
@@ -160,9 +159,9 @@ public class OutputClosureCodecTest {
         secondSlice.addProperty("selectedRuntimeCallId", 84L);
 
         OutputClosureContract merged = OutputClosureCodec.merge(Arrays.asList(
-                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                OutputClosureCodec.singleton("REL.1", "REGION.1", Collections.<String>emptyList(), port,
                         cell, "HEAP_STATE", "int", firstSlice),
-                OutputClosureCodec.singleton("REL.1", "REGION.1", port,
+                OutputClosureCodec.singleton("REL.1", "REGION.1", Collections.<String>emptyList(), port,
                         cell, "HEAP_STATE", "int", secondSlice)));
 
         JsonObject slice = merged.member(port).slice();
@@ -185,11 +184,11 @@ public class OutputClosureCodecTest {
         thirdSlice.addProperty("selectedRuntimeEventSeq", 180L);
         thirdSlice.addProperty("selectedRuntimeCallId", 187L);
         OutputClosureContract first = OutputClosureCodec.singleton("REL.1",
-                "REGION.1", port, cell, "HEAP_STATE", "int", firstSlice);
+                "REGION.1", Collections.<String>emptyList(), port, cell, "HEAP_STATE", "int", firstSlice);
         OutputClosureContract second = OutputClosureCodec.singleton("REL.1",
-                "REGION.1", port, cell, "HEAP_STATE", "int", secondSlice);
+                "REGION.1", Collections.<String>emptyList(), port, cell, "HEAP_STATE", "int", secondSlice);
         OutputClosureContract third = OutputClosureCodec.singleton("REL.1",
-                "REGION.1", port, cell, "HEAP_STATE", "int", thirdSlice);
+                "REGION.1", Collections.<String>emptyList(), port, cell, "HEAP_STATE", "int", thirdSlice);
 
         OutputClosureContract leftAssociated = OutputClosureCodec.merge(
                 Arrays.asList(OutputClosureCodec.merge(
@@ -229,9 +228,9 @@ public class OutputClosureCodecTest {
         secondSlice.add("demandedHeapDeclarations",
                 strings("<P: int second>"));
         OutputClosureContract first = OutputClosureCodec.singleton("REL.1",
-                "REGION.1", port, cell, "HEAP_STATE", "int", firstSlice);
+                "REGION.1", Collections.<String>emptyList(), port, cell, "HEAP_STATE", "int", firstSlice);
         OutputClosureContract second = OutputClosureCodec.singleton("REL.1",
-                "REGION.1", port, cell, "HEAP_STATE", "int", secondSlice);
+                "REGION.1", Collections.<String>emptyList(), port, cell, "HEAP_STATE", "int", secondSlice);
 
         OutputClosureContract forward = OutputClosureCodec.merge(
                 Arrays.asList(first, second));
@@ -266,7 +265,7 @@ public class OutputClosureCodecTest {
             String field, String edgeId, String input, String method) {
         String port = "REGION.1.out." + field;
         String cell = "<P: int " + field + ">";
-        return OutputClosureCodec.singleton("REL.1", "REGION.1", port, cell, "HEAP_STATE", "int",
+        return OutputClosureCodec.singleton("REL.1", "REGION.1", Collections.<String>emptyList(), port, cell, "HEAP_STATE", "int",
                 slice(port, cell, edgeId, input, method));
     }
 

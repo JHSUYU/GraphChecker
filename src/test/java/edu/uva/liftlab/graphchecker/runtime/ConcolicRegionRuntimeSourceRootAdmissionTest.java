@@ -5,7 +5,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
@@ -24,7 +23,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /** Frozen edge/task/port admission of one upstream shared Map state. */
-public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
+public class ConcolicRegionRuntimeSourceRootAdmissionTest {
     private static final String FIELD =
             "<example.MapHolder: java.util.Map values>";
     private static final String FIELD_KEY = "example.MapHolder#values";
@@ -77,49 +76,6 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
     }
 
     @Test
-    public void exactCausalEdgeChoosesOnePhaseOfOneOccurrence()
-            throws Exception {
-        load(SELECTED_EDGE, "RF.other");
-        assertEquals(PRODUCER_A + "\n" + OUTPUT + "\n" + SELECTED_EDGE
-                        + "\n" + INPUT,
-                ConcolicRegionRuntime.plannedMapAdmissionForTests(
-                        CONSUMER, FIELD));
-    }
-
-    @Test
-    public void missingOrAmbiguousProducerMemberRefusesWithoutGuessing()
-            throws Exception {
-        load("RF.never.a", "RF.never.b", "SYMBOLIC");
-        assertTrue(ConcolicRegionRuntime.plannedMapAdmissionForTests(
-                CONSUMER, FIELD).startsWith("REFUSED:"));
-
-        ConcolicRegionRuntime.resetForTests();
-        load(SELECTED_EDGE, SELECTED_EDGE);
-        assertTrue(ConcolicRegionRuntime.plannedMapAdmissionForTests(
-                CONSUMER, FIELD).startsWith("REFUSED:"));
-    }
-
-    @Test
-    public void ancillaryConcreteCandidateDoesNotCreateAnAdmissionOrGap()
-            throws Exception {
-        load("RF.never.a", "RF.never.b", "CONCRETE");
-        assertEquals("NONE", ConcolicRegionRuntime
-                .plannedMapAdmissionForTests(CONSUMER, FIELD));
-    }
-
-    @Test
-    public void rejectedProducerCandidateCannotPublishItsStagedVersion()
-            throws Exception {
-        load(SELECTED_EDGE, "RF.other");
-        assertEquals("ABSENT", ConcolicRegionRuntime
-                .mapVersionLifecycleForTests(
-                        PRODUCER_A, OUTPUT, 41L, false));
-        assertEquals("41", ConcolicRegionRuntime
-                .mapVersionLifecycleForTests(
-                        PRODUCER_A, OUTPUT, 41L, true));
-    }
-
-    @Test
     public void nativeProducerAdmissionRefusalsRemainDistinct() {
         assertEquals("SHARED_STATE_VERSION_NOT_FOUND",
                 SharedStateEvidence.reason(
@@ -130,55 +86,6 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
         assertEquals("SHARED_STATE_INVALID_EDGE",
                 SharedStateEvidence.reason(
                         SharedStateEvidence.SELECT_INVALID_EDGE));
-    }
-
-    @Test
-    public void concreteSelectedFieldUsesExactProducerButSymbolicDoesNot()
-            throws Exception {
-        loadField("CONCRETE", true);
-        assertEquals(PRODUCER_A + "\n" + FLAG_OUTPUT + "\n" + FLAG_EDGE
-                        + "\n" + FLAG_INPUT,
-                ConcolicRegionRuntime.plannedFieldAdmissionForTests(
-                        CONSUMER, FLAG_FIELD));
-        assertEquals("ABSENT", ConcolicRegionRuntime
-                .fieldVersionLifecycleForTests(
-                        PRODUCER_A, FLAG_OUTPUT, 73L, false));
-        assertEquals("73", ConcolicRegionRuntime
-                .fieldVersionLifecycleForTests(
-                        PRODUCER_A, FLAG_OUTPUT, 73L, true));
-
-        ConcolicRegionRuntime.resetForTests();
-        loadField("SYMBOLIC", true);
-        assertEquals("NONE", ConcolicRegionRuntime
-                .plannedFieldAdmissionForTests(CONSUMER, FLAG_FIELD));
-
-        ConcolicRegionRuntime.resetForTests();
-        loadField("CONCRETE", false);
-        assertEquals("NONE", ConcolicRegionRuntime
-                .plannedFieldAdmissionForTests(CONSUMER, FLAG_FIELD));
-    }
-
-    @Test
-    public void exactReferenceOutputCarriesItsConfiguredSourceIdentity()
-            throws Exception {
-        loadField("CONCRETE", true, true);
-        String sourcePhaseId = sourcePhaseId(PRODUCER_OCCURRENCE);
-        String symbol = ConcolicRegionRuntime.configuredSourceSymbolForTests(
-                sourcePhaseId, SOURCE_ID);
-        assertEquals(1, ConcolicRegionRuntime
-                .plannedFieldSourceAliasesForTests(CONSUMER, FLAG_FIELD)
-                .size());
-        assertEquals(sourcePhaseId + "\n" + PRODUCER_OCCURRENCE + "\n"
-                        + SOURCE_ID + "\n" + SOURCE_FIELD + "\n" + symbol,
-                ConcolicRegionRuntime
-                        .plannedFieldSourceAliasesForTests(
-                                CONSUMER, FLAG_FIELD).get(0));
-
-        ConcolicRegionRuntime.resetForTests();
-        loadField("CONCRETE", false, true);
-        assertTrue(ConcolicRegionRuntime
-                .plannedFieldSourceAliasesForTests(CONSUMER, FLAG_FIELD)
-                .isEmpty());
     }
 
     @Test
@@ -238,6 +145,118 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
                         taskId, root, exact, new Object[0]));
     }
 
+    /**
+     * An {@code INHERITED_CONTEXT} root is admitted by the source its thread
+     * inherited, and only by that one.
+     *
+     * <p>HDFS-11741 campaign-takeover-19 planned three
+     * {@code cluster0/client0#epoch0} occurrences on the balancer's own worker
+     * objects -- {@code Dispatcher$1} and {@code KeyManager$BlockKeyUpdater}.
+     * The complete alias set of that trace registers exactly one object for
+     * that source, the test's own client anchor, and no balancer class at all,
+     * so discovery named those activations from the context their threads
+     * inherited from the test thread.  Addressing them as
+     * {@code REGISTERED_SOURCE} asked replay to re-check an alias that never
+     * existed, and all three were skipped as {@code
+     * OCCURRENCE_ANCHOR_UNMATCHED}.</p>
+     */
+    @Test
+    public void inheritedContextRootIsAdmittedByTheSourceItsThreadInherited()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        String taskId = "TASK.inherited-context";
+        String occurrence = "test/client#epoch0/region/INHERITED#1";
+        String root = "<example.Worker: void run()>";
+        JsonObject task = baseTask(taskId, "INHERITED", occurrence, root,
+                "TARGET_REACH_CLOSURE");
+        task.getAsJsonObject("rootSelector")
+                .getAsJsonObject("causalAnchor")
+                .addProperty("kind", "INHERITED_CONTEXT");
+        Path plan = folder.newFile("inherited-context-plan.jsonl").toPath();
+        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id", taskId);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve(
+                        "inherited-context-results.jsonl").toString());
+
+        // No context on this thread: the address names a source nothing here
+        // ran under.
+        assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
+                taskId, root, new Object(), new Object[0]));
+
+        SourceRef other = new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "test/node", 0L);
+        long otherRequest = RuntimeTraceContext.beginRequest(other, "other");
+        assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
+                taskId, root, new Object(), new Object[0]));
+        RuntimeTraceContext.endRequest(otherRequest);
+
+        SourceRef client = new SourceRef(
+                "EXTERNAL_APP", "HDFS_CLIENT", "test/client", 0L);
+        long request = RuntimeTraceContext.beginRequest(client, "workload");
+        try {
+            // The thread context matches, but this receiver carries an alias
+            // of its own naming another node: dn0-versus-dn1 exactness is not
+            // weakened by admitting through context.
+            Object foreign = new Object();
+            RuntimeTraceContext.registerSource(foreign, other);
+            assertEquals("",
+                    ConcolicRegionRuntime.admitCampaignTaskForTests(
+                            taskId, root, foreign, new Object[0]));
+
+            // A receiver with no alias, on a thread that inherited the
+            // addressed source: this is the balancer's worker.
+            assertEquals(taskId,
+                    ConcolicRegionRuntime.admitCampaignTaskForTests(
+                            taskId, root, new Object(), new Object[0]));
+        } finally {
+            RuntimeTraceContext.endRequest(request);
+            RuntimeTraceContext.resetForTests();
+        }
+    }
+
+    /**
+     * The thread context never admits a {@code REGISTERED_SOURCE} root: that
+     * anchor states the receiver itself was registered, and an object that
+     * merely runs under the source is a different occurrence.
+     */
+    @Test
+    public void registeredSourceRootIsNotAdmittedByThreadContextAlone()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        String taskId = "TASK.registered-not-context";
+        String occurrence = "test/client#epoch0/region/REGISTERED#1";
+        String root = "<example.Server: void run()>";
+        JsonObject task = baseTask(taskId, "REGISTERED", occurrence, root,
+                "TARGET_REACH_CLOSURE");
+        Path plan = folder.newFile("registered-context-plan.jsonl").toPath();
+        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id", taskId);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve(
+                        "registered-context-results.jsonl").toString());
+
+        SourceRef client = new SourceRef(
+                "EXTERNAL_APP", "HDFS_CLIENT", "test/client", 0L);
+        long request = RuntimeTraceContext.beginRequest(client, "workload");
+        try {
+            assertEquals("",
+                    ConcolicRegionRuntime.admitCampaignTaskForTests(
+                            taskId, root, new Object(), new Object[0]));
+
+            Object registered = new Object();
+            RuntimeTraceContext.registerSource(registered, client);
+            assertEquals(taskId,
+                    ConcolicRegionRuntime.admitCampaignTaskForTests(
+                            taskId, root, registered, new Object[0]));
+        } finally {
+            RuntimeTraceContext.endRequest(request);
+            RuntimeTraceContext.resetForTests();
+        }
+    }
+
     @Test
     public void rootAnchorKindAndSourceIdentityAreFailClosed()
             throws Exception {
@@ -250,23 +269,6 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
                 "test/node#epoch0", "causalAnchor.kind");
         assertRootAnchorRejected("REGISTERED_SOURCE", "test/other#epoch0",
                 "test/node#epoch0", "instead of task source");
-    }
-
-    @Test
-    public void producerNotYetCommittedReleasesCandidateWithoutConcreteInput()
-            throws Exception {
-        loadField("CONCRETE", true);
-        assertEquals("pending=true,gaps=0,observed=false,"
-                        + "selectionRetained=true,"
-                        + "pendingAfterLaterAccess=true,abandoned=true,"
-                        + "retried=true",
-                ConcolicRegionRuntime
-                        .plannedFieldPrerequisiteMissForTests(
-                                CONSUMER,
-                                "<example.Consumer: void run()>", 2,
-                                new FlagHolder(), FLAG_FIELD, "enabled",
-                                new SourceRef("TEST", "CLIENT",
-                                        "test/client", 0L)));
     }
 
     private void load(String firstEdge, String secondEdge) throws Exception {
@@ -351,29 +353,16 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
         producer.add("outputClosure", fieldOutputClosure(
                 selected ? FLAG_EDGE : "RF.flag.other"));
         if (source) {
-            String sourcePhaseId = sourcePhaseId(PRODUCER_OCCURRENCE);
-            JsonObject declaration = new JsonObject();
-            declaration.addProperty("authority",
-                    SymbolicSourceEvidence.DECLARATION_AUTHORITY);
-            declaration.addProperty("sourcePhaseId", sourcePhaseId);
-            declaration.addProperty("sourceId", SOURCE_ID);
-            declaration.addProperty("fieldSignature", SOURCE_FIELD);
-            declaration.addProperty("requiredOutputFieldSignature",
-                    FLAG_FIELD);
-            JsonArray declarations = new JsonArray();
-            declarations.add(declaration);
-            producer.add(SymbolicSourceEvidence.TASK_FIELD, declarations);
+            // Wave 3: a task declares mint SITES, never selected source rows.
             addSourcePhaseCatalog(producer, PRODUCER_OCCURRENCE,
-                    sourcePhaseId);
+                    sourcePhaseId(PRODUCER_OCCURRENCE));
         }
         if (!assignmentOccurrence.isEmpty()) {
             String assignmentPhaseId = sourcePhaseId(assignmentOccurrence);
             JsonObject assignment = new JsonObject();
             assignment.addProperty("modelAssignmentKey", "MODEL.keyId");
-            assignment.addProperty("engineSymbol", "M_I_field_"
-                    + ConcolicRegionRuntime.configuredSourceSymbolForTests(
-                    assignmentPhaseId, SOURCE_ID)
-                    + "_example/Key");
+            assignment.addProperty("engineSymbol",
+                    "M_I_field_SRC.example_example/Key");
             assignment.addProperty("inputSymbol", "SOURCE_PHASE:"
                     + assignmentPhaseId);
             assignment.addProperty("configuredSourcePhaseId",
@@ -408,22 +397,17 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
 
     private static void addSourcePhaseCatalog(
             JsonObject task, String occurrenceId, String sourcePhaseId) {
+        JsonArray declared = new JsonArray();
+        declared.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                SOURCE_ID, SOURCE_FIELD, PRODUCER_ROOT, SOURCE_UNIT));
         ConfiguredSourcePhaseContract.Declaration declaration =
-                ConfiguredSourcePhaseContract.declarationsOf(
-                        Collections.singletonList(
-                                ConfiguredSourcePhaseContract.declaration(
-                                        ConfiguredSourcePhaseContract.Phase
-                                                .PUBLISH,
-                                        SOURCE_ID, SOURCE_FIELD,
-                                        PRODUCER_ROOT, SOURCE_UNIT))).get(0);
+                ConfiguredSourcePhaseContract.declarationsOf(declared).get(0);
         JsonArray phases = new JsonArray();
-        phases.add(GSON.toJsonTree(ConfiguredSourcePhaseContract.occurrence(
+        phases.add(ConfiguredSourcePhaseContract.occurrence(
                 declaration, occurrenceId, 1, 1L, 1L, 1L,
-                SOURCE_HOOK_CALLEE, Collections.singletonList(1L))));
+                SOURCE_HOOK_CALLEE, Collections.singletonList(1L)));
         task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
-        JsonArray selected = new JsonArray();
-        selected.add(sourcePhaseId);
-        task.add(ConfiguredSourcePhaseContract.SELECTED_PLAN_FIELD, selected);
     }
 
     private static String sourcePhaseId(String occurrenceId) {
@@ -702,5 +686,22 @@ public class ConcolicRegionRuntimeMapProducerStateAdmissionTest {
     private static final class FlagHolder {
         @SuppressWarnings("unused")
         private boolean enabled = true;
+    }
+
+    @org.junit.Test
+    public void aFoldedConstantIsNotAPropagatedExpression() {
+        com.google.gson.JsonParser parser = new com.google.gson.JsonParser();
+        org.junit.Assert.assertFalse(ConcolicRegionRuntime.isSymbolicExpression(
+                parser.parse("{\"_type\":\"ConstExpr\",\"_java_type\":\"I\",\"_exp\":\"Y_I_0\"}")));
+        org.junit.Assert.assertFalse(ConcolicRegionRuntime.isSymbolicExpression(null));
+        org.junit.Assert.assertTrue(ConcolicRegionRuntime.isSymbolicExpression(
+                parser.parse("{\"_type\":\"SymbolExpression\",\"_java_type\":\"I\",\"_exp\":\"M_I_x\"}")));
+        org.junit.Assert.assertTrue(ConcolicRegionRuntime.isSymbolicExpression(
+                parser.parse("{\"_type\":\"BinaryExpression\",\"_left\":{\"_type\":\"ConstExpr\",\"_exp\":\"1\"},"
+                        + "\"_right\":{\"_type\":\"SymbolExpression\",\"_exp\":\"M_I_y\"}}")));
+        org.junit.Assert.assertFalse("a field access over a container-derived reference names no root",
+                ConcolicRegionRuntime.isSymbolicExpression(parser.parse(
+                        "{\"_type\":\"FieldAccessExpression\",\"_java_type\":\"J\",\"ownerClass\":\"x/BlockKey\","
+                        + "\"_base\":{\"_type\":\"ContainerExpression\",\"_op\":\"READ\"}}")));
     }
 }

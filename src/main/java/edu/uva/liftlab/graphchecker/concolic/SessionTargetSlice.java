@@ -24,23 +24,12 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.textString;
 
 /**
- * The target slice of the recorded session graph.
- *
- * <p>The final formula should contain the expression and event nodes that can
- * reach the target predicate, and nothing else. This class computes that set
- * from what the session actually recorded - published field versions, resolved
- * reads, guarded read-from choices and the event ledger - rather than from an
- * offline reconstruction of which region might have written which field.</p>
- *
- * <p>The projection is backward and conservative in one direction only. A read
- * pulls in every writer it could have taken, a version pulls in every symbol
- * and nested read its value and its writer guard mention, and an event pulls
- * in the order facts that relate it to other sliced events. Keeping a node
- * that turns out not to matter costs formula size; dropping one that does
- * costs soundness, so every uncertainty here resolves towards keeping. Where
- * the recorded evidence cannot answer at all - a read whose location was never
- * a carrier, an event the ledger does not hold - the slice says so with a
- * named gap instead of quietly closing over what it happens to have.</p>
+ * The target slice of the recorded session graph: the expression and event
+ * nodes that can reach the target predicate, computed from what the session
+ * recorded rather than from an offline reconstruction. The backward walk is
+ * conservative in one direction only - a read pulls in every writer it could
+ * have taken - because dropping a node costs soundness while keeping one
+ * costs formula size. Evidence that cannot answer at all yields a named gap.
  */
 public final class SessionTargetSlice {
 
@@ -81,53 +70,15 @@ public final class SessionTargetSlice {
     }
 
     /**
-     * Projects the slice of {@code versionRecords} and {@code ledgerRecord}
-     * that can reach {@code targetPredicate}.
-     */
-    public static Slice project(Collection<JsonObject> versionRecords,
-                                JsonObject ledgerRecord,
-                                JsonElement targetPredicate) {
-        return project(versionRecords, ledgerRecord, targetPredicate,
-                Collections.<Long>emptyList());
-    }
-
-    /**
      * Projects the target slice.
      *
-     * <p>Roots come from two places, and both are needed. A <em>guarded</em>
-     * read is a node of the target term itself, so scanning the predicate
-     * finds it. An <em>exact</em> read is not: the VM hands the reader its
-     * writer's own expression, which is the whole point of proving
-     * provenance, so the read leaves no node behind to scan for.
-     * {@code targetReadEvents} is how a caller names those reads - they are
-     * recorded event ids, not a guess about which write matters.</p>
-     *
-     * @param versionRecords   admitted {@code VM_SHARED_FIELD_VERSIONS_V1}
-     *                         rows
-     * @param ledgerRecord     the admitted ledger row, or null
-     * @param targetPredicate  the recorded expression of the target condition
-     * @param targetReadEvents recorded reads the target performs
-     */
-    public static Slice project(Collection<JsonObject> versionRecords,
-                                JsonObject ledgerRecord,
-                                JsonElement targetPredicate,
-                                Collection<Long> targetReadEvents) {
-        return project(versionRecords, ledgerRecord, targetPredicate,
-                targetReadEvents, Collections.<Long>emptyList());
-    }
-
-    /**
-     * The same projection, with events that need a position but are not
-     * nodes.
-     *
-     * <p>An RPC delivery is the case this exists for. Its export and attach
-     * events carry no value the target term mentions, so they are not slice
-     * nodes; the order between them is a fact about this slice, so they need
-     * positions in its one order domain. Walking them as reads instead would
-     * report each of them as an unrecorded read, which is a gap the run does
-     * not have.</p>
-     *
-     * @param orderedEvents recorded events to place in the order domain
+     * <p>Roots come from two places. A <em>guarded</em> read is a node of the
+     * target term, so scanning the predicate finds it; an <em>exact</em> read
+     * is not, because the VM handed the reader its writer's own expression, so
+     * {@code targetReadEvents} names those recorded event ids instead.
+     * {@code orderedEvents} are events that need a position in the order
+     * domain but are not nodes - an RPC export/attach pair is the case -
+     * which walking them as reads would report as unrecorded reads.</p>
      */
     public static Slice project(Collection<JsonObject> versionRecords,
                                 JsonObject ledgerRecord,
@@ -180,13 +131,9 @@ public final class SessionTargetSlice {
     }
 
     /**
-     * A read pulls in the writers it could have taken.
-     *
-     * <p>An exact read pulls in exactly one, because the VM proved which. A
-     * guarded read pulls in every candidate its recorded term names, plus the
-     * unknown-writer symbol, which is a node of the slice like any other: the
-     * possibility that the value came from a writer this run never saw is
-     * part of the model, not a footnote to it.</p>
+     * A read pulls in the writers it could have taken: an exact read exactly
+     * one, a guarded read every candidate its term names plus the
+     * unknown-writer symbol, which is a slice node like any other.
      */
     private static void expandRead(RecordedGraph graph, Slice slice,
                                    long readEventId,
@@ -277,9 +224,7 @@ public final class SessionTargetSlice {
             this.domain = domain;
         }
 
-        private boolean add(String nodeId) {
-            return nodes.add(nodeId);
-        }
+        private boolean add(String nodeId) { return nodes.add(nodeId); }
 
         private void gap(String reason, String locationKey, String detail) {
             String key = reason + "\n" + locationKey + "\n" + detail;
@@ -347,18 +292,10 @@ public final class SessionTargetSlice {
         }
 
         /**
-         * The events of the other causal channels that directly order a
-         * sliced event.
-         *
-         * <p>The order domain is one relation over field, synchronization,
-         * value-handoff and region events; a slice that kept only its own
-         * field events would emit a field-only order and lose exactly the
-         * cross-thread facts that make two writes comparable. Adjacency is
-         * one hop on purpose: a lifecycle, volatile, or handoff event that
-         * ordered a sliced write is a fact about this slice, while unrelated
-         * session traffic is not. Program order is excluded because a
-         * thread's own sequence adds no cross-channel information the field
-         * events do not already carry.</p>
+         * The other-channel events that directly order a sliced event. One
+         * hop on purpose: a lifecycle, volatile or handoff event that ordered
+         * a sliced write is a fact about this slice, unrelated session
+         * traffic is not. Program order adds nothing the field events lack.
          */
         private static Set<Long> adjacentChannelEvents(
                 SessionOrderDomain domain, Set<Long> sliced) {
@@ -376,15 +313,6 @@ public final class SessionTargetSlice {
                 }
             }
             return adjacent;
-        }
-
-        /** Node ids in the slice, in discovery order. */
-        public Set<String> nodes() {
-            return Collections.unmodifiableSet(nodes);
-        }
-
-        public boolean contains(String nodeId) {
-            return nodes.contains(nodeId);
         }
 
         public boolean containsRead(long readEventId) {
@@ -422,13 +350,9 @@ public final class SessionTargetSlice {
         }
 
         /** Whether the recorded graph reaches the target predicate at all. */
-        public boolean reachesTarget() {
-            return !nodes.isEmpty();
-        }
+        public boolean reachesTarget() { return !nodes.isEmpty(); }
 
-        public SessionOrderDomain orderDomain() {
-            return domain;
-        }
+        public SessionOrderDomain orderDomain() { return domain; }
 
         /** The slice as one artifact-ready object. */
         public JsonObject toJson() {
@@ -519,8 +443,8 @@ public final class SessionTargetSlice {
                     versionsAt(locationKey).add(id);
                     // A version's own value may itself be a guarded read of
                     // another location, so the index has to see through it.
-                    index(version.get("expression"));
-                    index(version.get("pathGuard"));
+                    collect(version.get("expression"), new References());
+                    collect(version.get("pathGuard"), new References());
                 }
                 for (JsonElement element : array(envelope, "reads")) {
                     JsonObject read = element.getAsJsonObject();
@@ -539,17 +463,10 @@ public final class SessionTargetSlice {
             return at;
         }
 
-        /** Records every admitted guarded read node inside one term. */
-        private void index(JsonElement node) {
-            collect(node, new References());
-        }
-
         /**
          * Walks one expression term, noting the recorded identities it
          * mentions. A node that claims to be a guarded read but does not pass
-         * admission is walked as an ordinary term rather than trusted: it
-         * still contains symbols, and refusing to look inside it would lose
-         * them.
+         * admission is walked as an ordinary term: it still holds symbols.
          */
         private void collect(JsonElement node, References into) {
             if (node == null || node.isJsonNull()) return;

@@ -5,7 +5,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
-import edu.uva.liftlab.graphchecker.causynth.CausynthJson;
+import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
 import java.io.BufferedReader;
@@ -38,11 +39,10 @@ import java.util.concurrent.Future;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
-/**
- * Refines the cheap static candidate graph with one concrete REGION_STATE
- * execution.  Static discovery chooses methods; receiver/value object identity
- * supplies field paths.  No synthetic access-path cell is created.
- */
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
+
+/** Refines the cheap static candidate graph with one concrete REGION_STATE
+ * execution. */
 final class RuntimeRefinedGraphBuilder {
     static final int REFINEMENT_SCHEMA_VERSION = 1;
     static final String GRAPH_KIND = "RUNTIME_REFINED_DATAFLOW";
@@ -65,36 +65,6 @@ final class RuntimeRefinedGraphBuilder {
                          List<RuntimeRegionPlanner.MethodEvent> methods,
                          List<RuntimeRegionPlanner.RuntimeEvent> runtime,
                          List<RuntimeRegionPlanner.FieldAccessEvent> fields,
-                         List<RuntimeRegionPlanner.ProtocolEvent> protocol,
-                         Path output) throws IOException {
-        return refine(candidateGraph, selectedSkeletons, runtimeInstances,
-                methods, runtime, fields,
-                Collections.<RuntimeRegionPlanner.ArrayAccessEvent>emptyList(),
-                protocol, Collections.<Map<String, Object>>emptyList(),
-                output);
-    }
-
-    static Result refine(File candidateGraph, File selectedSkeletons,
-                         Collection<Map<String, Object>> runtimeInstances,
-                         List<RuntimeRegionPlanner.MethodEvent> methods,
-                         List<RuntimeRegionPlanner.RuntimeEvent> runtime,
-                         List<RuntimeRegionPlanner.FieldAccessEvent> fields,
-                         List<RuntimeRegionPlanner.ArrayAccessEvent> arrays,
-                         List<RuntimeRegionPlanner.ProtocolEvent> protocol,
-                         Path output) throws IOException {
-        return refine(candidateGraph, selectedSkeletons, runtimeInstances,
-                methods, runtime, fields, arrays, protocol,
-                Collections.<Map<String, Object>>emptyList(), output);
-    }
-
-    static Result refine(File candidateGraph, File selectedSkeletons,
-                         Collection<Map<String, Object>> runtimeInstances,
-                         List<RuntimeRegionPlanner.MethodEvent> methods,
-                         List<RuntimeRegionPlanner.RuntimeEvent> runtime,
-                         List<RuntimeRegionPlanner.FieldAccessEvent> fields,
-                         List<RuntimeRegionPlanner.ArrayAccessEvent> arrays,
-                         List<RuntimeRegionPlanner.ProtocolEvent> protocol,
-                         Collection<Map<String, Object>> occurrenceLinks,
                          Path output) throws IOException {
         if (candidateGraph == null || !candidateGraph.isFile()) {
             throw new IOException("candidate static graph not found: "
@@ -113,8 +83,6 @@ final class RuntimeRefinedGraphBuilder {
                 runtime);
         List<RuntimeRegionPlanner.FieldAccessEvent> fieldEvents = sortedFields(
                 fields);
-        Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
-                arraysByObject = arraysByObject(arrays, methodEvents);
         Map<Long, List<RuntimeRegionPlanner.RuntimeEvent>> runtimeByCall =
                 groupRuntime(runtimeEvents);
         Map<Long, List<RuntimeRegionPlanner.FieldAccessEvent>> fieldsByCall =
@@ -211,15 +179,10 @@ final class RuntimeRefinedGraphBuilder {
 
         final List<Map<String, Object>> refined = new ArrayList<>();
         final int[] runtimeBoundCounter = {0};
-        // The candidate graph can be multi-gigabyte.  Parse it in parallel
-        // batches and process rows strictly in file order, so the refined
-        // output is identical to a sequential pass while the full candidate
-        // row set never has to be resident at once.
+        // The candidate graph can be multi-gigabyte.
         streamRows(candidateGraph, candidate -> {
             requireCandidateEdge(candidate, candidateGraph);
             String method = string(candidate.get("method"));
-            String candidateTransfer = string(candidate.get(
-                    "transferKind"));
             if (!selectedMethods.contains(method)) {
                 return;
             }
@@ -250,8 +213,7 @@ final class RuntimeRefinedGraphBuilder {
                     edge.put("runtimeObserved", false);
                 } else {
                     edge.put("runtimeAccessorBindings",
-                            encodeAccessorBindings(bindings, edge,
-                                    arraysByObject));
+                            encodeAccessorBindings(bindings, edge));
                     edge.put("runtimeObserved", true);
                     runtimeBoundCounter[0]++;
                 }
@@ -262,7 +224,7 @@ final class RuntimeRefinedGraphBuilder {
                         bindingsBySite.get(site));
                 if (!bindings.isEmpty()) {
                     List<Map<String, Object>> encoded = encodeBindings(
-                            bindings, arraysByObject);
+                            bindings);
                     edge.put("runtimeFieldBindings", encoded);
                     List<String> uniquePath = uniquePath(bindings);
                     List<String> uniqueDeclarations =
@@ -299,11 +261,8 @@ final class RuntimeRefinedGraphBuilder {
         void accept(Map<String, Object> row) throws IOException;
     }
 
-    /**
-     * Streams JSONL rows in file order while parsing batches on background
-     * threads.  Row acceptance is unchanged: every non-blank line must be a
-     * JSON object, exactly as {@link #readRows(File)} required.
-     */
+    /** Streams JSONL rows in file order while parsing batches on background
+     * threads. */
     private static void streamRows(File file, RowSink sink)
             throws IOException {
         int threads = Math.max(1, Math.min(8,
@@ -396,11 +355,9 @@ final class RuntimeRefinedGraphBuilder {
         }
     }
 
-    /**
-     * Rewrites integral boxed numbers to Long in place, which is exactly the
-     * value domain produced by writing with {@link CausynthJson} and parsing
-     * with the LONG_OR_DOUBLE strategy.
-     */
+    /** Rewrites integral boxed numbers to Long in place, which is exactly the
+     * value domain produced by writing with {@link JsonFields#WRITER} and parsing
+     * with the LONG_OR_DOUBLE strategy. */
     @SuppressWarnings("unchecked")
     static void normalizeNumbersInPlace(Object value) {
         if (value instanceof Map<?, ?>) {
@@ -428,7 +385,9 @@ final class RuntimeRefinedGraphBuilder {
         }
     }
 
-    private static Object normalizeScalar(Object value) {
+    /** The one integral/floating boxed domain a JSONL round-trip produces;
+     * shared with the planner's deep copy so both state it once. */
+    static Object normalizeScalar(Object value) {
         if (value instanceof Integer || value instanceof Short
                 || value instanceof Byte) {
             return ((Number) value).longValue();
@@ -611,62 +570,20 @@ final class RuntimeRefinedGraphBuilder {
 
     private static List<Map<String, Object>> encodeBindings(
             Collection<RuntimeFieldBinding> bindings) {
-        return encodeBindings(bindings,
-                Collections.<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
-                        emptyMap());
-    }
-
-    private static List<Map<String, Object>> encodeBindings(
-            Collection<RuntimeFieldBinding> bindings,
-            Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
-                    arraysByObject) {
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
         for (RuntimeFieldBinding binding : bindings) {
-            Map<String, Object> encoded = binding.toMap();
-            attachArrayElementBindings(encoded, binding.root.sourceKey,
-                    binding.event.valueObjectId, arraysByObject);
-            unique.put(CausynthJson.write(encoded), encoded);
+            unique.put(JsonFields.WRITER.toJson(binding.toMap()), binding.toMap());
         }
         return new ArrayList<>(unique.values());
     }
 
-    private static Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
-            arraysByObject(
-            Collection<RuntimeRegionPlanner.ArrayAccessEvent> events,
-            Collection<RuntimeRegionPlanner.MethodEvent> methods) {
-        Map<Long, String> sourceKeyByCall = new LinkedHashMap<>();
-        for (RuntimeRegionPlanner.MethodEvent method : methods) {
-            sourceKeyByCall.put(method.callId, method.sourceKey);
-        }
-        Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>> result =
-                new LinkedHashMap<>();
-        List<RuntimeRegionPlanner.ArrayAccessEvent> sorted =
-                new ArrayList<>(events == null
-                        ? Collections.<RuntimeRegionPlanner.ArrayAccessEvent>
-                                emptyList() : events);
-        sorted.sort((left, right) -> Long.compare(left.seq, right.seq));
-        for (RuntimeRegionPlanner.ArrayAccessEvent event : sorted) {
-            String sourceKey = sourceKeyByCall.get(event.callId);
-            if (event.arrayObjectId == 0 || sourceKey == null
-                    || sourceKey.isEmpty()) continue;
-            result.computeIfAbsent(sourceKey + "\n" + event.arrayObjectId,
-                    ignored -> new ArrayList<>()).add(event);
-        }
-        return result;
-    }
-
     private static List<Map<String, Object>> encodeAccessorBindings(
             Collection<RuntimeAccessorBinding> bindings,
-            Map<String, Object> edge,
-            Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
-                    arraysByObject) {
+            Map<String, Object> edge) {
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
         for (RuntimeAccessorBinding binding : bindings) {
             Map<String, Object> encoded = binding.toMap(edge);
-            attachArrayElementBindings(encoded,
-                    binding.activation.root.sourceKey,
-                    binding.returned.objectId, arraysByObject);
-            unique.put(CausynthJson.write(encoded), encoded);
+            unique.put(JsonFields.WRITER.toJson(encoded), encoded);
         }
         return new ArrayList<>(unique.values());
     }
@@ -683,38 +600,9 @@ final class RuntimeRefinedGraphBuilder {
             encoded.remove("accessorImplementationMethod");
             encoded.put("authority",
                     "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
-            unique.put(CausynthJson.write(encoded), encoded);
+            unique.put(JsonFields.WRITER.toJson(encoded), encoded);
         }
         return new ArrayList<>(unique.values());
-    }
-
-    /** Carries exact element identity with every reference-array value. */
-    private static void attachArrayElementBindings(
-            Map<String, Object> encoded, String sourceKey, int valueObjectId,
-            Map<String, List<RuntimeRegionPlanner.ArrayAccessEvent>>
-                    arraysByObject) {
-        List<RuntimeRegionPlanner.ArrayAccessEvent> accesses =
-                arraysByObject.getOrDefault(sourceKey + "\n" + valueObjectId,
-                        Collections.<RuntimeRegionPlanner.ArrayAccessEvent>
-                                emptyList());
-        if (accesses.isEmpty()) return;
-        List<Map<String, Object>> rows = new ArrayList<>();
-        for (RuntimeRegionPlanner.ArrayAccessEvent access : accesses) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("kind", access.kind);
-            row.put("eventSeq", access.seq);
-            row.put("method", access.method);
-            row.put("callId", access.callId);
-            row.put("siteId", access.siteId);
-            row.put("unitIndex", access.unitIndex);
-            row.put("arrayObjectId", access.arrayObjectId);
-            row.put("arrayIndex", access.index);
-            row.put("elementObjectId", access.elementObjectId);
-            row.put("authority",
-                    "EXACT_RUNTIME_REFERENCE_ARRAY_ELEMENT_V1");
-            rows.add(row);
-        }
-        encoded.put("runtimeArrayElementBindings", rows);
     }
 
     private static List<String> uniquePath(
@@ -776,6 +664,7 @@ final class RuntimeRefinedGraphBuilder {
         result.sort(Comparator.comparingLong(RuntimeRefinedGraphBuilder::seq));
         return result;
     }
+
 
     private static long seq(Object event) {
         if (event instanceof RuntimeRegionPlanner.RuntimeEvent) {
@@ -860,7 +749,7 @@ final class RuntimeRefinedGraphBuilder {
         try (BufferedWriter writer = new BufferedWriter(
                 new OutputStreamWriter(stream, StandardCharsets.UTF_8))) {
             for (Map<String, Object> row : rows) {
-                writer.write(CausynthJson.write(row));
+                writer.write(JsonFields.WRITER.toJson(row));
                 writer.write('\n');
             }
         }
@@ -913,10 +802,6 @@ final class RuntimeRefinedGraphBuilder {
         }
     }
 
-    private static long longNumber(Object value, long fallback) {
-        return value instanceof Number ? ((Number) value).longValue()
-                : fallback;
-    }
 
     private static Set<Long> longNumbers(Object value) {
         Set<Long> result = new LinkedHashSet<>();
@@ -967,9 +852,11 @@ final class RuntimeRefinedGraphBuilder {
         private static SkeletonCatalog read(File file) throws IOException {
             SkeletonCatalog result = new SkeletonCatalog();
             for (Map<String, Object> row : readRows(file)) {
-                if (integer(row.get("schemaVersion"), -1) != 3
-                        || !"REGION_SKELETON".equals(
-                        string(row.get("kind")))) {
+                if (integer(row.get("schemaVersion"), -1)
+                        != RuntimeSelectedRegionFinalizer
+                        .REGION_SCHEMA_VERSION
+                        || !RuntimeSelectedRegionFinalizer.SKELETON_KIND
+                        .equals(string(row.get("kind")))) {
                     throw new IOException("invalid selected skeleton row in "
                             + file);
                 }
@@ -1186,7 +1073,6 @@ final class RuntimeRefinedGraphBuilder {
             result.put("primitiveValue", returned.primitiveValue);
             if (returned.objectId != 0) {
                 result.put("valueObjectId", returned.objectId);
-                result.put("valueRuntimeType", returned.runtimeType);
             }
             result.put("accessorOccurrence", occurrence);
             result.put("declaredCallee", enter.declaredCallee);
@@ -1279,7 +1165,6 @@ final class RuntimeRefinedGraphBuilder {
             result.put("fieldPathDeclarations", path.fieldDeclarations());
             result.put("authority", authority);
             result.put("bindingKind", bindingKind);
-            result.put("boundaryState", "ACTIVATION_LOCAL");
             if (containerRead != null && mutationEnter != null
                     && mutationCompletion != null) {
                 result.put("writerFieldReadSeq", containerRead.seq);
@@ -1294,11 +1179,8 @@ final class RuntimeRefinedGraphBuilder {
             return result;
         }
 
-        /**
-         * Names one map member by its defining mutation, never by its value or
-         * iteration position.  Object ids are retained only as trace-local
-         * evidence for attaching the member's demanded field leaves.
-         */
+        /** Names one map member by its defining mutation, never by its value
+         * or iteration position. */
         private void addAssociativeMemberIdentity(
                 Map<String, Object> result) {
             if (!JavaContainerTypes.associativePut(

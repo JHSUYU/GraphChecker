@@ -43,8 +43,9 @@ public class ConcolicRegionRuntimeConfiguredSourceTypeMatrixTest {
 
             assertTrue("write source " + model.field + " as "
                             + model.javaType,
-                    ConcolicRegionRuntime.writeModeledField(
-                            owner, signature, assignment));
+                    ConcolicRegionRuntime.writeModeledField(owner, signature,
+                            assignment,
+                            ConcolicRegionRuntime.MissingValue.INSTANCE));
             Field field = PrimitiveSources.class.getDeclaredField(model.field);
             field.setAccessible(true);
             assertEquals("materialized source " + model.field,

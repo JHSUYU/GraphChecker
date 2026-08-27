@@ -11,6 +11,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredArray;
+
 /**
  * Canonical typed branch row stored in a concolic summary.
  *
@@ -187,29 +189,19 @@ public final class SummaryBranchMapping {
         return (JsonObject) CanonicalJson.copy(result);
     }
 
-    public boolean isWitnessed() {
-        return witness != null;
-    }
+    public boolean isWitnessed() { return witness != null; }
 
     public boolean isConcreteObservation() {
         return concreteObservation != null;
     }
 
-    public BranchWitness witness() {
-        return witness;
-    }
+    public BranchWitness witness() { return witness; }
 
-    public int summaryPcIndex() {
-        return summaryPcIndex;
-    }
+    public int summaryPcIndex() { return summaryPcIndex; }
 
-    public Policy policy() {
-        return policy;
-    }
+    public Policy policy() { return policy; }
 
-    public boolean isExplore() {
-        return policy == Policy.EXPLORE;
-    }
+    public boolean isExplore() { return policy == Policy.EXPLORE; }
 
     public String siteId() {
         return witness != null
@@ -235,15 +227,6 @@ public final class SummaryBranchMapping {
         return witness == null
                 ? siteId() + "\u0000" + occurrence() + "\u0000" + 0
                 : witness.decisionIdentity();
-    }
-
-    private static JsonArray requiredArray(JsonObject parent, String name) {
-        JsonElement value = parent == null ? null : parent.get(name);
-        if (value == null || !value.isJsonArray()) {
-            throw new IllegalArgumentException(name
-                    + " must be a JSON array");
-        }
-        return value.getAsJsonArray();
     }
 
     private static int integer(JsonObject object, String name) {
