@@ -75,6 +75,7 @@ public final class ConcolicConstraintSolver {
                 SparseContainerBoundaries.discover(
                         branchConstraints, contextConstraints, actions);
         Encoder encoder = new Encoder(containerBoundaries);
+        encoder.useRecordedReadCut(query.recordedReadCut);
         for (int index = 0; index < contextConstraints.size(); index++) {
             JsonElement constraint = contextConstraints.get(index);
             if (!containerBoundaries.isConcreteObservation(constraint)) {
@@ -219,7 +220,13 @@ public final class ConcolicConstraintSolver {
         if (writableReplayControlSymbols.isEmpty()
                 && containerBoundaries.models.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
+            record.addProperty("reason", readCut.isEmpty()
+                    ? "NO_REGION_INPUT_SYMBOL_IN_QUERY"
+                    : "REPLAY_CONTROL_FRONTIER_MODEL_IS_NOT_MATERIALIZABLE");
+            if (!readCut.isEmpty()) {
+                record.add("unresolvedReplayControlSymbols",
+                        strings(replayFrontier));
+            }
         } else if (!projection.unresolved.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
@@ -277,6 +284,8 @@ public final class ConcolicConstraintSolver {
                 new LinkedHashSet<>();
         private final Set<String> javaIntRangeAssertions =
                 new LinkedHashSet<>();
+        /** Exact selector names and executable arms of this path's read cut. */
+        private JsonObject recordedReadCut = new JsonObject();
         private boolean usesJavaIntString;
         private Set<String> currentConstraintSymbols;
 
@@ -351,6 +360,9 @@ public final class ConcolicConstraintSolver {
             if ("MethodExpression".equals(type)) {
                 return methodTerm(object, origin);
             }
+            if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
+                return guardedReadTerm(object, expected, origin);
+            }
             if (ContainerSmtCodec.handles(object)) {
                 return containerTerm(object, origin);
             }
@@ -360,6 +372,130 @@ public final class ConcolicConstraintSolver {
             unsupported.add(origin + ":TYPE:" + firstNonBlank(type,
                     "MISSING"));
             return null;
+        }
+
+        private void useRecordedReadCut(JsonObject payload) {
+            recordedReadCut = RecordedSessionModel.isQueryPayload(payload)
+                    ? payload.deepCopy() : new JsonObject();
+        }
+
+        /** Lowers the VM's complete writer choice under the recorded cut. */
+        private Term guardedReadTerm(JsonObject read, Sort expected,
+                                     String origin) {
+            // A map iterator over a read-from choice carries VALUE_VIEW /
+            // KEY_VIEW on each known writer arm.  Move that common view
+            // outside the choice before lowering it, exactly as the composer
+            // does: the selected value is an AssocState here, not the Java
+            // reference type recorded on the transport wrapper.
+            JsonObject selectedViewState = ContainerSmtCodec
+                    .selectedReadViewState(read);
+            if (selectedViewState != null) {
+                read = selectedViewState;
+                expected = Sort.ASSOCIATIVE;
+            }
+            String fault = SharedStateEvidence.guardedReadFault(read);
+            long readEventId = longInteger(read, "readEventId", 0L);
+            JsonArray candidates = array(read, "candidates");
+            Sort declared = sortOfJava(string(read, "_java_type"));
+            Sort sort = expected != null && expected.containerState()
+                    ? expected : declared;
+            if (!fault.isEmpty() || readEventId <= 0L
+                    || candidates.size() == 0
+                    || sort == Sort.UNKNOWN
+                    || expected != null && expected != sort) {
+                unsupported.add(origin + ":UNADMITTED_GUARDED_READ:"
+                        + firstNonBlank(fault, "MALFORMED"));
+                return null;
+            }
+            List<String> selectors = new ArrayList<>();
+            List<Term> arms = new ArrayList<>();
+            for (JsonElement element : candidates) {
+                if (!element.isJsonObject()) {
+                    unsupported.add(origin
+                            + ":GUARDED_READ_CANDIDATE_NOT_OBJECT");
+                    return null;
+                }
+                JsonObject candidate = element.getAsJsonObject();
+                String arm = string(candidate, "selector");
+                String selector = recordedSelectorName(readEventId, arm);
+                if (arm.isEmpty() || selector.isEmpty()) {
+                    unsupported.add(origin
+                            + ":GUARDED_READ_CANDIDATE_UNNAMED");
+                    return null;
+                }
+                declarations.put(selector, Sort.BOOL);
+                additionalModelNames.add(selector);
+                selectors.add(selector);
+                if (bool(candidate, "unknown", false)) {
+                    // An unknown writer has no replay gate.  It remains in
+                    // the VM's closed writer universe, but cannot be the arm
+                    // an executable concolic task asks replay to confirm.
+                    assertions.add("(not " + selector + ")");
+                    arms.add(defaultGuardedReadTerm(sort));
+                    continue;
+                }
+                // The arm is an observed writer value, not another local
+                // input the target task must materialize.  It participates
+                // in the SMT relation while its internal lineage stays out
+                // of this replay-control frontier.
+                Set<String> frontier = currentConstraintSymbols;
+                currentConstraintSymbols = null;
+                Term value;
+                try {
+                    value = term(candidate.get("expression"), sort,
+                            origin + ":arm:" + arm);
+                } finally {
+                    currentConstraintSymbols = frontier;
+                }
+                if (value == null || value.sort != sort) {
+                    unsupported.add(origin
+                            + ":GUARDED_READ_ARM_SORT:" + arm);
+                    return null;
+                }
+                arms.add(value);
+            }
+            String value = arms.get(arms.size() - 1).text;
+            for (int index = arms.size() - 2; index >= 0; index--) {
+                value = "(ite " + selectors.get(index) + " "
+                        + arms.get(index).text + " " + value + ")";
+            }
+            return new Term(value, sort,
+                    JavaPrimitiveSmtSemantics.widthOfJavaType(
+                            string(read, "_java_type")));
+        }
+
+        private String recordedSelectorName(long readEventId, String arm) {
+            for (JsonElement readElement : array(recordedReadCut,
+                    "readChoices")) {
+                if (!readElement.isJsonObject()) continue;
+                JsonObject choice = readElement.getAsJsonObject();
+                if (longInteger(choice, "readEventId", 0L) != readEventId) {
+                    continue;
+                }
+                for (JsonElement candidateElement
+                        : array(choice, "candidates")) {
+                    if (!candidateElement.isJsonObject()) continue;
+                    JsonObject candidate = candidateElement.getAsJsonObject();
+                    if (arm.equals(string(candidate, "arm"))) {
+                        return string(candidate, "selector");
+                    }
+                }
+            }
+            return RecordedSessionModel.selectorNameToken(
+                    String.valueOf(readEventId), arm);
+        }
+
+        private static Term defaultGuardedReadTerm(Sort sort) {
+            if (sort == Sort.BOOL) return new Term("false", sort);
+            if (sort == Sort.INT) return new Term("0", sort);
+            if (sort == Sort.REF) return new Term("nullRef", sort);
+            if (sort == Sort.ASSOCIATIVE) {
+                return new Term("(assoc_state_of nullRef)", sort);
+            }
+            if (sort == Sort.INDEXED) {
+                return new Term("(indexed_state_of nullRef)", sort);
+            }
+            return new Term("0", sort);
         }
 
         private Term containerTerm(JsonObject expression, String origin) {
@@ -633,7 +769,7 @@ public final class ConcolicConstraintSolver {
                 }
                 if (regionInput(raw)) controlledSymbols.add(raw);
                 constrainIntegralInput(name, javaType, sort);
-                if (fixedNonNullPlaceholder(raw, sort)) {
+                if (fixedNonNullReference(raw, sort)) {
                     assertions.add("(not (= " + name + " nullRef))");
                 }
             } else {
@@ -662,6 +798,7 @@ public final class ConcolicConstraintSolver {
         /** Declares the recorded read cut this query carries. */
         private void bindRecordedReadCut(JsonObject payload) {
             if (!RecordedSessionModel.isQueryPayload(payload)) return;
+            useRecordedReadCut(payload);
             for (JsonElement element : array(payload, "positions")) {
                 JsonObject position = element.getAsJsonObject();
                 String name = string(position, "name");
@@ -2117,8 +2254,10 @@ public final class ConcolicConstraintSolver {
             Set<String> ambiguous = new LinkedHashSet<>();
             Set<String> missing = new LinkedHashSet<>();
             Set<String> mixed = new LinkedHashSet<>();
-            boolean selectedHasWritableRoot = false;
             int selected = predicates.size() - 1;
+            boolean selectedHasWritableRoot = selected >= 0
+                    && containsAdmittedGuardedRead(
+                    predicates.get(selected));
 
             for (int index = 0; index < symbolsByPredicate.size(); index++) {
                 ReplaySupport local = classifyReplaySupport(
@@ -2149,7 +2288,7 @@ public final class ConcolicConstraintSolver {
                     mixed.addAll(exactCompanion);
                 }
                 if (index == selected) {
-                    selectedHasWritableRoot =
+                    selectedHasWritableRoot |=
                             !local.writableSymbols.isEmpty();
                 }
                 if (local.writableSymbols.isEmpty()
@@ -2794,7 +2933,7 @@ public final class ConcolicConstraintSolver {
             if ("N".equals(symbol) || "V".equals(symbol)) continue;
             SymbolNames names = encoder.names(symbol);
             if (names != null
-                    && fixedNonNullPlaceholder(symbol, names.sort)) {
+                    && fixedNonNullReference(symbol, names.sort)) {
                 continue;
             }
             if (exactlyOneWritableBinding(encoder, symbol, actions,
@@ -2837,6 +2976,10 @@ public final class ConcolicConstraintSolver {
     static boolean hasLocallyWritableReplayRoot(
             JsonElement predicate, JsonObject activation) {
         if (predicate == null || activation == null) return false;
+        // A complete VM read-from choice is a replay control even when the
+        // selected value arrived from another task: the model chooses one
+        // recorded writer and replay observes/confirms that exact cut.
+        if (containsAdmittedGuardedRead(predicate)) return true;
         try {
             List<JsonObject> actions = materializationActions(activation);
             JsonArray predicates = new JsonArray();
@@ -2855,6 +2998,23 @@ public final class ConcolicConstraintSolver {
         } catch (IOException malformedActions) {
             return false;
         }
+    }
+
+    private static boolean containsAdmittedGuardedRead(JsonElement node) {
+        if (node == null || node.isJsonNull()) return false;
+        if (node.isJsonArray()) {
+            for (JsonElement child : node.getAsJsonArray()) {
+                if (containsAdmittedGuardedRead(child)) return true;
+            }
+            return false;
+        }
+        if (!node.isJsonObject()) return false;
+        JsonObject object = node.getAsJsonObject();
+        if (SharedStateEvidence.isGuardedRead(object)) return true;
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if (containsAdmittedGuardedRead(entry.getValue())) return true;
+        }
+        return false;
     }
 
     private static boolean targetReachQuery(JsonObject task) {
@@ -3172,8 +3332,10 @@ public final class ConcolicConstraintSolver {
      * A VM {@code PlaceHolderSymbolExp} is created from an already allocated
      * object, so its reference is known non-null.
      */
-    private static boolean fixedNonNullPlaceholder(String raw, Sort sort) {
-        return sort == Sort.REF && raw != null && raw.startsWith("P_L");
+    private static boolean fixedNonNullReference(String raw, Sort sort) {
+        return sort == Sort.REF && raw != null
+                && (raw.startsWith("P_L")
+                || VmExpressionIr.isAllocatedInstanceReference(raw));
     }
 
     /** This encoder's own answer to "is this Java type a String?". */

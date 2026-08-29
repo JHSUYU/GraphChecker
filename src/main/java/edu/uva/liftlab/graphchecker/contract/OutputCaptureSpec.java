@@ -85,8 +85,7 @@ public final class OutputCaptureSpec {
         argumentIndex = encoded.has("argumentIndex")
                 ? encoded.get("argumentIndex").getAsInt() : -1;
         occurrenceScoped = encoded.has("outputSiteId")
-                || encoded.has("outputOccurrence")
-                || encoded.has("replayOccurrence");
+                || encoded.has("outputOccurrence");
         occurrenceScope = occurrenceScoped
                 ? string(encoded, "occurrenceScope")
                 : "";
@@ -99,13 +98,8 @@ public final class OutputCaptureSpec {
         // The ordinal is recorded provenance, not a replay demand: refusing a
         // recorded ordinal past the replay window would discard an output the
         // recording proves for a reason the relation never asserted.
-        // replayOccurrence is outputOccurrence under a second name; nothing
-        // reads it back, so a wire that restates it is only held to agree.
         if (occurrenceScoped && (outputSiteId.isEmpty()
-                || outputOccurrence < 1
-                || (encoded.has("replayOccurrence")
-                && encoded.get("replayOccurrence").getAsInt()
-                != outputOccurrence))) {
+                || outputOccurrence < 1)) {
             throw new IllegalArgumentException(
                     "invalid bounded output capture occurrence");
         }

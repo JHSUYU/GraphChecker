@@ -514,7 +514,6 @@ public class ConcolicRegionRuntimeSourceRootAdmissionTest {
         capture.addProperty("outputSiteId",
                 "MUTATION_STATE:<example.Producer: void run()>#u1");
         capture.addProperty("outputOccurrence", 1);
-        capture.addProperty("replayOccurrence", 1);
         JsonArray fieldPath = new JsonArray();
         fieldPath.add("values");
         capture.add("fieldPath", fieldPath);
@@ -574,7 +573,6 @@ public class ConcolicRegionRuntimeSourceRootAdmissionTest {
                 "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
         capture.addProperty("outputSiteId", "FIELD_WRITE:#u2");
         capture.addProperty("outputOccurrence", 1);
-        capture.addProperty("replayOccurrence", 1);
 
         JsonObject output = new JsonObject();
         output.addProperty("portId", FLAG_OUTPUT);

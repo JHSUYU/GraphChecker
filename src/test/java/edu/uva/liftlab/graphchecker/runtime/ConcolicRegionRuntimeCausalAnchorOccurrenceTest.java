@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
 import org.junit.Before;
@@ -46,7 +47,7 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
     private static final String OTHER_PORT = "XCH.other.resp.keys";
     /** The root loop's own K_L, as the DN heartbeat loop declares it. */
     private static final int K_L = 8;
-    /** The region's declared unroll ceiling, above its root loop's K_L. */
+    /** An inner loop bound; it must never cap the outer anchor search. */
     private static final int REGION_MAX = 24;
     private static final String ROOT_LOOP_SITE = "L(" + ROOT + "#u1)";
     /** An inner walk, exactly as the DN region's {@code allKeys} loops do. */
@@ -85,20 +86,22 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
             throws Exception {
         load(true, true);
 
-        boolean[] turns = new boolean[14];
-        turns[10] = true;
+        boolean[] turns = new boolean[56];
+        turns[48] = true;
 
-        assertEquals("the anchored 11th turn replaces the 8th unanchored one",
-                Arrays.asList(1, 2, 3, 4, 5, 6, 7, 11),
+        assertEquals("the anchored 49th turn replaces the 8th unanchored one",
+                Arrays.asList(1, 2, 3, 4, 5, 6, 7, 49),
                 ConcolicRegionRuntime.simulateAnchoredTurnsForTests(
                         TASK, turns));
 
         JsonObject marker = onlyMarker();
         assertEquals(K_L, marker.get("boundedAt").getAsInt());
         assertEquals(1, marker.get("anchoredOccurrences").getAsInt());
-        assertEquals(3,
+        assertEquals(41,
                 marker.get("unanchoredTurnsReleased").getAsInt());
-        assertFalse(marker.get("anchorReservationReleased").getAsBoolean());
+        assertEquals(49, marker.get("turnsAdmitted").getAsInt());
+        assertFalse(marker.toString(), marker.has("anchorProbeCeiling"));
+        assertFalse(marker.toString(), marker.has("anchorReservationReleased"));
         assertEquals(ANCHOR_PORT, marker.getAsJsonArray("causalAnchorPorts")
                 .get(0).getAsString());
     }
@@ -121,31 +124,133 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
                 onlyMarker().get("unanchoredTurnsReleased").getAsInt());
     }
 
+    /** Source publications are semantic anchors just like selected RPCs. */
+    @Test
+    public void configuredSourceTurnsReplacePollingStutters() throws Exception {
+        load(true, false, K_L);
+
+        boolean[] turns = new boolean[K_L + 3];
+        for (int turn = 2; turn < K_L + 2; turn++) {
+            turns[turn] = true;
+        }
+
+        assertEquals(Arrays.asList(3, 4, 5, 6, 7, 8, 9, 10),
+                ConcolicRegionRuntime.simulateAnchoredTurnsForTests(
+                        TASK, turns));
+        JsonObject marker = onlyMarker();
+        assertEquals(K_L, marker.get("boundedAt").getAsInt());
+        assertEquals(K_L, marker.get("anchoredOccurrences").getAsInt());
+        assertEquals(2,
+                marker.get("unanchoredTurnsReleased").getAsInt());
+        assertTrue(marker.getAsJsonArray("causalAnchorPorts").isEmpty());
+        assertEquals(K_L, marker.getAsJsonArray(
+                "configuredSourceAnchorPhases").size());
+    }
+
+    /** Repeating one exact exchange cannot stand in for a missing phase. */
+    @Test
+    public void repeatedResponseAnchorDoesNotSatisfyAMissingSourcePhase()
+            throws Exception {
+        load(true, true, 2);
+        String firstPhase = sourcePhaseId(1);
+        String secondPhase = sourcePhaseId(2);
+        String[][] phases = new String[16][];
+        String[][] responses = new String[16][];
+        phases[0] = new String[]{firstPhase};
+        responses[1] = new String[]{ANCHOR_PORT};
+        responses[2] = new String[]{ANCHOR_PORT};
+
+        ConcolicRegionRuntime.simulateSemanticAnchorTurnsForTests(
+                TASK, phases, responses);
+        ConcolicRegionRuntime.publishRunTotals();
+
+        JsonObject gap = onlySkip("CAUSAL_ANCHOR_NOT_OBSERVED");
+        JsonArray missing = gap.getAsJsonArray(
+                "missingConfiguredSourcePhaseIds");
+        assertEquals(1, missing.size());
+        assertEquals(secondPhase, missing.get(0).getAsString());
+        assertTrue(gap.getAsJsonArray("missingResponseExchanges").isEmpty());
+    }
+
+    /** One retained turn may discharge several exact identities at once. */
+    @Test
+    public void colocatedPhaseAndResponseDoNotCreateAFalseMissingGap()
+            throws Exception {
+        load(true, true, 1);
+        String[][] phases = new String[16][];
+        String[][] responses = new String[16][];
+        phases[0] = new String[]{sourcePhaseId(1)};
+        responses[0] = new String[]{ANCHOR_PORT};
+
+        assertEquals(Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8),
+                ConcolicRegionRuntime.simulateSemanticAnchorTurnsForTests(
+                        TASK, phases, responses));
+        ConcolicRegionRuntime.publishRunTotals();
+
+        assertTrue(skipRows("CAUSAL_ANCHOR_NOT_OBSERVED").isEmpty());
+        JsonObject marker = onlyMarker();
+        assertEquals(1, marker.get("anchoredOccurrences").getAsInt());
+        assertEquals(K_L, marker.get("boundedAt").getAsInt());
+    }
+
+    /** A released candidate cannot consume the next task-scoped phase. */
+    @Test
+    public void sourcePhaseOrdinalCommitsOnlyWithAPublishedActivation()
+            throws Exception {
+        load(true, false, 3);
+        String key = "PUBLISH\nSOURCE.test\n" + ROOT + "#u7";
+
+        assertEquals(1, ConcolicRegionRuntime
+                .configuredSourcePhaseOrdinalForTests(TASK, key, 1));
+        assertEquals("an abandoned activation leaves phase one available",
+                1, ConcolicRegionRuntime
+                        .configuredSourcePhaseOrdinalForTests(TASK, key, 1));
+        ConcolicRegionRuntime.commitConfiguredSourcePhaseOrdinalsForTests(
+                TASK, key, 1);
+        assertEquals(2, ConcolicRegionRuntime
+                .configuredSourcePhaseOrdinalForTests(TASK, key, 1));
+    }
+
+    /** An ordinary root's phase catalog is activation-local. */
+    @Test
+    public void nonLoopSourcePhaseOrdinalRestartsForEveryActivation()
+            throws Exception {
+        load(false, false, 2);
+        String key = "PUBLISH\nSOURCE.test\n" + ROOT + "#u7";
+
+        assertEquals(1, ConcolicRegionRuntime
+                .configuredSourcePhaseOrdinalForTests(TASK, key, 1));
+        ConcolicRegionRuntime.commitConfiguredSourcePhaseOrdinalsForTests(
+                TASK, key, 1);
+        assertEquals("a second RPC/root activation starts its own catalog",
+                1, ConcolicRegionRuntime
+                        .configuredSourcePhaseOrdinalForTests(TASK, key, 1));
+    }
+
     /**
-     * FAIL-CLOSED: an anchor that never arrives gives the reservation back at
-     * the region's own declared unroll ceiling, and the address keeps exactly
-     * the K_L rows it keeps today -- never more, never an unbounded set.
+     * FAIL-CLOSED: an anchor that never arrives never substitutes an unrelated
+     * polling turn.  K_L still bounds the kept cases and shutdown names the
+     * missing selected exchange.
      */
     @Test
-    public void anAnchorThatNeverArrivesFallsBackToThePrefix()
+    public void anAnchorThatNeverArrivesPublishesANamedGap()
             throws Exception {
         load(true, true);
 
         List<Integer> kept = ConcolicRegionRuntime
                 .simulateAnchoredTurnsForTests(TASK, new boolean[64]);
 
-        assertEquals("never more than K_L occurrences", K_L, kept.size());
-        assertEquals(Arrays.asList(1, 2, 3, 4, 5, 6, 7, REGION_MAX + 1),
-                kept);
+        assertEquals("one slot stays reserved for the selected exchange",
+                Arrays.asList(1, 2, 3, 4, 5, 6, 7), kept);
+        ConcolicRegionRuntime.publishRunTotals();
 
-        JsonObject marker = onlyMarker();
-        assertTrue(marker.get("anchorReservationReleased").getAsBoolean());
-        assertEquals(0, marker.get("anchoredOccurrences").getAsInt());
-        assertEquals(REGION_MAX - K_L + 1,
-                marker.get("unanchoredTurnsReleased").getAsInt());
-        assertEquals("turns run and given back are bounded by the region's "
-                        + "own declared unroll ceiling",
-                REGION_MAX + 1, marker.get("turnsAdmitted").getAsInt());
+        assertTrue("no bounded marker may pretend the anchor was answered",
+                markerRows().isEmpty());
+        JsonObject gap = onlySkip("CAUSAL_ANCHOR_NOT_OBSERVED");
+        assertEquals(0, gap.get("anchoredOccurrences").getAsInt());
+        assertEquals(57,
+                gap.get("unanchoredTurnsReleased").getAsInt());
+        assertEquals(64, gap.get("turnsAdmitted").getAsInt());
     }
 
     /**
@@ -218,7 +323,17 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
         return markers.get(0);
     }
 
+    private JsonObject onlySkip(String kind) throws Exception {
+        List<JsonObject> rows = skipRows(kind);
+        assertEquals(rows.toString(), 1, rows.size());
+        return rows.get(0);
+    }
+
     private List<JsonObject> markerRows() throws Exception {
+        return skipRows("LOOP_OCCURRENCES_BOUNDED");
+    }
+
+    private List<JsonObject> skipRows(String kind) throws Exception {
         List<JsonObject> rows = new ArrayList<>();
         if (!Files.exists(results)) return rows;
         for (String line : Files.readAllLines(results,
@@ -227,7 +342,7 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
             JsonObject row = new JsonParser().parse(line).getAsJsonObject();
             if ("CONCOLIC_REGION_SKIPPED".equals(
                     row.get("event").getAsString())
-                    && "LOOP_OCCURRENCES_BOUNDED".equals(
+                    && kind.equals(
                     row.get("skipKind").getAsString())) {
                 rows.add(row);
             }
@@ -237,10 +352,16 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
 
     private void load(boolean loopBody, boolean boundAnchor)
             throws Exception {
+        load(loopBody, boundAnchor, 0);
+    }
+
+    private void load(boolean loopBody, boolean boundAnchor,
+                      int sourcePhases) throws Exception {
         String name = (loopBody ? "loop" : "flat")
-                + (boundAnchor ? "-anchored" : "-anchorless");
+                + (boundAnchor ? "-anchored" : "-anchorless")
+                + "-sources-" + sourcePhases;
         Path plan = folder.newFile(name + "-plan.jsonl").toPath();
-        Files.write(plan, (task(loopBody, boundAnchor) + "\n")
+        Files.write(plan, (task(loopBody, boundAnchor, sourcePhases) + "\n")
                 .getBytes(StandardCharsets.UTF_8));
         results = folder.getRoot().toPath().resolve(name + "-results.jsonl");
         System.setProperty("causynth.concolic.task.plan", plan.toString());
@@ -251,6 +372,11 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
     }
 
     private static JsonObject task(boolean loopBody, boolean boundAnchor) {
+        return task(loopBody, boundAnchor, 0);
+    }
+
+    private static JsonObject task(boolean loopBody, boolean boundAnchor,
+                                   int sourcePhases) {
         JsonObject task = new JsonObject();
         task.addProperty("taskId", TASK);
         task.addProperty("goalId", "GOAL." + TASK);
@@ -271,6 +397,26 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
         task.add("inputActions", new JsonArray());
         task.add("branches", new JsonArray());
 
+        if (sourcePhases > 0) {
+            JsonObject declaration =
+                    ConfiguredSourcePhaseContract.declaration(
+                            ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                            "SOURCE.test", "<example.State: long value>",
+                            ROOT, 7);
+            JsonArray phases = new JsonArray();
+            for (int ordinal = 1; ordinal <= sourcePhases; ordinal++) {
+                phases.add(ConfiguredSourcePhaseContract.occurrence(
+                        ConfiguredSourcePhaseContract.declarationsOf(
+                                singleton(declaration)).get(0),
+                        OCCURRENCE, ordinal, 100L + ordinal,
+                        200L + ordinal, 300L + ordinal,
+                        "<example.Hook: boolean symbolize(java.lang.String,"
+                                + "java.lang.Object,java.lang.String)>",
+                        Arrays.asList(200L + ordinal, 20L)));
+            }
+            task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
+        }
+
         JsonArray handoffs = new JsonArray();
         handoffs.add(attachPort(ANCHOR_PORT, 9));
         handoffs.add(attachPort(OTHER_PORT, 11));
@@ -279,7 +425,9 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
         JsonArray bindings = new JsonArray();
         if (boundAnchor) {
             JsonObject binding = new JsonObject();
+            binding.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
             binding.addProperty("toInputPort", ANCHOR_PORT);
+            binding.addProperty("toOccurrenceId", OCCURRENCE);
             binding.addProperty("fromOccurrenceId",
                     "test/peer#epoch0/region/PRODUCER#1");
             bindings.add(binding);
@@ -308,6 +456,18 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
         admission.addProperty("state", "EXECUTABLE");
         task.add("admission", admission);
         return task;
+    }
+
+    private static JsonArray singleton(JsonObject value) {
+        JsonArray values = new JsonArray();
+        values.add(value);
+        return values;
+    }
+
+    private static String sourcePhaseId(int ordinal) {
+        return ConfiguredSourcePhaseContract.phaseId(OCCURRENCE,
+                ROOT + "#u7",
+                ConfiguredSourcePhaseContract.Phase.PUBLISH, ordinal);
     }
 
     private static JsonObject attachPort(String portId, int unitIndex) {

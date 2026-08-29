@@ -301,8 +301,10 @@ public final class TargetReachPathQueryBuilder {
                     fatalRequiredOutcome);
             // The attached expression belongs to this exact target replay.
             // Hoisting it to the query root lets another target-prefix case
-            VmHandoffEvidence.writeTo(path,
-                    VmHandoffEvidence.eventsOf(summary));
+            if (!selected.writeExactHandoffEndpoints(path, summary,
+                    coverageGaps)) {
+                continue;
+            }
             JsonArray pathFreeSymbols = new JsonArray();
             for (JsonObject row
                     : SymbolicSourceEvidence.freeSymbolsOf(summary)) {
@@ -970,6 +972,93 @@ public final class TargetReachPathQueryBuilder {
                 throw new IOException("selected target symbolic context has "
                         + "the wrong occurrence identity");
             }
+        }
+
+        /**
+         * Binds every actual VM receive on this target path to the one
+         * selected protocol edge with the same planned producer, target and
+         * port.  Equal payload expressions are deliberately irrelevant here:
+         * they do not prove that this producer sent this receive.
+         */
+        private boolean writeExactHandoffEndpoints(
+                JsonObject path, JsonObject summary,
+                List<JsonObject> coverageGaps) {
+            List<JsonObject> bound = new ArrayList<>();
+            for (JsonObject event : VmHandoffEvidence.eventsOf(summary)) {
+                String port = string(event, "portId");
+                if (!exactInputPorts.contains(port)) {
+                    coverageGaps.add(CoverageDivergence.of(
+                            CoverageDivergence.Kind.FLOW,
+                            "TARGET_PATH_HANDOFF_ENDPOINT_NOT_SELECTED",
+                            instance + ":" + port,
+                            "target VM handoff port is not an input of the"
+                                    + " selected occurrence"));
+                    return false;
+                }
+                String producer = PathObservation.plannedOccurrenceOf(
+                        string(event,
+                                VmHandoffEvidence.PRODUCER_OCCURRENCE_ID));
+                String producerTask = string(event,
+                        VmHandoffEvidence.PRODUCER_TASK_ID);
+                List<JsonObject> matches = new ArrayList<>();
+                for (JsonElement element : array(summary, "edgeBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (!demandsMappedInput(binding)
+                            || !"RUNTIME_PROTOCOL_FLOW".equals(
+                            string(binding, "kind"))
+                            || !producer.equals(PathObservation
+                            .plannedOccurrenceOf(string(binding,
+                                    "fromOccurrenceId")))
+                            || !port.equals(string(binding,
+                            "fromOutputPort"))
+                            || VmHandoffEvidence.absorbed(binding)
+                            && !producerTask.equals(string(binding,
+                            VmHandoffEvidence.ABSORBED_FROM_TASK_ID))) {
+                        continue;
+                    }
+                    matches.add(binding);
+                }
+                if (matches.size() != 1) {
+                    coverageGaps.add(CoverageDivergence.of(
+                            CoverageDivergence.Kind.FLOW,
+                            "TARGET_PATH_HANDOFF_ENDPOINT_NOT_SELECTED",
+                            producer + " -> " + instance + ":" + port,
+                            "actual target VM handoff has " + matches.size()
+                                    + " selected endpoint bindings; expected"
+                                    + " one"));
+                    return false;
+                }
+                JsonObject binding = matches.get(0);
+                JsonObject encoded = event.deepCopy();
+                encoded.addProperty(
+                        VmHandoffEvidence.SELECTED_ENDPOINT_AUTHORITY_FIELD,
+                        VmHandoffEvidence.SELECTED_ENDPOINT_AUTHORITY);
+                encoded.addProperty(
+                        VmHandoffEvidence.SELECTED_ENDPOINT_EDGE_ID,
+                        string(binding, "edgeId"));
+                encoded.addProperty(VmHandoffEvidence
+                                .SELECTED_ENDPOINT_FROM_OCCURRENCE_ID,
+                        string(binding, "fromOccurrenceId"));
+                encoded.addProperty(VmHandoffEvidence
+                                .SELECTED_ENDPOINT_TO_OCCURRENCE_ID,
+                        string(binding, "toOccurrenceId"));
+                encoded.addProperty(VmHandoffEvidence
+                                .SELECTED_ENDPOINT_FROM_OUTPUT_PORT,
+                        string(binding, "fromOutputPort"));
+                encoded.addProperty(VmHandoffEvidence
+                                .SELECTED_ENDPOINT_TO_INPUT_PORT,
+                        string(binding, "toInputPort"));
+                if (VmHandoffEvidence.absorbed(binding)) {
+                    encoded.addProperty(VmHandoffEvidence
+                                    .SELECTED_ENDPOINT_ABSORBED_FROM_TASK_ID,
+                            string(binding,
+                                    VmHandoffEvidence.ABSORBED_FROM_TASK_ID));
+                }
+                bound.add(encoded);
+            }
+            VmHandoffEvidence.writeTo(path, bound);
+            return true;
         }
 
         private JsonArray exactBindings(

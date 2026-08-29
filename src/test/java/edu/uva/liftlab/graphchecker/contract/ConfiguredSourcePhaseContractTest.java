@@ -176,6 +176,52 @@ public class ConfiguredSourcePhaseContractTest {
         }
     }
 
+    @Test
+    public void declarationRequiresTheExactCurrentSchema() {
+        JsonObject current = ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                "ROTATING.KEY", FIELD, METHOD, 7);
+        for (String field : Arrays.asList(
+                "schemaVersion", "kind", "authority", "siteId")) {
+            JsonObject malformed = current.deepCopy();
+            malformed.remove(field);
+            try {
+                ConfiguredSourcePhaseContract.declarationsOf(rows(malformed));
+                fail("missing declaration field must be rejected: " + field);
+            } catch (IllegalArgumentException expected) {
+                assertEquals(true, expected.getMessage().contains(
+                        "unsupported schema"));
+            }
+        }
+        JsonObject stringVersion = current.deepCopy();
+        stringVersion.addProperty("schemaVersion", "1");
+        try {
+            ConfiguredSourcePhaseContract.declarationsOf(rows(stringVersion));
+            fail("string schemaVersion must be rejected");
+        } catch (IllegalArgumentException expected) {
+            assertEquals(true, expected.getMessage().contains(
+                    "unsupported schema"));
+        }
+    }
+
+    @Test
+    public void occurrenceRequiresTheExactCurrentSchema() {
+        JsonObject current = occurrence(declaration(), 1, 10, 41);
+        for (String field : Arrays.asList(
+                "schemaVersion", "kind", "authority", "siteId",
+                "phaseKind", "ownerCallId")) {
+            JsonObject malformed = current.deepCopy();
+            malformed.remove(field);
+            try {
+                ConfiguredSourcePhaseContract.occurrencesOf(rows(malformed));
+                fail("missing occurrence field must be rejected: " + field);
+            } catch (IllegalArgumentException expected) {
+                assertEquals(true, expected.getMessage().contains(
+                        "unsupported schema"));
+            }
+        }
+    }
+
     /** The one wire form a phase catalog is decoded from. */
     private static JsonArray rows(JsonObject... phases) {
         JsonArray encoded = new JsonArray();

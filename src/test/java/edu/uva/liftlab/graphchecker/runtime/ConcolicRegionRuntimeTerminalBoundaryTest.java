@@ -205,7 +205,6 @@ public class ConcolicRegionRuntimeTerminalBoundaryTest {
                 "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
         capture.addProperty("outputSiteId", "FIELD_WRITE:" + ROOT + "#u2");
         capture.addProperty("outputOccurrence", 1);
-        capture.addProperty("replayOccurrence", 1);
 
         JsonObject output = new JsonObject();
         output.addProperty("portId", OUTPUT_PORT);

@@ -2120,6 +2120,19 @@ public final class CausynthPipeline {
                 method, loop, continuations));
         Integer declared = null;
         String declaredSite = "";
+        // The catalog and runtime plan name one multi-guard loop by the
+        // composite loopSiteId built from its retained iteration guards.  The
+        // policy therefore carries L(site+site+...), not one entry per member.
+        // Resolve that canonical key before the edge-level fallback below;
+        // otherwise a non-default declaration silently instruments at the
+        // inherited bound even though every later stage reads the declared
+        // K_L from the plan.
+        String retainedSite = retainedLoopSiteId(method, loop);
+        Integer retainedBound = policy.declaredBounds().get(retainedSite);
+        if (retainedBound != null) {
+            declared = retainedBound;
+            declaredSite = retainedSite;
+        }
         for (String site : controlSites) {
             Integer candidate = policy.declaredBounds().get(site);
             if (candidate == null) continue;
@@ -2135,6 +2148,25 @@ public final class CausynthPipeline {
         }
         return declared == null ? policy.defaultBackedgeTraversals()
                 : declared.intValue();
+    }
+
+    /** The catalog's canonical id for this natural loop's retained guards. */
+    private static String retainedLoopSiteId(
+            SootMethod method, CfgLoopControl.NaturalLoop natural) {
+        if (method == null || natural == null || !method.isConcrete()) {
+            return "";
+        }
+        for (CfgLoopControl.RetainedLoop retained
+                : CfgLoopControl.retainedLoops(
+                CfgLoopControl.loopCfg(method.retrieveActiveBody()))) {
+            if (retained.header != natural.header) continue;
+            Set<String> sites = new LinkedHashSet<>();
+            for (Unit guard : retained.guards) {
+                addLoopControlSite(sites, method, guard);
+            }
+            return LoopBoundPolicy.loopSiteId(sites);
+        }
+        return "";
     }
 
     private static Set<String> naturalLoopControlSites(

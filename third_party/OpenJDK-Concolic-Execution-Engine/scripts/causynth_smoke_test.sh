@@ -38,6 +38,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionShadowStackLifecycleSmoke.java \
   test/causynth/RegionSharedFieldVersionSmoke.java \
   test/causynth/RegionSharedFieldProducerStateSmoke.java \
+  test/causynth/RegionCrossActivationPrimitiveFieldSmoke.java \
   test/causynth/RegionSharedMapProducerStateSmoke.java \
   test/causynth/RegionSymbolicKeySourceSmoke.java \
   test/causynth/RegionSharedReadFromSmoke.java \
@@ -79,6 +80,7 @@ for smoke in \
   RegionShadowStackLifecycleSmoke \
   RegionSharedFieldVersionSmoke \
   RegionSharedFieldProducerStateSmoke \
+  RegionCrossActivationPrimitiveFieldSmoke \
   RegionSharedMapProducerStateSmoke \
   RegionSymbolicKeySourceSmoke \
   RegionSharedReadFromSmoke \

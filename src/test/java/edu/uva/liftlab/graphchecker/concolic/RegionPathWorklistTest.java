@@ -603,6 +603,66 @@ public class RegionPathWorklistTest {
                 bothOutcomes.tasks.isEmpty());
     }
 
+    /** A one-guard throw has no next target guard, but its fatal mismatch is
+     * still the target-reach obligation. */
+    @Test
+    public void terminalTargetGuardIsFlippedWhenItsRootIsWritable() {
+        String id = "ACT.TARGET.TERMINAL";
+        JsonObject summary = summary(id,
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject task = executionTask(id,
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        String occurrence = task.get("occurrenceId").getAsString();
+        String sourceId = "TARGET.TERMINAL";
+        String sourceField = "<example.Target: int terminalValue>";
+        String phaseId = sourcePhaseId(occurrence, sourceId);
+        String raw = "M_I_field_"
+                + SymbolicSourceEvidence.engineLabelForPhase(
+                phaseId, sourceId) + "_example/Target";
+
+        JsonArray conditions = new JsonArray();
+        conditions.add(binarySymbol(raw, ">", 0));
+        summary.add("pathCondition", conditions);
+        JsonObject fatalMapping = mapping("SITE.FATAL", 0);
+        fatalMapping.addProperty("policy", "EXPLORE");
+        JsonArray mappings = new JsonArray();
+        mappings.add(fatalMapping);
+        summary.add("branchMappings", mappings);
+        authorizeVmPcMappings(summary);
+        JsonObject reach = new JsonObject();
+        reach.addProperty("kind", PathObservation.TargetReachEvent.KIND);
+        reach.addProperty("siteId", "SITE.FATAL");
+        reach.addProperty("occurrence", 1);
+        reach.addProperty("outcome", true);
+        summary.add(PathObservation.TargetReachEvent.FIELD, reach);
+
+        JsonObject fatalBranch = taskBranch("SITE.FATAL", "EXPLORE");
+        fatalBranch.addProperty("failureTarget", true);
+        fatalBranch.addProperty("requiredOutcome", false);
+        JsonArray branches = new JsonArray();
+        branches.add(fatalBranch);
+        task.add("branches", branches);
+        JsonObject target = new JsonObject();
+        target.addProperty("siteId", "SITE.FATAL");
+        target.addProperty("occurrence", 1);
+        task.add("targetBranch", target);
+        JsonArray actions = new JsonArray();
+        actions.add(targetLocalAction("REGION.3.in.terminal", sourceField));
+        task.add("inputActions", actions);
+        addMintSite(task, occurrence, sourceId, sourceField, 1);
+
+        RegionPathWorklist.Result result = worklist(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+
+        assertEquals(result.manifest.toString(), 1, result.tasks.size());
+        BranchReplayContract replay = replayContract(result.tasks.get(0));
+        assertEquals("SITE.FATAL", replay.source().siteId());
+        assertFalse(replay.requiredTakenOutcome());
+    }
+
     @Test
     public void severalLocalTargetPrefixesAreExploredAndDedupedSeparately() {
         String id = "ACT.TARGET.MULTIPLE.LOCAL.PREFIXES";
@@ -757,7 +817,10 @@ public class RegionPathWorklistTest {
     public void severalActivationsAreOneRelationOfSeveralOccurrences() {
         String planned = "REGION.3/occurrence-1";
         JsonObject first = activation(planned, 1, true, "Y_I_7");
-        JsonObject second = activation(planned, 2, true, "Y_I_9");
+        JsonObject second = first.deepCopy();
+        second.addProperty("summaryId", "SUMMARY.ACT.OCC.A2");
+        second.addProperty("occurrenceId", planned + "#a2");
+        second.addProperty("activationOrdinal", 2);
         JsonObject task = executionTask("ACT.OCC",
                 ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
 
@@ -799,6 +862,53 @@ public class RegionPathWorklistTest {
         assertEquals("each case is its own occurrence",
                 new LinkedHashSet<>(Arrays.asList(planned + "#a1",
                         planned + "#a2")), occurrences);
+    }
+
+    /** Distinct paths of one address each plan once; a duplicate plans none. */
+    @Test
+    public void distinctActivationPathsEachOwnTheirFlipObligations() {
+        String planned = "REGION.3/occurrence-1";
+        JsonObject first = activation(planned, 1, true, "Y_I_7");
+        JsonObject second = activation(planned, 2, true, "Y_I_9");
+        second.getAsJsonArray("pathCondition").set(0, binary(">=", 0));
+        JsonArray secondMappings = new JsonArray();
+        secondMappings.add(mapping("SITE.0", 0));
+        secondMappings.add(mapping("SITE.1", 1));
+        second.add("branchMappings", secondMappings);
+        authorizeVmPcMappings(second);
+        JsonObject duplicate = second.deepCopy();
+        duplicate.addProperty("summaryId", "SUMMARY.ACT.OCC.A3");
+        duplicate.addProperty("occurrenceId", planned + "#a3");
+        duplicate.addProperty("activationOrdinal", 3);
+        JsonObject task = executionTask("ACT.OCC",
+                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+        RegionPathWorklist.Bounds bounds =
+                new RegionPathWorklist.Bounds(64, 32, 256);
+
+        RegionPathWorklist.Result firstOnly = worklist(
+                Collections.singletonList(first),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(), bounds);
+        RegionPathWorklist.Result secondOnly = worklist(
+                Collections.singletonList(second),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(), bounds);
+        RegionPathWorklist.Result combined = worklist(
+                Arrays.asList(first, second, duplicate),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(), bounds);
+        RegionPathWorklist.Result distinct = worklist(
+                Arrays.asList(first, second),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(), bounds);
+
+        assertTrue(firstOnly.tasks.size() > 0);
+        assertTrue(secondOnly.tasks.size() > 0);
+        assertTrue("a second semantic path contributes obligations",
+                distinct.tasks.size() > Math.max(firstOnly.tasks.size(),
+                        secondOnly.tasks.size()));
+        assertEquals("a duplicate activation path is deduplicated",
+                distinct.tasks.size(), combined.tasks.size());
     }
 
     /**
@@ -1081,13 +1191,17 @@ public class RegionPathWorklistTest {
 
     private static JsonObject summary(String id,
                                       ClosureGoalKind goal) {
+        String plannedOccurrence = "REGION.3/occurrence-1";
         JsonObject summary = new JsonObject();
         summary.addProperty("summaryId", "SUMMARY." + id);
         summary.addProperty("goalId", id + ".GOAL");
         summary.addProperty("taskId", "TASK." + id);
         summary.addProperty("regionId", "REGION.3");
         summary.addProperty("sourceKey", "NAMENODE/active/epoch-0");
-        summary.addProperty("occurrenceId", "REGION.3/occurrence-1");
+        summary.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
+                plannedOccurrence);
+        summary.addProperty(PathObservation.ACTIVATION_ORDINAL, 1);
+        summary.addProperty("occurrenceId", plannedOccurrence + "#a1");
         LoopBoundPolicy.cfgBackedges(8).writeTo(summary);
         summary.addProperty("valid", true);
         summary.addProperty("relationallyComplete", true);

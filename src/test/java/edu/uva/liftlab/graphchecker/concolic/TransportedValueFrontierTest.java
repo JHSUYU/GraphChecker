@@ -32,6 +32,8 @@ public class TransportedValueFrontierTest {
     private static final String EXCHANGE =
             "XCH.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     private static final String RESPONSE_PORT = EXCHANGE + ".resp";
+    private static final String LATER_RESPONSE_PORT =
+            "XCH.ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb.resp";
     private static final String HEAP_PORT = "REGION.P.out.h";
     private static final String HEAP_INPUT = "REGION.P.in.a";
     private static final String TARGET_INPUT = "REGION.T.in.k";
@@ -183,6 +185,34 @@ public class TransportedValueFrontierTest {
         }
     }
 
+    @Test
+    public void finalizerAdmittedSharedInputDemandsItsExactWriter()
+            throws Exception {
+        String location = "T#state";
+        JsonObject producer = producerRow();
+        producer.addProperty("admissionBasis",
+                "SHARED_LOCATION_DEMAND_V1");
+        JsonArray consumers = new JsonArray();
+        consumers.add("REGION.T");
+        producer.add("demandedByRegionIds", consumers);
+        JsonArray locations = new JsonArray();
+        locations.add(location);
+        producer.add("demandedSharedLocations", locations);
+        markExactSharedLocation(producer, location);
+
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        producer, targetRow()),
+                        (region, action) -> false,
+                        (regionId, closure) ->
+                                Collections.<String>emptySet());
+
+        assertEquals(describe(workflow), 1,
+                workflow.producerGroups().size());
+        assertTrue(describe(workflow), scheduled(workflow,
+                PRODUCER_OCCURRENCE));
+    }
+
     /**
      * Two remote executions may deliver the same declared response port to
      * one coarse client occurrence.  The demanded output member records which
@@ -220,6 +250,122 @@ public class TransportedValueFrontierTest {
                 selectedOccurrence).contains(selectedEdge));
         assertTrue(describe(workflow), !selectedEdges(workflow,
                 selectedOccurrence).contains(olderEdge));
+    }
+
+    /** Folded heap versions retain a union catalog, but predecessor discovery
+     * follows only the input/edge scope of the selected writer event. */
+    @Test
+    public void selectedHeapVersionDoesNotDemandAnOlderVersionsInput()
+            throws Exception {
+        JsonObject producer = producerRow();
+        JsonObject goal = producer.getAsJsonArray("closureGoals")
+                .get(0).getAsJsonObject();
+        JsonObject early = deliveryEdge(ANCHORED_OCCURRENCE,
+                ANCHORED_EDGE, "VALUE_FRONTIER", RESPONSE_PORT);
+        JsonObject late = deliveryEdge(ACAUSAL_OCCURRENCE,
+                ACAUSAL_EDGE, "VALUE_FRONTIER", LATER_RESPONSE_PORT);
+        goal.getAsJsonArray("edgeBindings").add(early.deepCopy());
+        goal.getAsJsonArray("edgeBindings").add(late.deepCopy());
+        JsonObject slice = goal.getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice");
+        slice.getAsJsonArray("inputPorts").add(LATER_RESPONSE_PORT);
+        slice.getAsJsonArray("causalEdgeIds").add(ANCHORED_EDGE);
+        slice.getAsJsonArray("causalEdgeIds").add(ACAUSAL_EDGE);
+
+        JsonArray versions = new JsonArray();
+        versions.add(versionScope(10L, RESPONSE_PORT, HEAP_EDGE));
+        versions.add(versionScope(30L, LATER_RESPONSE_PORT, ACAUSAL_EDGE));
+        slice.add("boundedVersionScopes", versions);
+
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        producer, targetRow(),
+                        remoteRow(ANCHORED_OCCURRENCE, ANCHORED_EDGE,
+                                "VALUE_FRONTIER", RESPONSE_PORT),
+                        remoteRow(ACAUSAL_OCCURRENCE, ACAUSAL_EDGE,
+                                "VALUE_FRONTIER", LATER_RESPONSE_PORT)),
+                        (region, action) -> true,
+                        (regionId, closure) ->
+                                Collections.<String>emptySet());
+
+        assertTrue(describe(workflow), scheduled(workflow,
+                ANCHORED_OCCURRENCE));
+        assertTrue(describe(workflow), !scheduled(workflow,
+                ACAUSAL_OCCURRENCE));
+    }
+
+    @Test
+    public void writerEventNumberDoesNotReplaceMissingCausalEdgeIdentity()
+            throws Exception {
+        JsonObject producer = producerRow();
+        JsonObject slice = producer.getAsJsonArray("closureGoals")
+                .get(0).getAsJsonObject().getAsJsonObject("outputClosure")
+                .getAsJsonArray("members").get(0).getAsJsonObject()
+                .getAsJsonObject("slice");
+        JsonObject oldVersion = versionScope(10L, HEAP_INPUT, HEAP_EDGE);
+        oldVersion.add("causalEdgeIds", new JsonArray());
+        JsonArray versions = new JsonArray();
+        versions.add(oldVersion);
+        slice.add("boundedVersionScopes", versions);
+
+        try {
+            RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                            producer, targetRow()),
+                    (region, action) -> true,
+                    (regionId, closure) ->
+                            Collections.<String>emptySet());
+            fail("event-sequence equality must not revive an old edge");
+        } catch (java.io.IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains(
+                    "no bounded writer version"));
+        }
+    }
+
+    /** Equivalent target calls on opposite sides of a state write select the
+     * changed writer, then the first call that observed that writer. */
+    @Test
+    public void targetRankingKeepsTopologyChangeButDropsLaterStutter()
+            throws Exception {
+        JsonObject producer = producerRow();
+        JsonObject firstTarget = targetRow();
+        JsonObject firstEvidence = new JsonObject();
+        firstEvidence.addProperty("rootCallId", 20L);
+        firstTarget.add("traceEvidence", firstEvidence);
+
+        String changedOccurrence =
+                "cluster/target#epoch0/region/REGION.T#2";
+        JsonObject changedEdge = heapEdge();
+        changedEdge.addProperty("edgeId", "RF.heap.changed");
+        changedEdge.addProperty("toOccurrenceId", changedOccurrence);
+        changedEdge.addProperty("writerEventSeq", 30L);
+        changedEdge.addProperty("readerEventSeq", 40L);
+        JsonObject changedTarget = targetRow(changedOccurrence,
+                "GOAL.TARGET_REACH.changed", changedEdge, 40L);
+
+        String stutterOccurrence =
+                "cluster/target#epoch0/region/REGION.T#3";
+        JsonObject stutterEdge = changedEdge.deepCopy();
+        stutterEdge.addProperty("edgeId", "RF.heap.stutter");
+        stutterEdge.addProperty("toOccurrenceId", stutterOccurrence);
+        stutterEdge.addProperty("readerEventSeq", 50L);
+        JsonObject stutterTarget = targetRow(stutterOccurrence,
+                "GOAL.TARGET_REACH.stutter", stutterEdge, 50L);
+
+        JsonArray producerEdges = producer.getAsJsonArray("closureGoals")
+                .get(0).getAsJsonObject().getAsJsonArray("edgeBindings");
+        producerEdges.add(changedEdge.deepCopy());
+        producerEdges.add(stutterEdge.deepCopy());
+
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        producer, firstTarget, changedTarget, stutterTarget),
+                        (region, action) -> true,
+                        (regionId, closure) ->
+                                Collections.<String>emptySet());
+
+        assertEquals(changedOccurrence,
+                workflow.selections().get(0).occurrenceId);
     }
 
     /**
@@ -419,8 +565,43 @@ public class TransportedValueFrontierTest {
         return row;
     }
 
+    private static JsonObject targetRow(String occurrenceId, String goalId,
+                                        JsonObject edge, long rootCallId) {
+        JsonObject row = planRow("cluster/target#epoch0", occurrenceId,
+                "REGION.T",
+                "cluster/target/relation/REGION.T/segment/SEG.t#0");
+        JsonObject evidence = new JsonObject();
+        evidence.addProperty("rootCallId", rootCallId);
+        row.add("traceEvidence", evidence);
+        JsonObject goal = goalRow(goalId, "TARGET_REACH_CLOSURE",
+                "<T: void handle()>");
+        JsonArray symbolize = new JsonArray();
+        symbolize.add(valueAction(TARGET_INPUT));
+        goal.add("symbolize", symbolize);
+        JsonArray bindings = new JsonArray();
+        bindings.add(edge.deepCopy());
+        goal.add("edgeBindings", bindings);
+        attach(row, goal);
+        return row;
+    }
+
+    private static void markExactSharedLocation(JsonObject producer,
+                                                String location) {
+        JsonObject edge = producer.getAsJsonArray("closureGoals")
+                .get(0).getAsJsonObject().getAsJsonArray("edgeBindings")
+                .get(0).getAsJsonObject();
+        edge.addProperty("transportKind", "HEAP");
+        edge.addProperty("readFromField", location);
+        edge.addProperty("valueObjectId", 8L);
+    }
+
     private static JsonObject remoteRow(String occurrenceId, String edgeId,
                                         String role) {
+        return remoteRow(occurrenceId, edgeId, role, RESPONSE_PORT);
+    }
+
+    private static JsonObject remoteRow(String occurrenceId, String edgeId,
+                                        String role, String responsePort) {
         JsonObject row = planRow("cluster/remote#epoch0", occurrenceId,
                 "REGION.R", "cluster/remote/relation/REGION.R/segment/SEG.r#0");
 
@@ -430,9 +611,10 @@ public class TransportedValueFrontierTest {
         symbolize.add(valueAction(REMOTE_INPUT));
         goal.add("symbolize", symbolize);
         JsonArray bindings = new JsonArray();
-        bindings.add(deliveryEdge(occurrenceId, edgeId, role));
+        bindings.add(deliveryEdge(occurrenceId, edgeId, role,
+                responsePort));
         goal.add("edgeBindings", bindings);
-        goal.add("outputClosure", remoteClosure());
+        goal.add("outputClosure", remoteClosure(responsePort));
         attach(row, goal);
         return row;
     }
@@ -495,6 +677,8 @@ public class TransportedValueFrontierTest {
         JsonObject edge = new JsonObject();
         edge.addProperty("schemaVersion", 3);
         edge.addProperty("kind", "RUNTIME_FIELD_FLOW");
+        edge.addProperty("transportKind", "HEAP");
+        edge.addProperty("readFromField", "T#state");
         edge.addProperty("edgeId", HEAP_EDGE);
         edge.addProperty("evidenceKind", "FIELD_ASSIGNMENT_READ_FROM_V1");
         edge.addProperty("correlationAuthority",
@@ -523,6 +707,12 @@ public class TransportedValueFrontierTest {
     /** The recorded delivery that carried the response to the client. */
     private static JsonObject deliveryEdge(String remoteOccurrence,
                                            String edgeId, String role) {
+        return deliveryEdge(remoteOccurrence, edgeId, role, RESPONSE_PORT);
+    }
+
+    private static JsonObject deliveryEdge(String remoteOccurrence,
+                                           String edgeId, String role,
+                                           String responsePort) {
         JsonObject edge = new JsonObject();
         edge.addProperty("schemaVersion", 3);
         edge.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
@@ -536,10 +726,10 @@ public class TransportedValueFrontierTest {
         edge.addProperty("transportKind", "HADOOP_IPC");
         edge.addProperty("fromRegion", "REGION.R");
         edge.addProperty("fromOccurrenceId", remoteOccurrence);
-        edge.addProperty("fromOutputPort", RESPONSE_PORT);
+        edge.addProperty("fromOutputPort", responsePort);
         edge.addProperty("toRegion", "REGION.P");
         edge.addProperty("toOccurrenceId", PRODUCER_OCCURRENCE);
-        edge.addProperty("toInputPort", RESPONSE_PORT);
+        edge.addProperty("toInputPort", responsePort);
         edge.addProperty("dependencyRole", role);
         edge.addProperty("programOrderRequired", false);
         edge.addProperty("alignment", "ALIGNED");
@@ -597,17 +787,39 @@ public class TransportedValueFrontierTest {
      * port the exchange minted is not one this region minted itself.
      */
     private static JsonObject remoteClosure() {
+        return remoteClosure(RESPONSE_PORT);
+    }
+
+    private static JsonObject remoteClosure(String responsePort) {
         return closure("REGION.R",
                 "cluster/remote/relation/REGION.R/segment/SEG.r#0",
-                RESPONSE_PORT,
-                remoteMember());
+                responsePort,
+                remoteMember(responsePort));
     }
 
     private static JsonObject remoteMember() {
+        return remoteMember(RESPONSE_PORT);
+    }
+
+    private static JsonObject remoteMember(String responsePort) {
         JsonArray inputs = new JsonArray();
         inputs.add(REMOTE_INPUT);
-        return member(RESPONSE_PORT, "<R: int served>", "served", "int", "I",
+        return member(responsePort, "<R: int served>", "served", "int", "I",
                 inputs, REMOTE_INPUT, REMOTE_METHOD);
+    }
+
+    private static JsonObject versionScope(long eventSeq, String inputPort,
+                                           String edgeId) {
+        JsonObject scope = new JsonObject();
+        scope.addProperty("selectedRuntimeEventSeq", eventSeq);
+        JsonArray inputs = new JsonArray();
+        inputs.add(HEAP_INPUT);
+        inputs.add(inputPort);
+        scope.add("inputPorts", inputs);
+        JsonArray edges = new JsonArray();
+        edges.add(edgeId);
+        scope.add("causalEdgeIds", edges);
+        return scope;
     }
 
     private static JsonObject closure(String regionId, String relationKey,

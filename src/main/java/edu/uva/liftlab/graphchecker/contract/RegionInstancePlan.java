@@ -32,6 +32,7 @@ public final class RegionInstancePlan extends PlanRow {
     private final List<Goal> goals;
     private final String admissionBasis;
     private final Set<String> demandedByRegionIds;
+    private final Set<String> demandedSharedLocations;
 
     private RegionInstancePlan(JsonObject source) {
         super(source, "region plan", true);
@@ -46,6 +47,15 @@ public final class RegionInstancePlan extends PlanRow {
             }
         }
         demandedByRegionIds = Collections.unmodifiableSet(consumers);
+        Set<String> locations = new LinkedHashSet<>();
+        for (JsonElement element : array(encoded,
+                "demandedSharedLocations")) {
+            if (element.isJsonPrimitive()
+                    && !element.getAsString().isEmpty()) {
+                locations.add(element.getAsString());
+            }
+        }
+        demandedSharedLocations = Collections.unmodifiableSet(locations);
         List<Goal> decoded = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>();
         for (JsonElement element : array(encoded, "closureGoals")) {
@@ -89,6 +99,11 @@ public final class RegionInstancePlan extends PlanRow {
 
     /** The consumer regions a shared-location admission serves. */
     public Set<String> demandedByRegionIds() { return demandedByRegionIds; }
+
+    /** The exact heap locations that caused this writer to be admitted. */
+    public Set<String> demandedSharedLocations() {
+        return demandedSharedLocations;
+    }
 
     void writeTaskIdentityTo(JsonObject target) {
         target.addProperty("sourceKey", sourceKey());

@@ -255,6 +255,7 @@ SUNWprivate_1.1 {
                 #Concolic
                 JVM_PrintObjInfo;
                 JVM_StartConcolicRegion;
+                JVM_GetCurrentConcolicContextId;
                 JVM_EndConcolic;
                 JVM_OpenWorkloadSession;
                 JVM_CloseWorkloadSession;

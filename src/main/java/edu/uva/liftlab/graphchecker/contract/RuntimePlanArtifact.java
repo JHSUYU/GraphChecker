@@ -36,6 +36,8 @@ public final class RuntimePlanArtifact {
             "CONCOLIC_RUNTIME_MODEL_CATALOG";
     public static final String PLAN_KIND = "CONCOLIC_REGION_PLAN";
     public static final String EDGE_BINDING_IDS = "edgeBindingIds";
+    private static final int REGION_SCHEMA_VERSION = 3;
+    private static final String REGION_KIND = "SYMBOLIC_REGION";
 
     private final List<RegionInstancePlan> plans;
     private final List<JsonObject> regions;
@@ -275,6 +277,12 @@ public final class RuntimePlanArtifact {
         Set<String> ids = new LinkedHashSet<>();
         if (encodedRegions == null) return result;
         for (JsonObject source : encodedRegions) {
+            if (source == null
+                    || !exactSchemaVersion(source, REGION_SCHEMA_VERSION)
+                    || !REGION_KIND.equals(string(source, "kind"))) {
+                throw new IllegalArgumentException(
+                        "runtime region has an unsupported schema");
+            }
             JsonObject region = new JsonObject();
             copy(region, source, "schemaVersion");
             copy(region, source, "kind");
@@ -292,6 +300,13 @@ public final class RuntimePlanArtifact {
             result.add(region);
         }
         return result;
+    }
+
+    private static boolean exactSchemaVersion(JsonObject row, int expected) {
+        JsonElement value = row.get("schemaVersion");
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isNumber()
+                && Integer.toString(expected).equals(value.getAsString());
     }
 
     private static JsonArray compactPorts(JsonArray ports) {

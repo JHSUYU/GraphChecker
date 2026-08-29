@@ -157,6 +157,8 @@ public final class ConcolicInstrumentationSelections {
             rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
             rootLoopControlSites = task.rootLoopControlSites();
             materializations = ConcolicMaterializationSelection.from(symbolic);
+            materializations.addCapturePrerequisiteTargets(
+                    task.outputClosure(), inputActions.all());
             materializations.addSharedCarrierTargets(
                     task.sharedCarriers(), inputActions.all());
             outputCaptures = rootedOutputCaptures(task.outputCaptures(),
@@ -748,6 +750,50 @@ public final class ConcolicInstrumentationSelections {
             FieldTarget target = concolicFieldTarget(action);
             if (target != null) {
                 fields.put(target.owner + "|" + target.name, target);
+            }
+        }
+
+        /**
+         * A concrete input remains concrete, but an exact output capture that
+         * names it as its anchor still needs the action's observation hook.
+         * Select only those explicitly referenced anchors; unrelated concrete
+         * inputs remain outside the instrumentation surface.
+         */
+        void addCapturePrerequisiteTargets(OutputClosureContract closure,
+                                           JsonArray actions)
+                throws IOException {
+            if (closure == null) return;
+            Set<String> anchors = new LinkedHashSet<>();
+            for (OutputClosureContract.Member member : closure.members()) {
+                collectCaptureAnchors(member.slice(), anchors);
+            }
+            if (anchors.isEmpty()) return;
+            Set<String> found = new LinkedHashSet<>();
+            for (JsonElement element : actions) {
+                if (!element.isJsonObject()) continue;
+                JsonObject action = element.getAsJsonObject();
+                String symbol = string(action, "symbol");
+                if (anchors.contains(symbol)) {
+                    add(action);
+                    found.add(symbol);
+                }
+            }
+            anchors.removeAll(found);
+            if (!anchors.isEmpty()) {
+                throw new IOException("Output capture anchor has no input "
+                        + "action: " + anchors.iterator().next());
+            }
+        }
+
+        private static void collectCaptureAnchors(
+                JsonObject slice, Set<String> anchors) {
+            String anchor = string(slice, "captureAnchorPort");
+            if (!anchor.isEmpty()) anchors.add(anchor);
+            for (JsonElement element : JsonFields.array(
+                    slice, "boundedVersionScopes")) {
+                if (element.isJsonObject()) {
+                    collectCaptureAnchors(element.getAsJsonObject(), anchors);
+                }
             }
         }
 

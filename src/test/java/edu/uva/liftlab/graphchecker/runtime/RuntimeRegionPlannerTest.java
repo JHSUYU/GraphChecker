@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -31,6 +32,7 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class RuntimeRegionPlannerTest {
     private static final Gson GSON = new Gson();
@@ -39,6 +41,38 @@ public class RuntimeRegionPlannerTest {
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
+
+    @Test
+    public void accessorMaterializationRequiresEveryCanonicalField() {
+        JsonObject complete = new JsonObject();
+        complete.addProperty("sourceKind", "ACCESSOR_RETURN");
+        complete.addProperty("declaredFieldSignature",
+                "<example.Node: int keyId>");
+        complete.addProperty("cell", "<legacy.Node: int keyId>");
+        complete.addProperty("callerMethod", ROOT);
+        complete.addProperty("unitIndex", 3);
+        complete.addProperty("declaredCallee", "<example.Node: int key()>");
+        complete.addProperty("accessorImplementationMethod",
+                "<example.Node: int key()>");
+        complete.addProperty("javaType", "int");
+        JsonArray path = new JsonArray();
+        path.add("keyId");
+        complete.add("fieldPath", path);
+
+        for (String field : Arrays.asList("declaredFieldSignature",
+                "callerMethod", "unitIndex", "declaredCallee",
+                "accessorImplementationMethod", "javaType", "fieldPath")) {
+            JsonObject incomplete = complete.deepCopy();
+            incomplete.remove(field);
+            try {
+                MaterializationSpec.decode(incomplete);
+                fail("missing " + field + " must be rejected");
+            } catch (IllegalArgumentException expected) {
+                assertTrue(expected.getMessage(), expected.getMessage()
+                        .contains("ACCESSOR_RETURN"));
+            }
+        }
+    }
 
     @Test
     public void selectedOutputPublishesEarliestExactCallChainContinuation() {
@@ -679,6 +713,60 @@ public class RuntimeRegionPlannerTest {
                 .size());
     }
 
+    @Test
+    public void selectedOutputCallDropsSiblingSourcePhasesAndRenumbers()
+            throws Exception {
+        String method = "<example.Keys: void rotate()>";
+        String field = "<example.Key: long expiry>";
+        JsonArray declarations = new JsonArray();
+        declarations.add(ConfiguredSourcePhaseContract.declaration(
+                ConfiguredSourcePhaseContract.Phase.PUBLISH,
+                "NAMENODE.EXPIRY", field, method, 7));
+        ConfiguredSourcePhaseContract.Declaration declaration =
+                ConfiguredSourcePhaseContract.declarationsOf(
+                        declarations).get(0);
+        String occurrence = "occ.nn.monitor";
+        JsonObject sibling = ConfiguredSourcePhaseContract.occurrence(
+                declaration, occurrence, 1, 10L, 101L, 1001L,
+                "<example.Hook: void publish()>",
+                Arrays.asList(101L, 100L, 1L));
+        JsonObject selectedFirst = ConfiguredSourcePhaseContract.occurrence(
+                declaration, occurrence, 2, 20L, 201L, 2001L,
+                "<example.Hook: void publish()>",
+                Arrays.asList(201L, 200L, 1L));
+        JsonObject selectedSecond = ConfiguredSourcePhaseContract.occurrence(
+                declaration, occurrence, 3, 30L, 202L, 2002L,
+                "<example.Hook: void publish()>",
+                Arrays.asList(202L, 200L, 1L));
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put(ConfiguredSourcePhaseContract.PLAN_FIELD,
+                Arrays.asList(sibling, selectedFirst, selectedSecond));
+        Map<String, Object> goal = object(OutputClosureContract.FIELD,
+                object("members", Collections.singletonList(object(
+                        "slice", object("selectedRuntimeCallId", 200L)))));
+
+        RuntimeRegionPlanner.boundConfiguredSourcePhasesToSelectedOutputCalls(
+                plan, goal);
+
+        List<Map<String, Object>> retained = rows(plan.get(
+                ConfiguredSourcePhaseContract.PLAN_FIELD));
+        assertEquals(2, retained.size());
+        assertEquals(Arrays.asList(20L, 30L), Arrays.asList(
+                retained.get(0).get("eventSeq"),
+                retained.get(1).get("eventSeq")));
+        assertEquals(Arrays.asList(1L, 2L), Arrays.asList(
+                retained.get(0).get("baselineOrdinal"),
+                retained.get(1).get("baselineOrdinal")));
+        assertEquals(ConfiguredSourcePhaseContract.phaseId(
+                        occurrence, declaration.siteId(),
+                        declaration.phase(), 1),
+                retained.get(0).get("phaseId"));
+        assertEquals(2, ConfiguredSourcePhaseContract.occurrencesOf(
+                GSON.toJsonTree(plan.get(
+                        ConfiguredSourcePhaseContract.PLAN_FIELD)), true)
+                .size());
+    }
+
     private static String goalKind(Map<String, Object> plan) {
         List<?> goals = (List<?>) plan.get("closureGoals");
         assertEquals(1, goals.size());
@@ -1202,12 +1290,73 @@ public class RuntimeRegionPlannerTest {
                                 "<example.Node: void late()>")));
 
         OutputClosureContract.Member member = folded.members().get(0);
+        JsonArray versionScopes = member.slice().getAsJsonArray(
+                RuntimeRegionPlanner.BOUNDED_VERSION_SCOPES);
+        assertEquals(2, versionScopes.size());
+        assertEquals(30L, versionScopes.get(0).getAsJsonObject()
+                .get("selectedRuntimeEventSeq").getAsLong());
+        assertEquals("RF.first", versionScopes.get(0).getAsJsonObject()
+                .getAsJsonArray("causalEdgeIds").get(0).getAsString());
+        assertEquals("REGION.1.in.early",
+                versionScopes.get(0).getAsJsonObject()
+                        .getAsJsonArray("inputPorts").get(0).getAsString());
+        assertEquals(90L, versionScopes.get(1).getAsJsonObject()
+                .get("selectedRuntimeEventSeq").getAsLong());
+        assertEquals("RF.second", versionScopes.get(1).getAsJsonObject()
+                .getAsJsonArray("causalEdgeIds").get(0).getAsString());
         assertEquals(90L, member.slice().get("selectedRuntimeEventSeq")
                 .getAsLong());
         assertEquals(2, member.slice().get("activationLocalOccurrence")
                 .getAsInt());
         assertFalse(String.valueOf(member.slice()),
                 member.slice().has("alignmentGaps"));
+
+        Map<String, Set<String>> selectedEdges = new LinkedHashMap<>();
+        selectedEdges.put("REGION.1.out.state",
+                Collections.singleton("RF.first"));
+        OutputClosureContract projected = OutputClosureCodec
+                .projectSelectedVersions(folded, selectedEdges);
+        OutputClosureContract.Member selected = projected.members().get(0);
+        assertEquals(Collections.singleton("RF.first"),
+                projected.executionScope().causalEdgeIds());
+        assertEquals(Collections.singleton("REGION.1.in.early"),
+                projected.executionScope().inputPorts());
+        assertEquals(30L, selected.slice()
+                .get("selectedRuntimeEventSeq").getAsLong());
+        assertEquals(1, selected.slice()
+                .get("activationLocalOccurrence").getAsInt());
+        assertEquals("REGION.1.in.early", selected.slice()
+                .get("captureAnchorPort").getAsString());
+        assertEquals("<example.Node: void early()>#u1", selected.slice()
+                .get("captureAnchorSiteId").getAsString());
+        assertEquals(31L, selected.slice()
+                .get("definitionCompletionSeq").getAsLong());
+        assertEquals(30L, selected.slice()
+                .get("lastMutationCompletionSeq").getAsLong());
+        assertEquals(7L, selected.slice()
+                .get("observedDefinitionCallId").getAsLong());
+        assertEquals("<example.Node: void early()>", selected.slice()
+                .getAsJsonObject("replayEntry").get("method")
+                .getAsString());
+        assertEquals(31L, selected.slice()
+                .getAsJsonArray("foldedMutationCompletionSeqs").get(0)
+                .getAsLong());
+        assertFalse(String.valueOf(selected.slice()), selected.slice()
+                .toString().contains("<example.Node: void late()>"));
+        assertEquals(1, projected.toJson().getAsJsonArray("members").get(0)
+                .getAsJsonObject().getAsJsonObject("output")
+                .get("outputOccurrence").getAsInt());
+        assertFalse(projected.toJson().toString(), projected.toJson()
+                .toString().contains("replayOccurrence"));
+        assertFalse(selected.slice().has(
+                RuntimeRegionPlanner.BOUNDED_VERSION_SCOPES));
+
+        selectedEdges.put("REGION.1.out.state", new LinkedHashSet<>(
+                Arrays.asList("RF.first", "RF.second")));
+        OutputClosureContract selectedUnion = OutputClosureCodec
+                .projectSelectedVersions(folded, selectedEdges);
+        assertEquals(folded.closureFingerprint(),
+                selectedUnion.closureFingerprint());
 
         // One version is still one member, byte for byte what it was before
         // any fold existed.
@@ -1244,6 +1393,18 @@ public class RuntimeRegionPlannerTest {
         slice.addProperty("activationLocalOccurrence", occurrence);
         slice.addProperty("selectedRuntimeEventSeq", writeSeq);
         slice.addProperty("selectedRuntimeCallId", callId);
+        slice.addProperty("captureAnchorPort", inputPort);
+        slice.addProperty("captureAnchorSiteId", method + "#u1");
+        slice.addProperty("definitionCompletionSeq", writeSeq + 1L);
+        slice.addProperty("lastMutationCompletionSeq", writeSeq);
+        slice.addProperty("observedDefinitionCallId", callId);
+        slice.addProperty("foldedMutationCount", occurrence);
+        slice.add("foldedMutationCompletionSeqs", strings(
+                Long.toString(writeSeq + 1L)));
+        JsonObject replayEntry = new JsonObject();
+        replayEntry.addProperty("method", method);
+        replayEntry.addProperty("receiverClass", "example.Node");
+        slice.add("replayEntry", replayEntry);
         slice.addProperty("outputBoundaryKind",
                 "EXACT_FIELD_WRITE_AFTER_ASSIGNMENT");
 
@@ -1260,7 +1421,6 @@ public class RuntimeRegionPlannerTest {
         capture.addProperty("definitionUnitIndex", 5);
         capture.addProperty("outputSiteId", site);
         capture.addProperty("outputOccurrence", occurrence);
-        capture.addProperty("replayOccurrence", occurrence);
         capture.addProperty("occurrenceScope",
                 OutputCaptureSpec.REGION_ACTIVATION_SCOPE);
         capture.addProperty("outputBoundaryKind",

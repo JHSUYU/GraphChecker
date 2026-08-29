@@ -72,13 +72,13 @@ public final class RegionPathWorklist {
         private final Set<String> coverageGapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
+        /** Activation-independent semantic paths already explored. */
+        private final Set<String> plannedSemanticPaths =
+                new LinkedHashSet<>();
         /** OCC-1: tasks with at least one boundary-complete activation. */
         private final Set<String> completeActivations = new LinkedHashSet<>();
         /** OCC-1: path keys of activations carried as partial cases. */
         private final Set<String> partialActivations = new LinkedHashSet<>();
-        /** OCC-1: tasks whose obligations have already been planned. */
-        private final Set<String> plannedActivationTasks =
-                new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
         private Planner(List<JsonObject> summaries,
@@ -139,21 +139,6 @@ public final class RegionPathWorklist {
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
                 observedRegions.add(region);
                 observedScopes.put(path.scope().identity(), path.scope());
-                // OCC-1: a task with several occurrence cases is still one
-                // obligation.  A further activation of the same address ran
-                // the same code path again; it is another occurrence, not
-                // another path, so it becomes a case of the relation and
-                // charges neither the region's path budget nor a second set
-                // of flip obligations.  Exploration is planned from the
-                // task's first activation.  A pre-OCC-1 row states no
-                // activation and keeps planning every path it publishes,
-                // which is what the exploration waves produce.
-                boolean plansObligations =
-                        plannedActivationTasks.add(path.sourceTaskId())
-                        || !path.statesActivation();
-                if (plansObligations) {
-                    pathCountByRegion.merge(region, 1, Integer::sum);
-                }
                 if (divergedTopology(path)) {
                     coverageGap(TopologyDelta.TOPOLOGY_DIVERGENCE,
                             "OBLIGATION_BELONGS_TO_THE_NEXT_ITERATION",
@@ -185,6 +170,14 @@ public final class RegionPathWorklist {
                             region, pathKey, "", -1);
                     continue;
                 }
+                // Keep every activation as a relation case, but plan only
+                // once for the activation-independent semantic path. Invalid
+                // or partial cases never consume the valid path's allowance.
+                boolean plansObligations = plannedSemanticPaths.add(
+                        region + "\n" + path.semanticPathKey());
+                if (plansObligations) {
+                    pathCountByRegion.merge(region, 1, Integer::sum);
+                }
                 if (!plansObligations) continue;
                 if (pathCountByRegion.get(region) > bounds.maxPathsPerRegion) {
                     coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION", region,
@@ -196,7 +189,7 @@ public final class RegionPathWorklist {
             }
 
             int remainingPathSlots = bounds.maxPathsPerRegion
-                    - seenPaths.size();
+                    - plannedSemanticPaths.size();
             if (!tasks.isEmpty() && remainingPathSlots <= 0) {
                 coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
                         manifestRegionId(observedRegions),
@@ -512,9 +505,13 @@ public final class RegionPathWorklist {
                 return result;
             }
             int fatalPc = fatal.summaryPcIndex();
-            JsonObject nextTarget = nextTargetGuard(task, fatal.siteId());
             Boolean required = requiredTargetOutcome(task, fatal.siteId());
-            if (nextTarget != null && required != null
+            // The exact selected fatal guard is itself an obligation.  A
+            // following guarded fatal site exists only for a nested throw;
+            // requiring one here made a terminal one-guard throw look CLOSED
+            // while its observed outcome still contradicted the required
+            // failure outcome.
+            if (required != null
                     && fatal.sourceTakenOutcome() != required
                     && ConcolicConstraintSolver
                     .hasLocallyWritableReplayRoot(

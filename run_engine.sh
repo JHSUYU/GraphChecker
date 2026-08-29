@@ -42,7 +42,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|java_bin|graphchecker_work_dir|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|causynth_loop_bounds|causynth_symbolic_inputs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_max_jobs|solver_timeout_ms|reach_max_inputs|reach_max_valuations|campaign_setup_command|concolic_replay_command|concolic_worker_count|campaign_max_iterations|producer_max_paths_per_region|producer_max_flips_per_path|producer_max_path_tasks)
+    workflow_path_base|graphchecker_jar|java_bin|graphchecker_work_dir|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_cache_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|causynth_loop_bounds|causynth_symbolic_inputs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_max_jobs|solver_timeout_ms|reach_max_inputs|reach_max_valuations|campaign_setup_command|concolic_replay_command|concolic_worker_count|campaign_max_iterations|producer_max_paths_per_region|producer_max_flips_per_path|producer_max_path_tasks)
       return 0
       ;;
     *)
@@ -63,6 +63,7 @@ reset_config() {
   project_classpath=""
   analysis_classes_dir=""
   causynth_output_dir=""
+  causynth_cache_dir=""
   causynth_target_spec=""
   causynth_analysis_scope=""
   causynth_process_dirs=""
@@ -138,6 +139,7 @@ apply_environment_overrides() {
   apply_env_override project_classpath CAUSYNTH_CLASSPATH
   apply_env_override analysis_classes_dir CAUSYNTH_INSTRUMENTED_CLASSES_DIR
   apply_env_override causynth_output_dir CAUSYNTH_OUTPUT_DIR
+  apply_env_override causynth_cache_dir CAUSYNTH_CACHE_DIR
   apply_env_override causynth_target_spec CAUSYNTH_TARGET_SPEC
   apply_env_override causynth_analysis_scope CAUSYNTH_ANALYSIS_SCOPE
   apply_env_override causynth_process_dirs CAUSYNTH_PROCESS_DIRS
@@ -265,6 +267,7 @@ initialize_config() {
   project_test_classes_dir=${project_test_classes_dir:-@repo/target/test-classes}
   project_classpath=${project_classpath:-}
   causynth_output_dir=${causynth_output_dir:-@project/target/causynth-workflow}
+  causynth_cache_dir=${causynth_cache_dir:-@project/.causynth-cache}
   causynth_target_spec=${causynth_target_spec:-@config/target.yaml}
   analysis_classes_dir=${analysis_classes_dir:-${causynth_output_dir}/instrumented-classes}
   custom_jdk_home=${custom_jdk_home:-}
@@ -279,6 +282,7 @@ initialize_config() {
   project_classes_dir=$(resolve_path "${project_classes_dir}" repo)
   project_test_classes_dir=$(resolve_path "${project_test_classes_dir}" repo)
   causynth_output_dir=$(resolve_path "${causynth_output_dir}")
+  causynth_cache_dir=$(resolve_path "${causynth_cache_dir}")
   causynth_target_spec=$(resolve_path "${causynth_target_spec}")
   analysis_classes_dir=$(resolve_path "${analysis_classes_dir}")
   custom_jdk_home=$(resolve_path "${custom_jdk_home}")
@@ -358,7 +362,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in campaign_setup_command concolic_replay_command concolic_worker_count campaign_max_iterations producer_max_paths_per_region producer_max_flips_per_path producer_max_path_tasks config_file workflow_path_base graphchecker_jar java_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs causynth_loop_bounds causynth_symbolic_inputs custom_jdk_home z3_bin workload_work_dir workload_command trace_test candidate_graph refined_graph runtime_region_plan schedule_output_dir schedule_max_jobs solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in campaign_setup_command concolic_replay_command concolic_worker_count campaign_max_iterations producer_max_paths_per_region producer_max_flips_per_path producer_max_path_tasks config_file workflow_path_base graphchecker_jar java_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_cache_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs causynth_loop_bounds causynth_symbolic_inputs custom_jdk_home z3_bin workload_work_dir workload_command trace_test candidate_graph refined_graph runtime_region_plan schedule_output_dir schedule_max_jobs solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -366,7 +370,7 @@ print_normalized_config() {
 validate_config() {
   local key
   local missing=0
-  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test causynth_loop_bounds; do
+  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_cache_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test causynth_loop_bounds; do
     if [[ -z "${!key}" ]]; then
       echo "Missing workflow config value: ${key}" >&2
       missing=1
@@ -545,7 +549,7 @@ do_schedule() {
 }
 
 do_import() {
-  local iteration_id=${1:-}
+  local iteration_id=${1:-} key status=0 restore_errexit=0
   [[ -n "${iteration_id//[[:space:]]/}" ]] \
     || die "import iteration id is required"
   shift
@@ -553,6 +557,15 @@ do_import() {
   require_file "import activation plan" "${import_task_plan}"
   require_file "runtime region plan" "${runtime_region_plan}"
   ensure_output_directory "$(dirname "${imported_summaries}")"
+  key=$(campaign_import_cache_key "${iteration_id}")
+  campaign_cached_import_status=0
+  if campaign_restore_import_cache "${key}"; then
+    campaign_log "cache hit IMPORT key=${key}"
+    return "${campaign_cached_import_status}"
+  fi
+  campaign_log "cache miss IMPORT key=${key}"
+  [[ $- == *e* ]] && restore_errexit=1
+  set +e
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
     --results "${raw_concolic_results}" \
     --task-plan "${import_task_plan}" \
@@ -561,6 +574,10 @@ do_import() {
     --diagnostics "${import_diagnostics}" \
     ${import_topology_delta:+--topology-delta "${import_topology_delta}"} \
     --iteration-id "${iteration_id}" "$@"
+  status=$?
+  [[ "${restore_errexit}" -eq 0 ]] || set -e
+  campaign_store_import_cache "${key}" "${status}"
+  return "${status}"
 }
 
 append_path_list_arguments() {
@@ -853,8 +870,238 @@ campaign_tree_digest() {
     campaign_digest "$1"
     return 0
   fi
-  find "$1" -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum \
-    | sha256sum | awk '{print $1}'
+  (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z \
+    | xargs -0 -r sha256sum) | sha256sum | awk '{print $1}'
+}
+
+# Content-addressed importer cache.  Import is a pure decode of four frozen
+# inputs: the tool, raw replay rows, the exact task plan, and the runtime plan.
+# A cache hit copies only artifacts whose manifest and content digests match;
+# a corrupt entry is refused instead of being treated as a miss.
+campaign_import_cache_key() {
+  local iteration_id=$1
+  local jar_sha raw_sha task_sha plan_sha stubs_sha
+  jar_sha=$(campaign_digest "${graphchecker_jar}")
+  raw_sha=$(campaign_digest "${raw_concolic_results}")
+  task_sha=$(campaign_digest "${import_task_plan}")
+  plan_sha=$(campaign_digest "${runtime_region_plan}")
+  stubs_sha=$(campaign_optional_digest "${causynth_protocol_stubs}")
+  printf '%s\0' "CONCOLIC_IMPORT_CACHE_V1" "${iteration_id}" \
+    "${jar_sha}" "${raw_sha}" "${task_sha}" "${plan_sha}" \
+    "${stubs_sha}" | sha256sum | awk '{print $1}'
+}
+
+campaign_restore_import_cache() {
+  local key=$1 entry manifest expected actual name
+  entry="${causynth_cache_dir}/import/${key}"
+  manifest="${entry}/manifest.json"
+  [[ -e "${entry}" ]] || return 1
+  campaign_require_json "import cache manifest" "${manifest}" \
+    || campaign_fail CACHE ConcolicSummaryImporter "${entry}" \
+      "the content-addressed import cache entry is incomplete"
+  jq -e --arg key "${key}" '
+    . as $entry
+    | .schemaVersion == 1
+    and .kind == "CONCOLIC_IMPORT_CACHE_ENTRY"
+    and .key == $key
+    and (.exitStatus | type) == "number"
+    and (.artifacts | type) == "object"
+    and all(["summaries", "diagnostics", "topologyDelta"][];
+      . as $name
+      | ($entry.artifacts[$name].sha256 | type) == "string"
+        and ($entry.artifacts[$name].sha256 | length) == 64)
+  ' "${manifest}" >/dev/null \
+    || campaign_fail CACHE ConcolicSummaryImporter "${manifest}" \
+      "the import cache manifest has an unsupported schema"
+  for name in summaries diagnostics topologyDelta; do
+    [[ -f "${entry}/${name}.jsonl" ]] \
+      || campaign_fail CACHE ConcolicSummaryImporter "${entry}/${name}.jsonl" \
+        "the import cache artifact is missing"
+    expected=$(jq -r --arg name "${name}" \
+      '.artifacts[$name].sha256' "${manifest}")
+    actual=$(campaign_digest "${entry}/${name}.jsonl")
+    [[ "${actual}" == "${expected}" ]] \
+      || campaign_fail CACHE ConcolicSummaryImporter "${entry}/${name}.jsonl" \
+        "the import cache artifact digest does not match its manifest"
+  done
+  mkdir -p "$(dirname "${imported_summaries}")" \
+    "$(dirname "${import_diagnostics}")" \
+    "$(dirname "${import_topology_delta}")"
+  cp -- "${entry}/summaries.jsonl" "${imported_summaries}"
+  cp -- "${entry}/diagnostics.jsonl" "${import_diagnostics}"
+  cp -- "${entry}/topologyDelta.jsonl" "${import_topology_delta}"
+  campaign_cached_import_status=$(jq -r '.exitStatus' "${manifest}")
+  return 0
+}
+
+campaign_store_import_cache() {
+  local key=$1 status=$2 base entry lock temporary name path sha
+  [[ -f "${imported_summaries}" && -f "${import_diagnostics}"
+      && -f "${import_topology_delta}" ]] || return 0
+  base="${causynth_cache_dir}/import"
+  entry="${base}/${key}"
+  lock="${base}/.${key}.lock"
+  mkdir -p "${base}"
+  temporary=$(mktemp -d "${base}/.${key}.XXXXXX")
+  cp -- "${imported_summaries}" "${temporary}/summaries.jsonl"
+  cp -- "${import_diagnostics}" "${temporary}/diagnostics.jsonl"
+  cp -- "${import_topology_delta}" "${temporary}/topologyDelta.jsonl"
+  local -a artifact_args=()
+  for name in summaries diagnostics topologyDelta; do
+    path="${temporary}/${name}.jsonl"
+    sha=$(campaign_digest "${path}")
+    artifact_args+=(--arg "${name}Sha" "${sha}")
+  done
+  jq -n --arg key "${key}" --argjson status "${status}" \
+    "${artifact_args[@]}" '
+    {schemaVersion: 1, kind: "CONCOLIC_IMPORT_CACHE_ENTRY",
+     key: $key, exitStatus: $status,
+     artifacts: {
+       summaries: {sha256: $summariesSha},
+       diagnostics: {sha256: $diagnosticsSha},
+       topologyDelta: {sha256: $topologyDeltaSha}}}
+  ' >"${temporary}/manifest.json"
+  if mkdir "${lock}" 2>/dev/null; then
+    if [[ ! -e "${entry}" ]]; then
+      mv -- "${temporary}" "${entry}"
+      temporary=""
+    fi
+    rmdir -- "${lock}"
+  fi
+  [[ -z "${temporary}" ]] || rm -r -- "${temporary}"
+}
+
+# The static discovery and both trace-index passes are one seed boundary.  We
+# cache their published artifacts, not RuntimeRegionPlanner's private in-memory
+# index, so cache reuse adds no second semantic schema.
+campaign_seed_artifact_rows() {
+  printf '%s\t%s\n' \
+    candidateGraph "${candidate_graph}" \
+    runtimePlan "${runtime_region_plan}" \
+    refinedGraph "${refined_graph}" \
+    targetResolved "${causynth_output_dir}/target_resolved.json" \
+    regionSkeletons "${causynth_output_dir}/region_skeletons.jsonl.gz" \
+    communicationCallSites \
+      "${causynth_output_dir}/communication_call_sites.jsonl.gz" \
+    retainedLoops "${causynth_output_dir}/retained_loops.jsonl.gz" \
+    communicationGaps \
+      "${causynth_output_dir}/communication_gaps.jsonl.gz" \
+    selectedSkeletons \
+      "$(dirname "${runtime_region_plan}")/skeleton-pass/region_skeletons.jsonl"
+}
+
+campaign_seed_cache_key() {
+  local identity
+  identity=$(jq -S -c \
+    --arg analysisScope "${causynth_analysis_scope}" \
+    --arg processDirs "${causynth_process_dirs}" \
+    --arg workloadWorkDir "${workload_work_dir}" \
+    --arg workloadCommand "${workload_command}" \
+    --arg traceTest "${trace_test}" \
+    --arg traceJdk "${HDFS11741_TRACE_JDK:-}" \
+    --arg maxEvents "${HDFS11741_MAX_EVENTS:-}" \
+    --arg extraJvmArgs "${HDFS11741_EXTRA_JVM_ARGS:-}" \
+    --arg heartbeatExpireMs "${CAUSYNTH_HDFS_HEARTBEAT_EXPIRE_MS:-}" \
+    --arg keyUpdateMs "${CAUSYNTH_HDFS_KEY_UPDATE_MS:-}" \
+    --arg testWaitTimeoutMs "${CAUSYNTH_HDFS_TEST_WAIT_TIMEOUT_MS:-}" \
+    --arg balancerMaxIdleIterations \
+      "${CAUSYNTH_HDFS_BALANCER_MAX_IDLE_ITERATIONS:-}" '
+    {schemaVersion: 1, kind: "CAMPAIGN_SEED_CACHE_KEY",
+     inputs: {
+       jar: .jar.sha256,
+       config: .config.sha256,
+       targetSpec: .targetSpec.sha256,
+       protocolStubs: .protocolStubs.sha256,
+       loopBounds: .loopBounds.sha256,
+       symbolicInputs: .symbolicInputs.sha256,
+       productionClasses: .productionClasses.sha256,
+       workloadTestClasses: .workload.testClasses.sha256,
+       workloadClasspath: .workload.classpathSha256,
+       source: .source},
+     seedConfiguration: {
+       analysisScope: $analysisScope,
+       processDirs: $processDirs,
+       workloadWorkDir: $workloadWorkDir,
+       workloadCommand: $workloadCommand,
+       traceTest: $traceTest,
+       environment: {
+         traceJdk: $traceJdk, maxEvents: $maxEvents,
+         extraJvmArgs: $extraJvmArgs,
+         heartbeatExpireMs: $heartbeatExpireMs,
+         keyUpdateMs: $keyUpdateMs,
+         testWaitTimeoutMs: $testWaitTimeoutMs,
+         balancerMaxIdleIterations: $balancerMaxIdleIterations}}}
+  ' <<<"${campaign_provenance}")
+  printf '%s' "${identity}" | sha256sum | awk '{print $1}'
+}
+
+campaign_restore_seed_cache() {
+  local key=$1 entry manifest name destination expected actual count=0
+  entry="${causynth_cache_dir}/seed/${key}"
+  manifest="${entry}/manifest.json"
+  [[ -e "${entry}" ]] || return 1
+  campaign_require_json "seed cache manifest" "${manifest}" \
+    || campaign_fail CACHE CAMPAIGN "${entry}" \
+      "the content-addressed seed cache entry is incomplete"
+  jq -e --arg key "${key}" '
+    .schemaVersion == 1
+    and .kind == "CAMPAIGN_SEED_CACHE_ENTRY"
+    and .key == $key
+    and (.artifacts | type) == "object"
+  ' "${manifest}" >/dev/null \
+    || campaign_fail CACHE CAMPAIGN "${manifest}" \
+      "the seed cache manifest has an unsupported schema"
+  while IFS=$'\t' read -r name destination; do
+    count=$((count + 1))
+    [[ -f "${entry}/${name}" ]] \
+      || campaign_fail CACHE CAMPAIGN "${entry}/${name}" \
+        "the seed cache artifact is missing"
+    expected=$(jq -r --arg name "${name}" \
+      '.artifacts[$name].sha256 // ""' "${manifest}")
+    [[ ${#expected} -eq 64 ]] \
+      || campaign_fail CACHE CAMPAIGN "${manifest}" \
+        "the seed cache manifest omits ${name}"
+    actual=$(campaign_digest "${entry}/${name}")
+    [[ "${actual}" == "${expected}" ]] \
+      || campaign_fail CACHE CAMPAIGN "${entry}/${name}" \
+        "the seed cache artifact digest does not match its manifest"
+    mkdir -p "$(dirname "${destination}")"
+    cp -- "${entry}/${name}" "${destination}"
+  done < <(campaign_seed_artifact_rows)
+  [[ "${count}" -eq 9 ]] || campaign_fail CACHE CAMPAIGN "${manifest}" \
+    "the seed cache artifact set is incomplete"
+}
+
+campaign_store_seed_cache() {
+  local key=$1 base entry lock temporary rows name source sha
+  base="${causynth_cache_dir}/seed"
+  entry="${base}/${key}"
+  lock="${base}/.${key}.lock"
+  mkdir -p "${base}"
+  temporary=$(mktemp -d "${base}/.${key}.XXXXXX")
+  rows="${temporary}/artifacts.jsonl"
+  : >"${rows}"
+  while IFS=$'\t' read -r name source; do
+    require_nonempty "seed cache source ${name}" "${source}"
+    cp -- "${source}" "${temporary}/${name}"
+    sha=$(campaign_digest "${temporary}/${name}")
+    jq -n -c --arg name "${name}" --arg sha "${sha}" \
+      '{name: $name, sha256: $sha}' >>"${rows}"
+  done < <(campaign_seed_artifact_rows)
+  jq -n --arg key "${key}" --slurpfile rows "${rows}" '
+    {schemaVersion: 1, kind: "CAMPAIGN_SEED_CACHE_ENTRY", key: $key,
+     artifacts: ($rows | map({key: .name,
+                              value: {sha256: .sha256}}) | from_entries)}
+  ' >"${temporary}/manifest.json"
+  rm -- "${rows}"
+  if mkdir "${lock}" 2>/dev/null; then
+    if [[ ! -e "${entry}" ]]; then
+      mv -- "${temporary}" "${entry}"
+      temporary=""
+    fi
+    rmdir -- "${lock}"
+  fi
+  [[ -z "${temporary}" ]] || rm -r -- "${temporary}"
 }
 
 # A checkout's exact state. The commit alone is not its identity: these
@@ -1476,12 +1723,22 @@ campaign_verify_frozen_inputs() {
 # stage owns. Its outputs are the campaign's static catalog and target closure.
 campaign_seed() {
   local marker="${campaign_root}/.seed-started"
-  local catalog_sha plan_sha refined_sha
+  local catalog_sha plan_sha refined_sha seed_manifest seed_cache_key
+  local seed_cache_status
   : >"${marker}"
-  do_analyze
+  seed_cache_key=$(campaign_seed_cache_key)
+  if campaign_restore_seed_cache "${seed_cache_key}"; then
+    seed_cache_status=HIT
+    campaign_log "cache hit SEED key=${seed_cache_key}"
+  else
+    seed_cache_status=MISS
+    campaign_log "cache miss SEED key=${seed_cache_key}"
+    do_analyze
+    do_workload
+    campaign_store_seed_cache "${seed_cache_key}"
+  fi
   require_fresh "static candidate data-flow graph" "${candidate_graph}" \
     "${marker}"
-  do_workload
   require_fresh "runtime region plan" "${runtime_region_plan}" "${marker}"
   require_fresh "runtime-refined data-flow graph" "${refined_graph}" \
     "${marker}"
@@ -1518,6 +1775,54 @@ campaign_seed() {
     campaign_fail SEED CAMPAIGN "${campaign_root}" \
       "failed to extend immutable seed provenance"
   fi
+
+  # Persist the seed boundary immediately.  A later replay can be interrupted
+  # before an iteration manifest exists; keeping this exact pre-iteration
+  # identity beside the three seed products makes the expensive static/trace
+  # stage cacheable without treating timestamps or a matching JAR as proof.
+  seed_manifest="${campaign_root}/seed-manifest.json"
+  if ! jq -n \
+    --argjson provenance "${campaign_provenance}" \
+    --arg analysisScope "${causynth_analysis_scope}" \
+    --arg processDirs "${causynth_process_dirs}" \
+    --arg workloadWorkDir "${workload_work_dir}" \
+    --arg workloadCommand "${workload_command}" \
+    --arg traceTest "${trace_test}" \
+    --arg traceJdk "${HDFS11741_TRACE_JDK:-}" \
+    --arg maxEvents "${HDFS11741_MAX_EVENTS:-}" \
+    --arg extraJvmArgs "${HDFS11741_EXTRA_JVM_ARGS:-}" \
+    --arg heartbeatExpireMs "${CAUSYNTH_HDFS_HEARTBEAT_EXPIRE_MS:-}" \
+    --arg keyUpdateMs "${CAUSYNTH_HDFS_KEY_UPDATE_MS:-}" \
+    --arg testWaitTimeoutMs "${CAUSYNTH_HDFS_TEST_WAIT_TIMEOUT_MS:-}" \
+    --arg balancerMaxIdleIterations \
+      "${CAUSYNTH_HDFS_BALANCER_MAX_IDLE_ITERATIONS:-}" \
+    --arg cacheKey "${seed_cache_key}" \
+    --arg cacheStatus "${seed_cache_status}" \
+    '{schemaVersion: 1,
+      kind: "CAMPAIGN_SEED_MANIFEST",
+      provenance: $provenance,
+      cache: {schemaVersion: 1, authority: "CONTENT_DIGEST_V1",
+              key: $cacheKey, status: $cacheStatus},
+      seedConfiguration: {
+        analysisScope: $analysisScope,
+        processDirs: $processDirs,
+        workloadWorkDir: $workloadWorkDir,
+        workloadCommand: $workloadCommand,
+        traceTest: $traceTest,
+        environment: {
+          traceJdk: $traceJdk,
+          maxEvents: $maxEvents,
+          extraJvmArgs: $extraJvmArgs,
+          heartbeatExpireMs: $heartbeatExpireMs,
+          keyUpdateMs: $keyUpdateMs,
+          testWaitTimeoutMs: $testWaitTimeoutMs,
+          balancerMaxIdleIterations: $balancerMaxIdleIterations
+        }
+      }}' >"${seed_manifest}"; then
+    campaign_fail SEED CAMPAIGN "${seed_manifest}" \
+      "failed to persist the immutable seed manifest"
+  fi
+  require_nonempty "campaign seed manifest" "${seed_manifest}"
 }
 
 # Schedule pass one: the immutable target-first plan for this iteration, its
@@ -2421,19 +2726,17 @@ campaign_write_coverage_gaps() {
     $composedDocuments[0] as $composed |
     $reachDocuments[0] as $reach |
     $pathClosureDocuments[0] as $pathClosures |
-    {schemaVersion: 1,
-     kind: "CAMPAIGN_COVERAGE_GAPS",
-     gaps: (
-       [$composed.finalStatusRefusals[]?
+    ([$composed.finalStatusRefusals[]?
          | {stage: "COMPOSE", source: "COMPOSER",
             code: .code, subject: .subject, detail: .detail}]
-       + [$composed.canonicalModel.gaps[]?
-           | {stage: "MODEL", source: (.source // "COMPOSER"),
-              code: (.code // ""), subject: (.subject // ""),
-              detail: (.detail // "")}]
        + [$reach.gaps[]?
            | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
               detail: ""}]
+       | unique_by([.stage, .source, .code, .subject, .detail])) as $gaps |
+    ([$composed.canonicalModel.gaps[]?
+           | {stage: "MODEL", source: (.source // "COMPOSER"),
+              code: (.code // ""), subject: (.subject // ""),
+              detail: (.detail // "")}]
        + [$diagnostics[]?
            | {stage: "IMPORT", source: "IMPORTER", code: (.code // ""),
               subject: (.taskId // ""), detail: (.detail // "")}]
@@ -2455,9 +2758,17 @@ campaign_write_coverage_gaps() {
                         // .evidenceIdentity.taskId // ""),
               detail: ([(.reason // ""), (.detail // "")]
                        | map(select(. != "")) | join(": "))}]
-       | unique_by([.stage, .source, .code, .subject, .detail]))}
+       | unique_by([.stage, .source, .code, .subject, .detail]))
+       as $telemetry |
+    {schemaVersion: 1,
+     kind: "CAMPAIGN_COVERAGE_GAPS",
+     gaps: $gaps,
+     telemetryGaps: $telemetry}
     | .gapCount = (.gaps | length)
+    | .telemetryCount = (.telemetryGaps | length)
     | .byStage = (.gaps | group_by(.stage)
+        | map({key: .[0].stage, value: length}) | from_entries)
+    | .telemetryByStage = (.telemetryGaps | group_by(.stage)
         | map({key: .[0].stage, value: length}) | from_entries)
   ' >"${output}"
 }
@@ -2512,10 +2823,9 @@ campaign_emit() {
       "a path-closure JSON is malformed or could not be enumerated"
   fi
 
-  # Only the owners speak here: the Composer's selected blockers and model
-  # gaps, the solver's, the importer's, and the classifier's delta rows.
-  # Unselected VM and catalog telemetry is diagnostic and lives in the raw
-  # results; the causal projection is diagnostic and is not a gap source.
+  # The Composer and solver own acceptance blockers. Model, importer,
+  # classifier and worklist findings remain visible as telemetry and do not
+  # re-score the selected causal witness.
   campaign_write_coverage_gaps \
     "${composition_manifest}" \
     "${reach_report}" \
@@ -2545,6 +2855,7 @@ campaign_emit() {
     ($r.reachCondition.reachability // "UNKNOWN") as $reachability |
     ($r.unsatClosureComplete // false) as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
+    ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
     ($c.finalStatus == "FINAL_READY") as $accepted |
     {schemaVersion: 1,
@@ -2581,6 +2892,7 @@ campaign_emit() {
        fieldVersions: ($c.canonicalModel.counts.fieldVersions // 0),
        fieldReads: ($c.canonicalModel.counts.fieldReads // 0)},
      gapCount: $gapCount,
+     telemetryCount: $telemetryCount,
      valuations: ($r.valuations // [])}
   ' >"${campaign_final}/result.json"
   require_nonempty "campaign result" "${campaign_final}/result.json"
@@ -2631,7 +2943,7 @@ campaign_emit() {
 
   gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
   campaign_log "artifacts in ${campaign_final}"
-  jq -r '"  claim=\(.claim) reachability=\(.reachability) gaps=\(.gapCount) finalStatus=\(.finalStatus)"' \
+  jq -r '"  claim=\(.claim) reachability=\(.reachability) gaps=\(.gapCount) telemetry=\(.telemetryCount) finalStatus=\(.finalStatus)"' \
     "${campaign_final}/result.json"
   # A published artifact set is not an accepted candidate. A run that reached
   # no witness and no closed refutation exits nonzero with its own named

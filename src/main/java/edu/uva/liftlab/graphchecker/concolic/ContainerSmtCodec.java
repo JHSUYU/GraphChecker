@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralW
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** The single SMT lowering for VM container operations. */
@@ -521,7 +522,9 @@ public final class ContainerSmtCodec {
         if ("HAS_NEXT".equals(operation)) {
             Sort stateSort = "INDEXED".equals(shape)
                     ? Sort.INDEXED : Sort.ASSOCIATIVE;
-            Term state = host.operand(expression.get("receiver"), stateSort);
+            Term state = stateSort == Sort.ASSOCIATIVE
+                    ? associativeState(expression.get("receiver"), host)
+                    : host.operand(expression.get("receiver"), stateSort);
             JsonArray positions = array(expression, "arguments");
             Term position = positions.size() == 1
                     ? host.operand(positions.get(0), Sort.INT) : null;
@@ -561,14 +564,17 @@ public final class ContainerSmtCodec {
         }
         if ("INDEXED".equals(shape)) {
             JsonElement receiverIr = expression.get("receiver");
-            if ("READ".equals(operation) && arguments.size() == 1) {
+            boolean preserveReceiver = host.preserveContainerIdentity(
+                    receiverIr, Sort.INDEXED);
+            if ("READ".equals(operation) && arguments.size() == 1
+                    && !preserveReceiver) {
                 JsonElement stored = storedIndexedWrite(receiverIr,
                         arguments.get(0));
                 if (stored != null) {
                     return host.unbox(host.box(stored), javaType);
                 }
             }
-            if ("SIZE".equals(operation)) {
+            if ("SIZE".equals(operation) && !preserveReceiver) {
                 receiverIr = sizePreservingIndexedReceiver(receiverIr);
             }
             Term receiver = host.operand(receiverIr, Sort.INDEXED);
@@ -648,8 +654,8 @@ public final class ContainerSmtCodec {
                 return size == null ? null
                         : new Term("(= " + size.text + " 0)", Sort.BOOL);
             }
-            Term receiver = host.operand(expression.get("receiver"),
-                    Sort.ASSOCIATIVE);
+            Term receiver = associativeState(expression.get("receiver"),
+                    host);
             if (receiver == null) return null;
             if ("ITERATOR".equals(operation)
                     || "ENTRY_VIEW".equals(operation)
@@ -926,7 +932,7 @@ public final class ContainerSmtCodec {
             }
             break;
         }
-        Term state = host.operand(cursor, Sort.ASSOCIATIVE);
+        Term state = associativeState(cursor, host);
         return state == null || index == null ? null
                 : new Entry(state, index);
     }
@@ -947,8 +953,151 @@ public final class ContainerSmtCodec {
             if (!"ITERATOR".equals(name)) break;
             cursor = operation.get("receiver");
         }
-        Term state = host.operand(cursor, Sort.ASSOCIATIVE);
+        if (kind.isEmpty()) kind = selectedReadViewKind(cursor);
+        Term state = associativeState(cursor, host);
         return kind.isEmpty() || state == null ? null : new View(kind, state);
+    }
+
+    /** Lowers the selected map state beneath iterator/view wrappers. */
+    private static Term associativeState(JsonElement expression, Host host) {
+        JsonElement cursor = expression;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject relation = cursor.getAsJsonObject();
+            if (!EXPRESSION_TYPE.equals(string(relation, "_type"))) break;
+            String operation = string(relation, "operation");
+            if (!"ITERATOR".equals(operation)
+                    && !"ENTRY_VIEW".equals(operation)
+                    && !"KEY_VIEW".equals(operation)
+                    && !"VALUE_VIEW".equals(operation)) {
+                break;
+            }
+            cursor = relation.get("receiver");
+        }
+        if (cursor != null && cursor.isJsonObject()
+                && "ReadFromExpression".equals(string(
+                cursor.getAsJsonObject(), "_type"))) {
+            String kind = selectedReadViewKind(cursor);
+            if (!kind.isEmpty()) {
+                cursor = selectedReadViewState(
+                        cursor.getAsJsonObject(), kind);
+            }
+        }
+        Term state = host.operand(cursor, Sort.ASSOCIATIVE);
+        if (state != null && state.sort != Sort.ASSOCIATIVE) {
+            host.unsupported("ContainerRelation:ASSOCIATIVE:state-sort="
+                    + state.sort);
+            return null;
+        }
+        return state;
+    }
+
+    /**
+     * Recovers the view operation at a version-selected map read.
+     *
+     * <p>The VM keeps the exact {@code VALUE_VIEW}/{@code KEY_VIEW} operation
+     * in every known writer arm of a {@code ReadFromExpression}.  The wrapper
+     * itself is the selector over those arms, so an iterator sees the wrapper
+     * rather than the view node directly.  The projection remains exact when
+     * every known arm agrees; an unknown-writer arm still belongs to this same
+     * call-site view and is lowered through the wrapper's selected state.</p>
+     */
+    private static String selectedReadViewKind(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return "";
+        JsonObject object = expression.getAsJsonObject();
+        if (EXPRESSION_TYPE.equals(string(object, "_type"))) {
+            String operation = string(object, "operation");
+            if ("ENTRY_VIEW".equals(operation)
+                    || "KEY_VIEW".equals(operation)
+                    || "VALUE_VIEW".equals(operation)) {
+                return operation;
+            }
+            return "ITERATOR".equals(operation)
+                    ? selectedReadViewKind(object.get("receiver")) : "";
+        }
+        if (!"ReadFromExpression".equals(string(object, "_type"))) {
+            return "";
+        }
+        String selected = "";
+        for (JsonElement element : array(object, "candidates")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject arm = element.getAsJsonObject();
+            if (bool(arm, "unknown", false)) continue;
+            String candidate = selectedReadViewKind(arm.get("expression"));
+            if (candidate.isEmpty()) return "";
+            if (!selected.isEmpty() && !selected.equals(candidate)) {
+                return "";
+            }
+            selected = candidate;
+        }
+        return selected;
+    }
+
+    /**
+     * Moves a common view outside a read-from choice so every selector arm
+     * denotes an {@code AssocState}, including the unknown-writer arm.
+     */
+    private static JsonObject selectedReadViewState(
+            JsonObject read, String kind) {
+        JsonObject normalized = read.deepCopy();
+        normalized.addProperty("_java_type", "java/util/Map");
+        for (JsonElement element : array(normalized, "candidates")) {
+            if (!element.isJsonObject()) return null;
+            JsonObject arm = element.getAsJsonObject();
+            JsonElement expression = arm.get("expression");
+            if (bool(arm, "unknown", false)) {
+                JsonObject state = new JsonObject();
+                state.addProperty("_type", EXPRESSION_TYPE);
+                state.addProperty("shape", "ASSOCIATIVE");
+                state.addProperty("operation", "STATE");
+                state.addProperty("_java_type", "java/util/Map");
+                state.add("receiver", expression == null
+                        ? null : expression.deepCopy());
+                state.add("arguments", new JsonArray());
+                arm.add("expression", state);
+                continue;
+            }
+            if (expression == null || !expression.isJsonObject()) return null;
+            JsonObject view = expression.getAsJsonObject();
+            if (!EXPRESSION_TYPE.equals(string(view, "_type"))
+                    || !kind.equals(string(view, "operation"))
+                    || view.get("receiver") == null) {
+                return null;
+            }
+            arm.add("expression", view.get("receiver").deepCopy());
+        }
+        JsonArray normalizedCandidates = array(normalized, "candidates");
+        if (normalizedCandidates.size() == 0) return null;
+        JsonElement selection = normalizedCandidates
+                .get(normalizedCandidates.size() - 1)
+                .getAsJsonObject().get("expression").deepCopy();
+        for (int index = normalizedCandidates.size() - 2;
+             index >= 0; index--) {
+            JsonObject arm = normalizedCandidates.get(index)
+                    .getAsJsonObject();
+            String selector = string(arm, "selector");
+            if (selector.isEmpty()) return null;
+            JsonObject ite = new JsonObject();
+            ite.addProperty("_type", "IteExpression");
+            ite.addProperty("selector", selector);
+            ite.add("then", arm.get("expression").deepCopy());
+            ite.add("else", selection);
+            selection = ite;
+        }
+        normalized.add("ite", selection);
+        return normalized;
+    }
+
+    /**
+     * Canonical map-state form for eager read-from cataloguing.
+     *
+     * <p>The composer catalogs recorded reads before it sees their iterator
+     * use.  Exposing the same normalization used by {@link #associativeState}
+     * prevents that eager pass from memoizing a common map view as a plain
+     * Java reference.</p>
+     */
+    static JsonObject selectedReadViewState(JsonObject read) {
+        String kind = selectedReadViewKind(read);
+        return kind.isEmpty() ? null : selectedReadViewState(read, kind);
     }
 
     /**
@@ -991,6 +1140,15 @@ public final class ContainerSmtCodec {
         Term state(JsonElement identity, Sort shape);
 
         Term operand(JsonElement expression, Sort expected);
+
+        /**
+         * Whether an externally evidenced container identity must survive
+         * local select-over-store simplification.
+         */
+        default boolean preserveContainerIdentity(JsonElement expression,
+                                                  Sort expected) {
+            return false;
+        }
 
         Term box(JsonElement expression);
 

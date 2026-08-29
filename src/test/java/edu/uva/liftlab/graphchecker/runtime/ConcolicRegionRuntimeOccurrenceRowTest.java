@@ -70,7 +70,8 @@ public class ConcolicRegionRuntimeOccurrenceRowTest {
             throws Exception {
         load("OUTPUT_RELATION_CLOSURE");
 
-        JsonObject first = identity(activation(11L));
+        Object firstActive = activation(11L);
+        JsonObject first = identity(firstActive);
         assertEquals(TASK, first.get("taskId").getAsString());
         assertEquals(OCCURRENCE,
                 first.get("plannedOccurrenceId").getAsString());
@@ -92,6 +93,41 @@ public class ConcolicRegionRuntimeOccurrenceRowTest {
         assertFalse(second.get("relationallyComplete").getAsBoolean());
         // targetReached is a target-reach member only.
         assertFalse(second.has("targetReached"));
+
+        Field activation = firstActive.getClass().getDeclaredField(
+                "activation");
+        activation.setAccessible(true);
+        Object task = activation.get(firstActive);
+        Method reserve = task.getClass().getDeclaredMethod(
+                "reserveCompletedEvidence", boolean.class, boolean.class);
+        reserve.setAccessible(true);
+        Method blocksAdmission = task.getClass().getDeclaredMethod(
+                "blocksAdmissionAfterCompletedTarget");
+        blocksAdmission.setAccessible(true);
+        Method suppressesDuplicate = task.getClass().getDeclaredMethod(
+                "suppressesDuplicateRelationResult");
+        suppressesDuplicate.setAccessible(true);
+        reserve.invoke(task, false, false);
+        assertFalse((Boolean) blocksAdmission.invoke(task));
+        assertFalse((Boolean) suppressesDuplicate.invoke(task));
+        reserve.invoke(task, false, true);
+        assertFalse("a completed producer must remain live for propagation",
+                (Boolean) blocksAdmission.invoke(task));
+        assertTrue("only its duplicate durable row is suppressed",
+                (Boolean) suppressesDuplicate.invoke(task));
+
+        Object duplicate = activation(13L);
+        ConcolicRegionRuntime.beginLiveSelectedRegion();
+        Method suppress = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "suppressDuplicateRelationResult", duplicate.getClass());
+        suppress.setAccessible(true);
+        suppress.invoke(null, duplicate);
+        Field abandoned = duplicate.getClass().getDeclaredField("abandoned");
+        abandoned.setAccessible(true);
+        assertTrue(abandoned.getBoolean(duplicate));
+        assertEquals("a suppressed row does not spend an occurrence ordinal",
+                OCCURRENCE + "#a3",
+                identity(activation(14L)).get("occurrenceId").getAsString());
     }
 
     /** A target-reach address carries the member the importer selects on. */

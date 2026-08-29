@@ -61,7 +61,6 @@ public final class MaterializationSpec {
             return none();
         }
         String field = text(port, "declaredFieldSignature");
-        if (field.isEmpty()) field = text(port, "cell");
         String method = text(port, "callerMethod");
         int unitIndex = integer(port, "unitIndex", -1);
         String declaredCallee = text(port, "declaredCallee");
@@ -72,7 +71,8 @@ public final class MaterializationSpec {
         if (field.isEmpty() || method.isEmpty() || unitIndex < 0
                 || declaredCallee.isEmpty() || implementation.isEmpty()
                 || path.isEmpty() || javaType.isEmpty()) {
-            return none();
+            throw new IllegalArgumentException(
+                    "ACCESSOR_RETURN requires its complete canonical fields");
         }
         return new MaterializationSpec(Kind.ACCESSOR_RETURN, javaType,
                 field, path, method, unitIndex, declaredCallee,

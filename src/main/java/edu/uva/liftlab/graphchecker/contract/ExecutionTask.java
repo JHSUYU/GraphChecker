@@ -112,12 +112,67 @@ public final class ExecutionTask extends PlanRow {
         }
         retainSelectedCommunicationHandoffs(task, inputActions,
                 edgeBindings, selectedClosure);
+        demoteNestedLoopRootOutsideSelectedContinuation(task,
+                selectedClosure);
         promoteSelectedReplayEntry(task, selectedClosure);
         JsonObject admission = new JsonObject();
         admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
         task.add("admission", admission);
         return new ExecutionTask(task, loopBound, selectedClosure,
                 goal.plan().configuredSourcePhases());
+    }
+
+    /**
+     * Keeps a selected output that ran beside, rather than inside, a nested
+     * service loop from being replayed after it.
+     *
+     * <p>The region-level once-only-root rule follows the failure anchor.  A
+     * coarse activation can also contain an earlier producer phase: HDFS-11741
+     * registers the DataNode before {@code offerService()}, while its target
+     * heartbeat is inside that service loop.  Once output projection proves
+     * every demanded member shares the earlier {@code register} continuation,
+     * a loop-body root at {@code offerService} can never execute the selected
+     * response cut or heap writes.  In that exact nested-loop shape, remove
+     * the provisional loop root and let the existing continuation promotion
+     * root the task at the selected producer phase.</p>
+     *
+     * <p>A loop in the root method itself is unchanged.  So are closures with
+     * a missing or conflicting continuation: neither provides authority to
+     * move the task.</p>
+     */
+    private static void demoteNestedLoopRootOutsideSelectedContinuation(
+            JsonObject task, OutputClosureContract closure) {
+        if (closure == null || !LoopBoundPolicy.LOOP_BODY_ROOT.equals(
+                string(task, LoopBoundPolicy.ROOT_AUTHORITY))) {
+            return;
+        }
+        JsonObject rootLoop = object(task, LoopBoundPolicy.ROOT_LOOP);
+        String loopMethod = string(rootLoop,
+                LoopBoundPolicy.ROOT_LOOP_METHOD);
+        String coarseRoot = string(object(task, "rootSelector"), "method");
+        if (loopMethod.isEmpty() || coarseRoot.isEmpty()
+                || loopMethod.equals(coarseRoot)) {
+            return;
+        }
+        JsonObject selected = null;
+        for (OutputClosureContract.Member member : closure.members()) {
+            JsonObject entry = object(member.slice(), REPLAY_ENTRY);
+            if (string(entry, "method").isEmpty()
+                    || string(entry, "receiverClass").isEmpty()) {
+                return;
+            }
+            if (selected == null) {
+                selected = entry;
+            } else if (!selected.equals(entry)) {
+                return;
+            }
+        }
+        if (selected == null
+                || loopMethod.equals(string(selected, "method"))) {
+            return;
+        }
+        task.remove(LoopBoundPolicy.ROOT_AUTHORITY);
+        task.remove(LoopBoundPolicy.ROOT_LOOP);
     }
 
     /** Promotes the one exact continuation shared by the selected output

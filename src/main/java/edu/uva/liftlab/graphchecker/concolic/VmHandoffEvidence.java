@@ -101,6 +101,29 @@ public final class VmHandoffEvidence {
             "absorbedAttachEventId";
 
     /**
+     * A target path may use a VM handoff only after the reach-query builder
+     * has matched its actual producer to one selected protocol edge.  These
+     * fields keep that path-local endpoint proof beside the exact VM value
+     * edge all the way into composition.
+     */
+    public static final String SELECTED_ENDPOINT_AUTHORITY_FIELD =
+            "selectedEndpointAuthority";
+    public static final String SELECTED_ENDPOINT_AUTHORITY =
+            "TARGET_PATH_SELECTED_ENDPOINT_V1";
+    public static final String SELECTED_ENDPOINT_EDGE_ID =
+            "selectedEndpointEdgeId";
+    public static final String SELECTED_ENDPOINT_FROM_OCCURRENCE_ID =
+            "selectedEndpointFromOccurrenceId";
+    public static final String SELECTED_ENDPOINT_TO_OCCURRENCE_ID =
+            "selectedEndpointToOccurrenceId";
+    public static final String SELECTED_ENDPOINT_FROM_OUTPUT_PORT =
+            "selectedEndpointFromOutputPort";
+    public static final String SELECTED_ENDPOINT_TO_INPUT_PORT =
+            "selectedEndpointToInputPort";
+    public static final String SELECTED_ENDPOINT_ABSORBED_FROM_TASK_ID =
+            "selectedEndpointAbsorbedFromTaskId";
+
+    /**
      * Whether this edge binding is one a replay recorded and the scheduler
      * absorbed.
      *

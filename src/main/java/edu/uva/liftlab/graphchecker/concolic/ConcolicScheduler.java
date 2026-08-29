@@ -887,6 +887,10 @@ public final class ConcolicScheduler {
                 if (producerProjection != null) {
                     outputClosure = OutputClosureCodec.project(outputClosure,
                             producerProjection.outputPorts());
+                    outputClosure = OutputClosureCodec
+                            .projectSelectedVersions(outputClosure,
+                            selectedOutgoingEdges(goal,
+                                    producerProjection));
                 }
                 JsonArray branches = goal.branches();
                 JsonArray inputActions = materializationPlan(
@@ -987,6 +991,27 @@ public final class ConcolicScheduler {
                                 inputActions, targetBindings),
                         targetBindings, null, targetSourceFrontier));
             }
+    }
+
+    /** Selected runtime edges grouped by the output member they consume. */
+    private static Map<String, Set<String>> selectedOutgoingEdges(
+            Goal goal, ProducerOutputProjection projection) {
+        Map<String, Set<String>> result = new LinkedHashMap<>();
+        for (JsonElement element : goal.edgeBindings()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject edge = element.getAsJsonObject();
+            String edgeId = string(edge, "edgeId");
+            String output = string(edge, "fromOutputPort");
+            if (!projection.edgeIds().contains(edgeId)
+                    || !projection.outputPorts().contains(output)
+                    || !goal.plan().occurrenceId().equals(
+                    string(edge, "fromOccurrenceId"))) {
+                continue;
+            }
+            result.computeIfAbsent(output,
+                    ignored -> new LinkedHashSet<>()).add(edgeId);
+        }
+        return result;
     }
 
     private static boolean eligibleFailureTarget(JsonObject branch) {

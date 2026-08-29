@@ -175,12 +175,7 @@ public class RuntimePlanPortCompactionTest {
         JsonArray declarations = new JsonArray();
         declarations.add(declaration);
 
-        JsonObject region = new JsonObject();
-        region.addProperty("schemaVersion", 3);
-        region.addProperty("kind", "SYMBOLIC_REGION");
-        region.addProperty("regionId", "REGION.1");
-        region.add("symbolicInputs", new JsonArray());
-        region.add("outputs", new JsonArray());
+        JsonObject region = region(new JsonArray());
         region.add(StaticSymbolicSourceDeclaration.FIELD, declarations);
 
         String encoded = RuntimePlanArtifact.encode(
@@ -195,6 +190,25 @@ public class RuntimePlanPortCompactionTest {
 
         assertEquals(1, retained.size());
         assertEquals(declaration, retained.get(0).getAsJsonObject());
+    }
+
+    @Test
+    public void compactionRejectsRegionsOutsideTheCurrentSchema() {
+        JsonObject current = region(new JsonArray());
+        for (String field : new String[]{"schemaVersion", "kind"}) {
+            JsonObject malformed = current.deepCopy();
+            malformed.remove(field);
+            assertRegionRejected(malformed);
+        }
+        JsonObject wrongVersion = current.deepCopy();
+        wrongVersion.addProperty("schemaVersion", 2);
+        assertRegionRejected(wrongVersion);
+        JsonObject stringVersion = current.deepCopy();
+        stringVersion.addProperty("schemaVersion", "3");
+        assertRegionRejected(stringVersion);
+        JsonObject wrongKind = current.deepCopy();
+        wrongKind.addProperty("kind", "REGION_SKELETON");
+        assertRegionRejected(wrongKind);
     }
 
     // ------------------------------------------------------------------
@@ -221,14 +235,9 @@ public class RuntimePlanPortCompactionTest {
     }
 
     private List<JsonObject> roundTrip(JsonObject port) throws Exception {
-        JsonObject region = new JsonObject();
-        region.addProperty("schemaVersion", 3);
-        region.addProperty("kind", "SYMBOLIC_REGION");
-        region.addProperty("regionId", "REGION.1");
-        region.add("symbolicInputs", new JsonArray());
         JsonArray outputs = new JsonArray();
         outputs.add(port);
-        region.add("outputs", outputs);
+        JsonObject region = region(outputs);
 
         String encoded = RuntimePlanArtifact.encode(
                 Collections.<JsonObject>emptyList(),
@@ -238,5 +247,27 @@ public class RuntimePlanPortCompactionTest {
         Files.write(file.toPath(),
                 encoded.getBytes(StandardCharsets.UTF_8));
         return RuntimePlanArtifact.read(file.toPath()).regions();
+    }
+
+    private static JsonObject region(JsonArray outputs) {
+        JsonObject region = new JsonObject();
+        region.addProperty("schemaVersion", 3);
+        region.addProperty("kind", "SYMBOLIC_REGION");
+        region.addProperty("regionId", "REGION.1");
+        region.add("symbolicInputs", new JsonArray());
+        region.add("outputs", outputs);
+        return region;
+    }
+
+    private static void assertRegionRejected(JsonObject region) {
+        try {
+            RuntimePlanArtifact.encode(
+                    Collections.<JsonObject>emptyList(),
+                    Collections.<JsonObject>emptyList(),
+                    Collections.singletonList(region));
+            throw new AssertionError("unsupported region schema was accepted");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("unsupported schema"));
+        }
     }
 }

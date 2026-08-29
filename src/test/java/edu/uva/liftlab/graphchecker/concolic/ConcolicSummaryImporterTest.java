@@ -29,6 +29,44 @@ public class ConcolicSummaryImporterTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     @Test
+    public void resultRowsRequireTheCurrentActivationTuple() throws Exception {
+        JsonObject wrongSchema = pathResult(true, true);
+        wrongSchema.addProperty("schemaVersion", 2);
+        assertRawRefused("result-schema", wrongSchema,
+                "CONCOLIC_RESULT_SCHEMA_UNSUPPORTED");
+
+        JsonObject missingOrdinal = pathResult(true, true);
+        missingOrdinal.remove(PathObservation.ACTIVATION_ORDINAL);
+        assertRawRefused("result-no-ordinal", missingOrdinal,
+                "CONCOLIC_RESULT_ACTIVATION_TUPLE_MALFORMED");
+        JsonObject missingPlanned = pathResult(true, true);
+        missingPlanned.remove(PathObservation.PLANNED_OCCURRENCE_ID);
+        assertRawRefused("result-no-planned", missingPlanned,
+                "CONCOLIC_RESULT_ACTIVATION_TUPLE_MALFORMED");
+        JsonObject wrongOccurrence = pathResult(true, true);
+        wrongOccurrence.addProperty("occurrenceId", "legacy-coarse-address");
+        assertRawRefused("result-wrong-occurrence", wrongOccurrence,
+                "CONCOLIC_RESULT_ACTIVATION_TUPLE_MALFORMED");
+        JsonObject unstatedComplete = pathResult(true, true);
+        unstatedComplete.remove("relationallyComplete");
+        assertRawRefused("result-no-completeness", unstatedComplete,
+                "CONCOLIC_RESULT_ACTIVATION_TUPLE_MALFORMED");
+    }
+
+    @Test
+    public void skippedRowsDoNotRequireAnActivationTuple() throws Exception {
+        JsonObject skipped = new JsonObject();
+        skipped.addProperty("event", "CONCOLIC_REGION_SKIPPED");
+        skipped.addProperty("taskId", "TASK.SEED");
+        PathImport imported = importPath("skipped-current-contract",
+                pathTask(false), skipped);
+
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals("SKIPPED_RUNTIME_EVENT", ArtifactIO.readJsonl(
+                imported.diagnostics).get(0).get("code").getAsString());
+    }
+
+    @Test
     public void selectedBranchWitnessesRecoverACompactTargetPath()
             throws Exception {
         JsonObject raw = pathResult(true, true);
@@ -207,7 +245,7 @@ public class ConcolicSummaryImporterTest {
                 SymbolicSourceEvidence.engineLabelForPhase(
                         sourcePhaseId(task, 0),
                         "HDFS11741.NAMENODE.PROMOTED_KEY_ID")));
-        assertEquals(task.get("occurrenceId").getAsString(),
+        assertEquals(activationOccurrence(task, 1),
                 event.get("sourceOccurrenceId").getAsString());
     }
 
@@ -231,7 +269,7 @@ public class ConcolicSummaryImporterTest {
         assertTrue(summary.get("relationallyComplete").getAsBoolean());
         JsonObject event = summary.getAsJsonArray(
                 SymbolicSourceEvidence.FIELD).get(0).getAsJsonObject();
-        assertEquals(task.get("occurrenceId").getAsString(),
+        assertEquals(activationOccurrence(task, 1),
                 event.get("sourceOccurrenceId").getAsString());
         assertEquals(sourcePhaseId(task, 0),
                 event.get("sourcePhaseId").getAsString());
@@ -749,7 +787,7 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
-    public void exactRequiredTargetOutcomeOverridesTheSeedOutcome()
+    public void selectedTargetOutcomeIsNotPartOfTheSeedPrefix()
             throws Exception {
         JsonObject task = pathTask(false);
         JsonObject selectedBranch = task.getAsJsonArray("branches")
@@ -866,8 +904,12 @@ public class ConcolicSummaryImporterTest {
     @Test
     public void seedOutcomeMismatchIsRejectedFailClosed()
             throws Exception {
-        PathImport imported = importPath("wrong-seed-outcome",
-                pathTask(false), pathResult(true, false));
+        JsonObject prefixTask = pathTask(false);
+        addSeedPrefix(prefixTask, true);
+        JsonObject prefixRaw = pathResult(true, false);
+        addConcretePrefix(prefixRaw, false);
+        PathImport imported = importPath("wrong-seed-prefix", prefixTask,
+                prefixRaw);
 
         assertEquals(0, imported.result.validSummaryCount);
         assertEquals(1, imported.result.diagnosticCount);
@@ -1061,6 +1103,7 @@ public class ConcolicSummaryImporterTest {
     public void topologyDeltaClassifiesCasesCutsAndRefusals()
             throws Exception {
         JsonObject second = pathResult(true, true);
+        setActivation(second, 2);
         second.addProperty("exceptionType", "java.io.IOException");
         PathImport cases = importPath("delta-local-cases", pathTask(false),
                 pathResult(true, true), second);
@@ -1143,8 +1186,12 @@ public class ConcolicSummaryImporterTest {
 
         // Importer admission owns a refused row. The topology classifier must
         // not duplicate the same gap under a second stage.
-        PathImport refused = importPath("delta-refused", pathTask(false),
-                pathResult(true, false));
+        JsonObject refusedTask = pathTask(false);
+        addSeedPrefix(refusedTask, true);
+        JsonObject refusedRaw = pathResult(true, false);
+        addConcretePrefix(refusedRaw, false);
+        PathImport refused = importPath("delta-refused", refusedTask,
+                refusedRaw);
         assertEquals(0, ArtifactIO.readJsonl(refused.delta).size());
         assertEquals("BRANCH_REPLAY_MISMATCH",
                 ArtifactIO.readJsonl(refused.diagnostics).get(0)
@@ -1236,6 +1283,14 @@ public class ConcolicSummaryImporterTest {
                 .get("detail").getAsString().contains(issue));
     }
 
+    private void assertRawRefused(String name, JsonObject raw, String code)
+            throws Exception {
+        PathImport imported = importPath(name, pathTask(false), raw);
+        assertEquals(0, imported.result.validSummaryCount);
+        assertEquals(code, ArtifactIO.readJsonl(imported.diagnostics).get(0)
+                .get("code").getAsString());
+    }
+
     /** The one demanded output a relation-only seed closes. */
     private static JsonObject outputSlice(String port, String cell) {
         JsonObject slice = new JsonObject();
@@ -1310,6 +1365,32 @@ public class ConcolicSummaryImporterTest {
         return task;
     }
 
+    /** Adds one exact control event before the independently selected goal. */
+    private static void addSeedPrefix(JsonObject task, boolean outcome) {
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", seedMethod() + "#u2");
+        branch.addProperty("method", seedMethod());
+        branch.addProperty("unitIndex", 2);
+        branch.addProperty("policy", "PATH_ASSUMPTION");
+        JsonObject occurrence = new JsonObject();
+        occurrence.addProperty("occurrence", 1);
+        occurrence.addProperty("outcome", outcome);
+        JsonArray occurrences = new JsonArray();
+        occurrences.add(occurrence);
+        branch.add("occurrences", occurrences);
+        task.getAsJsonArray("branches").add(branch);
+    }
+
+    /** Runtime observation of that prefix while its symbolic gate is closed. */
+    private static void addConcretePrefix(JsonObject raw, boolean outcome) {
+        JsonObject observation = new JsonObject();
+        observation.addProperty("siteId", seedMethod() + "#u2");
+        observation.addProperty("sourceTakenOutcome", outcome);
+        JsonArray observations = new JsonArray();
+        observations.add(observation);
+        raw.add("concreteBranchWitnesses", observations);
+    }
+
     private static JsonObject relationOnlyTask() {
         JsonObject task = pathTask(false);
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(task);
@@ -1361,7 +1442,7 @@ public class ConcolicSummaryImporterTest {
         return SymbolicSourceEvidence.event(
                 phaseId,
                 "HDFS11741.NAMENODE.PROMOTED_KEY_ID",
-                task.get("occurrenceId").getAsString(),
+                activationOccurrence(task, 1),
                 "<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>",
                 expression, phaseIndex + 1, false, null);
     }
@@ -1474,7 +1555,11 @@ public class ConcolicSummaryImporterTest {
                                          boolean outcome) {
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.addProperty("schemaVersion", 1);
         raw.addProperty("taskId", "TASK.SEED");
+        setActivation(raw, 1);
+        raw.addProperty("relationallyComplete", true);
+        raw.addProperty(PathObservation.TARGET_REACHED, true);
         raw.addProperty("exitKind", "NORMAL");
         raw.addProperty("exceptionType", "");
         JsonObject engine = new JsonObject();
@@ -1512,6 +1597,17 @@ public class ConcolicSummaryImporterTest {
         installAuxiliaryPathCondition(raw, auxiliaryPathCondition(
                 includeMapping ? 1 : 0));
         return raw;
+    }
+
+    private static void setActivation(JsonObject raw, int ordinal) {
+        String planned = "test/source#epoch0/region/REGION.SEED#1";
+        raw.addProperty(PathObservation.PLANNED_OCCURRENCE_ID, planned);
+        raw.addProperty(PathObservation.ACTIVATION_ORDINAL, ordinal);
+        raw.addProperty("occurrenceId", planned + "#a" + ordinal);
+    }
+
+    private static String activationOccurrence(JsonObject task, int ordinal) {
+        return task.get("occurrenceId").getAsString() + "#a" + ordinal;
     }
 
     private static void installAuxiliaryPathCondition(

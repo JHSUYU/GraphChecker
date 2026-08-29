@@ -324,8 +324,6 @@ final class RecordedMapStateFixtures {
         events.add(event(QUERY_EVENT, "FIELD_READ", 103L, "REGION.0",
                 MAP_OWNER));
         JsonArray order = new JsonArray();
-        order.add(edge(WRITER_A_VERSION, WRITER_B_VERSION,
-                "SYNCHRONIZATION"));
         return ledgerEnvelope(events, order);
     }
 
@@ -438,16 +436,36 @@ final class RecordedMapStateFixtures {
                                                JsonObject envelope,
                                                JsonObject targetPredicate)
             throws Exception {
+        JsonObject recordedEnvelope = envelope.deepCopy();
+        for (JsonElement element : recordedEnvelope.getAsJsonArray(
+                "versions")) {
+            JsonObject version = element.getAsJsonObject();
+            version.addProperty("regionId", "REGION.1");
+            version.addProperty("taskId", "TASK.MAP");
+            version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
+                    SOURCE_KEY);
+            version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
+                    PRODUCER_OCCURRENCE);
+        }
         JsonObject firstHop = binding();
+        firstHop.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_CANDIDATE);
+        firstHop.remove(RecordedReadFrom.EDGE_UNKNOWN_ARM);
+        firstHop.remove("locationKey");
         RelationSummary producer = withRecordedMapState(
-                producerSummary(firstHop), envelope);
+                producerSummary(firstHop), recordedEnvelope);
+        targetPredicate.getAsJsonObject().getAsJsonObject("_left")
+                .addProperty("recordedEventScope",
+                        RecordedSessionModel.caseOwner("REGION.1",
+                                PRODUCER_OCCURRENCE, "CASE.MAP", 0));
         Files.createDirectories(directory);
         Path fatal = directory.resolve("fatal.jsonl");
         Path summaries = directory.resolve("summaries.jsonl");
         Path plan = directory.resolve("runtime_plan.jsonl");
         Path output = directory.resolve("candidate.smt2");
         Path manifest = directory.resolve("composed_smt_manifest.json");
-        write(fatal, fatalQuery(targetPredicate, firstHop) + "\n");
+        JsonObject query = fatalQuery(targetPredicate, firstHop);
+        write(fatal, query + "\n");
         write(summaries, producer.toJson() + "\n");
         write(plan, RuntimePlanArtifact.encode(
                 Collections.<JsonObject>emptyList(),
@@ -468,8 +486,10 @@ final class RecordedMapStateFixtures {
     private static RelationSummary withRecordedMapState(
             RelationSummary summary, JsonObject envelope) {
         JsonObject row = summary.toJson();
-        row.add(SharedStateEvidence.RECORDED_FIELD,
-                recordedMapMember(envelope));
+        row.getAsJsonObject("regionRelation").getAsJsonArray("cases")
+                .get(0).getAsJsonObject().add(
+                        SharedStateEvidence.RECORDED_FIELD,
+                        recordedMapMember(envelope));
         return RelationSummary.decode(row);
     }
 
@@ -507,8 +527,11 @@ final class RecordedMapStateFixtures {
                 "REGION.1.out.0", "<Test: int output>", "REGION_OUTPUT",
                 "int", outputSlice());
         JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", RelationSummary.SCHEMA_VERSION);
+        row.addProperty("kind", RelationSummary.KIND);
         row.addProperty("summaryId", "SUMMARY.MAP");
         row.addProperty("sourceKey", SOURCE_KEY);
+        row.addProperty("regionId", "REGION.1");
         row.addProperty("occurrenceId", PRODUCER_OCCURRENCE);
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(row);
         OutputClosureCodec.writeTo(row, closure);
@@ -517,6 +540,7 @@ final class RecordedMapStateFixtures {
         row.add("edgeBindings", bindings);
         JsonObject path = new JsonObject();
         path.addProperty("caseId", "CASE.MAP");
+        path.addProperty("occurrenceId", PRODUCER_OCCURRENCE);
         path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
                 new JsonArray());
         path.addProperty("sourceTaskId", "TASK.MAP");
@@ -630,6 +654,8 @@ final class RecordedMapStateFixtures {
     private static JsonObject region(String id, boolean hasInput,
                                      boolean hasOutput) {
         JsonObject region = new JsonObject();
+        region.addProperty("schemaVersion", 3);
+        region.addProperty("kind", "SYMBOLIC_REGION");
         region.addProperty("regionId", id);
         JsonArray inputs = new JsonArray();
         if (hasInput) inputs.add(port(id + ".in.0", "input"));
@@ -643,6 +669,8 @@ final class RecordedMapStateFixtures {
     private static JsonObject mapRegion(String id, boolean hasInput,
                                         boolean hasOutput) {
         JsonObject region = new JsonObject();
+        region.addProperty("schemaVersion", 3);
+        region.addProperty("kind", "SYMBOLIC_REGION");
         region.addProperty("regionId", id);
         JsonArray inputs = new JsonArray();
         if (hasInput) inputs.add(mapPort(id + ".in.0", "input"));

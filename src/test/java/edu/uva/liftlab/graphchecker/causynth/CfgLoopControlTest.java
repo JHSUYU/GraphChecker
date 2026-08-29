@@ -180,6 +180,38 @@ public class CfgLoopControlTest {
         body.validate();
     }
 
+    /** A multi-guard loop is instrumented with its composite declared K_L. */
+    @Test
+    public void multiGuardLoopUsesCompositeDeclaredBoundInsteadOfDefault() {
+        SootMethod method = conditionLoopWithTwoGuards();
+        Body body = method.getActiveBody();
+        String site = LoopBoundPolicy.loopSiteId(Arrays.asList(
+                method.getSignature() + "#u2",
+                method.getSignature() + "#u3"));
+
+        assertEquals(1, new CausynthPipeline(null)
+                .instrumentConcolicLoopBounds(
+                        Collections.singleton(method.getSignature()),
+                        LoopBoundPolicy.cfgBackedges(8,
+                                Collections.singletonMap(site, 5)),
+                        Collections.<String>emptySet()));
+
+        int hooks = 0;
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof Stmt)
+                    || !((Stmt) unit).containsInvokeExpr()
+                    || !"checkLoopBackedge".equals(((Stmt) unit)
+                    .getInvokeExpr().getMethodRef().name())) {
+                continue;
+            }
+            hooks++;
+            assertEquals(5, ((IntConstant) ((Stmt) unit).getInvokeExpr()
+                    .getArg(1)).value);
+        }
+        assertEquals(1, hooks);
+        body.validate();
+    }
+
     // ------------------------------------------------------------------
     // Fixture
     // ------------------------------------------------------------------
@@ -224,6 +256,32 @@ public class CfgLoopControlTest {
                 ? Jimple.v().newIfStmt(
                         Jimple.v().newEqExpr(i, IntConstant.v(1)), exit)
                 : Jimple.v().newNopStmt());
+        body.getUnits().add(Jimple.v().newAssignStmt(i,
+                Jimple.v().newAddExpr(i, IntConstant.v(1))));
+        body.getUnits().add(Jimple.v().newGotoStmt(header));
+        body.getUnits().add(exit);
+        return method;
+    }
+
+    /** One condition-controlled natural loop with two retained exit guards. */
+    private static SootMethod conditionLoopWithTwoGuards() {
+        SootClass owner = concolicScene("example.MultiGuardLoop");
+        SootMethod method = new SootMethod("run", Collections.emptyList(),
+                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(method);
+        Body body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local i = Jimple.v().newLocal("i", IntType.v());
+        body.getLocals().add(i);
+
+        Unit header = Jimple.v().newNopStmt();
+        Unit exit = Jimple.v().newReturnVoidStmt();
+        body.getUnits().add(Jimple.v().newAssignStmt(i, IntConstant.v(0)));
+        body.getUnits().add(header);
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newGeExpr(i, IntConstant.v(5)), exit));
+        body.getUnits().add(Jimple.v().newIfStmt(
+                Jimple.v().newEqExpr(i, IntConstant.v(3)), exit));
         body.getUnits().add(Jimple.v().newAssignStmt(i,
                 Jimple.v().newAddExpr(i, IntConstant.v(1))));
         body.getUnits().add(Jimple.v().newGotoStmt(header));

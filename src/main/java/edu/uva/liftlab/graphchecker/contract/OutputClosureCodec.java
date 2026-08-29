@@ -174,6 +174,80 @@ public final class OutputClosureCodec {
         return new OutputClosureContract(contract.producer(), selected);
     }
 
+    /**
+     * Projects folded heap writers to the exact version selected by their
+     * outgoing runtime edge.  A producer with no selected outgoing edge for a
+     * member keeps the union catalog.  One selected writer narrows to its
+     * exact slice; several selected writers keep the bounded union because
+     * they are distinct versions produced by the same coarse occurrence and
+     * are captured together by its one replay task.
+     */
+    public static OutputClosureContract projectSelectedVersions(
+            OutputClosureContract contract,
+            Map<String, Set<String>> selectedOutgoingEdges) {
+        if (contract == null || selectedOutgoingEdges == null) {
+            throw new IllegalArgumentException(
+                    "version projection requires a closure and edge map");
+        }
+        JsonObject encoded = contract.toJson();
+        for (JsonElement element : encoded.getAsJsonArray("members")) {
+            JsonObject member = element.getAsJsonObject();
+            JsonObject output = member.getAsJsonObject("output");
+            String port = requiredText(output, "portId");
+            Set<String> selectedEdges = selectedOutgoingEdges.getOrDefault(
+                    port, Collections.<String>emptySet());
+            JsonObject slice = member.getAsJsonObject("slice");
+            JsonArray versions = optionalArray(slice,
+                    "boundedVersionScopes");
+            if (versions.size() == 0 || selectedEdges.isEmpty()) continue;
+
+            JsonObject selected = null;
+            int selectedVersions = 0;
+            Set<String> coveredEdges = new LinkedHashSet<>();
+            for (JsonElement versionElement : versions) {
+                if (!versionElement.isJsonObject()) continue;
+                JsonObject version = versionElement.getAsJsonObject();
+                Set<String> versionEdges = stringSet(version,
+                        "causalEdgeIds");
+                if (Collections.disjoint(versionEdges, selectedEdges)) {
+                    continue;
+                }
+                selectedVersions++;
+                selected = version;
+                for (String edge : selectedEdges) {
+                    if (versionEdges.contains(edge)) coveredEdges.add(edge);
+                }
+            }
+            if (selected == null || !coveredEdges.equals(selectedEdges)) {
+                throw new IllegalArgumentException("selected output edges have "
+                        + "no bounded writer version: " + port + " -> "
+                        + selectedEdges);
+            }
+            if (selectedVersions > 1) {
+                // The folded member already is the one bounded capture
+                // contract for all versions of this static output site.  Its
+                // exact outgoing edge ledger still decides which captured
+                // version reaches each downstream read.
+                continue;
+            }
+            int occurrence = exactInteger(selected,
+                    "outputOccurrence", -1);
+            JsonObject exactSlice = selected.deepCopy();
+            exactSlice.remove("outputOccurrence");
+            exactSlice.remove("boundedVersionScopes");
+            member.add("slice", exactSlice);
+            if (occurrence > 0) {
+                output.addProperty("outputOccurrence", occurrence);
+                for (JsonElement captureElement
+                        : requiredArray(exactSlice, "captureBindings")) {
+                    JsonObject capture = captureElement.getAsJsonObject();
+                    capture.addProperty("outputOccurrence", occurrence);
+                }
+            }
+        }
+        return decodeEnvelope(encoded);
+    }
+
     private static OutputClosureContract.Member mergeMember(
             OutputClosureContract.Member left,
             OutputClosureContract.Member right) {
@@ -186,7 +260,7 @@ public final class OutputClosureCodec {
         JsonObject firstOutput = first.getAsJsonObject("output");
         JsonObject secondOutput = second.getAsJsonObject("output");
         for (String field : Arrays.asList("outputSiteId",
-                "outputOccurrence", "replayOccurrence")) {
+                "outputOccurrence")) {
             mergeReplayScalar(firstOutput, secondOutput, field, changed);
         }
         if (!firstOutput.equals(secondOutput)) {
@@ -402,8 +476,6 @@ public final class OutputClosureCodec {
                     requiredText(capture, "outputSiteId"));
             output.addProperty("outputOccurrence", requireIntAtLeast(
                     capture, "outputOccurrence", 1));
-            output.addProperty("replayOccurrence", replayOccurrence(capture,
-                    requireIntAtLeast(capture, "outputOccurrence", 1)));
         }
         JsonObject member = new JsonObject();
         member.add("output", output);
@@ -476,18 +548,11 @@ public final class OutputClosureCodec {
         String siteId = requiredText(output, "outputSiteId");
         int occurrence = requireIntAtLeast(output,
                 "outputOccurrence", 1);
-        // replayOccurrence is outputOccurrence under a second name: the
-        // ordinal is recorded provenance, not a replay demand.
-        if (replayOccurrence(output, occurrence) != occurrence) {
-            throw new IllegalArgumentException(path
-                    + " output occurrence is outside the bounded replay");
-        }
         for (JsonElement element : bindings) {
             JsonObject capture = element.getAsJsonObject();
             if (!siteId.equals(requiredText(capture, "outputSiteId"))
                     || occurrence != requireIntAtLeast(capture,
-                    "outputOccurrence", 1)
-                    || occurrence != replayOccurrence(capture, occurrence)) {
+                    "outputOccurrence", 1)) {
                 throw new IllegalArgumentException(path
                         + " capture output occurrence identity mismatch");
             }
@@ -496,8 +561,7 @@ public final class OutputClosureCodec {
 
     private static boolean hasOutputOccurrenceIdentity(JsonObject value) {
         return value.has("outputSiteId")
-                || value.has("outputOccurrence")
-                || value.has("replayOccurrence");
+                || value.has("outputOccurrence");
     }
 
     private static void validateSliceShape(
@@ -691,11 +755,6 @@ public final class OutputClosureCodec {
             }
         }
         return new ArrayList<>(declared);
-    }
-
-    private static int replayOccurrence(JsonObject value, int fallback) {
-        return value.has("replayOccurrence")
-                ? requireIntAtLeast(value, "replayOccurrence", 1) : fallback;
     }
 
     private static void requireFieldDescriptor(String value, String path) {

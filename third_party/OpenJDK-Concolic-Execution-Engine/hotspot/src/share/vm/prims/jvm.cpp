@@ -350,6 +350,15 @@ JVM_ENTRY(jlong, JVM_StartConcolicRegion(JNIEnv *env, jclass ignored,
 #endif
 JVM_END
 
+JVM_ENTRY(jlong, JVM_GetCurrentConcolicContextId(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_GetCurrentConcolicContextId");
+#ifdef ENABLE_CONCOLIC
+  return ConcolicMngr::currentContextId();
+#else
+  return 0;
+#endif
+JVM_END
+
 JVM_ENTRY(jlong, JVM_EndConcolic(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_EndConcolic");
 #ifdef ENABLE_CONCOLIC

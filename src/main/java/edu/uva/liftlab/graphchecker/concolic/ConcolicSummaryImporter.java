@@ -80,6 +80,10 @@ public final class ConcolicSummaryImporter {
     /** A result that published no {@code freeSymbols} array at all. */
     private static final String FREE_SYMBOL_LEDGER_MISSING =
             "FREE_SYMBOL_LEDGER_MISSING";
+    private static final String RESULT_SCHEMA_UNSUPPORTED =
+            "CONCOLIC_RESULT_SCHEMA_UNSUPPORTED";
+    private static final String RESULT_ACTIVATION_TUPLE_MALFORMED =
+            "CONCOLIC_RESULT_ACTIVATION_TUPLE_MALFORMED";
 
     private ConcolicSummaryImporter() {
     }
@@ -144,31 +148,30 @@ public final class ConcolicSummaryImporter {
         final SortedSet<String> observedCaptureBindings;
         /** The named shape refusal, or "" when the row decoded. */
         final String refusal;
-        /** OCC-1: this activation's ordinal, or 0 on a pre-OCC-1 row. */
+        /** OCC-1: this result activation's required positive ordinal. */
         final int activationOrdinal;
         /** OCC-1: the planned address every activation of the task shares. */
         final String plannedOccurrenceId;
         /** OCC-1: this activation's own occurrence identity. */
         final String rowOccurrenceId;
         /** OCC-1: whether the runtime saw this activation satisfy the
-         *  demanded output boundary; null on a pre-OCC-1 row. */
+         *  demanded output boundary; required on a result row. */
         final Boolean activationComplete;
         /** OCC-1: whether this activation exited through the target throw;
-         *  null on a pre-OCC-1 row or a non-target goal. */
+         *  null on a non-target goal. */
         final Boolean targetReachedFlag;
 
         ResultRow(JsonObject raw, int line) {
             this.line = line;
             this.taskId = string(raw, "taskId");
             this.event = string(raw, "event");
-            this.activationOrdinal = integer(raw,
-                    PathObservation.ACTIVATION_ORDINAL, 0);
-            this.plannedOccurrenceId = string(raw,
+            this.activationOrdinal = exactInteger(raw,
+                    PathObservation.ACTIVATION_ORDINAL, -1);
+            this.plannedOccurrenceId = exactText(raw,
                     PathObservation.PLANNED_OCCURRENCE_ID);
-            this.rowOccurrenceId = string(raw, "occurrenceId");
-            this.activationComplete = raw.has("relationallyComplete")
-                    ? Boolean.valueOf(bool(raw, "relationallyComplete", false))
-                    : null;
+            this.rowOccurrenceId = exactText(raw, "occurrenceId");
+            this.activationComplete = exactBoolean(raw,
+                    "relationallyComplete");
             this.targetReachedFlag =
                     raw.has(PathObservation.TARGET_REACHED)
                     ? Boolean.valueOf(bool(raw,
@@ -232,7 +235,9 @@ public final class ConcolicSummaryImporter {
                 bindings.add(id);
             }
             this.observedCaptureBindings = bindings;
-            String refused = "";
+            String refused = resultShapeRefusal(raw, event,
+                    activationOrdinal, plannedOccurrenceId, rowOccurrenceId,
+                    activationComplete);
             List<JsonObject> mints = new ArrayList<>();
             for (JsonElement element : array(raw, "symbolizedInputs")) {
                 JsonObject mint = element.isJsonObject()
@@ -242,7 +247,9 @@ public final class ConcolicSummaryImporter {
                 if (reused == null || !reused
                         && string(mint, SymbolicSourceEvidence.SYMBOL)
                         .isEmpty()) {
-                    refused = SYMBOLIZED_INPUT_ROW_MALFORMED;
+                    if (refused.isEmpty()) {
+                        refused = SYMBOLIZED_INPUT_ROW_MALFORMED;
+                    }
                     break;
                 }
                 mints.add(mint);
@@ -494,8 +501,8 @@ public final class ConcolicSummaryImporter {
                 if (!"CONCOLIC_REGION_RESULT".equals(string(raw, "event"))) {
                     continue;
                 }
-                int ordinal = integer(raw,
-                        PathObservation.ACTIVATION_ORDINAL, 0);
+                int ordinal = exactInteger(raw,
+                        PathObservation.ACTIVATION_ORDINAL, -1);
                 if (ordinal < 1) continue;
                 String taskId = string(raw, "taskId");
                 if (!census.ordinalsByTask.computeIfAbsent(taskId,
@@ -637,9 +644,7 @@ public final class ConcolicSummaryImporter {
         if (targetReach == null) return null;
         String branchReplayMismatch = relationOnlySeed ? ""
                 : branchReplayMismatch(row, task, mappings);
-        if (!branchReplayMismatch.isEmpty()
-                && (task.replayContract() != null
-                || !reachedRequiredTargetOutcome(task, targetReach))) {
+        if (!branchReplayMismatch.isEmpty()) {
             return refuse(row, "BRANCH_REPLAY_MISMATCH",
                     branchReplayMismatch, diagnostics, observation);
         }
@@ -678,25 +683,16 @@ public final class ConcolicSummaryImporter {
         summary.addProperty("taskId", task.taskId());
         summary.addProperty("sourceKey", task.sourceKey());
         summary.addProperty("regionId", task.regionId());
-        // OCC-1: a row that names its own activation is one occurrence of
-        // the planned address, not the address itself.  A row that names none
-        // is a pre-OCC-1 row and keeps the planned address verbatim, which is
-        // what makes an already-recorded campaign recompose unchanged.
-        summary.addProperty("occurrenceId", row.activationOrdinal >= 1
-                ? firstNonBlank(row.rowOccurrenceId,
-                        task.occurrenceId() + "#a" + row.activationOrdinal)
-                : task.occurrenceId());
-        if (row.activationOrdinal >= 1) {
-            summary.addProperty(PathObservation.ACTIVATION_ORDINAL,
-                    row.activationOrdinal);
-            summary.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
-                    firstNonBlank(row.plannedOccurrenceId,
-                            task.occurrenceId()));
-            if (task.goalKind().capturesTargetReach()) {
-                summary.addProperty(PathObservation.TARGET_REACHED,
-                        row.targetReachedFlag != null
-                                && row.targetReachedFlag);
-            }
+        // Current result rows always carry the exact activation tuple. The
+        // importer copies it; it does not reconstruct old coarse occurrences.
+        summary.addProperty("occurrenceId", row.rowOccurrenceId);
+        summary.addProperty(PathObservation.ACTIVATION_ORDINAL,
+                row.activationOrdinal);
+        summary.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
+                row.plannedOccurrenceId);
+        if (task.goalKind().capturesTargetReach()) {
+            summary.addProperty(PathObservation.TARGET_REACHED,
+                    row.targetReachedFlag != null && row.targetReachedFlag);
         }
         summary.addProperty("relationKey", task.relationKey());
         task.loopBound().writeTo(summary);
@@ -760,8 +756,7 @@ public final class ConcolicSummaryImporter {
         // the runtime's "no" is folded in as one more named issue: an
         // activation the recorder called incomplete never becomes a complete
         // case just because the importer found nothing else wrong with it.
-        if (row.activationOrdinal >= 1
-                && Boolean.FALSE.equals(row.activationComplete)
+        if (Boolean.FALSE.equals(row.activationComplete)
                 && issues.isEmpty()) {
             issues.add("ACTIVATION_BOUNDARY_INCOMPLETE:a"
                     + row.activationOrdinal);
@@ -1178,11 +1173,15 @@ public final class ConcolicSummaryImporter {
             String phaseId = string(event, "sourcePhaseId");
             String id = string(event, "sourceId");
             String field = string(event, "fieldSignature");
+            String sourceOccurrence = string(event,
+                    "sourceOccurrenceId");
+            String expectedOccurrence = row.rowOccurrenceId;
+            boolean exactRowOccurrence = sourceOccurrence.equals(
+                    expectedOccurrence);
             ConfiguredSourcePhaseContract.Occurrence phase =
                     mintSites.get(phaseId);
             if (phase == null
-                    || !task.occurrenceId().equals(string(event,
-                    "sourceOccurrenceId"))
+                    || !exactRowOccurrence
                     || !id.equals(phase.sourceId())
                     || !field.equals(phase.fieldSignature())
                     || !observed.add(phaseId)) {
@@ -1230,11 +1229,12 @@ public final class ConcolicSummaryImporter {
     private static String branchReplayMismatch(
             ResultRow row, ExecutionTask task, JsonArray mappings) {
         JsonElement encodedReplay = task.replayContract();
-        BranchEventCatalog seed = taskSeedEvents(task.branches());
+        BranchEventCatalog seed = taskSeedEvents(task);
         if (!seed.issue.isEmpty()) {
             return seed.issue;
         }
-        BranchEventCatalog observed = observedBranchEvents(mappings);
+        BranchEventCatalog observed = observedBranchEvents(mappings,
+                encodedReplay == null ? task : null);
         if (!observed.issue.isEmpty()) {
             return observed.issue;
         }
@@ -1257,10 +1257,14 @@ public final class ConcolicSummaryImporter {
         return replayPrefixMismatch(task.goalId(), observed.events, replay);
     }
 
-    private static BranchEventCatalog taskSeedEvents(JsonArray branches) {
+    private static BranchEventCatalog taskSeedEvents(ExecutionTask task) {
         BranchEventCatalog result = new BranchEventCatalog();
+        JsonObject selectedTarget = object(task.json(), "targetBranch");
+        String targetSite = string(selectedTarget, "siteId");
+        int targetOccurrence = JsonFields.exactInteger(selectedTarget,
+                "occurrence", -1);
         int branchIndex = 0;
-        for (JsonElement element : branches) {
+        for (JsonElement element : task.branches()) {
             if (!element.isJsonObject()) {
                 result.issue = "task branch " + branchIndex
                         + " is not an object";
@@ -1291,6 +1295,13 @@ public final class ConcolicSummaryImporter {
                             + site;
                     return result;
                 }
+                // The exact selected goal event is flipped by this task and
+                // therefore is not a seed-prefix event.  Earlier occurrences
+                // at the same loop site remain in the prefix.
+                if (site.equals(targetSite)
+                        && ordinal == targetOccurrence) {
+                    continue;
+                }
                 BranchEvent event = new BranchEvent(site, ordinal, outcome);
                 if (result.byIdentity.put(event.identity, event) != null) {
                     result.issue = "duplicate task branch event "
@@ -1305,8 +1316,13 @@ public final class ConcolicSummaryImporter {
     }
 
     private static BranchEventCatalog observedBranchEvents(
-            JsonArray mappings) {
+            JsonArray mappings, ExecutionTask seedTask) {
         BranchEventCatalog result = new BranchEventCatalog();
+        JsonObject selectedTarget = seedTask == null ? new JsonObject()
+                : object(seedTask.json(), "targetBranch");
+        String targetSite = string(selectedTarget, "siteId");
+        int targetOccurrence = JsonFields.exactInteger(selectedTarget,
+                "occurrence", -1);
         int mappingIndex = 0;
         for (JsonElement element : mappings) {
             if (!element.isJsonObject()) {
@@ -1322,6 +1338,11 @@ public final class ConcolicSummaryImporter {
                 result.issue = "runtime branch mapping " + mappingIndex
                         + " is malformed: " + malformed.getMessage();
                 return result;
+            }
+            if (mapping.siteId().equals(targetSite)
+                    && mapping.occurrence() == targetOccurrence) {
+                mappingIndex++;
+                continue;
             }
             if (mapping.isWitnessed()
                     && mapping.witness().isPcPredicateDecision()) {
@@ -1468,6 +1489,29 @@ public final class ConcolicSummaryImporter {
                 ? value.getAsBoolean() : null;
     }
 
+    private static String exactText(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isString()
+                ? value.getAsString().trim() : "";
+    }
+
+    private static String resultShapeRefusal(
+            JsonObject raw, String event, int activationOrdinal,
+            String plannedOccurrenceId, String occurrenceId,
+            Boolean relationallyComplete) {
+        if (!"CONCOLIC_REGION_RESULT".equals(event)) return "";
+        if (exactInteger(raw, "schemaVersion", -1) != 1) {
+            return RESULT_SCHEMA_UNSUPPORTED;
+        }
+        if (activationOrdinal < 1 || plannedOccurrenceId.isEmpty()
+                || !occurrenceId.equals(plannedOccurrenceId + "#a"
+                + activationOrdinal) || relationallyComplete == null) {
+            return RESULT_ACTIVATION_TUPLE_MALFORMED;
+        }
+        return "";
+    }
+
     /** Admits the runtime's exact target event against both authorities fixed
      * before composition: the task-selected branch identity and the witnessed
      * branch mapping imported from this execution. */
@@ -1533,45 +1577,6 @@ public final class ConcolicSummaryImporter {
                     diagnostics, observation);
         }
         return event.toJson();
-    }
-
-    /** An exact runtime witness of the planner-required target outcome is
-     * stronger than the seed path contract. */
-    private static boolean reachedRequiredTargetOutcome(
-            ExecutionTask task, JsonObject targetReach) {
-        if (!task.goalKind().capturesTargetReach()
-                || targetReach == null || targetReach.size() == 0) {
-            return false;
-        }
-        JsonObject selected = object(task.json(), "targetBranch");
-        String targetSite = string(selected, "siteId");
-        int targetOccurrence = JsonFields.exactInteger(selected,
-                "occurrence", -1);
-        if (targetSite.isEmpty() || targetOccurrence < 1
-                || !targetSite.equals(string(targetReach, "siteId"))
-                || targetOccurrence != JsonFields.exactInteger(
-                targetReach, "occurrence", -1)) {
-            return false;
-        }
-
-        Boolean required = null;
-        for (JsonElement element : task.branches()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject branch = element.getAsJsonObject();
-            if (!targetSite.equals(string(branch, "siteId"))
-                    || targetOccurrence != JsonFields.exactInteger(
-                    branch, "selectedOccurrence", -1)) {
-                continue;
-            }
-            Boolean candidate = exactBoolean(branch, "requiredOutcome");
-            if (candidate == null
-                    || required != null && required != candidate) {
-                return false;
-            }
-            required = candidate;
-        }
-        Boolean witnessed = exactBoolean(targetReach, "outcome");
-        return required != null && required.equals(witnessed);
     }
 
     private static String replayDetail(String replayId, String issue) {

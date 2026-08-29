@@ -274,7 +274,9 @@ public class TargetReachCutPortTest {
         VmHandoffEvidence.writeTo(witnessed,
                 java.util.Collections.singletonList(VmHandoffEvidence.event(
                         CUT_PORT, 41L, 42L, attached, "TASK.PRODUCER",
-                        "slice/producer#epoch0/region/R#1")));
+                        PRODUCER_OCCURRENCE)));
+        witnessed.getAsJsonArray("edgeBindings").add(
+                absorbed(exchangeBinding(), "TASK.PRODUCER"));
 
         JsonObject query = build(CUT_PORT, witnessed);
 
@@ -290,6 +292,11 @@ public class TargetReachCutPortTest {
         assertEquals(42L, path.getAsJsonArray(VmHandoffEvidence.FIELD)
                 .get(0).getAsJsonObject()
                 .get(VmHandoffEvidence.ATTACH_EVENT_ID).getAsLong());
+        assertEquals(ABSORBED_EDGE,
+                path.getAsJsonArray(VmHandoffEvidence.FIELD)
+                        .get(0).getAsJsonObject()
+                        .get(VmHandoffEvidence.SELECTED_ENDPOINT_EDGE_ID)
+                        .getAsString());
     }
 
     @Test
@@ -307,12 +314,16 @@ public class TargetReachCutPortTest {
         secondExpression.addProperty("_exp", "M_I_field_REMOTE_B");
         VmHandoffEvidence.writeTo(first, Collections.singletonList(
                 VmHandoffEvidence.event(CUT_PORT, 41L, 42L,
-                        firstExpression, "TASK.PRODUCER.A",
-                        "slice/dnA#epoch0/region/R#1")));
+                        firstExpression, "TASK.PRODUCER",
+                        PRODUCER_OCCURRENCE)));
         VmHandoffEvidence.writeTo(second, Collections.singletonList(
                 VmHandoffEvidence.event(CUT_PORT, 51L, 52L,
-                        secondExpression, "TASK.PRODUCER.B",
-                        "slice/dnB#epoch0/region/R#1")));
+                        secondExpression, "TASK.PRODUCER",
+                        PRODUCER_OCCURRENCE)));
+        first.getAsJsonArray("edgeBindings").add(
+                absorbed(exchangeBinding(), "TASK.PRODUCER"));
+        second.getAsJsonArray("edgeBindings").add(
+                absorbed(exchangeBinding(), "TASK.PRODUCER"));
 
         JsonObject query = build(CUT_PORT, Arrays.asList(first, second));
 
@@ -328,7 +339,45 @@ public class TargetReachCutPortTest {
                     .get(VmHandoffEvidence.PRODUCER_TASK_ID).getAsString());
         }
         assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
-                "TASK.PRODUCER.A", "TASK.PRODUCER.B")), producers);
+                "TASK.PRODUCER")), producers);
+    }
+
+    @Test
+    public void aHandoffCannotInheritAnotherProducersSelectedEdge()
+            throws Exception {
+        JsonObject matched = summary();
+        JsonObject attached = new JsonObject();
+        attached.addProperty("_type", "SymbolExpression");
+        attached.addProperty("_java_type", "I");
+        attached.addProperty("_exp", "M_I_field_REMOTE.VALUE_Test");
+        VmHandoffEvidence.writeTo(matched,
+                Collections.singletonList(VmHandoffEvidence.event(
+                        CUT_PORT, 31L, 32L, attached, "TASK.PRODUCER",
+                        PRODUCER_OCCURRENCE)));
+        matched.getAsJsonArray("edgeBindings").add(
+                absorbed(exchangeBinding(), "TASK.PRODUCER"));
+
+        JsonObject witnessed = summary();
+        VmHandoffEvidence.writeTo(witnessed,
+                Collections.singletonList(VmHandoffEvidence.event(
+                        CUT_PORT, 41L, 42L, attached, "TASK.OTHER",
+                        "slice/other#epoch0/region/R#1")));
+        witnessed.getAsJsonArray("edgeBindings").add(
+                absorbed(exchangeBinding(), "TASK.PRODUCER"));
+
+        JsonObject query = build(CUT_PORT,
+                Arrays.asList(matched, witnessed));
+
+        assertEquals(query.toString(), 1,
+                query.getAsJsonArray("paths").size());
+        assertEquals("TASK.PRODUCER", query.getAsJsonArray("paths")
+                .get(0).getAsJsonObject()
+                .getAsJsonArray(VmHandoffEvidence.FIELD)
+                .get(0).getAsJsonObject()
+                .get(VmHandoffEvidence.PRODUCER_TASK_ID).getAsString());
+        assertTrue(query.toString(), query.getAsJsonArray("coverageGaps")
+                .toString().contains(
+                        "TARGET_PATH_HANDOFF_ENDPOINT_NOT_SELECTED"));
     }
 
     @Test
@@ -574,10 +623,15 @@ public class TargetReachCutPortTest {
 
     /** The four fields that re-derive one row from the carry file. */
     private static JsonObject absorbed(JsonObject binding) {
+        return absorbed(binding, "TASK.SEED.PRODUCER");
+    }
+
+    private static JsonObject absorbed(JsonObject binding,
+                                       String producerTaskId) {
         binding.addProperty(VmHandoffEvidence.ABSORBED_AUTHORITY_FIELD,
                 VmHandoffEvidence.ABSORBED_AUTHORITY);
         binding.addProperty(VmHandoffEvidence.ABSORBED_FROM_TASK_ID,
-                "TASK.SEED.PRODUCER");
+                producerTaskId);
         binding.addProperty(VmHandoffEvidence.ABSORBED_EXPORT_EVENT_ID, 217L);
         binding.addProperty(VmHandoffEvidence.ABSORBED_ATTACH_EVENT_ID, 220L);
         return binding;
@@ -609,6 +663,7 @@ public class TargetReachCutPortTest {
     private static JsonObject activation(int ordinal, String location) {
         JsonObject row = summary();
         row.addProperty("occurrenceId", OCCURRENCE + "#a" + ordinal);
+        row.addProperty(PathObservation.ACTIVATION_ORDINAL, ordinal);
         JsonObject binding = new JsonObject();
         binding.addProperty("edgeId", SHARED_EDGE);
         binding.addProperty("kind", "RUNTIME_FIELD_FLOW");
@@ -775,7 +830,9 @@ public class TargetReachCutPortTest {
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
         row.addProperty("regionId", REGION);
-        row.addProperty("occurrenceId", OCCURRENCE);
+        row.addProperty(PathObservation.PLANNED_OCCURRENCE_ID, OCCURRENCE);
+        row.addProperty(PathObservation.ACTIVATION_ORDINAL, 1);
+        row.addProperty("occurrenceId", OCCURRENCE + "#a1");
         row.addProperty("goalId", GOAL);
         row.addProperty(ClosureGoalKind.TASK_FIELD,
                 ClosureGoalKind.TARGET_REACH_CLOSURE.name());

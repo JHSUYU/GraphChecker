@@ -139,6 +139,9 @@ JVM_StartConcolicRegion(JNIEnv *env, jclass ignored, jstring region_id,
                         jstring task_id);
 
 JNIEXPORT jlong JNICALL
+JVM_GetCurrentConcolicContextId(JNIEnv *env, jclass ignored);
+
+JNIEXPORT jlong JNICALL
 JVM_EndConcolic(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jlong JNICALL

@@ -22,6 +22,7 @@ import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -41,6 +42,8 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
             "test/server-b#epoch0/region/SERVER_B#3";
     private static final String CONSUMER_ROOT =
             "<example.Client: void call()>";
+    private static final String DECLARED_CALLEE =
+            "<example.Protocol: example.Response serve()>";
     private static final String PRODUCER_ROOT =
             "<example.Server: example.Response serve()>";
     private static final String PRODUCER_ROOT_B =
@@ -50,6 +53,7 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
     private static final String EFFECT_BINDING =
             "CAPTURE.response-producer.effect";
     private static final String EFFECT_PORT = "SERVER.out.keyId";
+    private static final String TRANSPORT = "TEST_RPC";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -63,12 +67,14 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         previousPlan = System.getProperty("causynth.concolic.task.plan");
         previousTasks = System.getProperty("causynth.concolic.task.id");
         previousResults = System.getProperty("causynth.concolic.results");
+        RuntimeTraceContext.resetForTests();
         ConcolicRegionRuntime.resetForTests();
     }
 
     @After
     public void restoreProperties() {
         ConcolicRegionRuntime.resetForTests();
+        RuntimeTraceContext.resetForTests();
         restore("causynth.concolic.task.plan", previousPlan);
         restore("causynth.concolic.task.id", previousTasks);
         restore("causynth.concolic.results", previousResults);
@@ -86,13 +92,15 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 new Object[0]));
 
         activate(CONSUMER_TASK, 41L);
+        long cutCall = beginResponseCutCall();
         ConcolicRegionRuntime.prepareResponseHandoff(PORT);
-        ConcolicRegionRuntime.observeExchangeLeg("SEND", "TEST_RPC",
+        ConcolicRegionRuntime.observeExchangeLeg("SEND", TRANSPORT,
                 "exchange-selected", "REQUEST");
+        endResponseCutCall(cutCall);
         clearCurrentToken();
 
         // A different delivery cannot consume the arm.
-        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", "TEST_RPC",
+        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", TRANSPORT,
                 "exchange-other", "REQUEST");
         assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
                 PRODUCER_TASK, PRODUCER_ROOT, server("test/server"),
@@ -100,12 +108,98 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
 
         // The exact request delivery claims it, after which this producer task
         // (and no value tuple) is authorized.
-        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", "TEST_RPC",
+        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", TRANSPORT,
                 "exchange-selected", "REQUEST");
         assertEquals(PRODUCER_TASK,
                 ConcolicRegionRuntime.admitCampaignTaskForTests(PRODUCER_TASK,
                         PRODUCER_ROOT, server("test/server"),
                         new Object[0]));
+    }
+
+    @Test
+    public void declaredCutTokenFollowsTheSpawnedSenderAcrossThreads()
+            throws Exception {
+        loadCampaign();
+        activate(CONSUMER_TASK, 50L);
+        long cutCall = beginResponseCutCall();
+        ConcolicRegionRuntime.prepareResponseHandoff(PORT);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread sender = requestSender("exchange-cross-thread", failure);
+        // The child already captured the exact cut token.  It needs neither
+        // the caller's CURRENT_TOKEN nor a broad request-scope match.
+        endResponseCutCall(cutCall);
+        sender.start();
+        sender.join();
+        assertEquals(null, failure.get());
+        clearCurrentToken();
+
+        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", TRANSPORT,
+                "exchange-cross-thread", "REQUEST");
+        assertEquals(PRODUCER_TASK,
+                ConcolicRegionRuntime.admitCampaignTaskForTests(
+                        PRODUCER_TASK, PRODUCER_ROOT,
+                        server("test/server"), new Object[0]));
+    }
+
+    @Test
+    public void missingCutSendLeavesStructuredArmEvidence()
+            throws Exception {
+        loadCampaign();
+        Object active = activate(CONSUMER_TASK, 51L);
+
+        long cutCall = beginResponseCutCall();
+        ConcolicRegionRuntime.prepareResponseHandoff(PORT);
+        endResponseCutCall(cutCall);
+        ConcolicRegionRuntime.observeExchangeLeg("SEND", "OTHER_RPC",
+                "exchange-unrelated", "REQUEST");
+        ConcolicRegionRuntime.attachCommunicationFieldPath(PORT,
+                new Response());
+
+        JsonObject gap = pendingHandoffGaps(active).get(PORT);
+        assertEquals("CUT_OWNED_REQUEST_EXCHANGE_V1",
+                gap.get("responseArmAuthority").getAsString());
+        assertEquals(TRANSPORT,
+                gap.get("expectedTransport").getAsString());
+        assertEquals(PORT, gap.get("portId").getAsString());
+        assertTrue(gap.get("detail").getAsString(),
+                gap.get("detail").getAsString().contains(
+                        "issued no matching REQUEST SEND"));
+    }
+
+    @Test
+    public void secondMatchingRequestSendLeavesStructuredRefusal()
+            throws Exception {
+        loadCampaign();
+        Object active = activate(CONSUMER_TASK, 52L);
+
+        long cutCall = beginResponseCutCall();
+        ConcolicRegionRuntime.prepareResponseHandoff(PORT);
+        ConcolicRegionRuntime.observeExchangeLeg("SEND", TRANSPORT,
+                "exchange-first", "REQUEST");
+        ConcolicRegionRuntime.observeExchangeLeg("SEND", TRANSPORT,
+                "exchange-second", "REQUEST");
+        endResponseCutCall(cutCall);
+        clearCurrentToken();
+
+        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", TRANSPORT,
+                "exchange-first", "REQUEST");
+        assertEquals(PRODUCER_TASK,
+                ConcolicRegionRuntime.admitCampaignTaskForTests(PRODUCER_TASK,
+                        PRODUCER_ROOT, server("test/server"),
+                        new Object[0]));
+
+        currentToken().set(52L);
+        ConcolicRegionRuntime.attachCommunicationFieldPath(PORT,
+                new Response());
+        JsonObject gap = pendingHandoffGaps(active).get(PORT);
+        assertEquals("CUT_OWNED_REQUEST_EXCHANGE_V1",
+                gap.get("responseArmAuthority").getAsString());
+        assertTrue(gap.get("detail").getAsString(),
+                gap.get("detail").getAsString().contains(
+                        "second matching REQUEST SEND"));
+        assertTrue(gap.get("detail").getAsString(),
+                gap.get("detail").getAsString().contains(
+                        "exchange-second"));
     }
 
     /**
@@ -154,11 +248,13 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         loadTwoProducerCampaign();
 
         activate(CONSUMER_TASK, 47L);
+        long cutCall = beginResponseCutCall();
         ConcolicRegionRuntime.prepareResponseHandoff(PORT_B);
-        ConcolicRegionRuntime.observeExchangeLeg("SEND", "TEST_RPC",
+        ConcolicRegionRuntime.observeExchangeLeg("SEND", TRANSPORT,
                 "exchange-b", "REQUEST");
+        endResponseCutCall(cutCall);
         clearCurrentToken();
-        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", "TEST_RPC",
+        ConcolicRegionRuntime.observeExchangeLeg("RECEIVE", TRANSPORT,
                 "exchange-b", "REQUEST");
 
         assertEquals("", ConcolicRegionRuntime.admitCampaignTaskForTests(
@@ -268,24 +364,44 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 JsonElement.class, String.class, String.class);
         accept.setAccessible(true);
         accept.invoke(null, active, communicationHandoff(active), 17L, 18L,
-                expression, PRODUCER_TASK, PRODUCER_OCCURRENCE);
+                expression, PRODUCER_TASK, PRODUCER_OCCURRENCE + "#a2");
 
         assertTrue(pathRecordingStarted(active));
         assertEquals(1, vmHandoffs(active).size());
+        assertEquals("", unconfirmedAttachEndpoint(active));
+    }
+
+    @Test
+    public void wrongPlannedProducerCannotAnswerSelectedAttach()
+            throws Exception {
+        loadCampaign();
+        Object active = activate(CONSUMER_TASK, 49L);
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "I");
+        expression.addProperty("_exp", "WRONG_RPC_VALUE");
+        Method accept = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "acceptVmHandoffExpression", active.getClass(),
+                CommunicationHandoffSpec.class, long.class, long.class,
+                JsonElement.class, String.class, String.class);
+        accept.setAccessible(true);
+        accept.invoke(null, active, communicationHandoff(active), 27L, 28L,
+                expression, "TASK.wrong-producer",
+                "test/server#epoch0/region/SERVER#6#a1");
+
+        assertFalse(pathRecordingStarted(active));
+        assertEquals(0, vmHandoffs(active).size());
+        String reason = unconfirmedAttachEndpoint(active);
+        assertTrue(reason, reason.contains(PRODUCER_OCCURRENCE));
+        assertTrue(reason, reason.contains("SERVER#6"));
     }
 
     private void loadCampaign() throws Exception {
         JsonObject consumer = task(CONSUMER_TASK, "CLIENT",
                 CONSUMER_OCCURRENCE, CONSUMER_ROOT, Object.class.getName(),
                 handoff(false));
-        JsonObject edge = new JsonObject();
-        edge.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
-        edge.addProperty("direction", "RESPONSE");
-        edge.addProperty("fromOccurrenceId", PRODUCER_OCCURRENCE);
-        edge.addProperty("fromOutputPort", PORT);
-        edge.addProperty("toInputPort", PORT);
         JsonArray edges = new JsonArray();
-        edges.add(edge);
+        edges.add(edge(PRODUCER_OCCURRENCE, PORT));
         consumer.add("edgeBindings", edges);
 
         JsonObject producer = task(PRODUCER_TASK, "SERVER",
@@ -440,7 +556,6 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         capture.addProperty("outputSiteId", "COMMUNICATION_EFFECT:"
                 + PRODUCER_ROOT);
         capture.addProperty("outputOccurrence", 1);
-        capture.addProperty("replayOccurrence", 1);
         capture.addProperty("occurrenceScope", "REGION_ACTIVATION");
 
         JsonObject output = new JsonObject();
@@ -535,6 +650,9 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         JsonObject edge = new JsonObject();
         edge.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
         edge.addProperty("direction", "RESPONSE");
+        edge.addProperty("protocolDirection", "RESPONSE");
+        edge.addProperty("transportKind", TRANSPORT);
+        edge.addProperty("callSiteId", CONSUMER_ROOT + "#u8");
         edge.addProperty("fromOccurrenceId", producerOccurrence);
         edge.addProperty("fromOutputPort", port);
         edge.addProperty("toOccurrenceId", CONSUMER_OCCURRENCE);
@@ -601,8 +719,7 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 exporting ? producerRoot : CONSUMER_ROOT);
         if (!exporting) {
             site.addProperty("definitionUnitIndex", 8);
-            site.addProperty("declaredCallee",
-                    "<example.Protocol: example.Response serve()>");
+            site.addProperty("declaredCallee", DECLARED_CALLEE);
         }
         JsonArray path = new JsonArray();
         path.add(fieldStep("<example.Response: example.Key currentKey>"));
@@ -616,6 +733,33 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
         step.addProperty("kind", "FIELD");
         step.addProperty("declaration", declaration);
         return step;
+    }
+
+    private static long beginResponseCutCall() {
+        long invocationId = CausynthTraceRecorder.beginCall(0L,
+                CONSUMER_ROOT, 8, DECLARED_CALLEE, null);
+        assertTrue(invocationId > 0L);
+        return invocationId;
+    }
+
+    private static void endResponseCutCall(long invocationId) {
+        CausynthTraceRecorder.endCall(invocationId, null, "");
+    }
+
+    private static Thread requestSender(
+            final String exchangeId,
+            final AtomicReference<Throwable> failure) {
+        return new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    ConcolicRegionRuntime.observeExchangeLeg("SEND",
+                            TRANSPORT, exchangeId, "REQUEST");
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                }
+            }
+        }, "test-ipc-sender");
     }
 
     private static Object activate(String taskId, long token) throws Exception {
@@ -700,6 +844,14 @@ public class ConcolicRegionRuntimeResponseProducerArmTest {
                 "pathRecordingStarted");
         field.setAccessible(true);
         return field.getBoolean(active);
+    }
+
+    private static String unconfirmedAttachEndpoint(Object active)
+            throws Exception {
+        Method method = active.getClass().getDeclaredMethod(
+                "unconfirmedSelectedAttachEndpoint");
+        method.setAccessible(true);
+        return (String) method.invoke(active);
     }
 
     @SuppressWarnings("unchecked")

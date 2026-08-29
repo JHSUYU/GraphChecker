@@ -4,6 +4,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
+import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -109,6 +112,34 @@ public class ConcolicInstrumentationSelectionsTest {
     }
 
     @Test
+    public void concreteOutputCaptureAnchorAddsOnlyItsAccessorHook()
+            throws Exception {
+        String anchoredPort = "REGION.1.in.anchored";
+        String unrelatedPort = "REGION.1.in.unrelated";
+        String anchoredCaller = "<example.Keys: int anchored()>";
+        String unrelatedCaller = "<example.Keys: int unrelated()>";
+        JsonArray actions = new JsonArray();
+        actions.add(accessorAction(anchoredPort, anchoredCaller, 3));
+        actions.add(accessorAction(unrelatedPort, unrelatedCaller, 4));
+
+        ConcolicInstrumentationSelections.ConcolicMaterializationSelection
+                selected = new ConcolicInstrumentationSelections
+                .ConcolicMaterializationSelection();
+        selected.addCapturePrerequisiteTargets(
+                exactHeapClosure(anchoredPort), actions);
+
+        assertEquals(1, selected.accessorCalls().size());
+        ConcolicInstrumentationSelections.AccessorCallTarget target =
+                selected.accessorCalls().iterator().next();
+        assertEquals(anchoredCaller, target.callerMethod);
+        assertEquals(3, target.callUnitIndex);
+        assertTrue(selected.accessorCallerMethods().contains(
+                anchoredCaller));
+        assertTrue(!selected.accessorCallerMethods().contains(
+                unrelatedCaller));
+    }
+
+    @Test
     public void configuredSourceHelperIsPartOfTheReplayEnvelope()
             throws Exception {
         String root = "<example.Producer: long produce()>";
@@ -181,6 +212,73 @@ public class ConcolicInstrumentationSelectionsTest {
             System.clearProperty("causynth.concolic.task.plan");
             System.clearProperty("causynth.concolic.task.id");
         }
+    }
+
+    private static JsonObject accessorAction(String symbol, String caller,
+                                             int unitIndex) {
+        String field = "<example.Key: int value>";
+        JsonObject action = new JsonObject();
+        action.addProperty("mode", "CONCRETE");
+        action.addProperty("symbol", symbol);
+        action.addProperty("portId", symbol);
+        action.addProperty("cell", field);
+        action.addProperty("javaType", "int");
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("bindingMode", "FIELD_ACCESS");
+        action.addProperty("accessFieldSignature", field);
+        action.addProperty("accessorCallerMethod", caller);
+        action.addProperty("accessorCallUnitIndex", unitIndex);
+        action.addProperty("accessorDeclaredCallee",
+                "<example.Key: int getValue()>");
+        action.addProperty("accessorImplementationMethod",
+                "<example.Key: int getValue()>");
+        return action;
+    }
+
+    private static OutputClosureContract exactHeapClosure(String anchor) {
+        String port = "REGION.1.out.value";
+        String field = "<example.Output: int value>";
+        String method = "<example.Output: void set(int)>";
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureBindingId", "CAPTURE.anchor");
+        capture.addProperty("outputPort", port);
+        capture.addProperty("captureKind",
+                OutputCaptureSpec.FIELD_WRITE_STATE);
+        capture.addProperty("outputCell", field);
+        capture.addProperty("javaType", "int");
+        capture.addProperty("fieldSignature", field);
+        JsonArray fieldPath = new JsonArray();
+        fieldPath.add("value");
+        capture.add("fieldPath", fieldPath);
+        capture.addProperty("definitionMethod", method);
+        capture.addProperty("definitionUnitIndex", 2);
+        capture.addProperty("outputSiteId", method + "#u2");
+        capture.addProperty("outputOccurrence", 1);
+        capture.addProperty("occurrenceScope",
+                OutputCaptureSpec.REGION_ACTIVATION_SCOPE);
+        capture.addProperty(OutputCaptureSpec.INSTANCE_SCOPED_PRODUCER,
+                true);
+
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", field);
+        slice.addProperty("captureAnchorPort", anchor);
+        for (String name : new String[]{"sites", "staticSites",
+                "causalEdgeIds", "captureBindingIssues"}) {
+            slice.add(name, new JsonArray());
+        }
+        JsonArray inputs = new JsonArray();
+        inputs.add(anchor);
+        slice.add("inputPorts", inputs);
+        JsonArray methods = new JsonArray();
+        methods.add(method);
+        slice.add("methods", methods);
+        JsonArray captures = new JsonArray();
+        captures.add(capture);
+        slice.add("captureBindings", captures);
+        return OutputClosureCodec.singleton("test/relation/TASK.ANCHOR",
+                "REGION.1", Collections.<String>emptyList(), port, field,
+                "HEAP_STATE", "int", slice);
     }
 
     /** One minimal executable campaign row. */

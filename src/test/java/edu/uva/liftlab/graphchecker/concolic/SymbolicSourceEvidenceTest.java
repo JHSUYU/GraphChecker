@@ -39,6 +39,21 @@ public class SymbolicSourceEvidenceTest {
     }
 
     @Test
+    public void oneVmRootSurvivingAcrossActivationsKeepsOneSource() {
+        String raw = raw(PHASE_A, SOURCE, "shared-object-field");
+        String later = OCCURRENCE + "#a2";
+
+        Map<String, String> identities =
+                SymbolicSourceEvidence.rawSymbolIdentities(Arrays.asList(
+                        owner(event(raw, PHASE_A, SOURCE, OCCURRENCE)),
+                        owner(event(raw, PHASE_A, SOURCE, later))));
+
+        assertEquals(1, identities.size());
+        assertEquals(SOURCE + "\n" + OCCURRENCE + "\n#1",
+                identities.get(raw));
+    }
+
+    @Test
     public void twoEntriesOfOneSiteAreTwoRoots() {
         String first = raw(PHASE_A, SOURCE, "entry1");
         String second = raw(PHASE_A, SOURCE, "entry2");

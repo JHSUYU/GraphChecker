@@ -153,14 +153,35 @@ public final class RecordedReadFrom {
      * The one location of {@code field} that recorded a read by this reader.
      */
     private Location deciding(String field, String readerSite) {
+        return deciding(field, readerSite, 0L);
+    }
+
+    private Location deciding(String field, String readerSite,
+                              long receiverObjectId) {
         if (readerSite == null || readerSite.isEmpty()) return null;
-        Location answer = null;
+        List<Location> matches = new ArrayList<>();
         for (Location location : locations(field)) {
+            if (receiverObjectId > 0L && location.receiverObjectId != 0L
+                    && receiverObjectId != location.receiverObjectId) {
+                continue;
+            }
             if (!location.reads(readerSite)) continue;
-            if (answer != null) return null;
-            answer = location;
+            matches.add(location);
         }
-        return answer;
+        if (matches.size() == 1) return matches.get(0);
+        if (matches.isEmpty()) return null;
+
+        // One logical heap location is copied into one case-local snapshot
+        // per replay path.  Canonical location keys intentionally include the
+        // exact activation, while sessionLocationKey keeps the VM store
+        // identity.  Join those snapshots only when every one names the same
+        // non-empty VM store; otherwise multiple locations remain ambiguous.
+        String session = matches.get(0).sessionLocationKey;
+        if (session.isEmpty()) return null;
+        for (Location location : matches) {
+            if (!session.equals(location.sessionLocationKey)) return null;
+        }
+        return Location.combine(matches, session);
     }
 
     public boolean isEmpty() {
@@ -172,18 +193,16 @@ public final class RecordedReadFrom {
      */
     public Decision decide(String field, String writerSite,
                            String readerSite) {
-        Location location = deciding(field, readerSite);
+        return decide(field, writerSite, readerSite, 0L);
+    }
+
+    private Decision decide(String field, String writerSite,
+                            String readerSite, long receiverObjectId) {
+        Location location = deciding(field, readerSite, receiverObjectId);
         if (location == null || writerSite == null || writerSite.isEmpty()) {
             return Decision.NO_RECORDED_EVIDENCE;
         }
-        Set<String> exact = location.exactWriters.get(readerSite);
-        if (exact != null) {
-            return exact.contains(writerSite)
-                    ? Decision.RECORDED_EXACT : Decision.RECORDED_EXCLUDED;
-        }
-        return location.writers.contains(writerSite)
-                ? Decision.RECORDED_GUARDED_CANDIDATE
-                : Decision.RECORDED_EXCLUDED;
+        return location.decide(writerSite, readerSite);
     }
 
     /**
@@ -205,11 +224,24 @@ public final class RecordedReadFrom {
         return location == null ? "" : location.locationKey;
     }
 
+    private String locationKey(String field, String readerSite,
+                               long receiverObjectId) {
+        Location location = deciding(field, readerSite, receiverObjectId);
+        return location == null ? "" : location.locationKey;
+    }
+
     /**
      * Whether every writer of one field is both recorded and addressable.
      */
     public boolean writerSetComplete(String field, String readerSite) {
         Location location = deciding(field, readerSite);
+        return location != null && location.writerSetComplete
+                && location.unaddressableWriters == 0;
+    }
+
+    private boolean writerSetComplete(String field, String readerSite,
+                                      long receiverObjectId) {
+        Location location = deciding(field, readerSite, receiverObjectId);
         return location != null && location.writerSetComplete
                 && location.unaddressableWriters == 0;
     }
@@ -220,6 +252,32 @@ public final class RecordedReadFrom {
     public boolean readLogTruncated(String field, String readerSite) {
         Location location = deciding(field, readerSite);
         return location != null && location.readLogTruncated;
+    }
+
+    private boolean readLogTruncated(String field, String readerSite,
+                                     long receiverObjectId) {
+        Location location = deciding(field, readerSite, receiverObjectId);
+        return location != null && location.readLogTruncated;
+    }
+
+    private String exactWriterSite(String field, String readerSite,
+                                   long receiverObjectId,
+                                   String requestedWriter) {
+        Location location = deciding(field, readerSite, receiverObjectId);
+        return location == null ? ""
+                : location.writerSite(requestedWriter, readerSite);
+    }
+
+    private String exactReaderSite(String field, String readerSite,
+                                   long receiverObjectId) {
+        Location location = deciding(field, readerSite, receiverObjectId);
+        return location == null ? "" : location.readerSite(readerSite);
+    }
+
+    private String sessionLocationKey(String field, String readerSite,
+                                      long receiverObjectId) {
+        Location location = deciding(field, readerSite, receiverObjectId);
+        return location == null ? "" : location.sessionLocationKey;
     }
 
 
@@ -237,17 +295,42 @@ public final class RecordedReadFrom {
             String field = string(binding, EDGE_FIELD);
             String readerSite = RecordedEvidenceIdentity.siteKey(
                     string(binding, "toOccurrenceId"));
+            String writerOccurrence = string(binding,
+                    "fromValueOccurrenceId");
+            if (writerOccurrence.isEmpty()) {
+                writerOccurrence = string(binding, "fromOccurrenceId");
+            }
+            long receiverObjectId = longInteger(binding,
+                    "receiverObjectId", 0L);
             Decision decision = decide(field,
                     RecordedEvidenceIdentity.siteKey(
-                            string(binding, "fromOccurrenceId")),
-                    readerSite);
+                            writerOccurrence),
+                    readerSite, receiverObjectId);
             if (!decision.decides()) continue;
             decided++;
+            String exactWriter = exactWriterSite(field, readerSite,
+                    receiverObjectId, writerOccurrence);
+            if (!exactWriter.isEmpty()) {
+                binding.addProperty("fromValueOccurrenceId", exactWriter);
+            }
+            String exactReader = exactReaderSite(field, readerSite,
+                    receiverObjectId);
+            if (!exactReader.isEmpty()) {
+                binding.addProperty("toValueOccurrenceId", exactReader);
+            }
             binding.addProperty(EDGE_PROVENANCE, decision.provenance());
             binding.remove(EDGE_PROVENANCE_GAP);
-            String location = locationKey(field, readerSite);
+            String location = locationKey(field, readerSite,
+                    receiverObjectId);
             if (!location.isEmpty()) {
                 binding.addProperty("locationKey", location);
+            }
+            String sessionLocation = sessionLocationKey(field, readerSite,
+                    receiverObjectId);
+            if (!sessionLocation.isEmpty()) {
+                binding.addProperty(
+                        SharedStateEvidence.SESSION_LOCATION_FIELD,
+                        sessionLocation);
             }
             if (decision == Decision.RECORDED_EXCLUDED) {
                 binding.addProperty(EDGE_PROVENANCE_GAP,
@@ -256,14 +339,15 @@ public final class RecordedReadFrom {
             }
             // The unknown arm is a property of the location, not of the arm
             // that happens to be selected: a writer set that is incomplete or
-            if (!writerSetComplete(field, readerSite)) {
+            if (!writerSetComplete(field, readerSite, receiverObjectId)) {
                 binding.addProperty(EDGE_UNKNOWN_ARM,
                         SharedStateEvidence.UNKNOWN_WRITER_SELECTOR);
                 // A truncated read log is an open writer set for a different
                 // reason, and the difference is what a reader acts on, so it
                 binding.addProperty(EDGE_PROVENANCE_GAP,
                         SharedStateEvidence.reason(
-                                readLogTruncated(field, readerSite)
+                                readLogTruncated(field, readerSite,
+                                        receiverObjectId)
                                 ? SharedStateEvidence.READ_LOG_TRUNCATED
                                 : SharedStateEvidence.UNKNOWN_WRITER));
             }
@@ -323,10 +407,12 @@ public final class RecordedReadFrom {
     /** One watched location, reduced to the identities a pairing can use. */
     private static final class Location {
         private String locationKey = "";
+        private String sessionLocationKey = "";
         private boolean writerSetComplete = true;
         /** The VM dropped read-log entries for this location. */
         private boolean readLogTruncated;
         private int unaddressableWriters;
+        private long receiverObjectId;
         private final Set<String> writers = new LinkedHashSet<>();
         private final Set<String> guardedReaders = new LinkedHashSet<>();
         private final Map<String, Set<String>> exactWriters =
@@ -335,10 +421,44 @@ public final class RecordedReadFrom {
         /** Activations of each static region, for region-only callers. */
         private final Map<String, Set<String>> sitesByRegion =
                 new LinkedHashMap<>();
+        /** Mutually-exclusive snapshots of one session location. */
+        private List<Location> caseMembers = Collections.emptyList();
+
+        /** Case-local snapshots of the same VM store, kept case-local. */
+        private static Location combine(Collection<Location> members,
+                                        String sessionLocationKey) {
+            Location result = new Location();
+            result.locationKey = sessionLocationKey;
+            result.sessionLocationKey = sessionLocationKey;
+            result.writerSetComplete = true;
+            result.caseMembers = Collections.unmodifiableList(
+                    new ArrayList<>(members));
+            for (Location member : members) {
+                result.writerSetComplete &= member.writerSetComplete;
+                result.readLogTruncated |= member.readLogTruncated;
+                result.unaddressableWriters += member.unaddressableWriters;
+                if (result.receiverObjectId == 0L) {
+                    result.receiverObjectId = member.receiverObjectId;
+                } else if (member.receiverObjectId != 0L
+                        && result.receiverObjectId
+                        != member.receiverObjectId) {
+                    result.receiverObjectId = -1L;
+                }
+            }
+            return result;
+        }
 
         private void absorb(JsonObject record) {
             JsonObject envelope = object(record, "envelope");
             locationKey = string(record, "locationKey");
+            sessionLocationKey = SharedStateEvidence
+                    .sessionLocationKey(record);
+            long receiver = longInteger(object(record, "carrier"),
+                    "receiverObjectId", 0L);
+            if (receiverObjectId == 0L) receiverObjectId = receiver;
+            else if (receiver > 0L && receiverObjectId != receiver) {
+                receiverObjectId = -1L;
+            }
             writerSetComplete = writerSetComplete
                     && SharedStateEvidence.writerSetComplete(envelope);
             readLogTruncated = readLogTruncated
@@ -382,8 +502,142 @@ public final class RecordedReadFrom {
 
         /** Whether this store recorded a read performed by {@code site}. */
         private boolean reads(String site) {
-            return exactWriters.containsKey(site)
-                    || guardedReaders.contains(site);
+            if (exactWriters.containsKey(site)
+                    || guardedReaders.contains(site)) {
+                return true;
+            }
+            String address = planned(site);
+            for (String reader : exactWriters.keySet()) {
+                if (address.equals(planned(reader))) return true;
+            }
+            for (String reader : guardedReaders) {
+                if (address.equals(planned(reader))) return true;
+            }
+            return false;
+        }
+
+        private Decision decide(String writer, String reader) {
+            if (!caseMembers.isEmpty()) {
+                boolean guarded = false;
+                for (Location member : caseMembers) {
+                    Decision decision = member.decide(writer, reader);
+                    if (decision == Decision.NO_RECORDED_EVIDENCE) {
+                        return Decision.NO_RECORDED_EVIDENCE;
+                    }
+                    if (decision == Decision.RECORDED_EXACT) {
+                        // A family of exact case-local reads needs exact
+                        // version/order lowering per case.  Do not collapse it
+                        // into one unconditional edge.
+                        return Decision.NO_RECORDED_EVIDENCE;
+                    }
+                    guarded |= decision
+                            == Decision.RECORDED_GUARDED_CANDIDATE;
+                }
+                return guarded
+                        ? Decision.RECORDED_GUARDED_CANDIDATE
+                        : Decision.RECORDED_EXCLUDED;
+            }
+            Set<String> exact = exactWriters.get(reader);
+            if (exact != null) {
+                return containsSite(exact, writer)
+                        ? Decision.RECORDED_EXACT
+                        : Decision.RECORDED_EXCLUDED;
+            }
+            if (guardedReaders.contains(reader)) {
+                return containsSite(writers, writer)
+                        ? Decision.RECORDED_GUARDED_CANDIDATE
+                        : Decision.RECORDED_EXCLUDED;
+            }
+
+            String address = planned(reader);
+            Set<String> commonExact = null;
+            boolean guarded = false;
+            for (Map.Entry<String, Set<String>> entry
+                    : exactWriters.entrySet()) {
+                if (!address.equals(planned(entry.getKey()))) continue;
+                if (commonExact == null) {
+                    commonExact = new LinkedHashSet<>(entry.getValue());
+                } else if (!commonExact.equals(entry.getValue())) {
+                    return Decision.NO_RECORDED_EVIDENCE;
+                }
+            }
+            for (String candidate : guardedReaders) {
+                if (address.equals(planned(candidate))) {
+                    guarded = true;
+                    break;
+                }
+            }
+            if (guarded) {
+                return containsSite(writers, writer)
+                        ? Decision.RECORDED_GUARDED_CANDIDATE
+                        : Decision.RECORDED_EXCLUDED;
+            }
+            if (commonExact != null) {
+                return containsSite(commonExact, writer)
+                        ? Decision.RECORDED_EXACT
+                        : Decision.RECORDED_EXCLUDED;
+            }
+            return Decision.NO_RECORDED_EVIDENCE;
+        }
+
+        private String writerSite(String requested, String reader) {
+            if (!caseMembers.isEmpty()) {
+                Set<String> sites = new LinkedHashSet<>();
+                for (Location member : caseMembers) {
+                    if (member.decide(requested, reader)
+                            != Decision.RECORDED_GUARDED_CANDIDATE) {
+                        continue;
+                    }
+                    String site = member.writerSite(requested, reader);
+                    if (site.isEmpty()) return "";
+                    sites.add(site);
+                }
+                return sites.size() == 1
+                        ? sites.iterator().next() : "";
+            }
+            if (writers.contains(requested)) return requested;
+            String address = planned(requested);
+            String answer = "";
+            for (String writer : writers) {
+                if (!address.equals(planned(writer))) continue;
+                if (!answer.isEmpty() && !answer.equals(writer)) return "";
+                answer = writer;
+            }
+            return answer;
+        }
+
+        private String readerSite(String requested) {
+            if (!caseMembers.isEmpty()) return "";
+            if (exactWriters.containsKey(requested)
+                    || guardedReaders.contains(requested)) {
+                return requested;
+            }
+            String address = planned(requested);
+            String answer = "";
+            Set<String> readers = new LinkedHashSet<>(
+                    exactWriters.keySet());
+            readers.addAll(guardedReaders);
+            for (String reader : readers) {
+                if (!address.equals(planned(reader))) continue;
+                if (!answer.isEmpty() && !answer.equals(reader)) return "";
+                answer = reader;
+            }
+            return answer;
+        }
+
+        private static boolean containsSite(Set<String> sites,
+                                            String requested) {
+            if (sites.contains(requested)) return true;
+            String address = planned(requested);
+            for (String site : sites) {
+                if (address.equals(planned(site))) return true;
+            }
+            return false;
+        }
+
+        private static String planned(String occurrenceId) {
+            return edu.uva.liftlab.graphchecker.contract.PathObservation
+                    .plannedOccurrenceOf(occurrenceId);
         }
 
         private void register(String regionId, String site) {

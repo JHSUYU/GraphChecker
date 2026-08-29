@@ -336,6 +336,85 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
+    /**
+     * Narrows a producer's source catalog from its long-lived activation root
+     * to the exact dynamic call(s) that produced the selected output version.
+     *
+     * <p>A service-loop occurrence can contain several calls to the same
+     * producer.  Those calls are useful while selecting a version, but once
+     * the output closure names its exact runtime call they are not alternative
+     * symbolic roots.  Keeping them here would attach unrelated rotations to
+     * one output relation.  The retained per-site ordinals are rebuilt because
+     * replay counts entries within this bounded catalog, not within the
+     * discarded parent activation.</p>
+     */
+    static void boundConfiguredSourcePhasesToSelectedOutputCalls(
+            Map<String, Object> plan, Map<String, Object> goal) {
+        if (plan == null || goal == null
+                || !plan.containsKey(ConfiguredSourcePhaseContract.PLAN_FIELD)) {
+            return;
+        }
+        Set<Long> selectedCalls = new LinkedHashSet<>();
+        Map<String, Object> closure = row(goal.get(OutputClosureContract.FIELD));
+        for (Map<String, Object> member : rows(closure.get("members"))) {
+            Map<String, Object> slice = row(member.get("slice"));
+            long selected = longNumber(
+                    slice.get("selectedRuntimeCallId"), -1L);
+            long observed = longNumber(
+                    slice.get("observedDefinitionCallId"), -1L);
+            if (selected > 0L) selectedCalls.add(selected);
+            if (observed > 0L) selectedCalls.add(observed);
+            for (Map<String, Object> version : rows(
+                    slice.get(BOUNDED_VERSION_SCOPES))) {
+                long versionCall = longNumber(
+                        version.get("selectedRuntimeCallId"), -1L);
+                if (versionCall > 0L) selectedCalls.add(versionCall);
+            }
+        }
+        // A closure without an exact call gives no authority to narrow the
+        // activation catalog.  Leave it intact so missing evidence stays
+        // visible to the later admission checks.
+        if (selectedCalls.isEmpty()) return;
+
+        JsonElement encoded = toJsonTreeFast(plan.get(
+                ConfiguredSourcePhaseContract.PLAN_FIELD));
+        List<ConfiguredSourcePhaseContract.Occurrence> phases =
+                ConfiguredSourcePhaseContract.occurrencesOf(encoded, true);
+        JsonArray rows = encoded.getAsJsonArray();
+        Map<String, Integer> ordinals = new LinkedHashMap<>();
+        List<JsonObject> bounded = new ArrayList<>();
+        for (int index = 0; index < phases.size(); index++) {
+            ConfiguredSourcePhaseContract.Occurrence phase =
+                    phases.get(index);
+            boolean enclosed = false;
+            for (Long callId : phase.enclosingCallIds()) {
+                if (selectedCalls.contains(callId)) {
+                    enclosed = true;
+                    break;
+                }
+            }
+            if (!enclosed) continue;
+            String identity = phase.phase().name() + "\n"
+                    + phase.sourceId() + "\n" + phase.siteId();
+            int ordinal = ordinals.merge(identity, 1, Integer::sum);
+            JsonObject retained = rows.get(index).getAsJsonObject().deepCopy();
+            retained.addProperty("baselineOrdinal", ordinal);
+            retained.addProperty("phaseId",
+                    ConfiguredSourcePhaseContract.phaseId(
+                            phase.sourceOccurrenceId(), phase.siteId(),
+                            phase.phase(), ordinal));
+            bounded.add(retained);
+        }
+        if (bounded.isEmpty()) {
+            plan.remove(ConfiguredSourcePhaseContract.PLAN_FIELD);
+            return;
+        }
+        JsonArray strict = new JsonArray();
+        for (JsonObject phase : bounded) strict.add(phase.deepCopy());
+        ConfiguredSourcePhaseContract.occurrencesOf(strict, true);
+        plan.put(ConfiguredSourcePhaseContract.PLAN_FIELD, bounded);
+    }
+
     private static void linkOneDelivery(
             Result result, Map<String, Object> activation,
             Map<String, Object> exported,
@@ -1516,6 +1595,8 @@ final class RuntimeRegionPlanner {
                 causalEdges);
         for (PlannedOutputRelation relation : planned) {
             materializeProducerGoal(relation, demandedOutputs);
+            boundConfiguredSourcePhasesToSelectedOutputCalls(
+                    relation.plan, relation.goal);
         }
         // Loop trip counts are bounded by the same demand, and only once the
         // goals state their final demanded slice.  With no failure to direct
@@ -2638,6 +2719,9 @@ final class RuntimeRegionPlanner {
                     "causalEdgeIds", "demandedHeapDeclarations",
                     "captureBindingIssues"));
 
+    /** Exact replay slice retained beside a folded output. */
+    static final String BOUNDED_VERSION_SCOPES = "boundedVersionScopes";
+
     /** Folds the bounded write versions of one demanded endpoint into the one
      * closure member README REGION-1 requires.
      *
@@ -2651,6 +2735,25 @@ final class RuntimeRegionPlanner {
         JsonObject folded = versions.get(versions.size() - 1).toJson();
         JsonObject anchor = folded.getAsJsonArray("members").get(0)
                 .getAsJsonObject().getAsJsonObject("slice");
+        JsonArray exactScopes = new JsonArray();
+        for (OutputClosureContract versionContract : versions) {
+            JsonObject member = versionContract.toJson()
+                    .getAsJsonArray("members").get(0).getAsJsonObject();
+            JsonObject output = member.getAsJsonObject("output");
+            JsonObject version = member.getAsJsonObject("slice");
+            // A writer version is one replay boundary, not just one set of
+            // incoming edges.  Preserve its complete slice so scheduler
+            // projection cannot combine one version's inputs with another
+            // version's capture anchor, completion event, or replay entry.
+            JsonObject exact = version.deepCopy();
+            for (String field : Collections.singletonList(
+                    "outputOccurrence")) {
+                JsonElement value = output.get(field);
+                if (value != null) exact.add(field, value.deepCopy());
+            }
+            exactScopes.add(exact);
+        }
+        anchor.add(BOUNDED_VERSION_SCOPES, exactScopes);
         for (int index = 0; index < versions.size() - 1; index++) {
             JsonObject version = versions.get(index).toJson()
                     .getAsJsonArray("members").get(0).getAsJsonObject()
@@ -2813,7 +2916,6 @@ final class RuntimeRegionPlanner {
             Map<String, Object> target, String siteId, int occurrence) {
         target.put("outputSiteId", siteId);
         target.put("outputOccurrence", occurrence);
-        target.put("replayOccurrence", occurrence);
     }
 
     private static OutputClosureContract directHeapOutputClosure(
@@ -3083,15 +3185,15 @@ final class RuntimeRegionPlanner {
                     "receiverClass", replayContinuation.receiverType)));
         }
         // A mutation reached here only through a resolved fold.
-        int replayOccurrence = mutation ? mutationFold.anchorOccurrence
+        int outputOccurrence = mutation ? mutationFold.anchorOccurrence
                 : recordedOutputOccurrence;
-        if (replayOccurrence < 1) {
+        if (outputOccurrence < 1) {
             rejectionReasons.add("OUTPUT_OCCURRENCE_UNRESOLVED:"
                     + outputPort);
             return null;
         }
         if (!explicitFaultExitSnapshot) {
-            slice.addProperty("activationLocalOccurrence", replayOccurrence);
+            slice.addProperty("activationLocalOccurrence", outputOccurrence);
         }
         slice.addProperty("selectedRuntimeEventSeq", longNumber(
                 output.get("eventSeq"), -1L));
@@ -3191,8 +3293,7 @@ final class RuntimeRegionPlanner {
                 + staticAccessSiteId + ":" + semanticDeclaration;
         if (!explicitFaultExitSnapshot) {
             capture.addProperty("outputSiteId", captureSiteId);
-            capture.addProperty("outputOccurrence", replayOccurrence);
-            capture.addProperty("replayOccurrence", replayOccurrence);
+            capture.addProperty("outputOccurrence", outputOccurrence);
         }
         if (mutationFold != null) {
             capture.addProperty("occurrenceScope",
@@ -3631,7 +3732,6 @@ final class RuntimeRegionPlanner {
                 OutputCaptureSpec.HANDOFF_BOUND_LEAF + ":"
                         + exchangeSiteKey + ":" + leafPath);
         capture.addProperty("outputOccurrence", 1);
-        capture.addProperty("replayOccurrence", 1);
         addCaptureBinding(slice, capture);
 
         try {
@@ -4108,7 +4208,6 @@ final class RuntimeRegionPlanner {
                 : OutputCaptureSpec.COMMUNICATION_EFFECT + ":"
                 + definitionMethod);
         capture.addProperty("outputOccurrence", 1);
-        capture.addProperty("replayOccurrence", 1);
         addCaptureBinding(slice, capture);
 
         try {

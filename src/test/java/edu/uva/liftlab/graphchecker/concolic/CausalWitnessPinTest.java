@@ -391,8 +391,11 @@ public class CausalWitnessPinTest {
                 "REGION.1.out.0", "<Test: int output>", "REGION_OUTPUT",
                 "int", outputSlice());
         JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", RelationSummary.SCHEMA_VERSION);
+        row.addProperty("kind", RelationSummary.KIND);
         row.addProperty("summaryId", "SUMMARY.PIN");
         row.addProperty("sourceKey", RecordedMapStateFixtures.SOURCE_KEY);
+        row.addProperty("regionId", "REGION.1");
         row.addProperty("occurrenceId",
                 RecordedMapStateFixtures.PRODUCER_OCCURRENCE);
         ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(row);
@@ -402,6 +405,8 @@ public class CausalWitnessPinTest {
         row.add("edgeBindings", bindings);
         JsonObject path = new JsonObject();
         path.addProperty("caseId", "CASE.PIN");
+        path.addProperty("occurrenceId",
+                RecordedMapStateFixtures.PRODUCER_OCCURRENCE);
         path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
         path.addProperty("sourceTaskId", "TASK.PIN");
         JsonObject guard = new JsonObject();
@@ -483,6 +488,8 @@ public class CausalWitnessPinTest {
     private static JsonObject region(String id, boolean hasInput,
                                      boolean hasOutput) {
         JsonObject region = new JsonObject();
+        region.addProperty("schemaVersion", 3);
+        region.addProperty("kind", "SYMBOLIC_REGION");
         region.addProperty("regionId", id);
         JsonArray inputs = new JsonArray();
         if (hasInput) inputs.add(port(id + ".in.0", "input"));

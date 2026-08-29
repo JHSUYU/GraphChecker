@@ -565,6 +565,8 @@ final class RecordedSharedStateFixtures {
                 "REGION.1.out.0", "<Test: int output>", "REGION_OUTPUT",
                 "int", outputSlice("REGION.1.out.0", "<Test: int output>"));
         JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", RelationSummary.SCHEMA_VERSION);
+        row.addProperty("kind", RelationSummary.KIND);
         row.addProperty("summaryId", "SUMMARY." + id);
         row.addProperty("sourceKey", COMPOSED_SOURCE_KEY);
         row.addProperty("occurrenceId", PRODUCER_OCCURRENCE);
@@ -715,6 +717,8 @@ final class RecordedSharedStateFixtures {
     private static JsonObject region(String id, boolean hasInput,
                                      boolean hasOutput) {
         JsonObject region = new JsonObject();
+        region.addProperty("schemaVersion", 3);
+        region.addProperty("kind", "SYMBOLIC_REGION");
         region.addProperty("regionId", id);
         JsonArray inputs = new JsonArray();
         if (hasInput) inputs.add(port(id + ".in.0", "input"));

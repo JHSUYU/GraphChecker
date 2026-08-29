@@ -413,6 +413,9 @@ public final class System {
     public static native long startConcolicRegion(String regionId,
                                                    String taskId);
 
+    /** Exact VM thread-context identity owning the current concolic region. */
+    public static native long getCurrentConcolicContextId();
+
     /**
      * End of our concolic execution
      */

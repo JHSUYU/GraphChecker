@@ -5,12 +5,15 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
@@ -73,6 +76,9 @@ public final class BoundedWriterUniverse {
     /** How the occurrence axis of the product was supplied. */
     public static final String OCCURRENCE_SOURCE_MATERIALIZED_RUN =
             "MATERIALIZED_RUN_OCCURRENCE";
+    /** The selected LOOP_BODY_ROOT relation enumerated its declared a1..aK. */
+    public static final String OCCURRENCE_SOURCE_DECLARED_BOUNDED_LOOP =
+            "DECLARED_BOUNDED_LOOP_OCCURRENCES";
 
     private final long readEventId;
     private final String locationKey;
@@ -83,6 +89,10 @@ public final class BoundedWriterUniverse {
     private final Set<String> gapKeys = new LinkedHashSet<>();
     private boolean closed = true;
     private int materializedCases;
+    private String occurrenceSource = OCCURRENCE_SOURCE_MATERIALIZED_RUN;
+    private final Set<String> boundedWriterAddresses =
+            new LinkedHashSet<>();
+    private Set<String> closedOccurrenceAddresses = Collections.emptySet();
 
     private BoundedWriterUniverse(long readEventId, String locationKey) {
         this.readEventId = readEventId;
@@ -100,9 +110,24 @@ public final class BoundedWriterUniverse {
      */
     public static BoundedWriterUniverse of(JsonObject guardedRead,
                                            JsonObject versionsRecord) {
+        return of(guardedRead, versionsRecord,
+                Collections.<String>emptySet());
+    }
+
+    /**
+     * Enumerates one read using selected LOOP_BODY_ROOT addresses whose
+     * complete relation proved the dense declared {@code a1..aK} prefix.
+     */
+    public static BoundedWriterUniverse of(JsonObject guardedRead,
+                                           JsonObject versionsRecord,
+                                           Collection<String>
+                                                   closedOccurrences) {
         String locationKey = SharedStateEvidence.locationKey(guardedRead);
         BoundedWriterUniverse universe = new BoundedWriterUniverse(
                 longInteger(guardedRead, "readEventId", 0L), locationKey);
+        universe.closedOccurrenceAddresses = closedOccurrences == null
+                ? Collections.<String>emptySet()
+                : new LinkedHashSet<>(closedOccurrences);
         universe.enumerate(guardedRead, versionsRecord);
         return universe;
     }
@@ -146,9 +171,70 @@ public final class BoundedWriterUniverse {
                     "the VM reports that " + locationKey
                             + " has already lost writers");
         }
-        open(SEMANTIC_OCCURRENCE_COVERAGE_OPEN,
-                "read " + readEventId + " enumerates only writer "
-                        + "occurrences materialized by recorded evidence");
+        if (closesSemanticOccurrenceAxis(guardedRead, versionsRecord,
+                published)) {
+            for (JsonElement element : cases) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                if (!bool(row, "unknown", false)) {
+                    row.addProperty("occurrenceSource", occurrenceSource);
+                }
+            }
+        } else {
+            open(SEMANTIC_OCCURRENCE_COVERAGE_OPEN,
+                    "read " + readEventId + " enumerates only writer "
+                            + "occurrences materialized by recorded evidence");
+        }
+    }
+
+    /**
+     * Closes only the occurrence axis. Every structural enumeration check has
+     * already run, so any earlier gap leaves the universe open. The number of
+     * writes is deliberately irrelevant: several writes may belong to one
+     * bounded activation.
+     */
+    private boolean closesSemanticOccurrenceAxis(
+            JsonObject guardedRead, JsonObject versionsRecord,
+            Map<Long, JsonObject> published) {
+        if (!mapState || !gaps.isEmpty()
+                || !bool(guardedRead, "writerSetComplete", false)
+                || !SharedStateEvidence.isVersionsRecord(versionsRecord)) {
+            return false;
+        }
+        JsonObject envelope = object(versionsRecord, "envelope");
+        JsonArray versions = array(envelope, "versions");
+        if (!SharedStateEvidence.writerSetComplete(envelope)
+                || SharedStateEvidence.readLogTruncated(envelope)
+                || bool(envelope, "serializationTruncated", false)
+                || longInteger(envelope, "versionsDropped", -1L) != 0L
+                || longInteger(envelope, "versionsObserved", -1L)
+                != versions.size()
+                || longInteger(envelope, "serializedVersionCount", -1L)
+                != versions.size()
+                || published.size() != versions.size()) {
+            return false;
+        }
+        int initial = 0;
+        int bounded = 0;
+        for (JsonObject version : published.values()) {
+            if ("INITIAL".equals(string(version, "versionKind"))) {
+                initial++;
+                continue;
+            }
+            String writerOccurrence = string(version,
+                    SharedStateEvidence.WRITER_OCCURRENCE_ID);
+            String address = PathObservation.plannedOccurrenceOf(
+                    writerOccurrence);
+            if (address.isEmpty()
+                    || !closedOccurrenceAddresses.contains(address)) {
+                return false;
+            }
+            boundedWriterAddresses.add(address);
+            bounded++;
+        }
+        if (initial != 1 || bounded <= 0) return false;
+        occurrenceSource = OCCURRENCE_SOURCE_DECLARED_BOUNDED_LOOP;
+        return true;
     }
 
     /**
@@ -239,8 +325,8 @@ public final class BoundedWriterUniverse {
         JsonElement receiver = query.get("receiver");
         JsonElement published = recorded.get("expression");
         boolean ownState = receiver != null && published != null
-                && CanonicalJson.render(receiver).equals(
-                CanonicalJson.render(published));
+                && CanonicalJson.render(writerStateIdentity(receiver)).equals(
+                CanonicalJson.render(writerStateIdentity(published)));
         row.addProperty("readsItsOwnWriterState", ownState);
         if (!ownState) {
             open(ARM_STATE_NOT_ITS_WRITER, "arm "
@@ -256,6 +342,52 @@ public final class BoundedWriterUniverse {
                     + " writer");
         }
         return queryKey;
+    }
+
+    /**
+     * Canonical identity of a published map state.
+     *
+     * <p>A map mutation may contain the value of an earlier guarded read.
+     * The VM serializes that nested read together with the candidate set known
+     * at the instant of each write, so later snapshots can contain a larger
+     * candidate array for the same {@code (readEventId, location)}.  Candidate
+     * enumeration is not part of the value inserted into the map: the one
+     * selected read value is.  Compare nested reads by that stable identity,
+     * while retaining every other member of the state expression.  This keeps
+     * a genuinely different writer state different and prevents temporal
+     * growth of diagnostic RF metadata from opening the writer universe.</p>
+     */
+    private static JsonElement writerStateIdentity(JsonElement expression) {
+        if (expression == null || expression.isJsonNull()
+                || expression.isJsonPrimitive()) {
+            return expression == null ? null : expression.deepCopy();
+        }
+        if (expression.isJsonArray()) {
+            JsonArray result = new JsonArray();
+            for (JsonElement element : expression.getAsJsonArray()) {
+                result.add(writerStateIdentity(element));
+            }
+            return result;
+        }
+        JsonObject object = expression.getAsJsonObject();
+        if (SharedStateEvidence.GUARDED_READ_TYPE.equals(
+                string(object, "_type"))) {
+            JsonObject identity = new JsonObject();
+            identity.addProperty("_type",
+                    SharedStateEvidence.GUARDED_READ_TYPE);
+            identity.addProperty("_java_type", string(object,
+                    "_java_type"));
+            identity.addProperty("readEventId",
+                    longInteger(object, "readEventId", 0L));
+            identity.addProperty("locationKey",
+                    SharedStateEvidence.locationKey(object));
+            return identity;
+        }
+        JsonObject result = new JsonObject();
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            result.add(entry.getKey(), writerStateIdentity(entry.getValue()));
+        }
+        return result;
     }
 
     private JsonObject unknownCase(JsonObject candidate) {
@@ -338,8 +470,15 @@ public final class BoundedWriterUniverse {
         universe.addProperty("closed", closed);
         universe.addProperty("retainsUnknownArm", retainsUnknownArm());
         universe.addProperty("materializedCases", materializedCases);
-        universe.addProperty("occurrenceSource",
-                OCCURRENCE_SOURCE_MATERIALIZED_RUN);
+        universe.addProperty("occurrenceSource", occurrenceSource);
+        JsonArray addresses = new JsonArray();
+        for (String address : boundedWriterAddresses) addresses.add(address);
+        universe.add("boundedWriterAddresses", addresses);
+        JsonArray declared = new JsonArray();
+        for (String address : closedOccurrenceAddresses) {
+            declared.add(address);
+        }
+        universe.add("closedOccurrenceAddresses", declared);
         universe.add("cases", cases.deepCopy());
         JsonArray recorded = new JsonArray();
         for (JsonObject gap : gaps) recorded.add(gap.deepCopy());

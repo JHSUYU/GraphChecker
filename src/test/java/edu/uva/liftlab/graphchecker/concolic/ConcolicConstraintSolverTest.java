@@ -477,6 +477,8 @@ public class ConcolicConstraintSolverTest {
         assertEquals("REGION.3.in.0",
                 assignment.get("inputSymbol").getAsString());
         assertTrue(assignment.get("value").getAsInt() > 0);
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(not (= sym__M_L_example_Owner__1__"));
     }
 
     @Test
@@ -642,6 +644,28 @@ public class ConcolicConstraintSolverTest {
                             refusal.getAsJsonObject().get("reason")
                                     .getAsString()));
         }
+    }
+
+    @Test
+    public void aReadCutWithoutWritableReplayControlIsNotReady()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject fixture = task(binaryExpression(intConstant(1), "==",
+                intConstant(1)));
+        fixture.add(RecordedSessionModel.QUERY_FIELD,
+                RecordedSharedStateFixtures.selectedReadCutQuery());
+        JsonObject noInputs = new JsonObject();
+        noInputs.add("inputActions", new JsonArray());
+
+        ConcolicConstraintSolver.Result result = solveForTest(fixture,
+                noInputs, Paths.get("z3"), 10_000L);
+
+        assertEquals(result.record.toString(), "MATERIALIZATION_GAP",
+                result.record.get("status").getAsString());
+        assertEquals("REPLAY_CONTROL_FRONTIER_MODEL_IS_NOT_MATERIALIZABLE",
+                result.record.get("reason").getAsString());
+        assertTrue(result.record.has("selectedReadCut"));
+        assertEquals(0, result.modelAssignments.size());
     }
 
     @Test

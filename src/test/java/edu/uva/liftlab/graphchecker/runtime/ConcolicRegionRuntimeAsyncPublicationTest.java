@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 /** Response completion owns VM read-out, but not JSON result publication. */
@@ -85,7 +86,9 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
         assertTrue(ConcolicRegionRuntime.completeResponseHandoff());
         assertTrue(decodeStarted.await(2, TimeUnit.SECONDS));
         assertFalse(Files.exists(resultFile));
-        assertTrue(candidateLive());
+        assertFalse("the closed VM occurrence must not block the next root "
+                + "while JSON publication is pending", candidateLive());
+        assertFalse("publication is not durable yet", occurrenceClaimed());
 
         CountDownLatch barrierReturned = new CountDownLatch(1);
         Thread barrier = new Thread(() -> {
@@ -140,6 +143,64 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
         // native close call.
         assertFalse(FakeVm.workloadSessionClosed);
         assertTrue(Files.exists(resultFile));
+    }
+
+    @Test
+    public void sharedWriterVersionKeepsItsMaterializedActivation()
+            throws Exception {
+        loadCampaign();
+        activateResponseCandidate(79L);
+        Object active = active(79L);
+        Field ordinal = active.getClass().getDeclaredField(
+                "activationOrdinal");
+        ordinal.setAccessible(true);
+        ordinal.setInt(active, 2);
+
+        JsonObject envelope = new JsonObject();
+        JsonArray versions = new JsonArray();
+        JsonObject version = new JsonObject();
+        version.addProperty("fieldVersionId", 101L);
+        version.addProperty("writerContextId", 9L);
+        version.addProperty("taskId", TASK);
+        version.addProperty("regionId", "SERVER");
+        versions.add(version);
+        envelope.add("versions", versions);
+        JsonArray reads = new JsonArray();
+        JsonObject read = new JsonObject();
+        read.addProperty("readEventId", 102L);
+        read.addProperty("readerContextId", 9L);
+        read.addProperty("regionId", "SERVER");
+        reads.add(read);
+        envelope.add("reads", reads);
+
+        Method remember = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "rememberContextActivation", long.class,
+                active.getClass());
+        remember.setAccessible(true);
+        remember.invoke(null, 9L, active);
+        Method annotate = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "addActivationIdentity", JsonObject.class,
+                active.getClass());
+        annotate.setAccessible(true);
+        JsonObject writeOnly = envelope.deepCopy();
+        writeOnly.getAsJsonArray("reads").remove(0);
+        annotate.invoke(null, writeOnly, null);
+        assertEquals(OCCURRENCE + "#a2", writeOnly
+                .getAsJsonArray("versions").get(0).getAsJsonObject()
+                .get("writerOccurrenceId").getAsString());
+
+        annotate.invoke(null, envelope, active);
+        assertEquals(OCCURRENCE + "#a2", version.get(
+                "writerOccurrenceId").getAsString());
+        assertEquals(OCCURRENCE + "#a2", read.get(
+                "readerOccurrenceId").getAsString());
+
+        JsonObject later = envelope.deepCopy();
+        later.getAsJsonArray("reads").remove(0);
+        annotate.invoke(null, later, null);
+        assertEquals(OCCURRENCE + "#a2", later.getAsJsonArray("versions")
+                .get(0).getAsJsonObject().get("writerOccurrenceId")
+                .getAsString());
     }
 
     @Test
@@ -464,15 +525,6 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
         bind(engine, "elementVersions", fake("elementVersions", Object.class,
                 int.class));
         bind(engine, "mapVersions", fake("mapVersions", Object.class));
-        bind(engine, "currentMapVersion", fake("currentMapVersion",
-                Object.class));
-        bind(engine, "admitMapVersion", fake("admitMapVersion", Object.class,
-                long.class, String.class));
-        bind(engine, "currentFieldVersion", fake("currentFieldVersion",
-                Object.class, String.class, String.class, String.class));
-        bind(engine, "admitFieldVersion", fake("admitFieldVersion",
-                Object.class, String.class, String.class, String.class,
-                long.class, String.class));
         bind(engine, "eventLedger", fake("eventLedger"));
         install(engine);
     }
@@ -510,6 +562,16 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
                 "configuration");
         field.setAccessible(true);
         return field.get(null);
+    }
+
+    private static Object active(long token) throws Exception {
+        Field activeRegions = ConcolicRegionRuntime.class.getDeclaredField(
+                "ACTIVE");
+        activeRegions.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<Long, Object> regions =
+                (Map<Long, Object>) activeRegions.get(null);
+        return regions.get(token);
     }
 
     @SuppressWarnings("unchecked")
@@ -602,21 +664,6 @@ public class ConcolicRegionRuntimeAsyncPublicationTest {
         public static String mapVersions(Object map) {
             rawReadOutBuilt = true;
             return "{}";
-        }
-        public static long currentMapVersion(Object map) { return 1L; }
-        public static long admitMapVersion(
-                Object map, long versionId, String selectedEdgeId) {
-            return 1L;
-        }
-        public static long currentFieldVersion(
-                Object owner, String declaringClass, String fieldName,
-                String descriptor) {
-            return 1L;
-        }
-        public static long admitFieldVersion(
-                Object owner, String declaringClass, String fieldName,
-                String descriptor, long versionId, String selectedEdgeId) {
-            return 1L;
         }
         public static String eventLedger() {
             rawReadOutBuilt = true;

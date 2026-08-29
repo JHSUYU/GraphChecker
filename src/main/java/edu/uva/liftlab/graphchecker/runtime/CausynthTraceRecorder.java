@@ -1050,14 +1050,17 @@ public final class CausynthTraceRecorder {
                                 + "activations");
             }
             writeSelectedSkeletons(candidateSkeletons, skeletons,
-                    graph.runtimeInstances, trace.methods);
+                    graph.runtimeInstances, trace.methods,
+                    trace.execution, trace.protocol);
         }
     }
 
     private static void writeSelectedSkeletons(
             File candidates, File output,
             Collection<Map<String, Object>> runtimeInstances,
-            List<RuntimeRegionPlanner.MethodEvent> methodEvents)
+            List<RuntimeRegionPlanner.MethodEvent> methodEvents,
+            List<RuntimeRegionPlanner.RuntimeEvent> executionEvents,
+            List<RuntimeRegionPlanner.ProtocolEvent> protocolEvents)
             throws IOException {
         Map<String, String> rootByRegion = new LinkedHashMap<>();
         Map<String, Set<String>> methodsByRegion = new LinkedHashMap<>();
@@ -1205,11 +1208,12 @@ public final class CausynthTraceRecorder {
             }
             // A communication client half whose every holder this run
             // dropped leaves the exchange with no modelled peer; the one
-            // region that stands for it is minted here, from the frame the
-            // run entered, and never from a holder's declared root.
+            // region that stands for it is minted here, from the exact SEND
+            // and caller frame the run recorded, never from a holder's root.
             for (JsonObject minted : mintUncoveredClientEntryRegions(
                     candidateRows, rootByRegion.keySet(),
-                    rootByRegion.values(), methodEvents)) {
+                    rootByRegion.values(), methodEvents,
+                    executionEvents, protocolEvents)) {
                 writer.write(minted.toString());
                 writer.write('\n');
             }
@@ -1228,7 +1232,8 @@ public final class CausynthTraceRecorder {
      * component as a library never enters those roots, every holder is
      * dropped, and the client half of the exchange leaves no occurrence at
      * all -- the server records an activation with no modelled peer.  This
-     * mints the missing root from the frame the run itself entered.</p>
+     * mints the missing root from the exact request SEND and the caller frame
+     * the run itself recorded.</p>
      *
      * <p>It fires only when no holder was selected, so a run that entered any
      * declared root mints nothing and this is inert wherever those roots run.
@@ -1240,9 +1245,13 @@ public final class CausynthTraceRecorder {
     private static List<JsonObject> mintUncoveredClientEntryRegions(
             List<JsonObject> candidates, Set<String> selectedRegions,
             Collection<String> selectedRoots,
-            List<RuntimeRegionPlanner.MethodEvent> methods) {
+            List<RuntimeRegionPlanner.MethodEvent> methods,
+            List<RuntimeRegionPlanner.RuntimeEvent> execution,
+            List<RuntimeRegionPlanner.ProtocolEvent> protocol) {
         List<JsonObject> minted = new ArrayList<>();
-        if (methods == null || methods.isEmpty()) {
+        if (methods == null || methods.isEmpty()
+                || execution == null || execution.isEmpty()
+                || protocol == null || protocol.isEmpty()) {
             return minted;
         }
         Map<String, List<JsonObject>> holders = new LinkedHashMap<>();
@@ -1273,7 +1282,7 @@ public final class CausynthTraceRecorder {
                 frames = new ObservedFrames(methods);
             }
             JsonObject row = mintClientEntryRegion(endpoint, group, frames,
-                    claimedRegions, claimedRoots);
+                    execution, protocol, claimedRegions, claimedRoots);
             if (row != null) {
                 minted.add(row);
                 claimedRegions.add(string(row, "regionId"));
@@ -1291,9 +1300,11 @@ public final class CausynthTraceRecorder {
     static List<JsonObject> mintedClientEntryRegionsForTests(
             List<JsonObject> candidates, Set<String> selectedRegions,
             Collection<String> selectedRoots,
-            List<RuntimeRegionPlanner.MethodEvent> methods) {
+            List<RuntimeRegionPlanner.MethodEvent> methods,
+            List<RuntimeRegionPlanner.RuntimeEvent> execution,
+            List<RuntimeRegionPlanner.ProtocolEvent> protocol) {
         return mintUncoveredClientEntryRegions(candidates, selectedRegions,
-                selectedRoots, methods);
+                selectedRoots, methods, execution, protocol);
     }
 
     /** The {@code callSiteId + exchange} of every client half a candidate
@@ -1339,6 +1350,8 @@ public final class CausynthTraceRecorder {
      */
     private static JsonObject mintClientEntryRegion(
             String endpoint, List<JsonObject> holders, ObservedFrames frames,
+            List<RuntimeRegionPlanner.RuntimeEvent> execution,
+            List<RuntimeRegionPlanner.ProtocolEvent> protocol,
             Set<String> claimedRegions, Set<String> claimedRoots) {
         int separator = endpoint.indexOf('\n');
         String callSite = endpoint.substring(0, separator);
@@ -1361,6 +1374,7 @@ public final class CausynthTraceRecorder {
         }
         JsonArray ports = new JsonArray();
         String definitionMethod = "";
+        String declaredCallee = null;
         for (JsonObject port : portsOf(holders.get(0))) {
             if (!endpoint.equals(string(port,
                     CommunicationCatalogContract.CALL_SITE_ID) + '\n'
@@ -1376,8 +1390,16 @@ public final class CausynthTraceRecorder {
             } else if (!definitionMethod.equals(owner)) {
                 return null;
             }
+            String callee = string(port,
+                    CommunicationCatalogContract.DECLARED_CALLEE);
+            if (declaredCallee == null) {
+                declaredCallee = callee;
+            } else if (!declaredCallee.equals(callee)) {
+                return null;
+            }
         }
         if (ports.size() == 0 || definitionMethod.isEmpty()
+                || declaredCallee == null || declaredCallee.isEmpty()
                 || !slice.contains(definitionMethod)) {
             return null;
         }
@@ -1428,7 +1450,10 @@ public final class CausynthTraceRecorder {
                 }
             }
         }
-        String root = frames.clientEntryRoot(definitionMethod, slice);
+        ObservedClientEntry observed = frames.clientEntry(
+                definitionMethod, callSite, declaredCallee, slice,
+                execution, protocol);
+        String root = observed == null ? "" : observed.rootMethod;
         if (root.isEmpty() || claimedRoots.contains(root)) {
             return null;
         }
@@ -1474,14 +1499,14 @@ public final class CausynthTraceRecorder {
             }
         }
         row.add("baselineObservedMethods", encodeStrings(
-                frames.observedInScope(root, slice)));
+                frames.observedInScope(observed.rootCallIds, slice)));
         // The re-root this row performs, named rather than implied: which
         // static regions declared this endpoint, and the roots they declared
         // that the run never entered.
         JsonObject reroot = new JsonObject();
         reroot.addProperty("schemaVersion", 1);
         reroot.addProperty("kind", "RUNTIME_CLIENT_ENTRY_REROOT");
-        reroot.addProperty("authority", "OBSERVED_CLIENT_ENDPOINT_FRAME_V1");
+        reroot.addProperty("authority", "OBSERVED_RPC_SEND_CLIENT_ENDPOINT_V2");
         reroot.addProperty(CommunicationCatalogContract.CALL_SITE_ID,
                 callSite);
         reroot.addProperty(CommunicationCatalogContract.EXCHANGE_SITE_KEY,
@@ -1495,6 +1520,19 @@ public final class CausynthTraceRecorder {
         }
         reroot.add("declaredRegionIds", declaredRegions);
         reroot.add("declaredRootMethods", declaredRoots);
+        JsonArray observedSends = new JsonArray();
+        for (RuntimeRegionPlanner.ProtocolEvent send : observed.sends) {
+            JsonObject boundary = new JsonObject();
+            boundary.addProperty("eventSeq", send.seq);
+            boundary.addProperty("exchangeId", send.correlationId);
+            if (!send.attemptId.isEmpty()) {
+                boundary.addProperty("attemptId", send.attemptId);
+            }
+            boundary.addProperty("half", send.half);
+            boundary.addProperty("invocationId", send.invocationId);
+            observedSends.add(boundary);
+        }
+        reroot.add("observedRpcSends", observedSends);
         row.add(RuntimeRegionPlanner.CLIENT_ENTRY_REROOT, reroot);
         return row;
     }
@@ -1537,14 +1575,27 @@ public final class CausynthTraceRecorder {
         return encoded;
     }
 
+    /** Exact protocol evidence that authorizes one minted client entry. */
+    private static final class ObservedClientEntry {
+        private final String rootMethod;
+        private final Set<Long> rootCallIds;
+        private final List<RuntimeRegionPlanner.ProtocolEvent> sends;
+
+        private ObservedClientEntry(
+                String rootMethod, Set<Long> rootCallIds,
+                List<RuntimeRegionPlanner.ProtocolEvent> sends) {
+            this.rootMethod = rootMethod;
+            this.rootCallIds = new LinkedHashSet<>(rootCallIds);
+            this.sends = new ArrayList<>(sends);
+        }
+    }
+
     /**
      * The observed call tree, read only for the frames a minted client entry
      * needs: the frames one method entered, and the parent of each.
      */
     private static final class ObservedFrames {
         private final Map<Long, RuntimeRegionPlanner.MethodEvent> byCall =
-                new LinkedHashMap<>();
-        private final Map<String, List<Long>> byMethod =
                 new LinkedHashMap<>();
         private final Map<Long, List<Long>> children = new LinkedHashMap<>();
 
@@ -1555,56 +1606,131 @@ public final class CausynthTraceRecorder {
                 // it names may root or bound a minted region.
                 byCall.put(event.callId,
                         byCall.containsKey(event.callId) ? null : event);
-                byMethod.computeIfAbsent(event.method,
-                        ignored -> new ArrayList<Long>()).add(event.callId);
                 children.computeIfAbsent(event.parentCallId,
                         ignored -> new ArrayList<Long>()).add(event.callId);
             }
         }
 
         /**
-         * The outermost frame that owns an observed client call site: from
-         * each frame of {@code owner} entered inside a registered request,
-         * walk up while the request and lane are unchanged and the caller is
-         * still a method of {@code scope}.  Empty when no such frame was
-         * observed, or when two of them name different roots -- the run then
-         * states no single client entry and nothing may stand for one.
+         * Resolves the client entry from the exact request SENDs recorded
+         * under one static cut.  Merely entering {@code owner} is not evidence
+         * that the cut fired: a protocol boundary must sit below the matching
+         * {@code CALL_SITE_ENTER} invocation in the recorded call tree.
          */
-        private String clientEntryRoot(String owner, Set<String> scope) {
-            String root = "";
-            for (Long call : byMethod.getOrDefault(owner,
-                    Collections.<Long>emptyList())) {
-                RuntimeRegionPlanner.MethodEvent frame = byCall.get(call);
-                if (frame == null || frame.requestKey.isEmpty()) {
+        private ObservedClientEntry clientEntry(
+                String owner, String callSite, String declaredCallee,
+                Set<String> scope,
+                List<RuntimeRegionPlanner.RuntimeEvent> execution,
+                List<RuntimeRegionPlanner.ProtocolEvent> protocol) {
+            Map<Long, RuntimeRegionPlanner.RuntimeEvent> sites =
+                    new LinkedHashMap<>();
+            Set<Long> disputedSites = new LinkedHashSet<>();
+            for (RuntimeRegionPlanner.RuntimeEvent event : execution) {
+                if (!"CALL_SITE_ENTER".equals(event.kind)
+                        || event.invocationId <= 0L) {
                     continue;
                 }
-                RuntimeRegionPlanner.MethodEvent outermost = frame;
-                while (true) {
-                    RuntimeRegionPlanner.MethodEvent parent =
-                            byCall.get(outermost.parentCallId);
-                    if (parent == null
-                            || parent.laneId != frame.laneId
-                            || !parent.requestKey.equals(frame.requestKey)
-                            || !scope.contains(parent.method)) {
-                        break;
-                    }
-                    outermost = parent;
-                }
-                if (root.isEmpty()) {
-                    root = outermost.method;
-                } else if (!root.equals(outermost.method)) {
-                    return "";
+                RuntimeRegionPlanner.RuntimeEvent previous = sites.put(
+                        event.invocationId, event);
+                if (previous != null) {
+                    disputedSites.add(event.invocationId);
                 }
             }
-            return root;
+            for (Long disputed : disputedSites) {
+                sites.remove(disputed);
+            }
+
+            String rootMethod = "";
+            Set<Long> rootCalls = new LinkedHashSet<>();
+            List<RuntimeRegionPlanner.ProtocolEvent> sends = new ArrayList<>();
+            for (RuntimeRegionPlanner.ProtocolEvent boundary : protocol) {
+                if (!"SEND".equals(boundary.direction)
+                        || !"REQUEST".equals(boundary.half)
+                        || boundary.correlationId.isEmpty()) {
+                    continue;
+                }
+                RuntimeRegionPlanner.RuntimeEvent site = enclosingSite(
+                        boundary, sites, owner, callSite, declaredCallee);
+                if (site == null || site.seq >= boundary.seq) {
+                    continue;
+                }
+                RuntimeRegionPlanner.MethodEvent outermost =
+                        clientEntryRoot(site.callId, scope);
+                if (outermost == null) {
+                    continue;
+                }
+                if (rootMethod.isEmpty()) {
+                    rootMethod = outermost.method;
+                } else if (!rootMethod.equals(outermost.method)) {
+                    return null;
+                }
+                rootCalls.add(outermost.callId);
+                sends.add(boundary);
+            }
+            return sends.isEmpty() ? null : new ObservedClientEntry(
+                    rootMethod, rootCalls, sends);
+        }
+
+        /** The matching static call-site invocation enclosing one SEND. */
+        private RuntimeRegionPlanner.RuntimeEvent enclosingSite(
+                RuntimeRegionPlanner.ProtocolEvent boundary,
+                Map<Long, RuntimeRegionPlanner.RuntimeEvent> sites,
+                String owner, String callSite, String declaredCallee) {
+            Set<Long> invocations = new LinkedHashSet<>();
+            if (boundary.invocationId > 0L) {
+                invocations.add(boundary.invocationId);
+            }
+            RuntimeRegionPlanner.MethodEvent frame = byCall.get(
+                    boundary.callId);
+            Set<Long> seenCalls = new LinkedHashSet<>();
+            while (frame != null && seenCalls.add(frame.callId)) {
+                if (frame.parentSiteId > 0L) {
+                    invocations.add(frame.parentSiteId);
+                }
+                frame = byCall.get(frame.parentCallId);
+            }
+            RuntimeRegionPlanner.RuntimeEvent matched = null;
+            for (Long invocation : invocations) {
+                RuntimeRegionPlanner.RuntimeEvent site = sites.get(invocation);
+                if (site == null || !owner.equals(site.method)
+                        || !callSite.equals(site.siteId)
+                        || !declaredCallee.equals(site.declaredCallee)) {
+                    continue;
+                }
+                if (matched != null && matched.callId != site.callId) {
+                    return null;
+                }
+                matched = site;
+            }
+            return matched;
+        }
+
+        /** The outermost in-scope owner frame of one exact call-site send. */
+        private RuntimeRegionPlanner.MethodEvent clientEntryRoot(
+                long ownerCallId, Set<String> scope) {
+            RuntimeRegionPlanner.MethodEvent frame = byCall.get(ownerCallId);
+            if (frame == null || frame.requestKey.isEmpty()
+                    || !scope.contains(frame.method)) {
+                return null;
+            }
+            RuntimeRegionPlanner.MethodEvent outermost = frame;
+            while (true) {
+                RuntimeRegionPlanner.MethodEvent parent =
+                        byCall.get(outermost.parentCallId);
+                if (parent == null || parent.laneId != frame.laneId
+                        || !parent.requestKey.equals(frame.requestKey)
+                        || !scope.contains(parent.method)) {
+                    return outermost;
+                }
+                outermost = parent;
+            }
         }
 
         /** The scope methods observed under every frame of {@code root}. */
-        private List<String> observedInScope(String root,
+        private List<String> observedInScope(Collection<Long> rootCalls,
                                              Set<String> scope) {
             Set<String> observed = new LinkedHashSet<>();
-            Deque<Long> work = new ArrayDeque<>(byMethod.getOrDefault(root,
-                    Collections.<Long>emptyList()));
+            Deque<Long> work = new ArrayDeque<>(rootCalls);
             Set<Long> seen = new LinkedHashSet<>(work);
             while (!work.isEmpty()) {
                 long call = work.removeFirst();
@@ -1908,8 +2034,8 @@ public final class CausynthTraceRecorder {
                     row.intValue("fieldReceiverObjectId", 0),
                     row.intValue("valueObjectId", 0),
                     row.stringValue("primitiveValue")));
-        } else if (!skeletonOnly && ("RPC_SEND".equals(eventKind)
-                || "RPC_RECEIVE".equals(eventKind))) {
+        } else if ("RPC_SEND".equals(eventKind)
+                || "RPC_RECEIVE".equals(eventKind)) {
             trace.protocol.add(new RuntimeRegionPlanner.ProtocolEvent(
                     row.longValue("seq", 0L),
                     "RPC_SEND".equals(eventKind) ? "SEND" : "RECEIVE",
@@ -1947,7 +2073,8 @@ public final class CausynthTraceRecorder {
                     row.intValue("objectId", 0),
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L)));
-        } else if (!skeletonOnly && isExecutionEventKind(eventKind)) {
+        } else if ((!skeletonOnly || "CALL_SITE_ENTER".equals(eventKind))
+                && isExecutionEventKind(eventKind)) {
             trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                     row.longValue("seq", 0L), eventKind,
                     row.stringValue("method"),
@@ -1984,6 +2111,20 @@ public final class CausynthTraceRecorder {
         for (String line : lines) {
             parseTraceLine(trace, line, lineNumber++,
                     new File("runtime-trace-test.jsonl"), "test", false,
+                    new ConcurrentHashMap<String, String>());
+        }
+        trace.sort();
+        return trace;
+    }
+
+    /** Reads the minimal pass-1 domain used to authenticate client entries. */
+    static TraceData parseSkeletonTraceLinesForTests(List<String> lines)
+            throws IOException {
+        TraceData trace = new TraceData();
+        int lineNumber = 1;
+        for (String line : lines) {
+            parseTraceLine(trace, line, lineNumber++,
+                    new File("runtime-trace-test.jsonl"), "test", true,
                     new ConcurrentHashMap<String, String>());
         }
         trace.sort();

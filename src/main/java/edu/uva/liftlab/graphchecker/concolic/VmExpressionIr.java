@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 
 import java.util.List;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
@@ -23,7 +24,21 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  */
 final class VmExpressionIr {
 
+    /**
+     * Exact serialization of {@code InstanceSymbolExp}: the VM can only
+     * construct it from an allocated oop and appends that object's positive
+     * symbolic runtime id.  Field roots ({@code M_L_field_*}) and unknown
+     * writer placeholders deliberately do not match.
+     */
+    private static final Pattern ALLOCATED_INSTANCE_REFERENCE =
+            Pattern.compile("^M_L'[^']+'_[1-9][0-9]*$");
+
     private VmExpressionIr() {
+    }
+
+    static boolean isAllocatedInstanceReference(String raw) {
+        return raw != null
+                && ALLOCATED_INSTANCE_REFERENCE.matcher(raw).matches();
     }
 
     static boolean isJavaParseInt(String name) {

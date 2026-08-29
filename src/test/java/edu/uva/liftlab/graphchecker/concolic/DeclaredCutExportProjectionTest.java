@@ -16,6 +16,7 @@ import java.util.Set;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -124,6 +125,56 @@ public class DeclaredCutExportProjectionTest {
         assertEquals("<C: void heartbeat()>", task.json()
                 .getAsJsonObject(ExecutionTask.REPLAY_ENTRY)
                 .get("method").getAsString());
+    }
+
+    @Test
+    public void selectedProducerBeforeNestedServiceLoopBecomesTaskRoot() {
+        JsonObject row = producerRow();
+        addLoopBodyRoot(row, "<C: void run()>", "<C: void service()>");
+        row.getAsJsonArray("closureGoals").get(0).getAsJsonObject()
+                .getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .add(ExecutionTask.REPLAY_ENTRY,
+                        replayEntry("<C: void registration()>", "C"));
+        RegionInstancePlan.Goal goal =
+                RegionInstancePlan.decode(row).goals().get(0);
+        OutputClosureContract selected = OutputClosureCodec.project(
+                goal.outputClosure(), Collections.singleton(HEAP_PORT));
+
+        ExecutionTask task = ExecutionTask.create(goal, "TASK.before-loop",
+                new JsonArray(), new JsonArray(), new JsonArray(),
+                LoopBoundPolicy.cfgBackedges(
+                        LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS),
+                true, selected);
+
+        assertEquals("<C: void registration()>", task.rootMethod());
+        assertEquals("", task.rootAuthority());
+        assertFalse(task.json().has(LoopBoundPolicy.ROOT_LOOP));
+    }
+
+    @Test
+    public void loopInCoarseRootKeepsItsBodyBoundary() {
+        JsonObject row = producerRow();
+        addLoopBodyRoot(row, "<C: void run()>", "<C: void run()>");
+        row.getAsJsonArray("closureGoals").get(0).getAsJsonObject()
+                .getAsJsonObject("outputClosure").getAsJsonArray("members")
+                .get(0).getAsJsonObject().getAsJsonObject("slice")
+                .add(ExecutionTask.REPLAY_ENTRY,
+                        replayEntry("<C: void helper()>", "C"));
+        RegionInstancePlan.Goal goal =
+                RegionInstancePlan.decode(row).goals().get(0);
+        OutputClosureContract selected = OutputClosureCodec.project(
+                goal.outputClosure(), Collections.singleton(HEAP_PORT));
+
+        ExecutionTask task = ExecutionTask.create(goal, "TASK.in-loop",
+                new JsonArray(), new JsonArray(), new JsonArray(),
+                LoopBoundPolicy.cfgBackedges(
+                        LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS),
+                true, selected);
+
+        assertEquals(LoopBoundPolicy.LOOP_BODY_ROOT, task.rootAuthority());
+        assertEquals("<C: void run()>", task.rootLoopMethod());
+        assertEquals("<C: void run()>", task.rootMethod());
     }
 
     // ---------------------------------------------------------------
@@ -398,6 +449,31 @@ public class DeclaredCutExportProjectionTest {
         entry.addProperty("method", method);
         entry.addProperty("receiverClass", receiverClass);
         return entry;
+    }
+
+    private static void addLoopBodyRoot(JsonObject row, String coarseRoot,
+                                        String loopMethod) {
+        JsonObject selector = new JsonObject();
+        selector.addProperty("kind", "RECEIVER_CONTEXT");
+        selector.addProperty("method", coarseRoot);
+        selector.addProperty("receiverClass", "C");
+        JsonObject anchor = new JsonObject();
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
+        anchor.addProperty("sourceKey", "cluster/client#epoch0");
+        selector.add("causalAnchor", anchor);
+        row.add("rootSelector", selector);
+        row.addProperty(LoopBoundPolicy.ROOT_AUTHORITY,
+                LoopBoundPolicy.LOOP_BODY_ROOT);
+        JsonObject rootLoop = new JsonObject();
+        rootLoop.addProperty("authority", LoopBoundPolicy.LOOP_BODY_ROOT);
+        rootLoop.addProperty(LoopBoundPolicy.ROOT_LOOP_METHOD, loopMethod);
+        rootLoop.addProperty(LoopBoundPolicy.HEADER_UNIT_INDEX, 1);
+        rootLoop.addProperty(LoopBoundPolicy.LOOP_SITE_ID,
+                loopMethod + "#u1");
+        JsonArray controls = new JsonArray();
+        controls.add(loopMethod + "#u2");
+        rootLoop.add(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS, controls);
+        row.add(LoopBoundPolicy.ROOT_LOOP, rootLoop);
     }
 
     /** The plan rows this fixture states, decoded the way the artifact does. */

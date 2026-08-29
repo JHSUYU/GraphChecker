@@ -128,7 +128,7 @@ public class ConcolicRegionRuntimeAbsorbedResponseProducerTest {
                     + "refused");
         } catch (IllegalStateException refused) {
             assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "response handoff port has two producer occurrences"));
+                    "communication attach port has two producer occurrences"));
         }
     }
 
@@ -169,7 +169,7 @@ public class ConcolicRegionRuntimeAbsorbedResponseProducerTest {
         taskById.setAccessible(true);
         Object task = taskById.invoke(configuration, taskId);
         Field field = task.getClass().getDeclaredField(
-                "responseProducerOccurrenceByPort");
+                "attachProducerOccurrenceByPort");
         field.setAccessible(true);
         return ((Map<String, String>) field.get(task)).get(PORT);
     }

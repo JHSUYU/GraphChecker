@@ -41,6 +41,8 @@ static JNINativeMethod methods[] = {
     {"printObjInfo",        "(" OBJ ")V",              (void *)&JVM_PrintObjInfo},
     {"startConcolicRegion", "(Ljava/lang/String;Ljava/lang/String;)J",
                                                         (void *)&JVM_StartConcolicRegion},
+    {"getCurrentConcolicContextId", "()J",
+                                      (void *)&JVM_GetCurrentConcolicContextId},
     {"endConcolic",         "()J",                     (void *)&JVM_EndConcolic},
     {"openWorkloadSession", "()J",                     (void *)&JVM_OpenWorkloadSession},
     {"closeWorkloadSession", "()J",                    (void *)&JVM_CloseWorkloadSession},

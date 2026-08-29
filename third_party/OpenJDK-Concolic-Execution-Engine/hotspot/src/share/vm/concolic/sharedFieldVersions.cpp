@@ -1421,7 +1421,16 @@ jlong ConcolicMngr::selectSharedFieldCarrier(
   jlong version_id =
       SharedFieldVersions::select_carrier(
           location, initial, fingerprint, descriptor);
-  if (version_id == 0) return SharedFieldVersions::SELECT_ALREADY_SELECTED;
+  if (version_id == 0) {
+    // Re-selection is how a later region declares that it is about to read a
+    // carrier retained by this workload session.  The location already has
+    // its writer universe, but this fresh thread context still needs its path
+    // gate opened before the real getfield resolves that universe.
+    if (SharedFieldVersions::is_carrier(location)) {
+      ctx->set_pc_admitted(true);
+    }
+    return SharedFieldVersions::SELECT_ALREADY_SELECTED;
+  }
   // A selected carrier is a materialized symbolic input in the same sense as
   // an explicit symbolize: from here on this thread's branches are relevant.
   ctx->set_pc_admitted(true);
@@ -1548,7 +1557,12 @@ jlong ConcolicMngr::selectSharedElementCarrier(Handle array, jint index) {
       shadow->get_sym_rid(), index, SharedFieldVersions::LOC_ARRAY_ELEMENT);
   jlong version_id =
       SharedFieldVersions::select_carrier(location, initial, fingerprint);
-  if (version_id == 0) return SharedFieldVersions::SELECT_ALREADY_SELECTED;
+  if (version_id == 0) {
+    if (SharedFieldVersions::is_carrier(location)) {
+      ctx->set_pc_admitted(true);
+    }
+    return SharedFieldVersions::SELECT_ALREADY_SELECTED;
+  }
   ctx->set_pc_admitted(true);
   return version_id;
 }
@@ -1585,7 +1599,12 @@ jlong ConcolicMngr::selectSharedMapCarrier(Handle map) {
   // equal maps two distinct candidates.
   jlong version_id = SharedFieldVersions::select_carrier(
       location, root, SharedFieldVersions::Fingerprint());
-  if (version_id == 0) return SharedFieldVersions::SELECT_ALREADY_SELECTED;
+  if (version_id == 0) {
+    if (SharedFieldVersions::is_carrier(location)) {
+      ctx->set_pc_admitted(true);
+    }
+    return SharedFieldVersions::SELECT_ALREADY_SELECTED;
+  }
   ctx->set_pc_admitted(true);
   return version_id;
 }

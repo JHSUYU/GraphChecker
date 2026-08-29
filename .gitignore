@@ -6,6 +6,7 @@
 /src/main/java/activations.json
 /src/main/java/concolicplan.jsonl
 /experiments-output/
+/.causynth-cache/
 __pycache__/
 /scratchpad/
 hs_err_pid*.log

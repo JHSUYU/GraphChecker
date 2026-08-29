@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
@@ -73,8 +74,12 @@ public final class RecordedSessionModel {
     private final Map<Long, JsonObject> readByReadEvent;
     /** The VM's authoritative writer row, addressed by its event/version id. */
     private final Map<Long, JsonObject> writerVersions;
+    /** Reads performed by the selected target region. */
+    private final Set<Long> targetReadEvents;
     /** Synthetic event id -> its replay/case-local identity. */
     private final Map<Long, EventIdentity> eventIdentities;
+    /** Alpha-renamed VM event rows used to prove same-context ownership. */
+    private final Map<Long, JsonObject> ledgerEvents;
     /** Exact replay/case scope and local VM id -> synthetic event id. */
     private final Map<String, Map<Long, Long>> eventIdsByScope;
     /**
@@ -82,9 +87,14 @@ public final class RecordedSessionModel {
      */
     private final Map<Long, BoundedWriterUniverse> boundedWriterUniverses =
             new LinkedHashMap<>();
+    /** LOOP_BODY_ROOT addresses whose declared a1..aK relation is closed. */
+    private final Set<String> closedOccurrenceAddresses;
     private final int ledgerSnapshots;
     private final String orderDomainFault;
     private final Set<Long> choiceReadEvents = new LinkedHashSet<>();
+    /** Arms proved impossible by their own sparse cut and recorded order. */
+    private final Set<String> dominatedReadArmSelectors =
+            new LinkedHashSet<>();
     /** README section 6's event-existence Booleans. */
     private final List<String> existenceSymbols = new ArrayList<>();
     /** Every guarded case represented by selected relation evidence. */
@@ -98,6 +108,9 @@ public final class RecordedSessionModel {
     private final Set<Long> unguardedEvents = new LinkedHashSet<>();
     /** Compact audit rows for interaction/state/handoff case membership. */
     private final List<JsonObject> caseEvidence = new ArrayList<>();
+    /** Exact selected case evidence, addressed by its alpha-renaming scope. */
+    private final Map<String, CaseEvidence> caseEvidenceByScope =
+            new LinkedHashMap<>();
     private boolean partial;
 
     private RecordedSessionModel(SessionTargetSlice.Slice slice,
@@ -105,19 +118,29 @@ public final class RecordedSessionModel {
                                  Map<Long, JsonObject> versionsByReadEvent,
                                  Map<Long, JsonObject> readByReadEvent,
                                  Map<Long, JsonObject> writerVersions,
+                                 Collection<Long> targetReadEvents,
                                  Map<Long, EventIdentity> eventIdentities,
+                                 Map<Long, JsonObject> ledgerEvents,
                                  Map<String, Map<Long, Long>> eventIdsByScope,
                                  int ledgerSnapshots,
-                                 String orderDomainFault) {
+                                 String orderDomainFault,
+                                 Collection<String> closedOccurrences) {
         this.slice = slice;
         this.readEventsBySite = readEventsBySite;
         this.versionsByReadEvent = versionsByReadEvent;
         this.readByReadEvent = readByReadEvent;
         this.writerVersions = writerVersions;
+        this.targetReadEvents = Collections.unmodifiableSet(
+                targetReadEvents == null ? new LinkedHashSet<Long>()
+                        : new LinkedHashSet<>(targetReadEvents));
         this.eventIdentities = eventIdentities;
+        this.ledgerEvents = ledgerEvents;
         this.eventIdsByScope = eventIdsByScope;
         this.ledgerSnapshots = ledgerSnapshots;
         this.orderDomainFault = orderDomainFault;
+        this.closedOccurrenceAddresses = Collections.unmodifiableSet(
+                closedOccurrences == null ? new LinkedHashSet<String>()
+                        : new LinkedHashSet<>(closedOccurrences));
     }
 
     /** One bounded integer position in the shared order domain. */
@@ -248,6 +271,42 @@ public final class RecordedSessionModel {
         }
     }
 
+    /** Unique selected case in which one RF arm's writer expression lives. */
+    public static final class WriterOwnerResolution {
+        public enum Status {
+            UNIQUE,
+            MISSING,
+            AMBIGUOUS,
+            READER_LOCAL
+        }
+
+        public final Status status;
+        public final String owner;
+        public final String regionId;
+        public final String occurrenceId;
+        public final List<String> candidates;
+        public final String detail;
+
+        private WriterOwnerResolution(Status status, String owner,
+                                      String regionId, String occurrenceId,
+                                      Collection<String> candidates,
+                                      String detail) {
+            this.status = status;
+            this.owner = owner == null ? "" : owner;
+            this.regionId = regionId == null ? "" : regionId;
+            this.occurrenceId = occurrenceId == null ? "" : occurrenceId;
+            this.candidates = Collections.unmodifiableList(
+                    new ArrayList<>(candidates == null
+                            ? Collections.<String>emptyList()
+                            : candidates));
+            this.detail = detail == null ? "" : detail;
+        }
+
+        public boolean usable() {
+            return status == Status.UNIQUE || status == Status.READER_LOCAL;
+        }
+    }
+
     private static final class PreparedEvidence {
         private final List<CaseEvidence> owners;
         private final List<JsonObject> versionRecords;
@@ -280,6 +339,15 @@ public final class RecordedSessionModel {
     public static RecordedSessionModel of(Collection<JsonObject> summaryRows,
                                           JsonElement targetPredicate,
                                           String targetRegionId) {
+        return of(summaryRows, targetPredicate, targetRegionId,
+                BoundedLoopComposition.empty());
+    }
+
+    /** Builds the model with the selected bounded-occurrence authority. */
+    public static RecordedSessionModel of(Collection<JsonObject> summaryRows,
+                                          JsonElement targetPredicate,
+                                          String targetRegionId,
+                                          BoundedLoopComposition loops) {
         PreparedEvidence prepared = prepareEvidence(
                 evidenceOwners(summaryRows), targetPredicate, targetRegionId);
         List<JsonObject> versionRecords = prepared.versionRecords;
@@ -298,8 +366,12 @@ public final class RecordedSessionModel {
                 readEventSites(versionRecords),
                 versionsByReadEvent(versionRecords),
                 readsByReadEvent(versionRecords),
-                writerVersions(versionRecords), prepared.identities,
-                prepared.idsByScope, prepared.ledgerSnapshots, fault);
+                writerVersions(versionRecords), targetReads,
+                prepared.identities,
+                ledgerEvents(prepared.ledgerEnvelope),
+                prepared.idsByScope, prepared.ledgerSnapshots, fault,
+                loops == null ? Collections.<String>emptySet()
+                        : loops.closedOccurrenceAddresses());
         model.retainCaseOwnership(prepared.owners);
         if (!fault.isEmpty()) {
             model.coverageGaps.add(gap(ORDER_DOMAIN_CYCLE, "", fault));
@@ -621,6 +693,17 @@ public final class RecordedSessionModel {
         return versions;
     }
 
+    private static Map<Long, JsonObject> ledgerEvents(JsonObject envelope) {
+        Map<Long, JsonObject> events = new LinkedHashMap<>();
+        for (JsonElement element : array(envelope, "events")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject event = element.getAsJsonObject();
+            long id = longInteger(event, "eventId", 0L);
+            if (id > 0L) events.put(id, event.deepCopy());
+        }
+        return events;
+    }
+
     /**
      * <p>README CASE-1 moved the state, container and ledger evidence of a
      */
@@ -728,6 +811,9 @@ public final class RecordedSessionModel {
      */
     private void retainCaseOwnership(Collection<CaseEvidence> evidence) {
         for (CaseEvidence owned : evidence) {
+            if (!owned.scope.isEmpty()) {
+                caseEvidenceByScope.put(owned.scope, owned);
+            }
             if (!owned.selector.isEmpty()) {
                 caseSelectors.put(owned.owner, owned.selector);
                 JsonObject audit = new JsonObject();
@@ -882,11 +968,65 @@ public final class RecordedSessionModel {
         return resolved == null ? 0L : resolved;
     }
 
+    /**
+     * Rehomes a copied expression's already-alpha-renamed event id in the
+     * exact producer scope which owns that expression.
+     */
+    public long resolveExpressionEventId(String scope, long eventId) {
+        if (eventId <= 0L) return 0L;
+        EventIdentity copied = eventIdentities.get(eventId);
+        long local = copied == null ? eventId : copied.localId;
+        return resolveEventId(scope, local);
+    }
+
     /** Resolves another local event in the same replay as {@code read}. */
     public long resolveEventForRead(long read, long localEventId) {
         EventIdentity identity = eventIdentities.get(read);
         return identity == null ? 0L
                 : resolveEventId(identity.scope, localEventId);
+    }
+
+    /**
+     * Restores the replay-local event names of a copied expression.
+     *
+     * <p>Composition alpha-renames event ids so different replay cases remain
+     * disjoint in the order domain.  Structural value identity, however, is
+     * compared with the producer's original output expression.  This copy
+     * removes only that bookkeeping rename and its scope annotation; the
+     * expression used for SMT lowering remains untouched.</p>
+     */
+    public JsonElement localEventExpression(JsonElement expression) {
+        JsonElement restored = expression == null
+                ? null : expression.deepCopy();
+        restoreLocalEventIds(restored);
+        return restored;
+    }
+
+    private void restoreLocalEventIds(JsonElement element) {
+        if (element == null || element.isJsonNull()) return;
+        if (element.isJsonArray()) {
+            for (JsonElement child : element.getAsJsonArray()) {
+                restoreLocalEventIds(child);
+            }
+            return;
+        }
+        if (!element.isJsonObject()) return;
+        JsonObject object = element.getAsJsonObject();
+        object.remove("recordedEventScope");
+        for (String member : new ArrayList<>(object.keySet())) {
+            JsonElement child = object.get(member);
+            if (eventIdMember(member) && child != null
+                    && child.isJsonPrimitive()
+                    && child.getAsJsonPrimitive().isNumber()) {
+                EventIdentity identity = eventIdentities.get(
+                        child.getAsLong());
+                if (identity != null) {
+                    object.addProperty(member, identity.localId);
+                }
+            } else {
+                restoreLocalEventIds(child);
+            }
+        }
     }
 
     private static String disjunction(Collection<String> selectors) {
@@ -970,9 +1110,9 @@ public final class RecordedSessionModel {
     }
 
     private void lower() {
-        // Every guarded read carries an unconditional unknown-writer arm, and
-        // a candidate set the slice could not close carries the same doubt.
-        partial = !slice.guardedReads().isEmpty();
+        // A guarded read is partial only while its bounded writer universe is
+        // open. A dense declared LOOP_BODY_ROOT prefix can close that axis.
+        partial = false;
         for (JsonObject recorded : slice.gaps()) {
             String reason = string(recorded, "reason");
             if (SessionTargetSlice.UNRECORDED_CANDIDATE_SET.equals(reason)
@@ -1040,7 +1180,8 @@ public final class RecordedSessionModel {
         // The set this read chooses from is enumerated before anything is
         String location = SharedStateEvidence.locationKey(guarded);
         BoundedWriterUniverse universe = BoundedWriterUniverse.of(guarded,
-                versionsByReadEvent.get(readEventId));
+                versionsByReadEvent.get(readEventId),
+                closedOccurrenceAddresses);
         boundedWriterUniverses.put(readEventId, universe);
         coverageGaps.addAll(universe.gaps());
         if (universe.retainsUnknownArm()) partial = true;
@@ -1052,8 +1193,11 @@ public final class RecordedSessionModel {
         }
         List<String> armSelectors = new ArrayList<>();
         JsonArray choice = new JsonArray();
-        for (ReadArm<Object> candidateArm : armsOf(readEventId,
-                array(guarded, "candidates"), null)) {
+        List<ReadArm<Object>> readArms = armsOf(readEventId,
+                array(guarded, "candidates"), null);
+        ReadArm<Object> maximalTargetWriter =
+                maximalTargetWriter(readEventId, readArms);
+        for (ReadArm<Object> candidateArm : readArms) {
             JsonObject candidate = candidateArm.candidate;
             String selector = candidateArm.selector;
             selectors.add(selector);
@@ -1069,6 +1213,22 @@ public final class RecordedSessionModel {
             // version id and the writer's ledger event are the same event -
             // stated under both names so a reader need not know that.
             row.addProperty("writerEventId", candidateArm.writerEventId);
+            if (maximalTargetWriter != null && !candidateArm.unknown) {
+                if (candidateArm == maximalTargetWriter) {
+                    row.addProperty("targetMaximalWriter", true);
+                    row.addProperty("maximalWriterAssertion",
+                            "recorded_target_maximal_writer__"
+                                    + eventToken(readEventId) + "__"
+                                    + eventToken(candidateArm.writerEventId));
+                } else {
+                    dominatedReadArmSelectors.add(selector);
+                    row.addProperty("valueTermPruned", true);
+                    row.addProperty("dominatedByEventId",
+                            maximalTargetWriter.writerEventId);
+                    row.addProperty("dominanceAuthority",
+                            "TARGET_READ_UNIQUE_MAXIMAL_WRITER_V1");
+                }
+            }
             choice.add(row);
             if (candidateArm.unknown) {
                 row.addProperty("writerExists", false);
@@ -1104,6 +1264,7 @@ public final class RecordedSessionModel {
                             + eventToken(version),
                     "(=> " + selector + " (< " + positionFor(version) + " "
                             + positionFor(readEventId) + "))"));
+            Long dominatedBy = null;
             for (JsonElement other : array(candidate, "orderConstraints")) {
                 JsonObject constraint = other.getAsJsonObject();
                 if (!"OTHER_WRITE_OUTSIDE_CUT".equals(
@@ -1121,6 +1282,40 @@ public final class RecordedSessionModel {
                                 + positionFor(version) + ") (< "
                                 + positionFor(readEventId) + " "
                                 + positionFor(competitor) + ")))"));
+                if (dominatedBy == null
+                        && slice.orderDomain().orderedBefore(version,
+                        competitor)
+                        && slice.orderDomain().orderedBefore(competitor,
+                        readEventId)) {
+                    dominatedBy = competitor;
+                }
+            }
+            if (dominatedBy != null) {
+                // This is a derived unit, not a heuristic pin.  The recorded
+                // order states version < dominating-write < read, while the
+                // sparse cut for this arm requires the dominating write to be
+                // outside (version, read).  Under the three events' cases the
+                // arm is therefore impossible.  State that consequence once
+                // so the solver need not rediscover it through integer order
+                // variables before simplifying a large writer expression.
+                String assertion = "recorded_read_cut_dominated__"
+                        + eventToken(readEventId) + "__"
+                        + eventToken(version) + "__"
+                        + eventToken(dominatedBy);
+                String dominanceGuard = caseGuard(version, dominatedBy,
+                        readEventId);
+                assertions.add(new OrderAssertion(assertion,
+                        "(not " + selector + ")", dominanceGuard));
+                row.addProperty("dominatedByEventId", dominatedBy);
+                row.addProperty("dominanceAssertion", assertion);
+                // When the dominance guard is exactly the read's guard,
+                // selector => read_exists makes this arm false everywhere.
+                // Composer may therefore replace its otherwise enormous value
+                // expression with a neutral term without changing any model.
+                if (dominanceGuard.equals(caseGuard(readEventId))) {
+                    dominatedReadArmSelectors.add(selector);
+                    row.addProperty("valueTermPruned", true);
+                }
             }
         }
         // Which of these arms replay could actually observe is knowable now,
@@ -1150,6 +1345,14 @@ public final class RecordedSessionModel {
         assertions.add(new OrderAssertion(
                 "recorded_read_choice__" + readEventId,
                 "(=> " + exists + " " + exactlyOne + ")"));
+        if (maximalTargetWriter != null) {
+            assertions.add(new OrderAssertion(
+                    "recorded_target_maximal_writer__"
+                            + eventToken(readEventId) + "__"
+                            + eventToken(maximalTargetWriter.writerEventId),
+                    "(=> " + exists + " "
+                            + maximalTargetWriter.selector + ")"));
+        }
         choiceReadEvents.add(readEventId);
         JsonObject read = new JsonObject();
         read.addProperty("readEventId", readEventId);
@@ -1163,6 +1366,63 @@ public final class RecordedSessionModel {
         read.addProperty("writerUniverseClosed", universe.closed());
         read.add("candidates", choice);
         readChoices.add(read);
+    }
+
+    /**
+     * Selects the completed state of one target-local writer activation.
+     *
+     * <p>This is an existential witness strengthening, not a latest-by-id
+     * guess: every mutating candidate must have the same exact case owner,
+     * any initial-state arm must be reader-local, and the recorded order must
+     * prove one unique writer follows every other candidate. Selecting it
+     * states the schedule in which that activation finished updating the
+     * shared field before the target read.</p>
+     */
+    private ReadArm<Object> maximalTargetWriter(
+            long readEventId, List<ReadArm<Object>> arms) {
+        if (!targetReadEvents.contains(readEventId)) return null;
+        List<ReadArm<Object>> known = new ArrayList<>();
+        String owner = "";
+        for (ReadArm<Object> arm : arms) {
+            if (arm.unknown) continue;
+            if (arm.writerEventId <= 0L || arm.expressionOwner == null) {
+                return null;
+            }
+            JsonObject version = writerVersion(arm.writerEventId);
+            if ("INITIAL".equals(string(version, "versionKind"))) {
+                if (arm.expressionOwner.status
+                        != WriterOwnerResolution.Status.READER_LOCAL) {
+                    return null;
+                }
+                known.add(arm);
+                continue;
+            }
+            if (arm.expressionOwner.status
+                    != WriterOwnerResolution.Status.UNIQUE
+                    || arm.expressionOwner.owner.isEmpty()) {
+                return null;
+            }
+            if (owner.isEmpty()) owner = arm.expressionOwner.owner;
+            else if (!owner.equals(arm.expressionOwner.owner)) return null;
+            known.add(arm);
+        }
+        if (known.size() < 2) return null;
+        ReadArm<Object> winner = null;
+        for (ReadArm<Object> candidate : known) {
+            boolean followsAll = true;
+            for (ReadArm<Object> other : known) {
+                if (candidate == other) continue;
+                if (!slice.orderDomain().orderedBefore(other.writerEventId,
+                        candidate.writerEventId)) {
+                    followsAll = false;
+                    break;
+                }
+            }
+            if (!followsAll) continue;
+            if (winner != null) return null;
+            winner = candidate;
+        }
+        return winner;
     }
 
     private String eventToken(long eventId) {
@@ -1199,15 +1459,18 @@ public final class RecordedSessionModel {
         public final boolean unknown;
         public final long writerEventId;
         public final JsonObject candidate;
+        public final WriterOwnerResolution expressionOwner;
         public final T term;
 
-        private ReadArm(String selector, JsonObject candidate, T term) {
+        private ReadArm(String selector, JsonObject candidate,
+                        WriterOwnerResolution expressionOwner, T term) {
             this.arm = string(candidate, "selector");
             this.selector = selector;
             this.unknown = bool(candidate, "unknown", false);
             this.writerEventId = longInteger(candidate, "fieldVersionId",
                     0L);
             this.candidate = candidate;
+            this.expressionOwner = expressionOwner;
             this.term = term;
         }
     }
@@ -1220,13 +1483,25 @@ public final class RecordedSessionModel {
     public <T> List<ReadArm<T>> armsOf(long readEventId,
                                        JsonArray candidates,
                                        Function<JsonObject, T> lowering) {
+        return armsOfWithWriterOwners(readEventId, candidates,
+                (candidate, ignored) -> lowering == null
+                        ? null : lowering.apply(candidate));
+    }
+
+    /** The same arm walk with the exact writer expression owner exposed. */
+    public <T> List<ReadArm<T>> armsOfWithWriterOwners(
+            long readEventId, JsonArray candidates,
+            BiFunction<JsonObject, WriterOwnerResolution, T> lowering) {
         List<ReadArm<T>> arms = new ArrayList<>();
         for (JsonElement element : candidates) {
             if (!element.isJsonObject()) continue;
             JsonObject candidate = element.getAsJsonObject();
+            WriterOwnerResolution owner = writerExpressionOwnerForRead(
+                    readEventId, candidate);
             arms.add(new ReadArm<>(scopedSelectorName(readEventId,
-                    string(candidate, "selector")), candidate,
-                    lowering == null ? null : lowering.apply(candidate)));
+                    string(candidate, "selector")), candidate, owner,
+                    lowering == null ? null : lowering.apply(candidate,
+                            owner)));
         }
         return arms;
     }
@@ -1287,6 +1562,12 @@ public final class RecordedSessionModel {
         return Collections.unmodifiableSet(choiceReadEvents);
     }
 
+    /** Whether the recorded order and sparse cut prove this arm unreachable. */
+    public boolean readArmValueTermPruned(long readEventId, String arm) {
+        return dominatedReadArmSelectors.contains(
+                scopedSelectorName(readEventId, arm));
+    }
+
     /** The guarded read-from terms of the sliced reads, by read event. */
     public Map<Long, JsonObject> guardedReads() {
         return slice.guardedReads();
@@ -1323,6 +1604,66 @@ public final class RecordedSessionModel {
                                              String readerSite) {
         List<ReadCase> result = new ArrayList<>();
         for (ReadCase readCase : readCasesOf(locationKey, readerSite)) {
+            if (SharedStateEvidence.RESOLUTION_GUARDED.equals(
+                    readCase.resolution)
+                    && guardedReads().containsKey(readCase.readEventId)) {
+                result.add(readCase);
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    /**
+     * Every case-local read of one VM store by one planned reader address.
+     *
+     * <p>Canonical location keys include the exact activation so that normal
+     * joins cannot accidentally merge two executions.  A selected composed
+     * edge can nevertheless address several mutually-exclusive target cases
+     * of the same store.  This method joins only on the VM's session location
+     * identity and the planned reader address; the returned guards retain the
+     * cases as separate alternatives.</p>
+     */
+    public List<ReadCase> readCasesOfSessionLocation(
+            String sessionLocationKey, String readerSite) {
+        if (sessionLocationKey == null || readerSite == null
+                || sessionLocationKey.isEmpty() || readerSite.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String plannedReader = PathObservation.plannedOccurrenceOf(
+                readerSite);
+        List<Long> events = new ArrayList<>();
+        for (Map.Entry<Long, JsonObject> entry : readByReadEvent.entrySet()) {
+            JsonObject record = versionsByReadEvent.get(entry.getKey());
+            if (record == null || !sessionLocationKey.equals(
+                    SharedStateEvidence.sessionLocationKey(record))) {
+                continue;
+            }
+            String recordedReader = SharedStateEvidence.readerSite(
+                    entry.getValue());
+            if (!readerSite.equals(recordedReader)
+                    && !plannedReader.equals(
+                    PathObservation.plannedOccurrenceOf(recordedReader))) {
+                continue;
+            }
+            events.add(entry.getKey());
+        }
+        Collections.sort(events);
+        List<ReadCase> cases = new ArrayList<>();
+        for (Long event : events) {
+            JsonObject read = readByReadEvent.get(event);
+            cases.add(new ReadCase(event, caseGuard(event),
+                    string(read, "resolution"),
+                    longInteger(read, "chosenFieldVersionId", 0L)));
+        }
+        return Collections.unmodifiableList(cases);
+    }
+
+    /** Guarded subset of {@link #readCasesOfSessionLocation}. */
+    public List<ReadCase> guardedReadCasesOfSessionLocation(
+            String sessionLocationKey, String readerSite) {
+        List<ReadCase> result = new ArrayList<>();
+        for (ReadCase readCase : readCasesOfSessionLocation(
+                sessionLocationKey, readerSite)) {
             if (SharedStateEvidence.RESOLUTION_GUARDED.equals(
                     readCase.resolution)
                     && guardedReads().containsKey(readCase.readEventId)) {
@@ -1377,6 +1718,224 @@ public final class RecordedSessionModel {
                                            long localVersionId) {
         return writerVersion(resolveEventForRead(readEventId,
                 localVersionId));
+    }
+
+    /** Alpha-renaming scope which owns one synthetic recorded event. */
+    public String eventScope(long eventId) {
+        EventIdentity identity = eventIdentities.get(eventId);
+        return identity == null ? "" : identity.scope;
+    }
+
+    /**
+     * Resolves the selected producer case that owns one known RF arm's raw
+     * expression.  A reader snapshot contains a copied writer version, so its
+     * synthetic event scope is the reader's and is not an expression owner.
+     * Join the VM-local event id and the writer's recorded task/region/
+     * occurrence back to a selected source case; refuse zero or several
+     * matches instead of guessing an activation.
+     */
+    public WriterOwnerResolution writerExpressionOwnerForRead(
+            long readEventId, JsonObject candidate) {
+        if (candidate == null || bool(candidate, "unknown", false)) {
+            String scope = eventScope(readEventId);
+            return new WriterOwnerResolution(
+                    WriterOwnerResolution.Status.READER_LOCAL, scope, "", "",
+                    scope.isEmpty() ? Collections.<String>emptyList()
+                            : Collections.singletonList(scope),
+                    "unknown RF arm remains reader-local");
+        }
+        long statedVersion = longInteger(candidate, "fieldVersionId", 0L);
+        long scopedVersion = resolveEventForRead(readEventId, statedVersion);
+        JsonObject writer = writerVersion(scopedVersion);
+        EventIdentity copiedIdentity = eventIdentities.get(scopedVersion);
+        String readerScope = eventScope(readEventId);
+        // A copied candidate whose write and read are both recorded in the
+        // same exact case already has an unambiguous expression owner.  The
+        // separate version store may omit that local write; its case-scoped
+        // event identity must not be discarded merely because the duplicate
+        // version snapshot is absent.
+        if (copiedIdentity != null && !readerScope.isEmpty()
+                && readerScope.equals(copiedIdentity.scope)
+                && sameCaseLocalWriter(readEventId, scopedVersion,
+                candidate, readerScope)) {
+            CaseEvidence owner = caseEvidenceByScope.get(readerScope);
+            return new WriterOwnerResolution(
+                    WriterOwnerResolution.Status.READER_LOCAL, readerScope,
+                    owner == null ? "" : owner.regionId,
+                    owner == null ? "" : owner.occurrenceId,
+                    Collections.singletonList(readerScope),
+                    "writer and read share one exact selected case");
+        }
+        if (scopedVersion <= 0L || writer.size() == 0
+                || copiedIdentity == null) {
+            return missingWriterOwner(readEventId, statedVersion,
+                    "reader snapshot has no admitted writer version");
+        }
+        String writerTask = first(string(writer, "taskId"),
+                string(candidate, "taskId"));
+        String writerRegion = first(string(writer, "regionId"),
+                string(candidate, "regionId"));
+        String writerOccurrence = string(writer,
+                SharedStateEvidence.WRITER_OCCURRENCE_ID);
+        String writerSource = string(writer,
+                SharedStateEvidence.WRITER_SOURCE_KEY);
+        if ("INITIAL".equals(string(writer, "versionKind"))) {
+            return new WriterOwnerResolution(
+                    WriterOwnerResolution.Status.READER_LOCAL, readerScope,
+                    "", "", readerScope.isEmpty()
+                    ? Collections.<String>emptyList()
+                    : Collections.singletonList(readerScope),
+                    "initial state is reader-local, not a producer case");
+        }
+        if (writerTask.isEmpty() || writerRegion.isEmpty()
+                || writerOccurrence.isEmpty()) {
+            return missingWriterOwner(readEventId, statedVersion,
+                    "writer version lacks task, region, or occurrence identity");
+        }
+
+        Set<String> matches = new LinkedHashSet<>();
+        for (Map.Entry<Long, JsonObject> entry : writerVersions.entrySet()) {
+            EventIdentity identity = eventIdentities.get(entry.getKey());
+            if (identity == null
+                    || identity.localId != copiedIdentity.localId
+                    || !sameWriterIdentity(writer, entry.getValue())) {
+                continue;
+            }
+            CaseEvidence owner = caseEvidenceByScope.get(identity.scope);
+            if (owner == null || owner.selector.isEmpty()
+                    || !writerRegion.equals(owner.regionId)
+                    || !writerTask.equals(string(owner.row,
+                    "sourceTaskId"))) {
+                continue;
+            }
+            String ownerOccurrence = owner.occurrenceId;
+            boolean occurrenceMatches = writerOccurrence.matches(".*#a\\d+$")
+                    ? writerOccurrence.equals(ownerOccurrence)
+                    : writerOccurrence.equals(
+                    PathObservation.plannedOccurrenceOf(ownerOccurrence));
+            if (!occurrenceMatches) continue;
+            String ownerSource = string(owner.row, "sourceKey");
+            if (!writerSource.isEmpty() && !ownerSource.isEmpty()
+                    && !writerSource.equals(ownerSource)) {
+                continue;
+            }
+            matches.add(owner.scope);
+        }
+
+        if (matches.size() == 1) {
+            String scope = matches.iterator().next();
+            CaseEvidence owner = caseEvidenceByScope.get(scope);
+            return new WriterOwnerResolution(
+                    WriterOwnerResolution.Status.UNIQUE, scope,
+                    owner.regionId, owner.occurrenceId, matches,
+                    "unique selected writer case");
+        }
+        WriterOwnerResolution.Status status = matches.isEmpty()
+                ? WriterOwnerResolution.Status.MISSING
+                : WriterOwnerResolution.Status.AMBIGUOUS;
+        return new WriterOwnerResolution(status, "", writerRegion,
+                writerOccurrence, matches,
+                "read " + readEventId + " writer " + statedVersion
+                        + " has " + matches.size()
+                        + " selected expression-owner cases");
+    }
+
+    /**
+     * Whether an inline RF candidate's missing duplicate version envelope is
+     * nevertheless owned by the reader's exact case.  The case expression
+     * names the read; the VM ledger must additionally put its writer in the
+     * same entered context, thread, region, location, and program order.
+     */
+    private boolean sameCaseLocalWriter(long readEventId, long writerEventId,
+                                        JsonObject candidate,
+                                        String readerScope) {
+        CaseEvidence owner = caseEvidenceByScope.get(readerScope);
+        JsonObject writer = ledgerEvents.get(writerEventId);
+        JsonObject read = ledgerEvents.get(readEventId);
+        if (owner == null || writer == null || read == null
+                || !"FIELD_WRITE".equals(string(writer, "eventKind"))
+                || !"FIELD_READ".equals(string(read, "eventKind"))) {
+            return false;
+        }
+        long context = longInteger(writer, "contextId", 0L);
+        long thread = longInteger(writer, "javaThreadId", 0L);
+        String region = string(writer, "regionId");
+        if (context <= 0L || thread <= 0L || region.isEmpty()
+                || context != longInteger(read, "contextId", 0L)
+                || thread != longInteger(read, "javaThreadId", 0L)
+                || !region.equals(string(read, "regionId"))
+                || !region.equals(owner.regionId)
+                || !region.equals(string(candidate, "regionId"))
+                || context != longInteger(candidate, "writerContextId", 0L)
+                || thread != longInteger(candidate,
+                "writerJavaThreadId", 0L)
+                || !string(candidate, "taskId").equals(
+                string(owner.row, "sourceTaskId"))
+                || longInteger(writer, "objectSymRid", 0L)
+                != longInteger(read, "objectSymRid", 0L)
+                || longInteger(writer, "slot", Long.MIN_VALUE)
+                != longInteger(read, "slot", Long.MAX_VALUE)
+                || longInteger(writer, "step", Long.MAX_VALUE)
+                >= longInteger(read, "step", Long.MIN_VALUE)
+                || SharedStateEvidence.containsVmSerializationTruncation(
+                candidate.get("expression"))) {
+            return false;
+        }
+        boolean ordered = false;
+        for (JsonElement element : array(candidate, "orderConstraints")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject edge = element.getAsJsonObject();
+            if ("WRITE_BEFORE_READ".equals(string(edge, "kind"))
+                    && longInteger(edge, "beforeEventId", 0L)
+                    == writerEventId
+                    && longInteger(edge, "afterEventId", 0L)
+                    == readEventId) {
+                ordered = true;
+                break;
+            }
+        }
+        if (!ordered || !slice.orderDomain().orderedBefore(
+                writerEventId, readEventId)) return false;
+        for (JsonObject event : ledgerEvents.values()) {
+            if ("REGION_ENTER".equals(string(event, "eventKind"))
+                    && context == longInteger(event, "contextId", 0L)
+                    && thread == longInteger(event, "javaThreadId", 0L)
+                    && region.equals(string(event, "regionId"))
+                    && longInteger(event, "eventId", Long.MAX_VALUE)
+                    < writerEventId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private WriterOwnerResolution missingWriterOwner(long readEventId,
+                                                       long version,
+                                                       String detail) {
+        return new WriterOwnerResolution(
+                WriterOwnerResolution.Status.MISSING, "", "", "",
+                Collections.<String>emptyList(), "read " + readEventId
+                + " writer " + version + ": " + detail);
+    }
+
+    private static boolean sameWriterIdentity(JsonObject left,
+                                              JsonObject right) {
+        if (!string(left, "taskId").equals(string(right, "taskId"))
+                || !string(left, "regionId").equals(
+                string(right, "regionId"))
+                || !string(left, SharedStateEvidence.WRITER_OCCURRENCE_ID)
+                .equals(string(right,
+                        SharedStateEvidence.WRITER_OCCURRENCE_ID))
+                || !string(left, "versionKind").equals(
+                string(right, "versionKind"))) {
+            return false;
+        }
+        String leftSource = string(left,
+                SharedStateEvidence.WRITER_SOURCE_KEY);
+        String rightSource = string(right,
+                SharedStateEvidence.WRITER_SOURCE_KEY);
+        return leftSource.isEmpty() || rightSource.isEmpty()
+                || leftSource.equals(rightSource);
     }
 
     public List<JsonObject> coverageGaps() {

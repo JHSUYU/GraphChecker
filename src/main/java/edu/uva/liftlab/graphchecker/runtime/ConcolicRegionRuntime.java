@@ -32,6 +32,7 @@ import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -159,6 +160,12 @@ public final class ConcolicRegionRuntime {
     static final String SKIP_ANCHOR_SOURCE_NEVER_EXISTED =
             "ANCHOR_EPOCH_NOT_REACHED";
     /**
+     * A bounded loop address ran, but the response exchange selected as its
+     * causal identity never occurred before the workload ended.
+     */
+    static final String SKIP_CAUSAL_ANCHOR_NOT_OBSERVED =
+            "CAUSAL_ANCHOR_NOT_OBSERVED";
+    /**
      * The region root was still running when the workload ended, so this
      * occurrence never reached {@code NORMAL}, {@code THROW} or a bounded
      * {@code CUT}.
@@ -203,6 +210,17 @@ public final class ConcolicRegionRuntime {
     private static volatile EngineApi engineApi;
     /** Session this JVM opened for its workload, or zero when it opened none. */
     private static volatile long workloadSessionId;
+    /**
+     * Exact configured-source fields selected into the current VM session.
+     * Identity semantics matter: two equal Hadoop keys are distinct carriers.
+     */
+    private static final Object PROPAGATED_SOURCE_FIELD_LOCK = new Object();
+    private static final IdentityHashMap<Object, Set<String>>
+            PROPAGATED_SOURCE_FIELDS = new IdentityHashMap<>();
+    /** Exact materialized activation owning each session VM context. */
+    private static final Object CONTEXT_ACTIVATION_LOCK = new Object();
+    private static final Map<Long, WriterActivationIdentity>
+            CONTEXT_ACTIVATIONS = new LinkedHashMap<>();
     /**
      * Producer execution carried implicitly by old manual-carrier ABIs that
      * transport only the VM broker handle.
@@ -523,16 +541,19 @@ public final class ConcolicRegionRuntime {
             engineApi = null;
             workloadSessionId = 0L;
         }
+        clearPropagatedSourceFields();
+        clearContextActivations();
         resetManualHandoffLineageSession(0L);
         ACTIVE.clear();
         CURRENT_TOKEN.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
-        PENDING_RESPONSE_ATTACH_PORTS.remove();
+        RESPONSE_CUT_TOKEN.remove();
         INBOUND_RESPONSE_PRODUCER_ARM.remove();
         beforePublicationDecodeForTests = null;
         synchronized (RESPONSE_ARM_LOCK) {
             IN_FLIGHT_RESPONSE_PRODUCER_ARMS.clear();
+            PENDING_RESPONSE_CUTS_BY_PORT.clear();
         }
         synchronized (PUBLICATION_LOCK) {
             if (resultPublicationsInFlight != 0) {
@@ -668,9 +689,17 @@ public final class ConcolicRegionRuntime {
      * @return an empty string on success, otherwise a named diagnostic
      */
     public static String openWorkloadSession() {
-        if (configuration().tasks.isEmpty()) return "";
+        if (configuration().tasks.isEmpty()) {
+            clearPropagatedSourceFields();
+            clearContextActivations();
+            return "";
+        }
         EngineApi api = engine();
-        if (!api.workloadSessionAvailable()) return "";
+        if (!api.workloadSessionAvailable()) {
+            clearPropagatedSourceFields();
+            clearContextActivations();
+            return "";
+        }
         final long status;
         try {
             status = api.openWorkloadSession();
@@ -683,6 +712,8 @@ public final class ConcolicRegionRuntime {
                     + api.workloadSessionStatus();
         }
         resetManualHandoffLineageSession(status);
+        clearPropagatedSourceFields();
+        clearContextActivations();
         workloadSessionId = status;
         return "";
     }
@@ -698,7 +729,11 @@ public final class ConcolicRegionRuntime {
         // of which launcher owns it.
         awaitSelectedResultPublications();
         long sessionId = workloadSessionId;
-        if (sessionId == 0L) return "";
+        if (sessionId == 0L) {
+            clearPropagatedSourceFields();
+            clearContextActivations();
+            return "";
+        }
         EngineApi api = engine();
         final long status;
         try {
@@ -713,6 +748,8 @@ public final class ConcolicRegionRuntime {
                     + api.workloadSessionStatus();
         }
         resetManualHandoffLineageSession(0L);
+        clearPropagatedSourceFields();
+        clearContextActivations();
         workloadSessionId = 0L;
         return "";
     }
@@ -729,6 +766,82 @@ public final class ConcolicRegionRuntime {
         if (status == -3L) return "MEMBERS_REMAIN";
         if (status == -4L) return "CLOSING";
         return "UNNAMED_STATUS(" + status + ")";
+    }
+
+    /** Remembers one exact source field only for this workload session. */
+    private static void rememberPropagatedSourceField(
+            Object owner, String fieldSignature) {
+        synchronized (PROPAGATED_SOURCE_FIELD_LOCK) {
+            Set<String> fields = PROPAGATED_SOURCE_FIELDS.get(owner);
+            if (fields == null) {
+                fields = new LinkedHashSet<>();
+                PROPAGATED_SOURCE_FIELDS.put(owner, fields);
+            }
+            fields.add(safe(fieldSignature));
+        }
+    }
+
+    /** Whether a prior activation selected this very object field. */
+    private static boolean propagatedSourceField(
+            Object owner, String fieldSignature) {
+        synchronized (PROPAGATED_SOURCE_FIELD_LOCK) {
+            Set<String> fields = PROPAGATED_SOURCE_FIELDS.get(owner);
+            return fields != null && fields.contains(safe(fieldSignature));
+        }
+    }
+
+    private static void clearPropagatedSourceFields() {
+        synchronized (PROPAGATED_SOURCE_FIELD_LOCK) {
+            PROPAGATED_SOURCE_FIELDS.clear();
+        }
+    }
+
+    private static void clearContextActivations() {
+        synchronized (CONTEXT_ACTIVATION_LOCK) {
+            CONTEXT_ACTIVATIONS.clear();
+        }
+    }
+
+    private static void rememberContextActivation(
+            long contextId, ActiveRegion active) {
+        if (contextId <= 0L || active == null) return;
+        synchronized (CONTEXT_ACTIVATION_LOCK) {
+            CONTEXT_ACTIVATIONS.put(contextId,
+                    new WriterActivationIdentity(active));
+        }
+    }
+
+    private static void updateContextActivation(ActiveRegion active) {
+        if (active == null || active.vmContextId <= 0L) return;
+        synchronized (CONTEXT_ACTIVATION_LOCK) {
+            WriterActivationIdentity identity = CONTEXT_ACTIVATIONS.get(
+                    active.vmContextId);
+            if (identity != null) identity.publishAs(active);
+        }
+    }
+
+    /** Immutable owner of one session-global VM field-version event. */
+    private static final class WriterActivationIdentity {
+        private final String vmTaskId;
+        private final String vmRegionId;
+        private volatile String sourceKey;
+        private volatile String occurrenceId;
+
+        private WriterActivationIdentity(ActiveRegion active) {
+            this.vmTaskId = active.activation.taskId;
+            this.vmRegionId = active.activation.regionId;
+            publishAs(active);
+        }
+
+        private void publishAs(ActiveRegion active) {
+            sourceKey = active.activation.sourceKey;
+            occurrenceId = active.occurrenceId();
+        }
+
+        private boolean owns(RuntimeTask writer) {
+            return writer != null && vmTaskId.equals(writer.taskId)
+                    && vmRegionId.equals(writer.regionId);
+        }
     }
 
     /**
@@ -842,26 +955,25 @@ public final class ConcolicRegionRuntime {
                     ports.add(new JsonPrimitive(portId));
                 }
                 evidence.add("causalAnchorPorts", ports);
+                JsonArray phases = new JsonArray();
+                for (String phaseId
+                        : admitted.configuredSourceAnchorPhases()) {
+                    phases.add(new JsonPrimitive(phaseId));
+                }
+                evidence.add("configuredSourceAnchorPhases", phases);
                 evidence.addProperty("anchoredOccurrences",
                         admitted.anchoredOccurrences);
                 evidence.addProperty("unanchoredTurnsReleased",
                         admitted.unanchoredTurnsReleased);
                 evidence.addProperty("turnsAdmitted",
                         admitted.admittedTurns);
-                evidence.addProperty("anchorProbeCeiling",
-                        admitted.anchorProbeCeiling());
-                evidence.addProperty("anchorReservationReleased",
-                        admitted.anchorReservationReleased);
                 reason = reason + "; occurrences were addressed by the "
-                        + "region's selected causal anchor "
-                        + admitted.causalAnchorPorts() + " ("
+                        + "region's semantic anchors (ports="
+                        + admitted.causalAnchorPorts() + ", sourcePhases="
+                        + admitted.configuredSourceAnchorPhases() + "; "
                         + admitted.anchoredOccurrences + " anchored, "
                         + admitted.unanchoredTurnsReleased
-                        + " unanchored turns released"
-                        + (admitted.anchorReservationReleased
-                        ? ", reservation given back after the declared "
-                        + "unroll ceiling was spent with no anchor" : "")
-                        + ")";
+                        + " unanchored turns released)";
             }
             writeSkipped(admitted, SKIP_LOOP_OCCURRENCES_BOUNDED, reason,
                     evidence);
@@ -910,6 +1022,12 @@ public final class ConcolicRegionRuntime {
             active.activationOrdinal = admitted.nextActivationOrdinal();
             ACTIVE.put(active.token, active);
             CURRENT_TOKEN.set(active.token);
+            active.vmContextId = api.currentContextId();
+            if (active.vmContextId <= 0L) {
+                throw new IllegalStateException(
+                        "custom concolic engine returned no context id");
+            }
+            rememberContextActivation(active.vmContextId, active);
             // A delivery can establish the causal request immediately before
             // the selected handler entry.
             RuntimeTraceContext.View context = RuntimeTraceContext.current();
@@ -991,21 +1109,28 @@ public final class ConcolicRegionRuntime {
         }
         EngineApi api = engine();
         if (!api.eventLedgerActivationAvailable()) {
-            // An older VM gates the ledger on its carrier count and cannot be
-            // told otherwise.
-            diag("EVENT_LEDGER_ACTIVATION_UNAVAILABLE",
-                    "task=" + safe(active.activation.taskId));
+            recordShared(failedShared(SharedStateEvidence.STAGE_LEDGER,
+                    SharedStateEvidence.API_UNAVAILABLE, "",
+                    "this JDK exposes no event-ledger activation API"),
+                    null, active);
             return;
         }
         try {
             boolean recording = api.activateEventLedger();
+            if (!recording) {
+                recordShared(failedShared(SharedStateEvidence.STAGE_LEDGER,
+                        SharedStateEvidence.INVOCATION_FAILED, "",
+                        "event-ledger activation did not start recording"),
+                        null, active);
+                return;
+            }
             diag("EVENT_LEDGER_ACTIVATED", "task="
                     + safe(active.activation.taskId)
                     + " recording=" + recording);
         } catch (Throwable throwable) {
-            diag("EVENT_LEDGER_ACTIVATION_FAILED", "task="
-                    + safe(active.activation.taskId) + " "
-                    + rootCause(throwable));
+            recordShared(failedShared(SharedStateEvidence.STAGE_LEDGER,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    rootCause(throwable)), null, active);
         }
     }
 
@@ -1721,17 +1846,13 @@ public final class ConcolicRegionRuntime {
             }
             String symbol = "";
             if (!reused) {
-                // A configured source's VM label is deterministic per
-                // source phase, so every activation of one address mints the
-                // same logical symbol for one phase: its name, its evidence
-                // sourceOccurrenceId, and its mint row all name the planned
-                // address, not the activation.  The composer keys these by
-                // rawSymbol and requires the metadata to agree across the
-                // activations that share one; the importer admits the mint
-                // only when its sourceOccurrenceId is the declared address
-                // (ConcolicSummaryImporter#symbolicSourceEvidence).
+                // The phase is the stable semantic source site.  Exact
+                // activation identity is recorded separately in the evidence
+                // row; changing the VM label per occurrence only duplicates
+                // equivalent symbolic roots and complicates composition.
+                String sourceOccurrence = active.occurrenceId();
                 symbol = "sym__" + safe(sourceId) + "__"
-                        + safe(active.activation.occurrenceId) + "__"
+                        + safe(sourceOccurrence) + "__"
                         + entry.ordinal;
                 String label = SymbolicSourceEvidence.engineLabelForPhase(
                         entry.phaseId(), safe(sourceId));
@@ -1739,6 +1860,22 @@ public final class ConcolicRegionRuntime {
                         entry.ordinal <= 1 ? label
                                 : label + "__" + entry.ordinal);
             }
+            // A source that survives in a shared object needs a session
+            // version of its exact primitive field.  Selecting after the mint
+            // makes the INITIAL version carry the source expression itself;
+            // a later activation can then re-select the same field and let its
+            // real getfield resolve that retained writer.  This is orthogonal
+            // to Map/reference propagation: the object identity says which
+            // field, while this scalar carrier preserves what the field held.
+            SharedStateResult sourceCarrier = selectSharedFieldCarrier(
+                    owner, declaringClass, field.getName(), descriptor);
+            if (!sourceCarrier.ok()) {
+                active.addUnresolvedOnce(entry.key()
+                        + ": configured source carrier selection failed: "
+                        + sourceCarrier.reason());
+                return false;
+            }
+            rememberPropagatedSourceField(owner, safe(fieldSignature));
             ensurePathRecordingStarted(active);
             Object value = field.get(owner);
             JsonElement expression = engineExpression(api.fieldExpression(
@@ -1766,7 +1903,7 @@ public final class ConcolicRegionRuntime {
                 active.recordSymbolicSource(entry.key(),
                         SymbolicSourceEvidence.event(entry.phaseId(),
                                 safe(sourceId),
-                                safe(active.activation.occurrenceId),
+                                active.occurrenceId(),
                                 safe(fieldSignature), expression,
                                 entry.ordinal, reused, symbol));
             }
@@ -1780,6 +1917,49 @@ public final class ConcolicRegionRuntime {
         } catch (Throwable failure) {
             active.addUnresolvedOnce(entry.key()
                     + ": exact symbolic source materialization failed: "
+                    + rootCause(failure));
+            return false;
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
+     * Opens this activation's branch gate from a field version retained by an
+     * earlier activation.  This operation is deliberately not a source
+     * declaration: an unregistered field is left concrete, and no root, phase
+     * row, or model assignment is created.  The following real getfield is
+     * what resolves the retained writer and supplies the branch expression.
+     */
+    public static boolean resumePropagatedField(
+            Object owner, String fieldSignature) {
+        ActiveRegion active = activeRegion();
+        if (active == null || owner == null) return false;
+        beginBookkeeping();
+        try {
+            Field field = declaredInstanceField(owner, safe(fieldSignature));
+            if (field == null || !field.getType().isPrimitive()) {
+                active.addUnresolvedOnce("propagated field is not an exact "
+                        + "primitive field: " + safe(fieldSignature));
+                return false;
+            }
+            String declaringClass = field.getDeclaringClass().getName();
+            String descriptor = javaTypeDescriptor(
+                    field.getType().getTypeName());
+            if (!propagatedSourceField(owner, safe(fieldSignature))) {
+                return false;
+            }
+            SharedStateResult resumed = selectSharedFieldCarrier(owner,
+                    declaringClass, field.getName(), descriptor);
+            if (!resumed.ok()) {
+                active.addUnresolvedOnce("propagated field carrier resume "
+                        + "failed: " + resumed.reason());
+                return false;
+            }
+            ensurePathRecordingStarted(active);
+            return true;
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce("propagated field resume failed: "
                     + rootCause(failure));
             return false;
         } finally {
@@ -2879,20 +3059,30 @@ public final class ConcolicRegionRuntime {
      * Exact producer admissions armed by selected callers, indexed only by
      * the live request exchange that can consume them.
      */
-    private static final Map<String, ResponseProducerArm>
+    private static final Map<String, ResponseProducerAdmission>
             IN_FLIGHT_RESPONSE_PRODUCER_ARMS = new LinkedHashMap<>();
     private static final Object RESPONSE_ARM_LOCK = new Object();
-    /** Exact response ports named immediately before this thread's next cut. */
-    private static final ThreadLocal<Set<String>>
-            PENDING_RESPONSE_ATTACH_PORTS = new ThreadLocal<Set<String>>() {
-                @Override
-                protected Set<String> initialValue() {
-                    return new LinkedHashSet<>();
-                }
-            };
+    /**
+     * Live response cuts, indexed by the caller occurrence and declared port.
+     *
+     * <p>A port stays here until the instrumented cut returns.  The exact
+     * cut token is thread-local (and inherited only by a thread spawned under
+     * the cut), so an arbitrary request scope cannot drain or replace it.</p>
+     */
+    private static final Map<String, PendingResponseCut>
+            PENDING_RESPONSE_CUTS_BY_PORT = new LinkedHashMap<>();
+    /** Exact live-cut token inherited only by a thread spawned under it. */
+    private static final AtomicLong RESPONSE_CUT_TOKEN_COUNTER =
+            new AtomicLong();
+    private static final InheritableThreadLocal<Long> RESPONSE_CUT_TOKEN =
+            new InheritableThreadLocal<>();
     /** The exact response producer task authorized by this request delivery. */
-    private static final ThreadLocal<ResponseProducerArm>
+    private static final ThreadLocal<ResponseProducerAdmission>
             INBOUND_RESPONSE_PRODUCER_ARM = new ThreadLocal<>();
+
+    /** Authority of the structured response-arm refusal evidence. */
+    private static final String RESPONSE_ARM_AUTHORITY =
+            "CUT_OWNED_REQUEST_EXCHANGE_V1";
 
     /** One caller-selected response producer admission. */
     private static final class ResponseProducerArm {
@@ -2918,6 +3108,165 @@ public final class ConcolicRegionRuntime {
                     && producerTaskId.equals(task.taskId)
                     && !task.responseExportPortIds.isEmpty()
                     && portIds.containsAll(task.responseExportPortIds);
+        }
+    }
+
+    /** One selected cut waiting for its own concrete request exchange. */
+    private static final class PendingResponseCut {
+        private final ActiveRegion caller;
+        private final long cutToken;
+        private final String siteId;
+        private final String declaredCallee;
+        private final String expectedTransport;
+        private final Set<String> portIds = new LinkedHashSet<>();
+        private final Set<String> returnedPortIds = new LinkedHashSet<>();
+        private final Set<String> refusals = new LinkedHashSet<>();
+        private String exchangeKey = "";
+        private boolean requestDelivered;
+        private boolean producerAdmitted;
+
+        private PendingResponseCut(ActiveRegion caller,
+                                   CommunicationHandoffSpec site,
+                                   String expectedTransport) {
+            this.caller = caller;
+            this.cutToken = RESPONSE_CUT_TOKEN_COUNTER.incrementAndGet();
+            this.siteId = site.siteId();
+            this.declaredCallee = site.declaredCallee();
+            this.expectedTransport = safe(expectedTransport);
+        }
+
+        private synchronized boolean sameCut(
+                ActiveRegion candidateCaller,
+                CommunicationHandoffSpec candidateSite) {
+            if (caller != candidateCaller || candidateSite == null
+                    || !siteId.equals(candidateSite.siteId())
+                    || !declaredCallee.equals(
+                    candidateSite.declaredCallee())) {
+                return false;
+            }
+            return true;
+        }
+
+        private synchronized void addPort(String portId) {
+            if (!safe(portId).isEmpty()) portIds.add(portId);
+        }
+
+        private synchronized Set<String> ports() {
+            return new LinkedHashSet<>(portIds);
+        }
+
+        /** Exact active cut token, optionally on its spawned sender thread. */
+        private synchronized boolean matchesSender(
+                ActiveRegion current,
+                Long carriedCutToken) {
+            if (carriedCutToken == null
+                    || carriedCutToken.longValue() != cutToken) {
+                return false;
+            }
+            if (current == null) return true;
+            return current == caller;
+        }
+
+        private synchronized boolean expectsTransport(String transport) {
+            return expectedTransport.equalsIgnoreCase(safe(transport));
+        }
+
+        /** True only for the first request exchange this cut admits. */
+        private synchronized boolean bindFirstExchange(String candidate) {
+            if (!exchangeKey.isEmpty()) {
+                if (!exchangeKey.equals(safe(candidate))) {
+                    refuse("second matching REQUEST SEND named exchange "
+                            + safe(candidate) + " after " + exchangeKey);
+                }
+                return false;
+            }
+            exchangeKey = safe(candidate);
+            return !exchangeKey.isEmpty();
+        }
+
+        private synchronized void delivered(String candidate) {
+            if (exchangeKey.equals(safe(candidate))) {
+                requestDelivered = true;
+            } else {
+                refuse("request delivery " + safe(candidate)
+                        + " did not match bound exchange "
+                        + safe(exchangeKey));
+            }
+        }
+
+        private synchronized void admitted() {
+            producerAdmitted = true;
+        }
+
+        private synchronized void refuse(String detail) {
+            if (!safe(detail).isEmpty()) refusals.add(detail);
+        }
+
+        private synchronized void returned(String portId) {
+            returnedPortIds.add(safe(portId));
+        }
+
+        private synchronized boolean allPortsReturned() {
+            return returnedPortIds.containsAll(portIds);
+        }
+
+        private synchronized Set<String> outstandingPorts() {
+            Set<String> outstanding = new LinkedHashSet<>(portIds);
+            outstanding.removeAll(returnedPortIds);
+            return outstanding;
+        }
+
+        private synchronized boolean complete() {
+            return !exchangeKey.isEmpty() && requestDelivered
+                    && producerAdmitted && refusals.isEmpty();
+        }
+
+        private synchronized String failure() {
+            if (!refusals.isEmpty()) {
+                return String.join("; ", refusals);
+            }
+            if (exchangeKey.isEmpty()) {
+                return "declared response cut issued no matching REQUEST "
+                        + "SEND";
+            }
+            if (!requestDelivered) {
+                return "bound request exchange was not delivered";
+            }
+            if (!producerAdmitted) {
+                return "request delivery did not admit the selected response "
+                        + "producer";
+            }
+            return "";
+        }
+    }
+
+    /** One concrete request delivery carrying its cut-selected admission. */
+    private static final class ResponseProducerAdmission {
+        private final ResponseProducerArm arm;
+        private final PendingResponseCut cut;
+        private final String exchangeKey;
+
+        private ResponseProducerAdmission(ResponseProducerArm arm,
+                                          PendingResponseCut cut,
+                                          String exchangeKey) {
+            this.arm = arm;
+            this.cut = cut;
+            this.exchangeKey = safe(exchangeKey);
+        }
+    }
+
+    /** Frozen protocol facts needed to recognize this cut's request send. */
+    private static final class ResponseCutExpectation {
+        private final String transport;
+        private final String failure;
+
+        private ResponseCutExpectation(String transport, String failure) {
+            this.transport = safe(transport);
+            this.failure = safe(failure);
+        }
+
+        private boolean valid() {
+            return !transport.isEmpty() && failure.isEmpty();
         }
     }
 
@@ -3218,7 +3567,7 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Names one response port whose cut is about to issue its request. */
+    /** Names one response port whose exact declared cut is starting. */
     public static void prepareResponseHandoff(String portId) {
         ActiveRegion caller = activeRegion();
         if (caller == null || safe(portId).isEmpty()) return;
@@ -3227,10 +3576,42 @@ public final class ConcolicRegionRuntime {
         if (site == null || !"RESPONSE".equalsIgnoreCase(site.direction())) {
             return;
         }
-        PENDING_RESPONSE_ATTACH_PORTS.get().add(site.portId());
+        ResponseCutExpectation expected = configuration()
+                .responseCutExpectation(caller.activation, site);
+        if (!expected.valid()) {
+            deferResponseArmGap(caller, site, null,
+                    "response cut has no unique request transport: "
+                            + expected.failure);
+            return;
+        }
+        PendingResponseCut cut;
+        String portKey = responseCutPortKey(caller.token, site.portId());
+        synchronized (RESPONSE_ARM_LOCK) {
+            cut = PENDING_RESPONSE_CUTS_BY_PORT.get(portKey);
+            if (cut == null) {
+                for (PendingResponseCut candidate : new LinkedHashSet<>(
+                        PENDING_RESPONSE_CUTS_BY_PORT.values())) {
+                    if (candidate.sameCut(caller, site)) {
+                        cut = candidate;
+                        break;
+                    }
+                }
+            }
+            if (cut == null) {
+                cut = new PendingResponseCut(caller, site,
+                        expected.transport);
+            } else if (!cut.expectsTransport(expected.transport)) {
+                cut.refuse("one response cut resolved two request transports: "
+                        + cut.expectedTransport + " and "
+                        + expected.transport);
+            }
+            cut.addPort(site.portId());
+            PENDING_RESPONSE_CUTS_BY_PORT.put(portKey, cut);
+            RESPONSE_CUT_TOKEN.set(Long.valueOf(cut.cutToken));
+        }
     }
 
-    /** Moves only the caller-selected response-producer scheduling arm. */
+    /** Moves only the arm owned by this exact request exchange. */
     static void observeExchangeLeg(String direction, String transport,
                                    String correlationId, String half) {
         String normalizedDirection = safe(direction);
@@ -3238,27 +3619,59 @@ public final class ConcolicRegionRuntime {
         String key = exchangeKey(transport, correlationId, normalizedHalf);
         if ("SEND".equalsIgnoreCase(normalizedDirection)) {
             if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
-                Set<String> ports = new LinkedHashSet<>(
-                        PENDING_RESPONSE_ATTACH_PORTS.get());
-                PENDING_RESPONSE_ATTACH_PORTS.remove();
-                armResponseProducer(key, ports);
+                PendingResponseCut cut = responseCutForSend(transport);
+                if (cut != null && cut.bindFirstExchange(key)) {
+                    armResponseProducer(key, cut);
+                }
             } else if ("RESPONSE".equalsIgnoreCase(normalizedHalf)) {
+                ResponseProducerAdmission inbound =
+                        INBOUND_RESPONSE_PRODUCER_ARM.get();
+                if (inbound != null) {
+                    inbound.cut.refuse("request exchange "
+                            + inbound.exchangeKey + " returned before the "
+                            + "selected response producer was admitted");
+                }
                 INBOUND_RESPONSE_PRODUCER_ARM.remove();
             }
             return;
         }
         if (!"RECEIVE".equalsIgnoreCase(normalizedDirection)) return;
         if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
-            ResponseProducerArm arm;
+            ResponseProducerAdmission admission;
             synchronized (RESPONSE_ARM_LOCK) {
-                arm = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(key);
+                admission = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(key);
             }
-            if (arm == null) {
+            if (admission == null) {
                 INBOUND_RESPONSE_PRODUCER_ARM.remove();
             } else {
-                INBOUND_RESPONSE_PRODUCER_ARM.set(arm);
+                admission.cut.delivered(key);
+                INBOUND_RESPONSE_PRODUCER_ARM.set(admission);
             }
         }
+    }
+
+    /** Selects a pending cut without consuming any unrelated send. */
+    private static PendingResponseCut responseCutForSend(String transport) {
+        ActiveRegion current = activeRegion();
+        Long cutToken = RESPONSE_CUT_TOKEN.get();
+        List<PendingResponseCut> matches = new ArrayList<>();
+        synchronized (RESPONSE_ARM_LOCK) {
+            for (PendingResponseCut candidate : new LinkedHashSet<>(
+                    PENDING_RESPONSE_CUTS_BY_PORT.values())) {
+                if (candidate.expectsTransport(transport)
+                        && candidate.matchesSender(current, cutToken)) {
+                    matches.add(candidate);
+                }
+            }
+            if (matches.size() == 1) return matches.get(0);
+            if (matches.size() > 1) {
+                for (PendingResponseCut candidate : matches) {
+                    candidate.refuse("request send matched " + matches.size()
+                            + " live response cuts in one causal scope");
+                }
+            }
+        }
+        return null;
     }
 
     private static String exchangeKey(String transport, String correlationId,
@@ -3269,38 +3682,133 @@ public final class ConcolicRegionRuntime {
 
     /** Arms only the unique producer already selected by this caller's task. */
     private static void armResponseProducer(String exchangeKey,
-                                            Set<String> responsePorts) {
-        ActiveRegion caller = activeRegion();
-        if (caller == null
-                || responsePorts == null || responsePorts.isEmpty()) {
-            return;
-        }
+                                            PendingResponseCut cut) {
+        if (cut == null) return;
+        Set<String> responsePorts = cut.ports();
         ResponseProducerArm arm = configuration().responseProducerArm(
-                caller.activation, responsePorts);
+                cut.caller.activation, responsePorts);
         if (!arm.valid()) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L,
-                    "required response producer admission is not unique: "
-                            + arm.failure));
+            cut.refuse("required response producer admission is not unique: "
+                    + arm.failure);
             return;
         }
-        boolean collision;
+        ResponseProducerAdmission admission = new ResponseProducerAdmission(
+                arm, cut, exchangeKey);
+        ResponseProducerAdmission previous;
         synchronized (RESPONSE_ARM_LOCK) {
-            collision = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.containsKey(
-                    exchangeKey);
-            if (collision) {
+            previous = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.put(exchangeKey,
+                    admission);
+        }
+        if (previous != null && previous.cut != cut) {
+            synchronized (RESPONSE_ARM_LOCK) {
                 IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(exchangeKey);
-            } else {
-                IN_FLIGHT_RESPONSE_PRODUCER_ARMS.put(exchangeKey, arm);
+            }
+            previous.cut.refuse("two selected cuts armed request exchange "
+                    + exchangeKey);
+            cut.refuse("two selected cuts armed request exchange "
+                    + exchangeKey);
+        }
+    }
+
+    private static String responseCutPortKey(long token, String portId) {
+        return token + "\n" + safe(portId);
+    }
+
+    /** Records one cut-addressing refusal on its caller's selected port. */
+    private static void deferResponseArmGap(
+            ActiveRegion caller, CommunicationHandoffSpec site,
+            PendingResponseCut cut, String detail) {
+        if (caller == null || site == null) return;
+        JsonObject gap = RpcExpressionHandoff.gap(
+                RpcExpressionHandoff.STAGE_ATTACH,
+                RpcExpressionHandoff.MISSING_METADATA, 0L,
+                "response arm: " + safe(detail));
+        gap.addProperty("responseArmAuthority", RESPONSE_ARM_AUTHORITY);
+        gap.addProperty("portId", site.portId());
+        gap.addProperty("cutSiteId", site.siteId());
+        gap.addProperty("declaredCallee", site.declaredCallee());
+        if (cut != null) {
+            gap.addProperty("cutToken", cut.cutToken);
+            gap.addProperty("expectedTransport", cut.expectedTransport);
+            gap.addProperty("exchangeKey", cut.exchangeKey);
+        }
+        caller.deferResponseHandoffGap(site.portId(), gap);
+        diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
+    }
+
+    /** Settles the arm when the instrumented response cut returns. */
+    private static void completeResponseCutReturn(
+            CommunicationHandoffSpec site) {
+        ActiveRegion caller = activeRegion();
+        if (caller == null || site == null) return;
+        PendingResponseCut cut;
+        synchronized (RESPONSE_ARM_LOCK) {
+            cut = PENDING_RESPONSE_CUTS_BY_PORT.remove(
+                    responseCutPortKey(caller.token, site.portId()));
+        }
+        if (cut == null) return;
+        clearResponseCutToken(cut);
+        cut.returned(site.portId());
+        if (!cut.complete()) {
+            deferResponseArmGap(caller, site, cut, cut.failure());
+        }
+        if (cut.allPortsReturned()) {
+            synchronized (RESPONSE_ARM_LOCK) {
+                removeResponseCutLocked(cut);
             }
         }
-        if (collision) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MALFORMED_RESULT, 0L,
-                    "two selected callers armed the same live response "
-                            + "exchange"));
+    }
+
+    /** Fails every declared response cut which outlived its caller. */
+    private static void failOutstandingResponseCuts(ActiveRegion caller) {
+        if (caller == null) return;
+        Set<PendingResponseCut> cuts = new LinkedHashSet<>();
+        synchronized (RESPONSE_ARM_LOCK) {
+            for (PendingResponseCut cut
+                    : PENDING_RESPONSE_CUTS_BY_PORT.values()) {
+                if (cut.caller == caller) cuts.add(cut);
+            }
+            for (PendingResponseCut cut : cuts) {
+                removeResponseCutLocked(cut);
+            }
+        }
+        for (PendingResponseCut cut : cuts) {
+            clearResponseCutToken(cut);
+            cut.refuse("caller occurrence ended before its declared response "
+                    + "cut returned");
+            for (String portId : cut.outstandingPorts()) {
+                CommunicationHandoffSpec site = caller.activation
+                        .communicationHandoff(portId, false);
+                deferResponseArmGap(caller, site, cut, cut.failure());
+            }
+        }
+    }
+
+    private static void clearResponseCutToken(PendingResponseCut cut) {
+        Long current = RESPONSE_CUT_TOKEN.get();
+        if (cut != null && current != null
+                && current.longValue() == cut.cutToken) {
+            RESPONSE_CUT_TOKEN.remove();
+        }
+    }
+
+    /** Removes all indexes owned by one settled cut. Lock must be held. */
+    private static void removeResponseCutLocked(PendingResponseCut cut) {
+        List<String> ports = new ArrayList<>();
+        for (Map.Entry<String, PendingResponseCut> entry
+                : PENDING_RESPONSE_CUTS_BY_PORT.entrySet()) {
+            if (entry.getValue() == cut) ports.add(entry.getKey());
+        }
+        for (String port : ports) {
+            PENDING_RESPONSE_CUTS_BY_PORT.remove(port);
+        }
+        List<String> exchanges = new ArrayList<>();
+        for (Map.Entry<String, ResponseProducerAdmission> entry
+                : IN_FLIGHT_RESPONSE_PRODUCER_ARMS.entrySet()) {
+            if (entry.getValue().cut == cut) exchanges.add(entry.getKey());
+        }
+        for (String exchange : exchanges) {
+            IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(exchange);
         }
     }
 
@@ -3378,6 +3886,7 @@ public final class ConcolicRegionRuntime {
             endBookkeeping();
         }
         if (site == null || !site.responsePathCarrier()) return;
+        completeResponseCutReturn(site);
         if (handle <= 0L) {
             ActiveRegion active = activeRegion();
             if (active != null
@@ -3542,6 +4051,10 @@ public final class ConcolicRegionRuntime {
             endBookkeeping();
         }
         if (site == null) return;
+        if (site.attachesCutReturn()
+                && "RESPONSE".equalsIgnoreCase(site.direction())) {
+            completeResponseCutReturn(site);
+        }
         if (carrier == null) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
@@ -3716,9 +4229,26 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, CommunicationHandoffSpec site,
             long exportEvent, long attachEvent, JsonElement expression,
             String producerTaskId, String producerOccurrenceId) {
+        String expectedProducer = active.activation
+                .attachProducerOccurrence(site.portId());
+        String actualProducer = PathObservation.plannedOccurrenceOf(
+                producerOccurrenceId);
+        if (!expectedProducer.isEmpty()
+                && !expectedProducer.equals(actualProducer)) {
+            active.noteAttachEndpointMismatch(site.portId(),
+                    expectedProducer, actualProducer, producerTaskId);
+            diag("ATTACH_ENDPOINT_PRODUCER_MISMATCH", "task="
+                    + safe(active.activation.taskId) + " port="
+                    + site.portId() + " expected=" + expectedProducer
+                    + " actual=" + actualProducer);
+            return;
+        }
         active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
                 exportEvent, attachEvent, expression, producerTaskId,
                 producerOccurrenceId));
+        if (!expectedProducer.isEmpty()) {
+            active.markAttachEndpointSatisfied(site.portId());
+        }
         // A VM-attached expression is an exact selected symbolic input just as
         // much as one created by a local symbolize hook.
         ensurePathRecordingStarted(active);
@@ -3989,18 +4519,21 @@ public final class ConcolicRegionRuntime {
      * negative answer whichever shape asked.
      */
     private static SharedStateResult selectedCarrier(SharedCarrier carrier) {
+        ActiveRegion active = activeRegion();
+        carrier.bindPlannedReceiver(active == null
+                ? null : active.activation);
         String missing = carrier.missing();
         if (!missing.isEmpty()) {
             return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
                     SharedStateEvidence.MISSING_METADATA, "", missing),
-                    null, activeRegion());
+                    null, active);
         }
         EngineApi api = engine();
         if (!(carrier.mapState() ? api.sharedMapEvidenceAvailable()
                 : api.sharedStateEvidenceAvailable())) {
             return recordShared(unavailableShared(
                     SharedStateEvidence.STAGE_SELECT, ""), null,
-                    activeRegion());
+                    active);
         }
         long initial;
         try {
@@ -4008,21 +4541,21 @@ public final class ConcolicRegionRuntime {
         } catch (Throwable throwable) {
             return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
                     SharedStateEvidence.INVOCATION_FAILED, "",
-                    rootCause(throwable)), null, activeRegion());
+                    rootCause(throwable)), null, active);
         }
-        if (initial < 0L) {
+        if (initial <= 0L) {
             return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
-                    initial < Integer.MIN_VALUE
+                    initial == 0L || initial < Integer.MIN_VALUE
                             ? SharedStateEvidence.MALFORMED_ENVELOPE
                             : (int) initial, "",
                     carrier.selectApi() + " returned " + initial), null,
-                    activeRegion());
+                    active);
         }
         return recordShared(new SharedStateResult(
                         SharedStateEvidence.STAGE_SELECT,
                         SharedStateEvidence.OK, "", initial, new JsonObject(),
                         new JsonObject()),
-                carrier, activeRegion());
+                carrier, active);
     }
 
     /** {@link #selectSharedMapCarrier} with no declared holding field. */
@@ -4066,6 +4599,8 @@ public final class ConcolicRegionRuntime {
                                                       ActiveRegion active) {
         beginBookkeeping();
         try {
+            carrier.bindPlannedReceiver(active == null
+                    ? null : active.activation);
             String missing = carrier.missing();
             if (!missing.isEmpty()) {
                 return recordShared(failedShared(
@@ -4233,10 +4768,30 @@ public final class ConcolicRegionRuntime {
             RuntimeTask writer = config.taskById(
                     string(version, "taskId"));
             if (writer == null) continue;
-            version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
-                    writer.sourceKey);
-            version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
-                    writer.occurrenceId);
+            WriterActivationIdentity exact;
+            synchronized (CONTEXT_ACTIVATION_LOCK) {
+                exact = CONTEXT_ACTIVATIONS.get(longInteger(version,
+                        "writerContextId", 0L));
+            }
+            if (exact != null && exact.owns(writer)) {
+                version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
+                        exact.sourceKey);
+                version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
+                        exact.occurrenceId);
+            } else if ("INITIAL".equals(string(version, "versionKind"))) {
+                version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
+                        writer.sourceKey);
+                version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
+                        writer.occurrenceId);
+            } else {
+                // A non-initial writer without an entry-time VM-context
+                // binding has no exact activation owner.  Leave it unnamed so
+                // the recorded writer universe refuses it by name instead of
+                // collapsing every loop activation to the planned address.
+                version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY, "");
+                version.addProperty(
+                        SharedStateEvidence.WRITER_OCCURRENCE_ID, "");
+            }
         }
         for (JsonElement element : array(envelope, "reads")) {
             if (!element.isJsonObject()) continue;
@@ -4256,7 +4811,7 @@ public final class ConcolicRegionRuntime {
             read.addProperty(SharedStateEvidence.READER_SOURCE_KEY,
                     reader.sourceKey);
             read.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
-                    reader.occurrenceId);
+                    active.occurrenceId());
             read.addProperty(READER_AUTHORITY_FIELD,
                     READER_ACTIVE_REGION_AUTHORITY);
         }
@@ -4539,8 +5094,22 @@ public final class ConcolicRegionRuntime {
     /** Selects a demanded carrier on its exact field-access owner once. */
     private static void selectAccessOwnerSharedCarriers(
             ActiveRegion active, Object owner, String fieldSignature) {
-        for (SharedCarrierRequest request
-                : active.activation.sharedCarriers) {
+        selectAccessOwnerSharedCarriers(active, active.activation, owner,
+                fieldSignature);
+        // Siblings are frozen before the activation is published.  Walk them
+        // directly here instead of allocating the claimant union at every
+        // selected field access.
+        for (RuntimeTask claimant : active.siblingClaimants) {
+            selectAccessOwnerSharedCarriers(active, claimant, owner,
+                    fieldSignature);
+        }
+    }
+
+    /** Selects one claimant's access-owner carriers for this activation. */
+    private static void selectAccessOwnerSharedCarriers(
+            ActiveRegion active, RuntimeTask claimant, Object owner,
+            String fieldSignature) {
+        for (SharedCarrierRequest request : claimant.sharedCarriers) {
             if (!request.matchesAccess(fieldSignature)) continue;
             String key = request.declaringClass + "#" + request.fieldName
                     + "@" + System.identityHashCode(owner);
@@ -4569,6 +5138,8 @@ public final class ConcolicRegionRuntime {
         private final String descriptor;
         private final int index;
         private final String shape;
+        /** Frozen trace locator from this task's selected causal edge. */
+        private long plannedReceiverObjectId;
 
         private SharedCarrier(Object owner, String declaringClass,
                               String fieldName, String descriptor, int index,
@@ -4602,6 +5173,19 @@ public final class ConcolicRegionRuntime {
             return SHAPE_MAP.equals(shape);
         }
 
+        void bindPlannedReceiver(RuntimeTask task) {
+            if (task == null || SHAPE_ELEMENT.equals(shape)
+                    || declaringClass.isEmpty() || fieldName.isEmpty()) {
+                return;
+            }
+            bindPlannedReceiver(task.plannedReceiverObjectId(
+                    declaringClass, fieldName));
+        }
+
+        void bindPlannedReceiver(long receiverObjectId) {
+            plannedReceiverObjectId = Math.max(0L, receiverObjectId);
+        }
+
         /** Activation-local dedupe key; never a cross-run address. */
         String key() {
             return shape + "/" + System.identityHashCode(owner) + "/"
@@ -4620,11 +5204,11 @@ public final class ConcolicRegionRuntime {
             carrier.addProperty("fieldName", fieldName);
             carrier.addProperty("descriptor", descriptor);
             carrier.addProperty("index", index);
-            // The receiver's trace identity, so a version row names its own
-            // location across sessions instead of borrowing a name from an
-            // edge in the same summary.
+            // A replay-local object id is not a cross-session identity.  The
+            // frozen causal edge's receiver locator is the one stable name
+            // every worker in this campaign shares.
             carrier.addProperty("receiverObjectId",
-                    CausynthTraceRecorder.recordedObjectId(owner));
+                    plannedReceiverObjectId);
             if (!SHAPE_ELEMENT.equals(shape) && !declaringClass.isEmpty()
                     && !fieldName.isEmpty()) {
                 carrier.addProperty("fieldKey",
@@ -5715,6 +6299,7 @@ public final class ConcolicRegionRuntime {
                 active.exceptionType = safe(exceptionType);
                 active.exitOutput = output;
                 judgeFinishedOccurrence(active);
+                suppressDuplicateRelationResult(active);
                 releaseUnanchoredLoopTurn(active);
             } finally {
                 publicationDeferred = closeOccurrence(active);
@@ -5737,8 +6322,11 @@ public final class ConcolicRegionRuntime {
     private static void releaseUnanchoredLoopTurn(ActiveRegion active) {
         if (active.abandoned) return;
         if (!active.activation.addressesOccurrencesByCausalAnchor()) return;
+        Set<String> newlyCarried = active.activation.newSemanticAnchorIds(
+                active.carriedSemanticAnchorIds());
         if (!active.activation.releasesUnanchoredLoopTurn(
-                active.carriedCausalAnchor())) {
+                !newlyCarried.isEmpty())) {
+            active.retainedSemanticAnchorIds.addAll(newlyCarried);
             return;
         }
         diag("LOOP_TURN_UNANCHORED", "task="
@@ -5789,6 +6377,7 @@ public final class ConcolicRegionRuntime {
             active.siblingClaimants.remove(index);
             active.siblingClaimants.add(entered);
             active.activation = claimant;
+            updateContextActivation(active);
             diag("OCCURRENCE_RE_KEYED", "from=" + safe(entered.taskId)
                     + " to=" + safe(claimant.taskId));
             return true;
@@ -5811,6 +6400,14 @@ public final class ConcolicRegionRuntime {
             // candidate loop working, not a finding, so it is released without
             // a durable row.
             active.activation.noteUnaddressedCandidate(unaddressed);
+            active.releaseActivationOrdinal();
+            active.abandoned = true;
+            endLiveSelectedRegion();
+            return;
+        }
+        String unconfirmedAttach = active.unconfirmedSelectedAttachEndpoint();
+        if (!unconfirmedAttach.isEmpty()) {
+            active.activation.noteUnaddressedCandidate(unconfirmedAttach);
             active.releaseActivationOrdinal();
             active.abandoned = true;
             endLiveSelectedRegion();
@@ -5876,12 +6473,6 @@ public final class ConcolicRegionRuntime {
             }
             return;
         }
-        // A producer path replay can make the canonical target task take its
-        // planned failure branch.
-        if (active.activation.reachedRequiredTargetOutcome(
-                active.targetReach)) {
-            return;
-        }
         // The occurrence has stopped running, so its witnessed outcome set
         // cannot widen any further.
         String conflict = seedOutcomeConflict(active.activation.seedOutcomes,
@@ -5891,6 +6482,24 @@ public final class ConcolicRegionRuntime {
                     "activation contradicts a recorded seed outcome: "
                             + conflict);
         }
+    }
+
+    /**
+     * Keeps later producer activations live long enough to propagate their
+     * symbolic state, but discards their duplicate durable relation row once
+     * this non-loop address has already published one complete relation.
+     */
+    private static void suppressDuplicateRelationResult(ActiveRegion active) {
+        if (active.abandoned
+                || !active.activation.suppressesDuplicateRelationResult()) {
+            return;
+        }
+        diag("DUPLICATE_RELATION_RESULT_SUPPRESSED", "task="
+                + safe(active.activation.taskId) + " ordinal="
+                + active.activationOrdinal);
+        active.releaseActivationOrdinal();
+        active.abandoned = true;
+        endLiveSelectedRegion();
     }
 
     /**
@@ -5920,6 +6529,7 @@ public final class ConcolicRegionRuntime {
             try {
                 // A response port is judged over the whole bounded caller, not
                 // over each producer candidate it tried.
+                failOutstandingResponseCuts(active);
                 active.flushPendingResponseHandoffGaps();
                 if (!active.abandoned) {
                     result = new JsonObject();
@@ -5966,7 +6576,6 @@ public final class ConcolicRegionRuntime {
             }
             ACTIVE.remove(active.token, active);
             CURRENT_TOKEN.remove();
-            PENDING_RESPONSE_ATTACH_PORTS.remove();
             if (!active.abandoned) endLiveSelectedRegion();
         }
         if (result == null) {
@@ -5993,6 +6602,22 @@ public final class ConcolicRegionRuntime {
             final ActiveRegion active, final JsonObject result,
             final String rawEngineSummary,
             final RawSharedStateReadOut rawSharedState) {
+        // The VM context and its raw read-out are complete.  Do not keep the
+        // task's admission slot hostage while the daemon performs the much
+        // larger JSON decode: a later loop-body turn may be the exact next
+        // source phase this bounded address reserved.  Reserve the retained
+        // loop evidence before reopening admission, so that next turn sees
+        // phase n+1 and cannot claim the same semantic anchor.  Publication
+        // remains fail-closed: an enqueue/decode/append failure terminates
+        // the task instead of rolling this reservation back underneath a
+        // later activation that may already depend on it.
+        active.activation.reserveCompletedOccurrence(
+                active.configuredSourcePhaseOrdinals,
+                active.retainedSemanticAnchorIds);
+        active.activation.reserveCompletedEvidence(
+                targetReachedByActivation(active),
+                bool(result, "relationallyComplete", false));
+        configuration().releaseCandidate(active.activation);
         try {
             RESULT_PUBLICATION_EXECUTOR.execute(new Runnable() {
                 @Override
@@ -6007,7 +6632,6 @@ public final class ConcolicRegionRuntime {
             // fallback.
             diagAfterVmClose("RESULT_PUBLICATION_REJECTED",
                     rootCause(rejected));
-            configuration().releaseCandidate(active.activation);
             haltWhenCampaignSettled(active.activation.taskId, 2);
             return false;
         }
@@ -6026,18 +6650,17 @@ public final class ConcolicRegionRuntime {
                             : rawSharedState.identity);
             boolean written = appendResult(result, rawEngineSummary);
             if (written) {
-                configuration().claimOccurrence(active.activation);
-            } else {
-                configuration().releaseCandidate(active.activation);
+                configuration().markOccurrencePublished(active.activation);
             }
             haltWhenCampaignSettled(active.activation.taskId,
                     written ? 0 : 2);
         } catch (Throwable failure) {
-            // An asynchronous failure must not leave the task permanently
-            // candidateLive.  No partial result is claimed.
+            // Admission was already reopened after the VM raw read-out.  A
+            // failure is terminal because a later activation may have used
+            // the reserved loop phase; silently rolling back would make its
+            // identity false.
             diagAfterVmClose("RESULT_PUBLICATION_FAILED",
                     rootCause(failure));
-            configuration().releaseCandidate(active.activation);
             haltWhenCampaignSettled(active.activation.taskId, 2);
         } finally {
             endSelectedResultPublication();
@@ -7521,6 +8144,8 @@ public final class ConcolicRegionRuntime {
         /** Conditions the thread has accumulated, window or not. */
         private final int size;
         private final boolean windowed;
+        /** One hook may attest and then consume the same exact condition. */
+        private final JsonElement[] parsed;
 
         private PathConditionElements(String raw, int[] bounds) {
             this(raw, bounds, null, 0, bounds.length / 2, bounds.length / 2,
@@ -7541,6 +8166,8 @@ public final class ConcolicRegionRuntime {
             this.windowEnd = windowEnd;
             this.size = size;
             this.windowed = windowed;
+            this.parsed = raw == null ? null
+                    : new JsonElement[bounds.length / 2];
         }
 
         /** Reads a serialized path condition. */
@@ -7594,8 +8221,13 @@ public final class ConcolicRegionRuntime {
             }
             int offset = index - base;
             if (tree != null) return tree.get(offset);
-            return parseJson(raw.substring(
-                    bounds[2 * offset], bounds[2 * offset + 1]));
+            JsonElement cached = parsed[offset];
+            if (cached == null) {
+                cached = parseJson(raw.substring(
+                        bounds[2 * offset], bounds[2 * offset + 1]));
+                parsed[offset] = cached;
+            }
+            return cached;
         }
 
         /** Which reader answered, for the replay's own diagnostics. */
@@ -8149,6 +8781,8 @@ public final class ConcolicRegionRuntime {
          * the occurrence it belongs to rather than the planned address.
          */
         private int activationOrdinal;
+        /** VM context whose writes belong to this materialized activation. */
+        private long vmContextId;
         /**
          * Other open occurrences of this same root that this one activation
          * may answer instead, in plan order.
@@ -8243,6 +8877,7 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashSet<>();
         private final Set<String> mintedConfiguredSourceFields =
                 new LinkedHashSet<>();
+        /** Phase entries used by this activation; committed on publication. */
         private final Map<String, Integer> configuredSourcePhaseOrdinals =
                 new LinkedHashMap<>();
         /** Ordered, structured replay ledger emitted with the raw result. */
@@ -8252,6 +8887,9 @@ public final class ConcolicRegionRuntime {
         private final List<JsonObject> configuredSourcePhaseGaps =
                 new ArrayList<>();
         private final Set<String> configuredSourcePhaseGapIdentities =
+                new LinkedHashSet<>();
+        /** Exact semantic anchors this activation will commit if published. */
+        private final Set<String> retainedSemanticAnchorIds =
                 new LinkedHashSet<>();
         private final Set<String> unresolved = new LinkedHashSet<>();
         private final List<JsonObject> branchMappings = new ArrayList<>();
@@ -8270,6 +8908,12 @@ public final class ConcolicRegionRuntime {
          * {@code VALUE_HANDOFF} edge relates it to.
          */
         private final List<JsonObject> vmHandoffEvents = new ArrayList<>();
+        /** Selected protocol inputs whose exact planned producer attached. */
+        private final Set<String> satisfiedAttachEndpointPorts =
+                new LinkedHashSet<>();
+        /** Last wrong producer observed while seeking each selected input. */
+        private final Map<String, String> attachEndpointMismatches =
+                new LinkedHashMap<>();
         /**
          * VM export event most recently published at each declared port.
          *
@@ -8288,6 +8932,67 @@ public final class ConcolicRegionRuntime {
         private final Map<String, JsonObject> pendingResponseHandoffGaps =
                 new LinkedHashMap<>();
         private final List<JsonObject> rpcHandoffGaps = new ArrayList<>();
+
+        private synchronized void noteAttachEndpointMismatch(
+                String portId, String expectedProducer,
+                String actualProducer, String actualTask) {
+            String port = safe(portId);
+            if (port.isEmpty() || satisfiedAttachEndpointPorts.contains(port)) {
+                return;
+            }
+            attachEndpointMismatches.put(port,
+                    "selected communication port " + port
+                            + " expected producer " + expectedProducer
+                            + " but attached " + firstNonBlank(
+                            actualProducer, "<unknown>") + " from task "
+                            + firstNonBlank(actualTask, "<unknown>"));
+        }
+
+        private synchronized void markAttachEndpointSatisfied(String portId) {
+            String port = safe(portId);
+            if (port.isEmpty()) return;
+            satisfiedAttachEndpointPorts.add(port);
+            attachEndpointMismatches.remove(port);
+        }
+
+        private synchronized String unconfirmedSelectedAttachEndpoint() {
+            Set<String> checkedExchanges = new LinkedHashSet<>();
+            for (Map.Entry<String, String> expected
+                    : activation.attachProducerOccurrenceByPort.entrySet()) {
+                String exchange = activation.attachExchangeIdentity(
+                        expected.getKey());
+                if (!checkedExchanges.add(exchange)) continue;
+                String mismatch = null;
+                String firstPort = expected.getKey();
+                String producer = expected.getValue();
+                boolean satisfied = false;
+                for (Map.Entry<String, String> candidate
+                        : activation.attachProducerOccurrenceByPort
+                        .entrySet()) {
+                    if (!exchange.equals(activation.attachExchangeIdentity(
+                            candidate.getKey()))) {
+                        continue;
+                    }
+                    if (satisfiedAttachEndpointPorts.contains(
+                            candidate.getKey())) {
+                        satisfied = true;
+                        break;
+                    }
+                    String candidateMismatch = attachEndpointMismatches.get(
+                            candidate.getKey());
+                    if (mismatch == null && candidateMismatch != null) {
+                        mismatch = candidateMismatch;
+                    }
+                }
+                if (satisfied) continue;
+                return mismatch == null
+                        ? "selected communication exchange " + exchange
+                        + " (port " + firstPort + ") never attached producer "
+                        + producer
+                        : mismatch;
+            }
+            return "";
+        }
 
         private synchronized void deferResponseHandoffGap(
                 String portId, JsonObject gap) {
@@ -8325,18 +9030,29 @@ public final class ConcolicRegionRuntime {
          * simply not anchored.  This evidence exists only once the exchange
          * has landed, which is inside the turn, not at its entry.</p>
          */
-        private synchronized boolean carriedCausalAnchor() {
+        private synchronized Set<String> carriedSemanticAnchorIds() {
+            Set<String> carried = new LinkedHashSet<>();
+            for (JsonObject observation
+                    : configuredSourcePhaseObservations) {
+                String phaseId = string(observation, "matchedPhaseId");
+                if (!phaseId.isEmpty()) {
+                    carried.add(activation.sourcePhaseAnchorId(phaseId));
+                }
+            }
             Set<String> anchors = activation.causalAnchorPorts();
-            if (anchors.isEmpty()) return false;
             for (String portId : anchors) {
                 if (satisfiedResponseHandoffPorts.contains(portId)) {
-                    return true;
+                    carried.add(activation.attachAnchorId(portId));
                 }
             }
             for (JsonObject handoff : vmHandoffEvents) {
-                if (anchors.contains(string(handoff, "portId"))) return true;
+                String portId = string(handoff, "portId");
+                if (anchors.contains(portId)) {
+                    carried.add(activation.attachAnchorId(portId));
+                }
             }
-            return false;
+            carried.remove("");
+            return carried;
         }
 
         private synchronized void flushPendingResponseHandoffGaps() {
@@ -9110,12 +9826,21 @@ public final class ConcolicRegionRuntime {
                 return null;
             }
             String ordinalKey = "PUBLISH\n" + safe(sourceId) + "\n" + site;
-            int ordinal = configuredSourcePhaseOrdinals.merge(ordinalKey, 1,
-                    Integer::sum);
+            int localOrdinal = configuredSourcePhaseOrdinals.merge(
+                    ordinalKey, 1, Integer::sum);
+            int ordinal = activation.configuredSourcePhaseOrdinal(
+                    ordinalKey, localOrdinal);
             boolean cataloged = ordinal <= declaration.size();
             ConfiguredSourcePhaseContract.Occurrence matched = cataloged
                     ? declaration.get(ordinal - 1)
                     : declaration.get(declaration.size() - 1);
+            if (!cataloged) {
+                addSourcePhaseGap("EXTRA", matched,
+                        "PUBLISH " + site + " occurrence " + ordinal
+                                + " exceeds the frozen phase catalog size "
+                                + declaration.size());
+                return null;
+            }
             if (!matched.fieldSignature().equals(
                     safe(runtimeFieldSignature))
                     || !matched.runtimeDeclaredCallee().equals(
@@ -9127,9 +9852,7 @@ public final class ConcolicRegionRuntime {
             reachedConfiguredSourceSites.add(matched.siteId());
             if (!site.isEmpty()) reachedConfiguredSourceSites.add(site);
             mintedConfiguredSourceFields.add(matched.fieldSignature());
-            if (cataloged) {
-                recordConfiguredSourcePhaseObservation(matched, context);
-            }
+            recordConfiguredSourcePhaseObservation(matched, context);
             return new SourceSiteEntry(matched, site, ordinal, cataloged);
         }
 
@@ -9162,9 +9885,7 @@ public final class ConcolicRegionRuntime {
                 JsonElement expression, boolean reused) {
             JsonObject row = new JsonObject();
             row.addProperty("sourceId", safe(sourceId));
-            // Planned address: one logical mint per phase across activations.
-            row.addProperty("occurrenceId",
-                    safe(activation.occurrenceId));
+            row.addProperty("occurrenceId", occurrenceId());
             row.addProperty("siteId", entry.siteId);
             row.addProperty("ordinal", entry.ordinal);
             row.addProperty("fieldSignature", safe(fieldSignature));
@@ -10527,6 +11248,8 @@ public final class ConcolicRegionRuntime {
         private final String taskId;
         private final String instrumentationSelector;
         private final String regionId;
+        /** Exact planner identity of the dynamic root activation. */
+        private final String activationId;
         /** The activation this task is. */
         private final String sourceKey;
         private final String occurrenceId;
@@ -10557,12 +11280,17 @@ public final class ConcolicRegionRuntime {
         private final List<OutputCaptureSpec> outputCaptures;
         private final boolean capturesOutputRelation;
         private final boolean capturesTargetReach;
+        /** Whether this target task has already published its failure goal. */
+        private volatile boolean completedTargetReserved;
+        /** Whether this ordinary producer already published a complete row. */
+        private volatile boolean completedRelationReserved;
         /**
          * Result rows this address has published in this replay.
          *
-         * <p>README {@code OCC-1}: an address is not answered once.  Every
-         * compatible activation that reaches a terminal is its own occurrence,
-         * and this counts them so each row can name which one it is.</p>
+         * <p>Every admitted activation that reaches a terminal is its own
+         * occurrence. This counts them so each row can name which one it is;
+         * target admission stops after its failure goal; ordinary producers
+         * keep running so later activations can propagate symbolic state.</p>
          */
         private int publishedActivations;
         /**
@@ -10586,21 +11314,15 @@ public final class ConcolicRegionRuntime {
         private final int loopOccurrenceBudget;
         /** Whether the one bounded-cut marker for this region was written. */
         private boolean loopBoundCutRecorded;
-        /**
-         * Turns of the root loop this address admitted, never given back.
-         * The anchor hunt is bounded by this count, so an address whose
-         * anchor never arrives still stops.
-         */
+        /** Turns of the root loop examined for this bounded address. */
         private int admittedTurns;
         /** Kept occurrences that carried the selected causal anchor. */
         private int anchoredOccurrences;
+        /** Exact phase/exchange identities committed by published turns. */
+        private final Set<String> observedSemanticAnchorIds =
+                new LinkedHashSet<>();
         /** Turns run and given back for carrying no selected anchor. */
         private int unanchoredTurnsReleased;
-        /**
-         * Whether the anchor reservation expired fail-closed, leaving this
-         * address the plain K_L prefix it is without an anchor.
-         */
-        private boolean anchorReservationReleased;
         private final boolean hasExplicitFaultInput;
         private final Map<String, Set<String>> capturePrerequisites;
         private final Map<String, JsonObject> recordedPrimitiveOutputs;
@@ -10621,19 +11343,24 @@ public final class ConcolicRegionRuntime {
         /** Exact baseline hook executions, in recorded event order. */
         private final List<ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhases;
+        /** Reserved source-hook ordinal across one LOOP_BODY_ROOT address. */
+        private final Map<String, Integer> configuredSourcePhaseOrdinals =
+                new LinkedHashMap<>();
         /** Strict phase lookup; phase ids never alias source ids. */
         private final Map<String, ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhasesById = new LinkedHashMap<>();
         /** Response leaves this caller must attach after its selected cut. */
         private final Set<String> responseAttachPortIds =
                 new LinkedHashSet<>();
+        /** Every protocol input this occurrence attaches from the VM. */
+        private final Set<String> attachPortIds = new LinkedHashSet<>();
         /** Response leaves this server occurrence exports at normal return. */
         private final Set<String> responseExportPortIds =
                 new LinkedHashSet<>();
         /**
          * Planner-selected producer occurrence of each response attach port.
          */
-        private final Map<String, String> responseProducerOccurrenceByPort =
+        private final Map<String, String> attachProducerOccurrenceByPort =
                 new LinkedHashMap<>();
         /** Manual adapter sites indexed only by their exact VM storage. */
         private final Map<String, CommunicationHandoffSpec>
@@ -10647,6 +11374,9 @@ public final class ConcolicRegionRuntime {
                 new ArrayList<>();
         /** Frozen runtime bindings used to resolve exact Map producers. */
         private final JsonArray edgeBindings;
+        /** Declared field -> unique frozen receiver locator for this task. */
+        private final Map<String, Long> plannedReceiverObjectIdByField =
+                new LinkedHashMap<>();
         /**
          * Activations that ran as candidates for this address and were not the
          * addressed occurrence, and every distinct reason they were not.
@@ -10663,6 +11393,7 @@ public final class ConcolicRegionRuntime {
             this.taskId = task.taskId();
             this.instrumentationSelector = task.instrumentationSelector();
             this.regionId = task.regionId();
+            this.activationId = string(task.json(), "activationId");
             this.sourceKey = task.sourceKey();
             this.occurrenceId = task.occurrenceId();
             this.rootMethod = task.rootMethod();
@@ -10706,6 +11437,7 @@ public final class ConcolicRegionRuntime {
             this.recordedPrimitiveOutputs = new LinkedHashMap<>();
             this.executionScopeMethods = new LinkedHashSet<>();
             this.edgeBindings = task.edgeBindings().deepCopy();
+            indexPlannedReceiverObjectIds(edgeBindings);
             // The plan row decoded this catalog once; phase ids are already
             // one strict ordered ledger by then, so this is an index, not a
             // second admission.
@@ -10797,6 +11529,9 @@ public final class ConcolicRegionRuntime {
             }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
+                if (!site.exports()) {
+                    attachPortIds.add(site.portId());
+                }
                 responseHandoff |= site.exportsEntryReturn()
                         && "RESPONSE".equals(site.direction());
                 if (site.attachesCutReturn()
@@ -10853,7 +11588,7 @@ public final class ConcolicRegionRuntime {
                                     + taskId + ": " + assignment.key);
                 }
             }
-            indexResponseProducerOccurrences(edgeBindings);
+            indexAttachProducerOccurrences(edgeBindings);
             this.exportsResponseHandoff = responseHandoff;
             // Gates travel with the task because the arm they enforce was
             // chosen by the solver for this replay and no other.
@@ -10946,8 +11681,8 @@ public final class ConcolicRegionRuntime {
          * Resolves each selected response input to its planner-authored
          * producer occurrence.
          */
-        private void indexResponseProducerOccurrences(JsonArray bindings) {
-            for (String portId : responseAttachPortIds) {
+        private void indexAttachProducerOccurrences(JsonArray bindings) {
+            for (String portId : attachPortIds) {
                 // An exchange pairing a replay recorded and the scheduler
                 // absorbed stands beside the frozen plan's own row for this
                 // port rather than replacing it, so one port can name two
@@ -10962,17 +11697,26 @@ public final class ConcolicRegionRuntime {
                 for (JsonElement element : bindings) {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
-                    if (!portId.equals(string(binding, "toInputPort"))) {
+                    if (!"RUNTIME_PROTOCOL_FLOW".equals(
+                            string(binding, "kind"))
+                            || !portId.equals(string(binding, "toInputPort"))) {
                         continue;
                     }
-                    String candidate = string(binding, "fromOccurrenceId");
+                    String receiver = PathObservation.plannedOccurrenceOf(
+                            string(binding, "toOccurrenceId"));
+                    if (!receiver.isEmpty()
+                            && !occurrenceId.equals(receiver)) {
+                        continue;
+                    }
+                    String candidate = PathObservation.plannedOccurrenceOf(
+                            string(binding, "fromOccurrenceId"));
                     if (candidate.isEmpty()) continue;
                     boolean recorded = VmHandoffEvidence.absorbed(binding);
                     String held = recorded
                             ? recordedOccurrence : producerOccurrence;
                     if (!held.isEmpty() && !held.equals(candidate)) {
                         throw new IllegalArgumentException(
-                                "response handoff port has two producer "
+                                "communication attach port has two producer "
                                         + "occurrences in " + taskId + ": "
                                         + portId);
                     }
@@ -10985,9 +11729,60 @@ public final class ConcolicRegionRuntime {
                 String selected = recordedOccurrence.isEmpty()
                         ? producerOccurrence : recordedOccurrence;
                 if (!selected.isEmpty()) {
-                    responseProducerOccurrenceByPort.put(portId, selected);
+                    attachProducerOccurrenceByPort.put(portId, selected);
                 }
             }
+        }
+
+        private String attachProducerOccurrence(String portId) {
+            return safe(attachProducerOccurrenceByPort.get(safe(portId)));
+        }
+
+        /** One protocol exchange shared by its adapter-carried leaf ports. */
+        private String attachExchangeIdentity(String portId) {
+            String port = safe(portId);
+            CommunicationHandoffSpec handoff = communicationHandoff(port,
+                    false);
+            if (handoff == null
+                    || safe(handoff.componentOfPortId()).isEmpty()) {
+                return port;
+            }
+            return handoff.componentOfPortId();
+        }
+
+        private void indexPlannedReceiverObjectIds(JsonArray bindings) {
+            Map<String, Set<Long>> candidates = new LinkedHashMap<>();
+            for (JsonElement element : bindings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                if (!"RUNTIME_FIELD_FLOW".equals(string(binding, "kind"))) {
+                    continue;
+                }
+                String from = PathObservation.plannedOccurrenceOf(
+                        string(binding, "fromOccurrenceId"));
+                String to = PathObservation.plannedOccurrenceOf(
+                        string(binding, "toOccurrenceId"));
+                if (!occurrenceId.equals(from) && !occurrenceId.equals(to)) {
+                    continue;
+                }
+                String field = string(binding, RecordedReadFrom.EDGE_FIELD);
+                long receiver = longInteger(binding, "receiverObjectId", 0L);
+                if (field.isEmpty() || receiver <= 0L) continue;
+                candidates.computeIfAbsent(field,
+                        ignored -> new LinkedHashSet<>()).add(receiver);
+            }
+            for (Map.Entry<String, Set<Long>> entry : candidates.entrySet()) {
+                if (entry.getValue().size() == 1) {
+                    plannedReceiverObjectIdByField.put(entry.getKey(),
+                            entry.getValue().iterator().next());
+                }
+            }
+        }
+
+        private long plannedReceiverObjectId(String declaringClass,
+                                             String fieldName) {
+            return plannedReceiverObjectIdByField.getOrDefault(
+                    safe(declaringClass) + "#" + safe(fieldName), 0L);
         }
 
         private static String handoffKey(String portId, boolean exporting) {
@@ -11228,8 +12023,17 @@ public final class ConcolicRegionRuntime {
             for (JsonElement element
                     : encodedOccurrences.getAsJsonArray()) {
                 if (!element.isJsonObject()) continue;
-                JsonElement outcome = element.getAsJsonObject().get(
-                        "outcome");
+                JsonObject occurrence = element.getAsJsonObject();
+                int ordinal = integer(occurrence, "occurrence", -1);
+                // The selected goal decision is the event this task exists
+                // to flip, not part of the seed prefix it must preserve.
+                // Match the full event identity: earlier turns of the same
+                // loop branch remain prefix evidence.
+                if (siteId.equals(targetBranchSite)
+                        && ordinal == targetBranchOccurrence) {
+                    continue;
+                }
+                JsonElement outcome = occurrence.get("outcome");
                 if (outcome == null || !outcome.isJsonPrimitive()
                         || !outcome.getAsJsonPrimitive().isBoolean()) {
                     continue;
@@ -11262,6 +12066,42 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
+         * The planner numbers a source site inside one activation root.  An
+         * ordinary region activation is that root and therefore restarts at
+         * one.  LOOP_BODY_ROOT is different: several body activations are
+         * slices of one enclosing root-loop activation, so only that address
+         * carries a reserved ordinal across its retained turns.
+         */
+        private synchronized int configuredSourcePhaseOrdinal(
+                String key, int localOrdinal) {
+            return (loopBodyRoot
+                    ? configuredSourcePhaseOrdinals.getOrDefault(
+                    safe(key), 0) : 0) + localOrdinal;
+        }
+
+        /** Reserves the phase prefix used by one retained loop-body turn. */
+        private synchronized void reserveConfiguredSourcePhaseOrdinals(
+                Map<String, Integer> used) {
+            if (!loopBodyRoot) return;
+            for (Map.Entry<String, Integer> entry : used.entrySet()) {
+                configuredSourcePhaseOrdinals.merge(entry.getKey(),
+                        entry.getValue(), Integer::sum);
+            }
+        }
+
+        /**
+         * Settles the small occurrence ledger before asynchronous decoding.
+         * A later body turn is allowed to rely on this reservation; any
+         * publication failure is consequently terminal and never rolled back.
+         */
+        private synchronized void reserveCompletedOccurrence(
+                Map<String, Integer> sourceOrdinals,
+                Set<String> semanticAnchorIds) {
+            reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
+            if (loopBodyRoot) commitSemanticAnchorIds(semanticAnchorIds);
+        }
+
+        /**
          * Ports whose producer occurrence the frozen plan names: the
          * exchanges this occurrence was selected for, and therefore the
          * region's <em>selected causal anchor</em>.
@@ -11273,7 +12113,75 @@ public final class ConcolicRegionRuntime {
          * addressed exactly as it is today.</p>
          */
         private Set<String> causalAnchorPorts() {
-            return responseProducerOccurrenceByPort.keySet();
+            return attachProducerOccurrenceByPort.keySet();
+        }
+
+        /** Exact source phases that may address a semantic loop turn. */
+        private Set<String> configuredSourceAnchorPhases() {
+            Set<String> phases = new LinkedHashSet<>();
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : configuredSourcePhases) {
+                phases.add(phase.phaseId());
+            }
+            return phases;
+        }
+
+        private String sourcePhaseAnchorId(String phaseId) {
+            String phase = safe(phaseId);
+            return phase.isEmpty() ? "" : "SOURCE_PHASE\n" + phase;
+        }
+
+        /** Exact selected response exchange, not merely a reusable port name. */
+        private String attachAnchorId(String portId) {
+            String port = safe(portId);
+            String producer = attachProducerOccurrenceByPort.get(port);
+            return port.isEmpty() || safe(producer).isEmpty() ? ""
+                    : "COMMUNICATION_EXCHANGE\n" + producer + "\n"
+                    + occurrenceId + "\n" + port;
+        }
+
+        private Set<String> plannedSemanticAnchorIds() {
+            Set<String> planned = new LinkedHashSet<>();
+            for (String phaseId : configuredSourceAnchorPhases()) {
+                planned.add(sourcePhaseAnchorId(phaseId));
+            }
+            for (String portId : causalAnchorPorts()) {
+                planned.add(attachAnchorId(portId));
+            }
+            planned.remove("");
+            return planned;
+        }
+
+        private synchronized Set<String> newSemanticAnchorIds(
+                Set<String> carried) {
+            Set<String> fresh = new LinkedHashSet<>();
+            Set<String> planned = plannedSemanticAnchorIds();
+            for (String identity : carried) {
+                if (planned.contains(identity)
+                        && !observedSemanticAnchorIds.contains(identity)) {
+                    fresh.add(identity);
+                }
+            }
+            return fresh;
+        }
+
+        private synchronized Set<String> missingSemanticAnchorIds() {
+            Set<String> missing = plannedSemanticAnchorIds();
+            missing.removeAll(observedSemanticAnchorIds);
+            return missing;
+        }
+
+        /** Reserves identities of one retained loop turn before decode. */
+        private synchronized void commitSemanticAnchorIds(Set<String> ids) {
+            boolean anchored = false;
+            Set<String> planned = plannedSemanticAnchorIds();
+            for (String identity : ids) {
+                if (planned.contains(identity)
+                        && observedSemanticAnchorIds.add(identity)) {
+                    anchored = true;
+                }
+            }
+            if (anchored) anchoredOccurrences++;
         }
 
         /**
@@ -11288,25 +12196,12 @@ public final class ConcolicRegionRuntime {
          * has no anchor to be addressed by and keeps the plain prefix.</p>
          */
         private synchronized int anchoredOccurrenceSlots() {
-            if (anchorReservationReleased) return 0;
             // A replay must reproduce the recorded prefix exactly; re-keying
             // its occurrence set on an anchor would answer a different one.
             if (replayContract != null) return 0;
-            int anchors = causalAnchorPorts().size();
+            int anchors = plannedSemanticAnchorIds().size();
             if (anchors <= 0) return 0;
-            // With no room above K_L there is nowhere to look for the anchor,
-            // and reserving a slot could only lose a turn.
-            if (anchorProbeCeiling() <= loopOccurrenceBudget) return 0;
             return Math.min(anchors, loopOccurrenceBudget);
-        }
-
-        /**
-         * Turns this address may run and give back while it looks for its
-         * anchor: the region's own declared unroll bound, never more.
-         */
-        private int anchorProbeCeiling() {
-            return Math.max(loopOccurrenceBudget,
-                    loopBound.maxBackedgeTraversals());
         }
 
         /** Whether this address addresses its occurrences by an anchor. */
@@ -11329,27 +12224,76 @@ public final class ConcolicRegionRuntime {
          * <p>While an anchored slot is still open the cut waits: the address
          * has not yet seen the exchange it was selected for, and cutting on
          * the raw ordinal would end the window before that exchange happens.
-         * The wait is bounded by {@link #anchorProbeCeiling()} -- the region's
-         * own declared unroll bound -- and expires fail-closed: the
-         * reservation is given back and the address becomes exactly the prefix
-         * it is today, never an unbounded or larger kept set.</p>
+         * The raw number of polling turns is deliberately not bounded by
+         * K_L: K_L bounds the <em>published symbolic cases</em>, not how many
+         * concrete workload turns may be inspected before the selected RPC
+         * exchange occurs.  Workload termination bounds that inspection.  If
+         * the exchange never occurs, shutdown publishes a named coverage gap
+         * instead of silently substituting an unrelated prefix turn.</p>
          */
         private synchronized boolean cutsBoundedLoopOccurrence() {
             if (!loopBodyRoot) return false;
             int reserved = anchoredOccurrenceSlots();
-            if (reserved > 0 && anchoredOccurrences < reserved) {
-                if (admittedTurns < anchorProbeCeiling()) {
-                    admittedTurns++;
-                    return false;
-                }
-                // FAIL-CLOSED: the declared ceiling is spent and no turn ever
-                // carried the anchor.  Give the reservation back so the kept
-                // set is the same size it always was.
-                anchorReservationReleased = true;
+            if (reserved > 0 && !missingSemanticAnchorIds().isEmpty()
+                    && anchoredOccurrences < loopOccurrenceBudget) {
+                admittedTurns++;
+                return false;
             }
             if (publishedActivations >= loopOccurrenceBudget) return true;
             admittedTurns++;
             return false;
+        }
+
+        /** Whether a live bounded address ended without its selected anchor. */
+        private synchronized boolean missedCausalAnchor() {
+            return admittedTurns > 0 && anchoredOccurrenceSlots() > 0
+                    && !missingSemanticAnchorIds().isEmpty();
+        }
+
+        /** Evidence for the fail-closed missing-anchor shutdown row. */
+        private synchronized JsonObject missedCausalAnchorEvidence() {
+            JsonObject evidence = new JsonObject();
+            evidence.addProperty("plannedOccurrenceId", occurrenceId);
+            evidence.addProperty("regionId", regionId);
+            JsonArray ports = new JsonArray();
+            for (String portId : causalAnchorPorts()) {
+                ports.add(new JsonPrimitive(portId));
+            }
+            evidence.add("causalAnchorPorts", ports);
+            JsonArray phases = new JsonArray();
+            for (String phaseId : configuredSourceAnchorPhases()) {
+                phases.add(new JsonPrimitive(phaseId));
+            }
+            evidence.add("configuredSourceAnchorPhases", phases);
+            JsonArray missingPhases = new JsonArray();
+            for (String phaseId : configuredSourceAnchorPhases()) {
+                if (missingSemanticAnchorIds().contains(
+                        sourcePhaseAnchorId(phaseId))) {
+                    missingPhases.add(new JsonPrimitive(phaseId));
+                }
+            }
+            evidence.add("missingConfiguredSourcePhaseIds", missingPhases);
+            JsonArray missingResponses = new JsonArray();
+            for (String portId : causalAnchorPorts()) {
+                if (!missingSemanticAnchorIds().contains(
+                        attachAnchorId(portId))) {
+                    continue;
+                }
+                JsonObject exchange = new JsonObject();
+                exchange.addProperty("portId", portId);
+                exchange.addProperty("producerOccurrenceId",
+                        attachProducerOccurrenceByPort.get(portId));
+                exchange.addProperty("consumerOccurrenceId", occurrenceId);
+                missingResponses.add(exchange);
+            }
+            evidence.add("missingResponseExchanges", missingResponses);
+            evidence.addProperty("occurrenceBudget", loopOccurrenceBudget);
+            evidence.addProperty("anchoredOccurrences",
+                    anchoredOccurrences);
+            evidence.addProperty("unanchoredTurnsReleased",
+                    unanchoredTurnsReleased);
+            evidence.addProperty("turnsAdmitted", admittedTurns);
+            return evidence;
         }
 
         /**
@@ -11367,16 +12311,21 @@ public final class ConcolicRegionRuntime {
          * @return {@code true} when this turn published no occurrence
          */
         private synchronized boolean releasesUnanchoredLoopTurn(
-                boolean carriedCausalAnchor) {
+                boolean carriedNewSemanticAnchor) {
             if (!loopBodyRoot) return false;
             int reserved = anchoredOccurrenceSlots();
             if (reserved <= 0) return false;
-            if (carriedCausalAnchor && anchoredOccurrences < reserved) {
-                anchoredOccurrences++;
+            if (carriedNewSemanticAnchor
+                    && anchoredOccurrences < loopOccurrenceBudget) {
                 return false;
             }
-            if (publishedActivations - anchoredOccurrences
-                    <= loopOccurrenceBudget - reserved) {
+            int remainingAnchorSlots = Math.min(
+                    missingSemanticAnchorIds().size(),
+                    loopOccurrenceBudget - anchoredOccurrences);
+            int ordinaryActivations = publishedActivations
+                    - anchoredOccurrences;
+            if (ordinaryActivations <= loopOccurrenceBudget
+                    - anchoredOccurrences - remainingAnchorSlots) {
                 return false;
             }
             unanchoredTurnsReleased++;
@@ -11404,6 +12353,33 @@ public final class ConcolicRegionRuntime {
 
         private boolean declaresTargetBranch() {
             return !targetBranchSite.isEmpty();
+        }
+
+        /**
+         * Reserves completed evidence before reopening task admission.
+         *
+         * <p>Loop-body roots remain governed exclusively by K_L. Replay
+         * tasks remain open for the path worklist's flipped relation. A
+         * complete ordinary producer also remains admissible because its
+         * later activations may carry symbolic state to consumers; only their
+         * duplicate result rows are suppressed.</p>
+         */
+        private void reserveCompletedEvidence(boolean targetReached,
+                                              boolean relationComplete) {
+            if (capturesTargetReach && targetReached) {
+                completedTargetReserved = true;
+            }
+            if (relationOnlySeed() && !loopBodyRoot && relationComplete) {
+                completedRelationReserved = true;
+            }
+        }
+
+        private boolean blocksAdmissionAfterCompletedTarget() {
+            return completedTargetReserved;
+        }
+
+        private boolean suppressesDuplicateRelationResult() {
+            return completedRelationReserved;
         }
 
         /**
@@ -11562,10 +12538,17 @@ public final class ConcolicRegionRuntime {
             for (int index = 0; index < tasks.size(); index++) {
                 RuntimeTask task = tasks.get(index);
                 if (task == primary || candidateLive[index]
+                        || task.blocksAdmissionAfterCompletedTarget()
                         // A response producer is armed by its live caller,
                         // never by a sibling's activation.
                         || task.exportsResponseHandoff
                         || !task.regionId.equals(primary.regionId)
+                        // Entry hooks may share a method, region and source
+                        // while naming different concurrent invocations.  A
+                        // sibling is another contract on this exact frozen
+                        // activation, never merely another compatible root.
+                        || primary.activationId.isEmpty()
+                        || !task.activationId.equals(primary.activationId)
                         || !task.rootMethod.equals(primary.rootMethod)
                         || !task.sourceKey.equals(primary.sourceKey)
                         || !task.rootContextSelector.sameAddress(
@@ -11603,9 +12586,19 @@ public final class ConcolicRegionRuntime {
             unansweredAddressesPublished = true;
             for (int index = 0; index < tasks.size(); index++) {
                 RuntimeTask task = tasks.get(index);
+                if (task.missedCausalAnchor()) {
+                    writeSkipped(task, SKIP_CAUSAL_ANCHOR_NOT_OBSERVED,
+                            "selected semantic anchor identities "
+                                    + task.missingSemanticAnchorIds()
+                                    + " were not observed before workload "
+                                    + "termination; K_L bounded published "
+                                    + "cases, not polling turns",
+                            task.missedCausalAnchorEvidence());
+                    continue;
+                }
                 // An address that published at least one occurrence has been
-                // answered; further activations of it published rows of their
-                // own rather than an ambiguity gap.
+                // answered for end-of-run diagnostics. Goal completion owns
+                // the separate decision to admit another activation.
                 if (occurrenceClaimed[index]) continue;
                 if (task.unaddressedCandidates == 0) continue;
                 writeSkipped(task, task.rootContextSelector
@@ -11624,6 +12617,12 @@ public final class ConcolicRegionRuntime {
             occurrenceClaimed[index] = true;
         }
 
+        /** Marks durable evidence without clearing a newer live candidate. */
+        private synchronized void markOccurrencePublished(RuntimeTask task) {
+            int index = tasks.indexOf(task);
+            if (index >= 0) occurrenceClaimed[index] = true;
+        }
+
         /** The campaign task with this id, or {@code null}. */
         private RuntimeTask taskById(String taskId) {
             if (taskId == null || taskId.isEmpty()) return null;
@@ -11631,6 +12630,71 @@ public final class ConcolicRegionRuntime {
                 if (taskId.equals(task.taskId)) return task;
             }
             return null;
+        }
+
+        /**
+         * Resolves the one transport recorded for this exact response cut.
+         * The dynamic correlation id is deliberately not frozen; the live
+         * SEND supplies it after the static cut and transport agree.
+         */
+        private ResponseCutExpectation responseCutExpectation(
+                RuntimeTask caller, CommunicationHandoffSpec site) {
+            if (caller == null || site == null) {
+                return new ResponseCutExpectation("", "missing cut");
+            }
+            RuntimeTask producer = selectedResponseProducer(caller,
+                    site.portId());
+            if (producer == null) {
+                return new ResponseCutExpectation("",
+                        "no unique selected producer for " + site.portId());
+            }
+            Set<String> transports = new LinkedHashSet<>();
+            Set<String> callSites = new LinkedHashSet<>();
+            for (RuntimeTask task : tasks) {
+                for (JsonElement element : task.edgeBindings) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (!"RUNTIME_PROTOCOL_FLOW".equals(
+                            string(binding, "kind"))
+                            || !site.portId().equals(
+                            string(binding, "toInputPort"))
+                            || !producer.occurrenceId.equals(
+                            string(binding, "fromOccurrenceId"))) {
+                        continue;
+                    }
+                    String receiver = string(binding, "toOccurrenceId");
+                    if (!receiver.isEmpty()
+                            && !caller.occurrenceId.equals(receiver)) {
+                        continue;
+                    }
+                    String protocolDirection = firstNonBlank(
+                            string(binding, "protocolDirection"),
+                            string(binding, "direction"));
+                    if (!"RESPONSE".equalsIgnoreCase(
+                            protocolDirection)) {
+                        continue;
+                    }
+                    String transport = string(binding, "transportKind");
+                    if (!transport.isEmpty()) transports.add(transport);
+                    String callSite = string(binding, "callSiteId");
+                    if (!callSite.isEmpty()) callSites.add(callSite);
+                }
+            }
+            if (transports.size() != 1) {
+                return new ResponseCutExpectation("",
+                        "selected response port names " + transports.size()
+                                + " transports");
+            }
+            if (!callSites.isEmpty()
+                    && (callSites.size() != 1
+                    || !callSites.contains(site.siteId()))) {
+                return new ResponseCutExpectation("",
+                        "recorded request call site " + callSites
+                                + " does not equal declared cut "
+                                + site.siteId());
+            }
+            return new ResponseCutExpectation(
+                    transports.iterator().next(), "");
         }
 
         /**
@@ -11686,7 +12750,7 @@ public final class ConcolicRegionRuntime {
         private RuntimeTask selectedResponseProducer(RuntimeTask caller,
                                                      String portId) {
             String localOccurrence = safe(
-                    caller.responseProducerOccurrenceByPort.get(portId));
+                    caller.attachProducerOccurrenceByPort.get(portId));
             RuntimeTask matched = null;
             for (RuntimeTask candidate : tasks) {
                 if (!candidate.responseExportPortIds.contains(portId)) {
@@ -11731,18 +12795,24 @@ public final class ConcolicRegionRuntime {
                     RuntimeTraceContext.sourceFor(receiver);
             RuntimeTraceContext.View context = RuntimeTraceContext.current();
             String requestApi = context.requestApi;
+            RuntimeTask completedRelationFallback = null;
             for (int index = 0; index < tasks.size(); index++) {
                 RuntimeTask task = tasks.get(index);
                 if (!task.instrumentationSelector.equals(
                         safe(instrumentationSelector))) continue;
+                if (task.blocksAdmissionAfterCompletedTarget()) continue;
                 if (!compatibleRoot(task.rootMethod, rootMethod,
                         task.rootContextSelector, task.rootArgumentSelector,
                         receiver, rootArguments, threadName)) {
                     continue;
                 }
+                ResponseProducerAdmission responseAdmission = null;
                 ResponseProducerArm responseArm = null;
                 if (task.exportsResponseHandoff) {
-                    responseArm = INBOUND_RESPONSE_PRODUCER_ARM.get();
+                    responseAdmission =
+                            INBOUND_RESPONSE_PRODUCER_ARM.get();
+                    responseArm = responseAdmission == null
+                            ? null : responseAdmission.arm;
                     if (responseArm == null
                             || !responseArm.authorizes(task)) {
                         // A response producer is an occurrence selected by its
@@ -11833,19 +12903,108 @@ public final class ConcolicRegionRuntime {
                             + task.sourceKey);
                     continue;
                 }
-                // README OCC-1: a further activation this address selects is
-                // another occurrence of it, not an ambiguity.  Only one runs
-                // at a time -- the VM region context is per thread -- but an
-                // already-answered address keeps admitting.
+                // A further candidate of an incomplete address is another
+                // occurrence, not an ambiguity. Only one runs at a time; a
+                // completed non-loop seed remains eligible for later symbolic
+                // propagation, but it must not starve another selected
+                // occurrence of the same root that has not published yet.
+                // Response producers are authorized by an exact live caller
+                // and therefore never enter this ordinary fallback queue.
                 if (candidateLive[index]) continue;
+                if (task.suppressesDuplicateRelationResult()
+                        && !task.exportsResponseHandoff) {
+                    if (completedRelationFallback == null) {
+                        completedRelationFallback = task;
+                    }
+                    continue;
+                }
                 candidateLive[index] = true;
-                if (responseArm != null) {
+                if (responseAdmission != null) {
                     // One live request authorizes one producer occurrence.
+                    responseAdmission.cut.admitted();
                     INBOUND_RESPONSE_PRODUCER_ARM.remove();
                 }
                 return task;
             }
+            if (completedRelationFallback != null) {
+                // Hooks are injected per occurrence.  A completed producer's
+                // hook therefore runs before later hooks at the same root and
+                // would otherwise open a duplicate VM region on every
+                // invocation, making the unfinished occurrence's hook see an
+                // already-active thread forever.  Propagation fallback is
+                // last across the whole compatible campaign, not merely last
+                // among rows sharing this hook's selector.
+                if (unfinishedTaskMatchesInvocation(rootMethod, receiver,
+                        rootArguments, threadName, requestApi,
+                        registeredReceiverSource, context)) {
+                    return null;
+                }
+                int index = tasks.indexOf(completedRelationFallback);
+                if (index >= 0 && !candidateLive[index]) {
+                    candidateLive[index] = true;
+                    return completedRelationFallback;
+                }
+            }
             return null;
+        }
+
+        /** Whether a later entry hook can admit unfinished work here. */
+        private boolean unfinishedTaskMatchesInvocation(
+                String rootMethod, Object receiver, Object[] rootArguments,
+                String threadName, String requestApi,
+                SourceRef registeredReceiverSource,
+                RuntimeTraceContext.View context) {
+            for (int index = 0; index < tasks.size(); index++) {
+                RuntimeTask task = tasks.get(index);
+                if (candidateLive[index]
+                        || task.blocksAdmissionAfterCompletedTarget()
+                        || task.suppressesDuplicateRelationResult()
+                        || !compatibleRoot(task.rootMethod, rootMethod,
+                        task.rootContextSelector, task.rootArgumentSelector,
+                        receiver, rootArguments, threadName)) {
+                    continue;
+                }
+                if (task.exportsResponseHandoff) {
+                    ResponseProducerAdmission admission =
+                            INBOUND_RESPONSE_PRODUCER_ARM.get();
+                    ResponseProducerArm arm = admission == null
+                            ? null : admission.arm;
+                    if (arm == null || !arm.authorizes(task)) continue;
+                }
+                if (!task.rootContextSelector.requestApi.isEmpty()
+                        && !task.rootContextSelector.requestApi.equals(
+                        safe(requestApi))) {
+                    continue;
+                }
+                if (task.rootContextSelector.inheritedContextAnchor) {
+                    SourceRef inherited = context.source;
+                    if (inherited == null
+                            || !task.sourceKey.equals(inherited.key())
+                            || registeredReceiverSource != null
+                            && !task.sourceKey.equals(
+                            registeredReceiverSource.key())) {
+                        continue;
+                    }
+                }
+                boolean exactRegistered = task.rootContextSelector
+                        .receiverScoped
+                        && task.rootContextSelector.registeredSourceAnchor;
+                if (exactRegistered
+                        && (registeredReceiverSource == null
+                        || !task.sourceKey.equals(
+                        registeredReceiverSource.key()))) {
+                    continue;
+                }
+                if (!exactRegistered
+                        && task.rootContextSelector.receiverScoped
+                        && registeredReceiverSource != null
+                        && !RuntimeTraceContext.sameSourceIdentity(
+                        task.sourceKey, registeredReceiverSource.key())) {
+                    continue;
+                }
+                return true;
+            }
+            return false;
         }
 
         /**
@@ -12028,13 +13187,79 @@ public final class ConcolicRegionRuntime {
         for (int turn = 0; turn < anchored.length; turn++) {
             if (boundedLoopOccurrenceCut(task)) continue;
             int ordinal = task.nextActivationOrdinal();
-            if (task.releasesUnanchoredLoopTurn(anchored[turn])) {
+            Set<String> carried = new LinkedHashSet<>();
+            if (anchored[turn]) {
+                Set<String> missing = task.missingSemanticAnchorIds();
+                if (!missing.isEmpty()) {
+                    carried.add(missing.iterator().next());
+                }
+            }
+            Set<String> fresh = task.newSemanticAnchorIds(carried);
+            if (task.releasesUnanchoredLoopTurn(!fresh.isEmpty())) {
                 task.releaseActivationOrdinal(ordinal);
             } else {
                 kept.add(turn + 1);
+                task.commitSemanticAnchorIds(fresh);
             }
         }
         return kept;
+    }
+
+    /** Exact-identity variant used to exercise duplicate and co-located anchors. */
+    static List<Integer> simulateSemanticAnchorTurnsForTests(
+            String taskId, String[][] phaseIdsByTurn,
+            String[][] responsePortsByTurn) {
+        RuntimeTask task = configuration().taskById(taskId);
+        if (task == null) return Collections.emptyList();
+        int turns = Math.max(phaseIdsByTurn == null ? 0
+                        : phaseIdsByTurn.length,
+                responsePortsByTurn == null ? 0
+                        : responsePortsByTurn.length);
+        List<Integer> kept = new ArrayList<>();
+        for (int turn = 0; turn < turns; turn++) {
+            if (boundedLoopOccurrenceCut(task)) continue;
+            int ordinal = task.nextActivationOrdinal();
+            Set<String> carried = new LinkedHashSet<>();
+            if (phaseIdsByTurn != null && turn < phaseIdsByTurn.length
+                    && phaseIdsByTurn[turn] != null) {
+                for (String phaseId : phaseIdsByTurn[turn]) {
+                    carried.add(task.sourcePhaseAnchorId(phaseId));
+                }
+            }
+            if (responsePortsByTurn != null
+                    && turn < responsePortsByTurn.length
+                    && responsePortsByTurn[turn] != null) {
+                for (String portId : responsePortsByTurn[turn]) {
+                    carried.add(task.attachAnchorId(portId));
+                }
+            }
+            Set<String> fresh = task.newSemanticAnchorIds(carried);
+            if (task.releasesUnanchoredLoopTurn(!fresh.isEmpty())) {
+                task.releaseActivationOrdinal(ordinal);
+            } else {
+                kept.add(turn + 1);
+                task.commitSemanticAnchorIds(fresh);
+            }
+        }
+        return kept;
+    }
+
+    /** Provisional task-scoped source ordinal; does not consume it. */
+    static int configuredSourcePhaseOrdinalForTests(
+            String taskId, String key, int localOrdinal) {
+        RuntimeTask task = configuration().taskById(taskId);
+        return task == null ? 0
+                : task.configuredSourcePhaseOrdinal(key, localOrdinal);
+    }
+
+    /** Commits a source phase exactly as one published activation does. */
+    static void commitConfiguredSourcePhaseOrdinalsForTests(
+            String taskId, String key, int used) {
+        RuntimeTask task = configuration().taskById(taskId);
+        if (task == null) return;
+        Map<String, Integer> phases = new LinkedHashMap<>();
+        phases.put(key, used);
+        task.reserveConfiguredSourcePhaseOrdinals(phases);
     }
 
     /** Test seam for exact task-directed admission. */
@@ -12123,6 +13348,7 @@ public final class ConcolicRegionRuntime {
         private Method closeWorkloadSession;
         private Method workloadSessionStatus;
         private Method startRegion;
+        private Method currentContextId;
         private Method symbolizeWithPrefix;
         private Method symbolizeField;
         private Method symbolizeExactField;
@@ -12148,14 +13374,11 @@ public final class ConcolicRegionRuntime {
         private Method fieldVersions;
         private Method elementVersions;
         private Method mapVersions;
-        private Method currentMapVersion;
-        private Method admitMapVersion;
-        private Method currentFieldVersion;
-        private Method admitFieldVersion;
         private Method eventLedger;
 
         private boolean available() {
             return startRegion != null
+                    && currentContextId != null
                     && symbolizeWithPrefix != null
                     && symbolizeExactField != null
                     && trackContainer != null
@@ -12210,6 +13433,12 @@ public final class ConcolicRegionRuntime {
                         "custom concolic engine rejected region start: "
                                 + ((Number) status).longValue());
             }
+        }
+
+        private long currentContextId() throws Exception {
+            Object value = currentContextId.invoke(null);
+            return value instanceof Number
+                    ? ((Number) value).longValue() : 0L;
         }
 
         private void symbolize(Object value, String prefix) throws Exception {
@@ -12380,10 +13609,16 @@ public final class ConcolicRegionRuntime {
         }
 
         private boolean activateEventLedger() throws Exception {
-            if (activate == null) return false;
+            if (activate == null) {
+                throw new UnsupportedOperationException(
+                        "custom concolic event-ledger activation API is unavailable");
+            }
             Object recording = activate.invoke(null);
-            return recording instanceof Boolean
-                    && ((Boolean) recording).booleanValue();
+            if (!(recording instanceof Boolean)) {
+                throw new IllegalStateException(
+                        "activateConcolicEventLedger returned no boolean status");
+            }
+            return ((Boolean) recording).booleanValue();
         }
 
         /**
@@ -12426,41 +13661,62 @@ public final class ConcolicRegionRuntime {
                 String descriptor) throws Exception {
             Object version = selectField.invoke(null, owner, declaringClass,
                     fieldName, descriptor);
-            return version instanceof Number
-                    ? ((Number) version).longValue() : 0L;
+            if (!(version instanceof Number)) {
+                throw new IllegalStateException(
+                        "selectSharedFieldCarrier returned no numeric version");
+            }
+            return ((Number) version).longValue();
         }
 
         private long selectSharedElementCarrier(Object array, int index)
                 throws Exception {
             Object version = selectElement.invoke(null, array, index);
-            return version instanceof Number
-                    ? ((Number) version).longValue() : 0L;
+            if (!(version instanceof Number)) {
+                throw new IllegalStateException(
+                        "selectSharedElementCarrier returned no numeric version");
+            }
+            return ((Number) version).longValue();
         }
 
         private long selectSharedMapCarrier(Object map) throws Exception {
             Object version = selectMap.invoke(null, map);
-            return version instanceof Number
-                    ? ((Number) version).longValue() : 0L;
+            if (!(version instanceof Number)) {
+                throw new IllegalStateException(
+                        "selectSharedMapCarrier returned no numeric version");
+            }
+            return ((Number) version).longValue();
         }
 
         private String sharedMapVersions(Object map) throws Exception {
-            return String.valueOf(mapVersions.invoke(null, map));
+            return requiredVmJson(mapVersions.invoke(null, map),
+                    "getSharedMapVersions");
         }
 
         private String sharedFieldVersions(
                 Object owner, String declaringClass, String fieldName,
                 String descriptor) throws Exception {
-            return String.valueOf(fieldVersions.invoke(null, owner,
-                    declaringClass, fieldName, descriptor));
+            return requiredVmJson(fieldVersions.invoke(null, owner,
+                    declaringClass, fieldName, descriptor),
+                    "getSharedFieldVersions");
         }
 
         private String sharedElementVersions(Object array, int index)
                 throws Exception {
-            return String.valueOf(elementVersions.invoke(null, array, index));
+            return requiredVmJson(elementVersions.invoke(null, array, index),
+                    "getSharedElementVersions");
         }
 
         private String eventLedger() throws Exception {
-            return String.valueOf(eventLedger.invoke(null));
+            return requiredVmJson(eventLedger.invoke(null), "getEventLedger");
+        }
+
+        private static String requiredVmJson(Object value, String api) {
+            if (!(value instanceof String)
+                    || ((String) value).trim().isEmpty()) {
+                throw new IllegalStateException(api
+                        + " returned no serialized VM evidence");
+            }
+            return (String) value;
         }
 
         private static EngineApi load() {
@@ -12472,6 +13728,8 @@ public final class ConcolicRegionRuntime {
                     method(system, "getWorkloadSessionStatus");
             api.startRegion = method(system, "startConcolicRegion",
                     String.class, String.class);
+            api.currentContextId = method(system,
+                    "getCurrentConcolicContextId");
             api.symbolizeWithPrefix = method(system, "symbolize",
                     Object.class, String.class);
             api.symbolizeField = method(system, "symbolizeField",
@@ -12522,16 +13780,6 @@ public final class ConcolicRegionRuntime {
                     Object.class, int.class);
             api.mapVersions = method(system, "getSharedMapVersions",
                     Object.class);
-            api.currentMapVersion = method(system,
-                    "getCurrentSharedMapVersion", Object.class);
-            api.admitMapVersion = method(system, "admitSharedMapVersion",
-                    Object.class, long.class, String.class);
-            api.currentFieldVersion = method(system,
-                    "getCurrentSharedFieldVersion", Object.class,
-                    String.class, String.class, String.class);
-            api.admitFieldVersion = method(system, "admitSharedFieldVersion",
-                    Object.class, String.class, String.class, String.class,
-                    long.class, String.class);
             api.eventLedger = method(system, "getEventLedger");
             return api;
         }

@@ -331,6 +331,10 @@ public class NestedTargetFrontierProgressionTest {
 
     private static JsonObject summaryIdentity(String summaryId) {
         JsonObject summary = identity(TASK);
+        summary.addProperty("occurrenceId", OCCURRENCE + "#a1");
+        summary.addProperty(PathObservation.ACTIVATION_ORDINAL, 1);
+        summary.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
+                OCCURRENCE);
         summary.addProperty("summaryId", summaryId);
         summary.addProperty("schemaVersion", 1);
         summary.addProperty("kind", "CONCOLIC_REGION_SUMMARY");

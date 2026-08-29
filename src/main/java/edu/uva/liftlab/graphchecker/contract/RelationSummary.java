@@ -27,6 +27,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Canonical wire carrier for one guarded region relation. */
 public final class RelationSummary {
+    public static final int SCHEMA_VERSION = 1;
+    public static final String KIND = "CONCOLIC_REGION_SUMMARY";
     /** Two path cases of different activations offered to one relation. */
     public static final String MERGE_REFUSED_CROSS_OCCURRENCE =
             "RELATION_MERGE_REFUSED_CROSS_OCCURRENCE";
@@ -80,7 +82,6 @@ public final class RelationSummary {
         // to be the same constant the case's guard is declared under.
         String region = outputClosure == null ? string(row, "regionId")
                 : outputClosure.producer().regionId();
-        String occurrence = string(row, "occurrenceId");
         JsonArray cases = array(object(row, "regionRelation"), "cases");
         Map<String, JsonObject> caseLocal = new LinkedHashMap<>();
         Map<String, Set<String>> selectors = new LinkedHashMap<>();
@@ -90,8 +91,11 @@ public final class RelationSummary {
             // OCC-1: the selector is minted under the case's own occurrence,
             // which is the relation's address for a single-occurrence
             // relation and the activation's identity otherwise.
-            String stated = string(item, "occurrenceId");
-            String caseOccurrence = stated.isEmpty() ? occurrence : stated;
+            String caseOccurrence = string(item, "occurrenceId");
+            if (caseOccurrence.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "relation case occurrenceId is required");
+            }
             String selector = RecordedSessionModel.caseSelector(
                     RecordedSessionModel.caseOwner(region, caseOccurrence,
                             string(item, "caseId"), index));
@@ -124,8 +128,20 @@ public final class RelationSummary {
         if (row == null) {
             throw new IllegalArgumentException("relation summary is required");
         }
+        if (!exactSchemaVersion(row)
+                || !KIND.equals(string(row, "kind"))) {
+            throw new IllegalArgumentException(
+                    "relation summary has an unsupported schema");
+        }
         return new RelationSummary(row.deepCopy(),
                 OutputClosureCodec.decode(row));
+    }
+
+    private static boolean exactSchemaVersion(JsonObject row) {
+        JsonElement value = row.get("schemaVersion");
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isNumber()
+                && Integer.toString(SCHEMA_VERSION).equals(value.getAsString());
     }
 
     /**
@@ -234,8 +250,8 @@ public final class RelationSummary {
                 : CanonicalJson.render(coverage)));
 
         JsonObject merged = new JsonObject();
-        merged.addProperty("schemaVersion", 1);
-        merged.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
+        merged.addProperty("schemaVersion", SCHEMA_VERSION);
+        merged.addProperty("kind", KIND);
         // Preserve the region that already owns the output closure so
         // VALUE_HANDOFF cases use one selector when recording and lowering.
         merged.addProperty("regionId", region);
@@ -425,19 +441,15 @@ public final class RelationSummary {
         // relation's -- otherwise their selectors, order positions and
         // read-from arms all collapse onto one occurrence.
         item.addProperty("occurrenceId", path.occurrenceId());
-        if (path.statesActivation()) {
-            item.addProperty(PathObservation.ACTIVATION_ORDINAL,
-                    path.activationOrdinal());
-            item.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
-                    path.plannedOccurrenceId());
-            item.addProperty(PathObservation.TARGET_REACHED,
-                    path.targetReached());
-            // A partial activation is a case that carries only what it
-            // captured.  It is marked here so no reader has to infer it from
-            // a missing port.
-            item.addProperty("relationallyComplete",
-                    path.relationallyComplete());
-        }
+        item.addProperty(PathObservation.ACTIVATION_ORDINAL,
+                path.activationOrdinal());
+        item.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
+                path.plannedOccurrenceId());
+        item.addProperty(PathObservation.TARGET_REACHED,
+                path.targetReached());
+        // A partial activation carries only what it captured.
+        item.addProperty("relationallyComplete",
+                path.relationallyComplete());
         // Case-local evidence.  A union at summary top level would let one
         // replay's guard enable another replay's RPC or map mutation.
         JsonObject recordedSharedState = path.recordedSharedState();

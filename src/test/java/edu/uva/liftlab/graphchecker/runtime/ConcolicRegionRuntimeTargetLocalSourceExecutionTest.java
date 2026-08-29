@@ -200,43 +200,42 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         assertEquals(8, receiver.elements[1].value);
     }
 
-    /**
-     * Wave 3: the frozen catalog names WHERE a mint site is, never which of
-     * its entries counts.  Every entry mints, and the ordinal is the
-     * per-(activation, site) entry count.
-     */
+    /** An entry past the exact frozen phase catalog is a gap, never a mint. */
     @Test
-    public void everyEntryOfADeclaredSiteMintsItsOwnSymbol()
+    public void anEntryPastTheConfiguredPhaseCatalogDoesNotMint()
             throws Exception {
         JsonObject task = task(false);
         loadTask(task, "every-entry");
         TargetState receiver = new TargetState();
         Object active = activate(receiver, 74L);
 
-        // One catalog row for this site; two owners reach it.
+        // Two exact catalog rows for this site; a third owner is EXTRA.
         assertTrue("first entry mints",
                 symbolize(ELEMENT_SOURCE_ID, receiver.elements[0],
                         ELEMENT_FIELD));
-        assertTrue("an entry past the catalog is still an occurrence",
+        assertTrue("second cataloged entry mints",
                 symbolize(ELEMENT_SOURCE_ID, receiver.elements[1],
                         ELEMENT_FIELD));
-        assertEquals(0, phaseGaps(active).size());
+        assertFalse("an entry past the catalog is refused",
+                symbolize(ELEMENT_SOURCE_ID, new ElementState(0),
+                        ELEMENT_FIELD));
+        assertEquals(1, phaseGaps(active).size());
+        assertEquals("EXTRA", phaseGaps(active).get(0)
+                .get("gapKind").getAsString());
 
         List<JsonObject> rows = symbolizedRows(active);
         assertEquals(2, rows.size());
-        for (int index = 0; index < rows.size(); index++) {
-            JsonObject row = rows.get(index);
-            assertEquals(ELEMENT_SOURCE_ID,
-                    row.get("sourceId").getAsString());
-            assertEquals(OCCURRENCE, row.get("occurrenceId").getAsString());
-            assertEquals(ELEMENT_FIELD,
-                    row.get("fieldSignature").getAsString());
-            assertEquals(index + 1, row.get("ordinal").getAsInt());
-            assertFalse(row.get("reused").getAsBoolean());
-            assertEquals("sym__" + ELEMENT_SOURCE_ID + "__" + OCCURRENCE
-                    + "__" + (index + 1), row.get("symbol").getAsString());
-        }
-        // Two entries, two VM roots.
+        JsonObject mintRow = rows.get(0);
+        assertEquals(ELEMENT_SOURCE_ID,
+                mintRow.get("sourceId").getAsString());
+        assertEquals(OCCURRENCE,
+                mintRow.get("occurrenceId").getAsString());
+        assertEquals(ELEMENT_FIELD,
+                mintRow.get("fieldSignature").getAsString());
+        assertEquals(1, mintRow.get("ordinal").getAsInt());
+        assertFalse(mintRow.get("reused").getAsBoolean());
+        assertEquals("sym__" + ELEMENT_SOURCE_ID + "__" + OCCURRENCE
+                + "__1", mintRow.get("symbol").getAsString());
         assertEquals(2, symbolicSources(active).size());
         assertTrue(freeSymbols(active).isEmpty());
 
@@ -299,6 +298,48 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         assertEquals(rows.get(0).getAsJsonObject("expression"),
                 rows.get(1).getAsJsonObject("expression"));
         assertTrue(freeSymbols(active).isEmpty());
+    }
+
+    /** Resume opens the gate only for an already propagated expression. */
+    @Test
+    public void propagatedFieldResumeNeverMintsAReplacementRoot()
+            throws Exception {
+        JsonObject task = task(false);
+        loadTask(task, "resume-propagated");
+        TargetState receiver = new TargetState();
+        Object active = activate(receiver, 751L);
+
+        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
+        setPathRecordingStarted(active, false);
+        assertTrue(ConcolicRegionRuntime.resumePropagatedField(
+                receiver, VALUE_FIELD));
+        assertTrue(pathRecordingStarted(active));
+        assertEquals(1, symbolizedRows(active).size());
+        assertEquals(1, symbolicSources(active).size());
+
+        setPathRecordingStarted(active, false);
+        assertFalse(ConcolicRegionRuntime.resumePropagatedField(
+                receiver.elements[1], ELEMENT_FIELD));
+        assertFalse(pathRecordingStarted(active));
+        assertEquals(1, symbolizedRows(active).size());
+        assertEquals(1, symbolicSources(active).size());
+    }
+
+    /** A VM without the recorded carrier APIs cannot authorize propagation. */
+    @Test
+    public void legacyVmCannotMaterializeAPropagatedSourceCarrier()
+            throws Exception {
+        installLegacyFakeEngine();
+        loadTask(task(false), "legacy-carrier-refused");
+        TargetState receiver = new TargetState();
+        Object active = activate(receiver, 752L);
+
+        assertFalse(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
+        assertFalse(ConcolicRegionRuntime.resumePropagatedField(
+                receiver, VALUE_FIELD));
+        assertTrue(unresolved(active).toString(), unresolved(active).stream()
+                .anyMatch(value -> value.contains(
+                        "configured source carrier selection failed")));
     }
 
     /**
@@ -717,6 +758,8 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         // Wave 3: mint SITES only; no selected-source rows travel with them.
         JsonArray sourcePhases = sourcePhases(VALUE_SOURCE_ID,
                 GATE_SOURCE_ID, ELEMENT_SOURCE_ID);
+        sourcePhases.add(sourcePhase(ELEMENT_SOURCE_ID, 2,
+                sourceUnit(ELEMENT_SOURCE_ID) + 1L));
         task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, sourcePhases);
 
         JsonArray assignments = new JsonArray();
@@ -759,6 +802,9 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         task.getAsJsonArray("inputActions").add(input);
         task.getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD).add(
                 sourcePhase(MAP_ELEMENT_SOURCE_ID));
+        task.getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD).add(
+                sourcePhase(MAP_ELEMENT_SOURCE_ID, 2,
+                        sourceUnit(MAP_ELEMENT_SOURCE_ID) + 1L));
         task.getAsJsonArray("modelAssignments").add(assignment(
                 MAP_ELEMENT_SOURCE_ID, ELEMENT_FIELD, "11"));
         return task;
@@ -1040,12 +1086,27 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         return field.getBoolean(active);
     }
 
+    private static void setPathRecordingStarted(Object active, boolean value)
+            throws Exception {
+        Field field = active.getClass().getDeclaredField(
+                "pathRecordingStarted");
+        field.setAccessible(true);
+        field.setBoolean(active, value);
+    }
+
     @SuppressWarnings("unchecked")
     private static List<JsonObject> symbolizedRows(Object active)
             throws Exception {
         Field field = active.getClass().getDeclaredField("symbolizedRows");
         field.setAccessible(true);
         return (List<JsonObject>) field.get(active);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Set<String> unresolved(Object active) throws Exception {
+        Field field = active.getClass().getDeclaredField("unresolved");
+        field.setAccessible(true);
+        return (Set<String>) field.get(active);
     }
 
     @SuppressWarnings("unchecked")
@@ -1075,6 +1136,29 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
     }
 
     private static void installFakeEngine() throws Exception {
+        Object engine = fakeEngineWithoutSharedState();
+        bind(engine, "selectField", FakeVm.class.getDeclaredMethod(
+                "selectSharedFieldCarrier", Object.class, String.class,
+                String.class, String.class));
+        bind(engine, "selectElement", FakeVm.class.getDeclaredMethod(
+                "selectSharedElementCarrier", Object.class, int.class));
+        bind(engine, "fieldVersions", FakeVm.class.getDeclaredMethod(
+                "sharedFieldVersions", Object.class, String.class,
+                String.class, String.class));
+        bind(engine, "elementVersions", FakeVm.class.getDeclaredMethod(
+                "sharedElementVersions", Object.class, int.class));
+        bind(engine, "eventLedger", FakeVm.class.getDeclaredMethod(
+                "eventLedger"));
+        bind(engine, "activate", FakeVm.class.getDeclaredMethod(
+                "activateEventLedger"));
+        install(engine);
+    }
+
+    private static void installLegacyFakeEngine() throws Exception {
+        install(fakeEngineWithoutSharedState());
+    }
+
+    private static Object fakeEngineWithoutSharedState() throws Exception {
         Object engine = newEngine();
         bind(engine, "symbolizeExactField", FakeVm.class.getDeclaredMethod(
                 "symbolizeExactField", Object.class, String.class,
@@ -1087,7 +1171,7 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
                 FakeVm.class.getDeclaredMethod("pause"));
         bind(engine, "resumePathCondition",
                 FakeVm.class.getDeclaredMethod("resume"));
-        install(engine);
+        return engine;
     }
 
     /** A stock EngineApi with every VM method absent, for selective binding. */
@@ -1196,6 +1280,64 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
                     + "\"_java_type\":\"I\",\"_exp\":\"" + raw
                     + "\"}}";
         }
+        public static long selectSharedFieldCarrier(
+                Object owner, String declaringClass, String field,
+                String descriptor) {
+            return 1L;
+        }
+        public static long selectSharedElementCarrier(Object array, int index) {
+            return 1L;
+        }
+        public static String sharedFieldVersions(
+                Object owner, String declaringClass, String field,
+                String descriptor) {
+            long ownerId = (System.identityHashCode(owner) & 0x7fffffffL) + 1L;
+            int slot = (field.hashCode() & 0x7fffffff) % 100_000 + 1;
+            return versionEnvelope(ownerId, slot, fieldExpression(owner,
+                    declaringClass, field, descriptor, Integer.valueOf(0)));
+        }
+        public static String sharedElementVersions(Object array, int index) {
+            long ownerId = (System.identityHashCode(array) & 0x7fffffffL) + 1L;
+            return versionEnvelope(ownerId, index + 1,
+                    "{\"expression\":{\"_type\":\"ConstExpr\","
+                            + "\"_java_type\":\"I\",\"_exp\":\"Y_I_0\"}}");
+        }
+        private static String versionEnvelope(
+                long ownerId, int slot, String expression) {
+            JsonObject value = new JsonParser().parse(expression)
+                    .getAsJsonObject().getAsJsonObject("expression");
+            JsonObject version = new JsonObject();
+            version.addProperty("fieldVersionId", 1L);
+            version.addProperty("versionKind", "INITIAL");
+            version.addProperty("writerContextId", 1L);
+            version.addProperty("fingerprintKind", "PRIMITIVE");
+            version.addProperty("fingerprint", 0L);
+            version.add("expression", value);
+            version.add("pathGuard", null);
+            JsonArray versions = new JsonArray();
+            versions.add(version);
+            JsonObject location = new JsonObject();
+            location.addProperty("ownerSymRid", ownerId);
+            location.addProperty("slot", slot);
+            location.addProperty("locationKind", "INSTANCE_FIELD");
+            JsonObject envelope = new JsonObject();
+            envelope.addProperty("schemaVersion", 1);
+            envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
+            envelope.addProperty("selected", true);
+            envelope.add("location", location);
+            envelope.addProperty("writerSetComplete", true);
+            envelope.add("versions", versions);
+            envelope.add("reads", new JsonArray());
+            return envelope.toString();
+        }
+        public static String eventLedger() {
+            return "{\"schemaVersion\":1,"
+                    + "\"kind\":\"SESSION_EVENT_LEDGER\","
+                    + "\"open\":true,\"partialOrder\":true,"
+                    + "\"acyclic\":true,\"domainSaturated\":false,"
+                    + "\"truncated\":false,\"events\":[],\"order\":[]}";
+        }
+        public static boolean activateEventLedger() { return true; }
         public static String finish() {
             return "{\"schemaVersion\":1,"
                     + "\"kind\":\"CONCOLIC_REGION_SUMMARY\"}";

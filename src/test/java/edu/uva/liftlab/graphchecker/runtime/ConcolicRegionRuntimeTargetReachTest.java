@@ -25,6 +25,7 @@ public class ConcolicRegionRuntimeTargetReachTest {
     private static final String ROOT =
             "<example.NameNode: void compare()>";
     private static final String TARGET_SITE = ROOT + "#u14";
+    private static final String PREFIX_SITE = ROOT + "#u9";
 
     @After
     public void resetRuntime() {
@@ -37,22 +38,37 @@ public class ConcolicRegionRuntimeTargetReachTest {
         Object runtimeTask = runtimeTask(task());
         Object active = activeRegion(runtimeTask);
 
-        JsonObject reached = reach(false, 1);
+        JsonObject reached = reach(false, 2);
         field(active, "targetReach").set(active, reached);
         @SuppressWarnings("unchecked")
         Map<String, Set<Boolean>> witnessed =
                 (Map<String, Set<Boolean>>) field(active,
                         "witnessedOutcomes").get(active);
         Set<Boolean> outcomes = new LinkedHashSet<>();
+        outcomes.add(Boolean.TRUE);
         outcomes.add(Boolean.FALSE);
         witnessed.put(TARGET_SITE, outcomes);
+        Set<Boolean> prefix = new LinkedHashSet<>();
+        prefix.add(Boolean.TRUE);
+        witnessed.put(PREFIX_SITE, prefix);
 
         Method exact = runtimeTask.getClass().getDeclaredMethod(
                 "reachedRequiredTargetOutcome", JsonObject.class);
         exact.setAccessible(true);
         assertTrue((Boolean) exact.invoke(runtimeTask, reached));
-        assertFalse((Boolean) exact.invoke(runtimeTask, reach(true, 1)));
-        assertFalse((Boolean) exact.invoke(runtimeTask, reach(false, 2)));
+        assertFalse((Boolean) exact.invoke(runtimeTask, reach(true, 2)));
+        assertFalse((Boolean) exact.invoke(runtimeTask, reach(false, 1)));
+
+        Method reserve = runtimeTask.getClass().getDeclaredMethod(
+                "reserveCompletedEvidence", boolean.class, boolean.class);
+        reserve.setAccessible(true);
+        Method blocksAdmission = runtimeTask.getClass().getDeclaredMethod(
+                "blocksAdmissionAfterCompletedTarget");
+        blocksAdmission.setAccessible(true);
+        reserve.invoke(runtimeTask, false, true);
+        assertFalse((Boolean) blocksAdmission.invoke(runtimeTask));
+        reserve.invoke(runtimeTask, true, false);
+        assertTrue((Boolean) blocksAdmission.invoke(runtimeTask));
 
         Method judge = ConcolicRegionRuntime.class.getDeclaredMethod(
                 "judgeFinishedOccurrence", active.getClass());
@@ -62,6 +78,37 @@ public class ConcolicRegionRuntimeTargetReachTest {
         Field abandoned = field(active, "abandoned");
         assertFalse("the selected failure outcome is a target witness",
                 abandoned.getBoolean(active));
+    }
+
+    @Test
+    public void selectedTargetIsExcludedButRealPrefixStillMatches()
+            throws Exception {
+        Object runtimeTask = runtimeTask(task());
+        Object active = activeRegion(runtimeTask);
+        field(active, "targetReach").set(active, reach(false, 2));
+        @SuppressWarnings("unchecked")
+        Map<String, Set<Boolean>> witnessed =
+                (Map<String, Set<Boolean>>) field(active,
+                        "witnessedOutcomes").get(active);
+        Set<Boolean> target = new LinkedHashSet<>();
+        target.add(Boolean.TRUE);
+        target.add(Boolean.FALSE);
+        witnessed.put(TARGET_SITE, target);
+        Set<Boolean> wrongPrefix = new LinkedHashSet<>();
+        wrongPrefix.add(Boolean.FALSE);
+        witnessed.put(PREFIX_SITE, wrongPrefix);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Set<Boolean>> recorded =
+                (Map<String, Set<Boolean>>) field(runtimeTask,
+                        "seedOutcomes").get(runtimeTask);
+        assertTrue("an earlier occurrence at the target loop site remains "
+                        + "seed prefix",
+                recorded.get(TARGET_SITE).contains(Boolean.TRUE));
+        assertTrue(recorded.containsKey(PREFIX_SITE));
+        assertFalse("a goal event cannot hide a real prefix mismatch",
+                ConcolicRegionRuntime.seedOutcomeConflict(
+                        recorded, witnessed).isEmpty());
     }
 
     private static Object runtimeTask(JsonObject task) throws Exception {
@@ -128,13 +175,13 @@ public class ConcolicRegionRuntimeTargetReachTest {
 
         JsonObject targetBranch = new JsonObject();
         targetBranch.addProperty("siteId", TARGET_SITE);
-        targetBranch.addProperty("occurrence", 1);
+        targetBranch.addProperty("occurrence", 2);
         task.add("targetBranch", targetBranch);
 
         JsonObject branch = new JsonObject();
         branch.addProperty("siteId", TARGET_SITE);
         branch.addProperty("policy", "EXPLORE");
-        branch.addProperty("selectedOccurrence", 1);
+        branch.addProperty("selectedOccurrence", 2);
         branch.addProperty("observedOutcome", true);
         branch.addProperty("requiredOutcome", false);
         JsonObject occurrence = new JsonObject();
@@ -142,9 +189,23 @@ public class ConcolicRegionRuntimeTargetReachTest {
         occurrence.addProperty("outcome", true);
         JsonArray occurrences = new JsonArray();
         occurrences.add(occurrence);
+        JsonObject selectedOccurrence = new JsonObject();
+        selectedOccurrence.addProperty("occurrence", 2);
+        selectedOccurrence.addProperty("outcome", true);
+        occurrences.add(selectedOccurrence);
         branch.add("occurrences", occurrences);
         JsonArray branches = new JsonArray();
         branches.add(branch);
+        JsonObject prefix = new JsonObject();
+        prefix.addProperty("siteId", PREFIX_SITE);
+        prefix.addProperty("policy", "PATH_ASSUMPTION");
+        JsonObject prefixOccurrence = new JsonObject();
+        prefixOccurrence.addProperty("occurrence", 1);
+        prefixOccurrence.addProperty("outcome", true);
+        JsonArray prefixOccurrences = new JsonArray();
+        prefixOccurrences.add(prefixOccurrence);
+        prefix.add("occurrences", prefixOccurrences);
+        branches.add(prefix);
         task.add("branches", branches);
 
         LoopBoundPolicy.cfgBackedges(

@@ -129,11 +129,14 @@ public class ConcolicRegionRuntimeSharedStateTest {
         // An authoritative version store becomes recorded evidence.  The VM
         // addresses a location by its own identity; only this call site also
         // knows the declared Java field, so the join is recorded.
+        ConcolicRegionRuntime.SharedCarrier plannedCarrier =
+                ConcolicRegionRuntime.SharedCarrier.field(
+                        new Carrier(), OWNER_CLASS, "value", "I");
+        plannedCarrier.bindPlannedReceiver(73L);
         ConcolicRegionRuntime.SharedStateResult versions =
                 ConcolicRegionRuntime.decodeVersionsEnvelope(
                         versionsEnvelope().toString(),
-                        ConcolicRegionRuntime.SharedCarrier.field(
-                                new Carrier(), OWNER_CLASS, "value", "I"),
+                        plannedCarrier,
                         IDENTITY, null);
         assertTrue(versions.ok());
         assertEquals("INSTANCE_FIELD/7#24", versions.locationKey());
@@ -143,6 +146,7 @@ public class ConcolicRegionRuntimeSharedStateTest {
         assertEquals(OWNER_CLASS + "#value:I",
                 carrier.get("fieldKey").getAsString());
         assertEquals("DECLARED_FIELD", carrier.get("kind").getAsString());
+        assertEquals(73L, carrier.get("receiverObjectId").getAsLong());
 
         // The stamp is what makes the record admissible at all: the same
         // envelope with no observer is refused rather than admitted with an

@@ -14,7 +14,8 @@
 # slower. The concolic image is for the replay stage, which is not this one.
 #
 # Environment:
-#   HDFS11741_OUTPUT       launcher output root
+#   HDFS11741_OUTPUT       launcher output root (default: this generation's
+#                          trace root, so no discovery pass reuses old state)
 #   CAUSYNTH_INSTRUMENTED_CLASSES_DIR rewritten classes for this pass
 #   CAUSYNTH_TRACE_OUTPUT_DIR         this generation's streaming trace root
 #   HDFS11741_TRACE_JDK    JVM that executes the pass
@@ -31,11 +32,28 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 # lock on its storage directory and NFS is the wrong place for that. The trace
 # directory and the analysis artifacts are the multi-gigabyte half and live on
 # the project volume, because the root filesystem has under 2 GB free.
-output=${HDFS11741_OUTPUT:-${repo_root}/experiments-output/hdfs-11741-session}
+output=${HDFS11741_OUTPUT:-${CAUSYNTH_TRACE_OUTPUT_DIR}/launcher}
 instrumented=${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:?run_engine did not name the rewritten classes for this pass}
 trace_dir=${CAUSYNTH_TRACE_OUTPUT_DIR:?run_engine did not name the trace root for this generation}
 trace_jdk=${HDFS11741_TRACE_JDK:-/usr/lib/jvm/java-8-openjdk-amd64}
 max_events=${HDFS11741_MAX_EVENTS:-100000000}
+
+# The fresh launcher root owns this pass's MiniDFS state, while the immutable
+# classpath is a build product shared by discovery and replay.  Link that one
+# file into the fresh root; never fall back to an older launcher's directory.
+build_output=${HDFS11741_BUILD_OUTPUT:-\
+${repo_root}/experiments-output/hdfs-11741-session}
+classpath_file=hadoop-test-classpath.txt
+mkdir -p "${output}"
+if [[ ! -f "${output}/${classpath_file}" ]]; then
+  [[ -f "${build_output}/${classpath_file}" ]] || {
+    echo "no ${classpath_file} in ${build_output}; run the launcher's build" \
+      "command before a campaign" >&2
+    exit 2
+  }
+  ln -sf "${build_output}/${classpath_file}" \
+    "${output}/${classpath_file}"
+fi
 
 # The stage chain passes the protocol endpoint declarations in the
 # environment. The launcher forwards every causynth.* system property set on

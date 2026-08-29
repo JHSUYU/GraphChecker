@@ -566,6 +566,55 @@ public class RecordedMapStateTest {
         assertEquals(0, blind.toJson().get("materializedCases").getAsInt());
     }
 
+    /**
+     * A nested guarded read is one inserted value, even though the VM may
+     * serialize a larger diagnostic candidate set in a later map snapshot.
+     */
+    @Test
+    public void nestedReadCandidateGrowthDoesNotChangeWriterStateIdentity() {
+        JsonObject envelope = RecordedMapStateFixtures.twoWriterMapEnvelope(
+                false, true);
+        JsonObject guarded = RecordedMapStateFixtures
+                .twoWriterGuardedMapRead(false);
+
+        JsonObject publishedRead = RecordedSharedStateFixtures.guardedRead(
+                900L, 77L, 8);
+        JsonObject laterRead = publishedRead.deepCopy();
+        laterRead.getAsJsonArray("candidates").add(
+                RecordedSharedStateFixtures.unknownCandidate(900L,
+                        "M_I_late_candidate"));
+        laterRead.getAsJsonArray("exactlyOne").add("rf_late");
+
+        JsonObject publishedState = RecordedMapStateFixtures.put(
+                RecordedMapStateFixtures.state("M_MAP_allKeys"),
+                RecordedSharedStateFixtures.constant(4242), publishedRead);
+        JsonObject laterSnapshot = RecordedMapStateFixtures.put(
+                RecordedMapStateFixtures.state("M_MAP_allKeys"),
+                RecordedSharedStateFixtures.constant(4242), laterRead);
+        envelope.getAsJsonArray("versions").get(0).getAsJsonObject().add(
+                "expression", publishedState);
+        guarded.getAsJsonArray("candidates").get(0).getAsJsonObject().add(
+                "expression", RecordedMapStateFixtures.query(laterSnapshot,
+                        RecordedSharedStateFixtures.constant(4242)));
+
+        SharedStateEvidence.normalizeGuards(envelope);
+        SharedStateEvidence.normalizeGuards(guarded);
+        java.util.List<String> reasons = reasons(BoundedWriterUniverse.of(guarded,
+                RecordedMapStateFixtures.mapVersionsRecord(envelope)).gaps());
+        assertFalse(reasons.toString(), reasons.contains(
+                BoundedWriterUniverse.ARM_STATE_NOT_ITS_WRITER));
+
+        // A real value change outside the nested RF metadata must still be
+        // rejected as a state that its claimed writer did not publish.
+        laterSnapshot.add("value", RecordedSharedStateFixtures.constant(9));
+        guarded.getAsJsonArray("candidates").get(0).getAsJsonObject().add(
+                "expression", RecordedMapStateFixtures.query(laterSnapshot,
+                        RecordedSharedStateFixtures.constant(4242)));
+        assertTrue(reasons(BoundedWriterUniverse.of(guarded,
+                RecordedMapStateFixtures.mapVersionsRecord(envelope)).gaps())
+                .contains(BoundedWriterUniverse.ARM_STATE_NOT_ITS_WRITER));
+    }
+
     // ----- parity -----------------------------------------------------------
 
     /** The map query reaches the model as the same census the SMT is. */

@@ -144,6 +144,31 @@ public final class AutomaticRegionEdge {
                 || tracedExchangeCandidate(binding);
     }
 
+    /**
+     * A trace-correlated shared-state edge that may close the producer
+     * topology, but must never be lowered as a read-from value equality.
+     *
+     * <p>The runtime has established the receiver/value identity and channel
+     * order required by {@link #trustedRuntimeCompositionBinding(JsonObject)},
+     * but the VM did not select one exact/guarded writer for this replay.
+     * Keeping this gate separate from {@link #composerTraversalBinding} is
+     * what lets the composer retain the causal producer without pretending
+     * that the diagnostic candidate is the selected value arm.</p>
+     */
+    static boolean topologyOnlyCompositionBinding(JsonObject binding) {
+        if (!trustedRuntimeCompositionBinding(binding)) return false;
+        String provenance = string(binding,
+                RecordedReadFrom.EDGE_PROVENANCE);
+        return RecordedReadFrom.PROVENANCE_CANDIDATE.equals(provenance)
+                || RecordedReadFrom.PROVENANCE_EXCLUDED.equals(provenance);
+    }
+
+    /** Evidence that may recursively close the composer's summary graph. */
+    static boolean composerGraphTraversalBinding(JsonObject binding) {
+        return composerTraversalBinding(binding)
+                || topologyOnlyCompositionBinding(binding);
+    }
+
     /** One exact/guarded VM-selected shared-state edge. */
     static boolean selectedReadFromCompositionBinding(
             JsonObject binding) {

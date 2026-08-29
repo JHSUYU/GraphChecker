@@ -69,6 +69,29 @@ public class ClientEntryRegionMintTest {
                 strings(region, RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
         assertEquals(2, region.getAsJsonArray(
                 RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS).size());
+        JsonObject reroot = region.getAsJsonObject(
+                RuntimeRegionPlanner.CLIENT_ENTRY_REROOT);
+        assertEquals("OBSERVED_RPC_SEND_CLIENT_ENDPOINT_V2",
+                reroot.get("authority").getAsString());
+        assertEquals("exchange-1", reroot.getAsJsonArray("observedRpcSends")
+                .get(0).getAsJsonObject().get("exchangeId").getAsString());
+    }
+
+    @Test
+    public void aNestedTransportSendBindsThroughTheExactEntryInvocation() {
+        String transport = "<example.Transport: void send()>";
+        List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                frame(1, 0, OWNER, REQUEST, 1L),
+                frame(2, 1, 101, transport, REQUEST, 1L));
+        List<JsonObject> minted = mint(holders(3), noneSelected(), methods,
+                Collections.singletonList(
+                        site(10, 1, 101, CALL_SITE, CALLEE)),
+                Collections.singletonList(send(20, "SEND", "exchange-1",
+                        "REQUEST", 2, 999)));
+
+        assertEquals(1, minted.size());
+        assertEquals(OWNER,
+                minted.get(0).get("rootMethod").getAsString());
     }
 
     @Test
@@ -141,6 +164,77 @@ public class ClientEntryRegionMintTest {
     // ------------------------------------------------------------- refusals
 
     @Test
+    public void anObservedOwnerWithoutASendMintsNothing() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
+        assertEquals(Collections.emptyList(), mint(holders(3), noneSelected(),
+                methods, defaultExecution(methods),
+                Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList()));
+    }
+
+    @Test
+    public void aReceiveWithoutASendMintsNothing() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
+        assertEquals(Collections.emptyList(), mint(holders(3), noneSelected(),
+                methods, defaultExecution(methods),
+                Collections.singletonList(send(20, "RECEIVE", "exchange-1",
+                        "REQUEST", 1, 101))));
+    }
+
+    @Test
+    public void aSendAtTheWrongCallSiteMintsNothing() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
+        assertEquals(Collections.emptyList(), mint(holders(3), noneSelected(),
+                methods,
+                Collections.singletonList(site(10, 1, 101,
+                        OWNER + "#u9", CALLEE)),
+                defaultProtocol(methods)));
+    }
+
+    @Test
+    public void aSendForTheWrongDeclaredCalleeMintsNothing() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
+        assertEquals(Collections.emptyList(), mint(holders(3), noneSelected(),
+                methods,
+                Collections.singletonList(site(10, 1, 101, CALL_SITE,
+                        "<example.Other: example.Keys fetch()>")),
+                defaultProtocol(methods)));
+    }
+
+    @Test
+    public void aSendWithoutAnExchangeIdentityMintsNothing() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
+        assertEquals(Collections.emptyList(), mint(holders(3), noneSelected(),
+                methods, defaultExecution(methods),
+                Collections.singletonList(send(20, "SEND", "", "REQUEST",
+                        1, 101))));
+    }
+
+    @Test
+    public void aSendFromAnotherInvocationMintsNothing() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
+        assertEquals(Collections.emptyList(), mint(holders(3), noneSelected(),
+                methods, defaultExecution(methods),
+                Collections.singletonList(send(20, "SEND", "exchange-2",
+                        "REQUEST", 1, 999))));
+    }
+
+    @Test
+    public void aResponseSendCannotAuthorizeAClientRequestEntry() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
+        assertEquals(Collections.emptyList(), mint(holders(3), noneSelected(),
+                methods, defaultExecution(methods),
+                Collections.singletonList(send(20, "SEND", "exchange-1",
+                        "RESPONSE", 1, 101))));
+    }
+
+    @Test
     public void aRunThatEnteredAnyHolderMintsNothing() {
         List<JsonObject> candidates = holders(3);
         Set<String> selected = new LinkedHashSet<>(Collections.singletonList(
@@ -175,11 +269,17 @@ public class ClientEntryRegionMintTest {
         }
         // One occurrence nested in a scope caller, one not: the run states
         // two different client entries, so it states none.
+        List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                frame(9, 0, OUTER, REQUEST, 1L),
+                frame(1, 9, OWNER, REQUEST, 1L),
+                frame(2, 0, OWNER, REQUEST, 1L));
         assertEquals(Collections.emptyList(), mint(inScope, noneSelected(),
-                Arrays.asList(
-                        frame(9, 0, OUTER, REQUEST, 1L),
-                        frame(1, 9, OWNER, REQUEST, 1L),
-                        frame(2, 0, OWNER, REQUEST, 1L))));
+                methods,
+                Arrays.asList(site(10, 1, 101, CALL_SITE, CALLEE),
+                        site(11, 2, 102, CALL_SITE, CALLEE)),
+                Arrays.asList(send(20, "SEND", "exchange-1", "REQUEST",
+                                1, 101),
+                        send(21, "SEND", "exchange-2", "REQUEST", 2, 102))));
     }
 
     @Test
@@ -224,11 +324,69 @@ public class ClientEntryRegionMintTest {
 
     @Test
     public void aRootAlreadyClaimedByASelectedRegionMintsNothing() {
+        List<RuntimeRegionPlanner.MethodEvent> methods =
+                Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L));
         assertEquals(Collections.emptyList(),
                 CausynthTraceRecorder.mintedClientEntryRegionsForTests(
                         holders(3), noneSelected(),
                         Collections.singletonList(OWNER),
-                        Arrays.asList(frame(1, 0, OWNER, REQUEST, 1L))));
+                        methods, defaultExecution(methods),
+                        defaultProtocol(methods)));
+    }
+
+    // ------------------------------------------------------ pass-1 evidence
+
+    @Test
+    public void skeletonPassRetainsOnlyTheProtocolAuthenticationDomain()
+            throws Exception {
+        JsonObject method = traceRow("METHOD_ENTER", 1);
+        method.addProperty("method", OWNER);
+        method.addProperty("callId", 1);
+        method.addProperty("threadName", "main");
+        method.addProperty("tid", 1);
+        method.addProperty("laneId", 1);
+        method.addProperty("requestKey", REQUEST);
+        method.addProperty("requestApi", "work");
+
+        JsonObject call = traceRow("CALL_SITE_ENTER", 10);
+        call.addProperty("method", OWNER);
+        call.addProperty("callId", 1);
+        call.addProperty("invocationId", 101);
+        call.addProperty("siteId", CALL_SITE);
+        call.addProperty("declaredCallee", CALLEE);
+
+        JsonObject branch = traceRow("BRANCH", 11);
+        branch.addProperty("method", OWNER);
+        branch.addProperty("callId", 1);
+        branch.addProperty("siteId", OWNER + "#u7");
+        branch.addProperty("outcome", true);
+
+        JsonObject send = traceRow("RPC_SEND", 20);
+        send.addProperty("transport", "HADOOP_IPC");
+        send.addProperty("correlationId", "exchange-1");
+        send.addProperty("attemptId", "0");
+        send.addProperty("half", "REQUEST");
+        send.addProperty("threadName", "main");
+        send.addProperty("tid", 1);
+        send.addProperty("method", OWNER);
+        send.addProperty("callId", 1);
+        send.addProperty("invocationId", 101);
+        send.addProperty("declaredCallee", CALLEE);
+        send.addProperty("requestKey", REQUEST);
+        send.addProperty("requestApi", "work");
+
+        CausynthTraceRecorder.TraceData trace =
+                CausynthTraceRecorder.parseSkeletonTraceLinesForTests(
+                        Arrays.asList(method.toString(), call.toString(),
+                                branch.toString(), send.toString()));
+
+        assertEquals(1, trace.methods.size());
+        assertEquals(1, trace.execution.size());
+        assertEquals("CALL_SITE_ENTER", trace.execution.get(0).kind);
+        assertEquals(1, trace.protocol.size());
+        assertEquals("SEND", trace.protocol.get(0).direction);
+        assertEquals(1, mint(holders(3), noneSelected(), trace.methods,
+                trace.execution, trace.protocol).size());
     }
 
     // ------------------------------------------------------- pass-2 binding
@@ -279,9 +437,40 @@ public class ClientEntryRegionMintTest {
     private static List<JsonObject> mint(
             List<JsonObject> candidates, Set<String> selected,
             List<RuntimeRegionPlanner.MethodEvent> methods) {
+        return mint(candidates, selected, methods,
+                defaultExecution(methods), defaultProtocol(methods));
+    }
+
+    private static List<JsonObject> mint(
+            List<JsonObject> candidates, Set<String> selected,
+            List<RuntimeRegionPlanner.MethodEvent> methods,
+            List<RuntimeRegionPlanner.RuntimeEvent> execution,
+            List<RuntimeRegionPlanner.ProtocolEvent> protocol) {
         return CausynthTraceRecorder.mintedClientEntryRegionsForTests(
                 candidates, selected,
-                Collections.<String>emptyList(), methods);
+                Collections.<String>emptyList(), methods, execution, protocol);
+    }
+
+    private static List<RuntimeRegionPlanner.RuntimeEvent> defaultExecution(
+            List<RuntimeRegionPlanner.MethodEvent> methods) {
+        for (RuntimeRegionPlanner.MethodEvent method : methods) {
+            if (OWNER.equals(method.method)) {
+                return Collections.singletonList(site(10, method.callId,
+                        101, CALL_SITE, CALLEE));
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    private static List<RuntimeRegionPlanner.ProtocolEvent> defaultProtocol(
+            List<RuntimeRegionPlanner.MethodEvent> methods) {
+        for (RuntimeRegionPlanner.MethodEvent method : methods) {
+            if (OWNER.equals(method.method)) {
+                return Collections.singletonList(send(20, "SEND",
+                        "exchange-1", "REQUEST", method.callId, 101));
+            }
+        }
+        return Collections.emptyList();
     }
 
     private static Set<String> noneSelected() {
@@ -349,6 +538,14 @@ public class ClientEntryRegionMintTest {
         return array;
     }
 
+    private static JsonObject traceRow(String event, long seq) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 3);
+        row.addProperty("event", event);
+        row.addProperty("seq", seq);
+        return row;
+    }
+
     private static Set<String> strings(JsonObject row, String field) {
         Set<String> values = new LinkedHashSet<>();
         for (com.google.gson.JsonElement element
@@ -358,11 +555,34 @@ public class ClientEntryRegionMintTest {
         return values;
     }
 
+    private static RuntimeRegionPlanner.RuntimeEvent site(
+            long seq, long callId, long invocationId, String siteId,
+            String callee) {
+        return new RuntimeRegionPlanner.RuntimeEvent(seq, "CALL_SITE_ENTER",
+                OWNER, callId, invocationId, 0L, siteId, callee,
+                -1, "", 0, "", null, null, "", "");
+    }
+
+    private static RuntimeRegionPlanner.ProtocolEvent send(
+            long seq, String direction, String exchange, String half,
+            long callId, long invocationId) {
+        return new RuntimeRegionPlanner.ProtocolEvent(seq, direction,
+                "HADOOP_IPC", exchange, "0", half, "main", 1L,
+                OWNER, callId, invocationId, CALLEE, 1L, 1L, 0L, 0L,
+                null, REQUEST, "work");
+    }
+
     private static RuntimeRegionPlanner.MethodEvent frame(
             long callId, long parentCallId, String method, String request,
             long lane) {
+        return frame(callId, parentCallId, 0L, method, request, lane);
+    }
+
+    private static RuntimeRegionPlanner.MethodEvent frame(
+            long callId, long parentCallId, long parentSiteId, String method,
+            String request, long lane) {
         return new RuntimeRegionPlanner.MethodEvent(callId, "test", "main",
-                1L, method, 0, "", callId, parentCallId, 0L, lane, 0L, 0L,
-                0L, null, false, request, "work");
+                1L, method, 0, "", callId, parentCallId, parentSiteId,
+                lane, 0L, 0L, 0L, null, false, request, "work");
     }
 }

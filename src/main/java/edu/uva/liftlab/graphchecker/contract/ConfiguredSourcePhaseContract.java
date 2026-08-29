@@ -221,7 +221,7 @@ public final class ConfiguredSourcePhaseContract {
     }
 
     private static Declaration validateDeclaration(JsonObject row) {
-        if (!DECLARATION_FIELDS.containsAll(row.keySet())
+        if (!DECLARATION_FIELDS.equals(row.keySet())
                 || !constants(row, DECLARATION_KIND, DECLARATION_AUTHORITY)) {
             throw new IllegalArgumentException(
                     DECLARATION_FIELD + " has an unsupported schema");
@@ -229,15 +229,18 @@ public final class ConfiguredSourcePhaseContract {
         return validateHookSite(row, DECLARATION_FIELD);
     }
 
-    /** The constant schemaVersion/kind/authority triplet is derived from the
-     *  member being decoded: a row that omits one restates nothing. */
     private static boolean constants(JsonObject row, String kind,
                                      String authority) {
-        return (!row.has("schemaVersion")
-                || exactInt(row, "schemaVersion") == SCHEMA_VERSION)
-                && (!row.has("kind") || kind.equals(text(row, "kind")))
-                && (!row.has("authority")
-                || authority.equals(text(row, "authority")));
+        return exactSchemaVersion(row)
+                && kind.equals(text(row, "kind"))
+                && authority.equals(text(row, "authority"));
+    }
+
+    private static boolean exactSchemaVersion(JsonObject row) {
+        JsonElement value = row.get("schemaVersion");
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isNumber()
+                && Integer.toString(SCHEMA_VERSION).equals(value.getAsString());
     }
 
     /**
@@ -258,11 +261,8 @@ public final class ConfiguredSourcePhaseContract {
         String method = required(text(row, "declarationMethod"),
                 "declarationMethod");
         int unit = exactInt(row, "declarationUnitIndex");
-        // siteId is declarationMethod#u<index>, so it is derived here and
-        // only compared when the wire restates it.
         if (unit < 0 || FieldPathSpec.declaredField(signature) == null
-                || row.has("siteId")
-                && !siteId(method, unit).equals(text(row, "siteId"))) {
+                || !siteId(method, unit).equals(text(row, "siteId"))) {
             throw new IllegalArgumentException(
                     field + " has an invalid exact hook site");
         }
@@ -270,15 +270,14 @@ public final class ConfiguredSourcePhaseContract {
     }
 
     private static Occurrence validateOccurrence(JsonObject row) {
-        if (!OCCURRENCE_FIELDS.containsAll(row.keySet())
+        if (!OCCURRENCE_FIELDS.equals(row.keySet())
                 || !constants(row, PLAN_KIND, PLAN_AUTHORITY)) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " has an unsupported schema");
         }
         Declaration declared = validateHookSite(row, PLAN_FIELD);
         // phaseKind is the phase under a second name.
-        if (row.has("phaseKind")
-                && !declared.phase().name().equals(text(row, "phaseKind"))) {
+        if (!declared.phase().name().equals(text(row, "phaseKind"))) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " phaseKind disagrees with phase");
         }
@@ -311,8 +310,7 @@ public final class ConfiguredSourcePhaseContract {
             ancestry.add(callId);
         }
         // ownerCallId is enclosingCallIds[0] under a second name.
-        if (ancestry.isEmpty() || row.has("ownerCallId")
-                && exactLong(row, "ownerCallId")
+        if (ancestry.isEmpty() || exactLong(row, "ownerCallId")
                 != ancestry.get(0).longValue()) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " ancestry does not begin at ownerCallId");

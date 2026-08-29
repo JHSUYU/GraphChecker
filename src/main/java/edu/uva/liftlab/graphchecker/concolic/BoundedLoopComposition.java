@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -15,7 +16,9 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
@@ -44,10 +47,15 @@ public final class BoundedLoopComposition {
             "BOUNDED_LOOP_CLASSIFICATION_UNDECLARED";
     public static final String LOOP_CLASSIFICATION_DISAGREES =
             "BOUNDED_LOOP_CLASSIFICATION_DISAGREES";
+    /** Manifest mark for the retained loop that owns an OCC-1 address. */
+    public static final String ROOT_LOOP_BODY_ADDRESS =
+            "rootLoopBodyAddress";
 
     private final List<BoundedLoop> loops = new ArrayList<>();
     private final List<JsonObject> gaps = new ArrayList<>();
     private final Set<String> gapKeys = new LinkedHashSet<>();
+    private final Set<String> occurrenceClosureRequiredLoops =
+            new LinkedHashSet<>();
 
     private BoundedLoopComposition() {
     }
@@ -63,6 +71,8 @@ public final class BoundedLoopComposition {
         BoundedLoopComposition model = new BoundedLoopComposition();
         Map<String, List<JsonObject>> declarations = new LinkedHashMap<>();
         Map<String, LoopBoundPolicy> policies = new LinkedHashMap<>();
+        Map<String, List<JsonObject>> relationCoverage =
+                new LinkedHashMap<>();
         Set<String> conflictingPolicies = new LinkedHashSet<>();
         for (JsonObject authority : boundAuthorityRows == null
                 ? Collections.<JsonObject>emptyList()
@@ -75,6 +85,10 @@ public final class BoundedLoopComposition {
             }
             String occurrence = string(authority, "occurrenceId");
             if (occurrence.isEmpty()) continue;
+            if (authority.has("pathCoverageState")) {
+                relationCoverage.computeIfAbsent(occurrence,
+                        ignored -> new ArrayList<JsonObject>()).add(authority);
+            }
             LoopBoundPolicy decoded = LoopBoundPolicy.decode(authority);
             LoopBoundPolicy held = policies.putIfAbsent(
                     occurrence, decoded);
@@ -92,6 +106,13 @@ public final class BoundedLoopComposition {
             if (retained.size() == 0) continue;
             LoopBoundPolicy policy = policies.get(occurrence);
             boolean conflicting = conflictingPolicies.contains(occurrence);
+            JsonObject rootLoop = object(plan, LoopBoundPolicy.ROOT_LOOP);
+            boolean loopBodyRoot = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
+                    string(plan, LoopBoundPolicy.ROOT_AUTHORITY))
+                    && LoopBoundPolicy.LOOP_BODY_ROOT.equals(
+                    string(rootLoop, "authority"));
+            String rootLoopSite = string(rootLoop,
+                    LoopBoundPolicy.LOOP_SITE_ID);
             for (JsonElement element : retained) {
                 if (!element.isJsonObject()) continue;
                 JsonObject row = element.getAsJsonObject().deepCopy();
@@ -103,6 +124,12 @@ public final class BoundedLoopComposition {
                 }
                 boolean demanded =
                         LoopBoundPolicy.failureRelevantLoop(row);
+                boolean rootLoopBodyAddress = loopBodyRoot
+                        && site.equals(rootLoopSite);
+                if (demanded || rootLoopBodyAddress) {
+                    model.occurrenceClosureRequiredLoops.add(
+                            occurrence + "\n" + site);
+                }
                 if (policy == null || conflicting) {
                     // A loop whose trip count nothing the failure reads can
                     // observe states no bound obligation, so an absent
@@ -163,6 +190,8 @@ public final class BoundedLoopComposition {
                             LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY,
                             LoopBoundPolicy.BOUND_FROM_DECLARATION);
                 }
+                row.addProperty(ROOT_LOOP_BODY_ADDRESS,
+                        rootLoopBodyAddress);
                 row.addProperty("occurrenceId", occurrence);
                 declarations.computeIfAbsent(occurrence + "\n" + site,
                         ignored -> new ArrayList<JsonObject>()).add(row);
@@ -170,14 +199,18 @@ public final class BoundedLoopComposition {
         }
         for (Map.Entry<String, List<JsonObject>> entry
                 : declarations.entrySet()) {
-            BoundedLoop loop = model.admit(entry.getKey(), entry.getValue());
+            String occurrence = string(entry.getValue().get(0),
+                    "occurrenceId");
+            BoundedLoop loop = model.admit(entry.getKey(), entry.getValue(),
+                    relationCoverage.get(occurrence));
             if (loop != null) model.loops.add(loop);
         }
         return model;
     }
 
     private BoundedLoop admit(String identity,
-                              List<JsonObject> declarations) {
+                              List<JsonObject> declarations,
+                              List<JsonObject> relationCoverage) {
         JsonObject first = declarations.get(0);
         String site = string(first, LoopBoundPolicy.LOOP_SITE_ID);
         String kind = string(first, LoopBoundPolicy.LOOP_CLASSIFICATION);
@@ -206,12 +239,16 @@ public final class BoundedLoopComposition {
             gap(LOOP_BODY_BOUND_UNDECLARED, identity,
                     "condition-bounded loop declares no K_L");
         }
-        return new BoundedLoop(string(first, "occurrenceId"), site, bound,
+        return new BoundedLoop(string(first, "occurrenceId"), site,
+                string(first, LoopBoundPolicy.RUNTIME_LOOP_ID), bound,
                 string(first, LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY),
                 kind,
                 string(first,
                         LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY),
-                array(first, LoopBoundPolicy.LOOP_CONTROL_SITE_IDS));
+                array(first, LoopBoundPolicy.LOOP_CONTROL_SITE_IDS),
+                bool(first, ROOT_LOOP_BODY_ADDRESS, false),
+                LoopBoundPolicy.failureRelevantLoop(first),
+                relationCoverage);
     }
 
     /**
@@ -230,12 +267,14 @@ public final class BoundedLoopComposition {
         String caseId = string(item, "caseId");
         for (BoundedLoop loop : loops) {
             if (!loop.occurrenceId.equals(occurrenceId)) continue;
+            loop.relationCaseCount++;
             JsonObject row = observed.get(loop.loopSiteId);
             if (row == null) {
                 gap(LoopBoundPolicy.PATH_LOOP_COUNT_MISSING,
                         loop.identity + "\n" + caseId,
                         "guarded case carries no path-local count for its "
                                 + "retained loop");
+                loop.pathEvidenceGap = true;
                 continue;
             }
             int count = integer(row, LoopBoundPolicy.LOOP_BODY_COUNT, -1);
@@ -245,6 +284,7 @@ public final class BoundedLoopComposition {
                         loop.identity + "\n" + caseId,
                         "case count " + count + " is outside 0.."
                                 + loop.bodyBound);
+                loop.pathEvidenceGap = true;
                 continue;
             }
             // A coarse region may declare library loops this path returned
@@ -260,17 +300,22 @@ public final class BoundedLoopComposition {
                         loop.identity + "\n" + caseId,
                         "guarded case does not state whether the retained "
                                 + "loop control was reached");
-                loop.pathCounts.add(caseCount(caseId, row));
+                loop.pathEvidenceGap = true;
+                loop.pathCounts.add(caseCount(caseId, row, item));
                 continue;
             }
             boolean loopReached = reached.getAsBoolean();
             if (loop.fixedCount() && loopReached
-                    && !exactCardinalities(row)) {
+                    && !exactCardinalities(row, count,
+                    loop.runtimeLoopId)) {
                 gap(LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
                         loop.identity + "\n" + caseId,
-                        "fixed-count case carries no exact dynamic N");
+                        "fixed-count case does not carry a dense exact "
+                                + "dynamic cardinality vector covering its "
+                                + "body count");
+                loop.pathEvidenceGap = true;
             }
-            loop.pathCounts.add(caseCount(caseId, row));
+            loop.pathCounts.add(caseCount(caseId, row, item));
         }
         for (JsonElement element : array(item,
                 LoopBoundPolicy.PATH_LOOP_COUNT_GAPS)) {
@@ -279,20 +324,116 @@ public final class BoundedLoopComposition {
             gap(string(row, "reason"), string(row, "subject") + "\n"
                             + caseId,
                     string(row, "detail"));
+            String subject = string(row, "subject");
+            for (BoundedLoop loop : loops) {
+                if (loop.occurrenceId.equals(occurrenceId)
+                        && (loop.loopSiteId.equals(subject)
+                        || loop.identity.equals(subject))) {
+                    loop.pathEvidenceGap = true;
+                }
+            }
         }
     }
 
-    private static JsonObject caseCount(String caseId, JsonObject observed) {
+    private static JsonObject caseCount(String caseId, JsonObject observed,
+                                        JsonObject item) {
         JsonObject row = observed.deepCopy();
         row.addProperty("caseId", caseId);
+        row.addProperty("occurrenceId", string(item, "occurrenceId"));
+        row.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
+                string(item, PathObservation.PLANNED_OCCURRENCE_ID));
+        row.addProperty(PathObservation.ACTIVATION_ORDINAL,
+                integer(item, PathObservation.ACTIVATION_ORDINAL, 0));
+        row.addProperty("relationallyComplete",
+                bool(item, "relationallyComplete", false));
+        row.addProperty("terminalKind",
+                string(object(item, "terminal"), "kind"));
         return row;
     }
 
-    private static boolean exactCardinalities(JsonObject observed) {
+    /**
+     * Planned LOOP_BODY_ROOT addresses whose complete selected relation
+     * enumerates exactly the declared {@code a1..aK} occurrence prefix.
+     */
+    public Set<String> closedOccurrenceAddresses() {
+        Set<String> closed = new LinkedHashSet<>();
+        Map<String, List<BoundedLoop>> byOccurrence = new LinkedHashMap<>();
+        for (BoundedLoop loop : loops) {
+            byOccurrence.computeIfAbsent(loop.occurrenceId,
+                    ignored -> new ArrayList<BoundedLoop>()).add(loop);
+        }
+        for (Map.Entry<String, List<BoundedLoop>> entry
+                : byOccurrence.entrySet()) {
+            String occurrence = entry.getKey();
+            for (BoundedLoop loop : entry.getValue()) {
+                loop.occurrenceAxisClosed = false;
+            }
+            if (hasOccurrenceAuthorityGap(occurrence)) continue;
+            BoundedLoop root = null;
+            boolean ambiguousRoot = false;
+            for (BoundedLoop loop : entry.getValue()) {
+                if (!loop.rootLoopBodyAddress) continue;
+                if (root == null) root = loop;
+                else ambiguousRoot = true;
+            }
+            if (root == null || ambiguousRoot
+                    || !root.closesOccurrenceAxis()) {
+                continue;
+            }
+            Set<String> cases = root.caseKeys();
+            boolean localLoopsComplete = true;
+            for (BoundedLoop loop : entry.getValue()) {
+                // The root's dense a1..aK rule is the occurrence census.  Its
+                // body count is therefore checked there, not as an inner
+                // condition loop (K=1 would otherwise require 1 < 1).
+                if (loop == root || !loop.failureRelevant) continue;
+                if (!loop.pathLocallyComplete(cases)) {
+                    localLoopsComplete = false;
+                    break;
+                }
+            }
+            if (localLoopsComplete) {
+                root.occurrenceAxisClosed = true;
+                closed.add(occurrence);
+            }
+        }
+        return Collections.unmodifiableSet(closed);
+    }
+
+    /** A loop-authority failure for this address cannot be repaired by a
+     *  different retained loop at the same address. */
+    private boolean hasOccurrenceAuthorityGap(String occurrence) {
+        for (JsonObject row : gaps) {
+            String subject = string(row, "subject");
+            if (occurrence.equals(subject)) return true;
+            for (String identity : occurrenceClosureRequiredLoops) {
+                if (!identity.startsWith(occurrence + "\n")) continue;
+                if (identity.equals(subject)
+                        || subject.startsWith(identity + "\n")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Exact dynamic fixed-loop cardinalities that cover the body count. */
+    private static boolean exactCardinalities(JsonObject observed,
+                                              int bodyCount,
+                                              String expectedRuntimeLoopId) {
         JsonArray rows = array(observed,
                 LoopBoundPolicy.LOOP_CARDINALITIES);
         if (rows.size() == 0) return false;
         Set<Integer> occurrences = new LinkedHashSet<>();
+        if (expectedRuntimeLoopId.isEmpty()) return false;
+        String observedRuntimeLoopId = string(observed,
+                LoopBoundPolicy.RUNTIME_LOOP_ID);
+        if (!observedRuntimeLoopId.isEmpty()
+                && !expectedRuntimeLoopId.equals(observedRuntimeLoopId)) {
+            return false;
+        }
+        int maximum = 0;
+        long cardinalityTotal = 0L;
         for (JsonElement element : rows) {
             if (!element.isJsonObject()) return false;
             JsonObject row = element.getAsJsonObject();
@@ -302,12 +443,22 @@ public final class BoundedLoopComposition {
                     LoopBoundPolicy.LOOP_CARDINALITY, -1);
             if (occurrence < 1 || cardinality < 0
                     || !occurrences.add(occurrence)
+                    || !expectedRuntimeLoopId.equals(string(row,
+                    LoopBoundPolicy.RUNTIME_LOOP_ID))
                     || !LoopBoundPolicy.PATH_CARDINALITY_AUTHORITY.equals(
                     string(row, "cardinalityAuthority"))) {
                 return false;
             }
+            maximum = Math.max(maximum, occurrence);
+            cardinalityTotal += cardinality;
         }
-        return true;
+        if (occurrences.size() != maximum) return false;
+        for (int occurrence = 1; occurrence <= maximum; occurrence++) {
+            if (!occurrences.contains(occurrence)) return false;
+        }
+        // A guarded path may leave an indexed loop early, so its executed
+        // bodies can be fewer than the exact array extent, never greater.
+        return bodyCount >= 0 && bodyCount <= cardinalityTotal;
     }
 
     public List<JsonObject> gaps() {
@@ -328,6 +479,8 @@ public final class BoundedLoopComposition {
     }
 
     public JsonObject manifest() {
+        // Refresh the group-level mark before serializing individual rows.
+        closedOccurrenceAddresses();
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", SCHEMA_VERSION);
         result.addProperty("kind", KIND);
@@ -345,21 +498,35 @@ public final class BoundedLoopComposition {
     public static final class BoundedLoop {
         public final String occurrenceId;
         public final String loopSiteId;
+        public final String runtimeLoopId;
         public final int bodyBound;
         public final String boundAuthority;
         public final String classification;
         public final String classificationAuthority;
         public final List<String> controlSiteIds;
         public final String identity;
+        public final boolean rootLoopBodyAddress;
+        public final boolean failureRelevant;
         private final List<JsonObject> pathCounts = new ArrayList<>();
+        private final int relationCoverageRows;
+        private final boolean relationCoverageClosed;
+        private final boolean relationEvidenceAdmitted;
+        private int relationCaseCount;
+        private boolean pathEvidenceGap;
+        private boolean occurrenceAxisClosed;
 
         private BoundedLoop(String occurrenceId, String loopSiteId,
+                            String runtimeLoopId,
                             int bodyBound, String boundAuthority,
                             String classification,
                             String classificationAuthority,
-                            JsonArray controlSites) {
+                            JsonArray controlSites,
+                            boolean rootLoopBodyAddress,
+                            boolean failureRelevant,
+                            List<JsonObject> relationCoverage) {
             this.occurrenceId = occurrenceId;
             this.loopSiteId = loopSiteId;
+            this.runtimeLoopId = runtimeLoopId;
             this.bodyBound = bodyBound;
             this.boundAuthority = boundAuthority;
             this.classification = classification;
@@ -370,6 +537,23 @@ public final class BoundedLoopComposition {
             }
             this.controlSiteIds = Collections.unmodifiableList(sites);
             this.identity = occurrenceId + "\n" + loopSiteId;
+            this.rootLoopBodyAddress = rootLoopBodyAddress;
+            this.failureRelevant = failureRelevant;
+            List<JsonObject> coverage = relationCoverage == null
+                    ? Collections.<JsonObject>emptyList()
+                    : relationCoverage;
+            this.relationCoverageRows = coverage.size();
+            this.relationCoverageClosed = coverage.size() == 1
+                    && "CLOSED".equals(string(coverage.get(0),
+                    "pathCoverageState"))
+                    && bool(coverage.get(0), "relationallyComplete", false);
+            String coverageState = coverage.size() == 1
+                    ? string(coverage.get(0), "pathCoverageState") : "";
+            this.relationEvidenceAdmitted = coverage.size() == 1
+                    && bool(coverage.get(0), "relationallyComplete", false)
+                    && ("CLOSED".equals(coverageState)
+                    || "PARTIAL".equals(coverageState)
+                    || "SEED_ONLY".equals(coverageState));
         }
 
         public boolean conditionBounded() {
@@ -382,11 +566,136 @@ public final class BoundedLoopComposition {
                     classification);
         }
 
+        private boolean closesOccurrenceAxis() {
+            if (!rootLoopBodyAddress || !conditionBounded()
+                    || bodyBound < 1
+                    || !LoopBoundPolicy.LOOP_CLASSIFIED_CONDITION_CONTROLLED
+                    .equals(classificationAuthority)
+                    || !LoopBoundPolicy.BOUND_FROM_DECLARATION.equals(
+                    boundAuthority)
+                    || relationCoverageRows != 1
+                    || !relationEvidenceAdmitted
+                    || pathEvidenceGap
+                    || relationCaseCount != bodyBound
+                    || pathCounts.size() != bodyBound) {
+                return false;
+            }
+            Set<Integer> ordinals = new LinkedHashSet<>();
+            for (JsonObject count : pathCounts) {
+                int ordinal = integer(count,
+                        PathObservation.ACTIVATION_ORDINAL, 0);
+                if (ordinal < 1 || ordinal > bodyBound
+                        || !occurrenceId.equals(string(count,
+                        PathObservation.PLANNED_OCCURRENCE_ID))
+                        || !(occurrenceId + "#a" + ordinal).equals(
+                        string(count, "occurrenceId"))
+                        || !bool(count, "relationallyComplete", false)
+                        || !"NORMAL".equals(string(count, "terminalKind"))
+                        || !loopSiteId.equals(string(count,
+                        LoopBoundPolicy.LOOP_SITE_ID))
+                        || !classification.equals(string(count,
+                        LoopBoundPolicy.LOOP_CLASSIFICATION))
+                        || !classificationAuthority.equals(string(count,
+                        LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY))
+                        || !bool(count,
+                        LoopBoundPolicy.PATH_LOOP_REACHED, false)
+                        || integer(count,
+                        LoopBoundPolicy.LOOP_BODY_COUNT, -1) != 1
+                        || integer(count,
+                        LoopBoundPolicy.LOOP_BODY_BOUND, -1) != bodyBound
+                        || !LoopBoundPolicy.BOUND_FROM_DECLARATION.equals(
+                        string(count,
+                                LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY))) {
+                    return false;
+                }
+                ordinals.add(ordinal);
+            }
+            if (ordinals.size() != bodyBound) return false;
+            for (int ordinal = 1; ordinal <= bodyBound; ordinal++) {
+                if (!ordinals.contains(ordinal)) return false;
+            }
+            return true;
+        }
+
+        private Set<String> caseKeys() {
+            Set<String> result = new LinkedHashSet<>();
+            for (JsonObject count : pathCounts) {
+                result.add(caseKey(count));
+            }
+            return result;
+        }
+
+        private static String caseKey(JsonObject count) {
+            return string(count, "caseId") + "\n"
+                    + string(count, "occurrenceId") + "\n"
+                    + integer(count, PathObservation.ACTIVATION_ORDINAL, 0);
+        }
+
+        /**
+         * Path-local completeness for one failure-relevant inner loop.  A
+         * fixed loop is complete from its exact dynamic cardinality census;
+         * a condition loop is complete only when it exits normally below K.
+         */
+        private boolean pathLocallyComplete(Set<String> expectedCases) {
+            if (!relationEvidenceAdmitted || pathEvidenceGap
+                    || relationCaseCount < 1
+                    || pathCounts.size() != relationCaseCount
+                    || caseKeys().size() != pathCounts.size()
+                    || !caseKeys().equals(expectedCases)) {
+                return false;
+            }
+            for (JsonObject count : pathCounts) {
+                if (!bool(count, "relationallyComplete", false)
+                        || !"NORMAL".equals(string(count, "terminalKind"))
+                        || !loopSiteId.equals(string(count,
+                        LoopBoundPolicy.LOOP_SITE_ID))
+                        || !classification.equals(string(count,
+                        LoopBoundPolicy.LOOP_CLASSIFICATION))
+                        || !classificationAuthority.equals(string(count,
+                        LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY))) {
+                    return false;
+                }
+                int observedBodies = integer(count,
+                        LoopBoundPolicy.LOOP_BODY_COUNT, -1);
+                if (observedBodies < 0) return false;
+                boolean reached = bool(count,
+                        LoopBoundPolicy.PATH_LOOP_REACHED, false);
+                if (!reached) {
+                    if (observedBodies != 0) return false;
+                    continue;
+                }
+                if (fixedCount()) {
+                    if (!LoopBoundPolicy.LOOP_CLASSIFIED_ARRAY_INDEXED.equals(
+                            classificationAuthority)
+                            || !exactCardinalities(count, observedBodies,
+                            runtimeLoopId)) {
+                        return false;
+                    }
+                } else if (conditionBounded()) {
+                    if (bodyBound < 1 || observedBodies >= bodyBound
+                            || !LoopBoundPolicy
+                            .LOOP_CLASSIFIED_CONDITION_CONTROLLED.equals(
+                                    classificationAuthority)
+                            || integer(count,
+                            LoopBoundPolicy.LOOP_BODY_BOUND, -1) != bodyBound
+                            || !LoopBoundPolicy.BOUND_FROM_DECLARATION.equals(
+                            string(count, LoopBoundPolicy
+                                    .LOOP_BODY_BOUND_AUTHORITY))) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         public JsonObject toJson() {
             JsonObject row = new JsonObject();
             row.addProperty("kind", "PATH_LOCAL_LOOP_COUNT_SET");
             row.addProperty("occurrenceId", occurrenceId);
             row.addProperty(LoopBoundPolicy.LOOP_SITE_ID, loopSiteId);
+            row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, runtimeLoopId);
             row.addProperty(LoopBoundPolicy.LOOP_BODY_BOUND, bodyBound);
             row.addProperty(LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY,
                     boundAuthority);
@@ -394,6 +703,16 @@ public final class BoundedLoopComposition {
                     classification);
             row.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY,
                     classificationAuthority);
+            row.addProperty(ROOT_LOOP_BODY_ADDRESS, rootLoopBodyAddress);
+            row.addProperty(LoopBoundPolicy.LOOP_FAILURE_RELEVANT,
+                    failureRelevant);
+            row.addProperty("relationCoverageRows", relationCoverageRows);
+            row.addProperty("relationCoverageClosed",
+                    relationCoverageClosed);
+            row.addProperty("relationEvidenceAdmitted",
+                    relationEvidenceAdmitted);
+            row.addProperty("occurrenceAxisClosed",
+                    occurrenceAxisClosed);
             JsonArray counts = new JsonArray();
             for (JsonObject count : pathCounts) counts.add(count.deepCopy());
             row.add("caseCounts", counts);

@@ -89,6 +89,148 @@ printf '{"ok":true}\n7\n' >"${scalar_jsonl}"
 expect_failure campaign_jsonl_array "scalar" "${scalar_jsonl}"
 expect_failure campaign_jsonl_array "missing" "${test_tmp}/missing.jsonl"
 
+tree_one="${test_tmp}/tree-one"
+tree_two="${test_tmp}/tree-two"
+mkdir -p "${tree_one}/nested" "${tree_two}/nested"
+printf 'same bytes\n' >"${tree_one}/nested/value"
+printf 'same bytes\n' >"${tree_two}/nested/value"
+[[ $(campaign_tree_digest "${tree_one}") \
+    == $(campaign_tree_digest "${tree_two}") ]] \
+  || fail "tree digest depends on its absolute root path"
+printf 'changed bytes\n' >"${tree_two}/nested/value"
+[[ $(campaign_tree_digest "${tree_one}") \
+    != $(campaign_tree_digest "${tree_two}") ]] \
+  || fail "tree digest ignored changed content"
+
+# Import summaries are content-addressed by every semantic input.  A hit must
+# reproduce all three importer artifacts without running the importer, a raw
+# input change must miss, and a corrupt entry must fail closed.
+import_cache_root="${test_tmp}/import-cache"
+import_raw="${test_tmp}/import-raw.jsonl"
+import_plan="${test_tmp}/import-plan.jsonl"
+import_runtime_plan="${test_tmp}/import-runtime-plan.jsonl"
+import_jar="${test_tmp}/import-GraphChecker.jar"
+import_calls="${test_tmp}/import-calls"
+printf '{"event":"CONCOLIC_REGION_RESULT"}\n' >"${import_raw}"
+printf '{"taskId":"task"}\n' >"${import_plan}"
+printf '{"kind":"RUNTIME_REGION_PLAN"}\n' >"${import_runtime_plan}"
+printf 'jar\n' >"${import_jar}"
+printf '0\n' >"${import_calls}"
+causynth_cache_dir="${import_cache_root}"
+graphchecker_jar="${import_jar}"
+causynth_protocol_stubs=""
+raw_concolic_results="${import_raw}"
+import_task_plan="${import_plan}"
+runtime_region_plan="${import_runtime_plan}"
+imported_summaries="${test_tmp}/import-out/summaries.jsonl"
+import_diagnostics="${test_tmp}/import-out/diagnostics.jsonl"
+import_topology_delta="${test_tmp}/import-out/delta.jsonl"
+run_java_main() {
+  local calls
+  calls=$(( $(<"${import_calls}") + 1 ))
+  printf '%s\n' "${calls}" >"${import_calls}"
+  printf '{"call":%s,"raw":"%s"}\n' "${calls}" \
+    "$(campaign_digest "${raw_concolic_results}")" \
+    >"${imported_summaries}"
+  : >"${import_diagnostics}"
+  printf '{"call":%s}\n' "${calls}" >"${import_topology_delta}"
+}
+do_import iteration-0000
+first_import_sha=$(campaign_digest "${imported_summaries}")
+rm -- "${imported_summaries}" "${import_diagnostics}" \
+  "${import_topology_delta}"
+do_import iteration-0000
+[[ $(<"${import_calls}") -eq 1 ]] \
+  || fail "an exact importer cache hit reran the importer"
+[[ $(campaign_digest "${imported_summaries}") == "${first_import_sha}" ]] \
+  || fail "an importer cache hit changed the summary bytes"
+printf '{"event":"CONCOLIC_REGION_RESULT","changed":true}\n' \
+  >"${import_raw}"
+rm -- "${imported_summaries}" "${import_diagnostics}" \
+  "${import_topology_delta}"
+do_import iteration-0000
+[[ $(<"${import_calls}") -eq 2 ]] \
+  || fail "changed raw replay content did not invalidate the import cache"
+changed_import_key=$(campaign_import_cache_key iteration-0000)
+printf 'corrupt\n' \
+  >"${import_cache_root}/import/${changed_import_key}/summaries.jsonl"
+if (do_import iteration-0000) >/dev/null 2>&1; then
+  fail "a corrupt importer cache entry was treated as a cache miss"
+fi
+
+seed_cache_root="${test_tmp}/seed-cache"
+seed_calls="${test_tmp}/seed-calls"
+printf '0\n' >"${seed_calls}"
+causynth_cache_dir="${seed_cache_root}"
+causynth_analysis_scope=test-scope
+causynth_process_dirs="${test_tmp}/classes"
+workload_work_dir="${test_tmp}"
+workload_command=test-workload
+trace_test=test.Workload#run
+unset HDFS11741_TRACE_JDK HDFS11741_MAX_EVENTS HDFS11741_EXTRA_JVM_ARGS
+campaign_provenance=$(jq -n '
+  {jar:{sha256:"jar"}, config:{sha256:"config"},
+   targetSpec:{sha256:"target"}, protocolStubs:{sha256:"stubs"},
+   loopBounds:{sha256:"bounds"}, symbolicInputs:{sha256:"symbols"},
+   productionClasses:{sha256:"classes"},
+   workload:{testClasses:{sha256:"tests"},classpathSha256:"classpath"},
+   source:{graphchecker:{head:"g",worktreeDigest:"gd"},
+           workload:{head:"h",worktreeDigest:"hd"}}}')
+configure_seed_outputs() {
+  local root=$1
+  causynth_output_dir="${root}"
+  candidate_graph="${root}/candidate_dataflow_edges.jsonl.gz"
+  runtime_region_plan="${root}/runtime/concolic_region_plan.jsonl"
+  refined_graph="${root}/runtime/refined_dataflow_edges.jsonl.gz"
+}
+do_analyze() {
+  local calls
+  calls=$(( $(<"${seed_calls}") + 1 ))
+  printf '%s\n' "${calls}" >"${seed_calls}"
+  mkdir -p "${causynth_output_dir}"
+  printf 'candidate-%s\n' "${calls}" >"${candidate_graph}"
+  printf 'target-%s\n' "${calls}" \
+    >"${causynth_output_dir}/target_resolved.json"
+  printf 'skeleton-%s\n' "${calls}" \
+    >"${causynth_output_dir}/region_skeletons.jsonl.gz"
+  printf 'calls-%s\n' "${calls}" \
+    >"${causynth_output_dir}/communication_call_sites.jsonl.gz"
+  printf 'loops-%s\n' "${calls}" \
+    >"${causynth_output_dir}/retained_loops.jsonl.gz"
+  printf 'gaps-%s\n' "${calls}" \
+    >"${causynth_output_dir}/communication_gaps.jsonl.gz"
+}
+do_workload() {
+  local calls
+  calls=$(<"${seed_calls}")
+  mkdir -p "$(dirname "${runtime_region_plan}")/skeleton-pass"
+  printf 'plan-%s\n' "${calls}" >"${runtime_region_plan}"
+  printf 'refined-%s\n' "${calls}" >"${refined_graph}"
+  printf 'selected-%s\n' "${calls}" \
+    >"$(dirname "${runtime_region_plan}")/skeleton-pass/region_skeletons.jsonl"
+}
+configure_seed_outputs "${test_tmp}/seed-output-one"
+campaign_root="${test_tmp}/seed-campaign-one"
+mkdir -p "${campaign_root}"
+campaign_seed
+[[ $(<"${seed_calls}") -eq 1 ]] || fail "the seed stage did not run once"
+configure_seed_outputs "${test_tmp}/seed-output-two"
+campaign_root="${test_tmp}/seed-campaign-two"
+mkdir -p "${campaign_root}"
+campaign_seed
+[[ $(<"${seed_calls}") -eq 1 ]] \
+  || fail "an exact seed cache hit reran static analysis or trace indexing"
+[[ $(jq -r '.cache.status' "${campaign_root}/seed-manifest.json") == HIT ]] \
+  || fail "the seed manifest did not record its cache hit"
+campaign_provenance=$(jq '.loopBounds.sha256 = "changed-bounds"' \
+  <<<"${campaign_provenance}")
+configure_seed_outputs "${test_tmp}/seed-output-three"
+campaign_root="${test_tmp}/seed-campaign-three"
+mkdir -p "${campaign_root}"
+campaign_seed
+[[ $(<"${seed_calls}") -eq 2 ]] \
+  || fail "changed loop-bound content did not invalidate the seed cache"
+
 worklist="${test_tmp}/worklist.jsonl"
 : >"${worklist}"
 [[ -z $(campaign_decode_worklist_keys "${worklist}" 8) ]] \
@@ -164,9 +306,11 @@ large_gaps="${test_tmp}/large-gaps.json"
 campaign_write_coverage_gaps "${large_composition}" "${large_reach}" \
   "${large_diagnostics}" "${large_delta}" "${large_closures}" \
   "${large_gaps}"
-[[ $(jq -r '.gapCount' "${large_gaps}") -eq 1 ]] \
+[[ $(jq -r '.gapCount' "${large_gaps}") -eq 0 ]] \
+  || fail "classifier telemetry became an acceptance blocker"
+[[ $(jq -r '.telemetryCount' "${large_gaps}") -eq 1 ]] \
   || fail "file-backed coverage aggregation lost the large delta"
-[[ $(jq -r '.gaps[0].code' "${large_gaps}") == "BIG" ]] \
+[[ $(jq -r '.telemetryGaps[0].code' "${large_gaps}") == "BIG" ]] \
   || fail "file-backed coverage aggregation changed the large delta"
 # A coverage gap the worklist only forwarded from an imported summary names
 # no region of its own; the recorded evidence identity is the only subject it
@@ -188,19 +332,21 @@ forwarded_gaps="${test_tmp}/forwarded-gaps.json"
 campaign_write_coverage_gaps "${large_composition}" "${large_reach}" \
   "${large_diagnostics}" "${test_tmp}/empty-delta.jsonl" \
   "${forwarded_closures}" "${forwarded_gaps}"
-[[ $(jq -r '.gapCount' "${forwarded_gaps}") -eq 2 ]] \
+[[ $(jq -r '.gapCount' "${forwarded_gaps}") -eq 0 ]] \
+  || fail "forwarded worklist telemetry became an acceptance blocker"
+[[ $(jq -r '.telemetryCount' "${forwarded_gaps}") -eq 2 ]] \
   || fail "forwarded coverage gaps were not both projected"
-[[ $(jq -r '.gaps[] | select(.code == "RPC_HANDOFF_GAP") | .subject' \
+[[ $(jq -r '.telemetryGaps[] | select(.code == "RPC_HANDOFF_GAP") | .subject' \
       "${forwarded_gaps}") == "task-consumer" ]] \
   || fail "a forwarded gap was projected without its evidence subject"
-[[ $(jq -r '.gaps[] | select(.code == "RPC_HANDOFF_GAP") | .detail' \
+[[ $(jq -r '.telemetryGaps[] | select(.code == "RPC_HANDOFF_GAP") | .detail' \
       "${forwarded_gaps}") \
     == "RPC_HANDOFF_UNKNOWN_HANDLE: required communication port carried no live VM handle: XCH.p" ]] \
   || fail "a forwarded gap lost its detail"
-[[ $(jq -r '.gaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .subject' \
+[[ $(jq -r '.telemetryGaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .subject' \
       "${forwarded_gaps}") == "REGION.own" ]] \
   || fail "a worklist gap stopped naming its own region"
-[[ $(jq -r '.gaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .detail' \
+[[ $(jq -r '.telemetryGaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .detail' \
       "${forwarded_gaps}") == "BOUND_EXCEEDED" ]] \
   || fail "a worklist gap stopped naming its reason"
 
@@ -464,21 +610,20 @@ run_emit
     == "${emit_config}" ]] \
   || fail "result.json provenance names a different frozen config"
 
-# The gap count never re-scores the Composer's claim -- result.json still
-# reports exactly what the semantic owners decided -- but a run holding an
-# unresolved gap is not one an operator may stop on, so the stage refuses it.
+# Importer diagnostics remain visible telemetry and do not re-score an
+# accepted selected causal witness.
 emit_fixture
 printf '{"code":"UNRESOLVED","taskId":"task-target","detail":"open"}\n' \
   >"${emit_iteration}/import_diagnostics.jsonl"
 run_emit
-[[ "${emit_status}" -ne 0 ]] \
-  || fail "a candidate reached with an unresolved gap exited zero"
-[[ $(jq -r '.gapCount' "${campaign_final}/result.json") -eq 1 ]] \
-  || fail "the published result lost the named gap"
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "importer telemetry withheld an accepted candidate"
+[[ $(jq -r '.gapCount' "${campaign_final}/result.json") -eq 0 ]] \
+  || fail "importer telemetry became an acceptance blocker"
+[[ $(jq -r '.telemetryCount' "${campaign_final}/result.json") -eq 1 ]] \
+  || fail "the published result lost importer telemetry"
 [[ $(jq -r '.claim' "${campaign_final}/result.json") == "SAT_CANDIDATE" ]] \
   || fail "the gap count re-scored the Composer's published claim"
-grep -q 'candidate withheld' "${emit_root}/emit.log" \
-  || fail "the withheld candidate was not named on stderr"
 
 # A frozen input that moved underneath the run is refused before anything is
 # published: provenance that was current at FREEZE is not provenance now.

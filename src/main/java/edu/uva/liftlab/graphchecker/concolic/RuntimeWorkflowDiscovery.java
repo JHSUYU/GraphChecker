@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -28,11 +29,14 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 
 /** Discovers the producer and target campaigns in one runtime region plan. */
 public final class RuntimeWorkflowDiscovery {
     private static final String SHARED_LOCATION_DEMAND =
             "SHARED_LOCATION_DEMAND_V1";
+    private static final String BOUNDED_VERSION_SCOPES =
+            "boundedVersionScopes";
     private static final Pattern CALL_ID = Pattern.compile(
             "(?:^|[#@])call([0-9]+)(?:$|[^0-9])");
 
@@ -109,6 +113,8 @@ public final class RuntimeWorkflowDiscovery {
             for (Goal goal : plan.goals()) {
                 if (!goal.kind().capturesOutputRelation()) continue;
                 List<JsonObject> edges = trustedEdges(plan, goal);
+                edges.removeIf(edge -> !causallyEligibleSourceEdge(
+                        plan, goal, edge));
                 if (edges.isEmpty()) continue;
                 ProducerCandidate candidate =
                         new ProducerCandidate(plan, goal, edges);
@@ -142,7 +148,24 @@ public final class RuntimeWorkflowDiscovery {
         RuntimeWorkflowDiscovery discovery =
                 new RuntimeWorkflowDiscovery(regionPlan,
                         failureInputSelection);
-        Target selected = discovery.admissibleTargets().get(0);
+        // Source-owned output members extend a candidate's predecessor
+        // frontier, so they are part of target ranking rather than a
+        // projection detail added after a target has already won.  Ranking
+        // with the empty selector first can choose a target which precedes
+        // the configured source and can therefore only close through an
+        // older presentation of the same protocol value.
+        List<Target> candidates = new ArrayList<>(
+                discovery.admissibleTargets());
+        for (Target candidate : candidates) {
+            try {
+                candidate.rank = discovery.discoverDemandClosure(candidate,
+                        sourceOutputSelection);
+            } catch (IOException invalidClosure) {
+                candidate.rank = TargetRank.invalid();
+            }
+        }
+        candidates.sort(Target::compare);
+        Target selected = candidates.get(0);
         if (!selected.goal.replayable()) {
             throw new IOException("ranked target goal is not replayable; "
                     + selected.context());
@@ -181,6 +204,11 @@ public final class RuntimeWorkflowDiscovery {
         // This is the target's fatal input frontier, before producer inputs
         // extend the recursive closure.
         Set<Endpoint> fatalInputs = new LinkedHashSet<>();
+        Map<Endpoint, Set<String>> targetAdmittedStateEdges =
+                new LinkedHashMap<>();
+        Set<String> failureMethods = selectedTarget.failureMethods();
+        boolean hasDirectTargetState = hasDirectTargetStateFrontier(
+                selectedTarget, failureMethods);
         for (JsonElement item : selectedTarget.goal.symbolize()) {
             if (!item.isJsonObject()) continue;
             JsonObject action = item.getAsJsonObject();
@@ -188,12 +216,28 @@ public final class RuntimeWorkflowDiscovery {
             if (input.isEmpty()) continue;
             Endpoint endpoint = new Endpoint(selectedTarget.occurrenceId,
                     selectedTarget.exactInput(input));
-            if (failureInputSelection.selected(
-                    selectedTarget.regionId, action)
-                    && (causalAction(action)
+            boolean configuredRoot = failureInputSelection.selected(
+                    selectedTarget.regionId, action);
+            // A finalizer-admitted exact writer is propagated state, not a
+            // new target-local symbolic root.  Seed that endpoint even when
+            // the configured-root allowlist is intentionally empty.
+            Set<String> admittedStateEdges =
+                    exactAdmittedSharedStateProducerEdges(
+                            selectedTarget.regionId, endpoint);
+            boolean directTargetState = failureMethods.contains(
+                    string(action, "rootMethod"));
+            boolean admittedCausalState = !admittedStateEdges.isEmpty()
+                    && (!hasDirectTargetState || directTargetState
+                    || configuredRoot);
+            if ((configuredRoot && (causalAction(action)
                     || exactCausalProducer(endpoint,
-                    producersByDownstream, false))) {
+                    producersByDownstream, false)))
+                    || admittedCausalState) {
                 fatalInputs.add(endpoint);
+                if (admittedCausalState) {
+                    targetAdmittedStateEdges.put(endpoint,
+                            admittedStateEdges);
+                }
             }
         }
         // A communication cut is already an explicit input of this exact
@@ -240,6 +284,10 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
         CausalFrontier frontier = new CausalFrontier(fatalInputs);
+        for (Map.Entry<Endpoint, Set<String>> exact
+                : targetAdmittedStateEdges.entrySet()) {
+            frontier.constrain(exact.getKey(), exact.getValue());
+        }
         for (Map.Entry<Endpoint, Set<String>> exact
                 : targetProtocolEdges.entrySet()) {
             frontier.constrain(exact.getKey(), exact.getValue());
@@ -305,8 +353,10 @@ public final class RuntimeWorkflowDiscovery {
                 }
             }
         }
+        Set<String> causallyCarriedSourceIds = new LinkedHashSet<>();
         for (Demand demand : result) {
             demand.finalizeProjection(selectedEdgeByEndpoint);
+            demand.addCausallyCarriedSourceIds(causallyCarriedSourceIds);
         }
 
         boolean exactDirectPresentation = false;
@@ -348,6 +398,9 @@ public final class RuntimeWorkflowDiscovery {
                 selectedTarget.occurrenceId);
         int valueBackedFatalInputs = valueBackedFatalInputs(fatalInputs,
                 selectedEdgeByEndpoint);
+        Map<String, Long> targetStateWriters = targetStateWriterVersions(
+                fatalInputs, selectedEdgeByEndpoint,
+                selectedTarget.occurrenceId);
         Set<String> observedSemanticGuards = new LinkedHashSet<>();
         for (Demand demand : result) {
             demand.addObservedSelectedSemanticGuards(
@@ -362,8 +415,68 @@ public final class RuntimeWorkflowDiscovery {
                 : new TargetRank(result, true, exactDirectPresentation,
                 propagatedBoundedStateTransition, valueBackedFatalInputs,
                 stateBackedFatalInputs, observedSemanticGuards.size(),
-                residualFatalInputs, fatalInputs.size(), result.size(),
-                exactBindings.size(), causalRegions.size());
+                causallyCarriedSourceIds.size(), targetStateWriters,
+                residualFatalInputs,
+                fatalInputs.size(), result.size(), exactBindings.size(),
+                causalRegions.size());
+    }
+
+    /** Whether the fatal method itself reads an exact admitted state value.
+     *
+     * <p>If it does, container lookups in helper methods are the concrete
+     * route to that object, not independent symbolic roots.  An explicitly
+     * configured helper input remains selectable by the caller.</p> */
+    private boolean hasDirectTargetStateFrontier(
+            Target target, Set<String> failureMethods) throws IOException {
+        if (failureMethods.isEmpty()) return false;
+        for (JsonElement element : target.goal.symbolize()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject();
+            if (!causalAction(action)
+                    || !failureMethods.contains(string(action,
+                    "rootMethod"))) {
+                continue;
+            }
+            String input = string(action, "symbol");
+            if (input.isEmpty()) continue;
+            Endpoint endpoint = new Endpoint(target.occurrenceId,
+                    target.exactInput(input));
+            if (!exactAdmittedSharedStateProducerEdges(target.regionId,
+                    endpoint).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Concrete state versions read directly by this target, by stable field.
+     *
+     * <p>When otherwise equivalent target calls straddle a real state
+     * transition, a field-wise newer version is the changed causal topology
+     * and repeated calls after it are stutter.  Missing or conflicting stable
+     * field identities disable this preference rather than guessing.</p> */
+    private static Map<String, Long> targetStateWriterVersions(
+            Set<Endpoint> fatalInputs,
+            Map<Endpoint, JsonObject> selectedEdgeByEndpoint,
+            String targetOccurrence) {
+        Map<String, Long> versions = new LinkedHashMap<>();
+        for (Endpoint input : fatalInputs) {
+            JsonObject edge = selectedEdgeByEndpoint.get(input);
+            if (edge == null
+                    || !targetOccurrence.equals(
+                    string(edge, "toOccurrenceId"))
+                    || !"HEAP".equals(string(edge, "transportKind"))) {
+                continue;
+            }
+            String field = string(edge, "readFromField");
+            long writer = longInteger(edge, "writerEventSeq", -1L);
+            if (field.isEmpty() || writer < 0L) continue;
+            Long prior = versions.putIfAbsent(field, writer);
+            if (prior != null && prior.longValue() != writer) {
+                return Collections.emptyMap();
+            }
+        }
+        return Collections.unmodifiableMap(versions);
     }
 
     /** Counts fatal operands whose selected producer edge carries a value,
@@ -745,6 +858,37 @@ public final class RuntimeWorkflowDiscovery {
         return false;
     }
 
+    /** Exact edge ids the finalizer admitted for this target input.
+     *
+     * <p>The admission must name both this consumer region and the exact
+     * shared location carried by a trusted runtime read-from edge.  This is
+     * deliberately narrower than accepting every observed heap writer.</p> */
+    private Set<String> exactAdmittedSharedStateProducerEdges(
+            String consumerRegion, Endpoint endpoint) {
+        Set<String> result = new LinkedHashSet<>();
+        for (ProducerCandidate candidate
+                : producersByDownstream.getOrDefault(endpoint,
+                Collections.emptyList())) {
+            if (!candidate.ready()
+                    || !sharedLocationConsumers(candidate.plan)
+                    .contains(consumerRegion)) {
+                continue;
+            }
+            Set<String> admittedLocations =
+                    candidate.plan.demandedSharedLocations();
+            for (JsonObject edge : candidate.edgesFor(endpoint)) {
+                String location = string(edge, "readFromField");
+                if (!location.isEmpty()
+                        && admittedLocations.contains(location)
+                        && exactSharedStateConduit(edge)) {
+                    String edgeId = string(edge, "edgeId");
+                    if (!edgeId.isEmpty()) result.add(edgeId);
+                }
+            }
+        }
+        return result;
+    }
+
     /** Whether one incoming shared-state edge is an exact conduit its
      * consuming endpoint may follow to the occurrence that wrote it.
      *
@@ -857,6 +1001,58 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
         return result;
+    }
+
+    /**
+     * Keeps only dynamic output versions that can carry every configured
+     * source field their exact output slice demands.  This is deliberately
+     * per edge/member: unrelated fields and outputs in the same coarse loop
+     * occurrence keep their own independent read-from alternatives.
+     */
+    private static boolean causallyEligibleSourceEdge(
+            RegionInstancePlan plan, Goal goal, JsonObject edge) {
+        if (plan.configuredSourcePhases().isEmpty()
+                || goal.outputClosure() == null) {
+            return true;
+        }
+        OutputClosureContract.Member member = goal.outputClosure().member(
+                string(edge, "fromOutputPort"));
+        if (member == null) return true;
+        return sourceIdsCarriedBy(plan, member.slice(),
+                productionEvent(edge)) != null;
+    }
+
+    /**
+     * Returns the source ids of the latest preceding phase for every
+     * configured field this member demands.  {@code null} means that at least
+     * one such field has no preceding phase and the dynamic output cannot
+     * carry it.  A later phase of the same field starts a new version; it does
+     * not retroactively invalidate an earlier output.
+     */
+    private static Set<String> sourceIdsCarriedBy(
+            RegionInstancePlan plan, JsonObject selectedSlice,
+            long produced) {
+        Set<String> demandedFields = new LinkedHashSet<>();
+        addStrings(demandedFields, array(selectedSlice,
+                "demandedHeapDeclarations"));
+        Set<String> carried = new LinkedHashSet<>();
+        for (String field : demandedFields) {
+            ConfiguredSourcePhaseContract.Occurrence latest = null;
+            boolean configured = false;
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : plan.configuredSourcePhases()) {
+                if (!field.equals(phase.fieldSignature())) continue;
+                configured = true;
+                if (phase.runtimeEventSeq() < produced
+                        && (latest == null || phase.runtimeEventSeq()
+                        > latest.runtimeEventSeq())) {
+                    latest = phase;
+                }
+            }
+            if (configured && latest == null) return null;
+            if (latest != null) carried.add(latest.sourceId());
+        }
+        return carried;
     }
 
 
@@ -1184,8 +1380,10 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             for (JsonObject edge : selectedEdges.values()) {
                 String sourceInstance = required(edge, "fromOccurrenceId");
+                OutputClosureContract.Member member = member(edge);
                 addMemberInputs(sourceInstance,
-                        requireOccurrence(sourceInstance), member(edge),
+                        requireOccurrence(sourceInstance), member,
+                        selectedVersionSlice(member, edge),
                         frontier, producersByDownstream);
             }
         }
@@ -1223,8 +1421,8 @@ public final class RuntimeWorkflowDiscovery {
                 }
                 OutputClosureContract.Member member = matches.get(0);
                 if (!sourceAugmentedOutputs.add(member.portId())) continue;
-                addMemberInputs(occurrenceId, occurrence, member, frontier,
-                        producersByDownstream);
+                addMemberInputs(occurrenceId, occurrence, member,
+                        member.slice(), frontier, producersByDownstream);
                 changed = true;
             }
             return changed;
@@ -1233,12 +1431,12 @@ public final class RuntimeWorkflowDiscovery {
         private void addMemberInputs(
                 String sourceInstance, Occurrence selected,
                 OutputClosureContract.Member member,
+                JsonObject selectedSlice,
                 CausalFrontier frontier,
                 Map<Endpoint, List<ProducerCandidate>> producersByDownstream)
                 throws IOException {
             Set<String> unmaterializable = new LinkedHashSet<>();
-            for (JsonElement input : member.slice()
-                    .getAsJsonArray("inputPorts")) {
+            for (JsonElement input : array(selectedSlice, "inputPorts")) {
                 String port = input.getAsString();
                 Endpoint endpoint = new Endpoint(sourceInstance,
                         selected.exactInput(port));
@@ -1248,7 +1446,7 @@ public final class RuntimeWorkflowDiscovery {
                             || exactCausalProducer(endpoint,
                             producersByDownstream, true)) {
                         requiredInputEndpoints.add(endpoint);
-                        frontier.addFromMember(endpoint, member,
+                        frontier.addFromSlice(endpoint, selectedSlice,
                                 producersByDownstream);
                     }
                     continue;
@@ -1258,7 +1456,7 @@ public final class RuntimeWorkflowDiscovery {
                 if (exactCausalProducer(endpoint,
                         producersByDownstream, false)) {
                     requiredInputEndpoints.add(endpoint);
-                    frontier.addFromMember(endpoint, member,
+                    frontier.addFromSlice(endpoint, selectedSlice,
                             producersByDownstream);
                     continue;
                 }
@@ -1280,9 +1478,20 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             Set<String> outputs = new LinkedHashSet<>();
             Set<String> edgeIds = new LinkedHashSet<>();
+            Set<String> exactComponentParents = new LinkedHashSet<>();
             for (JsonObject edge : selectedEdges.values()) {
-                outputs.add(member(edge).portId());
+                OutputClosureContract.Member selectedMember = member(edge);
+                outputs.add(selectedMember.portId());
                 edgeIds.add(required(edge, "edgeId"));
+                JsonObject selectedSlice = selectedVersionSlice(
+                        selectedMember, edge);
+                for (JsonElement element : array(selectedSlice,
+                        "captureBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    String parent = string(element.getAsJsonObject(),
+                            CommunicationCatalogContract.PORT_COMPONENT_OF);
+                    if (!parent.isEmpty()) exactComponentParents.add(parent);
+                }
             }
             for (Endpoint input : requiredInputEndpoints) {
                 JsonObject edge = selectedEdgeByEndpoint.get(input);
@@ -1293,6 +1502,12 @@ public final class RuntimeWorkflowDiscovery {
             // which selected the occurrence consumed a heap output.
             for (String output
                     : goal.outputClosure().producer().declaredOutputPorts()) {
+                // A selected response/request leaf is the exact transported
+                // value frontier.  Retaining its aggregate parent as a second
+                // output would import every unrelated live-in of the whole
+                // RPC handler (queues, registration state, metrics, ...).
+                // Keep a declared cut when no exact component supersedes it.
+                if (exactComponentParents.contains(output)) continue;
                 OutputClosureContract.Member member =
                         goal.outputClosure().member(output);
                 if (member == null) {
@@ -1320,6 +1535,33 @@ public final class RuntimeWorkflowDiscovery {
                     edgeIds);
         }
 
+        /**
+         * A configured source phase can explain only outputs produced after
+         * that exact hook execution.  Coarse service-loop occurrences may
+         * contain both an old write and a later source-bearing write; using
+         * the former while scheduling the latter creates a disconnected
+         * symbolic root even though both share one occurrence id.
+         */
+        private void addCausallyCarriedSourceIds(Set<String> carried)
+                throws IOException {
+            if (plan.configuredSourcePhases().isEmpty()) return;
+            for (JsonObject edge : selectedEdges.values()) {
+                OutputClosureContract.Member selectedMember = member(edge);
+                long produced = productionEvent(edge);
+                Set<String> selectedSources = sourceIdsCarriedBy(plan,
+                        selectedVersionSlice(selectedMember, edge), produced);
+                if (selectedSources == null) {
+                    throw new IOException("configured source phase does not "
+                            + "precede selected output: output="
+                            + selectedMember.portId() + "; edge="
+                            + required(edge, "edgeId")
+                            + "; productionEvent=" + produced + "; "
+                            + context());
+                }
+                carried.addAll(selectedSources);
+            }
+        }
+
         private ProducerOutputProjection projection() throws IOException {
             if (projection == null) {
                 throw new IOException("producer demand has no finalized "
@@ -1339,9 +1581,63 @@ public final class RuntimeWorkflowDiscovery {
                     throw new IOException("selected interaction output has "
                             + "no closure member: " + output);
                 }
-                addSliceInputs(result, member);
+                boolean exact = false;
+                for (JsonObject edge : selectedEdges.values()) {
+                    OutputClosureContract.Member edgeMember = member(edge);
+                    if (!output.equals(edgeMember.portId())) continue;
+                    addSliceInputs(result, selectedVersionSlice(edgeMember,
+                            edge));
+                    exact = true;
+                }
+                if (!exact) addSliceInputs(result, member);
             }
             return result;
+        }
+
+        /** Narrows predecessor discovery to the exact bounded writer version
+         * consumed by one selected downstream edge. */
+        private JsonObject selectedVersionSlice(
+                OutputClosureContract.Member member, JsonObject edge)
+                throws IOException {
+            JsonObject union = member.slice();
+            JsonArray versions = array(union, BOUNDED_VERSION_SCOPES);
+            if (versions.size() == 0) return union;
+            String selectedEdgeId = required(edge, "edgeId");
+            long produced = productionEvent(edge);
+            JsonObject selected = null;
+            for (JsonElement element : versions) {
+                if (!element.isJsonObject()) continue;
+                JsonObject version = element.getAsJsonObject();
+                Set<String> edges = new LinkedHashSet<>();
+                addStrings(edges, array(version, "causalEdgeIds"));
+                if (!edges.contains(selectedEdgeId)) {
+                    continue;
+                }
+                if (selected != null) {
+                    throw new IOException("output edge belongs to more than "
+                            + "one bounded writer version: edge="
+                            + selectedEdgeId + "; output=" + member.portId()
+                            + "; " + context());
+                }
+                selected = version;
+            }
+            if (selected == null) {
+                throw new IOException("selected output edge has no bounded "
+                        + "writer version: edge=" + selectedEdgeId
+                        + "; output=" + member.portId()
+                        + "; productionEvent=" + produced + "; "
+                        + context());
+            }
+            JsonObject exact = union.deepCopy();
+            exact.add("inputPorts",
+                    array(selected, "inputPorts").deepCopy());
+            exact.add("causalEdgeIds",
+                    array(selected, "causalEdgeIds").deepCopy());
+            if (selected.has("demandedHeapDeclarations")) {
+                exact.add("demandedHeapDeclarations", array(selected,
+                        "demandedHeapDeclarations").deepCopy());
+            }
+            return exact;
         }
 
         private OutputClosureContract.Member member(JsonObject edge)
@@ -1362,7 +1658,12 @@ public final class RuntimeWorkflowDiscovery {
         /** Adds every input port one closure member's slice lists. */
         private static void addSliceInputs(
                 Set<String> result, OutputClosureContract.Member member) {
-            for (JsonElement input : array(member.slice(), "inputPorts")) {
+            addSliceInputs(result, member.slice());
+        }
+
+        private static void addSliceInputs(
+                Set<String> result, JsonObject slice) {
+            for (JsonElement input : array(slice, "inputPorts")) {
                 if (input.isJsonPrimitive()) result.add(input.getAsString());
             }
         }
@@ -1395,7 +1696,8 @@ public final class RuntimeWorkflowDiscovery {
                 return result;
             }
             for (JsonObject edge : selectedEdges.values()) {
-                addSliceInputs(result, member(edge));
+                OutputClosureContract.Member member = member(edge);
+                addSliceInputs(result, selectedVersionSlice(member, edge));
             }
             return result;
         }
@@ -1573,14 +1875,14 @@ public final class RuntimeWorkflowDiscovery {
             allowedEdges.put(endpoint, intersection);
         }
 
-        private void addFromMember(
-                Endpoint endpoint, OutputClosureContract.Member member,
+        private void addFromSlice(
+                Endpoint endpoint, JsonObject selectedSlice,
                 Map<Endpoint, List<ProducerCandidate>> producersByDownstream)
                 throws IOException {
             endpoints.add(endpoint);
             Set<String> memberEdges = new LinkedHashSet<>();
             addStrings(memberEdges,
-                    array(member.slice(), "causalEdgeIds"));
+                    array(selectedSlice, "causalEdgeIds"));
             if (memberEdges.isEmpty()) return;
 
             Set<String> matching = new LinkedHashSet<>();
@@ -1875,24 +2177,20 @@ public final class RuntimeWorkflowDiscovery {
                 Comparator.comparingInt(
                         (ProducerChoice value) -> value.coveredEndpoints.size())
                         .reversed()
+                        // The consumer's recorded arrival/read-from is exact
+                        // dynamic identity, so it outranks structural closure
+                        // size and reuse.  Otherwise a smaller registration
+                        // response can replace the later heartbeat version
+                        // which actually preceded the demanded state write.
+                        .thenComparingInt(
+                                value -> -value.anchoredProductions)
+                        .thenComparingLong(
+                                value -> -value.latestAnchoredProduction)
                         .thenComparing(value -> !value.alreadySelected)
                         .thenComparingInt(value -> value.unrelatedEndpoints)
                         .thenComparingInt(value -> value.unrelatedOutputs)
                         .thenComparingInt(value -> value.unrelatedInputs)
                         .thenComparingInt(value -> value.demandedInputs)
-                        // Addressed by the exchange it carries: among the
-                        // alternatives every key above leaves tied, the
-                        // occurrence the consumer's own recorded read-from
-                        // names goes first, and the later of two such
-                        // occurrences answers the later production.  An
-                        // address no recorded arrival anchors scores zero
-                        // here and keeps exactly the identity order below,
-                        // which is what every selection did before this key
-                        // existed.
-                        .thenComparingInt(
-                                value -> -value.anchoredProductions)
-                        .thenComparingLong(
-                                value -> -value.latestAnchoredProduction)
                         .thenComparing(value -> value.candidate.semanticKey());
 
         private final ProducerCandidate candidate;
@@ -2230,6 +2528,22 @@ public final class RuntimeWorkflowDiscovery {
             return false;
         }
 
+        private Set<String> failureMethods() {
+            Set<String> methods = new LinkedHashSet<>();
+            for (JsonElement element : goal.branches()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (bool(branch, "failureTarget", false)
+                        && !bool(branch, "loopControlGuard", false)
+                        && TargetReachPathQueryBuilder
+                        .requiredOutcome(branch) != null) {
+                    String method = string(branch, "method");
+                    if (!method.isEmpty()) methods.add(method);
+                }
+            }
+            return methods;
+        }
+
         private JsonObject indexEntry(String taskId) {
             JsonObject result = new JsonObject();
             result.addProperty("campaignId", campaignId);
@@ -2246,13 +2560,30 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private static int compare(Target left, Target right) {
-            int compared = TargetRank.compare(left.rank, right.rank);
+            int compared = TargetRank.compareSemantic(left.rank, right.rank);
+            if (compared != 0) return compared;
+            if (left.relationKey.equals(right.relationKey)) {
+                compared = TargetRank.compareStateWriters(
+                        left.rank, right.rank);
+                if (compared != 0) return compared;
+                if (TargetRank.sameStateWriters(left.rank, right.rank)) {
+                    compared = Long.compare(left.rootCallId(),
+                            right.rootCallId());
+                    if (compared != 0) return compared;
+                }
+            }
+            compared = TargetRank.compareCost(left.rank, right.rank);
             if (compared != 0) return compared;
             compared = left.relationKey.compareTo(right.relationKey);
             if (compared != 0) return compared;
-            compared = left.goalId.compareTo(right.goalId);
+            compared = left.occurrenceId.compareTo(right.occurrenceId);
             if (compared != 0) return compared;
-            return left.occurrenceId.compareTo(right.occurrenceId);
+            return left.goalId.compareTo(right.goalId);
+        }
+
+        private long rootCallId() {
+            return longInteger(object(plan.json(), "traceEvidence"),
+                    "rootCallId", Long.MAX_VALUE);
         }
     }
 
@@ -2266,6 +2597,8 @@ public final class RuntimeWorkflowDiscovery {
         private final int valueBackedFatalInputs;
         private final int stateBackedFatalInputs;
         private final int observedSelectedSemanticGuards;
+        private final int causallyCarriedSourceIds;
+        private final Map<String, Long> targetStateWriterVersions;
         private final int residualFatalInputs;
         private final int fatalInputs;
         private final int producerGoals;
@@ -2278,6 +2611,8 @@ public final class RuntimeWorkflowDiscovery {
                            int valueBackedFatalInputs,
                            int stateBackedFatalInputs,
                            int observedSelectedSemanticGuards,
+                           int causallyCarriedSourceIds,
+                           Map<String, Long> targetStateWriterVersions,
                            int residualFatalInputs,
                            int fatalInputs, int producerGoals,
                            int exactBindings, int causalRegions) {
@@ -2291,6 +2626,10 @@ public final class RuntimeWorkflowDiscovery {
             this.stateBackedFatalInputs = stateBackedFatalInputs;
             this.observedSelectedSemanticGuards =
                     observedSelectedSemanticGuards;
+            this.causallyCarriedSourceIds = causallyCarriedSourceIds;
+            this.targetStateWriterVersions =
+                    Collections.unmodifiableMap(new LinkedHashMap<>(
+                            targetStateWriterVersions));
             this.residualFatalInputs = residualFatalInputs;
             this.fatalInputs = fatalInputs;
             this.exactBindings = exactBindings;
@@ -2299,13 +2638,22 @@ public final class RuntimeWorkflowDiscovery {
 
         private static TargetRank invalid() {
             return new TargetRank(Collections.<Demand>emptyList(), false,
-                    false, false, 0, 0, 0, Integer.MAX_VALUE,
+                    false, false, 0, 0, 0, 0,
+                    Collections.<String, Long>emptyMap(),
                     Integer.MAX_VALUE, Integer.MAX_VALUE,
+                    Integer.MAX_VALUE,
                     Integer.MAX_VALUE, Integer.MAX_VALUE);
         }
 
-        private static int compare(TargetRank left, TargetRank right) {
+        private static int compareSemantic(TargetRank left,
+                                           TargetRank right) {
             int compared = Boolean.compare(right.valid, left.valid);
+            if (compared != 0) return compared;
+            // Explicit source hooks are roots, not optional decoration on an
+            // otherwise cheaper closure.  Prefer the target whose exact
+            // selected output versions causally carry more distinct roots.
+            compared = Integer.compare(right.causallyCarriedSourceIds,
+                    left.causallyCarriedSourceIds);
             if (compared != 0) return compared;
             // Prefer an occurrence where a failure-relevant protocol input is
             // presented by one exact schedulable cross-boundary edge.
@@ -2343,8 +2691,40 @@ public final class RuntimeWorkflowDiscovery {
             if (compared != 0) return compared;
             compared = Integer.compare(left.fatalInputs,
                     right.fatalInputs);
-            if (compared != 0) return compared;
-            compared = Integer.compare(left.producerGoals,
+            return compared;
+        }
+
+        /** Returns a preference only when the same fields move monotonically.
+         * Crossed versions are incomparable and retain the established rank. */
+        private static int compareStateWriters(TargetRank left,
+                                               TargetRank right) {
+            if (left.targetStateWriterVersions.isEmpty()
+                    || !left.targetStateWriterVersions.keySet().equals(
+                    right.targetStateWriterVersions.keySet())) {
+                return 0;
+            }
+            int direction = 0;
+            for (String field : left.targetStateWriterVersions.keySet()) {
+                int compared = Long.compare(
+                        left.targetStateWriterVersions.get(field),
+                        right.targetStateWriterVersions.get(field));
+                if (compared == 0) continue;
+                int next = compared > 0 ? -1 : 1;
+                if (direction != 0 && direction != next) return 0;
+                direction = next;
+            }
+            return direction;
+        }
+
+        private static boolean sameStateWriters(TargetRank left,
+                                                TargetRank right) {
+            return !left.targetStateWriterVersions.isEmpty()
+                    && left.targetStateWriterVersions.equals(
+                    right.targetStateWriterVersions);
+        }
+
+        private static int compareCost(TargetRank left, TargetRank right) {
+            int compared = Integer.compare(left.producerGoals,
                     right.producerGoals);
             if (compared != 0) return compared;
             compared = Integer.compare(left.causalRegions,
@@ -2355,6 +2735,7 @@ public final class RuntimeWorkflowDiscovery {
             if (compared != 0) return compared;
             return compared;
         }
+
     }
 
     private static final class SelectedProducerOccurrence {

@@ -178,6 +178,8 @@ public:
 
   static jlong startConcolicRegion(JavaThread *thread, const char *region_id,
                                    const char *task_id);
+  /** Exact VM thread-context identity owning the current region. */
+  static jlong currentContextId();
   static jlong endConcolic();
   static void abandonPendingBranchForException(Thread *thread);
   static void abortCurrentContext(const char *reason);

@@ -126,6 +126,47 @@ public class ResponseComponentFrontierTest {
         assertTrue(edges(workflow, SELECTED).contains(STATS_EDGE));
     }
 
+    /** An exact response leaf replaces its aggregate parent in the projected
+     * task, so unrelated handler live-ins do not become causal predecessors. */
+    @Test
+    public void exactResponseLeafSupersedesAggregateCutNoise()
+            throws Exception {
+        JsonObject remote = remoteRow(SELECTED, SELECTED_EDGE);
+        JsonObject goal = remote.getAsJsonArray("closureGoals")
+                .get(0).getAsJsonObject();
+        JsonObject closure = goal.getAsJsonObject("outputClosure");
+        JsonArray declared = new JsonArray();
+        declared.add(RESPONSE);
+        declared.add(COMPONENT);
+        closure.getAsJsonObject("producer")
+                .add("declaredOutputPorts", declared);
+        JsonArray aggregateInputs = new JsonArray();
+        aggregateInputs.add(STATS_INPUT);
+        JsonArray aggregateEdges = new JsonArray();
+        aggregateEdges.add(STATS_EDGE);
+        closure.getAsJsonArray("members").add(communicationMember(
+                RESPONSE, aggregateInputs, aggregateEdges));
+        goal.getAsJsonArray("symbolize").add(valueAction(STATS_INPUT));
+        goal.getAsJsonArray("edgeBindings").add(sharedStateEdge(
+                STATS_WRITER, "REGION.S", STATS_OUTPUT,
+                STATS_EDGE, STATS_INPUT));
+
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        consumerRow(), targetRow(), remote,
+                        stateProducerRow(STATS_WRITER, "REGION.S",
+                                STATS_OUTPUT, STATS_EDGE, STATS_INPUT)),
+                        (region, action) -> true,
+                        (regionId, selectedClosure) ->
+                                Collections.<String>emptySet());
+
+        assertEquals(Collections.singleton(COMPONENT),
+                outputs(workflow, SELECTED));
+        assertFalse(inputs(workflow, SELECTED).contains(STATS_INPUT));
+        assertFalse(edges(workflow, SELECTED).contains(STATS_EDGE));
+        assertFalse(describe(workflow), scheduled(workflow, STATS_WRITER));
+    }
+
     private static JsonObject consumerRow() {
         JsonObject row = plan("node/client#epoch0", CONSUMER,
                 "REGION.C", "node/client/relation/REGION.C");
@@ -509,6 +550,48 @@ public class ResponseComponentFrontierTest {
         return member;
     }
 
+    private static JsonObject communicationMember(
+            String port, JsonArray inputs, JsonArray causalEdges) {
+        String method = "<Server: Response reply()>";
+        String cell = method + ".communication.response";
+        JsonObject output = new JsonObject();
+        output.addProperty("portId", port);
+        output.addProperty("cell", cell);
+        output.addProperty("kind", "INTERACTION_EVENT");
+        output.addProperty("javaTypeDescriptor", "LResponse;");
+
+        JsonObject capture = new JsonObject();
+        capture.addProperty("captureBindingId", "CAPTURE." + port);
+        capture.addProperty("captureKind", "COMMUNICATION_EFFECT");
+        capture.addProperty("outputPort", port);
+        capture.addProperty("outputCell", cell);
+        capture.addProperty("javaType", "Response");
+        capture.addProperty("definitionMethod", method);
+        capture.addProperty("outputSiteId",
+                "COMMUNICATION_EFFECT:" + method);
+        capture.addProperty("outputOccurrence", 1);
+
+        JsonObject slice = new JsonObject();
+        slice.addProperty("outputPort", port);
+        slice.addProperty("outputCell", cell);
+        slice.add("inputPorts", inputs);
+        slice.add("sites", new JsonArray());
+        slice.add("staticSites", new JsonArray());
+        JsonArray methods = new JsonArray();
+        methods.add(method);
+        slice.add("methods", methods);
+        slice.add("causalEdgeIds", causalEdges);
+        JsonArray captures = new JsonArray();
+        captures.add(capture);
+        slice.add("captureBindings", captures);
+        slice.add("captureBindingIssues", new JsonArray());
+
+        JsonObject member = new JsonObject();
+        member.add("output", output);
+        member.add("slice", slice);
+        return member;
+    }
+
     private static JsonArray one(JsonObject value) {
         JsonArray array = new JsonArray();
         array.add(value.deepCopy());
@@ -554,6 +637,18 @@ public class ResponseComponentFrontierTest {
             }
         }
         return outputs;
+    }
+
+    private static java.util.Set<String> inputs(
+            RuntimeWorkflowDiscovery.RankedWorkflow workflow,
+            String occurrence) throws Exception {
+        for (RuntimeWorkflowDiscovery.ProducerGroup group
+                : workflow.producerGroups()) {
+            if (occurrence.equals(group.occurrenceId)) {
+                return group.inputPorts();
+            }
+        }
+        return java.util.Collections.emptySet();
     }
 
     private static String describe(

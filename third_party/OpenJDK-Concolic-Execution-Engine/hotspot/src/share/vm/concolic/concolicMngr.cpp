@@ -425,6 +425,10 @@ jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
   return status;
 }
 
+jlong ConcolicMngr::currentContextId() {
+  return ctx == NULL ? 0 : ctx->get_context_id();
+}
+
 void ConcolicMngr::abandonPendingBranchForException(Thread *thread) {
   if (ctx == NULL || ctx->is_aborted() || thread == NULL
       || !thread->is_Java_thread()

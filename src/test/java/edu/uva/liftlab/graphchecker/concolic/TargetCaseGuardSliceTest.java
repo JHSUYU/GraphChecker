@@ -249,7 +249,9 @@ public class TargetCaseGuardSliceTest {
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "CONCOLIC_REGION_SUMMARY");
         row.addProperty("regionId", REGION);
-        row.addProperty("occurrenceId", OCCURRENCE);
+        row.addProperty("occurrenceId", OCCURRENCE + "#a1");
+        row.addProperty(PathObservation.ACTIVATION_ORDINAL, 1);
+        row.addProperty(PathObservation.PLANNED_OCCURRENCE_ID, OCCURRENCE);
         row.addProperty("goalId", GOAL);
         row.addProperty(ClosureGoalKind.TASK_FIELD,
                 ClosureGoalKind.TARGET_REACH_CLOSURE.name());
@@ -325,7 +327,13 @@ public class TargetCaseGuardSliceTest {
     private static JsonObject ambientEngineResult() {
         JsonObject raw = new JsonObject();
         raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.addProperty("schemaVersion", 1);
         raw.addProperty("taskId", "TASK.SEED.AMBIENT");
+        raw.addProperty(PathObservation.ACTIVATION_ORDINAL, 1);
+        raw.addProperty(PathObservation.PLANNED_OCCURRENCE_ID, OCCURRENCE);
+        raw.addProperty("occurrenceId", OCCURRENCE + "#a1");
+        raw.addProperty("relationallyComplete", true);
+        raw.addProperty(PathObservation.TARGET_REACHED, true);
         raw.addProperty("exitKind", "NORMAL");
         raw.addProperty("exceptionType", "");
 

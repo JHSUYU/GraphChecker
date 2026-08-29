@@ -25,8 +25,8 @@ import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -43,7 +43,12 @@ public final class PathObservation {
     private final List<SummaryBranchMapping> branchMappings;
     private final String branchMappingIssue;
     private final AlphaNormalizer alpha;
+    private final int activationOrdinal;
+    private final String plannedOccurrenceId;
+    private final String occurrenceId;
+    private final boolean relationallyComplete;
     private final String pathKey;
+    private final String semanticPathKey;
     private final List<Integer> relationPathPositions;
     private final JsonArray relationPathCondition;
     private final String relationGuardKey;
@@ -51,6 +56,17 @@ public final class PathObservation {
 
     private PathObservation(JsonObject summary, JsonObject task) {
         this.raw = summary.deepCopy();
+        this.activationOrdinal = exactInteger(raw, ACTIVATION_ORDINAL, -1);
+        this.plannedOccurrenceId = exactText(raw, PLANNED_OCCURRENCE_ID);
+        this.occurrenceId = exactText(raw, "occurrenceId");
+        Boolean complete = exactBoolean(raw, "relationallyComplete");
+        if (activationOrdinal < 1 || plannedOccurrenceId.isEmpty()
+                || !occurrenceId.equals(plannedOccurrenceId + "#a"
+                + activationOrdinal) || complete == null) {
+            throw new IllegalArgumentException(
+                    "path summary requires an exact activation tuple");
+        }
+        this.relationallyComplete = complete.booleanValue();
         this.scope = Scope.decode(raw, task);
         List<SummaryBranchMapping> decoded = Collections.emptyList();
         String issue = "";
@@ -63,7 +79,11 @@ public final class PathObservation {
         this.branchMappingIssue = issue;
         this.alpha = new AlphaNormalizer(raw);
         this.pathKey = stablePathKey(raw, scope,
-                raw.get("pathCondition"), alpha);
+                raw.get("pathCondition"), alpha,
+                occurrenceId);
+        this.semanticPathKey = stablePathKey(raw, scope,
+                raw.get("pathCondition"), alpha,
+                plannedOccurrenceId);
         this.relationPathPositions = Collections.unmodifiableList(
                 projectRelationPathCondition(raw, scope, branchMappings,
                         alpha));
@@ -78,7 +98,8 @@ public final class PathObservation {
         this.relationGuardKey = CanonicalJson.sha256(alphaCanonical(
                 relationPathCondition, new AlphaNormalizer(raw)));
         this.relationKey = stablePathKey(raw, scope,
-                relationPathCondition, new AlphaNormalizer(raw));
+                relationPathCondition, new AlphaNormalizer(raw),
+                occurrenceId);
     }
 
     public static PathObservation decode(JsonObject summary, JsonObject task) {
@@ -88,21 +109,34 @@ public final class PathObservation {
         return new PathObservation(summary, task);
     }
 
+    private static String exactText(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isString()
+                ? value.getAsString().trim() : "";
+    }
+
+    private static Boolean exactBoolean(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isBoolean()
+                ? Boolean.valueOf(value.getAsBoolean()) : null;
+    }
+
     public String regionId() {
         return scope.outputClosure == null ? string(raw, "regionId")
                 : scope.outputClosure.producer().regionId();
     }
     public String sourceTaskId() { return string(raw, "taskId"); }
-    public String occurrenceId() { return string(raw, "occurrenceId"); }
+    public String occurrenceId() { return occurrenceId; }
 
     /**
      * OCC-1: one task's address may be entered several times, and every
      * compatible activation is published as its own occurrence rather than
      * one being answered and the rest reported as an ambiguous address.
      *
-     * <p>These three members travel together.  A row that states no
-     * {@link #ACTIVATION_ORDINAL} is a pre-OCC-1 row and is read exactly as
-     * before: one occurrence, the planned one.</p>
+     * <p>These members travel together. Current summaries always name one
+     * exact activation; an incomplete tuple is not a supported schema.</p>
      */
     public static final String ACTIVATION_ORDINAL = "activationOrdinal";
     /** The address the task planned, shared by every activation of it. */
@@ -110,18 +144,14 @@ public final class PathObservation {
     /** Whether this activation exited through the selected target throw. */
     public static final String TARGET_REACHED = "targetReached";
 
-    /** This activation's ordinal, or 0 when the row states none. */
+    /** This activation's required positive ordinal. */
     public int activationOrdinal() {
-        return integer(raw, ACTIVATION_ORDINAL, 0);
+        return activationOrdinal;
     }
 
-    /** Whether this observation is one activation among a task's several. */
-    public boolean statesActivation() { return activationOrdinal() >= 1; }
-
-    /** The planned address; the occurrence itself when none is stated. */
+    /** The required planned address shared by this task's activations. */
     public String plannedOccurrenceId() {
-        String planned = string(raw, PLANNED_OCCURRENCE_ID);
-        return planned.isEmpty() ? occurrenceId() : planned;
+        return plannedOccurrenceId;
     }
 
     /** Whether this activation reached the target; false when unstated. */
@@ -150,10 +180,12 @@ public final class PathObservation {
     }
     public String sourceKey() { return string(raw, "sourceKey"); }
     public boolean relationallyComplete() {
-        return bool(raw, "relationallyComplete", false);
+        return relationallyComplete;
     }
     public Scope scope() { return scope; }
     public String pathKey() { return pathKey; }
+    /** Activation-independent key used only to deduplicate exploration. */
+    public String semanticPathKey() { return semanticPathKey; }
     public List<SummaryBranchMapping> branchMappings() {
         return branchMappings;
     }
@@ -456,13 +488,13 @@ public final class PathObservation {
 
     private static String stablePathKey(
             JsonObject summary, Scope scope, JsonElement pathCondition,
-            AlphaNormalizer alpha) {
+            AlphaNormalizer alpha, String occurrenceIdentity) {
         StringBuilder value = new StringBuilder();
         component(value, scope.outputClosure == null
                 ? string(summary, "regionId")
                 : scope.outputClosure.producer().regionId());
         component(value, string(summary, "sourceKey"));
-        component(value, string(summary, "occurrenceId"));
+        component(value, occurrenceIdentity);
         component(value, scope.identity);
         component(value, alphaCanonical(pathCondition, alpha));
         component(value, alphaCanonical(summary.get("outputExpressions"),
@@ -511,17 +543,19 @@ public final class PathObservation {
                 }
             }
         }
-        for (int index = 0; index < full.size(); index++) {
-            if (referencesSelectedInput(full.get(index), alpha)) {
-                selected.add(index);
-            }
-        }
-
-        // The task fixes non-selected inputs to witnessed concrete values, so
-        // a guard holds the selected symbolic decisions plus only the local
-        // definitions they depend on.
+        // A guard holds selected control decisions plus only the local
+        // definitions those decisions need. Output expressions and recorded
+        // state are already the authoritative effect channels; treating every
+        // auxiliary condition that merely reads an output operand as a
+        // definition pulls downstream library work (for example Base64 array
+        // bounds) back into the producer guard.
         Set<String> demanded = new LinkedHashSet<>();
         Set<String> selectedTokens = new LinkedHashSet<>();
+        // A configured source is itself a selected semantic root. Keep its
+        // exact field materialization even when this case's output reaches it
+        // through recorded state rather than a direct expression reference.
+        selectedTokens.addAll(dependencyTokens(
+                summary.get(SymbolicSourceEvidence.FIELD)));
         // What the case has to explain seeds the slice: a relation case its
         // declared outputs; a target case the branch predicate its fatal
         // query is about, already in `selected` above.
@@ -554,9 +588,12 @@ public final class PathObservation {
                         full.get(index), alpha);
                 boolean exactFieldCoDefinition = !exactField.isEmpty()
                         && exactFieldDefinitions.contains(exactField);
+                boolean targetOperandDefinition =
+                        scope.goalKind.capturesTargetReach()
+                                && overlaps(tokens, demanded);
                 if (!exactSelectedFieldDefinition
                         && !exactFieldCoDefinition
-                        && !overlaps(tokens, demanded)) {
+                        && !targetOperandDefinition) {
                     continue;
                 }
                 dependencies.add(index);
@@ -585,21 +622,6 @@ public final class PathObservation {
             conditions.add(full.get(position).deepCopy());
         }
         return conditions;
-    }
-
-    /** Keeps constraints over inputs the replay materialized as symbolic even
-     *  when the output is concrete and the controlling VM branch has no
-     *  branch-mapping hook. */
-    private static boolean referencesSelectedInput(
-            JsonElement expression, AlphaNormalizer alpha) {
-        for (String token : dependencyTokens(expression)) {
-            if (token.startsWith("SYMBOL:")
-                    && alpha.containsCanonicalInput(
-                            token.substring("SYMBOL:".length()))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -752,7 +774,6 @@ public final class PathObservation {
 
     private static final class AlphaNormalizer {
         private final Set<String> canonicalPorts = new LinkedHashSet<>();
-        private final Set<String> canonicalInputs = new LinkedHashSet<>();
         private final Map<String, String> symbols = new LinkedHashMap<>();
         private final Map<String, String> placeholders = new LinkedHashMap<>();
 
@@ -772,19 +793,12 @@ public final class PathObservation {
             for (JsonElement element : value.getAsJsonArray()) {
                 if (!element.isJsonPrimitive()) continue;
                 addPort(element.getAsString());
-                addInputPort(element.getAsString());
             }
         }
 
         private void addPort(String candidate) {
             if (looksLikeCanonicalPort(candidate)) {
                 canonicalPorts.add(candidate);
-            }
-        }
-
-        private void addInputPort(String candidate) {
-            if (looksLikeCanonicalPort(candidate)) {
-                canonicalInputs.add(candidate);
             }
         }
 
@@ -802,10 +816,6 @@ public final class PathObservation {
         private boolean containsCanonicalPort(String raw) {
             if (looksLikeCanonicalPort(raw)) return true;
             return containsCanonicalPort(raw, canonicalPorts);
-        }
-
-        private boolean containsCanonicalInput(String raw) {
-            return containsCanonicalPort(raw, canonicalInputs);
         }
 
         private static boolean containsCanonicalPort(

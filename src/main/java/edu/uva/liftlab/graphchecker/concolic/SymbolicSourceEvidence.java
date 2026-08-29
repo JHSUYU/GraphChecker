@@ -197,6 +197,7 @@ public final class SymbolicSourceEvidence {
     public static Map<String, String> rawSymbolIdentities(
             Iterable<JsonObject> owners) {
         Map<String, String> result = new LinkedHashMap<>();
+        Map<String, JsonObject> authorityByRaw = new LinkedHashMap<>();
         if (owners == null) return result;
         for (JsonObject owner : owners) {
             for (JsonObject event : eventsOf(owner)) {
@@ -205,9 +206,11 @@ public final class SymbolicSourceEvidence {
                 if (isReused(event)) continue;
                 String raw = string(event, "rawSymbol");
                 String identity = identity(event);
+                JsonObject prior = authorityByRaw.putIfAbsent(raw, event);
                 String priorIdentity = result.putIfAbsent(raw, identity);
                 if (priorIdentity != null
-                        && !priorIdentity.equals(identity)) {
+                        && !priorIdentity.equals(identity)
+                        && !sameConfiguredSource(prior, event)) {
                     throw new IllegalArgumentException(
                             "one VM symbol names two configured sources: "
                                     + raw);
@@ -215,6 +218,22 @@ public final class SymbolicSourceEvidence {
             }
         }
         return Collections.unmodifiableMap(result);
+    }
+
+    /** One VM root may be observed again when the same field object survives
+     * into another activation.  The raw root is then the identity authority;
+     * occurrence and ordinal describe observations, not new roots. */
+    private static boolean sameConfiguredSource(JsonObject left,
+                                                JsonObject right) {
+        return left != null && right != null
+                && string(left, "sourceId").equals(string(right,
+                "sourceId"))
+                && string(left, "sourcePhaseId").equals(string(right,
+                "sourcePhaseId"))
+                && string(left, "fieldSignature").equals(string(right,
+                "fieldSignature"))
+                && string(left, "javaType").equals(string(right,
+                "javaType"));
     }
 
     /**
