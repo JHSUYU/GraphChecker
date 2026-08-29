@@ -12,6 +12,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ./run_engine.sh --config FILE campaign
+  ./run_engine.sh --config FILE catalog
   ./run_engine.sh --config FILE config|validate
   ./run_engine.sh help
 
@@ -19,12 +20,14 @@ Commands:
   campaign    Run the complete campaign for one configuration: validate, seed,
               then immutable iterations of plan/instrument/replay/import/
               explore/classify until composition and Z3
+  catalog     Run through the first immutable PLAN only and stop after writing
+              symbolic_root_mechanism_cards.json for external classification
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
 
-The campaign is the only production execution path. Environment variables
-matching normalized workflow keys may override values loaded from FILE.
+Environment variables matching normalized workflow keys may override values
+loaded from FILE.
 EOF
 }
 
@@ -42,7 +45,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|java_bin|graphchecker_work_dir|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_cache_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|causynth_loop_bounds|causynth_symbolic_inputs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_max_jobs|solver_timeout_ms|reach_max_inputs|reach_max_valuations|campaign_setup_command|concolic_replay_command|concolic_worker_count|campaign_max_iterations|producer_max_paths_per_region|producer_max_flips_per_path|producer_max_path_tasks)
+    workflow_path_base|graphchecker_jar|java_bin|graphchecker_work_dir|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_cache_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_protocol_stubs|causynth_loop_bounds|causynth_symbolic_inputs|causynth_symbolic_root_proposal|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_max_jobs|solver_timeout_ms|reach_max_inputs|reach_max_valuations|campaign_setup_command|concolic_replay_command|concolic_worker_count|campaign_max_iterations|producer_max_paths_per_region|producer_max_flips_per_path|producer_max_path_tasks)
       return 0
       ;;
     *)
@@ -70,6 +73,7 @@ reset_config() {
   causynth_protocol_stubs=""
   causynth_loop_bounds=""
   causynth_symbolic_inputs=""
+  causynth_symbolic_root_proposal=""
   custom_jdk_home=""
   z3_bin=""
   workload_work_dir=""
@@ -146,6 +150,8 @@ apply_environment_overrides() {
   apply_env_override causynth_protocol_stubs CAUSYNTH_PROTOCOL_STUBS
   apply_env_override causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS
   apply_env_override causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS
+  apply_env_override causynth_symbolic_root_proposal \
+    CAUSYNTH_SYMBOLIC_ROOT_PROPOSAL
   apply_env_override custom_jdk_home CAUSYNTH_CUSTOM_JDK_HOME
   apply_env_override z3_bin CAUSYNTH_Z3
   apply_env_override workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR
@@ -307,6 +313,10 @@ initialize_config() {
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     causynth_symbolic_inputs=$(resolve_path "${causynth_symbolic_inputs}")
   fi
+  if [[ -n "${causynth_symbolic_root_proposal:-}" ]]; then
+    causynth_symbolic_root_proposal=$(resolve_path \
+      "${causynth_symbolic_root_proposal}")
+  fi
   candidate_graph=${candidate_graph:-${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz}
   runtime_region_plan=${runtime_region_plan:-${causynth_output_dir}/runtime/concolic_region_plan.jsonl}
   refined_graph=${refined_graph:-$(dirname "${runtime_region_plan}")/refined_dataflow_edges.jsonl.gz}
@@ -362,7 +372,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in campaign_setup_command concolic_replay_command concolic_worker_count campaign_max_iterations producer_max_paths_per_region producer_max_flips_per_path producer_max_path_tasks config_file workflow_path_base graphchecker_jar java_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_cache_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs causynth_loop_bounds causynth_symbolic_inputs custom_jdk_home z3_bin workload_work_dir workload_command trace_test candidate_graph refined_graph runtime_region_plan schedule_output_dir schedule_max_jobs solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in campaign_setup_command concolic_replay_command concolic_worker_count campaign_max_iterations producer_max_paths_per_region producer_max_flips_per_path producer_max_path_tasks config_file workflow_path_base graphchecker_jar java_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_cache_dir causynth_target_spec causynth_process_dirs causynth_protocol_stubs causynth_loop_bounds causynth_symbolic_inputs causynth_symbolic_root_proposal custom_jdk_home z3_bin workload_work_dir workload_command trace_test candidate_graph refined_graph runtime_region_plan schedule_output_dir schedule_max_jobs solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -391,6 +401,10 @@ validate_config() {
   fi
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
+  fi
+  if [[ -n "${causynth_symbolic_root_proposal:-}" ]]; then
+    require_file "symbolic root proposal" \
+      "${causynth_symbolic_root_proposal}"
   fi
   case "${solver_timeout_ms}" in
     ''|*[!0-9]*) die "solver_timeout_ms must be a positive integer" ;;
@@ -539,6 +553,12 @@ do_schedule() {
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
     args+=(--symbolic-inputs "${causynth_symbolic_inputs}")
+  fi
+  if [[ -n "${causynth_symbolic_root_proposal:-}" ]]; then
+    require_file "symbolic root proposal" \
+      "${causynth_symbolic_root_proposal}"
+    args+=(--symbolic-root-proposal \
+      "${causynth_symbolic_root_proposal}")
   fi
   if [[ -n "${schedule_summaries}" ]]; then
     require_file "scheduler summaries" "${schedule_summaries}"
@@ -790,6 +810,25 @@ campaign_digest() {
   sha256sum -- "$1" | awk '{print $1}'
 }
 
+# The proposal is a PLAN-only input.  Keep the complete config digest in
+# frozen provenance, but remove exactly that one property from the reusable
+# static-analysis/trace seed identity.
+campaign_seed_config_digest() {
+  local path=$1
+  [[ -f "${path}" ]] || die "cannot digest a missing seed config: ${path}"
+  {
+    printf '%s\n' CAMPAIGN_SEED_CONFIG_V1
+    awk '
+      {
+        key = $0
+        sub(/^[[:space:]]*/, "", key)
+        if (key ~ /^causynth_symbolic_root_proposal[[:space:]]*=/) next
+        print $0
+      }
+    ' "${path}"
+  } | sha256sum | awk '{print $1}'
+}
+
 # A final-stage JSON artifact is never optional.  Validate it before giving its
 # value to another jq invocation: command/process substitution otherwise hides
 # the producer's parse failure behind the consumer's successful exit status.
@@ -991,7 +1030,11 @@ campaign_seed_artifact_rows() {
 }
 
 campaign_seed_cache_key() {
-  local identity
+  local identity config_seed_sha
+  config_seed_sha=$(campaign_seed_config_digest "${config_file}")
+  # symbolicRootProposal is intentionally absent: it is a PLAN input and must
+  # reuse the exact static analysis, workload trace, runtime plan and refined
+  # graph that produced its mechanism catalog.
   identity=$(jq -S -c \
     --arg analysisScope "${causynth_analysis_scope}" \
     --arg processDirs "${causynth_process_dirs}" \
@@ -1004,12 +1047,13 @@ campaign_seed_cache_key() {
     --arg heartbeatExpireMs "${CAUSYNTH_HDFS_HEARTBEAT_EXPIRE_MS:-}" \
     --arg keyUpdateMs "${CAUSYNTH_HDFS_KEY_UPDATE_MS:-}" \
     --arg testWaitTimeoutMs "${CAUSYNTH_HDFS_TEST_WAIT_TIMEOUT_MS:-}" \
+    --arg configSeedSha "${config_seed_sha}" \
     --arg balancerMaxIdleIterations \
       "${CAUSYNTH_HDFS_BALANCER_MAX_IDLE_ITERATIONS:-}" '
     {schemaVersion: 1, kind: "CAMPAIGN_SEED_CACHE_KEY",
      inputs: {
        jar: .jar.sha256,
-       config: .config.sha256,
+       config: $configSeedSha,
        targetSpec: .targetSpec.sha256,
        protocolStubs: .protocolStubs.sha256,
        loopBounds: .loopBounds.sha256,
@@ -1512,7 +1556,7 @@ campaign_freeze() {
   local libjava="${custom_jdk_home}/jre/lib/amd64/libjava.so"
   local libjvm="${custom_jdk_home}/jre/lib/amd64/server/libjvm.so"
   local jar_sha vm_sha rt_jar_sha libjava_sha libjvm_sha config_sha
-  local spec_sha stubs_sha bounds_sha symbolic_inputs_sha
+  local spec_sha stubs_sha bounds_sha symbolic_inputs_sha root_proposal_sha
   local classes_sha test_classes_sha classpath_sha tool_source workload_source
   [[ -x "${vm}" ]] || die "the concolic VM is not built: ${vm}"
   require_file "concolic rt.jar" "${rt_jar}"
@@ -1558,6 +1602,11 @@ campaign_freeze() {
     campaign_fail FREEZE CAMPAIGN "${causynth_symbolic_inputs}" \
       "digest failed"
   fi
+  if ! root_proposal_sha=$(campaign_optional_digest \
+      "${causynth_symbolic_root_proposal:-}"); then
+    campaign_fail FREEZE CAMPAIGN "${causynth_symbolic_root_proposal:-}" \
+      "digest failed"
+  fi
   if ! classes_sha=$(campaign_tree_digest "${project_classes_dir}"); then
     campaign_fail FREEZE CAMPAIGN "${project_classes_dir}" \
       "tree digest failed"
@@ -1599,6 +1648,8 @@ campaign_freeze() {
     --arg boundsSha "${bounds_sha}" \
     --arg symbolicInputs "${causynth_symbolic_inputs}" \
     --arg symbolicInputsSha "${symbolic_inputs_sha}" \
+    --arg symbolicRootProposal "${causynth_symbolic_root_proposal:-}" \
+    --arg symbolicRootProposalSha "${root_proposal_sha}" \
     --arg classes "${project_classes_dir}" \
     --arg classesSha "${classes_sha}" \
     --arg testClass "${trace_test}" \
@@ -1619,6 +1670,8 @@ campaign_freeze() {
       loopBounds: {path: $bounds, sha256: $boundsSha},
       symbolicInputs: {path: $symbolicInputs,
                        sha256: $symbolicInputsSha},
+      symbolicRootProposal: {path: $symbolicRootProposal,
+                             sha256: $symbolicRootProposalSha},
       productionClasses: {path: $classes, sha256: $classesSha},
       workload: {testClass: $testClass,
                  testClasses: {path: $testClasses, sha256: $testClassesSha},
@@ -1639,7 +1692,8 @@ campaign_freeze() {
 #
 # Scope is the FREEZE stage's inputs and only those: jar, VM and its three
 # libraries, config, target spec, protocol stubs, per-loop bounds, symbolic
-# input selection, the production/test class trees, and the workload classpath
+# input selection, optional symbolic-root proposal, the production/test class
+# trees, and the workload classpath
 # string. The SEED additions (static catalog, region plan, refined graph) are
 # this campaign's own outputs rather than its inputs, and the INSTRUMENT stage
 # legitimately rewrites the analysis root they sit in; re-hashing them here
@@ -1648,6 +1702,9 @@ campaign_freeze() {
 # reports as dirty or untracked, and a workload writes cluster scratch beneath
 # its working directory while it runs.
 campaign_verify_frozen_inputs() {
+  local failure_stage=${1:-EMIT}
+  local failure_component=${2:-CAMPAIGN}
+  local failure_target=${3:-${campaign_final}}
   local rows kind label path expected actual classpath_sha
   if ! rows=$(jq -r '
       [{kind: "file", label: "jar", entry: .jar},
@@ -1660,6 +1717,8 @@ campaign_verify_frozen_inputs() {
        {kind: "file", label: "protocolStubs", entry: .protocolStubs},
        {kind: "file", label: "loopBounds", entry: .loopBounds},
        {kind: "file", label: "symbolicInputs", entry: .symbolicInputs},
+       {kind: "file", label: "symbolicRootProposal",
+        entry: .symbolicRootProposal},
        {kind: "tree", label: "productionClasses", entry: .productionClasses},
        {kind: "tree", label: "workload.testClasses",
         entry: .workload.testClasses}]
@@ -1669,7 +1728,7 @@ campaign_verify_frozen_inputs() {
          (if (.entry.path // "") == "" then "-" else .entry.path end),
          (if (.entry.sha256 // "") == "" then "-" else .entry.sha256 end)]
       | @tsv' <<<"${campaign_provenance}"); then
-    campaign_fail EMIT CAMPAIGN "${campaign_final}" \
+    campaign_fail "${failure_stage}" "${failure_component}" "${failure_target}" \
       "the frozen campaign provenance could not be read back"
   fi
   while IFS=$'\t' read -r kind label path expected; do
@@ -1678,30 +1737,32 @@ campaign_verify_frozen_inputs() {
     # It stays unnamed; a digest without a path is a provenance row nobody can
     # re-derive, so it is refused rather than skipped.
     if [[ "${path}" == "-" ]]; then
-      [[ "${expected}" == "-" ]] || campaign_fail EMIT CAMPAIGN "${label}" \
+      [[ "${expected}" == "-" ]] || campaign_fail "${failure_stage}" \
+        "${failure_component}" "${label}" \
         "the frozen provenance digests an input it names no path for"
       continue
     fi
     case "${kind}" in
       file)
-        [[ -f "${path}" ]] || campaign_fail EMIT CAMPAIGN "${path}" \
+        [[ -f "${path}" ]] || campaign_fail "${failure_stage}" \
+          "${failure_component}" "${path}" \
           "frozen input ${label} no longer exists"
         if ! actual=$(campaign_digest "${path}"); then
-          campaign_fail EMIT CAMPAIGN "${path}" \
+          campaign_fail "${failure_stage}" "${failure_component}" "${path}" \
             "frozen input ${label} could not be re-digested"
         fi
         ;;
       tree)
         if ! actual=$(campaign_tree_digest "${path}"); then
-          campaign_fail EMIT CAMPAIGN "${path}" \
+          campaign_fail "${failure_stage}" "${failure_component}" "${path}" \
             "frozen input ${label} could not be re-digested"
         fi
         ;;
-      *) campaign_fail EMIT CAMPAIGN "${label}" \
+      *) campaign_fail "${failure_stage}" "${failure_component}" "${label}" \
           "unknown frozen provenance entry kind: ${kind}" ;;
     esac
-    [[ "${actual}" == "${expected}" ]] || campaign_fail EMIT CAMPAIGN \
-      "${path}" \
+    [[ "${actual}" == "${expected}" ]] || campaign_fail "${failure_stage}" \
+      "${failure_component}" "${path}" \
       "frozen input ${label} changed after it was frozen: manifest sha256=${expected} current sha256=${actual}"
   done <<<"${rows}"
 
@@ -1711,11 +1772,13 @@ campaign_verify_frozen_inputs() {
   # reading a classpath the manifest does not describe.
   if ! classpath_sha=$(printf '%s' "${project_classpath}" | sha256sum \
       | awk '{print $1}'); then
-    campaign_fail EMIT CAMPAIGN "project_classpath" "digest failed"
+    campaign_fail "${failure_stage}" "${failure_component}" \
+      "project_classpath" "digest failed"
   fi
   [[ "${classpath_sha}" == \
       "$(jq -r '.workload.classpathSha256 // ""' <<<"${campaign_provenance}")" ]] \
-    || campaign_fail EMIT CAMPAIGN "project_classpath" \
+    || campaign_fail "${failure_stage}" "${failure_component}" \
+      "project_classpath" \
       "the workload classpath changed after it was frozen"
 }
 
@@ -1831,9 +1894,11 @@ campaign_plan() {
   local iteration_dir=$1 carry=$2
   local plan="${iteration_dir}/execution_task_plan.jsonl"
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
+  local root_cards="${iteration_dir}/symbolic_root_mechanism_cards.json"
   local frozen="${iteration_dir}/concolic_region_plan.jsonl"
   local role campaign_id region occurrence goal task worker
-  local plan_hash plan_size region_hash region_size
+  local plan_hash plan_size region_hash region_size cards_hash cards_size
+  local proposal_hash
 
   require_nonempty "runtime region plan" "${runtime_region_plan}"
   require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
@@ -1846,17 +1911,28 @@ campaign_plan() {
   runtime_region_plan="${frozen}"
   require_nonempty "campaign task plan" "${plan}"
   require_nonempty "runtime workflow schedule index" "${index}"
+  require_nonempty "symbolic root mechanism cards" "${root_cards}"
 
   plan_hash=$(campaign_digest "${plan}")
   plan_size=$(stat -c '%s' "${plan}")
   region_hash=$(campaign_digest "${frozen}")
   region_size=$(stat -c '%s' "${frozen}")
+  cards_hash=$(campaign_digest "${root_cards}")
+  cards_size=$(stat -c '%s' "${root_cards}")
+  if ! proposal_hash=$(campaign_optional_digest \
+      "${causynth_symbolic_root_proposal:-}"); then
+    campaign_fail PLAN ConcolicScheduler \
+      "${causynth_symbolic_root_proposal:-<none>}" \
+      "failed to digest the symbolic root proposal"
+  fi
   # Immutable paths, digests and task-set membership -- the whole of what the
   # shell owns here. The index must commit exactly the plan bytes this
   # iteration froze, and its members must be exactly that plan's tasks. What a
   # task selects, and by which authority, is the scheduler's own invariant.
   jq -e --arg plan_hash "${plan_hash}" --arg region_hash "${region_hash}" \
+    --arg cards_hash "${cards_hash}" --arg proposal_hash "${proposal_hash}" \
     --argjson plan_size "${plan_size}" --argjson region_size "${region_size}" \
+    --argjson cards_size "${cards_size}" \
     --slurpfile tasks "${plan}" '
       ([.target.taskId] + [.producers[].taskId]
         | map(select(. != null))) as $selected
@@ -1864,6 +1940,11 @@ campaign_plan() {
         and .executionTaskPlan.sizeBytes == $plan_size
         and .regionPlan.sha256 == $region_hash
         and .regionPlan.sizeBytes == $region_size
+        and .symbolicRootMechanismCatalog.sha256 == $cards_hash
+        and .symbolicRootMechanismCatalog.sizeBytes == $cards_size
+        and (if $proposal_hash == ""
+             then .symbolicRootProposal == null
+             else .symbolicRootProposal.sha256 == $proposal_hash end)
         and (.target | type == "object")
         and (.producers | type == "array")
         and ($selected | length) > 0
@@ -3063,6 +3144,39 @@ do_campaign() {
   campaign_publish_bound_gap "${campaign_max_iterations}"
 }
 
+# Produces the semantic compression boundary before any concolic replay.  A
+# later campaign uses a different fresh output root and the same content cache.
+do_catalog() {
+  local iteration_dir
+  [[ -z "${causynth_symbolic_root_proposal:-}" ]] \
+    || die "catalog must run without a symbolic root proposal"
+  campaign_root="${schedule_output_dir}"
+  campaign_final="${campaign_root}/final"
+  campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"
+  [[ ! -e "${campaign_root}/iteration-0000" \
+      && ! -e "${campaign_final}" ]] \
+    || die "this catalog root already holds a published run: ${campaign_root}"
+  ensure_output_directory "${campaign_root}"
+  mkdir -- "${campaign_root}/frozen-inputs" || campaign_fail \
+    FREEZE_TOOL CATALOG "${campaign_root}" \
+    "the catalog root is already reserved by another run"
+  : >"${campaign_stage_metrics}"
+
+  campaign_stage VALIDATE campaign_validate
+  campaign_stage FREEZE_TOOL campaign_freeze_graphchecker_jar
+  if [[ -n "${campaign_setup_command}" ]]; then
+    campaign_stage SETUP campaign_setup
+  fi
+  campaign_stage FREEZE campaign_freeze
+  campaign_stage SEED campaign_seed
+  iteration_dir="${campaign_root}/iteration-0000"
+  mkdir -p "${iteration_dir}"
+  campaign_member_rows=""
+  campaign_stage "PLAN[0]" campaign_plan "${iteration_dir}" ""
+  campaign_verify_frozen_inputs CATALOG CATALOG "${campaign_root}"
+  campaign_log "symbolic-root catalog ready: ${iteration_dir}/symbolic_root_mechanism_cards.json"
+}
+
 # Shell-level contract tests source the helpers without dispatching a workflow.
 # Production execution still reaches the argument parser below.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -3091,13 +3205,17 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|config|validate)
+  campaign|catalog|config|validate)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
       campaign)
         [[ $# -eq 0 ]] || die "campaign takes no extra arguments"
         do_campaign
+        ;;
+      catalog)
+        [[ $# -eq 0 ]] || die "catalog takes no extra arguments"
+        do_catalog
         ;;
       config) print_normalized_config ;;
       validate) validate_config ;;

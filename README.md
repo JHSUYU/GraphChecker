@@ -132,9 +132,20 @@ input digests still match.
 - Runtime plans, relation summaries, concolic result rows, configured source
   phases, and VM shared-state evidence accept only their current schemas. Old
   shapes and missing activation identities are rejected instead of synthesized.
+- The scheduler now exports a compact symbolic-root mechanism catalog. An
+  optional external LLM proposal is digest-bound, complete over that catalog,
+  and deterministically validated before it can narrow materialization; it
+  cannot alter workflow discovery or loop bounds. See
+  [`docs/SYMBOLIC_ROOT_LLM.md`](docs/SYMBOLIC_ROOT_LLM.md).
 - Output-capture aliases, obsolete reflective VM methods, and redundant
   Composer/fixture paths have been removed. `replayOccurrence` remains only on
   scheduler/runtime actions where it is part of current replay semantics.
+
+## TODO
+
+- After the symbolic-root workflow is stable across more bug cases, optimize
+  and refactor this planning lane, then delete superseded/dead code and
+  fixtures. Do not add fallback compatibility for retired schemas or paths.
 
 ## Minimal verification used for this result
 

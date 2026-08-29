@@ -161,6 +161,26 @@ fi
 seed_cache_root="${test_tmp}/seed-cache"
 seed_calls="${test_tmp}/seed-calls"
 printf '0\n' >"${seed_calls}"
+seed_config_base="${test_tmp}/seed-base.properties"
+seed_config_proposal="${test_tmp}/seed-proposal.properties"
+seed_config_changed="${test_tmp}/seed-changed.properties"
+seed_config_similar="${test_tmp}/seed-similar.properties"
+printf 'schedule_max_jobs=8\n' >"${seed_config_base}"
+printf 'schedule_max_jobs=8\n  causynth_symbolic_root_proposal = "/tmp/proposal.json"\n' \
+  >"${seed_config_proposal}"
+printf 'schedule_max_jobs=9\n' >"${seed_config_changed}"
+printf 'schedule_max_jobs=8\nx_causynth_symbolic_root_proposal=/tmp/p.json\n' \
+  >"${seed_config_similar}"
+[[ $(campaign_seed_config_digest "${seed_config_base}") \
+    == $(campaign_seed_config_digest "${seed_config_proposal}") ]] \
+  || fail "the plan-only proposal property changed the seed config digest"
+[[ $(campaign_seed_config_digest "${seed_config_base}") \
+    != $(campaign_seed_config_digest "${seed_config_changed}") ]] \
+  || fail "a seed-relevant config change was ignored"
+[[ $(campaign_seed_config_digest "${seed_config_base}") \
+    != $(campaign_seed_config_digest "${seed_config_similar}") ]] \
+  || fail "a similar config key was mistaken for the proposal property"
+config_file="${seed_config_base}"
 causynth_cache_dir="${seed_cache_root}"
 causynth_analysis_scope=test-scope
 causynth_process_dirs="${test_tmp}/classes"
@@ -176,6 +196,8 @@ campaign_provenance=$(jq -n '
    workload:{testClasses:{sha256:"tests"},classpathSha256:"classpath"},
    source:{graphchecker:{head:"g",worktreeDigest:"gd"},
            workload:{head:"h",worktreeDigest:"hd"}}}')
+campaign_provenance=$(jq --arg sha "$(campaign_digest "${config_file}")" \
+  '.config.sha256 = $sha' <<<"${campaign_provenance}")
 configure_seed_outputs() {
   local root=$1
   causynth_output_dir="${root}"
@@ -212,6 +234,7 @@ do_workload() {
 configure_seed_outputs "${test_tmp}/seed-output-one"
 campaign_root="${test_tmp}/seed-campaign-one"
 mkdir -p "${campaign_root}"
+baseline_seed_key=$(campaign_seed_cache_key)
 campaign_seed
 [[ $(<"${seed_calls}") -eq 1 ]] || fail "the seed stage did not run once"
 configure_seed_outputs "${test_tmp}/seed-output-two"
@@ -222,6 +245,20 @@ campaign_seed
   || fail "an exact seed cache hit reran static analysis or trace indexing"
 [[ $(jq -r '.cache.status' "${campaign_root}/seed-manifest.json") == HIT ]] \
   || fail "the seed manifest did not record its cache hit"
+config_file="${seed_config_proposal}"
+campaign_provenance=$(jq \
+  --arg configSha "$(campaign_digest "${config_file}")" \
+  '.config.sha256 = $configSha | .symbolicRootProposal =
+  {path:"/tmp/proposal.json",sha256:"changed-proposal"}' \
+  <<<"${campaign_provenance}")
+[[ $(campaign_seed_cache_key) == "${baseline_seed_key}" ]] \
+  || fail "the real proposal config path invalidated the seed cache key"
+configure_seed_outputs "${test_tmp}/seed-output-proposal"
+campaign_root="${test_tmp}/seed-campaign-proposal"
+mkdir -p "${campaign_root}"
+campaign_seed
+[[ $(<"${seed_calls}") -eq 1 ]] \
+  || fail "a changed root proposal invalidated reusable seed analysis"
 campaign_provenance=$(jq '.loopBounds.sha256 = "changed-bounds"' \
   <<<"${campaign_provenance}")
 configure_seed_outputs "${test_tmp}/seed-output-three"

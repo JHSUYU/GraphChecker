@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
@@ -77,6 +78,10 @@ public final class ConcolicScheduler {
 
         JsonObject regionPlanIdentity = artifactIdentity(
                 arguments.regionPlan);
+        JsonObject refinedGraphIdentity = artifactIdentity(
+                arguments.refinedGraph);
+        JsonObject symbolicInputsIdentity = arguments.symbolicInputs == null
+                ? null : artifactIdentity(arguments.symbolicInputs);
         RuntimePlanArtifact runtimePlan = RuntimePlanArtifact.read(
                 arguments.regionPlan);
         List<JsonObject> regions = runtimePlan.regions();
@@ -99,19 +104,32 @@ public final class ConcolicScheduler {
         SymbolicInputSelection symbolicInputs =
                 SymbolicInputSelection.read(arguments.symbolicInputs,
                         regions);
+        JsonArray declaredFixedRoots =
+                SymbolicMechanismCatalog.fixedRootDeclarations(regions);
 
         Map<String, Region> regionIndex = regionIndex(regions);
         if (regionPlanIdentity != null) {
             requireArtifactIdentity(arguments.regionPlan,
                     regionPlanIdentity, "region plan changed while loading");
         }
+        requireArtifactIdentity(arguments.refinedGraph,
+                refinedGraphIdentity,
+                "runtime-refined graph changed while loading");
+        if (arguments.symbolicInputs != null) {
+            requireArtifactIdentity(arguments.symbolicInputs,
+                    symbolicInputsIdentity,
+                    "symbolic input selection changed while loading");
+        }
         return new LoadedInputs(regionPlans, summaries, regionIndex,
-                definitions, regionPlanIdentity, symbolicInputs);
+                definitions, regionPlanIdentity, refinedGraphIdentity,
+                symbolicInputsIdentity, declaredFixedRoots, symbolicInputs);
     }
 
     private static Result scheduleLoaded(
             Arguments arguments, LoadedInputs loaded,
-            ProducerOutputProjection producerProjection) throws IOException {
+            ProducerOutputProjection producerProjection,
+            SymbolicMechanismCatalog.Selection mechanismSelection)
+            throws IOException {
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
                 loaded.definitions, producerProjection);
@@ -127,8 +145,21 @@ public final class ConcolicScheduler {
                             candidate.goal.plan().regionId(),
                             candidate.inputActions,
                             candidate.targetSourceFrontier);
-            JsonArray selectedInputs = loaded.symbolicInputs.select(
+            JsonArray baselineInputs = loaded.symbolicInputs.select(
                     candidate.goal.plan().regionId(), taskInputActions);
+            JsonArray mechanismBindings = mechanismBindings(candidate,
+                    producerProjection);
+            JsonArray writerAnchors = mechanismWriterAnchors(candidate,
+                    taskInputActions, mechanismBindings,
+                    loaded.regionIndex);
+            result.mechanismObservations.addAll(
+                    SymbolicMechanismCatalog.observations(
+                            mechanismContext(candidate), taskInputActions,
+                            baselineInputs, writerAnchors));
+            JsonArray selectedInputs = mechanismSelection == null
+                    ? baselineInputs
+                    : mechanismSelection.select(taskInputActions,
+                    baselineInputs, writerAnchors);
             String taskId = candidate.seedTaskId(selectedInputs);
             JsonObject taskQueryOccurrence = queryOccurrenceWithInputs(
                     candidate.queryOccurrence, selectedInputs);
@@ -194,6 +225,201 @@ public final class ConcolicScheduler {
                     + result.executionTasks.size());
         }
         return result;
+    }
+
+    /** Compact audit coordinates only; none participates in root identity. */
+    private static JsonObject mechanismContext(Candidate candidate) {
+        JsonObject context = new JsonObject();
+        context.addProperty("sourceKey", candidate.goal.plan().sourceKey());
+        context.addProperty("occurrenceId",
+                candidate.goal.plan().occurrenceId());
+        context.addProperty("relationKey",
+                candidate.goal.plan().relationKey());
+        context.addProperty("regionId", candidate.goal.plan().regionId());
+        context.addProperty("goalId", candidate.goal.goalId());
+        context.addProperty("goalKind", candidate.goal.kind().name());
+        context.addProperty("directed", candidate.directed);
+        context.addProperty("ready", candidate.ready);
+        if (!candidate.target.siteId.isEmpty()) {
+            context.addProperty("targetSiteId", candidate.target.siteId);
+            context.addProperty("targetSelectedOccurrence",
+                    candidate.target.selectedOccurrence);
+            context.addProperty("targetRequiredOutcome",
+                    candidate.target.requiredOutcome);
+            context.addProperty("targetDesiredOutcome",
+                    candidate.target.desiredOutcome);
+        }
+        JsonArray methods = new JsonArray();
+        java.util.TreeSet<String> ordered = new java.util.TreeSet<>(
+                candidate.goal.runtimeDefinitionMethods());
+        for (String method : ordered) methods.add(method);
+        context.add("runtimeDefinitionMethods", methods);
+        return context;
+    }
+
+    /**
+     * Read-only view of the exact edges already selected for this candidate.
+     * It deliberately does not merge or validate execution bindings: those
+     * checks stay at the existing task-construction boundary below.
+     */
+    private static JsonArray mechanismBindings(
+            Candidate candidate,
+            ProducerOutputProjection producerProjection) {
+        JsonArray source = candidate.targetEdgeBindings == null
+                ? candidate.goal.edgeBindings()
+                : candidate.targetEdgeBindings;
+        JsonArray result = new JsonArray();
+        for (JsonElement element : source) {
+            if (!element.isJsonObject()) continue;
+            JsonObject edge = element.getAsJsonObject();
+            if (producerProjection == null
+                    || producerProjection.edgeIds().contains(
+                    string(edge, "edgeId"))) {
+                result.add(edge.deepCopy());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Projects runtime edge ids and reader repetitions to stable writer sites.
+     * One array entry corresponds to one input action.  Repeated reads of the
+     * same writer therefore receive the same mechanism identity, while two
+     * distinct static write/output sites remain separate.  The original edge
+     * ledger and all bounded occurrences remain untouched in the task plan.
+     */
+    private static JsonArray mechanismWriterAnchors(
+            Candidate candidate, JsonArray actions, JsonArray bindings,
+            Map<String, Region> regions) {
+        JsonArray result = new JsonArray();
+        String receiver = PathObservation.plannedOccurrenceOf(
+                candidate.queryOccurrenceId);
+        for (JsonElement actionElement : actions) {
+            JsonObject action = actionElement.getAsJsonObject();
+            String port = firstNonBlank(string(action, "portId"),
+                    string(action, "symbol"));
+            Map<String, JsonObject> anchors = new TreeMap<>();
+            for (JsonElement bindingElement : bindings) {
+                if (!bindingElement.isJsonObject()) continue;
+                JsonObject binding = bindingElement.getAsJsonObject();
+                if (port.isEmpty()
+                        || !port.equals(string(binding, "toInputPort"))) {
+                    continue;
+                }
+                String toOccurrence = string(binding, "toOccurrenceId");
+                if (!toOccurrence.isEmpty() && !receiver.equals(
+                        PathObservation.plannedOccurrenceOf(toOccurrence))) {
+                    continue;
+                }
+                JsonObject anchor = mechanismWriterAnchor(binding, regions);
+                anchors.put(CanonicalJson.render(anchor), anchor);
+            }
+            if (anchors.isEmpty()
+                    && "EXACT_INCOMING_COMPOSITION".equals(
+                    string(action, "symbolicDemand"))) {
+                JsonObject unresolved = new JsonObject();
+                unresolved.addProperty("kind",
+                        "UNRESOLVED_INCOMING_ACTION");
+                unresolved.addProperty("regionId",
+                        candidate.goal.plan().regionId());
+                String incomingEdge = string(action,
+                        "selectedIncomingEdgeId");
+                if (!incomingEdge.isEmpty()) {
+                    unresolved.addProperty("selectedIncomingEdgeId",
+                            incomingEdge);
+                }
+                if (!port.isEmpty()) {
+                    unresolved.addProperty("unresolvedPortId", port);
+                }
+                String site = firstNonBlank(
+                        string(action, "staticAccessSiteId"),
+                        canonicalMechanismCell(string(action, "cell")));
+                if (!site.isEmpty()) unresolved.addProperty("siteId", site);
+                JsonElement declarations = action.get(
+                        "fieldPathDeclarations");
+                if (declarations != null && !declarations.isJsonNull()) {
+                    unresolved.add("fieldPathDeclarations",
+                            declarations.deepCopy());
+                }
+                anchors.put(CanonicalJson.render(unresolved), unresolved);
+            }
+            JsonArray rows = new JsonArray();
+            for (JsonObject anchor : anchors.values()) rows.add(anchor);
+            result.add(rows);
+        }
+        return result;
+    }
+
+    private static JsonObject mechanismWriterAnchor(
+            JsonObject binding, Map<String, Region> regions) {
+        String edgeId = string(binding, "edgeId");
+        boolean trusted = AutomaticRegionEdge
+                .trustedRuntimeReadFromBinding(binding)
+                || AutomaticRegionEdge.tracedExchangeCandidate(binding);
+        String fromRegion = string(binding, "fromRegion");
+        String fromPort = string(binding, "fromOutputPort");
+        Region region = regions.get(fromRegion);
+        JsonObject output = region == null ? null : region.outputRow(fromPort);
+        if (!trusted || output == null || output.size() == 0) {
+            return unresolvedWriterAnchor(edgeId);
+        }
+
+        JsonObject anchor = new JsonObject();
+        anchor.addProperty("kind", "REGION_OUTPUT");
+        anchor.addProperty("fromRegion", fromRegion);
+        for (String field : new String[]{
+                "sourceKind", "dependencyRole", "javaType",
+                "accessFieldSignature", "declaredFieldSignature",
+                "leafFieldSignature", "fieldSignature", "fieldPath",
+                "fieldPaths", "fieldPathDeclarations", "definitionMethod",
+                "definitionUnitIndex", "declaredCallee",
+                "staticAccessSiteId", "siteId", "outputSiteId",
+                "callSiteId", "handoffLeafPath", "manualCarrierClass",
+                "manualCarrierDescriptor", "manualCarrierField",
+                "captureKind", "outputCaptureKind"}) {
+            JsonElement value = output.get(field);
+            if (value != null && !value.isJsonNull()) {
+                anchor.add(field, value.deepCopy());
+            }
+        }
+        String cell = canonicalMechanismCell(string(output, "cell"));
+        if (!cell.isEmpty()) anchor.addProperty("cell", cell);
+        if (!anchor.has("fieldPathDeclarations")) {
+            JsonElement path = binding.get("fieldPathDeclarations");
+            if (path != null && !path.isJsonNull()) {
+                anchor.add("fieldPathDeclarations", path.deepCopy());
+            }
+        }
+        if (!anchor.has("declaredCallee")) {
+            String callee = string(binding, "mutatorDeclaredCallee");
+            if (!callee.isEmpty()) {
+                anchor.addProperty("declaredCallee", callee);
+            }
+        }
+        boolean hasDefinitionSite = anchor.has("definitionMethod")
+                && anchor.has("definitionUnitIndex");
+        boolean hasStaticSite = anchor.has("callSiteId")
+                || anchor.has("staticAccessSiteId")
+                || anchor.has("siteId")
+                || anchor.has("outputSiteId")
+                || hasDefinitionSite
+                || anchor.has("declaredCallee");
+        return hasStaticSite ? anchor : unresolvedWriterAnchor(edgeId);
+    }
+
+    private static JsonObject unresolvedWriterAnchor(String edgeId) {
+        JsonObject anchor = new JsonObject();
+        anchor.addProperty("kind", "UNRESOLVED_WRITER");
+        // Fail closed: two unresolved relations must never collapse merely
+        // because their reader-side field names happen to match.
+        anchor.addProperty("edgeId", edgeId.isEmpty()
+                ? "MISSING_EDGE_ID" : edgeId);
+        return anchor;
+    }
+
+    private static String canonicalMechanismCell(String value) {
+        return value == null ? ""
+                : value.replaceAll("#call[0-9]+", "#call");
     }
 
     /** Keeps exactly the causal ledger selected with a producer projection. */
@@ -480,23 +706,54 @@ public final class ConcolicScheduler {
                     + arguments.maxJobs);
         }
 
+        List<Result> scheduled = scheduleSelections(arguments, loaded,
+                workflow, null);
+        List<JsonObject> observations = new ArrayList<>();
+        for (Result selected : scheduled) {
+            observations.addAll(selected.mechanismObservations);
+        }
+        SymbolicMechanismCatalog mechanismCatalog =
+                SymbolicMechanismCatalog.create(
+                        mechanismCatalogInputs(arguments, loaded),
+                        observations, loaded.declaredFixedRoots);
+        Path mechanismCatalogPath = arguments.outputDirectory.resolve(
+                SymbolicMechanismCatalog.FILE_NAME);
+        ArtifactIO.replace(mechanismCatalogPath,
+                CanonicalJson.render(mechanismCatalog.json()) + "\n");
+        JsonObject mechanismCatalogIdentity = artifactIdentity(
+                mechanismCatalogPath);
+
+        JsonObject proposalIdentity = null;
+        if (arguments.symbolicRootProposal != null) {
+            requireFile(arguments.symbolicRootProposal,
+                    "symbolic root proposal");
+            proposalIdentity = artifactIdentity(
+                    arguments.symbolicRootProposal);
+            SymbolicMechanismCatalog.Selection mechanismSelection;
+            try {
+                SymbolicRootProposal proposal = SymbolicRootProposal.decode(
+                        ArtifactIO.readObject(
+                                arguments.symbolicRootProposal));
+                mechanismSelection = mechanismCatalog.validate(proposal);
+            } catch (RuntimeException rejected) {
+                throw new IOException("symbolic root proposal rejected: "
+                        + rejected.getMessage(), rejected);
+            }
+            requireArtifactIdentity(arguments.symbolicRootProposal,
+                    proposalIdentity,
+                    "symbolic root proposal changed while loading");
+            // Proposal selection changes only materialization.  Target/producer
+            // discovery above is intentionally unchanged.
+            scheduled = scheduleSelections(arguments, loaded, workflow,
+                    mechanismSelection);
+        }
+
         Map<String, ExecutionTask> tasks = new LinkedHashMap<>();
         Map<String, JsonObject> queries = new LinkedHashMap<>();
-        for (RuntimeWorkflowDiscovery.Selection selection
-                : workflow.selections()) {
-            Result selected;
-            try {
-                selected = scheduleLoaded(
-                        arguments.forSelection(selection), loaded,
-                        selection.producerProjection);
-            } catch (IllegalArgumentException failure) {
-                String projection = selection.producerProjection == null
-                        ? "TARGET" : CanonicalJson.render(
-                        selection.producerProjection.json());
-                throw new IOException("target-first selection is not "
-                        + "executable: campaign=" + selection.campaignId
-                        + " projection=" + projection, failure);
-            }
+        for (int index = 0; index < scheduled.size(); index++) {
+            RuntimeWorkflowDiscovery.Selection selection =
+                    workflow.selections().get(index);
+            Result selected = scheduled.get(index);
             if (selected.executionTasks.size() != 1) {
                 throw new IOException("target-first selection emitted "
                         + selected.executionTasks.size()
@@ -532,9 +789,30 @@ public final class ConcolicScheduler {
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result.executionTasks,
                 loaded.regionPlanIdentity, taskPlanIdentity);
+        index.add("symbolicRootMechanismCatalog",
+                mechanismCatalogIdentity.deepCopy());
+        index.add("symbolicRootProposal", proposalIdentity == null
+                ? JsonNull.INSTANCE : proposalIdentity.deepCopy());
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
+        requireArtifactIdentity(arguments.refinedGraph,
+                loaded.refinedGraphIdentity,
+                "runtime-refined graph changed while scheduling");
+        if (arguments.symbolicInputs != null) {
+            requireArtifactIdentity(arguments.symbolicInputs,
+                    loaded.symbolicInputsIdentity,
+                    "symbolic input selection changed while scheduling");
+        }
+        if (arguments.symbolicRootProposal != null) {
+            requireArtifactIdentity(arguments.symbolicRootProposal,
+                    proposalIdentity,
+                    "symbolic root proposal changed while scheduling");
+        }
+        requireArtifactIdentity(mechanismCatalogPath,
+                mechanismCatalogIdentity,
+                "symbolic root mechanism catalog changed before index "
+                        + "publication");
         requireArtifactIdentity(taskPlan, taskPlanIdentity,
                 "execution task plan changed before index publication");
         // The integrity-checked index is the commit record.
@@ -542,6 +820,46 @@ public final class ConcolicScheduler {
                         "runtime_workflow_schedule_index.json"),
                 CanonicalJson.render(index) + "\n");
         return result;
+    }
+
+    private static List<Result> scheduleSelections(
+            Arguments arguments, LoadedInputs loaded,
+            RuntimeWorkflowDiscovery.RankedWorkflow workflow,
+            SymbolicMechanismCatalog.Selection mechanismSelection)
+            throws IOException {
+        List<Result> result = new ArrayList<>();
+        for (RuntimeWorkflowDiscovery.Selection selection
+                : workflow.selections()) {
+            try {
+                result.add(scheduleLoaded(arguments.forSelection(selection),
+                        loaded, selection.producerProjection,
+                        mechanismSelection));
+            } catch (IllegalArgumentException failure) {
+                String projection = selection.producerProjection == null
+                        ? "TARGET" : CanonicalJson.render(
+                        selection.producerProjection.json());
+                throw new IOException("target-first selection is not "
+                        + "executable: campaign=" + selection.campaignId
+                        + " projection=" + projection, failure);
+            }
+        }
+        return result;
+    }
+
+    private static JsonObject mechanismCatalogInputs(
+            Arguments arguments, LoadedInputs loaded) {
+        JsonObject inputs = new JsonObject();
+        inputs.add("regionPlan", loaded.regionPlanIdentity.deepCopy());
+        inputs.add("refinedGraph", loaded.refinedGraphIdentity.deepCopy());
+        inputs.add("symbolicInputs",
+                loaded.symbolicInputsIdentity == null
+                        ? JsonNull.INSTANCE
+                        : loaded.symbolicInputsIdentity.deepCopy());
+        inputs.addProperty("maxLoopIterations",
+                arguments.maxLoopIterations);
+        inputs.addProperty("workflowAuthority",
+                "RANKED_EXACT_RUNTIME_READ_FROM_CLOSURE_V1");
+        return inputs;
     }
 
     private static JsonObject artifactIdentity(Path path)
@@ -2366,6 +2684,11 @@ public final class ConcolicScheduler {
             return outputRowsByPort.values();
         }
 
+        private JsonObject outputRow(String portId) {
+            JsonObject row = outputRowsByPort.get(portId);
+            return row == null ? null : row.deepCopy();
+        }
+
         private static void indexPorts(JsonArray rows,
                                        Map<String, JsonObject> target) {
             for (JsonElement element : rows) {
@@ -2711,6 +3034,8 @@ public final class ConcolicScheduler {
     public static final class Result {
         public final List<ExecutionTask> executionTasks = new ArrayList<>();
         public final List<JsonObject> queries = new ArrayList<>();
+        private final List<JsonObject> mechanismObservations =
+                new ArrayList<>();
     }
 
     /**
@@ -2961,6 +3286,9 @@ public final class ConcolicScheduler {
         private final Map<String, Region> regionIndex;
         private final DefinitionIndex definitions;
         private final JsonObject regionPlanIdentity;
+        private final JsonObject refinedGraphIdentity;
+        private final JsonObject symbolicInputsIdentity;
+        private final JsonArray declaredFixedRoots;
         private final SymbolicInputSelection symbolicInputs;
 
         private LoadedInputs(List<RegionInstancePlan> regionPlans,
@@ -2968,12 +3296,18 @@ public final class ConcolicScheduler {
                              Map<String, Region> regionIndex,
                              DefinitionIndex definitions,
                              JsonObject regionPlanIdentity,
+                             JsonObject refinedGraphIdentity,
+                             JsonObject symbolicInputsIdentity,
+                             JsonArray declaredFixedRoots,
                              SymbolicInputSelection symbolicInputs) {
             this.regionPlans = regionPlans;
             this.summaries = summaries;
             this.regionIndex = regionIndex;
             this.definitions = definitions;
             this.regionPlanIdentity = regionPlanIdentity;
+            this.refinedGraphIdentity = refinedGraphIdentity;
+            this.symbolicInputsIdentity = symbolicInputsIdentity;
+            this.declaredFixedRoots = declaredFixedRoots.deepCopy();
             this.symbolicInputs = symbolicInputs;
         }
     }
@@ -2989,6 +3323,7 @@ public final class ConcolicScheduler {
         public final int maxJobs;
         public final int maxLoopIterations;
         public final Path symbolicInputs;
+        public final Path symbolicRootProposal;
         private final Set<String> targetEdgeIds;
 
         private Arguments(Path regionPlan, Path refinedGraph, Path summaries,
@@ -2996,6 +3331,7 @@ public final class ConcolicScheduler {
                           String occurrenceId, String goalId,
                           int maxJobs, int maxLoopIterations,
                           Path symbolicInputs,
+                          Path symbolicRootProposal,
                           Set<String> targetEdgeIds) {
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
@@ -3007,6 +3343,7 @@ public final class ConcolicScheduler {
             this.maxJobs = Math.max(1, maxJobs);
             this.maxLoopIterations = maxLoopIterations;
             this.symbolicInputs = symbolicInputs;
+            this.symbolicRootProposal = symbolicRootProposal;
             this.targetEdgeIds = Collections.unmodifiableSet(
                     new LinkedHashSet<>(targetEdgeIds));
         }
@@ -3014,7 +3351,8 @@ public final class ConcolicScheduler {
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
                     "refined-graph", "summaries", "output-dir", "max-jobs",
-                    "symbolic-inputs", "max-loop-iterations");
+                    "symbolic-inputs", "symbolic-root-proposal",
+                    "max-loop-iterations");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
@@ -3023,6 +3361,8 @@ public final class ConcolicScheduler {
             Path summaries = optionalPath(values.get("summaries"));
             Path symbolicInputs = optionalPath(
                     values.get("symbolic-inputs"));
+            Path symbolicRootProposal = optionalPath(
+                    values.get("symbolic-root-proposal"));
             // The scheduler has one mode: the whole target-first closure.
             return new Arguments(regionPlan, refinedGraph,
                     summaries, output, "", "", "",
@@ -3031,6 +3371,7 @@ public final class ConcolicScheduler {
                             LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                             "max-loop-iterations"),
                     symbolicInputs,
+                    symbolicRootProposal,
                     Collections.<String>emptySet());
         }
 
@@ -3079,6 +3420,7 @@ public final class ConcolicScheduler {
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1, maxLoopIterations,
                     symbolicInputs,
+                    symbolicRootProposal,
                     selection.targetEdgeIds);
         }
 
