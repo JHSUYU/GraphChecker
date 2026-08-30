@@ -1,0 +1,8 @@
+/build/
+/builds/
+/.hg/
+*/.hg/
+/a.out
+/hs_err*.log
+/core
+/cmake-build-debug/

@@ -1,38 +1,44 @@
-![logo](./WeBridge.png)
+# Causynth OpenJDK concolic execution engine
 
-[![pipeline status](https://ipads.se.sjtu.edu.cn:1312/ipads-storage/codebase/wbridge/openjdk8-webridge/badges/master/pipeline.svg)](https://ipads.se.sjtu.edu.cn:1312/ipads-storage/codebase/wbridge/openjdk8-webridge/-/commits/master)
+This tree derives from the WeBridge OpenJDK 8 concolic engine and contains the
+customized Zero VM used by GraphChecker's narrow replay stage. GraphChecker
+itself and broad discovery tracing must run on a stock JDK 8; do not make this
+VM the workflow's global `JAVA_HOME`.
 
-# WeBridge OpenJDK Concolic Execution Engine
+## Canonical build
 
-Implementation of a concolic execution engine on top of OpenJDK 8.
+From the GraphChecker repository root, build the `linux/amd64` image and VM:
 
-The engine currently supports interpreter mode execution.
-
-# Prerequisites
-We have tested the code in the following environment:
-
-Operating system: Ubuntu 16.04
-
-GCC/G++: 6.5.0
-
-Refer to this gist for gcc-6 installation issue on Ubuntu 20.0.x: https://gist.github.com/0xjac/85097472043b697ab57ba1b1c7530274
-
-# How to build
-First install necessary dependencies.
-```shell
-./scripts/install_dependencies.sh
-```
-Next, configure the project.
-```shell
-./scripts/configure.sh
-```
-Then, build the project.
-```shell
-make all -j CONF=linux-x86_64-normal-zero-release
+```bash
+JOBS=4 \
+  third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh
 ```
 
-The built concolic execution JDK path will be in `./build/linux-x86_64-normal-zero-release/images/j2sdk-image`. Next, set this path as your default `JAVA_HOME` to use the concolic execution JDK.
+The JDK image is written to:
 
-# Quick start
+```text
+third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image
+```
 
-Refer to the `./concolic-test` directory to see examples on how to run Java programs with the concolic execution engine.
+The Docker build supplies the supported GCC 6, boot JDK 8, and libffi
+environment. Build products are intentionally ignored by Git.
+
+## Smoke test
+
+```bash
+JDK_HOME="$PWD/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image" \
+  third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh
+```
+
+Use the resulting image in GraphChecker with:
+
+```bash
+export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
+```
+
+For the complete workflow and the separation between stock-JDK discovery and
+custom-VM replay, see the [GraphChecker README](../../README.md).
+
+The helper `scripts/causynth_build_openjdk.sh` also supports a native build,
+but then the caller must provide the exact GCC 6, boot JDK, libffi, and native
+library prerequisites. The Docker entrypoint is the documented portable path.

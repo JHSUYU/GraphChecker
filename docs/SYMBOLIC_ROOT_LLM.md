@@ -63,7 +63,9 @@ Classification rules:
 - STUTTER_NOISE or IRRELEVANT / EXCLUDE_SYMBOLIZATION: polling/retry repetition
   or state unrelated to this mechanism.
 - REVIEW / REVIEW: evidence is insufficient. Never guess an ID or silently
-  omit a candidate.
+  omit a candidate. REVIEW is a non-executable draft marker: GraphChecker
+  rejects the proposal until a human resolves every REVIEW decision and
+  resubmits it as one of the three executable decisions above.
 
 Loop rule:
 - Do not choose K, an iteration number, or an occurrence. Repeated polling
@@ -93,6 +95,9 @@ Before returning, check:
 5. Uncertainty is REVIEW, not an unsupported semantic claim.
 ```
 
+If the output contains `REVIEW`, stop for human review. Do not pass that draft
+to `campaign`; the deterministic validator rejects all unresolved review items.
+
 ## Offline workflow
 
 Use two different, initially absent output roots and one shared external cache.
@@ -107,8 +112,9 @@ unset CAUSYNTH_SYMBOLIC_ROOT_PROPOSAL
 
 The catalog is
 `/absent/path/hdfs11741-catalog/schedule/iteration-0000/symbolic_root_mechanism_cards.json`.
-Invoke the LLM outside GraphChecker and save one strict proposal JSON. Then run
-the actual campaign in another fresh root while reusing the same cache:
+Invoke the LLM outside GraphChecker, resolve any `REVIEW` items, and save one
+strict executable proposal JSON. Then run the actual campaign in another fresh
+root while reusing the same cache:
 
 ```bash
 export CAUSYNTH_OUTPUT_DIR=/absent/path/hdfs11741-selected

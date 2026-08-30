@@ -16,6 +16,8 @@ docker run --rm \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
   -e JOBS="$JOBS" \
+  -e LIBFFI_CFLAGS=-I/usr/include/x86_64-linux-gnu \
+  -e LIBFFI_LIBS=/usr/lib/x86_64-linux-gnu/libffi_pic.a \
   -v "$ROOT:/workspace" \
   -w /workspace \
   "$IMAGE" \

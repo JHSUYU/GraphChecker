@@ -5,8 +5,8 @@
 
 > 范围：本文是当前 wire contract，目标架构见 [../README.md](../README.md)。
 > 「Worker isolation」中「一个 custom-JDK 进程只允许一个 active concolic context」
-> 属于 README Phase 1 的改造范围（以 attach/detach 线程成员关系取代
-> single-active-region mutex），不代表目标架构。
+> 是当前 runtime isolation contract（以 attach/detach 线程成员关系取代
+> single-active-region mutex），不代表跨 task 调度已经由 VM 强制实现。
 
 ## Execution identity
 
