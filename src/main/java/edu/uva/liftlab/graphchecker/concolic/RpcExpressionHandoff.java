@@ -30,7 +30,6 @@ public final class RpcExpressionHandoff {
     // them; the numbers stay unassigned because the codes are a shared ABI.
 
     /** Bridge-local statuses. */
-    public static final int API_UNAVAILABLE = -1000;
     public static final int INVOCATION_FAILED = -1001;
     public static final int MALFORMED_RESULT = -1002;
 
@@ -72,8 +71,6 @@ public final class RpcExpressionHandoff {
                 return REASON_PREFIX + "SORT_MISMATCH";
             case UNSUPPORTED_TARGET:
                 return REASON_PREFIX + "UNSUPPORTED_TARGET";
-            case API_UNAVAILABLE:
-                return REASON_PREFIX + "API_UNAVAILABLE";
             case INVOCATION_FAILED:
                 return REASON_PREFIX + "INVOCATION_FAILED";
             case MALFORMED_RESULT:

@@ -607,10 +607,6 @@ public final class OutputClosureCodec {
                 if (OutputCaptureSpec.MUTATION_STATE.equals(captureKind)) {
                     requiredText(binding, "declaredCallee");
                 }
-            } else if (OutputCaptureSpec.HANDOFF_BOUND_LEAF.equals(
-                    captureKind)) {
-                validateHandoffBoundLeafEndpoint(binding, port, cell, path,
-                        descriptor);
             } else if (OutputCaptureSpec.REGION_EXIT_FIELD.equals(
                     captureKind)) {
                 if (hasOutputOccurrenceIdentity(binding)) {
@@ -623,43 +619,6 @@ public final class OutputClosureCodec {
                 throw new IllegalArgumentException(path
                         + " captureKind is unsupported: " + captureKind);
             }
-        }
-    }
-
-    /** Validates a structured leaf at the broker boundary.  No positional or
-     *  name-only recovery is accepted: the capture names the declared parent,
-     *  encoding authority, exact static site and direction; the expression and
-     *  its delivery identity come from the VM handoff's VALUE_HANDOFF edge. */
-    private static void validateHandoffBoundLeafEndpoint(
-            JsonObject binding, String port, String cell, String path,
-            String descriptor) {
-        String javaType = requiredText(binding, "javaType");
-        String parent = requiredText(binding,
-                CommunicationCatalogContract.PORT_COMPONENT_OF);
-        String authority = requiredText(binding,
-                CommunicationCatalogContract.PORT_ENCODING_AUTHORITY);
-        String site = requiredText(binding,
-                CommunicationCatalogContract.EXCHANGE_SITE_KEY);
-        String leaf = requiredText(binding, "leafPath");
-        String direction = requiredText(binding,
-                CommunicationCatalogContract.PORT_DIRECTION);
-        String terminal = leaf.substring(leaf.lastIndexOf('/') + 1);
-        String expectedLeg = CommunicationCatalogContract.DIRECTION_REQUEST
-                .equals(direction) ? ".req." : ".resp";
-        boolean declaredDirection = CommunicationCatalogContract.DIRECTION_REQUEST.equals(direction)
-                || CommunicationCatalogContract.DIRECTION_RESPONSE.equals(
-                direction);
-        if (!cell.equals(port)
-                || !descriptor.equals(javaTypeDescriptor(javaType))
-                || parent.equals(port)
-                || !parent.startsWith(site + expectedLeg)
-                || !port.startsWith(site + expectedLeg)
-                || authority.isEmpty() || !declaredDirection
-                || !port.endsWith("." + terminal)
-                || binding.has("argumentIndex")
-                || binding.has("declaredCallee")) {
-            throw new IllegalArgumentException(path
-                    + " handoff-bound leaf is inconsistent");
         }
     }
 

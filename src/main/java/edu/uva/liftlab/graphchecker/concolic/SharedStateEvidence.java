@@ -104,7 +104,6 @@ public final class SharedStateEvidence {
     /** The frozen producer edge id is absent or malformed. */
     public static final int SELECT_INVALID_EDGE = -7;
 
-    public static final int API_UNAVAILABLE = -1000;
     public static final int INVOCATION_FAILED = -1001;
     public static final int MALFORMED_ENVELOPE = -1002;
     /** The location was never selected, so it has no recorded evidence. */
@@ -210,8 +209,6 @@ public final class SharedStateEvidence {
                 return REASON_PREFIX + "VERSION_AMBIGUOUS";
             case SELECT_INVALID_EDGE:
                 return REASON_PREFIX + "INVALID_EDGE";
-            case API_UNAVAILABLE:
-                return REASON_PREFIX + "API_UNAVAILABLE";
             case INVOCATION_FAILED:
                 return REASON_PREFIX + "INVOCATION_FAILED";
             case MALFORMED_ENVELOPE:

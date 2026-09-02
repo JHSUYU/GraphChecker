@@ -50,13 +50,13 @@ public class CompiledBytecodeSliceTest {
     @Before
     public void resetBefore() {
         soot.G.reset();
-        System.clearProperty("causynth.protocol.stubs");
+        System.clearProperty(WireFlowCatalog.PROPERTY);
         System.clearProperty("causynth.trace.test");
     }
 
     @After
     public void resetAfter() throws IOException {
-        System.clearProperty("causynth.protocol.stubs");
+        System.clearProperty(WireFlowCatalog.PROPERTY);
         System.clearProperty("causynth.trace.test");
         soot.G.reset();
         if (processDir != null) {

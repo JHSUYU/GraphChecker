@@ -45,6 +45,8 @@ public class SymbolicRegionPlannerTest {
             "<example.Client: int request()>";
     private static final String CALLBACK =
             "<example.Callback: void handle(java.lang.Object)>";
+    private static final String WRITER = "<example.Store: void update(int)>";
+    private static final String STATE = "<example.Store: int state>";
 
     @Test
     public void partitionsMethodsAndStopsBeforeStatePlanning() {
@@ -62,16 +64,17 @@ public class SymbolicRegionPlannerTest {
         SymbolicRegionPlanner.planSelectedSkeleton(program,
                 Arrays.asList(ROOT, TARGET, ASYNC));
 
-        // A target an execution-context entry reaches keeps that entry's
-        // region; the target-activation fallback adds nothing.
-        assertEquals(2, program.regions.size());
+        // The exact target is a boundary, so the execution-context envelope
+        // cannot absorb the complete path leading to the failure.
+        assertEquals(3, program.regions.size());
         Map<String, Object> target = regionContaining(program, TARGET);
         assertEquals(3, target.get("schemaVersion"));
         assertEquals("REGION_SKELETON", target.get("kind"));
-        assertEquals(ROOT, target.get("rootMethod"));
-        assertEquals("TASK_ENTRY", target.get("rootAuthority"));
+        assertEquals(TARGET, target.get("rootMethod"));
+        assertEquals("FAILURE_TARGET_ENTRY", target.get("rootAuthority"));
         assertEquals(TARGET, target.get("anchorMethod"));
-        assertEquals(Arrays.asList(ROOT, TARGET), target.get("methods"));
+        assertEquals(Collections.singletonList(TARGET),
+                target.get("methods"));
         assertFalse(target.containsKey("symbolicInputs"));
         assertFalse(target.containsKey("outputs"));
         assertFalse(target.containsKey("branchPolicies"));
@@ -139,7 +142,7 @@ public class SymbolicRegionPlannerTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    public void communicationSiteDoesNotWidenFailureDemandScope() {
+    public void targetBoundarySeparatesCommunicationDemand() {
         StaticProgram program = new StaticProgram();
         program.edges.add(edge(ROOT, TARGET, "VALUE_PASS", "local", "x",
                 "y"));
@@ -150,24 +153,47 @@ public class SymbolicRegionPlannerTest {
         program.executionContextAuthorities.put(ROOT, "TASK_ENTRY");
         program.targetResolved.put("method", TARGET);
         Map<String, Object> communication = new LinkedHashMap<>();
-        communication.put(CommunicationCatalogContract.CLIENT_METHOD,
+        Map<String, Object> producer = new LinkedHashMap<>();
+        producer.put(CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                 COMMUNICATION);
-        communication.put(
-                CommunicationCatalogContract.SERVER_ENTRY_CANDIDATES,
-                Collections.emptyList());
+        communication.put(WireFlowCatalog.PRODUCER, producer);
         program.communicationCallSites.add(communication);
 
         SymbolicRegionPlanner.planSelectedSkeleton(program,
                 Arrays.asList(ROOT, TARGET, COMMUNICATION));
 
-        Map<String, Object> region = regionContaining(program, TARGET);
+        Map<String, Object> region = regionContaining(program, COMMUNICATION);
         assertTrue(((List<String>) region.get("methods"))
                 .contains(COMMUNICATION));
         List<String> demanded = (List<String>) region.get(
                 RuntimeSelectedRegionFinalizer.DEMAND_SCOPE);
         assertTrue(demanded.contains(ROOT));
-        assertTrue(demanded.contains(TARGET));
-        assertFalse(demanded.contains(COMMUNICATION));
+        assertTrue(demanded.contains(COMMUNICATION));
+        assertFalse(demanded.contains(TARGET));
+        assertEquals(TARGET,
+                regionContaining(program, TARGET).get("rootMethod"));
+    }
+
+    @Test
+    public void rootsAnUnownedFailureRelevantStateWriter() {
+        StaticProgram program = new StaticProgram();
+        program.edges.add(edge(TARGET, "", "HEAP_READ", "field_read",
+                STATE, TARGET + "::value"));
+        program.edges.add(edge(TARGET, "", "GUARD", "exception_guard",
+                TARGET + "::value", TARGET + "#u7#exception:Failure"));
+        program.edges.add(edge(WRITER, "", "HEAP_WRITE", "field_write",
+                WRITER + ".param0:int", STATE));
+        program.targetResolved.put("method", TARGET);
+
+        SymbolicRegionPlanner.planSelectedSkeleton(program,
+                Arrays.asList(TARGET, WRITER));
+
+        Map<String, Object> writer = regionContaining(program, WRITER);
+        assertEquals(SymbolicRegionPlanner.STATE_WRITER_ENTRY,
+                writer.get("rootAuthority"));
+        assertEquals("STATE_CONTEXT", writer.get("selection"));
+        assertEquals(Collections.singletonList(WRITER),
+                writer.get("methods"));
     }
 
     private static Map<String, Object> edge(

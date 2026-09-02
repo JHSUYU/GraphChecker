@@ -110,40 +110,6 @@ public class BoxedValueLeafProjectionTest {
     }
 
     /**
-     * The strongest reference evidence the recorder can state is still not
-     * evidence about the value.  This is the shape the confirmed cross-JVM
-     * handoff leaves behind: the carrier is a confirmed runtime identity, it
-     * names an exact producer occurrence and output port, it carries a
-     * transported-value-frontier authority, and the consumer never writes the
-     * leaf itself.  All of that decides who produced the <em>reference</em>.
-     * The leaf still keeps the named demotion, because the producer's output
-     * port stands for the object, and the object is not the value.
-     */
-    @Test
-    public void aConfirmedReferenceCarrierStillDoesNotDecideAPlainLeaf() {
-        List<Map<String, Object>> regions = regions(leaf(PLAIN_VALUE,
-                WRAPPER));
-        Map<String, Object> confirmed = carrier(WRAPPER);
-        confirmed.put("state", "CONFIRMED_RUNTIME_IDENTITY");
-        confirmed.put("correlationAuthority",
-                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
-        confirmed.put("transportedValueFrontierAuthority",
-                "EXACT_RUNTIME_REFERENCE_CARRIER_OF_VM_COMPONENT_V1");
-        List<Map<String, Object>> edges = new ArrayList<>(
-                Collections.singletonList(confirmed));
-
-        RuntimeSelectedRegionFinalizer.markUnclosedReferenceLeavesConcrete(
-                regions, edges, Collections.<Map<String, Object>>emptyList(),
-                Collections.<String, String>emptyMap());
-
-        Map<String, Object> leaf = port(regions, LEAF_PORT);
-        assertEquals("CONCRETE_REFERENCE_BOUNDARY_REPLAY",
-                leaf.get("symbolicDemand"));
-        assertNull(String.valueOf(edges), projection(edges));
-        assertEquals(1, edges.size());
-    }
-
-    /**
      * A leaf the <em>consumer</em> installs itself was never reached through
      * the boundary, so it is not demoted and not projected - not even when it
      * is a wrapper whose reference a carrier did deliver.

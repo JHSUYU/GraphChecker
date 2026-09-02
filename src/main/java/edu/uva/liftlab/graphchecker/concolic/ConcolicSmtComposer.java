@@ -107,9 +107,6 @@ public final class ConcolicSmtComposer {
     static final String LOCAL_SYMBOLIC_ROOT = "LOCAL_SYMBOLIC_ROOT";
     static final String COMMUNICATION_LEAF = "COMMUNICATION_LEAF";
     static final String READ_FROM_ARM = "READ_FROM_ARM";
-    /** A configured component carried through one exact runtime reference. */
-    static final String EXACT_COMPONENT_CARRIER =
-            "EXACT_COMPONENT_CARRIER";
     /**
      * <p>README {@code SMT-1} admits a "known read-from arm" and nothing
      */
@@ -345,8 +342,6 @@ public final class ConcolicSmtComposer {
                 loops.manifest());
         manifest.add("recordedValueBindings",
                 emitter.recordedValueBindingLedger());
-        manifest.add("exactComponentCarrierBridges",
-                emitter.exactComponentCarrierBridgeLedger());
         manifest.add("recordedReadAliases", emitter.recordedReadAliasLedger());
         List<JsonObject> selectedBindings = bindingRows(
                 resolved.selectedEdges.values());
@@ -639,8 +634,6 @@ public final class ConcolicSmtComposer {
         emitter.mergeEdgeBindings(resolved.selectedEdges.values());
         emitter.mergeVmHandoffs(caseEvidenceRows, allCaseEvidenceRows,
                 loops, recorded);
-        emitter.mergeExactComponentCarrierBridges(
-                resolved.selectedEdges.values(), caseEvidenceRows);
         emitter.restrictConsumedReadsToRecordedWriters();
         emitter.finishRecordedReadExistence();
         emitter.finishFatalAbsenceMutationWitness();
@@ -1635,22 +1628,38 @@ public final class ConcolicSmtComposer {
             throw new IOException(
                     "Target reach query has no exact branch decision");
         }
+        boolean concreteTarget = fatal.has(TargetReachPathQueryBuilder
+                .TARGET_CONCRETE_OBSERVATION);
+        boolean replayTarget = fatal.has("seedReplayContract");
+        if (concreteTarget == replayTarget) {
+            throw new IOException("Target reach query must have exactly one "
+                    + "branch authority");
+        }
         JsonArray paths = array(fatal, "paths");
         if (paths.size() == 0) {
             throw new IOException(
                     "Closed target reach query contains no path");
         }
         for (JsonElement element : paths) {
-            if (!element.isJsonObject()
-                    || !element.getAsJsonObject().has("constraints")
-                    || !element.getAsJsonObject().get("constraints")
-                    .isJsonArray()
-                    || element.getAsJsonObject().getAsJsonArray(
-                    "constraints").size() == 0) {
+            if (!element.isJsonObject()) {
                 throw new IOException(
                         "Malformed target reach path query member");
             }
-            if (!element.getAsJsonObject().has(
+            JsonObject path = element.getAsJsonObject();
+            boolean pathConcrete = path.has(TargetReachPathQueryBuilder
+                    .TARGET_CONCRETE_OBSERVATION);
+            boolean pathWitness = path.has(TargetReachPathQueryBuilder
+                    .TARGET_BRANCH_WITNESS);
+            if (pathConcrete == pathWitness
+                    || pathConcrete != concreteTarget
+                    || !path.has("constraints")
+                    || !path.get("constraints").isJsonArray()
+                    || path.getAsJsonArray("constraints").size() == 0
+                    && !pathConcrete) {
+                throw new IOException(
+                        "Malformed target reach path query member");
+            }
+            if (!path.has(
                     PathObservation.TargetReachEvent.FIELD)) {
                 throw new IOException(
                         "Target reach path has no exact attestation "
@@ -1708,6 +1717,7 @@ public final class ConcolicSmtComposer {
 
         registerTargetDemands(result, targetBindings);
         seedTargetBindings(result, summaries, targetBindings);
+        seedSelectedWirePrefix(result, summaries, targetBindings);
 
         while (!result.pending.isEmpty()) {
             ProducerKey consumer = result.pending.removeFirst();
@@ -1759,6 +1769,37 @@ public final class ConcolicSmtComposer {
                     + " alone");
         }
         return result;
+    }
+
+    /** Retains the supplied exact wire prefix of the target's request flow. */
+    private static void seedSelectedWirePrefix(
+            ResolvedSummaryGraph graph, SummaryIndex summaries,
+            List<JsonObject> targetBindings) {
+        Map<String, Long> cutoffs = new LinkedHashMap<>();
+        for (JsonObject binding : targetBindings) {
+            if (!AutomaticRegionEdge.trustedWireEquality(binding)) continue;
+            String request = string(binding, "requestKey");
+            long cutoff = longInteger(binding, "receiverEventSeq", -1L);
+            cutoffs.merge(request, cutoff, Math::max);
+        }
+        for (JsonObject binding : summaries.ownedWireBindings()) {
+            Long cutoff = cutoffs.get(string(binding, "requestKey"));
+            if (cutoff == null || longInteger(binding,
+                    "receiverEventSeq", -1L) > cutoff) {
+                continue;
+            }
+            ProducerKey source = selectExactProducer(graph, summaries,
+                    bindingSourceRegion(binding),
+                    bindingSourceInstance(binding),
+                    bindingSourceOutput(binding), binding);
+            if (source != null) {
+                graph.addDirectBindingIfPresent(source,
+                        string(binding, "toRegion"),
+                        bindingTargetInstance(binding),
+                        bindingTargetInput(binding), binding, binding,
+                        "EQUALITY");
+            }
+        }
     }
 
     private static boolean hasComposerTraversalBinding(
@@ -2187,6 +2228,9 @@ public final class ConcolicSmtComposer {
                 .equals(kind)) {
             return "READ_FROM";
         }
+        if (AutomaticRegionEdge.trustedWireEquality(binding)) {
+            return "EQUALITY";
+        }
         if (AutomaticRegionEdge.tracedExchangeCandidate(binding)) {
             return "TOPOLOGY";
         }
@@ -2390,6 +2434,29 @@ public final class ConcolicSmtComposer {
                                                    String instance) {
             return bindingsByTarget.getOrDefault(region + "\n" + instance,
                     Collections.emptyList());
+        }
+
+        /** Exact wire outputs owned by the supplied producer summaries. */
+        private List<JsonObject> ownedWireBindings() {
+            List<JsonObject> result = new ArrayList<>();
+            for (List<RelationSummary> group : byRegion.values()) {
+                for (RelationSummary summary : group) {
+                    for (JsonObject binding : summary.edgeBindings()) {
+                        if (AutomaticRegionEdge.trustedWireEquality(binding)
+                                && summary.occurrenceId().equals(
+                                bindingSourceInstance(binding))
+                                && summary.outputClosure().outputPorts()
+                                .contains(bindingSourceOutput(binding))) {
+                            result.add(binding);
+                        }
+                    }
+                }
+            }
+            result.sort(Comparator
+                    .comparingLong((JsonObject edge) -> longInteger(edge,
+                            "receiverEventSeq", -1L))
+                    .thenComparing(edge -> string(edge, "edgeId")));
+            return result;
         }
 
         private static String closureKey(String region,
@@ -3215,9 +3282,6 @@ public final class ConcolicSmtComposer {
         private final Deque<Long> readFromContext = new ArrayDeque<>();
         /** One evidence row per recorded value binding, for the manifest. */
         private final JsonArray recordedValueBindings = new JsonArray();
-        /** Exact reference/component and local-materialization bridges. */
-        private final JsonArray exactComponentCarrierBridges =
-                new JsonArray();
         /** Coverage findings of the recorded value lowering. */
         private final List<JsonObject> recordedCoverage = new ArrayList<>();
         /**
@@ -3890,6 +3954,15 @@ public final class ConcolicSmtComposer {
             boolean exactDesired = desired != null
                     && desired.isJsonPrimitive()
                     && desired.getAsJsonPrimitive().isBoolean();
+            JsonElement encodedConcrete = path.get(
+                    TargetReachPathQueryBuilder
+                            .TARGET_CONCRETE_OBSERVATION);
+            if (encodedConcrete != null) {
+                recordConcreteTargetReach(pathOrdinal, path, caseGuard,
+                        fatal, event, required, exactRequired, desired,
+                        exactDesired, encodedConcrete);
+                return;
+            }
             final BranchReplayContract replay;
             try {
                 replay = BranchReplayContract.fromJson(
@@ -3960,16 +4033,92 @@ public final class ConcolicSmtComposer {
                     && exactRequired
                     && event.matches(string(fatal, "targetSiteId"),
                     occurrence, required.getAsBoolean());
+            boolean matchingPolarity = exactRequired
+                    && (sourceAttestation
+                    && required.getAsBoolean()
+                    == replay.requiredTakenOutcome()
+                    || requiredAttestation);
             if (!exactRequired || !exactDesired
                     || desired.getAsBoolean() != required.getAsBoolean()
-                    || required.getAsBoolean()
-                    != replay.requiredTakenOutcome()
+                    || !matchingPolarity
                     || !string(fatal, "targetSiteId").equals(
                     source.siteId())
                     || occurrence != source.occurrence()
                     || !matchingEvent) {
                 unsupported.add("SelectedTargetReachEventMismatch:path:"
                         + pathOrdinal + ":" + event.siteId() + "#"
+                        + event.occurrence() + "=" + event.outcome());
+                return;
+            }
+            JsonObject row = event.toJson();
+            row.addProperty("attestationRole", attestationRole);
+            row.addProperty("sourceObservedOutcome", event.outcome());
+            row.addProperty("desiredTakenOutcome",
+                    required.getAsBoolean());
+            row.addProperty("pathOrdinal", pathOrdinal);
+            row.addProperty("caseGuard", caseGuard);
+            targetReachEvents.add(row);
+            targetReachCaseTerms.add(caseGuard);
+        }
+
+        /** Records a required branch that the VM attested had no predicate. */
+        private void recordConcreteTargetReach(
+                int pathOrdinal, JsonObject path, String caseGuard,
+                JsonObject fatal, PathObservation.TargetReachEvent event,
+                JsonElement required, boolean exactRequired,
+                JsonElement desired, boolean exactDesired,
+                JsonElement encodedPathObservation) {
+            JsonElement encodedSeedObservation = fatal.get(
+                    TargetReachPathQueryBuilder
+                            .TARGET_CONCRETE_OBSERVATION);
+            if (!encodedPathObservation.isJsonObject()
+                    || encodedSeedObservation == null
+                    || !encodedSeedObservation.isJsonObject()) {
+                unsupported.add("SelectedConcreteTargetObservationMissing:"
+                        + "path:" + pathOrdinal);
+                return;
+            }
+            final ExactConcreteBranchObservation pathObservation;
+            final ExactConcreteBranchObservation seedObservation;
+            try {
+                pathObservation = ExactConcreteBranchObservation.fromJson(
+                        encodedPathObservation.getAsJsonObject());
+                seedObservation = ExactConcreteBranchObservation.fromJson(
+                        encodedSeedObservation.getAsJsonObject());
+            } catch (IllegalArgumentException malformed) {
+                unsupported.add("SelectedConcreteTargetObservationMalformed:"
+                        + "path:" + pathOrdinal + ":" + firstNonBlank(
+                        malformed.getMessage(), "UNKNOWN"));
+                return;
+            }
+            int occurrence = JsonFields.exactInteger(fatal,
+                    "targetOccurrence", -1);
+            String targetSite = string(fatal, "targetSiteId");
+            String attestationRole = string(path,
+                    TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE);
+            boolean sameAuthority = pathObservation.siteId().equals(
+                    seedObservation.siteId())
+                    && pathObservation.occurrence()
+                    == seedObservation.occurrence()
+                    && pathObservation.sourceTakenOutcome()
+                    == seedObservation.sourceTakenOutcome();
+            boolean exactOutcome = exactRequired && exactDesired
+                    && desired.getAsBoolean() == required.getAsBoolean()
+                    && required.getAsBoolean()
+                    == pathObservation.sourceTakenOutcome();
+            boolean matchingEvent = event.matches(pathObservation.siteId(),
+                    pathObservation.occurrence(),
+                    pathObservation.sourceTakenOutcome());
+            if (!sameAuthority || !exactOutcome || !matchingEvent
+                    || !targetSite.equals(pathObservation.siteId())
+                    || occurrence != pathObservation.occurrence()
+                    || !TargetReachPathQueryBuilder
+                    .REQUIRED_TARGET_REACH_EVENT.equals(attestationRole)
+                    || !TargetReachPathQueryBuilder
+                    .REQUIRED_CONCRETE_BRANCH_AUTHORITY.equals(string(path,
+                    "fatalBranchConditionAuthority"))) {
+                unsupported.add("SelectedConcreteTargetReachEventMismatch:"
+                        + "path:" + pathOrdinal + ":" + event.siteId() + "#"
                         + event.occurrence() + "=" + event.outcome());
                 return;
             }
@@ -4850,10 +4999,6 @@ public final class ConcolicSmtComposer {
         /** The recorded value bindings, as one manifest member. */
         private JsonArray recordedValueBindingLedger() {
             return recordedValueBindings.deepCopy();
-        }
-
-        private JsonArray exactComponentCarrierBridgeLedger() {
-            return exactComponentCarrierBridges.deepCopy();
         }
 
         private JsonArray recordedReadAliasLedger() {
@@ -7617,553 +7762,6 @@ public final class ConcolicSmtComposer {
             }
         }
 
-        /**
-         * Makes a transported reference's configured value component
-         * explicit in the formula.
-         *
-         * <p>This is deliberately not another read-from resolver.  The
-         * topology edge remains candidate/excluded unless the recorded VM
-         * read chose a writer.  A bridge is admitted only when the edge has
-         * the runtime's exact reference-carrier authority, one producer case
-         * wrote the observed reference identity, that case received one
-         * configured VM component, and one consumer case materialized and
-         * exactly read the same component.  A later activation may reuse the
-         * component only through an exact same-object/same-version local
-         * materialization.  These conditions turn an otherwise implicit
-         * shared raw term into an auditable causal equality without guessing
-         * a read-from arm.</p>
-         */
-        private void mergeExactComponentCarrierBridges(
-                Collection<ResolvedEdge> edges,
-                List<JsonObject> caseRows) {
-            Set<String> emitted = new LinkedHashSet<>();
-            for (ResolvedEdge resolved : edges == null
-                    ? Collections.<ResolvedEdge>emptyList() : edges) {
-                JsonObject edge = resolved.binding;
-                String provenance = string(edge,
-                        RecordedReadFrom.EDGE_PROVENANCE);
-                if (!AutomaticRegionEdge.TRANSPORTED_VALUE_FRONTIER_AUTHORITY
-                        .equals(string(edge, AutomaticRegionEdge
-                                .TRANSPORTED_VALUE_FRONTIER_FIELD))
-                        || !AutomaticRegionEdge
-                        .trustedRuntimeReadFromBinding(edge)
-                        || !(RecordedReadFrom.PROVENANCE_CANDIDATE.equals(
-                        provenance)
-                        || RecordedReadFrom.PROVENANCE_EXCLUDED.equals(
-                        provenance))) {
-                    continue;
-                }
-                String edgeId = string(edge, "edgeId");
-                List<ExactCarrierCase> producerCases =
-                        exactCarrierProducerCases(edge, caseRows);
-                if (producerCases.size() != 1) {
-                    refuse("ExactComponentCarrierProducerGap:" + edgeId,
-                            "the exact transported-reference edge matched "
-                                    + producerCases.size()
-                                    + " producer cases with one observed"
-                                    + " reference write and configured VM"
-                                    + " component");
-                    continue;
-                }
-                ExactCarrierCase producer = producerCases.get(0);
-                for (JsonObject componentEvent : producer.components) {
-                    String componentCanonical =
-                            containerStateSemanticCanonical(componentEvent.get(
-                                    VmHandoffEvidence.EXPRESSION));
-                    List<MaterializedComponent> consumers =
-                            materializedComponents(caseRows,
-                                    string(edge, "toOccurrenceId"),
-                                    componentCanonical, "", 0L, "");
-                    if (consumers.size() != 1) {
-                        refuse("ExactComponentMaterializationGap:" + edgeId
-                                        + ":" + string(componentEvent,
-                                        "portId"),
-                                "the transported configured component matched "
-                                        + consumers.size()
-                                        + " exact consumer materializations");
-                        continue;
-                    }
-                    MaterializedComponent consumer = consumers.get(0);
-                    String bridgeKey = edgeId + "\n" + producer.occurrence
-                            + "\n" + string(componentEvent, "portId") + "\n"
-                            + consumer.occurrence + "\n" + consumer.outputPort;
-                    if (!emitted.add(bridgeKey)) continue;
-                    emitExactComponentCarrierBridge(edge, producer,
-                            componentEvent, consumer, bridgeKey);
-                    mergeExactMaterializationAliases(edges, caseRows,
-                            consumer, bridgeKey, emitted);
-                }
-            }
-        }
-
-        /** Exact producer case selected by a reference fingerprint read. */
-        private List<ExactCarrierCase> exactCarrierProducerCases(
-                JsonObject edge, List<JsonObject> caseRows) {
-            List<ExactCarrierCase> matches = new ArrayList<>();
-            String plannedProducer = plannedOccurrence(string(edge,
-                    "fromOccurrenceId"));
-            String outputPort = string(edge, "fromOutputPort");
-            String targetRegion = string(edge, "toRegion");
-            long receiver = longInteger(edge, "receiverObjectId", 0L);
-            for (JsonObject row : caseRows == null
-                    ? Collections.<JsonObject>emptyList() : caseRows) {
-                String occurrence = string(row, "toOccurrenceId");
-                JsonElement output = object(row, "outputExpressions")
-                        .get(outputPort);
-                if (!plannedProducer.equals(plannedOccurrence(occurrence))
-                        || output == null || !output.isJsonObject()) {
-                    continue;
-                }
-                String outputCanonical =
-                        containerStateSemanticCanonical(output);
-                for (JsonElement element : array(object(row,
-                        SharedStateEvidence.RECORDED_FIELD), "versions")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject record = element.getAsJsonObject();
-                    if (!completeVersionRecord(record)
-                            || receiver != longInteger(object(record,
-                            "carrier"), "receiverObjectId", 0L)
-                            || !recordedFieldMatches(record,
-                            string(edge, RecordedReadFrom.EDGE_FIELD))) {
-                        continue;
-                    }
-                    JsonObject envelope = object(record, "envelope");
-                    for (JsonElement versionElement : array(envelope,
-                            "versions")) {
-                        if (!versionElement.isJsonObject()) continue;
-                        JsonObject version = versionElement.getAsJsonObject();
-                        if ("INITIAL".equals(string(version, "versionKind"))
-                                || !"IDENTITY".equals(string(version,
-                                "fingerprintKind"))
-                                || longInteger(version, "fingerprint", 0L)
-                                <= 0L
-                                || !outputCanonical.equals(
-                                containerStateSemanticCanonical(
-                                        version.get("expression")))) {
-                            continue;
-                        }
-                        List<Long> reads = observedReferenceReads(envelope,
-                                version, targetRegion);
-                        if (reads.isEmpty()) continue;
-                        List<JsonObject> components =
-                                configuredComponentEvents(row);
-                        if (components.isEmpty()) continue;
-                        matches.add(new ExactCarrierCase(row, outputPort,
-                                record, version, reads, components));
-                    }
-                }
-            }
-            return matches;
-        }
-
-        /** Reads that observed exactly the identity published by a version. */
-        private static List<Long> observedReferenceReads(JsonObject envelope,
-                                                         JsonObject version,
-                                                         String targetRegion) {
-            List<Long> result = new ArrayList<>();
-            String kind = string(version, "fingerprintKind");
-            long fingerprint = longInteger(version, "fingerprint", 0L);
-            for (JsonElement element : array(envelope, "reads")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject read = element.getAsJsonObject();
-                if (!targetRegion.equals(string(read, "regionId"))
-                        || !kind.equals(string(read,
-                        "observedFingerprintKind"))
-                        || fingerprint != longInteger(read,
-                        "observedFingerprint", Long.MIN_VALUE)) {
-                    continue;
-                }
-                long event = longInteger(read, "readEventId", 0L);
-                if (event > 0L) result.add(event);
-            }
-            return result;
-        }
-
-        /** Configured symbolic components attached in one producer case. */
-        private List<JsonObject> configuredComponentEvents(JsonObject row) {
-            List<JsonObject> result = new ArrayList<>();
-            for (JsonObject event : VmHandoffEvidence.eventsOf(row)) {
-                JsonElement expression = event.get(
-                        VmHandoffEvidence.EXPRESSION);
-                if (expression == null || !expression.isJsonObject()) {
-                    continue;
-                }
-                String raw = rawSymbol(expression.getAsJsonObject());
-                if (raw.isEmpty()
-                        || !symbolicSourceIdentities.containsKey(raw)
-                        && !namedSourceIdentities.containsKey(raw)) {
-                    continue;
-                }
-                String port = string(event, "portId");
-                if (port.isEmpty() || !ports.contains(port)) continue;
-                result.add(event);
-            }
-            return result;
-        }
-
-        private static String rawSymbol(JsonObject expression) {
-            if (expression == null
-                    || !"SymbolExpression".equals(string(expression,
-                    "_type"))) {
-                return "";
-            }
-            return string(expression, "_exp");
-        }
-
-        /** One exact local write/read that supplies a case output. */
-        private List<MaterializedComponent> materializedComponents(
-                List<JsonObject> caseRows, String plannedConsumer,
-                String expressionCanonical, String sessionLocation,
-                long fieldVersion, String recordedField) {
-            List<MaterializedComponent> matches = new ArrayList<>();
-            String planned = plannedOccurrence(plannedConsumer);
-            for (JsonObject row : caseRows == null
-                    ? Collections.<JsonObject>emptyList() : caseRows) {
-                String occurrence = string(row, "toOccurrenceId");
-                if (!planned.equals(plannedOccurrence(occurrence))) continue;
-                List<String> outputs = new ArrayList<>();
-                for (Map.Entry<String, JsonElement> output
-                        : object(row, "outputExpressions").entrySet()) {
-                    if (expressionCanonical.equals(
-                            containerStateSemanticCanonical(
-                                    output.getValue()))) {
-                        outputs.add(output.getKey());
-                    }
-                }
-                if (outputs.size() != 1) continue;
-                for (JsonElement element : array(object(row,
-                        SharedStateEvidence.RECORDED_FIELD), "versions")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject record = element.getAsJsonObject();
-                    String location = SharedStateEvidence
-                            .sessionLocationKey(record);
-                    if (!completeVersionRecord(record)
-                            || !sessionLocation.isEmpty()
-                            && !sessionLocation.equals(location)
-                            || !recordedField.isEmpty()
-                            && !recordedFieldMatches(record, recordedField)) {
-                        continue;
-                    }
-                    JsonObject envelope = object(record, "envelope");
-                    for (JsonElement versionElement : array(envelope,
-                            "versions")) {
-                        if (!versionElement.isJsonObject()) continue;
-                        JsonObject version = versionElement.getAsJsonObject();
-                        long versionId = longInteger(version,
-                                "fieldVersionId", 0L);
-                        if ("INITIAL".equals(string(version, "versionKind"))
-                                || fieldVersion > 0L
-                                && versionId != fieldVersion
-                                || !expressionCanonical.equals(
-                                containerStateSemanticCanonical(
-                                        version.get("expression")))) {
-                            continue;
-                        }
-                        List<Long> reads = exactReadsOfVersion(envelope,
-                                versionId, occurrence);
-                        if (!reads.isEmpty()) {
-                            matches.add(new MaterializedComponent(row,
-                                    outputs.get(0), record, version, reads));
-                        }
-                    }
-                }
-            }
-            return matches;
-        }
-
-        private static List<Long> exactReadsOfVersion(JsonObject envelope,
-                                                      long version,
-                                                      String occurrence) {
-            List<Long> result = new ArrayList<>();
-            for (JsonElement element : array(envelope, "reads")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject read = element.getAsJsonObject();
-                if (!SharedStateEvidence.RESOLUTION_EXACT.equals(
-                        string(read, "resolution"))
-                        || version != longInteger(read,
-                        "chosenFieldVersionId", 0L)
-                        || !occurrence.equals(string(read,
-                        "readerOccurrenceId"))) {
-                    continue;
-                }
-                long event = longInteger(read, "readEventId", 0L);
-                if (event > 0L) result.add(event);
-            }
-            return result;
-        }
-
-        private static boolean completeVersionRecord(JsonObject record) {
-            if (!SharedStateEvidence.isVersionsRecord(record)) return false;
-            JsonObject envelope = object(record, "envelope");
-            return SharedStateEvidence.writerSetComplete(envelope)
-                    && integer(envelope, "versionsDropped", -1) == 0
-                    && !bool(envelope, "serializationTruncated", false)
-                    && integer(envelope, "readsDropped", -1) == 0
-                    && !SharedStateEvidence.readLogTruncated(envelope);
-        }
-
-        private static boolean recordedFieldMatches(JsonObject record,
-                                                    String field) {
-            JsonObject carrier = object(record, "carrier");
-            String named = string(carrier, "declaringClass") + "#"
-                    + string(carrier, "fieldName");
-            return !field.isEmpty() && field.equals(named);
-        }
-
-        private void emitExactComponentCarrierBridge(
-                JsonObject edge, ExactCarrierCase producer,
-                JsonObject componentEvent, MaterializedComponent consumer,
-                String bridgeKey) {
-            String previousGuard = currentGuard;
-            currentGuard = consumer.selector;
-            try {
-                String producerCaseAssertion = assertNamed(
-                        "exact_component_producer_case_"
-                                + sha256(bridgeKey).substring(0, 16),
-                        producer.selector);
-                PortOccurrence producerReference = occurrence(
-                        producer.occurrence, producer.outputPort);
-                PortOccurrence consumerReference = occurrence(
-                        consumer.occurrence, string(edge, "toInputPort"));
-                String referenceAssertion = assertPortBindingEqualityNamed(
-                        producerReference, consumerReference,
-                        "exact_component_reference_carrier_"
-                                + sha256(bridgeKey).substring(0, 16));
-                mentionPort(consumerReference);
-                if (!referenceAssertion.isEmpty()) {
-                    markSuppliedInput(consumerReference);
-                    recordInputAuthority(consumerReference,
-                            EXACT_COMPONENT_CARRIER, referenceAssertion);
-                }
-
-                PortOccurrence producerComponent = occurrence(
-                        producer.occurrence,
-                        string(componentEvent, "portId"));
-                PortOccurrence consumerComponent = occurrence(
-                        consumer.occurrence, consumer.outputPort);
-                String componentAssertion = assertPortBindingEqualityNamed(
-                        producerComponent, consumerComponent,
-                        "exact_component_value_carrier_"
-                                + sha256(bridgeKey).substring(0, 16));
-                mentionPort(consumerComponent);
-                if (!componentAssertion.isEmpty()) {
-                    markSuppliedInput(consumerComponent);
-                    recordInputAuthority(consumerComponent,
-                            EXACT_COMPONENT_CARRIER, componentAssertion);
-                }
-
-                JsonObject evidence = componentCarrierEvidence(edge,
-                        producer, componentEvent, consumer);
-                evidence.addProperty("producerCaseAssertion",
-                        producerCaseAssertion);
-                evidence.addProperty("referenceAssertion",
-                        referenceAssertion);
-                evidence.addProperty("valueAssertion", componentAssertion);
-                exactComponentCarrierBridges.add(evidence.deepCopy());
-                recordedValueBindings.add(evidence);
-            } finally {
-                currentGuard = previousGuard;
-            }
-        }
-
-        private JsonObject componentCarrierEvidence(
-                JsonObject edge, ExactCarrierCase producer,
-                JsonObject componentEvent, MaterializedComponent consumer) {
-            JsonObject evidence = new JsonObject();
-            evidence.addProperty("kind",
-                    "EXACT_COMPONENT_CARRIER_BINDING");
-            evidence.addProperty("authority", EXACT_COMPONENT_CARRIER);
-            evidence.addProperty("edgeId", string(edge, "edgeId"));
-            evidence.addProperty("fromOccurrenceId", producer.occurrence);
-            evidence.addProperty("toOccurrenceId", consumer.occurrence);
-            evidence.addProperty("referenceOutputPort",
-                    producer.outputPort);
-            evidence.addProperty("referenceInputPort",
-                    string(edge, "toInputPort"));
-            evidence.addProperty("componentInputPort",
-                    string(componentEvent, "portId"));
-            evidence.addProperty("componentOutputPort",
-                    consumer.outputPort);
-            evidence.addProperty("referenceLocation",
-                    producer.sessionLocation);
-            evidence.addProperty("referenceFieldVersionId",
-                    producer.fieldVersionId);
-            evidence.add("referenceReadEventIds",
-                    GSON.toJsonTree(producer.readEventIds));
-            evidence.addProperty("materializationLocation",
-                    consumer.sessionLocation);
-            evidence.addProperty("materializationFieldVersionId",
-                    consumer.fieldVersionId);
-            evidence.add("materializationReadEventIds",
-                    GSON.toJsonTree(consumer.readEventIds));
-            String raw = rawSymbol(object(componentEvent,
-                    VmHandoffEvidence.EXPRESSION));
-            evidence.addProperty("configuredSourceSymbol", raw);
-            evidence.addProperty("configuredSourceIdentity",
-                    firstNonBlank(symbolicSourceIdentities.get(raw),
-                            namedSourceIdentities.get(raw)));
-            evidence.addProperty(RecordedSessionModel.CASE_SELECTOR,
-                    consumer.selector);
-            return evidence;
-        }
-
-        /** Propagates one proven component through later exact aliases. */
-        private void mergeExactMaterializationAliases(
-                Collection<ResolvedEdge> edges, List<JsonObject> caseRows,
-                MaterializedComponent source, String parentKey,
-                Set<String> emitted) {
-            for (ResolvedEdge resolved : edges == null
-                    ? Collections.<ResolvedEdge>emptyList() : edges) {
-                JsonObject edge = resolved.binding;
-                String provenance = string(edge,
-                        RecordedReadFrom.EDGE_PROVENANCE);
-                if (!AutomaticRegionEdge
-                        .trustedRuntimeReadFromBinding(edge)
-                        || !(RecordedReadFrom.PROVENANCE_CANDIDATE.equals(
-                        provenance)
-                        || RecordedReadFrom.PROVENANCE_EXCLUDED.equals(
-                        provenance))
-                        || !plannedOccurrence(source.occurrence).equals(
-                        plannedOccurrence(string(edge,
-                                "fromOccurrenceId")))
-                        || plannedOccurrence(source.occurrence).equals(
-                        plannedOccurrence(string(edge,
-                                "toOccurrenceId")))
-                        || source.receiverObjectId != longInteger(edge,
-                        "receiverObjectId", 0L)
-                        || !recordedFieldMatches(source.record,
-                        string(edge, RecordedReadFrom.EDGE_FIELD))) {
-                    continue;
-                }
-                List<MaterializedComponent> aliases =
-                        materializedComponents(caseRows,
-                                string(edge, "toOccurrenceId"),
-                                source.expressionCanonical,
-                                source.sessionLocation,
-                                source.fieldVersionId,
-                                string(edge, RecordedReadFrom.EDGE_FIELD));
-                if (aliases.size() != 1) continue;
-                MaterializedComponent alias = aliases.get(0);
-                String aliasKey = parentKey + "\n" + string(edge, "edgeId")
-                        + "\n" + alias.occurrence + "\n" + alias.outputPort;
-                if (!emitted.add(aliasKey)) continue;
-                emitExactMaterializationAlias(edge, source, alias, aliasKey);
-            }
-        }
-
-        private void emitExactMaterializationAlias(
-                JsonObject edge, MaterializedComponent source,
-                MaterializedComponent alias, String aliasKey) {
-            String previousGuard = currentGuard;
-            currentGuard = alias.selector;
-            try {
-                String producerCaseAssertion = assertNamed(
-                        "exact_materialization_producer_case_"
-                                + sha256(aliasKey).substring(0, 16),
-                        source.selector);
-                PortOccurrence from = occurrence(source.occurrence,
-                        source.outputPort);
-                PortOccurrence to = occurrence(alias.occurrence,
-                        alias.outputPort);
-                String assertion = assertPortBindingEqualityNamed(from, to,
-                        "exact_materialization_alias_"
-                                + sha256(aliasKey).substring(0, 16));
-                mentionPort(to);
-                if (!assertion.isEmpty()) {
-                    markSuppliedInput(to);
-                    recordInputAuthority(to, EXACT_COMPONENT_CARRIER,
-                            assertion);
-                }
-                JsonObject evidence = new JsonObject();
-                evidence.addProperty("kind",
-                        "EXACT_LOCAL_MATERIALIZATION_ALIAS");
-                evidence.addProperty("authority", EXACT_COMPONENT_CARRIER);
-                evidence.addProperty("edgeId", string(edge, "edgeId"));
-                evidence.addProperty("fromOccurrenceId", source.occurrence);
-                evidence.addProperty("toOccurrenceId", alias.occurrence);
-                evidence.addProperty("fromComponentPort", source.outputPort);
-                evidence.addProperty("toComponentPort", alias.outputPort);
-                evidence.addProperty("sessionLocation",
-                        alias.sessionLocation);
-                evidence.addProperty("receiverObjectId",
-                        alias.receiverObjectId);
-                evidence.addProperty("fieldVersionId",
-                        alias.fieldVersionId);
-                evidence.add("readEventIds",
-                        GSON.toJsonTree(alias.readEventIds));
-                evidence.addProperty("producerCaseAssertion",
-                        producerCaseAssertion);
-                evidence.addProperty("valueAssertion", assertion);
-                evidence.addProperty(RecordedSessionModel.CASE_SELECTOR,
-                        alias.selector);
-                exactComponentCarrierBridges.add(evidence.deepCopy());
-                recordedValueBindings.add(evidence);
-            } finally {
-                currentGuard = previousGuard;
-            }
-        }
-
-        private static final class ExactCarrierCase {
-            private final String occurrence;
-            private final String selector;
-            private final String outputPort;
-            private final String sessionLocation;
-            private final long fieldVersionId;
-            private final List<Long> readEventIds;
-            private final List<JsonObject> components;
-
-            private ExactCarrierCase(JsonObject row, String outputPort,
-                                     JsonObject record, JsonObject version,
-                                     List<Long> readEventIds,
-                                     List<JsonObject> components) {
-                this.occurrence = string(row, "toOccurrenceId");
-                this.selector = string(row,
-                        RecordedSessionModel.CASE_SELECTOR);
-                this.outputPort = outputPort;
-                this.sessionLocation = SharedStateEvidence
-                        .sessionLocationKey(record);
-                this.fieldVersionId = longInteger(version,
-                        "fieldVersionId", 0L);
-                this.readEventIds = Collections.unmodifiableList(
-                        new ArrayList<>(readEventIds));
-                this.components = Collections.unmodifiableList(
-                        new ArrayList<>(components));
-            }
-        }
-
-        private final class MaterializedComponent {
-            private final JsonObject record;
-            private final String occurrence;
-            private final String selector;
-            private final String outputPort;
-            private final String sessionLocation;
-            private final long receiverObjectId;
-            private final long fieldVersionId;
-            private final String expressionCanonical;
-            private final List<Long> readEventIds;
-
-            private MaterializedComponent(JsonObject row, String outputPort,
-                                          JsonObject record,
-                                          JsonObject version,
-                                          List<Long> readEventIds) {
-                this.record = record;
-                this.occurrence = string(row, "toOccurrenceId");
-                this.selector = string(row,
-                        RecordedSessionModel.CASE_SELECTOR);
-                this.outputPort = outputPort;
-                this.sessionLocation = SharedStateEvidence
-                        .sessionLocationKey(record);
-                this.receiverObjectId = longInteger(object(record,
-                        "carrier"), "receiverObjectId", 0L);
-                this.fieldVersionId = longInteger(version,
-                        "fieldVersionId", 0L);
-                this.expressionCanonical =
-                        containerStateSemanticCanonical(
-                                version.get("expression"));
-                this.readEventIds = Collections.unmodifiableList(
-                        new ArrayList<>(readEventIds));
-            }
-        }
 
         /**
          * Indexes the imported cases by the execution that produced them.

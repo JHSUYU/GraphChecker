@@ -787,6 +787,39 @@ public class ConcolicSummaryImporterTest {
     }
 
     @Test
+    public void concreteTargetDecisionRequiresAndAdmitsItsExactEvent()
+            throws Exception {
+        JsonObject raw = pathResult(true, false);
+        JsonObject mapping = raw.getAsJsonArray("branchMappings")
+                .get(0).getAsJsonObject();
+        mapping.remove("witness");
+        mapping.addProperty("rawPathConditionSize", 0);
+        mapping.add("concreteObservation",
+                ExactConcreteBranchObservation.attested(seedSite(),
+                        seedMethod(), 3, 1, false).toJson());
+        installAuxiliaryPathCondition(raw, auxiliaryPathCondition(0));
+
+        PathImport admitted = importPath("concrete-target-event",
+                pathTask(false), raw);
+        assertEquals(1, admitted.result.validSummaryCount);
+        JsonObject summary = ArtifactIO.readJsonl(admitted.output).get(0);
+        assertTrue(summary.getAsJsonArray("branchMappings").get(0)
+                .getAsJsonObject().has("concreteObservation"));
+        assertFalse(summary.getAsJsonObject(
+                PathObservation.TargetReachEvent.FIELD)
+                .get("outcome").getAsBoolean());
+
+        raw.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("outcome", true);
+        PathImport refused = importPath("concrete-target-event-mismatch",
+                pathTask(false), raw);
+        assertEquals(0, refused.result.validSummaryCount);
+        assertEquals("TARGET_REACH_EVENT_MISMATCH",
+                ArtifactIO.readJsonl(refused.diagnostics).get(0)
+                        .get("code").getAsString());
+    }
+
+    @Test
     public void selectedTargetOutcomeIsNotPartOfTheSeedPrefix()
             throws Exception {
         JsonObject task = pathTask(false);
@@ -1633,64 +1666,6 @@ public class ConcolicSummaryImporterTest {
     }
 
     /**
-     * HDFS-11741 campaign-takeover-24: the balancer Dispatcher exported all
-     * three declared SASL handshake leaves and the VM answered
-     * {@code NOT_SYMBOLIC} for {@code blockPoolId} and {@code nonce}.  The
-     * recorder admits that case on purpose, and
-     * {@code hasCapturedDemandedOutput} admits it too, but
-     * {@code outputExpressions} reported it as
-     * {@code OUTPUT_CAPTURE_COUNT:<port>:0} -- a claim that the occurrence
-     * never reached the site.  The relation was refused, the path planner
-     * dropped it, and the Composer was never handed the one producer the
-     * target's keyId comes from.  The refusal stands; it now says what it
-     * found.
-     */
-    @Test
-    public void aConcreteHandoffLeafIsPresentedNotUncaptured()
-            throws Exception {
-        JsonObject concrete = new JsonObject();
-        concrete.addProperty("captureBindingId", "CAPTURE.leaf");
-        concrete.addProperty("outputSiteId", LEAF_SITE);
-        concrete.addProperty("outputOccurrence", 1);
-        concrete.addProperty("outputVersionOrdinal", 1);
-        concrete.addProperty("concreteLeaf", true);
-        concrete.addProperty("primitiveValue", "BP-1-127.0.0.1-1");
-
-        assertTrue("the VM answered this leaf concrete",
-                ConcolicSummaryImporter.concreteHandoffLeaf(
-                        leafSpec(OutputCaptureSpec.HANDOFF_BOUND_LEAF),
-                        concrete));
-
-        // Scoped to the handoff leaf: a heap write with no expression is
-        // still an unobserved boundary and still counts as uncaptured.
-        assertFalse("only a handoff leaf is presented without an expression",
-                ConcolicSummaryImporter.concreteHandoffLeaf(
-                        leafSpec(OutputCaptureSpec.FIELD_WRITE_STATE),
-                        concrete));
-
-        // A guarded capture failure recorded neither an expression nor the
-        // VM's concrete answer, and stays uncaptured.
-        JsonObject silent = new JsonObject();
-        silent.addProperty("captureBindingId", "CAPTURE.leaf");
-        silent.addProperty("outputSiteId", LEAF_SITE);
-        silent.addProperty("outputOccurrence", 1);
-        silent.addProperty("outputVersionOrdinal", 1);
-        assertFalse("a guarded capture failure is not a presented leaf",
-                ConcolicSummaryImporter.concreteHandoffLeaf(
-                        leafSpec(OutputCaptureSpec.HANDOFF_BOUND_LEAF),
-                        silent));
-
-        // A row that names no activation-local occurrence carries no
-        // exact boundary and is not presented evidence either.
-        JsonObject unscoped = concrete.deepCopy();
-        unscoped.addProperty("outputOccurrence", 0);
-        assertFalse("a leaf without its occurrence is not an exact boundary",
-                ConcolicSummaryImporter.concreteHandoffLeaf(
-                        leafSpec(OutputCaptureSpec.HANDOFF_BOUND_LEAF),
-                        unscoped));
-    }
-
-    /**
      * Once-only-root rule, second owner.  The recorder already refuses to
      * call an occurrence incomplete for a heap write whose recorded version
      * is an instance-level fact
@@ -1739,40 +1714,6 @@ public class ConcolicSummaryImporterTest {
         assertIncomplete("mixed-writers",
                 heapWriteTask(true, true), heapWriteResult(),
                 "OUTPUT_CAPTURE_COUNT:" + HEAP_WRITE_PORT + ":0");
-    }
-
-    /**
-     * Fail-closed at the contract: the flag is only ever stamped on an exact
-     * heap write, so a closure that states it on any other capture kind is
-     * refused at decode and never reaches the importer's relaxation at all.
-     */
-    @Test
-    public void theTagIsRefusedOnAnythingButAnExactHeapWrite()
-            throws Exception {
-        java.lang.reflect.Method decode =
-                OutputCaptureSpec.class.getDeclaredMethod(
-                        "decodeValidated", JsonObject.class);
-        decode.setAccessible(true);
-        JsonObject encoded = new JsonObject();
-        encoded.addProperty("captureBindingId", "CAPTURE.leaf");
-        encoded.addProperty("outputPort", "XCH.test.req.blockPoolId");
-        encoded.addProperty("captureKind",
-                OutputCaptureSpec.HANDOFF_BOUND_LEAF);
-        encoded.addProperty("outputCell", "XCH.test.req.blockPoolId");
-        encoded.addProperty("javaType", "java.lang.String");
-        encoded.addProperty("occurrenceScope", "REGION_ACTIVATION");
-        encoded.addProperty("outputSiteId", LEAF_SITE);
-        encoded.addProperty("outputOccurrence", 1);
-        encoded.addProperty(OutputCaptureSpec.INSTANCE_SCOPED_PRODUCER, true);
-        try {
-            decode.invoke(null, encoded);
-            fail("a handoff leaf may not claim an instance-scoped producer");
-        } catch (java.lang.reflect.InvocationTargetException refused) {
-            assertTrue(refused.getCause()
-                    instanceof IllegalArgumentException);
-            assertTrue(refused.getCause().getMessage().contains(
-                    "instance-scoped producer requires an exact heap-write"));
-        }
     }
 
     private static final String HEAP_WRITE_PORT = "REGION.SEED.out.write";
@@ -1871,38 +1812,6 @@ public class ConcolicSummaryImporterTest {
                         "AUXILIARY_PATH_CONDITION_MALFORMED:CARDINALITY"));
     }
 
-    /**
-     * A run whose VM predates the marker serializer published a short array
-     * with no way to tell a byte-capped window from a dropped one.  It is
-     * refused under its own name -- no tolerance -- so a reader sees that the
-     * run needs replacing rather than the schema.
-     */
-    @Test
-    public void aLegacyEnvelopeWithoutEmittedCountIsRefusedByName()
-            throws Exception {
-        JsonObject auxiliary = auxiliaryPathCondition(8);
-        auxiliary.getAsJsonArray("pathConditionIndices").add(1);
-        auxiliary.getAsJsonArray("pathConditionIndices").add(2);
-        auxiliary.getAsJsonArray("conditions").add(branchPredicate(true));
-        auxiliary.addProperty("conditionCount", 2);
-        auxiliary.addProperty("emittedConditionCount", 1);
-        auxiliary.remove("emittedConditionCount");
-
-        JsonObject raw = pathResult(true, true);
-        installLegacyAuxiliaryPathCondition(raw, auxiliary);
-        PathImport imported = importPath("legacy-auxiliary-window",
-                pathTask(false), raw);
-
-        JsonObject summary = ArtifactIO.readJsonl(imported.output).get(0);
-        assertFalse("a legacy envelope is not admitted",
-                summary.get("relationallyComplete").getAsBoolean());
-        String detail = ArtifactIO.readJsonl(imported.diagnostics).get(0)
-                .get("detail").getAsString();
-        assertTrue("the refusal names the legacy run: " + detail,
-                detail.contains(
-                        "AUXILIARY_PATH_CONDITION_LEGACY_NO_EMITTED_COUNT"));
-    }
-
     private static JsonObject truncationMarker(String kind, int index) {
         JsonObject marker = new JsonObject();
         marker.addProperty("_type", "TruncatedExpression");
@@ -1912,36 +1821,6 @@ public class ConcolicSummaryImporterTest {
                 "VM_SERIALIZATION_TRUNCATION_V1");
         marker.addProperty("truncationKind", kind);
         return marker;
-    }
-
-    /** Installs an envelope exactly as a pre-marker VM published it. */
-    private static void installLegacyAuxiliaryPathCondition(
-            JsonObject raw, JsonObject auxiliary) {
-        installAuxiliaryPathCondition(raw, auxiliary);
-        raw.getAsJsonObject("engineSummary")
-                .getAsJsonObject("auxiliaryPathCondition")
-                .remove("emittedConditionCount");
-    }
-
-    private static final String LEAF_SITE =
-            "HANDOFF_BOUND_LEAF:XCH.test:HANDSHAKE/blockPoolId";
-
-    private static OutputCaptureSpec leafSpec(String captureKind)
-            throws Exception {
-        JsonObject encoded = new JsonObject();
-        encoded.addProperty("captureBindingId", "CAPTURE.leaf");
-        encoded.addProperty("outputPort", "XCH.test.req.blockPoolId");
-        encoded.addProperty("captureKind", captureKind);
-        encoded.addProperty("outputCell", "XCH.test.req.blockPoolId");
-        encoded.addProperty("javaType", "java.lang.String");
-        encoded.addProperty("occurrenceScope", "REGION_ACTIVATION");
-        encoded.addProperty("outputSiteId", LEAF_SITE);
-        encoded.addProperty("outputOccurrence", 1);
-        java.lang.reflect.Method decode =
-                OutputCaptureSpec.class.getDeclaredMethod(
-                        "decodeValidated", JsonObject.class);
-        decode.setAccessible(true);
-        return (OutputCaptureSpec) decode.invoke(null, encoded);
     }
 
     private static JsonObject auxiliaryPathCondition(int watermark) {

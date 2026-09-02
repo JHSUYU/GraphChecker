@@ -285,7 +285,8 @@ public class DeclaredLoopBodyBoundTest {
             SootMethod client, DeclaredLoopBodyBounds bounds) {
         return CommunicationCatalogPlanner.plan(
                 Collections.singletonList(client.getSignature()),
-                bodies::get, new StubAdapter(), bounds);
+                bodies::get,
+                Collections.<WireFlowCatalog.WireFlow>emptyList(), bounds);
     }
 
     private DeclaredLoopBodyBounds declarations(String... rows)
@@ -408,31 +409,4 @@ public class DeclaredLoopBodyBoundTest {
                 + " was published; loops=" + result.loops);
     }
 
-    /**
-     * One declared cut and no server entry: this test is about the loop the
-     * fragment is inside, not about who answers the call.
-     */
-    private static final class StubAdapter
-            implements CommunicationCallSiteAdapter {
-        @Override
-        public String name() {
-            return "TEST_ADAPTER";
-        }
-
-        @Override
-        public CommunicationResolution resolve(String enclosingMethod,
-                                               int unitIndex,
-                                               String declaredCallee) {
-            if (!declaredCallee.contains("example.Proto")) {
-                return CommunicationResolution.none();
-            }
-            return CommunicationResolution.site(new CommunicationCallSite(
-                    enclosingMethod, unitIndex, name(), "TEST_TRANSPORT",
-                    "example.Proto", declaredCallee,
-                    Collections.<String>emptyList(), false, "",
-                    Collections.<CommunicationCallSite.RequestPort>
-                            emptyList(), Collections
-                    .<CommunicationCallSite.ResponseComponentPort>emptyList()));
-        }
-    }
 }

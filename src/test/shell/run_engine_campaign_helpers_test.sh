@@ -118,7 +118,7 @@ printf 'jar\n' >"${import_jar}"
 printf '0\n' >"${import_calls}"
 causynth_cache_dir="${import_cache_root}"
 graphchecker_jar="${import_jar}"
-causynth_protocol_stubs=""
+causynth_communication_mappings=""
 raw_concolic_results="${import_raw}"
 import_task_plan="${import_plan}"
 runtime_region_plan="${import_runtime_plan}"
@@ -190,7 +190,7 @@ trace_test=test.Workload#run
 unset HDFS11741_TRACE_JDK HDFS11741_MAX_EVENTS HDFS11741_EXTRA_JVM_ARGS
 campaign_provenance=$(jq -n '
   {jar:{sha256:"jar"}, config:{sha256:"config"},
-   targetSpec:{sha256:"target"}, protocolStubs:{sha256:"stubs"},
+   targetSpec:{sha256:"target"}, communicationMappings:{sha256:"mappings"},
    loopBounds:{sha256:"bounds"}, symbolicInputs:{sha256:"symbols"},
    productionClasses:{sha256:"classes"},
    workload:{testClasses:{sha256:"tests"},classpathSha256:"classpath"},
@@ -412,6 +412,41 @@ jq '.kind = "WRONG"' "${manifest}" >"${manifest}.bad"
 mv "${manifest}.bad" "${manifest}"
 expect_failure campaign_iteration_manifests_json "${campaign}"
 
+# Seed replay is one fresh JVM per singleton member plan. They run in parallel,
+# while the merged artifact remains a deterministic concatenation.
+(
+  replay_iteration="${test_tmp}/singleton-session"
+  replay_calls="${replay_iteration}/calls"
+  concolic_worker_count=8
+  mkdir -p "${replay_iteration}/instrumented-classes" \
+    "${replay_iteration}/workers/task-a" \
+    "${replay_iteration}/workers/task-b"
+  printf '{"taskId":"task-a"}\n{"taskId":"task-b"}\n' \
+    >"${replay_iteration}/execution_task_plan.jsonl"
+  printf '{"taskId":"task-a"}\n' \
+    >"${replay_iteration}/workers/task-a/execution_task_plan.jsonl"
+  printf '{"taskId":"task-b"}\n' \
+    >"${replay_iteration}/workers/task-b/execution_task_plan.jsonl"
+  : >"${replay_calls}"
+  campaign_replay() {
+    local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
+    [[ "${role}" == worker && $(campaign_task_ids "${plan}") == "${ids}" \
+      && $(wc -l <"${plan}") -eq 1 ]] \
+      || fail "seed replay did not use a singleton member plan"
+    mkdir -p "${worker}"
+    printf '%s\n' "${ids}" >>"${replay_calls}"
+    printf '{"event":"CONCOLIC_REGION_RESULT","taskId":"%s"}\n' \
+      "${ids}" >"${results}"
+  }
+  campaign_session_replay "${replay_iteration}"
+  [[ $(LC_ALL=C sort "${replay_calls}" | paste -sd, -) == "task-a,task-b" ]] \
+    || fail "session members were not replayed independently"
+  [[ $(jq -r '.taskId' \
+      "${replay_iteration}/seed-result/concolic_region_results.jsonl" \
+      | paste -sd, -) == "task-a,task-b" ]] \
+    || fail "singleton replay results were not merged"
+)
+
 # A second campaign for the same root must lose before it can truncate the
 # winner's metrics.  Stop the winner inside its first real campaign stage so
 # both contenders remain live while the loser executes do_campaign's actual
@@ -489,7 +524,7 @@ private_jar="${freeze_root}/frozen-inputs/GraphChecker.jar"
 workload_work_dir="${test_tmp}"
 config_file="${test_tmp}/workflow.properties"
 custom_jdk_home="${test_tmp}/jdk"
-causynth_protocol_stubs=""
+causynth_communication_mappings=""
 adapter_observed="${test_tmp}/adapter-graphchecker-jar"
 workload_observed="${test_tmp}/workload-graphchecker-jar"
 export RUN_ENGINE_TEST_ADAPTER_OUTPUT="${adapter_observed}"
@@ -520,7 +555,7 @@ configure_minimal_workflow() {
   project_classpath="${test_tmp}"
   causynth_output_dir="${test_tmp}/out"
   causynth_target_spec="${test_tmp}/target.yaml"
-  causynth_protocol_stubs=""
+  causynth_communication_mappings=""
   causynth_symbolic_inputs=""
   causynth_loop_bounds="${loop_bounds_declared}"
   custom_jdk_home="${test_tmp}/jdk"
@@ -599,7 +634,7 @@ emit_fixture() {
       | sha256sum | awk '{print $1}')" '
     {config: {path: $config, sha256: $configSha},
      loopBounds: {path: $bounds, sha256: $boundsSha},
-     protocolStubs: {path: "", sha256: ""},
+     communicationMappings: {path: "", sha256: ""},
      productionClasses: {path: $classes, sha256: $classesSha},
      workload: {testClasses: {path: $classes, sha256: $classesSha},
                 classpath: $classpath, classpathSha256: $classpathSha}}')

@@ -59,6 +59,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -191,6 +192,8 @@ public final class ConcolicRegionRuntime {
     private static volatile Boolean diagnostics;
     private static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     private static final ThreadLocal<Long> CURRENT_TOKEN = new ThreadLocal<>();
+    private static final ThreadLocal<Integer> OBSERVATION_PAUSE_DEPTH =
+            ThreadLocal.withInitial(() -> 0);
     /**
      * Dynamic root-invocation ownership used only by injected entry/exit
      * hooks.
@@ -221,16 +224,6 @@ public final class ConcolicRegionRuntime {
     private static final Object CONTEXT_ACTIVATION_LOCK = new Object();
     private static final Map<Long, WriterActivationIdentity>
             CONTEXT_ACTIVATIONS = new LinkedHashMap<>();
-    /**
-     * Producer execution carried implicitly by old manual-carrier ABIs that
-     * transport only the VM broker handle.
-     */
-    private static final Object MANUAL_HANDOFF_LINEAGE_LOCK = new Object();
-    private static final Map<Long, ManualHandoffLineage>
-            MANUAL_HANDOFF_LINEAGE = new LinkedHashMap<>();
-    /** Workload session whose handles the table above may describe. */
-    private static long manualHandoffLineageSessionId;
-
     private ConcolicRegionRuntime() {
     }
 
@@ -241,6 +234,7 @@ public final class ConcolicRegionRuntime {
      * The VM still keeps structural shadow frames balanced.
      */
     public static void pauseObservation() {
+        OBSERVATION_PAUSE_DEPTH.set(OBSERVATION_PAUSE_DEPTH.get() + 1);
         try {
             engine().pausePathCondition();
         } catch (Throwable ignored) {
@@ -250,6 +244,9 @@ public final class ConcolicRegionRuntime {
 
     /** Completes the observation-only subtree started by {@link #pauseObservation()}. */
     public static void resumeObservation() {
+        int depth = OBSERVATION_PAUSE_DEPTH.get();
+        if (depth <= 1) OBSERVATION_PAUSE_DEPTH.remove();
+        else OBSERVATION_PAUSE_DEPTH.set(depth - 1);
         try {
             engine().resumePathCondition();
         } catch (Throwable ignored) {
@@ -322,6 +319,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void checkLoopBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
+        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
         ActiveRegion active = activeRegion();
         if (active == null) return;
 
@@ -376,6 +374,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void checkReplayLoopBody(
             String loopId, int instrumentedMaxTraversals) {
+        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
         ActiveRegion active = activeRegion();
         if (active == null) return;
 
@@ -421,6 +420,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void recordLoopCardinality(
             String loopId, int cardinality) {
+        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
         ActiveRegion active = activeRegion();
         if (active == null) return;
         beginBookkeeping();
@@ -433,6 +433,7 @@ public final class ConcolicRegionRuntime {
 
     /** Ends the current dynamic occurrence of one fixed-count loop. */
     public static void completeLoopCardinality(String loopId) {
+        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
         ActiveRegion active = activeRegion();
         if (active == null) return;
         beginBookkeeping();
@@ -543,18 +544,12 @@ public final class ConcolicRegionRuntime {
         }
         clearPropagatedSourceFields();
         clearContextActivations();
-        resetManualHandoffLineageSession(0L);
+        SymbolicMessageEnvelope.clear();
         ACTIVE.clear();
         CURRENT_TOKEN.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
-        RESPONSE_CUT_TOKEN.remove();
-        INBOUND_RESPONSE_PRODUCER_ARM.remove();
         beforePublicationDecodeForTests = null;
-        synchronized (RESPONSE_ARM_LOCK) {
-            IN_FLIGHT_RESPONSE_PRODUCER_ARMS.clear();
-            PENDING_RESPONSE_CUTS_BY_PORT.clear();
-        }
         synchronized (PUBLICATION_LOCK) {
             if (resultPublicationsInFlight != 0) {
                 throw new IllegalStateException(
@@ -695,11 +690,7 @@ public final class ConcolicRegionRuntime {
             return "";
         }
         EngineApi api = engine();
-        if (!api.workloadSessionAvailable()) {
-            clearPropagatedSourceFields();
-            clearContextActivations();
-            return "";
-        }
+        api.requireCurrentCapabilities();
         final long status;
         try {
             status = api.openWorkloadSession();
@@ -711,7 +702,7 @@ public final class ConcolicRegionRuntime {
                     + workloadSessionStatusName(status) + " "
                     + api.workloadSessionStatus();
         }
-        resetManualHandoffLineageSession(status);
+        SymbolicMessageEnvelope.clear();
         clearPropagatedSourceFields();
         clearContextActivations();
         workloadSessionId = status;
@@ -747,7 +738,7 @@ public final class ConcolicRegionRuntime {
                     + " sessionId=" + sessionId + " "
                     + api.workloadSessionStatus();
         }
-        resetManualHandoffLineageSession(0L);
+        SymbolicMessageEnvelope.clear();
         clearPropagatedSourceFields();
         clearContextActivations();
         workloadSessionId = 0L;
@@ -989,8 +980,8 @@ public final class ConcolicRegionRuntime {
             // One activation is one VM region context: CURRENT_TOKEN holds a
             // single token, so a second region started here would take every
             // capture from the one already running and leave it live and
-            // blind.  The claimant list is how a second occurrence rides this
-            // activation.
+            // blind. The claimant list is how another occurrence of this
+            // exact activation rides it.
             admitted.noteUnaddressedCandidate(
                     "another selected occurrence was already running on this "
                             + "thread when this root was entered");
@@ -999,13 +990,6 @@ public final class ConcolicRegionRuntime {
         }
         beginLiveSelectedRegion();
         EngineApi api = engine();
-        if (!api.available()) {
-            writeSkipped(admitted, SKIP_NOT_STARTED,
-                    "custom concolic System API is unavailable", null);
-            configuration().releaseCandidate(admitted);
-            endLiveSelectedRegion();
-            return null;
-        }
         boolean engineStarted = false;
         boolean pathConditionPaused = false;
         ActiveRegion active = null;
@@ -1103,18 +1087,10 @@ public final class ConcolicRegionRuntime {
         RuntimeTask declaring = active.activation;
         if (declaring.sharedCarriers.isEmpty()
                 && declaring.communicationHandoffs.isEmpty()
-                && declaring.manualCommunicationHandoffs.isEmpty()
                 && safe(declaring.regionId).isEmpty()) {
             return;
         }
         EngineApi api = engine();
-        if (!api.eventLedgerActivationAvailable()) {
-            recordShared(failedShared(SharedStateEvidence.STAGE_LEDGER,
-                    SharedStateEvidence.API_UNAVAILABLE, "",
-                    "this JDK exposes no event-ledger activation API"),
-                    null, active);
-            return;
-        }
         try {
             boolean recording = api.activateEventLedger();
             if (!recording) {
@@ -2047,6 +2023,7 @@ public final class ConcolicRegionRuntime {
 
         recordRegionExitFieldOutput(active, request, fieldOwner, fieldValue,
                 occurrence);
+        finishLocalOutputRelation(active, fieldValue);
     }
 
     /** Records one exact argument value at the configured protocol call. */
@@ -2084,6 +2061,11 @@ public final class ConcolicRegionRuntime {
                     + rootCause(throwable));
         } finally {
             active.outputCaptures.add(row);
+            if (active.activation.communicationHandoff(
+                    request.outputPort(), true) != null) {
+                finishStagedCommunicationRelation(
+                        active, request.outputPort(), value);
+            }
         }
     }
 
@@ -2109,6 +2091,7 @@ public final class ConcolicRegionRuntime {
             row.addProperty("exportEventId", exported.longValue());
         }
         active.outputCaptures.add(row);
+        finishLocalOutputRelation(active, null);
     }
 
     /** Starts one definition-invocation-local occurrence stream. */
@@ -2223,8 +2206,8 @@ public final class ConcolicRegionRuntime {
                     + ": mutation-state output capture failed: "
                     + rootCause(throwable));
         } finally {
-            // README TERM-1: an admitted version is not a terminal.
             active.outputCaptures.add(row);
+            finishLocalOutputRelation(active, pending.container);
         }
     }
 
@@ -2279,9 +2262,8 @@ public final class ConcolicRegionRuntime {
                     + ": field-write output capture failed: "
                     + rootCause(throwable));
         } finally {
-            // README TERM-1, as above: a captured field-write version leaves
-            // the occurrence open for its own terminal.
             active.outputCaptures.add(row);
+            finishLocalOutputRelation(active, fieldValue);
         }
     }
 
@@ -2293,63 +2275,6 @@ public final class ConcolicRegionRuntime {
         row.addProperty("outputOccurrence", occurrence);
         row.addProperty("outputVersionOrdinal", versionOrdinal);
         return row;
-    }
-
-    /**
-     * A concrete leaf's value, for the audit trail only.
-     *
-     * <p>Bounded on purpose: this is evidence that the occurrence presented
-     * the leaf, not a second encoding of the value the composer lowers.</p>
-     */
-    private static String concreteLeafValue(Object value) {
-        if (value == null) return "";
-        String rendered = value.getClass().isArray()
-                ? value.getClass().getComponentType().getName()
-                        + "[" + Array.getLength(value) + "]"
-                : String.valueOf(value);
-        return rendered.length() <= 128 ? rendered
-                : rendered.substring(0, 128);
-    }
-
-    /**
-     * The typed constant one concrete scalar leaf denotes, or {@code null}
-     * when the value has no exact textual encoding the Composer can lower.
-     *
-     * <p>The encoding is the custom VM's own: {@code Y_<descriptor>_<value>},
-     * which {@code VmExpressionIr.constantPayload} reads back by taking
-     * everything after the second underscore.</p>
-     */
-    private static JsonElement concreteScalarExpression(String descriptor,
-                                                        Object value) {
-        String type = safe(descriptor);
-        String literal;
-        if (value == null) {
-            // A null reference leaf is the null constant, whatever it is a
-            // reference to.
-            literal = "0";
-        } else if ("Z".equals(type)) {
-            literal = Boolean.TRUE.equals(value) ? "1" : "0";
-        } else if ("B".equals(type) || "S".equals(type) || "I".equals(type)
-                || "J".equals(type)) {
-            if (!(value instanceof Number)) return null;
-            literal = String.valueOf(((Number) value).longValue());
-        } else if ("C".equals(type)) {
-            if (!(value instanceof Character)) return null;
-            literal = String.valueOf((int) (Character) value);
-        } else if ("F".equals(type) || "D".equals(type)) {
-            if (!(value instanceof Number)) return null;
-            literal = String.valueOf(value);
-        } else if ("Ljava/lang/String;".equals(type)) {
-            if (!(value instanceof String)) return null;
-            literal = (String) value;
-        } else {
-            return null;
-        }
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "ConstExpr");
-        expression.addProperty("_java_type", type);
-        expression.addProperty("_exp", "Y_" + type + "_" + literal);
-        return expression;
     }
 
     private static void recordRegionExitFieldOutput(
@@ -2398,7 +2323,6 @@ public final class ConcolicRegionRuntime {
             OutputCaptureSpec request) {
         return request != null && (request.capturesCallArgument()
                 || request.capturesCommunicationEffect()
-                || request.capturesHandoffBoundLeaf()
                 || request.capturesFieldWriteState()
                 || request.capturesMutationState());
     }
@@ -2418,9 +2342,7 @@ public final class ConcolicRegionRuntime {
                     string(capture, "authority"))) {
                 return false;
             }
-        } else if (!(request.capturesHandoffBoundLeaf()
-                && capture.has("concreteLeaf")
-                && capture.get("concreteLeaf").getAsBoolean())) {
+        } else {
             JsonElement relation = capture.get("expression");
             if (relation == null || relation.isJsonNull()) return false;
         }
@@ -2443,14 +2365,6 @@ public final class ConcolicRegionRuntime {
                     || !requestedBindings.add(request.captureBindingId())) {
                 return false;
             }
-            // Once-only-root rule: an instance-scoped heap write is a fact of
-            // the object's history, not of this loop iteration.  A field
-            // belongs to the object, not to the seventh backedge, so whether
-            // its version was recorded is decided once at instance scope and
-            // an occurrence that did not sample the once-entered write is not
-            // incomplete because of it.  The write is still captured wherever
-            // an occurrence's window did contain it, so no version is lost.
-            if (request.instanceScopedProducer()) continue;
             int successfulRows = 0;
             for (JsonObject capture : captures) {
                 if (successfulExactOutputCapture(request, capture)) {
@@ -2479,9 +2393,6 @@ public final class ConcolicRegionRuntime {
         StringBuilder missing = new StringBuilder();
         int named = 0;
         for (OutputCaptureSpec request : task.outputCaptures) {
-            // An instance-scoped once-only write is never a per-occurrence
-            // miss (see completeExactOutputBoundary).
-            if (request.instanceScopedProducer()) continue;
             boolean observed = false;
             for (JsonObject capture : captures) {
                 if (successfulExactOutputCapture(request, capture)) {
@@ -2705,74 +2616,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Exports one exact field through the live VM broker.
-     *
-     * <p>This is the complete reflective ABI used by application adapters.
-     * The returned live handle remains the sole value identity.  For adapters
-     * whose frozen wire ABI carries only that {@code long}, the runtime also
-     * remembers which exact task occurrence published the handle so the later
-     * attach can emit complete producer lineage without inventing a second
-     * exchange or value identity.</p>
-     */
-    public static HandoffResult exportSymbolicLeaf(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        CommunicationHandoffSpec declared = manualCommunicationHandoffSite(
-                declaringClass, fieldName, descriptor, true);
-        if (declared == null) {
-            beginBookkeeping();
-            try {
-                return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
-                        RpcExpressionHandoff.MISSING_METADATA, 0L,
-                        "manual carrier is not declared by the active task: "
-                                + safe(declaringClass) + "."
-                                + safe(fieldName) + safe(descriptor)));
-            } finally {
-                endBookkeeping();
-            }
-        }
-        HandoffResult result = exportSymbolicLeaf(owner, declaringClass,
-                fieldName, descriptor, declared.portId());
-        return registerManualHandoffLineage(result);
-    }
-
-    /** Attaches one live broker handle to one exact destination field. */
-    public static HandoffResult receiveSymbolicLeaf(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, long handle) {
-        CommunicationHandoffSpec declared = manualCommunicationHandoffSite(
-                declaringClass, fieldName, descriptor, false);
-        if (declared == null) {
-            beginBookkeeping();
-            try {
-                return record(failed(RpcExpressionHandoff.STAGE_ATTACH,
-                        RpcExpressionHandoff.MISSING_METADATA, handle,
-                        "manual carrier is not declared by the active task: "
-                                + safe(declaringClass) + "."
-                                + safe(fieldName) + safe(descriptor)));
-            } finally {
-                endBookkeeping();
-            }
-        }
-        ManualHandoffLineageResolution lineage =
-                resolveManualHandoffLineage(handle);
-        if (!lineage.ok()) {
-            beginBookkeeping();
-            try {
-                return record(failed(RpcExpressionHandoff.STAGE_ATTACH,
-                        lineage.status, handle, lineage.detail));
-            } finally {
-                endBookkeeping();
-            }
-        }
-        return attachDeclaredCommunicationExpression(owner,
-                declaringClass, fieldName, descriptor,
-                new HeaderHandle(true, handle,
-                        lineage.lineage.producerTaskId,
-                        lineage.lineage.producerOccurrenceId), declared);
-    }
-
     private static HandoffResult exportSymbolicLeaf(
             Object owner, String declaringClass, String fieldName,
             String descriptor, String declaredPortId) {
@@ -2797,10 +2640,6 @@ public final class ConcolicRegionRuntime {
                     RpcExpressionHandoff.MISSING_METADATA, 0L, missing));
         }
         EngineApi api = engine();
-        if (!api.expressionHandoffAvailable()) {
-            return record(unavailable(RpcExpressionHandoff.STAGE_EXPORT, 0L,
-                    "this JDK exposes no symbolic expression handoff API"));
-        }
         long handle;
         // README RPC-1: the VM reports the export's own ledger event here,
         // so the producer's interaction row can name the exact export it
@@ -2820,13 +2659,7 @@ public final class ConcolicRegionRuntime {
             HandoffResult result = failed(
                     RpcExpressionHandoff.STAGE_EXPORT, status, 0L,
                     "exportExpression returned " + handle);
-            if (status == RpcExpressionHandoff.NOT_SYMBOLIC) {
-                // This guarded execution has a concrete leaf, not a broken
-                // symbolic handoff.
-                recordHandoffBoundLeafOutput(owner, declaringClass,
-                        fieldName, descriptor, result, declaredPortId);
-                return result;
-            }
+            if (status == RpcExpressionHandoff.NOT_SYMBOLIC) return result;
             return record(result);
         }
         JsonObject exported = new JsonObject();
@@ -2841,171 +2674,7 @@ public final class ConcolicRegionRuntime {
             exporting.exportEventByPort.put(safe(declaredPortId),
                     Long.valueOf(exportEvent[0]));
         }
-        recordHandoffBoundLeafOutput(owner, declaringClass, fieldName,
-                descriptor, result, declaredPortId);
         return result;
-    }
-
-    /**
-     * Remembers the VM export event this occurrence published at one port.
-     *
-     * <p>README {@code RPC-1}: the producer's {@code COMMUNICATION_EFFECT}
-     * interaction row is what a consumer's handoff reference has to be paired
-     * with, and the exact export id is the pairing the VM already made.</p>
-     */
-    /**
-     * Captures an output relation only when this export is the exact handoff-
-     * bound component requested by the task.
-     *
-     * <p>README {@code RPC-1}: a stale discovery id produces a gap, never an
-     * equality, so it is not a match key here either.</p>
-     *
-     * <p>What identifies the capture is the declared port the instrumented
-     * hook already carries.</p>
-     */
-    private static void recordHandoffBoundLeafOutput(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, HandoffResult result, String declaredPortId) {
-        ActiveRegion active = activeRegion();
-        if (active == null) {
-            if (result != null) diag("HANDOFF_CAPTURE_IGNORED",
-                    "no-active-region");
-            return;
-        }
-        if (result == null
-                || !RpcExpressionHandoff.STAGE_EXPORT.equals(result.stage)
-                || !result.ok()
-                && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
-            return;
-        }
-        List<OutputCaptureSpec> requests = handoffBoundLeafCaptures(
-                active, declaredPortId);
-        if (requests.isEmpty()) {
-            diag("HANDOFF_CAPTURE_IGNORED", "task="
-                    + safe(active.activation.taskId)
-                    + " reason=not-declared");
-            return;
-        }
-        for (OutputCaptureSpec request : requests) {
-            recordHandoffBoundLeafOutput(active, owner, declaringClass,
-                    fieldName, descriptor, result, request);
-        }
-    }
-
-    private static void recordHandoffBoundLeafOutput(
-            ActiveRegion active, Object owner, String declaringClass,
-            String fieldName, String descriptor, HandoffResult result,
-            OutputCaptureSpec request) {
-        if (!active.captureEligible(request)) {
-            diag("HANDOFF_CAPTURE_IGNORED", "task="
-                    + safe(active.activation.taskId) + " binding="
-                    + request.captureBindingId()
-                    + " reason=prerequisites-incomplete");
-            return;
-        }
-        int occurrence = active.nextOutputCaptureOccurrence(request);
-        if (!active.boundedOutputVersionSlot(request, occurrence)) {
-            diag("HANDOFF_CAPTURE_IGNORED", "task="
-                    + safe(active.activation.taskId) + " binding="
-                    + request.captureBindingId() + " occurrence="
-                    + occurrence + " reason=outside-bounded-slot");
-            return;
-        }
-
-        JsonObject row = outputCaptureRow(request, occurrence, occurrence);
-        try {
-            Field field = declaredInstanceField(owner, declaringClass,
-                    fieldName, descriptor);
-            if (field == null) {
-                throw new IllegalStateException(
-                        "exported field differs from planned component");
-            }
-            Object value = field.get(owner);
-            boolean concrete =
-                    result.status() == RpcExpressionHandoff.NOT_SYMBOLIC;
-            if (concrete) {
-                // The VM already answered this leaf: it holds a concrete
-                // value, so there is no expression to ask for and asking
-                // would report the boundary as unreached.  README TERM-1
-                // asks whether the occurrence presented every demanded
-                // leaf, not whether every leaf happened to be symbolic; a
-                // constant leaf is presented and lowers as a constant.
-                row.addProperty("concreteLeaf", true);
-                row.addProperty("primitiveValue", concreteLeafValue(value));
-                // "Lowers as a constant" needs the constant to be written
-                // down.  primitiveValue is a bounded audit note, not a value
-                // the Composer may lower, so a leaf that stopped here left
-                // its port with no expression at all and every consumer of
-                // this relation refused it for a boundary the occurrence did
-                // reach.  A scalar is written as the typed literal it is; an
-                // array or map takes the same bounded VM snapshot the
-                // symbolic branch already takes for a concrete container,
-                // because NOT_SYMBOLIC says the field has no scalar shadow,
-                // not that the value cannot be stated.
-                JsonElement literal = concreteScalarExpression(
-                        descriptor, value);
-                if (literal != null) {
-                    row.add("expression", literal);
-                    return;
-                }
-                if (!containerValue(value)) return;
-            }
-            EngineApi api = engine();
-            JsonElement expression;
-            if (containerValue(value)) {
-                // A concrete array/container has no scalar field shadow for
-                // getFieldExpression to return.
-                if (!snapshotOutputContainer(value, api)) {
-                    throw new IllegalStateException(
-                            "exported container has no VM snapshot model");
-                }
-                expression = engineExpression(api.expression(value));
-            } else {
-                expression = engineExpression(api.fieldExpression(
-                        owner, declaringClass, fieldName, descriptor, value));
-            }
-            if (expression == null || expression.isJsonNull()) {
-                throw new IllegalStateException(
-                        "custom VM returned no handoff field expression");
-            }
-            row.add("expression", expression);
-        } catch (Throwable throwable) {
-            // A concrete container the VM could not snapshot keeps its
-            // audit-only record: the boundary was still presented, and the
-            // importer names the port that could not be lowered.
-            if (row.has("concreteLeaf")) {
-                diag("HANDOFF_CAPTURE_CONCRETE_NOT_LOWERABLE", "task="
-                        + safe(active.activation.taskId) + " binding="
-                        + request.captureBindingId() + " reason="
-                        + rootCause(throwable));
-                return;
-            }
-            active.addGuardedOutputCaptureFailure(
-                    request.captureBindingId(), request.captureBindingId()
-                            + ": handoff-bound output capture failed: "
-                            + rootCause(throwable));
-        } finally {
-            active.outputCaptures.add(row);
-            diag("HANDOFF_CAPTURE", "task="
-                    + safe(active.activation.taskId) + " binding="
-                    + request.captureBindingId() + " occurrence=" + occurrence
-                    + " expression=" + row.has("expression"));
-        }
-    }
-
-    /** The bounded plan row this occurrence declares for the exported port. */
-    private static List<OutputCaptureSpec> handoffBoundLeafCaptures(
-            ActiveRegion active, String declaredPortId) {
-        List<OutputCaptureSpec> requests = new ArrayList<>();
-        if (safe(declaredPortId).isEmpty()) return requests;
-        for (OutputCaptureSpec candidate : active.demandedCaptures()) {
-            if (!candidate.capturesHandoffBoundLeaf()
-                    || !candidate.outputPort().equals(declaredPortId)) {
-                continue;
-            }
-            requests.add(candidate);
-        }
-        return requests;
     }
 
     /**
@@ -3014,16 +2683,16 @@ public final class ConcolicRegionRuntime {
      */
     private static HandoffResult attachDeclaredCommunicationExpression(
             Object owner, String declaringClass, String fieldName,
-            String descriptor, HeaderHandle carried,
+            String descriptor, SymbolicMessageEnvelope.Entry carried,
             CommunicationHandoffSpec declared) {
         beginBookkeeping();
         try {
             HandoffResult result = record(attach(owner, declaringClass,
-                    fieldName, descriptor, carried.handle));
+                    fieldName, descriptor, carried.handle()));
             if (result.ok()) {
                 recordVmHandoffEvent(declared, result, owner, declaringClass,
-                        fieldName, descriptor, carried.producerTaskId,
-                        carried.producerOccurrenceId);
+                        fieldName, descriptor, carried.producerTaskId(),
+                        carried.producerOccurrenceId());
             }
             return result;
         } finally {
@@ -3052,940 +2721,42 @@ public final class ConcolicRegionRuntime {
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime"
                     + "$HandoffLeafCarrier";
     // ------------------------------------------------------------------
-    // Hadoop RPC-header bridge
+    // Communication message flow
     // ------------------------------------------------------------------
 
-    /**
-     * Exact producer admissions armed by selected callers, indexed only by
-     * the live request exchange that can consume them.
-     */
-    private static final Map<String, ResponseProducerAdmission>
-            IN_FLIGHT_RESPONSE_PRODUCER_ARMS = new LinkedHashMap<>();
-    private static final Object RESPONSE_ARM_LOCK = new Object();
-    /**
-     * Live response cuts, indexed by the caller occurrence and declared port.
-     *
-     * <p>A port stays here until the instrumented cut returns.  The exact
-     * cut token is thread-local (and inherited only by a thread spawned under
-     * the cut), so an arbitrary request scope cannot drain or replace it.</p>
-     */
-    private static final Map<String, PendingResponseCut>
-            PENDING_RESPONSE_CUTS_BY_PORT = new LinkedHashMap<>();
-    /** Exact live-cut token inherited only by a thread spawned under it. */
-    private static final AtomicLong RESPONSE_CUT_TOKEN_COUNTER =
-            new AtomicLong();
-    private static final InheritableThreadLocal<Long> RESPONSE_CUT_TOKEN =
-            new InheritableThreadLocal<>();
-    /** The exact response producer task authorized by this request delivery. */
-    private static final ThreadLocal<ResponseProducerAdmission>
-            INBOUND_RESPONSE_PRODUCER_ARM = new ThreadLocal<>();
-
-    /** Authority of the structured response-arm refusal evidence. */
-    private static final String RESPONSE_ARM_AUTHORITY =
-            "CUT_OWNED_REQUEST_EXCHANGE_V1";
-
-    /** One caller-selected response producer admission. */
-    private static final class ResponseProducerArm {
-        private final String producerTaskId;
-        private final Set<String> portIds;
-        private final String failure;
-
-        private ResponseProducerArm(String producerTaskId,
-                                    Set<String> portIds, String failure) {
-            this.producerTaskId = safe(producerTaskId);
-            this.portIds = Collections.unmodifiableSet(
-                    new LinkedHashSet<>(portIds));
-            this.failure = safe(failure);
-        }
-
-        private boolean valid() {
-            return !producerTaskId.isEmpty() && failure.isEmpty()
-                    && !portIds.isEmpty();
-        }
-
-        private boolean authorizes(RuntimeTask task) {
-            return valid() && task != null
-                    && producerTaskId.equals(task.taskId)
-                    && !task.responseExportPortIds.isEmpty()
-                    && portIds.containsAll(task.responseExportPortIds);
-        }
-    }
-
-    /** One selected cut waiting for its own concrete request exchange. */
-    private static final class PendingResponseCut {
-        private final ActiveRegion caller;
-        private final long cutToken;
-        private final String siteId;
-        private final String declaredCallee;
-        private final String expectedTransport;
-        private final Set<String> portIds = new LinkedHashSet<>();
-        private final Set<String> returnedPortIds = new LinkedHashSet<>();
-        private final Set<String> refusals = new LinkedHashSet<>();
-        private String exchangeKey = "";
-        private boolean requestDelivered;
-        private boolean producerAdmitted;
-
-        private PendingResponseCut(ActiveRegion caller,
-                                   CommunicationHandoffSpec site,
-                                   String expectedTransport) {
-            this.caller = caller;
-            this.cutToken = RESPONSE_CUT_TOKEN_COUNTER.incrementAndGet();
-            this.siteId = site.siteId();
-            this.declaredCallee = site.declaredCallee();
-            this.expectedTransport = safe(expectedTransport);
-        }
-
-        private synchronized boolean sameCut(
-                ActiveRegion candidateCaller,
-                CommunicationHandoffSpec candidateSite) {
-            if (caller != candidateCaller || candidateSite == null
-                    || !siteId.equals(candidateSite.siteId())
-                    || !declaredCallee.equals(
-                    candidateSite.declaredCallee())) {
-                return false;
-            }
-            return true;
-        }
-
-        private synchronized void addPort(String portId) {
-            if (!safe(portId).isEmpty()) portIds.add(portId);
-        }
-
-        private synchronized Set<String> ports() {
-            return new LinkedHashSet<>(portIds);
-        }
-
-        /** Exact active cut token, optionally on its spawned sender thread. */
-        private synchronized boolean matchesSender(
-                ActiveRegion current,
-                Long carriedCutToken) {
-            if (carriedCutToken == null
-                    || carriedCutToken.longValue() != cutToken) {
-                return false;
-            }
-            if (current == null) return true;
-            return current == caller;
-        }
-
-        private synchronized boolean expectsTransport(String transport) {
-            return expectedTransport.equalsIgnoreCase(safe(transport));
-        }
-
-        /** True only for the first request exchange this cut admits. */
-        private synchronized boolean bindFirstExchange(String candidate) {
-            if (!exchangeKey.isEmpty()) {
-                if (!exchangeKey.equals(safe(candidate))) {
-                    refuse("second matching REQUEST SEND named exchange "
-                            + safe(candidate) + " after " + exchangeKey);
-                }
-                return false;
-            }
-            exchangeKey = safe(candidate);
-            return !exchangeKey.isEmpty();
-        }
-
-        private synchronized void delivered(String candidate) {
-            if (exchangeKey.equals(safe(candidate))) {
-                requestDelivered = true;
-            } else {
-                refuse("request delivery " + safe(candidate)
-                        + " did not match bound exchange "
-                        + safe(exchangeKey));
-            }
-        }
-
-        private synchronized void admitted() {
-            producerAdmitted = true;
-        }
-
-        private synchronized void refuse(String detail) {
-            if (!safe(detail).isEmpty()) refusals.add(detail);
-        }
-
-        private synchronized void returned(String portId) {
-            returnedPortIds.add(safe(portId));
-        }
-
-        private synchronized boolean allPortsReturned() {
-            return returnedPortIds.containsAll(portIds);
-        }
-
-        private synchronized Set<String> outstandingPorts() {
-            Set<String> outstanding = new LinkedHashSet<>(portIds);
-            outstanding.removeAll(returnedPortIds);
-            return outstanding;
-        }
-
-        private synchronized boolean complete() {
-            return !exchangeKey.isEmpty() && requestDelivered
-                    && producerAdmitted && refusals.isEmpty();
-        }
-
-        private synchronized String failure() {
-            if (!refusals.isEmpty()) {
-                return String.join("; ", refusals);
-            }
-            if (exchangeKey.isEmpty()) {
-                return "declared response cut issued no matching REQUEST "
-                        + "SEND";
-            }
-            if (!requestDelivered) {
-                return "bound request exchange was not delivered";
-            }
-            if (!producerAdmitted) {
-                return "request delivery did not admit the selected response "
-                        + "producer";
-            }
-            return "";
-        }
-    }
-
-    /** One concrete request delivery carrying its cut-selected admission. */
-    private static final class ResponseProducerAdmission {
-        private final ResponseProducerArm arm;
-        private final PendingResponseCut cut;
-        private final String exchangeKey;
-
-        private ResponseProducerAdmission(ResponseProducerArm arm,
-                                          PendingResponseCut cut,
-                                          String exchangeKey) {
-            this.arm = arm;
-            this.cut = cut;
-            this.exchangeKey = safe(exchangeKey);
-        }
-    }
-
-    /** Frozen protocol facts needed to recognize this cut's request send. */
-    private static final class ResponseCutExpectation {
-        private final String transport;
-        private final String failure;
-
-        private ResponseCutExpectation(String transport, String failure) {
-            this.transport = safe(transport);
-            this.failure = safe(failure);
-        }
-
-        private boolean valid() {
-            return !transport.isEmpty() && failure.isEmpty();
-        }
-    }
-
-    /** Exact Java execution which published one opaque VM broker handle. */
-    private static final class ManualHandoffLineage {
-        private final long sessionId;
-        private final long handle;
-        private final String producerTaskId;
-        private final String producerOccurrenceId;
-        private final boolean ambiguous;
-
-        private ManualHandoffLineage(long sessionId, long handle,
-                                     String producerTaskId,
-                                     String producerOccurrenceId,
-                                     boolean ambiguous) {
-            this.sessionId = sessionId;
-            this.handle = handle;
-            this.producerTaskId = safe(producerTaskId);
-            this.producerOccurrenceId = safe(producerOccurrenceId);
-            this.ambiguous = ambiguous;
-        }
-
-        private boolean sameProducer(ManualHandoffLineage other) {
-            return other != null && sessionId == other.sessionId
-                    && handle == other.handle
-                    && producerTaskId.equals(other.producerTaskId)
-                    && producerOccurrenceId.equals(
-                    other.producerOccurrenceId);
-        }
-
-        private ManualHandoffLineage ambiguous() {
-            return new ManualHandoffLineage(sessionId, handle,
-                    producerTaskId, producerOccurrenceId, true);
-        }
-    }
-
-    /** Result of resolving producer metadata before mutating receiver shadow. */
-    private static final class ManualHandoffLineageResolution {
-        private final ManualHandoffLineage lineage;
-        private final int status;
-        private final String detail;
-
-        private ManualHandoffLineageResolution(
-                ManualHandoffLineage lineage, int status, String detail) {
-            this.lineage = lineage;
-            this.status = status;
-            this.detail = safe(detail);
-        }
-
-        private boolean ok() {
-            return status == RpcExpressionHandoff.OK && lineage != null;
-        }
-    }
-
-    /** Starts or tears down the Java metadata half of one VM broker session. */
-    private static void resetManualHandoffLineageSession(long sessionId) {
-        synchronized (MANUAL_HANDOFF_LINEAGE_LOCK) {
-            MANUAL_HANDOFF_LINEAGE.clear();
-            manualHandoffLineageSessionId = sessionId;
-        }
-    }
-
-    /**
-     * Registers producer metadata for a handle returned through the manual
-     * handoff ABI (the Hadoop adapter's CausynthSymbolicHandoff export/attach).
-     */
-    private static HandoffResult registerManualHandoffLineage(
-            HandoffResult result) {
-        if (result == null || !result.ok()) return result;
+    /** Stages one VM handle and its producer on the next outbound message. */
+    private static boolean stageMessageExpression(String portId,
+                                                  long handle) {
         ActiveRegion active = activeRegion();
-        long sessionId = workloadSessionId;
-        if (sessionId <= 0L) {
-            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
-                    RpcExpressionHandoff.NO_ACTIVE_REGION, result.handle(),
-                    "manual handoff lineage requires a workload session"));
-        }
-        if (active == null
-                || safe(active.activation.taskId).isEmpty()
-                || safe(active.occurrenceId()).isEmpty()) {
-            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
-                    RpcExpressionHandoff.MISSING_METADATA, result.handle(),
-                    "manual handoff export has no exact producer execution"));
-        }
-        ManualHandoffLineage candidate = new ManualHandoffLineage(sessionId,
-                result.handle(), active.activation.taskId,
-                active.occurrenceId(), false);
-        synchronized (MANUAL_HANDOFF_LINEAGE_LOCK) {
-            if (sessionId != workloadSessionId
-                    || manualHandoffLineageSessionId != sessionId) {
-                return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
-                        RpcExpressionHandoff.FOREIGN_HANDLE, result.handle(),
-                        "manual handoff session changed during export"));
-            }
-            ManualHandoffLineage prior = MANUAL_HANDOFF_LINEAGE.get(
-                    result.handle());
-            if (prior == null) {
-                MANUAL_HANDOFF_LINEAGE.put(result.handle(), candidate);
-                return result;
-            }
-            if (!prior.sameProducer(candidate) || prior.ambiguous) {
-                MANUAL_HANDOFF_LINEAGE.put(result.handle(),
-                        prior.ambiguous());
-                return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
-                        RpcExpressionHandoff.MISSING_METADATA,
-                        result.handle(),
-                        "manual handoff handle has ambiguous producer "
-                                + "execution"));
-            }
-            return result;
+        boolean staged = active != null && SymbolicMessageEnvelope.stage(
+                portId, handle, active.activation.taskId,
+                active.occurrenceId());
+        if (staged) active.stagedCommunicationPorts.add(portId);
+        return staged;
+    }
+
+    /** Closes a producer once its complete relation is resident on the wire. */
+    private static void finishStagedCommunicationRelation(
+            ActiveRegion active, String portId, Object output) {
+        if (active != null && active.activation.relationOnlySeed()
+                && active.stagedCommunicationPorts.contains(portId)
+                && active.demandedOutputRelationComplete()) {
+            finish(active.token, "NORMAL", "", output);
         }
     }
 
-    /**
-     * Resolves one handle to a unique producer in the current workload before
-     * attach changes any receiver shadow.
-     */
-    private static ManualHandoffLineageResolution
-            resolveManualHandoffLineage(long handle) {
-        if (handle <= 0L) {
-            return new ManualHandoffLineageResolution(null,
-                    RpcExpressionHandoff.MISSING_METADATA,
-                    "manual handoff receive needs a positive handle");
-        }
-        long sessionId = workloadSessionId;
-        if (sessionId <= 0L) {
-            return new ManualHandoffLineageResolution(null,
-                    RpcExpressionHandoff.NO_ACTIVE_REGION,
-                    "manual handoff lineage has no workload session");
-        }
-        synchronized (MANUAL_HANDOFF_LINEAGE_LOCK) {
-            if (sessionId != workloadSessionId
-                    || manualHandoffLineageSessionId != sessionId) {
-                return new ManualHandoffLineageResolution(null,
-                        RpcExpressionHandoff.FOREIGN_HANDLE,
-                        "manual handoff handle belongs to another session");
-            }
-            ManualHandoffLineage lineage =
-                    MANUAL_HANDOFF_LINEAGE.get(handle);
-            if (lineage == null) {
-                return new ManualHandoffLineageResolution(null,
-                        RpcExpressionHandoff.UNKNOWN_HANDLE,
-                        "manual handoff handle has no producer lineage in "
-                                + "this session");
-            }
-            if (lineage.sessionId != sessionId) {
-                return new ManualHandoffLineageResolution(null,
-                        RpcExpressionHandoff.FOREIGN_HANDLE,
-                        "manual handoff producer lineage belongs to another "
-                                + "session");
-            }
-            if (lineage.ambiguous
-                    || lineage.producerTaskId.isEmpty()
-                    || lineage.producerOccurrenceId.isEmpty()) {
-                return new ManualHandoffLineageResolution(null,
-                        RpcExpressionHandoff.MISSING_METADATA,
-                        "manual handoff handle has ambiguous producer "
-                                + "lineage");
-            }
-            return new ManualHandoffLineageResolution(lineage,
-                    RpcExpressionHandoff.OK, "");
-        }
-    }
-
-    /** One leaf read directly from the current Hadoop Call's wire header. */
-    private static final class HeaderHandle {
-        private static final HeaderHandle MISSING =
-                new HeaderHandle(false, 0L, "", "");
-        private final boolean present;
-        private final long handle;
-        private final String producerTaskId;
-        private final String producerOccurrenceId;
-
-        private HeaderHandle(boolean present, long handle,
-                             String producerTaskId,
-                             String producerOccurrenceId) {
-            this.present = present;
-            this.handle = handle;
-            this.producerTaskId = safe(producerTaskId);
-            this.producerOccurrenceId = safe(producerOccurrenceId);
-        }
-    }
-
-    /** Optional reflection boundary to Hadoop's RPC-header implementation. */
-    private static final class RpcHeaderBridge {
-        private static final String CLASS =
-                "org.apache.hadoop.ipc.CausynthRpcWire";
-        private static volatile Binding binding;
-
-        private static boolean stage(String leafPath, long handle,
-                                     String producerTaskId,
-                                     String producerOccurrenceId) {
-            Binding current = bind();
-            if (!current.usable()) return false;
-            try {
-                Object result = current.stage.invoke(null, leafPath,
-                        Long.valueOf(handle), producerTaskId,
-                        producerOccurrenceId);
-                return result instanceof Boolean
-                        && ((Boolean) result).booleanValue();
-            } catch (Throwable ignored) {
-                return false;
-            }
-        }
-
-        private static HeaderHandle take(String leafPath) {
-            Binding current = bind();
-            if (!current.usable()) return HeaderHandle.MISSING;
-            try {
-                Object result = current.take.invoke(null, leafPath);
-                if (result == null || !((Boolean) current.present.invoke(
-                        result)).booleanValue()) {
-                    return HeaderHandle.MISSING;
-                }
-                return new HeaderHandle(true, ((Long) current.handle.invoke(
-                        result)).longValue(),
-                        (String) current.producerTaskId.invoke(result),
-                        (String) current.producerOccurrenceId.invoke(result));
-            } catch (Throwable ignored) {
-                return HeaderHandle.MISSING;
-            }
-        }
-
-        private static Binding bind() {
-            Binding current = binding;
-            if (current != null) return current;
-            synchronized (RpcHeaderBridge.class) {
-                current = binding;
-                if (current != null) return current;
-                try {
-                    Class<?> bridge = Class.forName(CLASS);
-                    Method stage = bridge.getMethod("stageExpression",
-                            String.class, long.class, String.class,
-                            String.class);
-                    Method take = bridge.getMethod("takeCurrentExpression",
-                            String.class);
-                    Class<?> result = take.getReturnType();
-                    current = new Binding(stage, take,
-                            result.getMethod("present"),
-                            result.getMethod("handle"),
-                            result.getMethod("producerTaskId"),
-                            result.getMethod("producerOccurrenceId"));
-                } catch (ReflectiveOperationException | RuntimeException
-                         | LinkageError unavailable) {
-                    current = new Binding();
-                }
-                binding = current;
-                return current;
-            }
-        }
-
-        private static final class Binding {
-            private final Method stage;
-            private final Method take;
-            private final Method present;
-            private final Method handle;
-            private final Method producerTaskId;
-            private final Method producerOccurrenceId;
-
-            private Binding() {
-                this(null, null, null, null, null, null);
-            }
-
-            private Binding(Method stage, Method take, Method present,
-                            Method handle, Method producerTaskId,
-                            Method producerOccurrenceId) {
-                this.stage = stage;
-                this.take = take;
-                this.present = present;
-                this.handle = handle;
-                this.producerTaskId = producerTaskId;
-                this.producerOccurrenceId = producerOccurrenceId;
-            }
-
-            private boolean usable() {
-                return stage != null && take != null;
-            }
-        }
-    }
-
-    /** Stages one VM handle with the exact active producer execution. */
-    private static boolean stageRpcHeaderExpression(String leafPath,
-                                                    long handle) {
-        ActiveRegion active = activeRegion();
-        return active != null && RpcHeaderBridge.stage(leafPath, handle,
-                active.activation.taskId, active.occurrenceId());
-    }
-
-    /** Exact primitive leaf reached from one configured response root. */
-    private static final class ResponseFieldPathLeaf {
-        private final Object owner;
-        private final DeclaredField field;
-        private final String descriptor;
-
-        private ResponseFieldPathLeaf(Object owner, DeclaredField field) {
-            this.owner = owner;
-            this.field = field;
-            this.descriptor = javaTypeDescriptor(field.type());
-        }
-    }
-
-    /** Names one response port whose exact declared cut is starting. */
-    public static void prepareResponseHandoff(String portId) {
-        ActiveRegion caller = activeRegion();
-        if (caller == null || safe(portId).isEmpty()) return;
-        CommunicationHandoffSpec site =
-                caller.activation.communicationHandoff(portId, false);
-        if (site == null || !"RESPONSE".equalsIgnoreCase(site.direction())) {
-            return;
-        }
-        ResponseCutExpectation expected = configuration()
-                .responseCutExpectation(caller.activation, site);
-        if (!expected.valid()) {
-            deferResponseArmGap(caller, site, null,
-                    "response cut has no unique request transport: "
-                            + expected.failure);
-            return;
-        }
-        PendingResponseCut cut;
-        String portKey = responseCutPortKey(caller.token, site.portId());
-        synchronized (RESPONSE_ARM_LOCK) {
-            cut = PENDING_RESPONSE_CUTS_BY_PORT.get(portKey);
-            if (cut == null) {
-                for (PendingResponseCut candidate : new LinkedHashSet<>(
-                        PENDING_RESPONSE_CUTS_BY_PORT.values())) {
-                    if (candidate.sameCut(caller, site)) {
-                        cut = candidate;
-                        break;
-                    }
-                }
-            }
-            if (cut == null) {
-                cut = new PendingResponseCut(caller, site,
-                        expected.transport);
-            } else if (!cut.expectsTransport(expected.transport)) {
-                cut.refuse("one response cut resolved two request transports: "
-                        + cut.expectedTransport + " and "
-                        + expected.transport);
-            }
-            cut.addPort(site.portId());
-            PENDING_RESPONSE_CUTS_BY_PORT.put(portKey, cut);
-            RESPONSE_CUT_TOKEN.set(Long.valueOf(cut.cutToken));
-        }
-    }
-
-    /** Moves only the arm owned by this exact request exchange. */
-    static void observeExchangeLeg(String direction, String transport,
-                                   String correlationId, String half) {
-        String normalizedDirection = safe(direction);
-        String normalizedHalf = safe(half);
-        String key = exchangeKey(transport, correlationId, normalizedHalf);
-        if ("SEND".equalsIgnoreCase(normalizedDirection)) {
-            if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
-                PendingResponseCut cut = responseCutForSend(transport);
-                if (cut != null && cut.bindFirstExchange(key)) {
-                    armResponseProducer(key, cut);
-                }
-            } else if ("RESPONSE".equalsIgnoreCase(normalizedHalf)) {
-                ResponseProducerAdmission inbound =
-                        INBOUND_RESPONSE_PRODUCER_ARM.get();
-                if (inbound != null) {
-                    inbound.cut.refuse("request exchange "
-                            + inbound.exchangeKey + " returned before the "
-                            + "selected response producer was admitted");
-                }
-                INBOUND_RESPONSE_PRODUCER_ARM.remove();
-            }
-            return;
-        }
-        if (!"RECEIVE".equalsIgnoreCase(normalizedDirection)) return;
-        if ("REQUEST".equalsIgnoreCase(normalizedHalf)) {
-            ResponseProducerAdmission admission;
-            synchronized (RESPONSE_ARM_LOCK) {
-                admission = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(key);
-            }
-            if (admission == null) {
-                INBOUND_RESPONSE_PRODUCER_ARM.remove();
-            } else {
-                admission.cut.delivered(key);
-                INBOUND_RESPONSE_PRODUCER_ARM.set(admission);
-            }
-        }
-    }
-
-    /** Selects a pending cut without consuming any unrelated send. */
-    private static PendingResponseCut responseCutForSend(String transport) {
-        ActiveRegion current = activeRegion();
-        Long cutToken = RESPONSE_CUT_TOKEN.get();
-        List<PendingResponseCut> matches = new ArrayList<>();
-        synchronized (RESPONSE_ARM_LOCK) {
-            for (PendingResponseCut candidate : new LinkedHashSet<>(
-                    PENDING_RESPONSE_CUTS_BY_PORT.values())) {
-                if (candidate.expectsTransport(transport)
-                        && candidate.matchesSender(current, cutToken)) {
-                    matches.add(candidate);
-                }
-            }
-            if (matches.size() == 1) return matches.get(0);
-            if (matches.size() > 1) {
-                for (PendingResponseCut candidate : matches) {
-                    candidate.refuse("request send matched " + matches.size()
-                            + " live response cuts in one causal scope");
-                }
-            }
-        }
-        return null;
-    }
-
-    private static String exchangeKey(String transport, String correlationId,
-                                      String half) {
-        return safe(transport) + "\n" + safe(correlationId) + "\n"
-                + safe(half);
-    }
-
-    /** Arms only the unique producer already selected by this caller's task. */
-    private static void armResponseProducer(String exchangeKey,
-                                            PendingResponseCut cut) {
-        if (cut == null) return;
-        Set<String> responsePorts = cut.ports();
-        ResponseProducerArm arm = configuration().responseProducerArm(
-                cut.caller.activation, responsePorts);
-        if (!arm.valid()) {
-            cut.refuse("required response producer admission is not unique: "
-                    + arm.failure);
-            return;
-        }
-        ResponseProducerAdmission admission = new ResponseProducerAdmission(
-                arm, cut, exchangeKey);
-        ResponseProducerAdmission previous;
-        synchronized (RESPONSE_ARM_LOCK) {
-            previous = IN_FLIGHT_RESPONSE_PRODUCER_ARMS.put(exchangeKey,
-                    admission);
-        }
-        if (previous != null && previous.cut != cut) {
-            synchronized (RESPONSE_ARM_LOCK) {
-                IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(exchangeKey);
-            }
-            previous.cut.refuse("two selected cuts armed request exchange "
-                    + exchangeKey);
-            cut.refuse("two selected cuts armed request exchange "
-                    + exchangeKey);
-        }
-    }
-
-    private static String responseCutPortKey(long token, String portId) {
-        return token + "\n" + safe(portId);
-    }
-
-    /** Records one cut-addressing refusal on its caller's selected port. */
-    private static void deferResponseArmGap(
-            ActiveRegion caller, CommunicationHandoffSpec site,
-            PendingResponseCut cut, String detail) {
-        if (caller == null || site == null) return;
-        JsonObject gap = RpcExpressionHandoff.gap(
-                RpcExpressionHandoff.STAGE_ATTACH,
-                RpcExpressionHandoff.MISSING_METADATA, 0L,
-                "response arm: " + safe(detail));
-        gap.addProperty("responseArmAuthority", RESPONSE_ARM_AUTHORITY);
-        gap.addProperty("portId", site.portId());
-        gap.addProperty("cutSiteId", site.siteId());
-        gap.addProperty("declaredCallee", site.declaredCallee());
-        if (cut != null) {
-            gap.addProperty("cutToken", cut.cutToken);
-            gap.addProperty("expectedTransport", cut.expectedTransport);
-            gap.addProperty("exchangeKey", cut.exchangeKey);
-        }
-        caller.deferResponseHandoffGap(site.portId(), gap);
-        diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
-    }
-
-    /** Settles the arm when the instrumented response cut returns. */
-    private static void completeResponseCutReturn(
-            CommunicationHandoffSpec site) {
-        ActiveRegion caller = activeRegion();
-        if (caller == null || site == null) return;
-        PendingResponseCut cut;
-        synchronized (RESPONSE_ARM_LOCK) {
-            cut = PENDING_RESPONSE_CUTS_BY_PORT.remove(
-                    responseCutPortKey(caller.token, site.portId()));
-        }
-        if (cut == null) return;
-        clearResponseCutToken(cut);
-        cut.returned(site.portId());
-        if (!cut.complete()) {
-            deferResponseArmGap(caller, site, cut, cut.failure());
-        }
-        if (cut.allPortsReturned()) {
-            synchronized (RESPONSE_ARM_LOCK) {
-                removeResponseCutLocked(cut);
-            }
-        }
-    }
-
-    /** Fails every declared response cut which outlived its caller. */
-    private static void failOutstandingResponseCuts(ActiveRegion caller) {
-        if (caller == null) return;
-        Set<PendingResponseCut> cuts = new LinkedHashSet<>();
-        synchronized (RESPONSE_ARM_LOCK) {
-            for (PendingResponseCut cut
-                    : PENDING_RESPONSE_CUTS_BY_PORT.values()) {
-                if (cut.caller == caller) cuts.add(cut);
-            }
-            for (PendingResponseCut cut : cuts) {
-                removeResponseCutLocked(cut);
-            }
-        }
-        for (PendingResponseCut cut : cuts) {
-            clearResponseCutToken(cut);
-            cut.refuse("caller occurrence ended before its declared response "
-                    + "cut returned");
-            for (String portId : cut.outstandingPorts()) {
-                CommunicationHandoffSpec site = caller.activation
-                        .communicationHandoff(portId, false);
-                deferResponseArmGap(caller, site, cut, cut.failure());
-            }
-        }
-    }
-
-    private static void clearResponseCutToken(PendingResponseCut cut) {
-        Long current = RESPONSE_CUT_TOKEN.get();
-        if (cut != null && current != null
-                && current.longValue() == cut.cutToken) {
-            RESPONSE_CUT_TOKEN.remove();
-        }
-    }
-
-    /** Removes all indexes owned by one settled cut. Lock must be held. */
-    private static void removeResponseCutLocked(PendingResponseCut cut) {
-        List<String> ports = new ArrayList<>();
-        for (Map.Entry<String, PendingResponseCut> entry
-                : PENDING_RESPONSE_CUTS_BY_PORT.entrySet()) {
-            if (entry.getValue() == cut) ports.add(entry.getKey());
-        }
-        for (String port : ports) {
-            PENDING_RESPONSE_CUTS_BY_PORT.remove(port);
-        }
-        List<String> exchanges = new ArrayList<>();
-        for (Map.Entry<String, ResponseProducerAdmission> entry
-                : IN_FLIGHT_RESPONSE_PRODUCER_ARMS.entrySet()) {
-            if (entry.getValue().cut == cut) exchanges.add(entry.getKey());
-        }
-        for (String exchange : exchanges) {
-            IN_FLIGHT_RESPONSE_PRODUCER_ARMS.remove(exchange);
+    /** Closes a producer once every exact local output has been captured. */
+    private static void finishLocalOutputRelation(
+            ActiveRegion active, Object output) {
+        if (active != null && active.activation.relationOnlySeed()
+                && active.demandedOutputRelationComplete()) {
+            finish(active.token, "NORMAL", "", output);
         }
     }
 
     // ------------------------------------------------------------------
     // Declared communication ports
     // ------------------------------------------------------------------
-
-    /** Exports one configured primitive component of the returned response. */
-    public static void exportCommunicationFieldPath(String portId,
-                                                    Object responseRoot) {
-        CommunicationHandoffSpec site;
-        beginBookkeeping();
-        try {
-            site = communicationHandoffSite(portId, true);
-        } finally {
-            endBookkeeping();
-        }
-        if (site == null || !site.responsePathCarrier()) return;
-        ResponseFieldPathLeaf leaf = responseFieldPathLeaf(responseRoot,
-                site.handoffPath());
-        if (leaf == null) {
-            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
-                    "configured response field path did not resolve: "
-                            + site.portId());
-            return;
-        }
-        // The native broker deliberately performs a pure lookup for a
-        // container state: it must never turn an arbitrary response object
-        // into a symbolic root.
-        try {
-            Object value = readExactField(leaf.owner,
-                    leaf.field.signature());
-            if (value == MissingValue.INSTANCE) {
-                throw new IllegalStateException(
-                        "configured response leaf is unavailable");
-            }
-            if (containerValue(value)
-                    && !snapshotOutputContainer(value, engine())) {
-                throw new IllegalStateException(
-                        "configured response container has no bounded "
-                                + "snapshot model");
-            }
-        } catch (Throwable failure) {
-            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
-                    "configured response field path could not prepare its "
-                            + "container state: " + rootCause(failure));
-            return;
-        }
-        HandoffResult result = exportSymbolicLeaf(leaf.owner,
-                leaf.field.owner(), leaf.field.name(), leaf.descriptor,
-                site.portId());
-        // The custom VM exports exact concrete primitives as typed ConstExpr
-        // handles.
-        if (!result.ok()) return;
-        if (!stageRpcHeaderExpression(site.leafPath(), result.handle())) {
-            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_EXPORT,
-                    "response field path could not enter the RPC header: "
-                            + site.leafPath());
-        }
-    }
-
-    /** Attaches one carried handle to the reconstructed response's leaf. */
-    public static void attachCommunicationFieldPath(String portId,
-                                                    Object responseRoot) {
-        CommunicationHandoffSpec site;
-        HeaderHandle carried;
-        long handle;
-        beginBookkeeping();
-        try {
-            site = communicationHandoffSite(portId, false);
-            carried = site == null ? HeaderHandle.MISSING
-                    : RpcHeaderBridge.take(site.leafPath());
-            handle = carried.handle;
-        } finally {
-            endBookkeeping();
-        }
-        if (site == null || !site.responsePathCarrier()) return;
-        completeResponseCutReturn(site);
-        if (handle <= 0L) {
-            ActiveRegion active = activeRegion();
-            if (active != null
-                    && active.responseHandoffSatisfied(site.portId())) {
-                // This bounded case already attached the selected response
-                // component.
-                return;
-            }
-            deferRequiredResponseHandoffHandleGap(site);
-            return;
-        }
-        ResponseFieldPathLeaf leaf = responseFieldPathLeaf(responseRoot,
-                site.handoffPath());
-        if (leaf == null) {
-            recordFieldPathHandoffFailure(RpcExpressionHandoff.STAGE_ATTACH,
-                    "configured response field path did not resolve: "
-                            + site.portId());
-            return;
-        }
-        attachDeclaredCommunicationExpression(leaf.owner,
-                leaf.field.owner(), leaf.field.name(), leaf.descriptor,
-                carried, site);
-    }
-
-    private static ResponseFieldPathLeaf responseFieldPathLeaf(
-            Object root,
-            List<CommunicationHandoffSpec.PathStep> path) {
-        if (root == null || path == null || path.isEmpty()) {
-            return null;
-        }
-        Object owner = root;
-        for (int index = 0; index < path.size(); index++) {
-            CommunicationHandoffSpec.PathStep step = path.get(index);
-            if (step.field()) {
-                if (index + 1 == path.size()) {
-                    DeclaredField leaf = FieldPathSpec.declaredField(
-                            step.declaration());
-                    if (leaf == null || declaredInstanceField(owner,
-                            leaf.signature()) == null) return null;
-                    return new ResponseFieldPathLeaf(owner, leaf);
-                }
-                owner = readExactField(owner, step.declaration());
-            } else if (step.uniqueArrayElement()) {
-                owner = uniqueArrayElement(owner, step.elementType());
-            } else {
-                return null;
-            }
-            if (owner == null || owner == MissingValue.INSTANCE) return null;
-        }
-        return null;
-    }
-
-    /** Returns the sole exact-class element of one fixed runtime array. */
-    private static Object uniqueArrayElement(Object value,
-                                             String binaryClassName) {
-        if (value == null || !value.getClass().isArray()
-                || safe(binaryClassName).isEmpty()) return null;
-        Object selected = null;
-        int length = Array.getLength(value);
-        for (int index = 0; index < length; index++) {
-            Object element = Array.get(value, index);
-            if (element == null || !binaryClassName.equals(
-                    element.getClass().getName())) continue;
-            if (selected != null) return null;
-            selected = element;
-        }
-        return selected;
-    }
-
-    private static void recordFieldPathHandoffFailure(String stage,
-                                                      String detail) {
-        beginBookkeeping();
-        try {
-            record(failed(stage, RpcExpressionHandoff.MISSING_METADATA,
-                    0L, detail));
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /** A selected attach site executed, but its message carried no VM handle. */
-    /**
-     * Defers a missing selected response leaf until this bounded caller ends.
-     */
-    private static void deferRequiredResponseHandoffHandleGap(
-            CommunicationHandoffSpec site) {
-        JsonObject gap = RpcExpressionHandoff.gap(
-                RpcExpressionHandoff.STAGE_ATTACH,
-                RpcExpressionHandoff.UNKNOWN_HANDLE, 0L,
-                "required communication port carried no live VM handle: "
-                        + site.portId());
-        ActiveRegion active = activeRegion();
-        if (active == null) {
-            recordHandoffGap(gap);
-            return;
-        }
-        active.deferResponseHandoffGap(site.portId(), gap);
-        diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
-    }
 
     /**
      * Exports the live expression of one declared communication port.
@@ -3999,6 +2770,7 @@ public final class ConcolicRegionRuntime {
     public static void exportCommunicationLeaf(String portId, Object carrier,
                                                String field,
                                                String descriptor) {
+        ActiveRegion active = activeRegion();
         CommunicationHandoffSpec site;
         beginBookkeeping();
         try {
@@ -4014,14 +2786,16 @@ public final class ConcolicRegionRuntime {
                 && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
             return;
         }
-        if (!stageRpcHeaderExpression(site.leafPath(),
+        if (!stageMessageExpression(site.portId(),
                 result.ok() ? result.handle() : 0L)) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_EXPORT,
                     RpcExpressionHandoff.MISSING_METADATA,
                     result.ok() ? result.handle() : 0L,
-                    "communication leaf could not enter the RPC header: "
+                    "communication leaf could not enter the message: "
                             + site.portId()));
+        } else {
+            finishStagedCommunicationRelation(active, site.portId(), carrier);
         }
     }
 
@@ -4037,24 +2811,20 @@ public final class ConcolicRegionRuntime {
                                                String field,
                                                String descriptor) {
         CommunicationHandoffSpec site;
-        HeaderHandle carried;
+        SymbolicMessageEnvelope.Entry carried;
         long handle;
         boolean leafCarried;
         beginBookkeeping();
         try {
             site = communicationHandoffSite(portId, false);
-            carried = site == null ? HeaderHandle.MISSING
-                    : RpcHeaderBridge.take(site.leafPath());
-            leafCarried = carried.present;
-            handle = carried.handle;
+            carried = site == null ? null
+                    : SymbolicMessageEnvelope.take(site.portId());
+            leafCarried = carried != null && carried.present();
+            handle = carried == null ? 0L : carried.handle();
         } finally {
             endBookkeeping();
         }
         if (site == null) return;
-        if (site.attachesCutReturn()
-                && "RESPONSE".equalsIgnoreCase(site.direction())) {
-            completeResponseCutReturn(site);
-        }
         if (carrier == null) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
@@ -4063,11 +2833,35 @@ public final class ConcolicRegionRuntime {
                             + site.portId()));
             return;
         }
+        if (leafCarried && handle == 0L) {
+            ActiveRegion active = activeRegion();
+            if (active != null && acceptCommunicationEndpoint(active, site,
+                    carried.producerTaskId(),
+                    carried.producerOccurrenceId())) {
+                active.observedInputSlots.add(site.portId());
+                active.symbolized.remove(site.portId());
+            }
+            return;
+        }
+        // The native VM executes one selected region per workload instance.
+        // A singleton consumer replay therefore sees the concrete message but
+        // no live handle from the producer's separate replay.  Its frozen
+        // exact wire binding is still the authority for this relation-bound
+        // input; composition later equates it with the producer's output.
+        ActiveRegion active = activeRegion();
+        String plannedProducer = active == null ? ""
+                : active.activation.attachProducerOccurrence(site.portId());
+        if (!leafCarried && handle == 0L && !plannedProducer.isEmpty()
+                && acceptCommunicationEndpoint(active, site, "",
+                plannedProducer)) {
+            active.observedInputSlots.add(site.portId());
+            active.symbolized.remove(site.portId());
+            return;
+        }
         if (handle <= 0L) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
-                    leafCarried ? RpcExpressionHandoff.NOT_SYMBOLIC
-                            : RpcExpressionHandoff.UNKNOWN_HANDLE, 0L,
+                    RpcExpressionHandoff.UNKNOWN_HANDLE, 0L,
                     "required communication port carried no live VM handle: "
                             + site.portId()));
             return;
@@ -4082,17 +2876,6 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = activeRegion();
         if (active == null || safe(portId).isEmpty()) return null;
         return active.activation.communicationHandoff(portId, exporting);
-    }
-
-    /** The manual adapter port declared for one exact carrier storage. */
-    private static CommunicationHandoffSpec manualCommunicationHandoffSite(
-            String declaringClass, String fieldName, String descriptor,
-            boolean exporting) {
-        ActiveRegion active = activeRegion();
-        if (active == null) return null;
-        return active.activation.manualCommunicationHandoffs.get(
-                RuntimeTask.handoffCarrierKey(declaringClass, fieldName,
-                        descriptor, exporting));
     }
 
     /**
@@ -4229,6 +3012,27 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, CommunicationHandoffSpec site,
             long exportEvent, long attachEvent, JsonElement expression,
             String producerTaskId, String producerOccurrenceId) {
+        if (!acceptCommunicationEndpoint(active, site, producerTaskId,
+                producerOccurrenceId)) return;
+        active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
+                exportEvent, attachEvent, expression, producerTaskId,
+                producerOccurrenceId));
+        // A VM-attached expression is an exact selected symbolic input just as
+        // much as one created by a local symbolize hook.
+        ensurePathRecordingStarted(active);
+        // The receiving local now denotes the sender's expression, so any
+        // fresh root the entry materialization minted for this same port is
+        // dead code that only a second authority could still read.
+        // README SMT-1 allows one authority per selected input, and after a
+        // successful attach that authority is this edge.
+        active.observedInputSlots.add(site.portId());
+        active.symbolized.remove(site.portId());
+    }
+
+    /** Checks that one message entry came from its planned producer. */
+    private static boolean acceptCommunicationEndpoint(
+            ActiveRegion active, CommunicationHandoffSpec site,
+            String producerTaskId, String producerOccurrenceId) {
         String expectedProducer = active.activation
                 .attachProducerOccurrence(site.portId());
         String actualProducer = PathObservation.plannedOccurrenceOf(
@@ -4241,26 +3045,15 @@ public final class ConcolicRegionRuntime {
                     + safe(active.activation.taskId) + " port="
                     + site.portId() + " expected=" + expectedProducer
                     + " actual=" + actualProducer);
-            return;
+            return false;
         }
-        active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
-                exportEvent, attachEvent, expression, producerTaskId,
-                producerOccurrenceId));
         if (!expectedProducer.isEmpty()) {
             active.markAttachEndpointSatisfied(site.portId());
         }
-        // A VM-attached expression is an exact selected symbolic input just as
-        // much as one created by a local symbolize hook.
-        ensurePathRecordingStarted(active);
-        if (site.responsePathCarrier()) {
-            active.markResponseHandoffSatisfied(site.portId());
+        if (!active.activation.responseConsumerExchanges.isEmpty()) {
+            active.responseConsumerAttached = true;
         }
-        // The receiving local now denotes the sender's expression, so any
-        // fresh root the entry materialization minted for this same port is
-        // dead code that only a second authority could still read.
-        // README SMT-1 allows one authority per selected input, and after a
-        // successful attach that authority is this edge.
-        active.symbolized.remove(site.portId());
+        return true;
     }
 
     /** Files one handoff gap with the active region, when there is one. */
@@ -4284,10 +3077,6 @@ public final class ConcolicRegionRuntime {
                     RpcExpressionHandoff.MISSING_METADATA, handle, missing);
         }
         EngineApi api = engine();
-        if (!api.expressionHandoffAvailable()) {
-            return unavailable(RpcExpressionHandoff.STAGE_ATTACH, handle,
-                    "this JDK exposes no symbolic expression handoff API");
-        }
         long exportEventId;
         // README RPC-1: both endpoints of the VALUE_HANDOFF edge leave the VM
         // together.
@@ -4339,12 +3128,6 @@ public final class ConcolicRegionRuntime {
             return RpcExpressionHandoff.MALFORMED_RESULT;
         }
         return (int) handle;
-    }
-
-    private static HandoffResult unavailable(String stage, long handle,
-                                             String detail) {
-        return failed(stage, RpcExpressionHandoff.API_UNAVAILABLE, handle,
-                detail);
     }
 
     private static HandoffResult failed(String stage, int status, long handle,
@@ -4529,12 +3312,6 @@ public final class ConcolicRegionRuntime {
                     null, active);
         }
         EngineApi api = engine();
-        if (!(carrier.mapState() ? api.sharedMapEvidenceAvailable()
-                : api.sharedStateEvidenceAvailable())) {
-            return recordShared(unavailableShared(
-                    SharedStateEvidence.STAGE_SELECT, ""), null,
-                    active);
-        }
         long initial;
         try {
             initial = carrier.select(api);
@@ -4543,9 +3320,12 @@ public final class ConcolicRegionRuntime {
                     SharedStateEvidence.INVOCATION_FAILED, "",
                     rootCause(throwable)), null, active);
         }
-        if (initial <= 0L) {
+        // The VM returns zero when this exact location is already selected in
+        // the current session.  Selection is idempotent: this activation must
+        // still retain the carrier so it can read the shared version ledger.
+        if (initial < 0L) {
             return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
-                    initial == 0L || initial < Integer.MIN_VALUE
+                    initial < Integer.MIN_VALUE
                             ? SharedStateEvidence.MALFORMED_ENVELOPE
                             : (int) initial, "",
                     carrier.selectApi() + " returned " + initial), null,
@@ -4609,11 +3389,6 @@ public final class ConcolicRegionRuntime {
                         null, active);
             }
             EngineApi api = engine();
-            if (!(carrier.mapState() ? api.sharedMapEvidenceAvailable()
-                    : api.sharedStateEvidenceAvailable())) {
-                return recordShared(unavailableShared(
-                        SharedStateEvidence.STAGE_VERSIONS, ""), null, active);
-            }
             String serialized = memoizedReadOut(carrier.key());
             if (serialized == null) {
                 try {
@@ -4643,10 +3418,6 @@ public final class ConcolicRegionRuntime {
         beginBookkeeping();
         try {
             EngineApi api = engine();
-            if (!api.sharedStateEvidenceAvailable()) {
-                return recordShared(unavailableShared(
-                        SharedStateEvidence.STAGE_LEDGER, ""), null, active);
-            }
             String serialized = memoizedReadOut(LEDGER_READ_OUT_KEY);
             if (serialized == null) {
                 try {
@@ -5275,14 +4046,6 @@ public final class ConcolicRegionRuntime {
                 + "and type descriptor" : "";
     }
 
-    /** Maps a negative carrier-selection answer onto a status. */
-    private static SharedStateResult unavailableShared(String stage,
-                                                       String locationKey) {
-        return failedShared(stage, SharedStateEvidence.API_UNAVAILABLE,
-                locationKey,
-                "this JDK exposes no recorded shared-state evidence API");
-    }
-
     private static SharedStateResult failedShared(String stage, int status,
                                                   String locationKey,
                                                   String detail) {
@@ -5331,14 +4094,6 @@ public final class ConcolicRegionRuntime {
         for (SharedCarrier carrier
                 : new ArrayList<>(active.sharedCarriers.values())) {
             try {
-                if (carrier.mapState()
-                        ? !api.sharedMapEvidenceAvailable()
-                        : !api.sharedStateEvidenceAvailable()) {
-                    carriers.add(RawSharedCarrierReadOut.failure(carrier,
-                            unavailableShared(
-                                    SharedStateEvidence.STAGE_VERSIONS, "")));
-                    continue;
-                }
                 String serialized = memoizedReadOut(carrier.key());
                 if (serialized == null) {
                     serialized = memoizeReadOut(carrier.key(),
@@ -5356,22 +4111,17 @@ public final class ConcolicRegionRuntime {
 
         String ledger = null;
         SharedStateResult ledgerFailure = null;
-        if (!api.sharedStateEvidenceAvailable()) {
-            ledgerFailure = unavailableShared(
-                    SharedStateEvidence.STAGE_LEDGER, "");
-        } else {
-            try {
-                ledger = memoizedReadOut(LEDGER_READ_OUT_KEY);
-                if (ledger == null) {
-                    ledger = memoizeReadOut(LEDGER_READ_OUT_KEY,
-                            api.eventLedger());
-                }
-            } catch (Throwable throwable) {
-                ledgerFailure = failedShared(
-                        SharedStateEvidence.STAGE_LEDGER,
-                        SharedStateEvidence.INVOCATION_FAILED, "",
-                        rootCause(throwable));
+        try {
+            ledger = memoizedReadOut(LEDGER_READ_OUT_KEY);
+            if (ledger == null) {
+                ledger = memoizeReadOut(LEDGER_READ_OUT_KEY,
+                        api.eventLedger());
             }
+        } catch (Throwable throwable) {
+            ledgerFailure = failedShared(
+                    SharedStateEvidence.STAGE_LEDGER,
+                    SharedStateEvidence.INVOCATION_FAILED, "",
+                    rootCause(throwable));
         }
         return new RawSharedStateReadOut(carriers, ledger, ledgerFailure,
                 identity);
@@ -5826,8 +4576,7 @@ public final class ConcolicRegionRuntime {
     /** Reads only the absolute indices named by an exact VM branch event. */
     private static PathConditionRead readPathConditionRange(
             EngineApi api, int start, int end) throws Exception {
-        if (!api.pathConditionRangeAvailable() || start < 0
-                || end <= start) {
+        if (start < 0 || end <= start) {
             return new PathConditionRead(PathConditionElements.EMPTY, -1,
                     "EXACT_RANGE_UNAVAILABLE");
         }
@@ -6247,29 +4996,7 @@ public final class ConcolicRegionRuntime {
                                              Object output) {
         ActiveRegion active = ownerRegion(token);
         if (active == null) return;
-        if ("NORMAL".equals(exitKind)
-                && active.deferResponseTerminal(exitKind,
-                exceptionType, output)) {
-            return;
-        }
         finishOccurrence(active, exitKind, exceptionType, output);
-    }
-
-    /**
-     * Completes a server occurrence after its transport adapter exported the
-     * returned response object while the occurrence's VM context was live.
-     *
-     * @return {@code true} when this thread completed a parked response
-     * terminal, otherwise {@code false}
-     */
-    public static boolean completeResponseHandoff() {
-        ActiveRegion active = activeRegion();
-        if (active == null) return false;
-        DeferredTerminal terminal = active.takeResponseTerminal();
-        if (terminal == null) return false;
-        finishOccurrence(active, terminal.exitKind,
-                terminal.exceptionType, terminal.output);
-        return true;
     }
 
     private static void finishOccurrence(ActiveRegion active, String exitKind,
@@ -6527,10 +5254,6 @@ public final class ConcolicRegionRuntime {
             api.pausePathCondition();
             READ_OUT_MEMO.set(new HashMap<String, String>());
             try {
-                // A response port is judged over the whole bounded caller, not
-                // over each producer candidate it tried.
-                failOutstandingResponseCuts(active);
-                active.flushPendingResponseHandoffGaps();
                 if (!active.abandoned) {
                     result = new JsonObject();
                     // One ordinal names every row assembled for this close.
@@ -7668,6 +6391,50 @@ public final class ConcolicRegionRuntime {
         return token == null ? null : ownerRegion(token);
     }
 
+    /** Drops a response consumer that started on the wrong request attempt. */
+    static boolean retainOutboundExchange(
+            String transport, String correlationId, String attemptId,
+            String half) {
+        ActiveRegion active = activeRegion();
+        if (active == null || active.responseConsumerAttached
+                || !active.activation
+                .rejectsOutboundRequestExchange(transport, correlationId,
+                        attemptId, half)) {
+            return true;
+        }
+        if (!active.finished.compareAndSet(false, true)) return false;
+        beginBookkeeping();
+        try {
+            String actual = responseExchangeKey(
+                    transport, correlationId, attemptId);
+            active.activation.noteUnaddressedCandidate(
+                    "matching root sent response exchange " + actual
+                            + " instead of "
+                            + active.activation.responseConsumerExchanges);
+            diag("RESPONSE_CONSUMER_EXCHANGE_REJECTED", "task="
+                    + safe(active.activation.taskId) + " exchange=" + actual);
+            AccessorCallContext scope = CURRENT_ACCESSOR_CALL_CONTEXT.get();
+            if (scope != null && scope.regionToken == active.token) {
+                CURRENT_ACCESSOR_CALL_CONTEXT.remove();
+            }
+            engine().cleanupAfterFailure();
+        } finally {
+            active.releaseActivationOrdinal();
+            active.abandoned = true;
+            active.closed = true;
+            ACTIVE.remove(active.token, active);
+            CURRENT_TOKEN.remove();
+            configuration().releaseCandidate(active.activation);
+            for (RuntimeTask claimant : active.siblingClaimants) {
+                configuration().releaseCandidate(claimant);
+            }
+            active.siblingClaimants.clear();
+            endLiveSelectedRegion();
+            endBookkeeping();
+        }
+        return false;
+    }
+
     /** Returns null only when no lightweight accessor scope is active. */
     private static Boolean lightweightAccessorContextMatches(
             String callerMethod, int callUnitIndex, String callSiteId,
@@ -7972,28 +6739,7 @@ public final class ConcolicRegionRuntime {
                 result.add(entry.getKey(), entry.getValue());
             }
         }
-        boolean written = appendResult(result);
-        int haltStatus = terminalSelectedSkipHaltStatus(skipKind, reason,
-                written);
-        if (haltStatus >= 0) {
-            // A durable terminal skip is not a successful replay result.
-            haltWhenCampaignSettled(activation.taskId, haltStatus);
-        }
-    }
-
-    /**
-     * The halt-status contribution of a skip that ends its task, or -1 when
-     * the task may still publish.
-     */
-    static int terminalSelectedSkipHaltStatus(
-            String skipKind, String reason, boolean written) {
-        // A replay-prefix mismatch is not terminal: a later compatible
-        // activation of the same task may still match the recorded prefix.
-        boolean terminal = SKIP_NOT_STARTED.equals(skipKind)
-                && safe(reason).startsWith(
-                "custom concolic System API is unavailable");
-        if (!terminal) return -1;
-        return written ? 3 : 2;
+        appendResult(result);
     }
 
     private static boolean appendResult(JsonObject result) {
@@ -8478,6 +7224,31 @@ public final class ConcolicRegionRuntime {
         return value == null ? "" : value;
     }
 
+    private static String plannedResponseExchangeKey(JsonObject binding) {
+        if (!"RUNTIME_PROTOCOL_FLOW".equals(string(binding, "kind"))
+                || !"RESPONSE".equalsIgnoreCase(firstNonBlank(
+                string(binding, "protocolDirection"),
+                string(binding, "direction")))) {
+            return "";
+        }
+        String[] leg = string(binding, "exchangeLeg").split("\n", -1);
+        if (leg.length != 3 || !"RESPONSE".equalsIgnoreCase(leg[2])) {
+            return "";
+        }
+        return responseExchangeKey(string(binding, "transportKind"),
+                leg[0], leg[1]);
+    }
+
+    private static String responseExchangeKey(
+            String transport, String correlationId, String attemptId) {
+        String kind = safe(transport).trim().toUpperCase(Locale.ROOT);
+        String correlation = safe(correlationId).trim();
+        String attempt = safe(attemptId).trim();
+        return kind.isEmpty() || correlation.isEmpty() || attempt.isEmpty()
+                ? "" : kind + "\n" + correlation + "\n" + attempt
+                + "\nRESPONSE";
+    }
+
     enum MissingValue { INSTANCE }
 
     private enum UnsupportedReplayValue { INSTANCE }
@@ -8800,8 +7571,8 @@ public final class ConcolicRegionRuntime {
         /** Terminal outcome, frozen when the occurrence stops running. */
         private boolean abandoned;
         private boolean closed;
-        /** Normal handler return parked until response serialization ends. */
-        private DeferredTerminal responseTerminal;
+        /** A selected response input attached; later requests are new hops. */
+        private boolean responseConsumerAttached;
         /** Loop bodies this activation has charged. */
         private volatile long chargedLoopBodies;
         /**
@@ -8829,23 +7600,6 @@ public final class ConcolicRegionRuntime {
             return true;
         }
 
-        private synchronized boolean deferResponseTerminal(
-                String exitKind, String exceptionType, Object output) {
-            if (!activation.exportsResponseHandoff) return false;
-            if (responseTerminal != null) {
-                throw new IllegalStateException(
-                        "response terminal already deferred");
-            }
-            responseTerminal = new DeferredTerminal(exitKind,
-                    exceptionType, output);
-            return true;
-        }
-
-        private synchronized DeferredTerminal takeResponseTerminal() {
-            DeferredTerminal terminal = responseTerminal;
-            responseTerminal = null;
-            return terminal;
-        }
         private String exitKind = "";
         private String exceptionType = "";
         private Object exitOutput;
@@ -8922,15 +7676,8 @@ public final class ConcolicRegionRuntime {
          */
         private final Map<String, Long> exportEventByPort =
                 new LinkedHashMap<>();
-        /** Response component ports already attached in this bounded case. */
-        private final Set<String> satisfiedResponseHandoffPorts =
+        private final Set<String> stagedCommunicationPorts =
                 new LinkedHashSet<>();
-        /**
-         * Provisional handle misses while searching repeated response
-         * candidates.
-         */
-        private final Map<String, JsonObject> pendingResponseHandoffGaps =
-                new LinkedHashMap<>();
         private final List<JsonObject> rpcHandoffGaps = new ArrayList<>();
 
         private synchronized void noteAttachEndpointMismatch(
@@ -8959,8 +7706,7 @@ public final class ConcolicRegionRuntime {
             Set<String> checkedExchanges = new LinkedHashSet<>();
             for (Map.Entry<String, String> expected
                     : activation.attachProducerOccurrenceByPort.entrySet()) {
-                String exchange = activation.attachExchangeIdentity(
-                        expected.getKey());
+                String exchange = expected.getKey();
                 if (!checkedExchanges.add(exchange)) continue;
                 String mismatch = null;
                 String firstPort = expected.getKey();
@@ -8969,8 +7715,7 @@ public final class ConcolicRegionRuntime {
                 for (Map.Entry<String, String> candidate
                         : activation.attachProducerOccurrenceByPort
                         .entrySet()) {
-                    if (!exchange.equals(activation.attachExchangeIdentity(
-                            candidate.getKey()))) {
+                    if (!exchange.equals(candidate.getKey())) {
                         continue;
                     }
                     if (satisfiedAttachEndpointPorts.contains(
@@ -8994,38 +7739,13 @@ public final class ConcolicRegionRuntime {
             return "";
         }
 
-        private synchronized void deferResponseHandoffGap(
-                String portId, JsonObject gap) {
-            String port = safe(portId);
-            if (port.isEmpty() || satisfiedResponseHandoffPorts.contains(
-                    port)) return;
-            if (!pendingResponseHandoffGaps.containsKey(port)) {
-                pendingResponseHandoffGaps.put(port, gap);
-            }
-        }
-
-        private synchronized void markResponseHandoffSatisfied(
-                String portId) {
-            String port = safe(portId);
-            if (port.isEmpty()) return;
-            satisfiedResponseHandoffPorts.add(port);
-            pendingResponseHandoffGaps.remove(port);
-        }
-
-        private synchronized boolean responseHandoffSatisfied(
-                String portId) {
-            return !safe(portId).isEmpty()
-                    && satisfiedResponseHandoffPorts.contains(portId);
-        }
-
         /**
          * Whether this turn carried one of its region's selected causal
          * anchors: the VM answered the declared attach of an exchange the
          * plan selected this region for.
          *
-         * <p>Both witnesses are the VM's own answer at the declared attach --
-         * a satisfied response-path component, and the handoff ledger row a
-         * plain cut-return attach files.  Nothing here consults the plan for
+         * <p>The witness is the VM's own answer at the declared attach.
+         * Nothing here consults the plan for
          * what "should" have arrived; a turn the exchange did not reach is
          * simply not anchored.  This evidence exists only once the exchange
          * has landed, which is inside the turn, not at its entry.</p>
@@ -9040,11 +7760,6 @@ public final class ConcolicRegionRuntime {
                 }
             }
             Set<String> anchors = activation.causalAnchorPorts();
-            for (String portId : anchors) {
-                if (satisfiedResponseHandoffPorts.contains(portId)) {
-                    carried.add(activation.attachAnchorId(portId));
-                }
-            }
             for (JsonObject handoff : vmHandoffEvents) {
                 String portId = string(handoff, "portId");
                 if (anchors.contains(portId)) {
@@ -9053,16 +7768,6 @@ public final class ConcolicRegionRuntime {
             }
             carried.remove("");
             return carried;
-        }
-
-        private synchronized void flushPendingResponseHandoffGaps() {
-            for (Map.Entry<String, JsonObject> entry
-                    : pendingResponseHandoffGaps.entrySet()) {
-                if (!satisfiedResponseHandoffPorts.contains(entry.getKey())) {
-                    rpcHandoffGaps.add(entry.getValue());
-                }
-            }
-            pendingResponseHandoffGaps.clear();
         }
         /**
          * Shared locations this activation selected as symbolic carriers, and
@@ -9377,6 +8082,10 @@ public final class ConcolicRegionRuntime {
                             .toJson());
             branchMappings.add(mapping);
             witnessOutcome(site, outcome);
+            if (activation.targetBranchSite.equals(site)
+                    && activation.targetBranchOccurrence == occurrence) {
+                recordTargetReach(site, occurrence, outcome);
+            }
         }
 
         private String seedOutcomeConflict() {
@@ -9553,11 +8262,6 @@ public final class ConcolicRegionRuntime {
                 String method, int unitIndex, String expression,
                 EngineApi api) throws Exception {
             String site = safe(method) + "#u" + unitIndex;
-            if (!api.exactBranchEventsAvailable()) {
-                addUnresolvedOnce(site
-                        + ": custom JDK exact branch-event API is required");
-                return null;
-            }
             int occurrence = nextBranchOccurrence(site);
             long sequence = ++preparedBranchSequence;
             if (sequence > Integer.MAX_VALUE) {
@@ -9582,11 +8286,6 @@ public final class ConcolicRegionRuntime {
                     || activation.capturesOutputRelation
                     && "BOUNDED".equals(exitKind);
             for (OutputCaptureSpec request : activation.outputCaptures) {
-                // Once-only-root rule: an instance-scoped write's version is an
-                // instance-level fact, so this per-iteration occurrence owes no
-                // capture of it and neither a miss nor a many-write count past
-                // the sampling bound is a gap here.
-                if (request.instanceScopedProducer()) continue;
                 String observedUnit = request.definitionInvocationScoped()
                         ? "definition invocation(s)"
                         : "hook occurrence(s)";
@@ -11349,24 +10048,13 @@ public final class ConcolicRegionRuntime {
         /** Strict phase lookup; phase ids never alias source ids. */
         private final Map<String, ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhasesById = new LinkedHashMap<>();
-        /** Response leaves this caller must attach after its selected cut. */
-        private final Set<String> responseAttachPortIds =
-                new LinkedHashSet<>();
         /** Every protocol input this occurrence attaches from the VM. */
         private final Set<String> attachPortIds = new LinkedHashSet<>();
-        /** Response leaves this server occurrence exports at normal return. */
-        private final Set<String> responseExportPortIds =
-                new LinkedHashSet<>();
         /**
          * Planner-selected producer occurrence of each response attach port.
          */
         private final Map<String, String> attachProducerOccurrenceByPort =
                 new LinkedHashMap<>();
-        /** Manual adapter sites indexed only by their exact VM storage. */
-        private final Map<String, CommunicationHandoffSpec>
-                manualCommunicationHandoffs = new LinkedHashMap<>();
-        /** Whether serialization must run before this server root closes. */
-        private final boolean exportsResponseHandoff;
         /** Read-cut gates the solver selected for this replay, if any. */
         private final List<JsonObject> readCutGates = new ArrayList<>();
         /** Shared locations this task selects as carriers at region entry. */
@@ -11374,6 +10062,12 @@ public final class ConcolicRegionRuntime {
                 new ArrayList<>();
         /** Frozen runtime bindings used to resolve exact Map producers. */
         private final JsonArray edgeBindings;
+        /** Response exchanges for which this occurrence is the producer. */
+        private final Set<String> responseProducerExchanges =
+                new LinkedHashSet<>();
+        /** Response exchanges delivered to this occurrence. */
+        private final Set<String> responseConsumerExchanges =
+                new LinkedHashSet<>();
         /** Declared field -> unique frozen receiver locator for this task. */
         private final Map<String, Long> plannedReceiverObjectIdByField =
                 new LinkedHashMap<>();
@@ -11417,7 +10111,6 @@ public final class ConcolicRegionRuntime {
             this.declaredSymbolize = new ArrayList<>();
             this.symbolize = new ArrayList<>();
             boolean explicitFaultInput = false;
-            boolean responseHandoff = false;
             this.branchPolicies = new LinkedHashMap<>();
             this.seedOutcomes = new LinkedHashMap<>();
             this.loopBound = task.loopBound();
@@ -11437,6 +10130,7 @@ public final class ConcolicRegionRuntime {
             this.recordedPrimitiveOutputs = new LinkedHashMap<>();
             this.executionScopeMethods = new LinkedHashSet<>();
             this.edgeBindings = task.edgeBindings().deepCopy();
+            indexResponseExchanges(edgeBindings);
             indexPlannedReceiverObjectIds(edgeBindings);
             // The plan row decoded this catalog once; phase ids are already
             // one strict ordered ledger by then, so this is an index, not a
@@ -11529,37 +10223,16 @@ public final class ConcolicRegionRuntime {
             }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
-                if (!site.exports()) {
+                if (!site.outgoing()) {
                     attachPortIds.add(site.portId());
-                }
-                responseHandoff |= site.exportsEntryReturn()
-                        && "RESPONSE".equals(site.direction());
-                if (site.attachesCutReturn()
-                        && "RESPONSE".equals(site.direction())) {
-                    responseAttachPortIds.add(site.portId());
-                }
-                if (site.exportsEntryReturn()
-                        && "RESPONSE".equals(site.direction())) {
-                    responseExportPortIds.add(site.portId());
                 }
                 // A region that holds both sides of a cut declares the same
                 // port twice, once per role, and each role has its own site.
                 if (communicationHandoffs.put(handoffKey(site.portId(),
-                        site.exports()), site) != null) {
+                        site.outgoing()), site) != null) {
                     throw new IllegalArgumentException(
                             "communication port declares two handoff sites "
                             + "in " + taskId + ": " + site.portId());
-                }
-                if (site.manualCarrier()
-                        && manualCommunicationHandoffs.put(
-                        handoffCarrierKey(site.carrierClass(),
-                                site.carrierField(),
-                                site.carrierDescriptor(), site.exports()),
-                        site) != null) {
-                    throw new IllegalArgumentException(
-                            "communication handoff declares two ports for "
-                                    + "one manual carrier in " + taskId
-                                    + ": " + site.siteId());
                 }
             }
             // A configured-source model names one mint SITE of the frozen
@@ -11589,7 +10262,6 @@ public final class ConcolicRegionRuntime {
                 }
             }
             indexAttachProducerOccurrences(edgeBindings);
-            this.exportsResponseHandoff = responseHandoff;
             // Gates travel with the task because the arm they enforce was
             // chosen by the solver for this replay and no other.
             for (JsonElement element : array(
@@ -11738,16 +10410,45 @@ public final class ConcolicRegionRuntime {
             return safe(attachProducerOccurrenceByPort.get(safe(portId)));
         }
 
-        /** One protocol exchange shared by its adapter-carried leaf ports. */
-        private String attachExchangeIdentity(String portId) {
-            String port = safe(portId);
-            CommunicationHandoffSpec handoff = communicationHandoff(port,
-                    false);
-            if (handoff == null
-                    || safe(handoff.componentOfPortId()).isEmpty()) {
-                return port;
+        private void indexResponseExchanges(JsonArray bindings) {
+            for (JsonElement element : bindings) {
+                if (!element.isJsonObject()) continue;
+                JsonObject binding = element.getAsJsonObject();
+                String exchange = plannedResponseExchangeKey(binding);
+                if (exchange.isEmpty()) continue;
+                if (occurrenceId.equals(PathObservation.plannedOccurrenceOf(
+                        string(binding, "fromOccurrenceId")))) {
+                    responseProducerExchanges.add(exchange);
+                }
+                if (occurrenceId.equals(PathObservation.plannedOccurrenceOf(
+                        string(binding, "toOccurrenceId")))) {
+                    responseConsumerExchanges.add(exchange);
+                }
             }
-            return handoff.componentOfPortId();
+        }
+
+        private boolean matchesResponseProducerExchange(
+                RuntimeTraceContext.View context) {
+            if (responseProducerExchanges.isEmpty()) return true;
+            if (context == null || !"REQUEST".equals(context.exchangeHalf)) {
+                return false;
+            }
+            return responseProducerExchanges.contains(responseExchangeKey(
+                    context.exchangeTransport, context.exchangeCorrelationId,
+                    context.exchangeAttemptId));
+        }
+
+        private boolean rejectsOutboundRequestExchange(
+                String transport, String correlationId, String attemptId,
+                String half) {
+            return !responseConsumerExchanges.isEmpty()
+                    && "REQUEST".equalsIgnoreCase(safe(half))
+                    && !responseConsumerExchanges.contains(responseExchangeKey(
+                    transport, correlationId, attemptId));
+        }
+
+        private String responseProducerExchangeDescription() {
+            return responseProducerExchanges.toString();
         }
 
         private void indexPlannedReceiverObjectIds(JsonArray bindings) {
@@ -11787,15 +10488,6 @@ public final class ConcolicRegionRuntime {
 
         private static String handoffKey(String portId, boolean exporting) {
             return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);
-        }
-
-        private static String handoffCarrierKey(String declaringClass,
-                                                String fieldName,
-                                                String descriptor,
-                                                boolean exporting) {
-            return (exporting ? "EXPORT\n" : "ATTACH\n")
-                    + safe(declaringClass) + "\n" + safe(fieldName) + "\n"
-                    + safe(descriptor);
         }
 
         /**
@@ -12106,9 +10798,9 @@ public final class ConcolicRegionRuntime {
          * exchanges this occurrence was selected for, and therefore the
          * region's <em>selected causal anchor</em>.
          *
-         * <p>Derived, never declared: {@code responseAttachPortIds} is every
-         * response leaf this root may attach, and {@code edgeBindings} names
-         * a producer for exactly the ones an edge selected this region for.
+         * <p>Derived, never declared: incoming communication ports are the
+         * leaves this root may attach, and {@code edgeBindings} names a
+         * producer for exactly the ones an edge selected this region for.
          * A region the plan bound to no exchange has no anchor here and is
          * addressed exactly as it is today.</p>
          */
@@ -12455,19 +11147,6 @@ public final class ConcolicRegionRuntime {
 
     }
 
-    private static final class DeferredTerminal {
-        private final String exitKind;
-        private final String exceptionType;
-        private final Object output;
-
-        private DeferredTerminal(String exitKind, String exceptionType,
-                                 Object output) {
-            this.exitKind = exitKind;
-            this.exceptionType = exceptionType;
-            this.output = output;
-        }
-    }
-
     /** The bounded campaign this JVM executes. */
     private static final class Configuration {
         /**
@@ -12535,13 +11214,11 @@ public final class ConcolicRegionRuntime {
                 Object[] rootArguments, String threadName,
                 String requestApi) {
             List<RuntimeTask> claimed = new ArrayList<>();
+            RuntimeTraceContext.View context = RuntimeTraceContext.current();
             for (int index = 0; index < tasks.size(); index++) {
                 RuntimeTask task = tasks.get(index);
                 if (task == primary || candidateLive[index]
                         || task.blocksAdmissionAfterCompletedTarget()
-                        // A response producer is armed by its live caller,
-                        // never by a sibling's activation.
-                        || task.exportsResponseHandoff
                         || !task.regionId.equals(primary.regionId)
                         // Entry hooks may share a method, region and source
                         // while naming different concurrent invocations.  A
@@ -12560,6 +11237,7 @@ public final class ConcolicRegionRuntime {
                         receiver, rootArguments, threadName)) {
                     continue;
                 }
+                if (!task.matchesResponseProducerExchange(context)) continue;
                 candidateLive[index] = true;
                 claimed.add(task);
             }
@@ -12632,156 +11310,6 @@ public final class ConcolicRegionRuntime {
             return null;
         }
 
-        /**
-         * Resolves the one transport recorded for this exact response cut.
-         * The dynamic correlation id is deliberately not frozen; the live
-         * SEND supplies it after the static cut and transport agree.
-         */
-        private ResponseCutExpectation responseCutExpectation(
-                RuntimeTask caller, CommunicationHandoffSpec site) {
-            if (caller == null || site == null) {
-                return new ResponseCutExpectation("", "missing cut");
-            }
-            RuntimeTask producer = selectedResponseProducer(caller,
-                    site.portId());
-            if (producer == null) {
-                return new ResponseCutExpectation("",
-                        "no unique selected producer for " + site.portId());
-            }
-            Set<String> transports = new LinkedHashSet<>();
-            Set<String> callSites = new LinkedHashSet<>();
-            for (RuntimeTask task : tasks) {
-                for (JsonElement element : task.edgeBindings) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!"RUNTIME_PROTOCOL_FLOW".equals(
-                            string(binding, "kind"))
-                            || !site.portId().equals(
-                            string(binding, "toInputPort"))
-                            || !producer.occurrenceId.equals(
-                            string(binding, "fromOccurrenceId"))) {
-                        continue;
-                    }
-                    String receiver = string(binding, "toOccurrenceId");
-                    if (!receiver.isEmpty()
-                            && !caller.occurrenceId.equals(receiver)) {
-                        continue;
-                    }
-                    String protocolDirection = firstNonBlank(
-                            string(binding, "protocolDirection"),
-                            string(binding, "direction"));
-                    if (!"RESPONSE".equalsIgnoreCase(
-                            protocolDirection)) {
-                        continue;
-                    }
-                    String transport = string(binding, "transportKind");
-                    if (!transport.isEmpty()) transports.add(transport);
-                    String callSite = string(binding, "callSiteId");
-                    if (!callSite.isEmpty()) callSites.add(callSite);
-                }
-            }
-            if (transports.size() != 1) {
-                return new ResponseCutExpectation("",
-                        "selected response port names " + transports.size()
-                                + " transports");
-            }
-            if (!callSites.isEmpty()
-                    && (callSites.size() != 1
-                    || !callSites.contains(site.siteId()))) {
-                return new ResponseCutExpectation("",
-                        "recorded request call site " + callSites
-                                + " does not equal declared cut "
-                                + site.siteId());
-            }
-            return new ResponseCutExpectation(
-                    transports.iterator().next(), "");
-        }
-
-        /**
-         * Resolves the caller's selected response ports to one exact producer
-         * task in this campaign.
-         */
-        private ResponseProducerArm responseProducerArm(
-                RuntimeTask caller, Set<String> requestedPorts) {
-            if (caller == null || requestedPorts == null
-                    || requestedPorts.isEmpty()) {
-                return new ResponseProducerArm("",
-                        Collections.<String>emptySet(), "no response attach");
-            }
-            String producerTaskId = "";
-            RuntimeTask selectedProducer = null;
-            Set<String> ports = new LinkedHashSet<>();
-            for (String portId : requestedPorts) {
-                if (!caller.responseAttachPortIds.contains(portId)) {
-                    return new ResponseProducerArm("", ports,
-                            "port " + portId
-                                    + " is not a response attach of caller "
-                                    + caller.taskId);
-                }
-                RuntimeTask matched = selectedResponseProducer(caller,
-                        portId);
-                if (matched == null) {
-                    return new ResponseProducerArm("", ports,
-                            "port " + portId
-                                    + " has no unique campaign producer "
-                                    + "task for caller "
-                                    + caller.occurrenceId);
-                }
-                if (!producerTaskId.isEmpty()
-                        && !producerTaskId.equals(matched.taskId)) {
-                    return new ResponseProducerArm("", ports,
-                            "one request would arm response ports from "
-                                    + "multiple producer tasks");
-                }
-                producerTaskId = matched.taskId;
-                selectedProducer = matched;
-            }
-            if (selectedProducer == null) {
-                return new ResponseProducerArm("", ports,
-                        "no selected response producer");
-            }
-            ports.addAll(selectedProducer.responseExportPortIds);
-            return new ResponseProducerArm(producerTaskId, ports, "");
-        }
-
-        /**
-         * Finds the unique frozen producer task for one caller response port.
-         */
-        private RuntimeTask selectedResponseProducer(RuntimeTask caller,
-                                                     String portId) {
-            String localOccurrence = safe(
-                    caller.attachProducerOccurrenceByPort.get(portId));
-            RuntimeTask matched = null;
-            for (RuntimeTask candidate : tasks) {
-                if (!candidate.responseExportPortIds.contains(portId)) {
-                    continue;
-                }
-                boolean selected = !localOccurrence.isEmpty()
-                        && localOccurrence.equals(candidate.occurrenceId);
-                for (JsonElement element : candidate.edgeBindings) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!"RESPONSE".equalsIgnoreCase(
-                            string(binding, "direction"))
-                            || !candidate.occurrenceId.equals(
-                            string(binding, "fromOccurrenceId"))
-                            || !portId.equals(string(binding,
-                            "fromOutputPort"))
-                            || !caller.occurrenceId.equals(string(binding,
-                            "toOccurrenceId"))
-                            || !portId.equals(string(binding,
-                            "toInputPort"))) {
-                        continue;
-                    }
-                    selected = true;
-                }
-                if (!selected) continue;
-                if (matched != null && matched != candidate) return null;
-                matched = candidate;
-            }
-            return matched;
-        }
-
         /** Claims at most one open task for this root invocation. */
         private synchronized RuntimeTask select(String instrumentationSelector,
                                                 String rootMethod,
@@ -12806,31 +11334,6 @@ public final class ConcolicRegionRuntime {
                         receiver, rootArguments, threadName)) {
                     continue;
                 }
-                ResponseProducerAdmission responseAdmission = null;
-                ResponseProducerArm responseArm = null;
-                if (task.exportsResponseHandoff) {
-                    responseAdmission =
-                            INBOUND_RESPONSE_PRODUCER_ARM.get();
-                    responseArm = responseAdmission == null
-                            ? null : responseAdmission.arm;
-                    if (responseArm == null
-                            || !responseArm.authorizes(task)) {
-                        // A response producer is an occurrence selected by its
-                        // active caller, not the first compatible invocation
-                        // of the same server method.  Refusing it silently
-                        // published no row at all for a task whose caller was
-                        // never admitted, so the campaign saw
-                        // REPLAY_TASK_WITHOUT_RESULT and no reason: name the
-                        // candidate instead.
-                        task.noteUnaddressedCandidate(responseArm == null
-                                ? "matching root served no request this "
-                                + "campaign armed as its response producer"
-                                : "matching root was armed for "
-                                + responseArm.producerTaskId
-                                + " instead of " + task.taskId);
-                        continue;
-                    }
-                }
                 // The root must have entered the selected local scope.
                 if (!task.rootContextSelector.requestApi.isEmpty()
                         && !task.rootContextSelector.requestApi.equals(
@@ -12839,6 +11342,16 @@ public final class ConcolicRegionRuntime {
                             "matching root entered request API "
                                     + safe(requestApi) + " instead of "
                                     + task.rootContextSelector.requestApi);
+                    continue;
+                }
+                if (!task.matchesResponseProducerExchange(context)) {
+                    task.noteUnaddressedCandidate(
+                            "matching root entered transport exchange "
+                                    + context.exchangeTransport + "/"
+                                    + context.exchangeCorrelationId + "/"
+                                    + context.exchangeAttemptId + "/"
+                                    + context.exchangeHalf + " instead of "
+                                    + task.responseProducerExchangeDescription());
                     continue;
                 }
                 // INHERITED_CONTEXT is an exact thread-context address.
@@ -12908,22 +11421,14 @@ public final class ConcolicRegionRuntime {
                 // completed non-loop seed remains eligible for later symbolic
                 // propagation, but it must not starve another selected
                 // occurrence of the same root that has not published yet.
-                // Response producers are authorized by an exact live caller
-                // and therefore never enter this ordinary fallback queue.
                 if (candidateLive[index]) continue;
-                if (task.suppressesDuplicateRelationResult()
-                        && !task.exportsResponseHandoff) {
+                if (task.suppressesDuplicateRelationResult()) {
                     if (completedRelationFallback == null) {
                         completedRelationFallback = task;
                     }
                     continue;
                 }
                 candidateLive[index] = true;
-                if (responseAdmission != null) {
-                    // One live request authorizes one producer occurrence.
-                    responseAdmission.cut.admitted();
-                    INBOUND_RESPONSE_PRODUCER_ARM.remove();
-                }
                 return task;
             }
             if (completedRelationFallback != null) {
@@ -12964,18 +11469,12 @@ public final class ConcolicRegionRuntime {
                         receiver, rootArguments, threadName)) {
                     continue;
                 }
-                if (task.exportsResponseHandoff) {
-                    ResponseProducerAdmission admission =
-                            INBOUND_RESPONSE_PRODUCER_ARM.get();
-                    ResponseProducerArm arm = admission == null
-                            ? null : admission.arm;
-                    if (arm == null || !arm.authorizes(task)) continue;
-                }
                 if (!task.rootContextSelector.requestApi.isEmpty()
                         && !task.rootContextSelector.requestApi.equals(
                         safe(requestApi))) {
                     continue;
                 }
+                if (!task.matchesResponseProducerExchange(context)) continue;
                 if (task.rootContextSelector.inheritedContextAnchor) {
                     SourceRef inherited = context.source;
                     if (inherited == null
@@ -13339,9 +11838,9 @@ public final class ConcolicRegionRuntime {
     /**
      * Reflective view of the concolic VM's static entry points.
      *
-     * <p>Every name below is looked up by reflection and left null when the
-     * JDK does not export it, so a stock JVM degrades instead of failing to
-     * load.</p>
+     * <p>Every name below is looked up by reflection so this class remains
+     * loadable on a stock JDK. A replay plan requires the complete current
+     * broker surface before its workload starts.</p>
      */
     private static final class EngineApi {
         private Method openWorkloadSession;
@@ -13376,28 +11875,23 @@ public final class ConcolicRegionRuntime {
         private Method mapVersions;
         private Method eventLedger;
 
-        private boolean available() {
-            return startRegion != null
-                    && currentContextId != null
-                    && symbolizeWithPrefix != null
-                    && symbolizeExactField != null
-                    && trackContainer != null
-                    && getExpression != null
-                    && getFieldExpression != null
-                    && finishRegion != null
-                    && getPathCondition != null
-                    && pausePathCondition != null
-                    && resumePathCondition != null
-                    && cleanupEnd != null;
-        }
-
-        /**
-         * Open and close are one capability: a session that can be opened but
-         * never closed would outlive the workload it belongs to.
-         */
-        private boolean workloadSessionAvailable() {
-            return openWorkloadSession != null
-                    && closeWorkloadSession != null;
+        private void requireCurrentCapabilities() {
+            List<String> missing = new ArrayList<>();
+            for (Field capability : EngineApi.class.getDeclaredFields()) {
+                if (capability.getType() != Method.class) continue;
+                try {
+                    if (capability.get(this) == null) {
+                        missing.add(capability.getName());
+                    }
+                } catch (IllegalAccessException impossible) {
+                    throw new AssertionError(impossible);
+                }
+            }
+            Collections.sort(missing);
+            if (!missing.isEmpty()) {
+                throw new IllegalStateException("Concolic task plan requires "
+                        + "current custom VM broker capabilities: " + missing);
+            }
         }
 
         /** Positive session id, or a negative VM status. */
@@ -13447,10 +11941,6 @@ public final class ConcolicRegionRuntime {
 
         private void symbolizeField(Object owner, String field, String prefix)
                 throws Exception {
-            if (symbolizeField == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic System.symbolizeField API is unavailable");
-            }
             symbolizeField.invoke(null, owner, field, prefix);
         }
 
@@ -13459,10 +11949,6 @@ public final class ConcolicRegionRuntime {
                 throws Exception {
             DeclaredField field = FieldPathSpec.declaredField(
                     safe(fieldSignature));
-            if (symbolizeExactField == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic exact-field API is unavailable");
-            }
             if (field == null) {
                 throw new UnsupportedOperationException(
                         "no exact declared field for symbolized leaf: "
@@ -13476,10 +11962,6 @@ public final class ConcolicRegionRuntime {
                 Object owner, String fieldSignature) throws Exception {
             DeclaredField field = FieldPathSpec.declaredField(
                     safe(fieldSignature));
-            if (observeExactPrimitiveField == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic exact observed-field API is unavailable");
-            }
             if (field == null) {
                 throw new UnsupportedOperationException(
                         "no exact declared field for observed leaf: "
@@ -13492,10 +11974,6 @@ public final class ConcolicRegionRuntime {
         private boolean snapshotContainer(
                 Object value, Object[] keys, Object[] values, int kind)
                 throws Exception {
-            if (snapshotContainer == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic container-snapshot API is unavailable");
-            }
             return Boolean.TRUE.equals(snapshotContainer.invoke(
                     null, value, keys, values, kind));
         }
@@ -13530,10 +12008,6 @@ public final class ConcolicRegionRuntime {
             resumePathCondition.invoke(null);
         }
 
-        private boolean exactBranchEventsAvailable() {
-            return markBranch != null && getBranchEvents != null;
-        }
-
         private String branchEvents() throws Exception {
             return String.valueOf(getBranchEvents.invoke(null));
         }
@@ -13548,14 +12022,6 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
-         * A handoff that can export but never attach is not a handoff, so a
-         * partial pair is reported absent.
-         */
-        private boolean expressionHandoffAvailable() {
-            return export != null && attach != null;
-        }
-
-        /**
          * Exports one field and reports the VM ledger event the export is.
          *
          * <p>README {@code RPC-1}: the exporter is one endpoint of the {@code
@@ -13566,10 +12032,6 @@ public final class ConcolicRegionRuntime {
         private long exportExpression(
                 Object owner, String declaringClass, String fieldName,
                 String descriptor, long[] eventOut) throws Exception {
-            if (export == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic expression-export API is unavailable");
-            }
             Object handle = export.invoke(null, owner, declaringClass,
                     fieldName, descriptor, eventOut);
             return handle instanceof Number
@@ -13589,10 +12051,6 @@ public final class ConcolicRegionRuntime {
                 Object owner, String declaringClass, String fieldName,
                 String descriptor, long handle, long[] eventOut)
                 throws Exception {
-            if (attach == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic expression-attach API is unavailable");
-            }
             Object answer = attach.invoke(null, owner, declaringClass,
                     fieldName, descriptor, handle, eventOut);
             return answer instanceof Number
@@ -13600,19 +12058,7 @@ public final class ConcolicRegionRuntime {
                     : RpcExpressionHandoff.MALFORMED_RESULT;
         }
 
-        /**
-         * README {@code EVENT-1}: activation is its own capability, not part
-         * of the shared-state group.
-         */
-        private boolean eventLedgerActivationAvailable() {
-            return activate != null;
-        }
-
         private boolean activateEventLedger() throws Exception {
-            if (activate == null) {
-                throw new UnsupportedOperationException(
-                        "custom concolic event-ledger activation API is unavailable");
-            }
             Object recording = activate.invoke(null);
             if (!(recording instanceof Boolean)) {
                 throw new IllegalStateException(
@@ -13621,39 +12067,9 @@ public final class ConcolicRegionRuntime {
             return ((Boolean) recording).booleanValue();
         }
 
-        /**
-         * Its own capability: the whole path condition is no longer inlined in
-         * the region summary, so this is the only way a selected branch
-         * witness reads back the predicate its {@code conditionIndices} name.
-         */
-        private boolean pathConditionRangeAvailable() {
-            return range != null;
-        }
-
         private String pathConditionRange(int startIndex, int endIndex)
                 throws Exception {
             return String.valueOf(range.invoke(null, startIndex, endIndex));
-        }
-
-        /**
-         * Selection and read-out are one capability: a carrier that can be
-         * selected but whose versions cannot be read back proves nothing.
-         */
-        private boolean sharedStateEvidenceAvailable() {
-            return selectField != null && selectElement != null
-                    && fieldVersions != null && elementVersions != null
-                    && eventLedger != null;
-        }
-
-        /**
-         * Asked separately from {@link #sharedStateEvidenceAvailable()}: a JDK
-         * holding neither map method still has the scalar half, and reporting
-         * the whole evidence API absent for it would turn a missing map
-         * carrier into a missing field carrier.
-         */
-        private boolean sharedMapEvidenceAvailable() {
-            return sharedStateEvidenceAvailable() && selectMap != null
-                    && mapVersions != null;
         }
 
         private long selectSharedFieldCarrier(

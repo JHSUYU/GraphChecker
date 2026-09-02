@@ -33,6 +33,7 @@ public final class SymbolicRootProposal {
     public enum SiteRole {
         ROOT,
         CARRIER,
+        DERIVED_STATE,
         SELECTOR,
         GUARD,
         STUTTER_NOISE,
@@ -243,6 +244,7 @@ public final class SymbolicRootProposal {
                 expected = DecisionKind.SELECT_ROOT;
                 break;
             case CARRIER:
+            case DERIVED_STATE:
             case SELECTOR:
             case GUARD:
                 expected = DecisionKind.RETAIN_CONTEXT;

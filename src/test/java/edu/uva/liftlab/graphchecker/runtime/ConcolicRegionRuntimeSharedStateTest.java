@@ -15,15 +15,12 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Stock-JDK behaviour of the recorded shared-state bridge, the admission of
- * the VM envelopes it reads back, and the installation boundary of a
- * solver-selected read cut.
+ * Admission of recorded shared-state VM envelopes and the installation
+ * boundary of a solver-selected read cut.
  *
- * <p>An ordinary {@code java.lang.System} has none of the five natives, so
- * every call must answer with a named gap rather than a silent no-op. Envelope
- * decoding is exercised through its test seam, because the shape of a refusal
- * is the part a consumer depends on. Installing a read-cut gate means
- * observing, so that call returns a decision, never a wait.</p>
+ * <p>Envelope decoding is exercised through its test seam. Installing a
+ * read-cut gate means observing, so that call returns a decision, never a
+ * wait.</p>
  */
 public class ConcolicRegionRuntimeSharedStateTest {
     private static final String OWNER_CLASS =
@@ -80,27 +77,6 @@ public class ConcolicRegionRuntimeSharedStateTest {
 
     @Test
     public void sharedStateAndReadCutAnswerWithNamedFindingsOrNothing() {
-        assertAbsent("selectSharedFieldCarrier", Object.class, String.class,
-                String.class, String.class);
-        assertAbsent("selectSharedElementCarrier", Object.class, int.class);
-        assertAbsent("getSharedFieldVersions", Object.class, String.class,
-                String.class, String.class);
-        assertAbsent("getSharedElementVersions", Object.class, int.class);
-        assertAbsent("getEventLedger");
-
-        assertUnavailable(ConcolicRegionRuntime.selectSharedFieldCarrier(
-                        new Carrier(), OWNER_CLASS, "value", "I"),
-                SharedStateEvidence.STAGE_SELECT);
-        assertUnavailable(ConcolicRegionRuntime.selectSharedElementCarrier(
-                new int[]{1}, 0), SharedStateEvidence.STAGE_SELECT);
-        assertUnavailable(ConcolicRegionRuntime.captureSharedFieldVersions(
-                        new Carrier(), OWNER_CLASS, "value", "I"),
-                SharedStateEvidence.STAGE_VERSIONS);
-        assertUnavailable(ConcolicRegionRuntime.captureSharedElementVersions(
-                new int[]{1}, 0), SharedStateEvidence.STAGE_VERSIONS);
-        assertUnavailable(ConcolicRegionRuntime.captureSessionEventLedger(),
-                SharedStateEvidence.STAGE_LEDGER);
-
         // Incomplete carrier addressing is missing metadata, not a guess.
         for (ConcolicRegionRuntime.SharedStateResult result
                 : new ConcolicRegionRuntime.SharedStateResult[]{
@@ -434,26 +410,4 @@ public class ConcolicRegionRuntimeSharedStateTest {
                 .getAsJsonObject();
     }
 
-    private static void assertAbsent(String name, Class<?>... parameters) {
-        try {
-            System.class.getMethod(name, parameters);
-            throw new AssertionError(name
-                    + " unexpectedly exists on this JDK; this test asserts "
-                    + "the stock-JDK degradation path");
-        } catch (NoSuchMethodException expected) {
-            assertTrue(true);
-        }
-    }
-
-    private static void assertUnavailable(
-            ConcolicRegionRuntime.SharedStateResult result, String stage) {
-        assertFalse(result.ok());
-        assertEquals(stage, result.stage());
-        assertEquals(SharedStateEvidence.API_UNAVAILABLE, result.status());
-        assertEquals("SHARED_STATE_API_UNAVAILABLE", result.reason());
-        assertEquals(0, result.record().size());
-        assertEquals(0L, result.initialFieldVersionId());
-        assertTrue(SharedStateEvidence.isGap(result.gap()));
-        assertEquals(stage, result.gap().get("stage").getAsString());
-    }
 }

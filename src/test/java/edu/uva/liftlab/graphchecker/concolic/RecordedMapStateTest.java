@@ -633,45 +633,8 @@ public class RecordedMapStateTest {
                 counts.get("fieldReads").getAsInt());
     }
 
-    // ----- the VM bridge ----------------------------------------------------
-
-    /**
-     * A stock JDK has neither map native, so both calls answer with the same
-     * named gap the handoff and field bridges answer with. Silence would be
-     * indistinguishable from a map that recorded nothing.
-     */
     @Test
-    public void theMapCarrierBridgeNamesItsAbsenceOnAStockJdk() {
-        for (String native0 : new String[]{"selectSharedMapCarrier",
-                "getSharedMapVersions"}) {
-            boolean present = true;
-            try {
-                System.class.getMethod(native0, Object.class);
-            } catch (NoSuchMethodException absent) {
-                present = false;
-            }
-            assertFalse(native0, present);
-        }
-
-        ConcolicRegionRuntime.SharedStateResult selected =
-                ConcolicRegionRuntime.selectSharedMapCarrier(
-                        new java.util.HashMap<String, String>());
-        assertFalse(selected.ok());
-        assertEquals(SharedStateEvidence.API_UNAVAILABLE, selected.status());
-        assertEquals("SHARED_STATE_API_UNAVAILABLE", selected.reason());
-        assertEquals(SharedStateEvidence.STAGE_SELECT, selected.stage());
-        assertTrue(SharedStateEvidence.isGap(selected.gap()));
-        assertEquals(0, selected.record().size());
-
-        ConcolicRegionRuntime.SharedStateResult captured =
-                ConcolicRegionRuntime.captureSharedMapVersions(
-                        new java.util.HashMap<String, String>());
-        assertFalse(captured.ok());
-        assertEquals(SharedStateEvidence.API_UNAVAILABLE, captured.status());
-        assertEquals(SharedStateEvidence.STAGE_VERSIONS, captured.stage());
-        assertTrue(SharedStateEvidence.isGap(captured.gap()));
-
-        // A missing map is missing metadata, never a guess about which map.
+    public void aMissingMapIsMissingMetadata() {
         for (ConcolicRegionRuntime.SharedStateResult absent
                 : new ConcolicRegionRuntime.SharedStateResult[]{
                 ConcolicRegionRuntime.selectSharedMapCarrier(null),

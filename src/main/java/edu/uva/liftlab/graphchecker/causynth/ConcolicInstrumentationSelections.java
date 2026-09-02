@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
@@ -200,7 +201,7 @@ public final class ConcolicInstrumentationSelections {
             // A cut's own frame is where the port's value is presented and
             // received.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
-                if (!site.manualCarrier()) methods.add(site.method());
+                methods.add(site.method());
             }
             // A declaration may live in a small helper called by the region
             // root.
@@ -431,7 +432,7 @@ public final class ConcolicInstrumentationSelections {
             addCaptureMethods(methods, callArgumentOutputs);
             addCaptureMethods(methods, communicationEffects);
             for (CommunicationHandoffSpec handoff : communicationHandoffs) {
-                if (!handoff.manualCarrier()) methods.add(handoff.method());
+                methods.add(handoff.method());
             }
             methods.remove("");
             return methods;
@@ -687,6 +688,7 @@ public final class ConcolicInstrumentationSelections {
                 sharedCarrierFieldsBySite = new LinkedHashMap<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
+        private boolean associativeContainerState;
 
         private static ConcolicMaterializationSelection from(
                 JsonArray actions) throws IOException {
@@ -699,6 +701,10 @@ public final class ConcolicInstrumentationSelections {
         }
 
         void add(JsonObject action) throws IOException {
+            associativeContainerState |= "BOUNDED_CONTAINER_STATE".equals(
+                    string(action, "symbolicDemand"))
+                    && JavaContainerTypes.shape(string(action, "javaType"))
+                    == JavaContainerTypes.Shape.ASSOCIATIVE;
             addAccessorCallTarget(action);
             String mode = string(action, "bindingMode");
             String cell = string(action, "cell");
@@ -1016,6 +1022,7 @@ public final class ConcolicInstrumentationSelections {
             sharedCarrierFields.addAll(other.sharedCarrierFields);
             mergeNested(sharedCarrierFieldsBySite,
                     other.sharedCarrierFieldsBySite);
+            associativeContainerState |= other.associativeContainerState;
             for (AccessorCallTarget target
                     : other.accessorCallsBySite.values()) {
                 if (conflicts(target)) {
@@ -1040,6 +1047,10 @@ public final class ConcolicInstrumentationSelections {
             }
             return accessorCallsBySite.containsKey(
                     CommunicationCatalogContract.siteId(method, unitIndex));
+        }
+
+        boolean associativeContainerState() {
+            return associativeContainerState;
         }
 
         /** Unique local-definition sites this campaign named. */

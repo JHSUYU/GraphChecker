@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public class JUnitMethodRunnerTest {
@@ -26,11 +27,11 @@ public class JUnitMethodRunnerTest {
 
     /**
      * The runner owns the workload's symbolic lifetime: it opens the session
-     * before the JUnit method and closes it after, in direct mode and under a
-     * configured campaign alike.  On an ordinary JDK the session natives are
-     * absent and both are no-ops, so the JUnit lifecycle is exactly what it
-     * was; closing while unwinding a failing workload must not replace the
-     * workload's own failure; and a forced exit still stops leaked threads
+     * before the JUnit method and closes it after. A stock JDK remains valid
+     * for an unplanned seed run, while a configured replay fails before the
+     * workload starts unless the complete current VM broker is present.
+     * Closing while unwinding a failing workload must not replace the
+     * workload's own failure, and a forced exit still stops leaked threads
      * with the status the workload earned.
      */
     @Test
@@ -46,9 +47,8 @@ public class JUnitMethodRunnerTest {
             assertEquals(Arrays.asList("before", "workload", "after"),
                     EVENTS);
 
-            // A configured campaign must still run exactly as before --
-            // otherwise every stock-JDK workload would break the moment a
-            // campaign was selected.
+            // A replay plan is the boundary where the complete current VM
+            // broker becomes mandatory.
             EVENTS.clear();
             Path plan = folder.newFile().toPath();
             Files.write(plan, campaignTask("TASK.1").getBytes(
@@ -58,11 +58,17 @@ public class JUnitMethodRunnerTest {
             System.setProperty("causynth.concolic.task.id", "TASK.1");
             System.setProperty("causynth.concolic.results",
                     folder.newFile().toPath().toString());
+            ConcolicRegionRuntime.resetForTests();
             try {
-                JUnitMethodRunner.main(new String[]{Fixture.class.getName(),
-                        "workload"});
-                assertEquals(Arrays.asList("before", "workload", "after"),
-                        EVENTS);
+                try {
+                    JUnitMethodRunner.main(new String[]{
+                            Fixture.class.getName(), "workload"});
+                    fail("a stock JDK must refuse a configured replay");
+                } catch (IllegalStateException failure) {
+                    assertTrue(failure.getMessage(), failure.getMessage()
+                            .contains("current custom VM broker capabilities"));
+                }
+                assertTrue(EVENTS.isEmpty());
             } finally {
                 System.clearProperty("causynth.concolic.task.plan");
                 System.clearProperty("causynth.concolic.task.id");

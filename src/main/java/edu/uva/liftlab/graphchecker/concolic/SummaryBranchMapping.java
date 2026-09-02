@@ -197,6 +197,10 @@ public final class SummaryBranchMapping {
 
     public BranchWitness witness() { return witness; }
 
+    public ExactConcreteBranchObservation concreteObservation() {
+        return concreteObservation;
+    }
+
     public int summaryPcIndex() { return summaryPcIndex; }
 
     public Policy policy() { return policy; }

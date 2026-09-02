@@ -52,6 +52,9 @@ public final class RuntimeWorkflowDiscovery {
     /** One coarse occurrence, one producer candidate (README REGION-1). */
     private final Map<String, ProducerCandidate>
             producerCandidatesByOccurrence = new LinkedHashMap<>();
+    /** Trace-correlated protocol edges, de-duplicated across endpoint goals. */
+    private final Map<String, JsonObject> protocolEdgesById =
+            new LinkedHashMap<>();
     private final List<Target> targets;
 
     @FunctionalInterface
@@ -91,8 +94,30 @@ public final class RuntimeWorkflowDiscovery {
                         ignored -> new ArrayList<>()).add(plan);
             }
         }
+        indexProtocolEdges();
         indexProducerCandidates();
         targets = discoverTargets();
+    }
+
+    private void indexProtocolEdges() throws IOException {
+        for (RegionInstancePlan plan : plans) {
+            for (Goal goal : plan.goals()) {
+                for (JsonElement element : goal.edgeBindings()) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject edge = element.getAsJsonObject();
+                    if (!AutomaticRegionEdge.tracedExchangeCandidate(edge)) {
+                        continue;
+                    }
+                    String edgeId = required(edge, "edgeId");
+                    JsonObject prior = protocolEdgesById.putIfAbsent(
+                            edgeId, edge.deepCopy());
+                    if (prior != null && !prior.equals(edge)) {
+                        throw new IOException("conflicting protocol edge "
+                                + edgeId);
+                    }
+                }
+            }
+        }
     }
 
     /** The consumer regions one plan was admitted to serve, empty unless its
@@ -244,20 +269,8 @@ public final class RuntimeWorkflowDiscovery {
         // target occurrence even when the local backward slice represents a
         // decoded request value through a container query rather than through
         // the handler parameter.
-        Set<String> structuredProtocolParents = new LinkedHashSet<>();
         Map<Endpoint, Set<String>> targetProtocolEdges =
                 new LinkedHashMap<>();
-        for (JsonElement item : selectedTarget.goal.edgeBindings()) {
-            if (!item.isJsonObject()) continue;
-            JsonObject edge = item.getAsJsonObject();
-            if (!selectedTarget.occurrenceId.equals(
-                    string(edge, "toOccurrenceId"))) {
-                continue;
-            }
-            String parent = string(edge,
-                    CommunicationCatalogContract.PORT_COMPONENT_OF);
-            if (!parent.isEmpty()) structuredProtocolParents.add(parent);
-        }
         for (JsonElement item : selectedTarget.goal.edgeBindings()) {
             if (!item.isJsonObject()) continue;
             JsonObject edge = item.getAsJsonObject();
@@ -269,10 +282,7 @@ public final class RuntimeWorkflowDiscovery {
                 continue;
             }
             String input = string(edge, "toInputPort");
-            // A declared aggregate whose transported leaves are explicit is a
-            // concrete carrier, not a second symbolic operand.
-            if (!input.isEmpty()
-                    && !structuredProtocolParents.contains(input)) {
+            if (!input.isEmpty()) {
                 Endpoint endpoint = new Endpoint(selectedTarget.occurrenceId,
                         selectedTarget.exactInput(input));
                 fatalInputs.add(endpoint);
@@ -291,6 +301,20 @@ public final class RuntimeWorkflowDiscovery {
         for (Map.Entry<Endpoint, Set<String>> exact
                 : targetProtocolEdges.entrySet()) {
             frontier.constrain(exact.getKey(), exact.getValue());
+        }
+        List<JsonObject> requestPrefix = requestPrefixEdges(selectedTarget);
+        selectedTarget.retainRequestPrefix(requestPrefix);
+        for (JsonObject edge : requestPrefix) {
+            if (selectedTarget.occurrenceId.equals(
+                    string(edge, "fromOccurrenceId"))) {
+                // The target task already owns this occurrence.  Preserve the
+                // outgoing transaction on that task without minting a second
+                // REGION-1 campaign for the same occurrence.
+                continue;
+            }
+            Endpoint downstream = Endpoint.consumerOf(edge);
+            frontier.constrain(downstream,
+                    Collections.singleton(required(edge, "edgeId")));
         }
         Map<Endpoint, ProducerCandidate> producerByEndpoint =
                 new LinkedHashMap<>();
@@ -419,6 +443,49 @@ public final class RuntimeWorkflowDiscovery {
                 residualFatalInputs,
                 fatalInputs.size(), result.size(), exactBindings.size(),
                 causalRegions.size());
+    }
+
+    /**
+     * Observed value transactions in the selected request before its fatal
+     * event form a bounded prefix of that request flow.  They are retained
+     * even when no individual transaction value is a direct fatal operand:
+     * expiration/retry protocols make the sequence itself causal.
+     */
+    private List<JsonObject> requestPrefixEdges(Target target) {
+        String requestKey = string(target.plan.json(), "requestKey");
+        long cutoff = target.failureEventSeq();
+        if (requestKey.isEmpty() || cutoff < 0L) {
+            return Collections.emptyList();
+        }
+        List<JsonObject> result = new ArrayList<>();
+        for (JsonObject edge : protocolEdgesById.values()) {
+            if (!requestKey.equals(string(edge, "requestKey"))
+                    || !DependencyRole.VALUE_FRONTIER.equals(
+                    DependencyRole.normalize(edge.get("dependencyRole")))) {
+                continue;
+            }
+            long sent = productionEvent(edge);
+            long received = arrivalEvent(edge);
+            if (sent < 0L || received < sent || received >= cutoff) {
+                continue;
+            }
+            String producerOccurrence = string(edge,
+                    "fromOccurrenceId");
+            if (!target.occurrenceId.equals(producerOccurrence)) {
+                ProducerCandidate producer =
+                        producerCandidatesByOccurrence.get(
+                                producerOccurrence);
+                if (producer == null || !producer.ready()
+                        || !producer.owns(edge)) {
+                    continue;
+                }
+            }
+            result.add(edge.deepCopy());
+        }
+        result.sort(Comparator.comparingLong(
+                RuntimeWorkflowDiscovery::productionEvent)
+                .thenComparing(edge -> string(edge, "edgeId")));
+        return result;
     }
 
     /** Whether the fatal method itself reads an exact admitted state value.
@@ -837,20 +904,17 @@ public final class RuntimeWorkflowDiscovery {
     /** Whether an incoming producer edge makes this endpoint extend the
      * value frontier.
      *
-     * <p>A concrete carrier does not normally extend it.  With {@code
-     * transportedOnly} an exact heap object identity alone is refused: a
-     * concrete local structure may carry transported value leaves, but the
-     * identity by itself is not a symbolic producer demand.</p> */
+     * <p>A concrete heap carrier does not extend the value frontier.</p> */
     private static boolean exactCausalProducer(
             Endpoint endpoint,
             Map<Endpoint, List<ProducerCandidate>> producersByDownstream,
-            boolean transportedOnly) {
+            boolean protocolOnly) {
         for (ProducerCandidate candidate
                 : producersByDownstream.getOrDefault(endpoint,
                 java.util.Collections.emptyList())) {
             for (JsonObject edge : candidate.edgesFor(endpoint)) {
-                if (!transportedOnly && exactSharedStateConduit(edge)
-                        || transportedValueFrontier(edge)) {
+                if (!protocolOnly && exactSharedStateConduit(edge)
+                        || protocolValueFrontier(edge)) {
                     return true;
                 }
             }
@@ -905,27 +969,15 @@ public final class RuntimeWorkflowDiscovery {
                 && AutomaticRegionEdge.trustedRuntimeReadFromBinding(edge);
     }
 
-    /** Whether one incoming protocol edge makes its consuming endpoint extend
-     * the value frontier even though the consuming action is a concrete
-     * structure carrier. */
-    private static boolean transportedValueFrontier(JsonObject edge) {
+    /** Whether one incoming protocol edge extends the value frontier. */
+    private static boolean protocolValueFrontier(JsonObject edge) {
         if (!DependencyRole.VALUE_FRONTIER.equals(
                 DependencyRole.normalize(edge.get("dependencyRole")))) {
             return false;
         }
-        if (AutomaticRegionEdge.RUNTIME_PROTOCOL_EDGE_KIND.equals(
-                string(edge, "kind"))) {
-            return AutomaticRegionEdge.schedulableProducerBinding(edge);
-        }
-        // A concrete heap reference extends the frontier only when the
-        // finalizer names why: this exact stored object carried a configured
-        // VM component received by the writer occurrence.
-        return AutomaticRegionEdge.RUNTIME_EDGE_KIND.equals(
+        return AutomaticRegionEdge.RUNTIME_PROTOCOL_EDGE_KIND.equals(
                 string(edge, "kind"))
-                && AutomaticRegionEdge
-                .TRANSPORTED_VALUE_FRONTIER_AUTHORITY.equals(string(edge,
-                AutomaticRegionEdge.TRANSPORTED_VALUE_FRONTIER_FIELD))
-                && exactSharedStateConduit(edge);
+                && AutomaticRegionEdge.schedulableProducerBinding(edge);
     }
 
     private List<Target> discoverTargets() throws IOException {
@@ -1211,8 +1263,10 @@ public final class RuntimeWorkflowDiscovery {
             }
             touchingBindings.add(edgeId);
         }
-        if (!selectedTarget.occurrence.bindingIds.containsAll(
-                touchingBindings)) {
+        Set<String> recordedBindings = new LinkedHashSet<>(
+                selectedTarget.occurrence.bindingIds);
+        recordedBindings.addAll(selectedTarget.requestPrefixEdgeIds());
+        if (!recordedBindings.containsAll(touchingBindings)) {
             throw new IOException("scheduled target occurrence binding "
                     + "ledger is incomplete: "
                     + selectedTarget.occurrenceId);
@@ -1478,20 +1532,10 @@ public final class RuntimeWorkflowDiscovery {
                 throws IOException {
             Set<String> outputs = new LinkedHashSet<>();
             Set<String> edgeIds = new LinkedHashSet<>();
-            Set<String> exactComponentParents = new LinkedHashSet<>();
             for (JsonObject edge : selectedEdges.values()) {
                 OutputClosureContract.Member selectedMember = member(edge);
                 outputs.add(selectedMember.portId());
                 edgeIds.add(required(edge, "edgeId"));
-                JsonObject selectedSlice = selectedVersionSlice(
-                        selectedMember, edge);
-                for (JsonElement element : array(selectedSlice,
-                        "captureBindings")) {
-                    if (!element.isJsonObject()) continue;
-                    String parent = string(element.getAsJsonObject(),
-                            CommunicationCatalogContract.PORT_COMPONENT_OF);
-                    if (!parent.isEmpty()) exactComponentParents.add(parent);
-                }
             }
             for (Endpoint input : requiredInputEndpoints) {
                 JsonObject edge = selectedEdgeByEndpoint.get(input);
@@ -1502,12 +1546,6 @@ public final class RuntimeWorkflowDiscovery {
             // which selected the occurrence consumed a heap output.
             for (String output
                     : goal.outputClosure().producer().declaredOutputPorts()) {
-                // A selected response/request leaf is the exact transported
-                // value frontier.  Retaining its aggregate parent as a second
-                // output would import every unrelated live-in of the whole
-                // RPC handler (queues, registration state, metrics, ...).
-                // Keep a declared cut when no exact component supersedes it.
-                if (exactComponentParents.contains(output)) continue;
                 OutputClosureContract.Member member =
                         goal.outputClosure().member(output);
                 if (member == null) {
@@ -2008,6 +2046,19 @@ public final class RuntimeWorkflowDiscovery {
                     java.util.Collections.emptyList());
         }
 
+        private boolean owns(JsonObject selected) {
+            String edgeId = string(selected, "edgeId");
+            Endpoint endpoint = Endpoint.consumerOf(selected);
+            for (JsonObject edge : edgesFor(endpoint)) {
+                if (occurrence.occurrenceId.equals(
+                        string(edge, "fromOccurrenceId"))
+                        && edgeId.equals(string(edge, "edgeId"))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private String semanticKey() {
             OutputClosureContract closure = goal.outputClosure();
             return plan.regionId() + "\n" + plan.relationKey() + "\n"
@@ -2280,7 +2331,9 @@ public final class RuntimeWorkflowDiscovery {
                 materialized.add(selection);
                 grouped.add(new ProducerGroup(producer, selection));
             }
-            materialized.add(0, Selection.target(target, targetEdgeIds));
+            targetEdgeIds.addAll(target.requestPrefixEdgeIds());
+            materialized.add(0, Selection.target(target, targetEdgeIds,
+                    target.requestPrefixBindings()));
             selections = java.util.Collections.unmodifiableList(materialized);
             producerGroups = java.util.Collections.unmodifiableList(
                     grouped);
@@ -2413,11 +2466,13 @@ public final class RuntimeWorkflowDiscovery {
         final String goalId;
         final ProducerOutputProjection producerProjection;
         final Set<String> targetEdgeIds;
+        final JsonArray targetPrefixBindings;
 
         private Selection(String campaignId, String regionId,
                           String occurrenceId, String goalId,
                           ProducerOutputProjection producerProjection,
-                          Set<String> targetEdgeIds) {
+                          Set<String> targetEdgeIds,
+                          JsonArray targetPrefixBindings) {
             this.campaignId = campaignId;
             this.regionId = regionId;
             this.occurrenceId = occurrenceId;
@@ -2425,13 +2480,15 @@ public final class RuntimeWorkflowDiscovery {
             this.producerProjection = producerProjection;
             this.targetEdgeIds = java.util.Collections.unmodifiableSet(
                     new LinkedHashSet<>(targetEdgeIds));
+            this.targetPrefixBindings = targetPrefixBindings.deepCopy();
         }
 
         private static Selection target(Target target,
-                                        Set<String> targetEdgeIds) {
+                                        Set<String> targetEdgeIds,
+                                        JsonArray targetPrefixBindings) {
             return new Selection(target.campaignId, target.regionId,
                     target.occurrenceId, target.goalId, null,
-                    targetEdgeIds);
+                    targetEdgeIds, targetPrefixBindings);
         }
 
         private static Selection producer(
@@ -2444,7 +2501,7 @@ public final class RuntimeWorkflowDiscovery {
             return new Selection(projection.campaignId(), producer.regionId,
                     producer.occurrenceId, producer.goalId,
                     ProducerOutputProjection.decode(canonicalProjection),
-                    Collections.<String>emptySet());
+                    Collections.<String>emptySet(), new JsonArray());
         }
 
     }
@@ -2492,6 +2549,8 @@ public final class RuntimeWorkflowDiscovery {
         private final String occurrenceId;
         private final String goalId;
         private final Occurrence occurrence;
+        private final Map<String, JsonObject> requestPrefixBindings =
+                new LinkedHashMap<>();
         private TargetRank rank = TargetRank.invalid();
 
         private Target(RegionInstancePlan plan, Goal goal,
@@ -2508,6 +2567,45 @@ public final class RuntimeWorkflowDiscovery {
 
         private String exactInput(String canonical) throws IOException {
             return occurrence.exactInput(canonical);
+        }
+
+        private void retainRequestPrefix(List<JsonObject> edges) {
+            for (JsonObject edge : edges) {
+                if (!occurrenceId.equals(string(edge, "fromOccurrenceId"))
+                        && !occurrenceId.equals(
+                        string(edge, "toOccurrenceId"))) {
+                    continue;
+                }
+                requestPrefixBindings.put(string(edge, "edgeId"),
+                        edge.deepCopy());
+            }
+        }
+
+        private JsonArray requestPrefixBindings() {
+            JsonArray result = new JsonArray();
+            for (JsonObject edge : requestPrefixBindings.values()) {
+                result.add(edge.deepCopy());
+            }
+            return result;
+        }
+
+        private Set<String> requestPrefixEdgeIds() {
+            return new LinkedHashSet<>(requestPrefixBindings.keySet());
+        }
+
+        private long failureEventSeq() {
+            long cutoff = -1L;
+            for (JsonElement element : goal.branches()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!bool(branch, "failureTarget", false)
+                        || !bool(branch, "observed", false)) {
+                    continue;
+                }
+                cutoff = Math.max(cutoff, longInteger(branch,
+                        "selectedRuntimeEventSeq", -1L));
+            }
+            return cutoff;
         }
 
         /** Whether the target predicate's decision site lies in this

@@ -21,14 +21,6 @@ public final class AutomaticRegionEdge {
      */
     public static final String TRACED_EXCHANGE_AUTHORITY =
             "TRACED_RPC_EXCHANGE_CORRELATION_V1";
-    /**
-     * Scheduling-only proof that a concrete reference field carried a
-     * configured VM-handoff component into a later occurrence.
-     */
-    public static final String TRANSPORTED_VALUE_FRONTIER_FIELD =
-            "transportedValueFrontierAuthority";
-    public static final String TRANSPORTED_VALUE_FRONTIER_AUTHORITY =
-            "EXACT_RUNTIME_REFERENCE_CARRIER_OF_VM_COMPONENT_V1";
     /** A read-from relation the session itself recorded. */
     static final String CONFIRMED_VM_RECORDED_READ_FROM =
             "CONFIRMED_VM_RECORDED_READ_FROM";
@@ -121,10 +113,45 @@ public final class AutomaticRegionEdge {
         return true;
     }
 
+    /**
+     * A traced wire delivery whose correlation identifies one exact value
+     * leaf at both ends.  Weaker exchange records remain useful topology,
+     * but do not prove a value equality.
+     */
+    public static boolean trustedWireEquality(JsonObject edge) {
+        if (!tracedExchangeCandidate(edge)) return false;
+        String site = string(edge, "exchangeSiteKey");
+        String leg = string(edge, "exchangeLeg");
+        String attempt = string(edge, "attemptId");
+        String request = string(edge, "requestKey");
+        String transport = string(edge, "transportKind");
+        String javaType = string(edge, "javaType");
+        String direction = string(edge, "direction");
+        String protocolDirection = string(edge, "protocolDirection");
+        String leaf = string(edge, "handoffLeafPath");
+        String output = string(edge, "fromOutputPort");
+        String input = string(edge, "toInputPort");
+        long sent = longInteger(edge, "senderEventSeq", -1L);
+        long received = longInteger(edge, "receiverEventSeq", -1L);
+        String legSuffix = "\n" + attempt + "\n" + direction;
+        return !site.isEmpty() && !leg.isEmpty() && !attempt.isEmpty()
+                && !request.isEmpty() && !transport.isEmpty()
+                && !javaType.isEmpty() && !protocolDirection.isEmpty()
+                && !leaf.isEmpty() && !direction.isEmpty()
+                && attempt.indexOf('\n') < 0 && direction.indexOf('\n') < 0
+                && direction.equals(protocolDirection)
+                && output.equals(input) && output.equals(leaf)
+                && leaf.startsWith(site + ".")
+                && leg.length() > legSuffix.length()
+                && leg.endsWith(legSuffix)
+                && sent >= 0L && received > sent;
+    }
+
     /** Runtime evidence admitted for recursive summary composition. */
     public static boolean trustedRuntimeCompositionBinding(
             JsonObject binding) {
-        return trustedRuntimeReadFromBinding(binding);
+        return trustedRuntimeReadFromBinding(binding)
+                || trustedWireEquality(binding);
     }
 
     /** Runtime evidence a producer may be <em>scheduled</em> on. */

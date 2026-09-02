@@ -287,11 +287,7 @@ public final class ExecutionTask extends PlanRow {
             JsonObject handoff = element.getAsJsonObject();
             String portId = string(handoff,
                     CommunicationCatalogContract.PORT_ID);
-            String componentOf = string(handoff,
-                    CommunicationCatalogContract.PORT_COMPONENT_OF);
-            if (selectedPorts.contains(portId)
-                    || !componentOf.isEmpty()
-                    && selectedPorts.contains(componentOf)) {
+            if (selectedPorts.contains(portId)) {
                 retained.add(handoff.deepCopy());
             }
         }

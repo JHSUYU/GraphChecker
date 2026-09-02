@@ -59,6 +59,71 @@ public class SymbolicMechanismCatalogTest {
     }
 
     @Test
+    public void runtimeCoordinatesDoNotChangeRelationProposalIdentity() {
+        JsonObject firstAction = symbolicField(
+                "XCH.STATUS", "<Wire: int httpStatus>");
+        firstAction.addProperty("sourceKind", "COMMUNICATION_SITE_PORT");
+        firstAction.addProperty("javaType", "int");
+        firstAction.addProperty("exchangeSiteKey", "XCH.STATUS");
+        firstAction.addProperty("direction", "RESPONSE");
+        firstAction.addProperty("replayOccurrence", 7);
+        firstAction.addProperty("outputOccurrence", 9);
+        JsonObject secondAction = firstAction.deepCopy();
+        secondAction.addProperty("replayOccurrence", 70);
+        secondAction.addProperty("outputOccurrence", 90);
+
+        JsonObject firstContext = context("OCC.RUNTIME.1");
+        firstContext.addProperty("goalId", "GOAL.RUNTIME.1");
+        firstContext.addProperty("eventSequence", 41);
+        JsonObject secondContext = context("OCC.RUNTIME.2");
+        secondContext.addProperty("goalId", "GOAL.RUNTIME.2");
+        secondContext.addProperty("eventSequence", 99);
+
+        JsonObject firstAnchor = new JsonObject();
+        firstAnchor.addProperty("kind", "UNRESOLVED_WRITER");
+        firstAnchor.addProperty("edgeId", "RPC.RUNTIME.1");
+        firstAnchor.addProperty("fromOccurrenceId", "OCC.WRITER.1");
+        JsonObject secondAnchor = new JsonObject();
+        secondAnchor.addProperty("kind", "UNRESOLVED_WRITER");
+        secondAnchor.addProperty("edgeId", "RPC.RUNTIME.2");
+        secondAnchor.addProperty("fromOccurrenceId", "OCC.WRITER.2");
+
+        SymbolicMechanismCatalog first = SymbolicMechanismCatalog.create(
+                inputs(), observe(firstContext, firstAction,
+                        unselected(firstAction), array(firstAnchor)));
+        SymbolicMechanismCatalog second = SymbolicMechanismCatalog.create(
+                new JsonObject(), observe(secondContext, secondAction,
+                        unselected(secondAction), array(secondAnchor)));
+
+        String candidateId = SymbolicMechanismCatalog.candidateId(
+                firstAction, array(firstAnchor));
+        assertEquals(candidateId, SymbolicMechanismCatalog.candidateId(
+                secondAction, array(secondAnchor)));
+        assertEquals(first.inputDigest(), second.inputDigest());
+        assertEquals(evidenceByCandidate(first), evidenceByCandidate(second));
+        assertFalse(CanonicalJson.render(first.json()
+                .getAsJsonArray("candidates").get(0).getAsJsonObject()
+                .get("semantic")).contains("RPC.RUNTIME.1"));
+
+        String evidenceId = evidenceByCandidate(first).get(candidateId);
+        second.validate(SymbolicRootProposal.create(first.inputDigest(),
+                Collections.singletonList(retain(candidateId, evidenceId))));
+        assertEquals("GOAL.RUNTIME.2", second.json()
+                .getAsJsonArray("candidates").get(0).getAsJsonObject()
+                .getAsJsonArray("evidence").get(0).getAsJsonObject()
+                .get("goalId").getAsString());
+
+        JsonObject changedAction = secondAction.deepCopy();
+        changedAction.addProperty("javaType", "long");
+        SymbolicMechanismCatalog changed = SymbolicMechanismCatalog.create(
+                new JsonObject(), observe(secondContext, changedAction,
+                        unselected(changedAction), array(secondAnchor)));
+        assertFalse(candidateId.equals(SymbolicMechanismCatalog.candidateId(
+                changedAction, array(secondAnchor))));
+        assertFalse(first.inputDigest().equals(changed.inputDigest()));
+    }
+
+    @Test
     public void selectionKeepsRelationsButMintsOnlySelectedRoots() {
         JsonObject root = symbolicField("PORT.ROOT", "<Keys: int keyId>");
         JsonObject carrier = symbolicField(
@@ -133,6 +198,10 @@ public class SymbolicMechanismCatalogTest {
         SymbolicMechanismCatalog catalog = SymbolicMechanismCatalog.create(
                 inputs(), observe(context("OCC.1"), root,
                         unselected(root), empty()));
+        JsonObject rerun = symbolicField("PORT.RERUN", "<Keys: int keyId>");
+        assertEquals(catalog.inputDigest(), SymbolicMechanismCatalog.create(
+                new JsonObject(), observe(context("OCC.1"), rerun,
+                        unselected(rerun), empty())).inputDigest());
         assertRejected(catalog, SymbolicRootProposal.create(
                 repeat('0', 64),
                 Collections.<SymbolicRootProposal.Decision>emptyList()),

@@ -664,6 +664,65 @@ public class RegionPathWorklistTest {
     }
 
     @Test
+    public void requiredConcreteTargetEventClosesWithoutAFlip() {
+        String id = "ACT.TARGET.CONCRETE";
+        JsonObject summary = summary(id,
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        summary.add("pathCondition", new JsonArray());
+        JsonObject concrete = mapping("SITE.FATAL", -1);
+        concrete.addProperty("outcome", false);
+        concrete.addProperty("policy", "EXPLORE");
+        JsonArray mappings = new JsonArray();
+        mappings.add(concrete);
+        summary.add("branchMappings", mappings);
+        authorizeVmPcMappings(summary);
+        JsonObject reach = new JsonObject();
+        reach.addProperty("kind", PathObservation.TargetReachEvent.KIND);
+        reach.addProperty("siteId", "SITE.FATAL");
+        reach.addProperty("occurrence", 1);
+        reach.addProperty("outcome", false);
+        summary.add(PathObservation.TargetReachEvent.FIELD, reach);
+
+        JsonObject task = executionTask(id,
+                ClosureGoalKind.TARGET_REACH_CLOSURE);
+        JsonObject fatalBranch = taskBranch("SITE.FATAL", "EXPLORE");
+        fatalBranch.addProperty("failureTarget", true);
+        fatalBranch.addProperty("requiredOutcome", false);
+        JsonArray branches = new JsonArray();
+        branches.add(fatalBranch);
+        task.add("branches", branches);
+        JsonObject target = new JsonObject();
+        target.addProperty("siteId", "SITE.FATAL");
+        target.addProperty("occurrence", 1);
+        task.add("targetBranch", target);
+
+        RegionPathWorklist.Result closed = worklist(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertTrue(closed.tasks.toString(), closed.tasks.isEmpty());
+        assertEquals("CLOSED", closed.manifest.get("state").getAsString());
+
+        JsonObject opposite = summary.deepCopy();
+        opposite.addProperty("summaryId", "SUMMARY." + id + ".OPPOSITE");
+        opposite.getAsJsonArray("branchMappings").get(0).getAsJsonObject()
+                .getAsJsonObject("concreteObservation")
+                .addProperty("sourceTakenOutcome", true);
+        opposite.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("outcome", true);
+        RegionPathWorklist.Result gapped = worklist(
+                Collections.singletonList(opposite),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults());
+        assertEquals("GAPPED", gapped.manifest.get("state").getAsString());
+        assertEquals("TARGET_PREFIX_CONCRETE_OUTCOME_MISMATCH",
+                gapped.manifest.getAsJsonArray("gaps").get(0)
+                        .getAsJsonObject().get("kind").getAsString());
+    }
+
+    @Test
     public void severalLocalTargetPrefixesAreExploredAndDedupedSeparately() {
         String id = "ACT.TARGET.MULTIPLE.LOCAL.PREFIXES";
         JsonObject summary = summary(id,

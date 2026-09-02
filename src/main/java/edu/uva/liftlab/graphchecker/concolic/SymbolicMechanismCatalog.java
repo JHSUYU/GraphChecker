@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -39,8 +40,7 @@ final class SymbolicMechanismCatalog {
             "javaType", "definitionMethod", "definitionUnitIndex",
             "definitionSites", "method", "local", "index",
             "argumentIndex", "declaredCallee", "callSiteId",
-            "handoffLeafPath", "handoffPath", "manualCarrierClass",
-            "manualCarrierDescriptor", "manualCarrierField",
+            "handoffLeafPath",
             "captureKind", "outputCaptureKind", "protocolDirection",
             "rootKind", "rootMethod", "staticAccessSiteId", "outputSiteId"
     };
@@ -56,13 +56,39 @@ final class SymbolicMechanismCatalog {
             "argumentIndex", "declaredCallee",
             "accessorImplementationMethod", "callerMethod", "unitIndex",
             "callSiteId", "exchangeSiteKey", "direction", "portRole",
-            "handoffLeafPath", "handoffPath", "manualCarrierClass",
-            "manualCarrierDescriptor", "manualCarrierField",
+            "handoffLeafPath",
             "captureKind", "outputCaptureKind", "protocolDirection",
             "rootKind", "rootMethod", "staticAccessSiteId",
             "outputSiteId", "outputOccurrence", "replayOccurrence",
             "helperActivationBoundedOccurrence", "boundedWriterOccurrence",
             "baselineOrdinal", "symbolicDemand"
+    };
+
+    private static final String[] STABLE_EVIDENCE_CONTEXT_FIELDS = {
+            "regionId", "relationKey", "goalKind", "directed", "ready",
+            "targetSiteId", "targetRequiredOutcome", "targetDesiredOutcome"
+    };
+
+    /** Static fields emitted by the scheduler for a resolved writer site. */
+    private static final String[] STABLE_WRITER_FIELDS = {
+            "kind", "fromRegion", "regionId", "sourceKind",
+            "dependencyRole", "javaType", "accessFieldSignature",
+            "declaredFieldSignature", "leafFieldSignature",
+            "fieldSignature", "fieldPath", "fieldPaths",
+            "fieldPathDeclarations", "definitionMethod",
+            "definitionUnitIndex", "declaredCallee",
+            "staticAccessSiteId", "siteId", "outputSiteId", "callSiteId",
+            "handoffLeafPath", "captureKind", "outputCaptureKind", "cell",
+            "unresolvedPortId"
+    };
+
+    /** Stable reader-side value port used when a writer has no static site. */
+    private static final String[] RELATION_VALUE_FIELDS = {
+            "sourceKind", "dependencyRole", "location", "bindingMode",
+            "portId", "symbol", "javaType", "definitionMethod",
+            "definitionUnitIndex", "declaredCallee", "callSiteId",
+            "exchangeSiteKey", "direction", "portRole", "handoffLeafPath",
+            "captureKind", "outputCaptureKind", "protocolDirection", "cell"
     };
 
     private final JsonObject encoded;
@@ -92,6 +118,8 @@ final class SymbolicMechanismCatalog {
             boolean fixed = "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED".equals(
                     string(baseline, "symbolicDemand"));
             if (fixed) continue;
+            if ("CONCRETE_OUTSIDE_OUTPUT_CLOSURE_SCOPE".equals(
+                    string(baseline, "symbolicDemand"))) continue;
 
             JsonObject semantic = semanticDescriptor(action, writerAnchors);
             String candidateId = candidateIdFromSemantic(semantic);
@@ -109,10 +137,12 @@ final class SymbolicMechanismCatalog {
         }
 
         JsonArray candidateRows = new JsonArray();
+        JsonArray decisionCandidates = new JsonArray();
         Map<String, Card> decodedCards = new LinkedHashMap<>();
         for (CardBuilder builder : candidates.values()) {
             Card card = builder.build();
             candidateRows.add(card.json());
+            decisionCandidates.add(card.decisionJson());
             decodedCards.put(card.candidateId, card);
         }
         Map<String, JsonObject> orderedFixedRows = new TreeMap<>();
@@ -135,17 +165,22 @@ final class SymbolicMechanismCatalog {
             fixedRows.add(row);
         }
 
-        JsonObject digestPayload = new JsonObject();
-        digestPayload.addProperty("schemaVersion", SCHEMA_VERSION);
-        digestPayload.addProperty("kind", KIND);
-        digestPayload.addProperty("authority", AUTHORITY);
-        digestPayload.add("inputs", inputs == null
-                ? new JsonObject() : inputs.deepCopy());
-        digestPayload.add("fixedRoots", fixedRows);
-        digestPayload.add("candidates", candidateRows);
-        inputDigest = CanonicalJson.sha256(digestPayload);
+        JsonObject decisionSurface = new JsonObject();
+        decisionSurface.addProperty("schemaVersion", SCHEMA_VERSION);
+        decisionSurface.addProperty("kind", KIND);
+        decisionSurface.addProperty("authority", AUTHORITY);
+        decisionSurface.add("fixedRoots", fixedRows.deepCopy());
+        decisionSurface.add("candidates", decisionCandidates);
+        inputDigest = CanonicalJson.sha256(decisionSurface);
 
-        encoded = digestPayload.deepCopy();
+        encoded = new JsonObject();
+        encoded.addProperty("schemaVersion", SCHEMA_VERSION);
+        encoded.addProperty("kind", KIND);
+        encoded.addProperty("authority", AUTHORITY);
+        encoded.add("fixedRoots", fixedRows);
+        encoded.add("candidates", candidateRows);
+        encoded.add("inputs", inputs == null
+                ? new JsonObject() : inputs.deepCopy());
         encoded.addProperty("inputDigest", inputDigest);
         cards = Collections.unmodifiableMap(decodedCards);
     }
@@ -362,7 +397,22 @@ final class SymbolicMechanismCatalog {
         JsonArray anchors = canonicalWriterAnchors(writerAnchors);
         if (anchors.size() > 0) {
             result.addProperty("mechanismKind", "RELATION_BOUND_VALUE");
-            result.add("writerAnchors", anchors);
+            JsonArray stableAnchors = stableWriterAnchors(anchors);
+            result.add("writerAnchors", stableAnchors);
+            boolean hasStaticWriter = false;
+            for (JsonElement element : stableAnchors) {
+                JsonObject anchor = element.getAsJsonObject();
+                hasStaticWriter |= anchor.size() > 1
+                        || !anchor.has("kind");
+            }
+            if (!hasStaticWriter) {
+                JsonObject valuePort = stableRelationValue(action);
+                if (valuePort.size() == 0) {
+                    throw new IllegalArgumentException(
+                            "relation-bound action has no stable semantics");
+                }
+                result.add("valuePort", valuePort);
+            }
             return (JsonObject) CanonicalJson.copy(result);
         }
 
@@ -373,6 +423,16 @@ final class SymbolicMechanismCatalog {
             copy(result, action, "fieldPath");
             copy(result, action, "fieldPaths");
             copy(result, action, "javaType");
+            // A boxed primitive is an activation-local value carrier, not
+            // one global Long.value field.  Keep repetitions of the same
+            // accessor site together while separating unrelated values.
+            if ("ACCESSOR_RETURN".equals(string(action, "sourceKind"))) {
+                copy(result, action, "sourceKind");
+                copy(result, action, "callerMethod");
+                copy(result, action, "unitIndex");
+                copy(result, action, "declaredCallee");
+                copy(result, action, "staticAccessSiteId");
+            }
         } else {
             result.addProperty("mechanismKind", "PROGRAM_INPUT_ORIGIN");
             for (String field : LOCAL_ORIGIN_FIELDS) {
@@ -385,6 +445,37 @@ final class SymbolicMechanismCatalog {
             throw new IllegalArgumentException(
                     "symbolic mechanism action has no stable semantics");
         }
+        return (JsonObject) CanonicalJson.copy(result);
+    }
+
+    private static JsonArray stableWriterAnchors(JsonArray anchors) {
+        Map<String, JsonObject> ordered = new TreeMap<>();
+        for (JsonElement element : anchors) {
+            JsonObject source = element.getAsJsonObject();
+            JsonObject stable = new JsonObject();
+            for (String field : STABLE_WRITER_FIELDS) {
+                if (!"cell".equals(field)) copy(stable, source, field);
+            }
+            String cell = canonicalCell(string(source, "cell"));
+            if (!cell.isEmpty()) stable.addProperty("cell", cell);
+            if (stable.size() == 0) {
+                stable.addProperty("kind", "UNRESOLVED_WRITER");
+            }
+            stable = (JsonObject) CanonicalJson.copy(stable);
+            ordered.put(CanonicalJson.render(stable), stable);
+        }
+        JsonArray result = new JsonArray();
+        for (JsonObject anchor : ordered.values()) result.add(anchor);
+        return result;
+    }
+
+    private static JsonObject stableRelationValue(JsonObject action) {
+        JsonObject result = new JsonObject();
+        for (String field : RELATION_VALUE_FIELDS) {
+            if (!"cell".equals(field)) copy(result, action, field);
+        }
+        String cell = canonicalCell(string(action, "cell"));
+        if (!cell.isEmpty()) result.addProperty("cell", cell);
         return (JsonObject) CanonicalJson.copy(result);
     }
 
@@ -486,6 +577,7 @@ final class SymbolicMechanismCatalog {
         private final boolean relationBound;
         private boolean symbolizable;
         private final Map<String, JsonObject> evidence = new TreeMap<>();
+        private final Set<String> evidenceIds = new TreeSet<>();
 
         private CardBuilder(String candidateId, JsonObject semantic,
                             boolean relationBound) {
@@ -498,9 +590,6 @@ final class SymbolicMechanismCatalog {
                              JsonObject baseline, boolean eligible) {
             symbolizable |= eligible;
             JsonObject row = context.deepCopy();
-            String port = firstNonempty(string(action, "portId"),
-                    string(action, "symbol"));
-            if (!port.isEmpty()) row.addProperty("sourcePortId", port);
             JsonObject reader = new JsonObject();
             for (String field : EVIDENCE_FIELDS) copy(reader, action, field);
             if (reader.size() > 0) row.add("reader", reader);
@@ -510,16 +599,40 @@ final class SymbolicMechanismCatalog {
             }
             String evidenceId = "ROOT_EVIDENCE."
                     + CanonicalJson.sha256(candidateId + "\n"
-                    + CanonicalJson.render(row));
+                    + CanonicalJson.render(stableEvidence(
+                    context, action, baseline)));
             row.addProperty("evidenceId", evidenceId);
-            evidence.put(evidenceId, row);
+            evidenceIds.add(evidenceId);
+            evidence.put(CanonicalJson.render(row), row);
         }
 
         private Card build() {
             return new Card(candidateId, semantic, symbolizable,
                     relationBound,
-                    new ArrayList<>(evidence.values()));
+                    new ArrayList<>(evidence.values()), evidenceIds);
         }
+    }
+
+    private static JsonObject stableEvidence(
+            JsonObject context, JsonObject action, JsonObject baseline) {
+        JsonObject result = new JsonObject();
+        for (String field : STABLE_EVIDENCE_CONTEXT_FIELDS) {
+            copy(result, context, field);
+        }
+        JsonObject reader = new JsonObject();
+        for (String field : EVIDENCE_FIELDS) {
+            if (field.endsWith("Occurrence")
+                    || "baselineOrdinal".equals(field)) continue;
+            if (!"cell".equals(field)) copy(reader, action, field);
+        }
+        String cell = canonicalCell(string(action, "cell"));
+        if (!cell.isEmpty()) reader.addProperty("cell", cell);
+        if (reader.size() > 0) result.add("reader", reader);
+        String baselineDemand = string(baseline, "symbolicDemand");
+        if (!baselineDemand.isEmpty()) {
+            result.addProperty("manualBaselineDemand", baselineDemand);
+        }
+        return (JsonObject) CanonicalJson.copy(result);
     }
 
     private static final class Card {
@@ -532,30 +645,34 @@ final class SymbolicMechanismCatalog {
 
         private Card(String candidateId, JsonObject semantic,
                      boolean symbolizable, boolean relationBound,
-                     List<JsonObject> evidence) {
+                     List<JsonObject> evidence, Set<String> evidenceIds) {
             this.candidateId = candidateId;
             this.semantic = semantic.deepCopy();
             this.symbolizable = symbolizable;
             this.relationBound = relationBound;
             this.evidence = Collections.unmodifiableList(evidence);
-            Set<String> ids = new LinkedHashSet<>();
-            for (JsonObject row : evidence) ids.add(string(row, "evidenceId"));
-            evidenceIds = Collections.unmodifiableSet(ids);
+            this.evidenceIds = Collections.unmodifiableSet(
+                    new LinkedHashSet<>(evidenceIds));
         }
 
-        private JsonObject json() {
+        private JsonObject decisionJson() {
             JsonObject row = new JsonObject();
             row.addProperty("candidateId", candidateId);
             row.addProperty("symbolizable", symbolizable);
             row.addProperty("relationBound", relationBound);
             row.add("semantic", semantic.deepCopy());
             JsonArray ids = new JsonArray();
+            for (String evidenceId : evidenceIds) ids.add(evidenceId);
+            row.add("evidenceIds", ids);
+            return row;
+        }
+
+        private JsonObject json() {
+            JsonObject row = decisionJson();
             JsonArray rows = new JsonArray();
             for (JsonObject item : evidence) {
-                ids.add(string(item, "evidenceId"));
                 rows.add(item.deepCopy());
             }
-            row.add("evidenceIds", ids);
             row.add("evidence", rows);
             return row;
         }

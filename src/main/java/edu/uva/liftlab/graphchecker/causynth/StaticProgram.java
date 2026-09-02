@@ -61,8 +61,6 @@ public final class StaticProgram {
      * slice.
      */
     final Set<String> communicationCallSiteCallees = new LinkedHashSet<>();
-    /** Static-only implementation frames removed before region closure. */
-    final Set<String> regionEnvelopeExclusions = new LinkedHashSet<>();
     /**
      * The initialization-root decisions this run may plan candidate regions
      * from, as {@link #initializationRootDecisions} answers them.

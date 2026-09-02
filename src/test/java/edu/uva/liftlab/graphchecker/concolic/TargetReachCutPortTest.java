@@ -161,8 +161,13 @@ public class TargetReachCutPortTest {
                 witnessed.deepCopy());
         opposite.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
                 .addProperty("outcome", false);
+        JsonObject seed = seedQuery(CUT_PORT);
+        JsonObject seedWitness = seed.getAsJsonObject("replayContract")
+                .getAsJsonObject("source");
+        seedWitness.addProperty("sourceTakenOutcome", false);
+        seedWitness.add("sourceSatisfiedPredicate", witnessed.deepCopy());
 
-        JsonObject query = build(CUT_PORT, opposite);
+        JsonObject query = build(CUT_PORT, opposite, manifest(), seed);
 
         JsonObject path = query.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
@@ -174,6 +179,43 @@ public class TargetReachCutPortTest {
                         .getAsString());
         assertEquals(">", path.getAsJsonArray("constraints").get(0)
                 .getAsJsonObject().get("_op").getAsString());
+    }
+
+    @Test
+    public void requiredConcreteTargetEventNeedsNoReplayContract()
+            throws Exception {
+        JsonObject concrete = ExactConcreteBranchObservation.attested(
+                TARGET_SITE, METHOD, 6, 1, false).toJson();
+        JsonObject summary = summary();
+        summary.add("pathCondition", new JsonArray());
+        JsonArray mappings = new JsonArray();
+        mappings.add(SummaryBranchMapping.concrete(
+                ExactConcreteBranchObservation.fromJson(concrete),
+                SummaryBranchMapping.Policy.EXPLORE).toJson());
+        summary.add("branchMappings", mappings);
+        summary.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("outcome", false);
+
+        JsonObject seed = seedQuery(CUT_PORT);
+        seed.remove("replayContract");
+        seed.add(TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION,
+                concrete.deepCopy());
+        JsonObject query = build(CUT_PORT, summary, manifest(), seed);
+
+        assertFalse(query.has("seedReplayContract"));
+        assertEquals(concrete, query.getAsJsonObject(
+                TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION));
+        JsonObject path = query.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        assertEquals(0, path.getAsJsonArray("constraints").size());
+        assertFalse(path.has(
+                TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS));
+        assertEquals(concrete, path.getAsJsonObject(
+                TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION));
+        assertEquals(TargetReachPathQueryBuilder
+                        .REQUIRED_TARGET_REACH_EVENT,
+                path.get(TargetReachPathQueryBuilder
+                        .TARGET_ATTESTATION_ROLE).getAsString());
     }
 
     @Test

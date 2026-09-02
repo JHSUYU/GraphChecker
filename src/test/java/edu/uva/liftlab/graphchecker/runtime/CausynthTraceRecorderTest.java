@@ -39,27 +39,38 @@ public class CausynthTraceRecorderTest {
     }
 
     @Test
-    public void rpcRecorderHasOneFullyStatedAbi() throws Exception {
+    public void exchangeRecorderHasOneFullyStatedAbi() throws Exception {
+        int exchanges = 0;
         for (Method method : CausynthTraceRecorder.class
                 .getDeclaredMethods()) {
-            if ("recordRpc".equals(method.getName())) {
+            if ("recordExchange".equals(method.getName())) {
                 assertEquals(String.valueOf(method), 6,
                         method.getParameterCount());
+                exchanges++;
             }
         }
+        assertEquals(1, exchanges);
         String outputProperty = System.getProperty(
                 "causynth.trace.output.dir");
-        Path output = folder.newFolder("rpc-identity").toPath();
+        Path output = folder.newFolder("exchange-identity").toPath();
         try {
             clear();
             System.setProperty("causynth.trace.output.dir",
                     output.toString());
-            CausynthTraceRecorder.recordRpc("SEND", "EXAMPLE",
-                    "exchange-1", "attempt-2", "REQUEST", null);
+            Object client = new Object();
+            CausynthTraceRecorder.registerSource(client, "EXTERNAL_APP",
+                    "CLIENT", "app/client0", 0L);
+            long request = CausynthTraceRecorder.beginSourceRequest(client,
+                    "fetchindex");
+            String header = CausynthTraceRecorder.outboundExchange(
+                    "HTTP", "exchange-1", "attempt-2", "REQUEST", client);
+            assertTrue(header.startsWith("1|"));
+            CausynthTraceRecorder.endSourceRequest(request, "fetchindex");
             shutdown();
-            JsonObject row = traceRows(output, "RPC_SEND").get(0);
+            JsonObject row = traceRows(output, "EXCHANGE_SEND").get(0);
             assertEquals("attempt-2", row.get("attemptId").getAsString());
             assertEquals("REQUEST", row.get("half").getAsString());
+            assertEquals("fetchindex", row.get("requestApi").getAsString());
         } finally {
             shutdown();
             clear();

@@ -59,9 +59,9 @@ public class NestedTargetSelectedRpcHandoffTest {
                 .getAsJsonObject().get("edgeId").getAsString());
 
         assertEquals(1, task.communicationHandoffs().size());
-        assertFalse(task.communicationHandoffs().get(0).exports());
-        assertTrue(task.communicationHandoffs().get(0)
-                .attachesCutReturn());
+        assertTrue(task.communicationHandoffs().get(0).incoming());
+        assertEquals(CommunicationCatalogContract.CAPTURE_CALL_RETURN,
+                task.communicationHandoffs().get(0).captureKind());
         assertEquals(SELECTED_PORT,
                 task.communicationHandoffs().get(0).portId());
     }
@@ -133,14 +133,14 @@ public class NestedTargetSelectedRpcHandoffTest {
 
     private static JsonObject responseAttach(String port) {
         JsonObject site = new JsonObject();
-        site.addProperty("kind", CommunicationHandoffSpec.KIND);
-        site.addProperty("role", CommunicationHandoffSpec.ROLE_ATTACH);
+        site.addProperty(CommunicationHandoffSpec.SIDE,
+                CommunicationHandoffSpec.IN);
+        site.addProperty(CommunicationHandoffSpec.CAPTURE_KIND,
+                CommunicationCatalogContract.CAPTURE_CALL_RETURN);
         site.addProperty("portId", port);
         site.addProperty("handoffLeafPath", "RETURN");
         site.addProperty("direction", "RESPONSE");
         site.addProperty("javaType", "long");
-        site.addProperty("exchangeSiteKey",
-                port.substring(0, port.length() - ".resp".length()));
         site.addProperty("definitionMethod", TARGET_METHOD);
         site.addProperty(CommunicationCatalogContract.DECLARED_CALLEE,
                 "<DataNodeProtocol: long readValue()>");

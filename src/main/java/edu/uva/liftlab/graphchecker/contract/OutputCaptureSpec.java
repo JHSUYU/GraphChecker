@@ -17,11 +17,6 @@ public final class OutputCaptureSpec {
     public static final String MUTATION_STATE = "MUTATION_STATE";
     public static final String FIELD_WRITE_STATE = "FIELD_WRITE_STATE";
     public static final String REGION_EXIT_FIELD = "REGION_EXIT_FIELD";
-    /** A structured communication leaf exported by the VM handoff broker: no
-     *  Java argument position of its own, so its output boundary is the
-     *  successful export of the exact field expression under the exchange,
-     *  attempt, direction and leaf path the planned RPC edge states. */
-    public static final String HANDOFF_BOUND_LEAF = "HANDOFF_BOUND_LEAF";
     public static final String REGION_ACTIVATION_SCOPE =
             "REGION_ACTIVATION";
     public static final String DEFINITION_INVOCATION_SCOPE =
@@ -57,8 +52,6 @@ public final class OutputCaptureSpec {
     private final String occurrenceScope;
     private final boolean instanceScopedProducer;
     private final String outputSiteId;
-    private final String leafPath;
-    private final String direction;
 
     static OutputCaptureSpec decodeValidated(JsonObject encoded) {
         return new OutputCaptureSpec(encoded);
@@ -92,9 +85,6 @@ public final class OutputCaptureSpec {
         outputSiteId = string(encoded, "outputSiteId");
         int outputOccurrence = encoded.has("outputOccurrence")
                 ? encoded.get("outputOccurrence").getAsInt() : -1;
-        leafPath = string(encoded, "leafPath");
-        direction = string(encoded,
-                CommunicationCatalogContract.PORT_DIRECTION);
         // The ordinal is recorded provenance, not a replay demand: refusing a
         // recorded ordinal past the replay window would discard an output the
         // recording proves for a reason the relation never asserted.
@@ -157,15 +147,6 @@ public final class OutputCaptureSpec {
     public boolean capturesRegionExitField() {
         return REGION_EXIT_FIELD.equals(captureKind);
     }
-
-    /** Captures one exact field expression at a successful RPC export. */
-    public boolean capturesHandoffBoundLeaf() {
-        return HANDOFF_BOUND_LEAF.equals(captureKind);
-    }
-
-    public String leafPath() { return leafPath; }
-
-    public String direction() { return direction; }
 
     public String accessRootInputPort() { return accessRootInputPort; }
 

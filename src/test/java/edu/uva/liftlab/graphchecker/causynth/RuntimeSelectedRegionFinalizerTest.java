@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -588,14 +589,20 @@ public class RuntimeSelectedRegionFinalizerTest {
         target.put("observedFatalTargets", Collections.singletonList(
                 observedFatalTarget(targetRoot + "#u9", targetRoot,
                         50L, 30L, false)));
+        String exchangeLeg = "exchange-1\nattempt-2\nREQUEST";
+        observeCommunication(producer, "OUT", portId, exchangeLeg,
+                39L, 40L);
+        observeCommunication(target, "IN", portId, exchangeLeg,
+                46L, 45L);
         Map<String, Object> link = object("schemaVersion", 3,
                 "kind", "RUNTIME_OCCURRENCE_LINK",
                 "linkKind", "SERVER_ENTRY",
                 "fromActivationId", "ACT.producer",
                 "toActivationId", "ACT.envelope",
-                "exchangeLeg", "exchange-1\nattempt-2\nREQUEST",
+                "exchangeLeg", exchangeLeg,
                 "attemptId", "attempt-2", "direction", "REQUEST",
                 "transport", "EXAMPLE",
+                "senderEventSeq", 40L, "receiverEventSeq", 45L,
                 "authority", "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1");
 
         RuntimeSelectedRegionFinalizer.Result result =
@@ -620,6 +627,102 @@ public class RuntimeSelectedRegionFinalizerTest {
         assertEquals("REGION.producer", protocol.get(0).get("fromRegion"));
         assertEquals("REGION.target", protocol.get(0).get("toRegion"));
         assertEquals("attempt-2", protocol.get(0).get("attemptId"));
+    }
+
+    @Test
+    public void distinctPortsResolveToDistinctNestedReceivers()
+            throws Exception {
+        String producerRoot = "<example.Transport: void respond()>";
+        String outerRoot = "<example.Client: void finish()>";
+        String innerRoot = "<example.Decoder: int status()>";
+        String outerPort = "XCH.example.response.result";
+        String innerPort = "XCH.example.response.status";
+        String requestKey = "cluster/client#epoch0/request/work#1";
+        String exchangeLeg = "exchange-1\nattempt-2\nRESPONSE";
+
+        Map<String, Object> producerSkeleton = communicationSkeleton(
+                "REGION.producer", producerRoot, "STATE_CONTEXT", null);
+        producerSkeleton.put(RuntimeSelectedRegionFinalizer
+                        .COMMUNICATION_PORTS,
+                Arrays.asList(
+                        communicationPort(outerPort, "OUT", "SERVER",
+                                "RESPONSE"),
+                        communicationPort(innerPort, "OUT", "SERVER",
+                                "RESPONSE")));
+        Map<String, Object> outerSkeleton = communicationSkeleton(
+                "REGION.outer", outerRoot, "EXCEPTION_CONTEXT",
+                communicationPort(outerPort, "IN", "CLIENT",
+                        "RESPONSE"));
+        Map<String, Object> innerSkeleton = communicationSkeleton(
+                "REGION.inner", innerRoot, "STATE_CONTEXT",
+                communicationPort(innerPort, "IN", "CLIENT",
+                        "RESPONSE"));
+        File skeleton = writeRows("multi-port-receiver-skeleton.jsonl",
+                producerSkeleton, outerSkeleton, innerSkeleton);
+        Map<String, Object> fatal = object("schemaVersion", 3,
+                "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", "DF.multi.port.failure", "kind", "exception_guard",
+                "transferKind", "GUARD", "method", outerRoot,
+                "regionIds", Collections.singletonList("REGION.outer"),
+                "fromCell", outerRoot + "::$failed",
+                "toCell", outerRoot + "#u9#exception:example.Failure",
+                "siteId", outerRoot + "#u9", "unitIndex", 9);
+        File refined = writeRows("multi-port-receiver-refined.jsonl", fatal);
+
+        Map<String, Object> producer = activation("ACT.producer",
+                "REGION.producer", 10L, producerRoot, "STATE_CONTEXT");
+        Map<String, Object> outer = activation("ACT.outer", "REGION.outer",
+                20L, outerRoot, "EXCEPTION_CONTEXT");
+        Map<String, Object> inner = activation("ACT.inner", "REGION.inner",
+                30L, innerRoot, "STATE_CONTEXT");
+        inner.put("enclosingActivationIds",
+                Collections.singletonList("ACT.outer"));
+        for (Map<String, Object> activation
+                : Arrays.asList(producer, outer, inner)) {
+            activation.put("requestKey", requestKey);
+        }
+        outer.put("observedFatalTargets", Collections.singletonList(
+                observedFatalTarget(outerRoot + "#u9", outerRoot,
+                        80L, 20L, false)));
+        observeCommunication(producer, "OUT", outerPort, exchangeLeg,
+                48L, 50L);
+        observeCommunication(producer, "OUT", innerPort, exchangeLeg,
+                49L, 50L);
+        observeCommunication(outer, "IN", outerPort, exchangeLeg,
+                61L, 60L);
+        observeCommunication(inner, "IN", innerPort, exchangeLeg,
+                62L, 60L);
+        Map<String, Object> link = object("schemaVersion", 3,
+                "kind", "RUNTIME_OCCURRENCE_LINK",
+                "linkKind", "CLIENT_RETURN",
+                "fromActivationId", "ACT.producer",
+                "toActivationId", "ACT.outer",
+                "exchangeLeg", exchangeLeg,
+                "attemptId", "attempt-2", "direction", "RESPONSE",
+                "transport", "EXAMPLE", "requestKey", requestKey,
+                "senderEventSeq", 50L, "receiverEventSeq", 60L,
+                "authority", "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1");
+
+        RuntimeSelectedRegionFinalizer.Result result =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        Collections.singletonList(fatal), refined, skeleton,
+                        Arrays.asList(producerRoot, outerRoot, innerRoot),
+                        Arrays.asList(producer, outer, inner),
+                        Collections.<Map<String, Object>>emptyList(),
+                        Collections.singletonList(link));
+
+        Set<String> ports = new LinkedHashSet<>();
+        Set<String> receivers = new LinkedHashSet<>();
+        for (Map<String, Object> edge : result.regionEdges) {
+            if (!"RUNTIME_PROTOCOL_FLOW".equals(edge.get("kind"))) continue;
+            ports.add(String.valueOf(edge.get("toPort")));
+            receivers.add(String.valueOf(edge.get("toRegion")));
+        }
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                outerPort, innerPort)), ports);
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                "REGION.outer", "REGION.inner")), receivers);
     }
 
     @Test
@@ -699,12 +802,17 @@ public class RuntimeSelectedRegionFinalizerTest {
         target.put("observedFatalTargets", Collections.singletonList(
                 observedFatalTarget(targetRoot + "#u9", targetRoot,
                         70L, 30L, false)));
+        String exchangeLeg = "exchange-1\nattempt-1\nREQUEST";
+        observeCommunication(producer, "OUT", portId, exchangeLeg,
+                49L, 50L);
+        observeCommunication(target, "IN", portId, exchangeLeg,
+                61L, 60L);
         Map<String, Object> link = object("schemaVersion", 3,
                 "kind", "RUNTIME_OCCURRENCE_LINK",
                 "linkKind", "SERVER_ENTRY",
                 "fromActivationId", "ACT.producer",
                 "toActivationId", "ACT.target",
-                "exchangeLeg", "exchange-1\nattempt-1\nREQUEST",
+                "exchangeLeg", exchangeLeg,
                 "attemptId", "attempt-1", "direction", "REQUEST",
                 "transport", "EXAMPLE", "senderEventSeq", 50L,
                 "receiverEventSeq", 60L,
@@ -865,6 +973,14 @@ public class RuntimeSelectedRegionFinalizerTest {
                 "ACT.upstream.early", "ACT.producer", "early", 10L, 15L);
         Map<String, Object> lateLink = occurrenceLink(
                 "ACT.upstream.late", "ACT.producer", "late", 60L, 70L);
+        observeCommunication(earlyUpstream, "OUT", responsePort,
+                "early\nattempt-1\nRESPONSE", 9L, 10L);
+        observeCommunication(producer, "IN", responsePort,
+                "early\nattempt-1\nRESPONSE", 16L, 15L);
+        observeCommunication(lateUpstream, "OUT", responsePort,
+                "late\nattempt-1\nRESPONSE", 59L, 60L);
+        observeCommunication(producer, "IN", responsePort,
+                "late\nattempt-1\nRESPONSE", 71L, 70L);
 
         RuntimeSelectedRegionFinalizer.Result result =
                 RuntimeSelectedRegionFinalizer.finalizeRegions(
@@ -886,6 +1002,144 @@ public class RuntimeSelectedRegionFinalizerTest {
                                 edge.get("receiverEventSeq"))));
     }
 
+    @Test
+    public void requestPrefixKeepsOnlyTheExactlyCapturedTransaction()
+            throws Exception {
+        String producerRoot = "<example.Transport: int send()>";
+        String consumerRoot = "<example.Client: int receive()>";
+        String targetRoot = "<example.Client: void fail()>";
+        String portId = "XCH.example.response.status";
+        String request = "cluster/client#epoch0/request/work#1";
+        String otherRequest = "cluster/client#epoch0/request/work#2";
+
+        File skeleton = writeRows("request-prefix-skeleton.jsonl",
+                communicationSkeleton("REGION.producer", producerRoot,
+                        "COMMUNICATION_CONTEXT",
+                        communicationPort(portId, "OUT", "SERVER",
+                                "RESPONSE")),
+                communicationSkeleton("REGION.consumer", consumerRoot,
+                        "STATE_CONTEXT",
+                        communicationPort(portId, "IN", "CLIENT",
+                                "RESPONSE")),
+                communicationSkeleton("REGION.target", targetRoot,
+                        "EXCEPTION_CONTEXT", null));
+        Map<String, Object> fatal = object("schemaVersion", 3,
+                "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", "DF.request.prefix.failure",
+                "kind", "exception_guard", "transferKind", "GUARD",
+                "method", targetRoot,
+                "regionIds", Collections.singletonList("REGION.target"),
+                "fromCell", targetRoot + "::$failed",
+                "toCell", targetRoot + "#u9#exception:example.Failure",
+                "siteId", targetRoot + "#u9", "unitIndex", 9);
+        File refined = writeRows("request-prefix-refined.jsonl", fatal);
+
+        Map<String, Object> firstProducer = activation("ACT.producer.first",
+                "REGION.producer", 10L, producerRoot,
+                "COMMUNICATION_CONTEXT");
+        Map<String, Object> secondProducer = activation(
+                "ACT.producer.second", "REGION.producer", 20L,
+                producerRoot, "COMMUNICATION_CONTEXT");
+        Map<String, Object> sharedConsumer = activation("ACT.consumer.shared",
+                "REGION.consumer", 30L, consumerRoot, "STATE_CONTEXT");
+        Map<String, Object> otherProducer = activation("ACT.producer.other",
+                "REGION.producer", 40L, producerRoot,
+                "COMMUNICATION_CONTEXT");
+        Map<String, Object> otherConsumer = activation("ACT.consumer.other",
+                "REGION.consumer", 50L, consumerRoot, "STATE_CONTEXT");
+        Map<String, Object> lateProducer = activation("ACT.producer.late",
+                "REGION.producer", 60L, producerRoot,
+                "COMMUNICATION_CONTEXT");
+        Map<String, Object> lateConsumer = activation("ACT.consumer.late",
+                "REGION.consumer", 70L, consumerRoot, "STATE_CONTEXT");
+        Map<String, Object> target = activation("ACT.target",
+                "REGION.target", 80L, targetRoot, "EXCEPTION_CONTEXT");
+        for (Map<String, Object> activation : Arrays.asList(firstProducer,
+                secondProducer, sharedConsumer, lateProducer, lateConsumer,
+                target)) {
+            activation.put("requestKey", request);
+        }
+        otherProducer.put("requestKey", otherRequest);
+        otherConsumer.put("requestKey", otherRequest);
+        target.put("observedFatalTargets", Collections.singletonList(
+                observedFatalTarget(targetRoot + "#u9", targetRoot,
+                        100L, 80L, false)));
+
+        Map<String, Object> first = requestFlowLink("ACT.producer.first",
+                "ACT.consumer.shared", "exchange-first", "attempt-1",
+                request, 10L, 20L);
+        Map<String, Object> second = requestFlowLink("ACT.producer.second",
+                "ACT.consumer.shared", "exchange-second", "attempt-2",
+                request, 30L, 40L);
+        Map<String, Object> other = requestFlowLink("ACT.producer.other",
+                "ACT.consumer.other", "exchange-other", "attempt-1",
+                otherRequest, 50L, 60L);
+        Map<String, Object> late = requestFlowLink("ACT.producer.late",
+                "ACT.consumer.late", "exchange-late", "attempt-3",
+                request, 110L, 120L);
+
+        observeCommunication(firstProducer, "OUT", portId,
+                "exchange-first\nattempt-1\nRESPONSE", 9L, 10L);
+        observeCommunication(secondProducer, "OUT", portId,
+                "exchange-second\nattempt-2\nRESPONSE", 29L, 30L);
+        // The same coarse consumer received both responses, but its cut ran
+        // only after the second one.  The first delivery is not observed at
+        // this port and must not acquire an edge.
+        observeCommunication(sharedConsumer, "IN", portId,
+                "exchange-second\nattempt-2\nRESPONSE", 41L, 40L);
+        observeCommunication(otherProducer, "OUT", portId,
+                "exchange-other\nattempt-1\nRESPONSE", 49L, 50L);
+        observeCommunication(otherConsumer, "IN", portId,
+                "exchange-other\nattempt-1\nRESPONSE", 61L, 60L);
+        observeCommunication(lateProducer, "OUT", portId,
+                "exchange-late\nattempt-3\nRESPONSE", 109L, 110L);
+        observeCommunication(lateConsumer, "IN", portId,
+                "exchange-late\nattempt-3\nRESPONSE", 121L, 120L);
+
+        RuntimeSelectedRegionFinalizer.Result result =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        Collections.singletonList(fatal), refined, skeleton,
+                        Arrays.asList(producerRoot, consumerRoot, targetRoot),
+                        Arrays.asList(firstProducer, secondProducer,
+                                sharedConsumer, otherProducer, otherConsumer,
+                                lateProducer, lateConsumer, target),
+                        Collections.<Map<String, Object>>emptyList(),
+                        Arrays.asList(first, second, other, late));
+
+        List<Map<String, Object>> protocol = new ArrayList<>();
+        for (Map<String, Object> edge : result.regionEdges) {
+            if ("RUNTIME_PROTOCOL_FLOW".equals(edge.get("kind"))) {
+                protocol.add(edge);
+            }
+        }
+        assertEquals(String.valueOf(protocol), 1, protocol.size());
+        assertEquals("exchange-second\nattempt-2\nRESPONSE",
+                protocol.get(0).get("exchangeLeg"));
+        assertEquals(request, protocol.get(0).get("requestKey"));
+        assertEquals(secondProducer.get("occurrenceId"),
+                protocol.get(0).get("fromOccurrenceId"));
+        assertEquals(sharedConsumer.get("occurrenceId"),
+                protocol.get(0).get("toOccurrenceId"));
+    }
+
+    private static Map<String, Object> requestFlowLink(
+            String fromActivation, String toActivation, String exchange,
+            String attempt, String requestKey, long senderEventSeq,
+            long receiverEventSeq) {
+        return object("schemaVersion", 3,
+                "kind", "RUNTIME_OCCURRENCE_LINK",
+                "linkKind", "CLIENT_RETURN",
+                "fromActivationId", fromActivation,
+                "toActivationId", toActivation,
+                "exchangeLeg", exchange + "\n" + attempt + "\nRESPONSE",
+                "attemptId", attempt, "direction", "RESPONSE",
+                "transport", "EXAMPLE", "requestKey", requestKey,
+                "senderEventSeq", senderEventSeq,
+                "receiverEventSeq", receiverEventSeq,
+                "authority", "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1");
+    }
+
     private static Map<String, Object> occurrenceLink(
             String fromActivation, String toActivation, String exchange,
             long senderEventSeq, long receiverEventSeq) {
@@ -900,6 +1154,19 @@ public class RuntimeSelectedRegionFinalizerTest {
                 "senderEventSeq", senderEventSeq,
                 "receiverEventSeq", receiverEventSeq,
                 "authority", "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1");
+    }
+
+    private static void observeCommunication(
+            Map<String, Object> activation, String side, String portId,
+            String exchangeLeg, long eventSeq, long transportEventSeq) {
+        List<Map<String, Object>> captures = new ArrayList<>(rows(
+                activation.get(RuntimeSelectedRegionFinalizer
+                        .OBSERVED_COMMUNICATION_CAPTURES)));
+        captures.add(object("side", side, "portId", portId,
+                "exchangeLeg", exchangeLeg, "eventSeq", eventSeq,
+                "transportEventSeq", transportEventSeq));
+        activation.put(RuntimeSelectedRegionFinalizer
+                .OBSERVED_COMMUNICATION_CAPTURES, captures);
     }
 
     private static Map<String, Object> communicationSkeleton(

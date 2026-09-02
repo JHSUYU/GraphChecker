@@ -140,11 +140,7 @@ public final class ConcolicScheduler {
         Result result = new Result();
         Set<String> scheduledOutputOccurrences = new LinkedHashSet<>();
         for (Candidate candidate : candidates) {
-            JsonArray taskInputActions = loaded.symbolicInputs
-                    .includeTargetSourceFrontier(
-                            candidate.goal.plan().regionId(),
-                            candidate.inputActions,
-                            candidate.targetSourceFrontier);
+            JsonArray taskInputActions = candidate.inputActions;
             JsonArray baselineInputs = loaded.symbolicInputs.select(
                     candidate.goal.plan().regionId(), taskInputActions);
             JsonArray mechanismBindings = mechanismBindings(candidate,
@@ -179,6 +175,10 @@ public final class ConcolicScheduler {
                     candidate.goal.edgeBindings());
             if (candidate.targetEdgeBindings != null) {
                 edgeBindings = candidate.targetEdgeBindings.deepCopy();
+            }
+            if (candidate.goal.kind().capturesTargetReach()) {
+                edgeBindings = mergeTargetPrefixBindings(edgeBindings,
+                        arguments.targetPrefixBindings);
             }
             edgeBindings = mergeEdgeBindings(edgeBindings);
             if (producerProjection != null) {
@@ -374,8 +374,7 @@ public final class ConcolicScheduler {
                 "fieldPaths", "fieldPathDeclarations", "definitionMethod",
                 "definitionUnitIndex", "declaredCallee",
                 "staticAccessSiteId", "siteId", "outputSiteId",
-                "callSiteId", "handoffLeafPath", "manualCarrierClass",
-                "manualCarrierDescriptor", "manualCarrierField",
+                "callSiteId", "handoffLeafPath",
                 "captureKind", "outputCaptureKind"}) {
             JsonElement value = output.get(field);
             if (value != null && !value.isJsonNull()) {
@@ -1112,6 +1111,18 @@ public final class ConcolicScheduler {
         return result;
     }
 
+    /** Adds the exact same-request prefix edges selected by discovery. */
+    static JsonArray mergeTargetPrefixBindings(
+            JsonArray selected, JsonArray requestPrefix) {
+        JsonArray result = objectRows(selected);
+        for (JsonElement element : requestPrefix) {
+            if (element.isJsonObject()) {
+                result.add(element.getAsJsonObject().deepCopy());
+            }
+        }
+        return result;
+    }
+
     private static List<Candidate> candidates(Arguments arguments,
                                               List<RegionInstancePlan>
                                                       regionPlans,
@@ -1298,6 +1309,8 @@ public final class ConcolicScheduler {
                         queryInstance, arguments.targetEdgeIds);
                 inputActions = targetSymbolicFrontier(goal, inputActions,
                         queryInstance);
+                inputActions = mergeSymbolicFrontier(inputActions,
+                        targetSourceFrontier);
                 JsonArray targetBindings = targetInputBindings(goal,
                         inputActions, queryInstance,
                         arguments.targetEdgeIds);
@@ -1410,6 +1423,31 @@ public final class ConcolicScheduler {
         return result;
     }
 
+    /** Adds every symbolic carrier needed by another guard of the same throw. */
+    private static JsonArray mergeSymbolicFrontier(
+            JsonArray branchActions, JsonArray guardedTargetActions) {
+        JsonArray result = branchActions == null
+                ? new JsonArray() : branchActions.deepCopy();
+        Set<String> represented = new LinkedHashSet<>();
+        for (JsonElement element : result) {
+            if (element.isJsonObject()) {
+                represented.add(string(element.getAsJsonObject(), "symbol"));
+            }
+        }
+        for (JsonElement element : guardedTargetActions == null
+                ? new JsonArray() : guardedTargetActions) {
+            if (!element.isJsonObject()) continue;
+            JsonObject action = element.getAsJsonObject();
+            String symbol = string(action, "symbol");
+            if (!symbol.isEmpty() && represented.add(symbol)
+                    && InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                    string(action, "mode"))) {
+                result.add(action.deepCopy());
+            }
+        }
+        return result;
+    }
+
     private static boolean trustedIncomingBinding(
             Goal goal, String canonicalInput, String queryInstance) {
         Set<String> acceptedPorts = exactInputPorts(goal, canonicalInput,
@@ -1473,21 +1511,10 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /** A selected response delivery remains part of the replay topology even
-     * when the branch currently being reopened does not consume its value;
-     * an exact component edge is target topology, not a local symbolic root.
-     */
+    /** A selected response remains replay topology even when this branch does
+     * not consume its value. */
     private static boolean selectedWorkflowHandoffBinding(
             JsonObject binding) {
-        if (!string(binding,
-                CommunicationCatalogContract.PORT_COMPONENT_OF).isEmpty()
-                && !string(binding,
-                CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH).isEmpty()
-                && !string(binding,
-                CommunicationCatalogContract.PORT_ENCODING_AUTHORITY)
-                .isEmpty()) {
-            return true;
-        }
         return "RUNTIME_PROTOCOL_FLOW".equals(string(binding, "kind"))
                 && "RESPONSE".equalsIgnoreCase(
                 string(binding, "direction"))
@@ -1575,7 +1602,16 @@ public final class ConcolicScheduler {
             String cell = string(action, "cell");
             String dependencyRole = DependencyRole.normalize(
                     action.get("dependencyRole"));
-            if (concreteOnlyInput(action)
+            if (scope == null
+                    && JavaContainerTypes.shape(string(action, "javaType"))
+                    != JavaContainerTypes.Shape.NONE) {
+                binding.addProperty("symbolicDemand",
+                        "BOUNDED_CONTAINER_STATE");
+                binding.addProperty("dependencyRole",
+                        DependencyRole.VALUE_FRONTIER);
+                dependencyRole = DependencyRole.VALUE_FRONTIER;
+            }
+            if (concreteOnlyInput(binding)
                     || !DependencyRole.VALUE_FRONTIER.equals(
                     dependencyRole)) {
                 addConcreteInputAction(result, represented, binding,
@@ -1583,7 +1619,7 @@ public final class ConcolicScheduler {
                 continue;
             }
             boolean boundedContainerState =
-                    supportedBoundedContainerState(action, location);
+                    supportedBoundedContainerState(binding, location);
             String unsupportedLeaf = boundedContainerState ? ""
                     : unsupportedSymbolicLeafReason(action, location, cell);
             if (!unsupportedLeaf.isEmpty()) {
@@ -1689,7 +1725,7 @@ public final class ConcolicScheduler {
                 JsonArray sites = definitions.returnSites(cell,
                         scope == null ? regionMethods : scope.methods(),
                         scope);
-                sites = exactExplicitFaultReturnSite(action, sites);
+                sites = exactCallReturnSite(action, sites);
                 if (sites.size() == 0) {
                     addConcreteInputAction(result, represented, binding,
                             "CONCRETE_NO_RESOLVED_RETURN_SITE");
@@ -1915,10 +1951,13 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    static JsonArray exactExplicitFaultReturnSite(
+    static JsonArray exactCallReturnSite(
             JsonObject action, JsonArray sites) {
+        String sourceKind = string(action, "sourceKind");
         if (!RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
-                string(action, "sourceKind"))) {
+                sourceKind)
+                && !RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
+                .equals(sourceKind)) {
             return sites;
         }
         String caller = string(action, "callerMethod");
@@ -2281,25 +2320,33 @@ public final class ConcolicScheduler {
         // The query is the target relation consumed by composition.
         LoopBoundPolicy.decode(summary).writeTo(query);
         try {
-            BranchReplayContract contract;
-            try {
-                contract = BranchReplayContract.fromSummary(summary,
-                    candidate.target.siteId,
-                    candidate.target.selectedOccurrence);
-                if (contract.source().isPcPredicateDecision()
-                        || contract.source().sourceTakenOutcome()
-                        != candidate.target.observedOutcome
-                        || contract.requiredTakenOutcome()
-                        != candidate.target.desiredOutcome) {
-                    throw new IllegalArgumentException(
-                            "captured branch polarity differs from selection");
+            SummaryBranchMapping concrete = directConcreteTarget(
+                    candidate, summary);
+            if (concrete != null) {
+                query.add(TargetReachPathQueryBuilder
+                                .TARGET_CONCRETE_OBSERVATION,
+                        concrete.concreteObservation().toJson());
+            } else {
+                BranchReplayContract contract;
+                try {
+                    contract = BranchReplayContract.fromSummary(summary,
+                        candidate.target.siteId,
+                        candidate.target.selectedOccurrence);
+                    if (contract.source().isPcPredicateDecision()
+                            || contract.source().sourceTakenOutcome()
+                            != candidate.target.observedOutcome
+                            || contract.requiredTakenOutcome()
+                            != candidate.target.desiredOutcome) {
+                        throw new IllegalArgumentException(
+                                "captured branch polarity differs from selection");
+                    }
+                } catch (IllegalArgumentException noDirectTargetWitness) {
+                    contract = latestTargetSeedDecision(candidate, summary);
                 }
-            } catch (IllegalArgumentException noDirectTargetWitness) {
-                contract = latestTargetSeedDecision(candidate, summary);
+                // This artifact is consumed by the target path-set builder,
+                // not by the local path-flip solver.
+                query.add("replayContract", contract.toJson());
             }
-            // This artifact is consumed by the target path-set builder, not by
-            // the local path-flip solver.
-            query.add("replayContract", contract.toJson());
             query.addProperty("readyForSolver", true);
         } catch (IllegalArgumentException incompleteWitness) {
             query.addProperty("readyForSolver", false);
@@ -2310,6 +2357,40 @@ public final class ConcolicScheduler {
                 candidate.queryOccurrenceId);
         query.add("symbolicContext", symbolicContext);
         return query;
+    }
+
+    /** An exact required target event needs no branch flip. */
+    private static SummaryBranchMapping directConcreteTarget(
+            Candidate candidate, JsonObject summary) {
+        SummaryBranchMapping selected = null;
+        for (SummaryBranchMapping mapping
+                : SummaryBranchMapping.fromSummary(summary)) {
+            if (candidate.target.siteId.equals(mapping.siteId())
+                    && candidate.target.selectedOccurrence
+                    == mapping.occurrence()) {
+                selected = mapping;
+                break;
+            }
+        }
+        if (selected == null || !selected.isConcreteObservation()
+                || selected.sourceTakenOutcome()
+                != candidate.target.requiredOutcome) {
+            return null;
+        }
+        JsonElement encoded = summary.get(
+                PathObservation.TargetReachEvent.FIELD);
+        if (encoded == null) {
+            throw new IllegalArgumentException(
+                    "concrete target branch has no target reach event");
+        }
+        PathObservation.TargetReachEvent event =
+                PathObservation.TargetReachEvent.decode(encoded);
+        if (!event.matches(selected.siteId(), selected.occurrence(),
+                selected.sourceTakenOutcome())) {
+            throw new IllegalArgumentException(
+                    "concrete target branch and target reach event differ");
+        }
+        return selected;
     }
 
     /** The solver query names every input frozen into the effective task. */
@@ -2708,23 +2789,27 @@ public final class ConcolicScheduler {
     private static final class TargetBranch {
         private final String siteId;
         private final int selectedOccurrence;
+        private final long runtimeEventSeq;
         private final boolean observedOutcome;
         private final boolean requiredOutcome;
         private final boolean desiredOutcome;
 
         private TargetBranch(String siteId, int selectedOccurrence,
+                             long runtimeEventSeq,
                              boolean observedOutcome,
                              boolean requiredOutcome,
                              boolean desiredOutcome) {
             this.siteId = safe(siteId);
             this.selectedOccurrence = Math.max(1, selectedOccurrence);
+            this.runtimeEventSeq = runtimeEventSeq;
             this.observedOutcome = observedOutcome;
             this.requiredOutcome = requiredOutcome;
             this.desiredOutcome = desiredOutcome;
         }
 
         private static TargetBranch outputCapture() {
-            return new TargetBranch("", 1, false, false, false);
+            return new TargetBranch("", 1, -1L,
+                    false, false, false);
         }
 
         private static TargetBranch select(
@@ -2737,6 +2822,7 @@ public final class ConcolicScheduler {
                 boolean observed = bool(occurrence, "outcome", false);
                 int ordinal = integer(occurrence, "occurrence", index + 1);
                 TargetBranch selected = new TargetBranch(siteId, ordinal,
+                        longInteger(occurrence, "eventSeq", -1L),
                         observed, required,
                         observed == required ? !observed : required);
                 if (observed == required) return selected;
@@ -2794,6 +2880,10 @@ public final class ConcolicScheduler {
         private static final Comparator<Candidate> ORDER =
                 Comparator.comparing((Candidate value) -> !value.directed)
                         .thenComparing(value -> !value.ready)
+                        .thenComparing(Comparator.comparingLong(
+                                (Candidate value) ->
+                                        value.target.runtimeEventSeq)
+                                .reversed())
                         .thenComparing(value -> value.target.siteId)
                         .thenComparing(value ->
                                 value.goal.plan().occurrenceId())
@@ -3185,45 +3275,6 @@ public final class ConcolicScheduler {
             return selected;
         }
 
-        /** Keeps manual target roots needed by any guard of the same throw. */
-        JsonArray includeTargetSourceFrontier(
-                String regionId, JsonArray branchActions,
-                JsonArray guardedTargetActions) {
-            JsonArray result = branchActions == null
-                    ? new JsonArray() : branchActions.deepCopy();
-            if (!configured || guardedTargetActions == null
-                    || guardedTargetActions.size() == 0
-                    || !minted.containsKey(safe(regionId))) {
-                return result;
-            }
-            Set<String> represented = new LinkedHashSet<>();
-            for (JsonElement element : result) {
-                if (!element.isJsonObject()) continue;
-                String symbol = actionPort(element.getAsJsonObject());
-                if (!symbol.isEmpty()) represented.add(symbol);
-            }
-            for (JsonElement element : guardedTargetActions) {
-                if (!element.isJsonObject()) continue;
-                JsonObject action = element.getAsJsonObject();
-                String symbol = actionPort(action);
-                if (symbol.isEmpty() || represented.contains(symbol)
-                        || !"SYMBOLIC".equals(string(action, "mode"))
-                        || !minted(regionId, action)
-                        // A relation-bound root is already carried by the
-                        // edge the target task selected.
-                        || "EXACT_INCOMING_COMPOSITION".equals(
-                        string(action, "symbolicDemand"))
-                        || !string(action, "selectedIncomingEdgeId").isEmpty()
-                        || !string(action,
-                        "intraRegionReadFromAuthority").isEmpty()) {
-                    continue;
-                }
-                result.add(action.deepCopy());
-                represented.add(symbol);
-            }
-            return result;
-        }
-
         /** Applies the same allowlist before target-first producer closure. */
         boolean selectedForDiscovery(String regionId, JsonObject action) {
             if (!configured) return true;
@@ -3325,6 +3376,7 @@ public final class ConcolicScheduler {
         public final Path symbolicInputs;
         public final Path symbolicRootProposal;
         private final Set<String> targetEdgeIds;
+        private final JsonArray targetPrefixBindings;
 
         private Arguments(Path regionPlan, Path refinedGraph, Path summaries,
                           Path outputDirectory, String regionId,
@@ -3332,7 +3384,8 @@ public final class ConcolicScheduler {
                           int maxJobs, int maxLoopIterations,
                           Path symbolicInputs,
                           Path symbolicRootProposal,
-                          Set<String> targetEdgeIds) {
+                          Set<String> targetEdgeIds,
+                          JsonArray targetPrefixBindings) {
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
             this.summaries = summaries;
@@ -3346,6 +3399,7 @@ public final class ConcolicScheduler {
             this.symbolicRootProposal = symbolicRootProposal;
             this.targetEdgeIds = Collections.unmodifiableSet(
                     new LinkedHashSet<>(targetEdgeIds));
+            this.targetPrefixBindings = targetPrefixBindings.deepCopy();
         }
 
         public static Arguments parse(String[] args) {
@@ -3372,7 +3426,7 @@ public final class ConcolicScheduler {
                             "max-loop-iterations"),
                     symbolicInputs,
                     symbolicRootProposal,
-                    Collections.<String>emptySet());
+                    Collections.<String>emptySet(), new JsonArray());
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -3421,7 +3475,8 @@ public final class ConcolicScheduler {
                     selection.goalId, 1, maxLoopIterations,
                     symbolicInputs,
                     symbolicRootProposal,
-                    selection.targetEdgeIds);
+                    selection.targetEdgeIds,
+                    selection.targetPrefixBindings);
         }
 
     }

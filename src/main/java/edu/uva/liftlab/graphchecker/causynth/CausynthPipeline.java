@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.C
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ExactHeapOutputCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CommunicationEffectCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import static edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract.siteId;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
@@ -518,10 +519,10 @@ public final class CausynthPipeline {
         CampaignEnvelope envelope = new CampaignEnvelope(campaign);
         envelope.tagSelectedBodies();
         envelope.boundSelectedLoops();
+        instrumentConcolicCommunicationHandoffs(campaign, refs);
         for (InstrumentationPlan plan : campaign) {
             instrumentConcolicRegion(plan, refs, envelope);
         }
-        instrumentConcolicCommunicationHandoffs(campaign, refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
@@ -931,113 +932,137 @@ public final class CausynthPipeline {
 
 
 
-    /**
-     * Puts the VM's own handoff at every declared communication site of this
-     * campaign. README's "Symbolic propagation is the authority": at a real
-     * boundary the sender exports the live expression and the receiver
-     * attaches it, after which the receiver's own arithmetic builds on the
-     * sender's term and the session ledger holds one {@code VALUE_HANDOFF}
-     * edge.
-     */
     private void instrumentConcolicCommunicationHandoffs(
             List<InstrumentationPlan> campaign, HookCatalog refs) {
         Map<String, CommunicationHandoffSpec> sites = new LinkedHashMap<>();
         for (InstrumentationPlan plan : campaign) {
             for (CommunicationHandoffSpec site
                     : plan.communicationHandoffs()) {
-                sites.putIfAbsent(site.exports() + "\n" + site.portId()
+                sites.putIfAbsent(site.side() + "\n" + site.portId()
                         + "\n" + site.siteId() + "\n"
-                        + site.argumentIndex(), site);
+                        + site.captureKind() + "\n" + site.argumentIndex(),
+                        site);
             }
         }
         for (CommunicationHandoffSpec site : sites.values()) {
-            // Adapter-carried components already invoke the public VM ABI on
-            // their exact storage.
-            if (site.manualCarrier()) continue;
-            SootMethod method = concreteSelected(site.method(),
-                    "COMMUNICATION_HANDOFF_METHOD_UNAVAILABLE: "
-                            + site.portId(),
-                    "COMMUNICATION_HANDOFF_METHOD_NOT_CONCRETE: "
-                            + site.portId());
-            Body body = method.retrieveActiveBody();
-            if (site.exportsCutArgument()) {
-                instrumentCutArgumentExport(body, site, refs);
-            } else if (site.exportsEntryReturn()) {
-                instrumentEntryReturnExport(body, method, site, refs);
-            } else if (site.attachesEntryParameter()) {
-                instrumentEntryParameterAttach(body, method, site, refs);
-            } else if (site.attachesCutReturn()) {
-                instrumentCutReturnAttach(body, site, refs);
-            }
+            instrumentCommunicationHandoff(site, refs);
         }
     }
 
-    /** The unique invoke unit one declared cut site names, or {@code null}. */
+    private void instrumentCommunicationHandoff(
+            CommunicationHandoffSpec site, HookCatalog refs) {
+        SootMethod method = concreteSelected(site.method(),
+                "COMMUNICATION_HANDOFF_METHOD_UNAVAILABLE: " + site.portId(),
+                "COMMUNICATION_HANDOFF_METHOD_NOT_CONCRETE: " + site.portId());
+        Body body = method.retrieveActiveBody();
+        String capture = site.captureKind();
+        if (CommunicationCatalogContract.CAPTURE_METHOD_PARAMETER.equals(
+                capture)) {
+            if (site.argumentIndex() >= method.getParameterCount()) {
+                throw handoffFailure(site, "PARAMETER_UNAVAILABLE");
+            }
+            List<Unit> units = new ArrayList<>();
+            addCommunicationHandoff(body,
+                    body.getParameterLocal(site.argumentIndex()),
+                    method.getParameterType(site.argumentIndex()), site,
+                    units, refs);
+            insertBeforeOrAppendNoRedirect(body,
+                    safeInstrumentationEntry(body, method), units);
+            return;
+        }
+        if (CommunicationCatalogContract.CAPTURE_METHOD_RETURN.equals(
+                capture)) {
+            int returns = 0;
+            for (Unit unit : snapshotUnits(body)) {
+                if (!(unit instanceof ReturnStmt)) continue;
+                returns++;
+                ReturnStmt returned = (ReturnStmt) unit;
+                List<Unit> units = new ArrayList<>();
+                Value value = addCommunicationHandoff(body, returned.getOp(),
+                        method.getReturnType(), site, units, refs);
+                if (!site.outgoing()) returned.setOp(value);
+                insertBeforeSequence(body, unit, units);
+            }
+            if (returns == 0) throw handoffFailure(site, "RETURN_UNAVAILABLE");
+            return;
+        }
+        Stmt cut = cutInvoke(body, site);
+        if (CommunicationCatalogContract.CAPTURE_CALL_ARGUMENT.equals(
+                capture)) {
+            InvokeExpr invoke = cut.getInvokeExpr();
+            if (site.argumentIndex() >= invoke.getArgCount()) {
+                throw handoffFailure(site, "ARGUMENT_UNAVAILABLE");
+            }
+            List<Unit> units = new ArrayList<>();
+            Value value = addCommunicationHandoff(body,
+                    invoke.getArg(site.argumentIndex()),
+                    invoke.getMethodRef().parameterType(site.argumentIndex()),
+                    site, units, refs);
+            if (!site.outgoing()) invoke.setArg(site.argumentIndex(), value);
+            insertBeforeSequence(body, cut, units);
+            return;
+        }
+        if (!(cut instanceof DefinitionStmt)) {
+            throw handoffFailure(site, "CALL_RETURN_UNAVAILABLE");
+        }
+        Value target = ((DefinitionStmt) cut).getLeftOp();
+        List<Unit> units = new ArrayList<>();
+        Value value = addCommunicationHandoff(body, target,
+                cut.getInvokeExpr().getMethodRef().returnType(), site,
+                units, refs);
+        if (!site.outgoing() && value != target) {
+            units.add(Jimple.v().newAssignStmt(target, value));
+        }
+        insertAfterSequence(body, cut, units);
+    }
+
     private static Stmt cutInvoke(Body body, CommunicationHandoffSpec site) {
         Stmt selected = null;
         for (Unit unit : snapshotUnits(body)) {
             if (originalUnitIndex(unit) != site.unitIndex()
-                    || !(unit instanceof Stmt)) {
-                continue;
-            }
-            Stmt statement = (Stmt) unit;
-            if (!statement.containsInvokeExpr()
-                    || !site.declaredCallee().equals(statement
-                    .getInvokeExpr().getMethodRef().getSignature())) {
-                continue;
-            }
-            if (selected != null) {
-                throw new IllegalStateException(
-                        "COMMUNICATION_HANDOFF_CUT_NOT_UNIQUE: "
-                                + site.portId());
-            }
-            selected = statement;
+                    || !(unit instanceof Stmt)) continue;
+            Stmt candidate = (Stmt) unit;
+            if (!candidate.containsInvokeExpr()
+                    || !site.declaredCallee().equals(candidate.getInvokeExpr()
+                    .getMethodRef().getSignature())) continue;
+            if (selected != null) throw handoffFailure(site,
+                    "CALL_SITE_NOT_UNIQUE");
+            selected = candidate;
         }
+        if (selected == null) throw handoffFailure(site,
+                "CALL_SITE_UNAVAILABLE");
         return selected;
     }
 
-    /** {@code Req_out}: exported one instruction ahead of the cut call. */
-    private void instrumentCutArgumentExport(
-            Body body, CommunicationHandoffSpec site, HookCatalog refs) {
-        Stmt cut = cutInvoke(body, site);
-        if (cut == null) return;
-        InvokeExpr invoke = cut.getInvokeExpr();
-        if (site.argumentIndex() >= invoke.getArgCount()) return;
-        List<Unit> before = new ArrayList<>();
-        addCommunicationLeafExport(body, invoke.getArg(
-                site.argumentIndex()), site, before, refs);
-        insertBeforeSequence(body, cut, before);
-    }
-
-    /** {@code Resp_out}: exported at the server entry's normal return. */
-    private void instrumentEntryReturnExport(
-            Body body, SootMethod method, CommunicationHandoffSpec site,
+    private Value addCommunicationHandoff(
+            Body body, Value value, Type declaredType,
+            CommunicationHandoffSpec site, List<Unit> units,
             HookCatalog refs) {
-        if (method.getReturnType() instanceof VoidType) return;
-        for (Unit unit : snapshotUnits(body)) {
-            if (!(unit instanceof ReturnStmt)) continue;
-            List<Unit> before = new ArrayList<>();
-            if (site.responsePathCarrier()) {
-                emit(before, refs.ref(Hook.EXPORT_COMMUNICATION_FIELD_PATH),
-                        StringConstant.v(site.portId()),
-                        ((ReturnStmt) unit).getOp());
-            } else {
-                addCommunicationLeafExport(body,
-                        ((ReturnStmt) unit).getOp(), site, before, refs);
-            }
-            insertBeforeSequence(body, unit, before);
+        if (site.outgoing()) {
+            String[] leaf = carrierLeaf(declaredType);
+            Local carrier = newCarrierLeaf(body, leaf, value, units);
+            emit(units, refs.ref(Hook.EXPORT_COMMUNICATION_LEAF),
+                    StringConstant.v(site.portId()), carrier,
+                    StringConstant.v(leaf[0]), StringConstant.v(leaf[1]));
+            return value;
         }
+        Value target = value;
+        if (!(target instanceof Local)) {
+            Local local = newTraceLocal(body, declaredType,
+                    "$causynthHandoffValue");
+            units.add(Jimple.v().newAssignStmt(local,
+                    immediateValue(body, value, units)));
+            target = local;
+        }
+        addCommunicationLeafAttach(body, target, declaredType, site, units,
+                refs);
+        return target;
     }
 
-    /** Presents one value to the broker on a fresh carrier leaf. */
-    private void addCommunicationLeafExport(
-            Body body, Value value, CommunicationHandoffSpec site,
-            List<Unit> units, HookCatalog refs) {
-        String[] leaf = carrierLeaf(value.getType());
-        Local carrier = newCarrierLeaf(body, leaf, value, units);
-        emit(units, refs.ref(Hook.EXPORT_COMMUNICATION_LEAF),
-                StringConstant.v(site.portId()), carrier,
-                StringConstant.v(leaf[0]), StringConstant.v(leaf[1]));
+    private static IllegalStateException handoffFailure(
+            CommunicationHandoffSpec site, String reason) {
+        return new IllegalStateException("COMMUNICATION_HANDOFF_" + reason
+                + ": " + site.portId());
     }
 
     /** Allocates one carrier and stores {@code value} on its typed leaf. */
@@ -1090,54 +1115,17 @@ public final class CausynthPipeline {
         return phantomClass(HANDOFF_LEAF_CARRIER_CLASS);
     }
 
-    /** {@code Req_in}: attached onto the server entry's own parameter. */
-    private void instrumentEntryParameterAttach(
-            Body body, SootMethod method, CommunicationHandoffSpec site,
-            HookCatalog refs) {
-        if (site.argumentIndex() >= method.getParameterCount()) return;
-        Unit insertionPoint = safeInstrumentationEntry(body, method);
-        Value parameter = body.getParameterLocal(site.argumentIndex());
-        List<Unit> entry = new ArrayList<>();
-        addCommunicationLeafAttach(body, parameter, parameter.getType(),
-                site, entry, refs);
-        insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-    }
-
-    /** {@code Resp_in}: attached onto the value the cut call returned. */
-    private void instrumentCutReturnAttach(
-            Body body, CommunicationHandoffSpec site, HookCatalog refs) {
-        Stmt cut = cutInvoke(body, site);
-        if (cut == null || !(cut instanceof DefinitionStmt)) return;
-        Value returned = ((DefinitionStmt) cut).getLeftOp();
-        if (!(returned instanceof Local)) return;
-        List<Unit> before = new ArrayList<>();
-        emit(before, refs.ref(Hook.PREPARE_RESPONSE_HANDOFF),
-                StringConstant.v(site.portId()));
-        insertBeforeSequence(body, cut, before);
-        List<Unit> after = new ArrayList<>();
-        if (site.responsePathCarrier()) {
-            emit(after, refs.ref(Hook.ATTACH_COMMUNICATION_FIELD_PATH),
-                    StringConstant.v(site.portId()), returned);
-        } else {
-            addCommunicationLeafAttach(body, returned,
-                    cut.getInvokeExpr().getMethodRef().returnType(), site,
-                    after, refs);
-        }
-        insertAfterSequence(body, cut, after);
-    }
-
-    /** Replaces {@code target} with the value the VM attached to it. */
     private void addCommunicationLeafAttach(
             Body body, Value target, Type declaredType,
             CommunicationHandoffSpec site, List<Unit> units,
             HookCatalog refs) {
         Type valueType = target.getType();
-        String[] leaf = carrierLeaf(valueType);
+        String[] leaf = carrierLeaf(declaredType);
         Local carrier = newCarrierLeaf(body, leaf, target, units);
         emit(units, refs.ref(Hook.ATTACH_COMMUNICATION_LEAF),
                 StringConstant.v(site.portId()), carrier,
                 StringConstant.v(leaf[0]), StringConstant.v(leaf[1]));
-        if (valueType instanceof PrimType
+        if (declaredType instanceof PrimType
                 || "java.lang.Object".equals(valueType.toString())) {
             units.add(readCarrierLeaf(carrier, leaf, target));
             return;
@@ -1620,7 +1608,8 @@ public final class CausynthPipeline {
                         ? stmt.getInvokeExpr() : null;
                 // The first gate.
                 if (associativeReadInvoke(invoke)
-                        && selection.selectedSite(signature, unitIndex)) {
+                        && (selection.selectedSite(signature, unitIndex)
+                        || selection.associativeContainerState())) {
                     envelope.associativeReadSites++;
                     InstanceInvokeExpr read = (InstanceInvokeExpr) invoke;
                     // No pause/resume bracket: the hook owns its own mute
@@ -3225,9 +3214,6 @@ public final class CausynthPipeline {
         RECORD_COMMUNICATION_EFFECT,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
-        EXPORT_COMMUNICATION_FIELD_PATH,
-        ATTACH_COMMUNICATION_FIELD_PATH,
-        PREPARE_RESPONSE_HANDOFF,
         BEGIN_MUTATION_METHOD_STATE_OUTPUT,
         PREPARE_ATOMIC_MUTATION_STATE_OUTPUT,
         RECORD_MUTATION_STATE_OUTPUT,
@@ -3395,14 +3381,6 @@ public final class CausynthPipeline {
                     .add(Hook.ATTACH_COMMUNICATION_LEAF, runtime,
                             "attachCommunicationLeaf", VoidType.v(), string,
                             object, string, string)
-                    .add(Hook.EXPORT_COMMUNICATION_FIELD_PATH, runtime,
-                            "exportCommunicationFieldPath", VoidType.v(),
-                            string, object)
-                    .add(Hook.ATTACH_COMMUNICATION_FIELD_PATH, runtime,
-                            "attachCommunicationFieldPath", VoidType.v(),
-                            string, object)
-                    .add(Hook.PREPARE_RESPONSE_HANDOFF, runtime,
-                            "prepareResponseHandoff", VoidType.v(), string)
                     .add(Hook.BEGIN_MUTATION_METHOD_STATE_OUTPUT, runtime,
                             "beginMutationMethodStateOutput", VoidType.v(),
                             string)

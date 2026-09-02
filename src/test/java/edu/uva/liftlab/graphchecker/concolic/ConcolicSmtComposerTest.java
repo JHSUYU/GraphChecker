@@ -1083,6 +1083,10 @@ public class ConcolicSmtComposerTest {
         JsonObject path = fatal.getAsJsonArray("paths").get(0)
                 .getAsJsonObject();
         markRequiredTargetPath(path);
+        fatal.getAsJsonObject("seedReplayContract")
+                .add("source", path.getAsJsonObject(
+                        TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS)
+                        .deepCopy());
 
         ConcolicSmtComposer.Result result = composeFatal(occurrence,
                 Collections.<RelationSummary>emptyList(),
@@ -1098,6 +1102,58 @@ public class ConcolicSmtComposerTest {
         assertFalse(attestation.get("outcome").getAsBoolean());
         assertFalse(result.smtLib, result.smtLib.contains(
                 "(assert false) ; fail closed: unsupported"));
+    }
+
+    @Test
+    public void exactConcreteRequiredTargetNeedsNoPredicateOrFreeSymbol()
+            throws Exception {
+        String occurrence = "REGION.0@Test#concrete-target";
+        JsonObject fatal = fatalQuery(occurrence, targetConstraints());
+        JsonObject concrete = ExactConcreteBranchObservation.attested(
+                "<Test: void consume()>#u1", "<Test: void consume()>",
+                1, 1, false).toJson();
+        fatal.remove("seedReplayContract");
+        fatal.add(TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION,
+                concrete.deepCopy());
+        JsonObject path = fatal.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        path.add("constraints", new JsonArray());
+        path.remove(TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS);
+        path.add(TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION,
+                concrete.deepCopy());
+        path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
+                TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT);
+        path.addProperty("fatalBranchConditionAuthority",
+                TargetReachPathQueryBuilder
+                        .REQUIRED_CONCRETE_BRANCH_AUTHORITY);
+        path.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
+                .addProperty("outcome", false);
+
+        ConcolicSmtComposer.Result result = composeFatal(occurrence,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false)), fatal, null);
+
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertEquals(1, result.manifest.getAsJsonArray(
+                "targetReachLedger").size());
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
+
+        path.getAsJsonObject(TargetReachPathQueryBuilder
+                .TARGET_CONCRETE_OBSERVATION)
+                .addProperty("sourceTakenOutcome", true);
+        ConcolicSmtComposer.Result refused = composeFatal(occurrence,
+                Collections.<RelationSummary>emptyList(),
+                Arrays.asList(region("REGION.0", true, false)), fatal, null);
+        assertEquals(refused.manifest.toString(),
+                ConcolicSmtComposer.FINAL_REFUSED,
+                refused.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertTrue(refused.manifest.toString(), refused.manifest.toString()
+                .contains("SelectedConcreteTargetReachEventMismatch"));
     }
 
     @Test
@@ -2263,6 +2319,107 @@ public class ConcolicSmtComposerTest {
                 .topologyOnlyCompositionBinding(guarded));
         assertFalse(AutomaticRegionEdge
                 .topologyOnlyCompositionBinding(rpc));
+    }
+
+    @Test
+    public void onlyExactWireDeliveryLowersAsEquality() throws Exception {
+        String target = "REGION.0@Test#wire-target";
+        String producer = "REGION.1@Test#wire-producer";
+        String port = "REGION.1.out.0";
+        JsonObject wire = exactWireBinding("EDGE.WIRE", producer, port,
+                target, port, "node/request/fetch#1", "7", "RESPONSE",
+                40, 41);
+
+        assertTrue(AutomaticRegionEdge.trustedWireEquality(wire));
+        assertTrue(AutomaticRegionEdge
+                .trustedRuntimeCompositionBinding(wire));
+
+        JsonObject weak = wire.deepCopy();
+        weak.addProperty("receiverEventSeq", 40);
+        assertTrue(AutomaticRegionEdge.tracedExchangeCandidate(weak));
+        assertFalse(AutomaticRegionEdge.trustedWireEquality(weak));
+        assertFalse(AutomaticRegionEdge
+                .trustedRuntimeCompositionBinding(weak));
+
+        JsonObject targetRegion = region("REGION.0", true, false);
+        targetRegion.getAsJsonArray("symbolicInputs").get(0)
+                .getAsJsonObject().addProperty("portId", port);
+        RelationSummary source = summary("WIRE", producer, 7,
+                Collections.<String>emptyList(),
+                Collections.singletonList(wire));
+        ConcolicSmtComposer.Result result = compose(target,
+                Collections.singletonList(source),
+                Arrays.asList(targetRegion,
+                        region("REGION.1", false, true)), wire);
+
+        assertEquals(result.manifest.toString(), 1,
+                result.manifest.getAsJsonArray(
+                        "resolvedEdgeBindings").size());
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "edge_binding_REGION_1_to_REGION_0_0"));
+    }
+
+    @Test
+    public void exactWireTargetRetainsOnlyItsOwnedRequestPrefix()
+            throws Exception {
+        String port = "REGION.1.out.0";
+        String request = "node/request/fetch#1";
+        String target = "REGION.0@Test#target";
+        JsonObject before = exactWireBinding("EDGE.BEFORE",
+                "REGION.1@Test#before", port, "REGION.0@Test#consumer-1",
+                port, request, "1", "REQUEST", 10, 11);
+        JsonObject targetEdge = exactWireBinding("EDGE.TARGET",
+                "REGION.1@Test#target-source", port, target, port, request,
+                "2", "RESPONSE", 20, 21);
+        JsonObject otherRequest = exactWireBinding("EDGE.OTHER",
+                "REGION.1@Test#other", port, "REGION.0@Test#consumer-2",
+                port, "node/request/other#1", "3", "REQUEST", 12, 13);
+        JsonObject after = exactWireBinding("EDGE.AFTER",
+                "REGION.1@Test#after", port, "REGION.0@Test#consumer-3",
+                port, request, "4", "REQUEST", 30, 31);
+        JsonObject unowned = exactWireBinding("EDGE.UNOWNED",
+                "REGION.1@Test#missing", port, "REGION.0@Test#consumer-4",
+                port, request, "5", "REQUEST", 14, 15);
+        List<RelationSummary> summaries = Arrays.asList(
+                summary("BEFORE", "REGION.1@Test#before", 1,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(before)),
+                summary("TARGET", "REGION.1@Test#target-source", 2,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(targetEdge)),
+                summary("OTHER", "REGION.1@Test#other", 3,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(otherRequest)),
+                summary("AFTER", "REGION.1@Test#after", 4,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(after)),
+                summary("UNOWNED", "REGION.1@Test#not-missing", 5,
+                        Collections.<String>emptyList(),
+                        Collections.singletonList(unowned)));
+        JsonObject targetRegion = region("REGION.0", true, false);
+        targetRegion.getAsJsonArray("symbolicInputs").get(0)
+                .getAsJsonObject().addProperty("portId", port);
+
+        ConcolicSmtComposer.Result result = compose(target, summaries,
+                Arrays.asList(targetRegion,
+                        region("REGION.1", false, true)), targetEdge);
+
+        String resolved = result.manifest.getAsJsonArray(
+                "resolvedEdgeBindings").toString();
+        assertEquals(result.manifest.toString(), 2,
+                result.manifest.getAsJsonArray(
+                        "resolvedEdgeBindings").size());
+        assertTrue(resolved, resolved.contains("EDGE.BEFORE"));
+        assertTrue(resolved, resolved.contains("EDGE.TARGET"));
+        assertFalse(resolved, resolved.contains("EDGE.OTHER"));
+        assertFalse(resolved, resolved.contains("EDGE.AFTER"));
+        assertFalse(resolved, resolved.contains("EDGE.UNOWNED"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "edge_binding_REGION_1_to_REGION_0_0"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "edge_binding_REGION_1_to_REGION_0_1"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "edge_binding_REGION_1_to_REGION_0_2"));
     }
 
     @Test
@@ -4152,6 +4309,32 @@ public class ConcolicSmtComposerTest {
         binding.addProperty("toRegion", regionOf(toPort));
         binding.addProperty("toOccurrenceId", toInstance);
         binding.addProperty("toInputPort", toPort);
+        return binding;
+    }
+
+    private static JsonObject exactWireBinding(
+            String edgeId, String fromInstance, String fromPort,
+            String toInstance, String toPort, String request, String attempt,
+            String direction, long sent, long received) {
+        JsonObject binding = protocolBinding(edgeId, fromInstance, fromPort,
+                toInstance, toPort);
+        int targetSeparator = toInstance.indexOf('@');
+        if (targetSeparator > 0) {
+            binding.addProperty("toRegion",
+                    toInstance.substring(0, targetSeparator));
+        }
+        binding.addProperty("transportKind", "HTTP");
+        binding.addProperty("exchangeSiteKey", "REGION.1");
+        binding.addProperty("exchangeLeg", edgeId + "\n" + attempt + "\n"
+                + direction);
+        binding.addProperty("attemptId", attempt);
+        binding.addProperty("requestKey", request);
+        binding.addProperty("javaType", "int");
+        binding.addProperty("direction", direction);
+        binding.addProperty("protocolDirection", direction);
+        binding.addProperty("handoffLeafPath", fromPort);
+        binding.addProperty("senderEventSeq", sent);
+        binding.addProperty("receiverEventSeq", received);
         return binding;
     }
 

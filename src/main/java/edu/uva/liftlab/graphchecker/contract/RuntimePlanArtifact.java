@@ -331,7 +331,6 @@ public final class RuntimePlanArtifact {
                     CommunicationCatalogContract.PORT_ARGUMENT_INDEX,
                     CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                     CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX,
-                    CommunicationCatalogContract.PORT_SERVER_PARAMETER_INDEX,
                     // Which side of which call site this port is; without
                     // them a consumer has to re-derive the direction from the
                     // id's spelling.
@@ -339,16 +338,7 @@ public final class RuntimePlanArtifact {
                     "portRole",
                     CommunicationCatalogContract.EXCHANGE_SITE_KEY,
                     CommunicationCatalogContract.CALL_SITE_ID,
-                    // A structured leaf has no argument position of its own,
-                    // so its parent and encoding authority are the complete
-                    // static address of the value.
-                    CommunicationCatalogContract.PORT_COMPONENT_OF,
-                    CommunicationCatalogContract.PORT_ENCODING_AUTHORITY,
                     CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
-                    CommunicationCatalogContract.PORT_HANDOFF_PATH,
-                    CommunicationCatalogContract.PORT_MANUAL_CARRIER_CLASS,
-                    CommunicationCatalogContract.PORT_MANUAL_CARRIER_FIELD,
-                    CommunicationCatalogContract.PORT_MANUAL_CARRIER_DESCRIPTOR,
                     "declaredCallee", "accessorImplementationMethod",
                     "fieldPath", "fieldPathDeclarations"}) {
                 copy(port, source, field);

@@ -474,7 +474,7 @@ public final class RegionPathWorklist {
             int targetOccurrence = integer(target, "occurrence", -1);
             List<SummaryBranchMapping> fatalMappings = new ArrayList<>();
             for (SummaryBranchMapping mapping : path.branchMappings()) {
-                if (mapping.isWitnessed() && mapping.isExplore()
+                if (mapping.isExplore()
                         && targetSite.equals(mapping.siteId())
                         && targetOccurrence == mapping.occurrence()) {
                     fatalMappings.add(mapping);
@@ -504,8 +504,20 @@ public final class RegionPathWorklist {
                         targetOccurrence);
                 return result;
             }
-            int fatalPc = fatal.summaryPcIndex();
             Boolean required = requiredTargetOutcome(task, fatal.siteId());
+            if (fatal.isConcreteObservation()) {
+                if (required == null
+                        || fatal.sourceTakenOutcome() != required) {
+                    gap("TARGET_PREFIX_CONCRETE_OUTCOME_MISMATCH",
+                            "TARGET_CONCRETE_DECISION_CANNOT_BE_FLIPPED",
+                            path.regionId(), path.pathKey(), targetSite,
+                            targetOccurrence);
+                }
+                // A matching exact concrete target event is already the
+                // existential reach witness. It has no predicate to flip.
+                return result;
+            }
+            int fatalPc = fatal.summaryPcIndex();
             // The exact selected fatal guard is itself an obligation.  A
             // following guarded fatal site exists only for a nested throw;
             // requiring one here made a terminal one-guard throw look CLOSED

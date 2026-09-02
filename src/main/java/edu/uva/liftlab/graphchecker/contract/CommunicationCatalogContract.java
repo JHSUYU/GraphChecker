@@ -21,8 +21,6 @@ public final class CommunicationCatalogContract {
     /** Bump whenever a field is added, removed or re-interpreted. */
     public static final int SCHEMA_VERSION = 4;
 
-    public static final String CALL_SITE_ROW_KIND =
-            "COMMUNICATION_CALL_SITE";
     public static final String GAP_ROW_KIND = "COMMUNICATION_GAP";
 
     public static final String SCHEMA_VERSION_FIELD = "schemaVersion";
@@ -31,82 +29,24 @@ public final class CommunicationCatalogContract {
     /** Stable site id of the client call: {@code <method>#u<unitIndex>}. */
     public static final String CALL_SITE_ID = "callSiteId";
     public static final String EXCHANGE_SITE_KEY = "exchangeSiteKey";
-    public static final String ADAPTER = "adapter";
-    /** {@link #TRANSPORT_HADOOP_IPC} or {@link #TRANSPORT_SASL_HANDSHAKE}. */
     public static final String TRANSPORT = "transport";
-    public static final String PROTOCOL = "protocol";
     public static final String CLIENT_METHOD = "clientMethod";
-    public static final String CLIENT_UNIT_INDEX = "clientUnitIndex";
     public static final String DECLARED_CALLEE = "declaredCallee";
-    /** Post-deserialization semantic server entry when discovery resolved
-     *  exactly one.  Empty is not a licence to pick one: the candidates are
-     *  in the accompanying {@link #GAP_SERVER_CUT_UNRESOLVED} row. */
+    /** Consumer-side method of the declared wire flow. */
     public static final String SERVER_ENTRY_METHOD = "serverEntryMethod";
-    /** Every semantic server entry this call site may reach; one element
-     *  means {@link #SERVER_ENTRY_METHOD} resolved.  A closed static
-     *  over-approximation, so publishing it is a bound rather than a guess -
-     *  nothing here chooses. */
+    /** Consumer-side methods reachable from this static flow. */
     public static final String SERVER_ENTRY_CANDIDATES =
             "serverEntryCandidates";
-    public static final String EXPECTS_RESPONSE = "expectsResponse";
-    public static final String REQUEST_PORTS = "requestPorts";
-    public static final String RESPONSE_PORT = "responsePort";
-    public static final String RESPONSE_COMPONENT_PORTS =
-            "responseComponentPorts";
-
-    public static final String TRANSPORT_HADOOP_IPC = "HADOOP_IPC";
-    public static final String TRANSPORT_SASL_HANDSHAKE = "SASL_HANDSHAKE";
-
     public static final String PORT_ID = "portId";
     /** REQUEST or RESPONSE. */
     public static final String PORT_DIRECTION = "direction";
     public static final String PORT_NAME = "name";
     public static final String PORT_JAVA_TYPE = "javaType";
-    public static final String PORT_CLIENT_ARGUMENT_INDEX =
-            "clientArgumentIndex";
-    public static final String PORT_SERVER_PARAMETER_INDEX =
-            "serverParameterIndex";
-    /** The REQUEST port this one is a component of, or absent: a leaf that
-     *  crosses <em>inside</em> another port's value.  The HDFS handshake
-     *  flattens {@code keyId}, {@code blockPoolId} and the nonce into one SASL
-     *  user name, so the call carries one argument and three declared leaves
-     *  whose argument/parameter indices are {@code -1}. */
-    public static final String PORT_COMPONENT_OF = "componentOfPortId";
-    /** Who states the encoding a component port crosses; the model does not
-     *  execute that encoding symbolically. */
-    public static final String PORT_ENCODING_AUTHORITY = "encodingAuthority";
     /**
      * Exact leaf path the runtime handoff broker addresses a component by.
      * Distinct from {@link #PORT_NAME}: wire adapters may namespace a leaf.
      */
     public static final String PORT_HANDOFF_LEAF_PATH = "handoffLeafPath";
-    /** Canonical structural path from a response object to one selected leaf.
-     *  Accessor syntax is lowered to this at load time; runtime never invokes
-     *  a configured getter. */
-    public static final String PORT_HANDOFF_PATH = "handoffPath";
-    public static final String PORT_EXPORT_CARRIER_CLASS =
-            "exportCarrierClass";
-    public static final String PORT_EXPORT_CARRIER_FIELD =
-            "exportCarrierField";
-    public static final String PORT_EXPORT_CARRIER_DESCRIPTOR =
-            "exportCarrierDescriptor";
-    public static final String PORT_ATTACH_CARRIER_CLASS =
-            "attachCarrierClass";
-    public static final String PORT_ATTACH_CARRIER_FIELD =
-            "attachCarrierField";
-    public static final String PORT_ATTACH_CARRIER_DESCRIPTOR =
-            "attachCarrierDescriptor";
-    public static final String PORT_MANUAL_CARRIER_CLASS =
-            "manualCarrierClass";
-    public static final String PORT_MANUAL_CARRIER_FIELD =
-            "manualCarrierField";
-    public static final String PORT_MANUAL_CARRIER_DESCRIPTOR =
-            "manualCarrierDescriptor";
-    /**
-     * Leaf path of the one response a cut carries, matching the {@code .resp}
-     * suffix {@link #responsePortId} mints.
-     */
-    public static final String RESPONSE_LEAF_PATH = "resp";
     /** Capture kind of a port read at a call site rather than out of the
      *  heap; see {@link #PORT_ARGUMENT_INDEX}. */
     public static final String PORT_OUTPUT_CAPTURE_KIND =
@@ -115,14 +55,8 @@ public final class CommunicationCatalogContract {
     /** Response port read as the call's return value: {@code Resp_in}, in
      *  the caller's own frame at the call unit. */
     public static final String CAPTURE_CALL_RETURN = "CALL_RETURN";
-    /** Request port read as the server entry's parameter: {@code Req_in}, one
-     *  frame above the delivery.  Its position is
-     *  {@link #PORT_ARGUMENT_INDEX}, the same field the client's capture
-     *  uses. */
-    public static final String CAPTURE_ENTRY_PARAMETER = "ENTRY_PARAMETER";
-    /** Response port written as the server entry's returned value:
-     *  {@code Resp_out}. */
-    public static final String CAPTURE_ENTRY_RETURN = "ENTRY_RETURN";
+    public static final String CAPTURE_METHOD_PARAMETER = "METHOD_PARAMETER";
+    public static final String CAPTURE_METHOD_RETURN = "METHOD_RETURN";
     public static final String PORT_ARGUMENT_INDEX = "argumentIndex";
     public static final String PORT_DEFINITION_METHOD = "definitionMethod";
     public static final String PORT_DEFINITION_UNIT_INDEX =
@@ -140,19 +74,6 @@ public final class CommunicationCatalogContract {
     public static final String GAP_METHOD = "method";
     public static final String GAP_DETAIL = "detail";
 
-    /** Derives the static {@link #EXCHANGE_SITE_KEY} of one client call site
-     *  and its resolved server entry; names the site pair, never one
-     *  attempt. */
-    public static final String GAP_CALL_SITE_UNRESOLVED =
-            "COMMUNICATION_CALL_SITE_UNRESOLVED";
-    /**
-     * A recognised protocol call whose post-deserialization server entry has
-     * no unique non-transport implementation.
-     */
-    public static final String GAP_SERVER_CUT_UNRESOLVED =
-            "COMMUNICATION_SERVER_CUT_UNRESOLVED";
-    public static final String GAP_SERVER_BODY_UNAVAILABLE =
-            "COMMUNICATION_SERVER_BODY_UNAVAILABLE";
     public static final String GAP_REQUEST_PORT_UNRESOLVED =
             "COMMUNICATION_REQUEST_PORT_UNRESOLVED";
     private CommunicationCatalogContract() {
@@ -189,8 +110,8 @@ public final class CommunicationCatalogContract {
     }
 
     /** {@code <exchangeSiteKey>.resp.<name>}. */
-    public static String responseComponentPortId(String exchangeSiteKey,
-                                                 String name) {
+    public static String namedResponsePortId(String exchangeSiteKey,
+                                             String name) {
         return responsePortId(exchangeSiteKey) + "." + nonNull(name);
     }
 

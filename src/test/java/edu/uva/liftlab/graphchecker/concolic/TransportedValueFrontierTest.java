@@ -102,6 +102,60 @@ public class TransportedValueFrontierTest {
                 REMOTE_OCCURRENCE));
     }
 
+    @Test
+    public void requestPrefixKeepsOnlyReadyObservedValueTransactions()
+            throws Exception {
+        String request = "cluster/client#epoch0/request/fetch#1";
+        JsonObject target = requestTargetRow(request, 100L);
+        JsonObject selected = requestRemoteRow(
+                "cluster/remote#epoch0/region/REGION.R#2",
+                "RPC.prefix.selected", request, "VALUE_FRONTIER",
+                60L, 70L);
+        JsonObject anotherRequest = requestRemoteRow(
+                "cluster/remote#epoch0/region/REGION.R#3",
+                "RPC.prefix.other", request + ".other", "VALUE_FRONTIER",
+                61L, 71L);
+        JsonObject afterFailure = requestRemoteRow(
+                "cluster/remote#epoch0/region/REGION.R#4",
+                "RPC.prefix.late", request, "VALUE_FRONTIER",
+                90L, 101L);
+        JsonObject carrier = requestRemoteRow(
+                "cluster/remote#epoch0/region/REGION.R#5",
+                "RPC.prefix.carrier", request,
+                "CONCRETE_STRUCTURE_CARRIER", 62L, 72L);
+        JsonObject targetRequest = targetRequestConsumer(request,
+                "RPC.prefix.target-out", 80L, 90L);
+
+        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
+                        producerRow(), target, selected, anotherRequest,
+                        afterFailure, carrier, targetRequest),
+                        (region, action) -> true,
+                        (regionId, closure) ->
+                                Collections.<String>emptySet());
+
+        assertEquals(describe(workflow), 2,
+                workflow.producerGroups().size());
+        assertTrue(describe(workflow), scheduled(workflow,
+                "cluster/remote#epoch0/region/REGION.R#2"));
+        assertTrue(describe(workflow), !scheduled(workflow,
+                "cluster/remote#epoch0/region/REGION.R#3"));
+        assertTrue(describe(workflow), !scheduled(workflow,
+                "cluster/remote#epoch0/region/REGION.R#4"));
+        assertTrue(describe(workflow), !scheduled(workflow,
+                "cluster/remote#epoch0/region/REGION.R#5"));
+
+        RuntimeWorkflowDiscovery.Selection targetSelection =
+                workflow.selections().get(0);
+        assertTrue(targetSelection.targetEdgeIds.contains(
+                "RPC.prefix.target-out"));
+        JsonArray merged = ConcolicScheduler.mergeTargetPrefixBindings(
+                new JsonArray(), targetSelection.targetPrefixBindings);
+        assertEquals(1, merged.size());
+        assertEquals("RPC.prefix.target-out", merged.get(0)
+                .getAsJsonObject().get("edgeId").getAsString());
+    }
+
     /** A concrete heap receiver is replay structure, not a symbolic writer. */
     @Test
     public void aConcreteHeapCarrierDoesNotScheduleItsWriter()
@@ -129,44 +183,6 @@ public class TransportedValueFrontierTest {
         assertEquals(describe(workflow), 1,
                 workflow.producerGroups().size());
         assertTrue(describe(workflow), !scheduled(workflow,
-                REMOTE_OCCURRENCE));
-    }
-
-    /**
-     * An exact reference field that the finalizer identifies as carrying a
-     * configured VM component does retain its writer.  The consuming action
-     * remains concrete; only the marked edge extends the scheduling frontier.
-     */
-    @Test
-    public void anExactVmComponentCarrierSchedulesItsHeapWriter()
-            throws Exception {
-        JsonObject producer = producerRow();
-        JsonObject edge = sharedStateEdge(REMOTE_OCCURRENCE,
-                DELIVERY_EDGE);
-        edge.addProperty("dependencyRole", "VALUE_FRONTIER");
-        edge.addProperty(
-                AutomaticRegionEdge.TRANSPORTED_VALUE_FRONTIER_FIELD,
-                AutomaticRegionEdge.TRANSPORTED_VALUE_FRONTIER_AUTHORITY);
-        JsonObject goal = producer.getAsJsonArray("closureGoals")
-                .get(0).getAsJsonObject();
-        goal.getAsJsonArray("edgeBindings").add(edge.deepCopy());
-        goal.getAsJsonObject("outputClosure")
-                .getAsJsonArray("members").get(0).getAsJsonObject()
-                .getAsJsonObject("slice")
-                .getAsJsonArray("causalEdgeIds").add(DELIVERY_EDGE);
-        JsonObject remote = remoteRow(REMOTE_OCCURRENCE, DELIVERY_EDGE,
-                "CONCRETE_STRUCTURE_CARRIER");
-        remote.getAsJsonArray("closureGoals").get(0).getAsJsonObject()
-                .add("edgeBindings", one(edge));
-
-        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                RuntimeWorkflowDiscovery.rankedWorkflow(plans(
-                        producer, targetRow(), remote),
-                        (region, action) -> true, (regionId, closure) -> Collections.<String>emptySet());
-
-        assertEquals(describe(workflow), 2,
-                workflow.producerGroups().size());
-        assertTrue(describe(workflow), scheduled(workflow,
                 REMOTE_OCCURRENCE));
     }
 
@@ -561,6 +577,69 @@ public class TransportedValueFrontierTest {
         JsonArray bindings = new JsonArray();
         bindings.add(heapEdge());
         goal.add("edgeBindings", bindings);
+        attach(row, goal);
+        return row;
+    }
+
+    private static JsonObject requestTargetRow(String requestKey,
+                                               long failureEvent) {
+        JsonObject row = targetRow();
+        row.addProperty("requestKey", requestKey);
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", "<T: void handle()>#u1");
+        branch.addProperty("method", "<T: void handle()>");
+        branch.addProperty("failureTarget", true);
+        branch.addProperty("loopControlGuard", false);
+        branch.addProperty("observed", true);
+        branch.addProperty("requiredOutcome", false);
+        branch.addProperty("selectedRuntimeEventSeq", failureEvent);
+        row.getAsJsonArray("closureGoals").get(0).getAsJsonObject()
+                .getAsJsonArray("branches").add(branch);
+        return row;
+    }
+
+    private static JsonObject requestRemoteRow(
+            String occurrence, String edgeId, String requestKey,
+            String role, long sent, long received) {
+        JsonObject row = remoteRow(occurrence, edgeId, role);
+        row.addProperty("requestKey", requestKey);
+        JsonObject edge = row.getAsJsonArray("closureGoals").get(0)
+                .getAsJsonObject().getAsJsonArray("edgeBindings")
+                .get(0).getAsJsonObject();
+        edge.addProperty("requestKey", requestKey);
+        edge.addProperty("senderEventSeq", sent);
+        edge.addProperty("receiverEventSeq", received);
+        edge.addProperty("direction", "RESPONSE");
+        edge.addProperty("toRegion", "REGION.prefix-consumer");
+        edge.addProperty("toOccurrenceId",
+                "cluster/client#epoch0/region/REGION.prefix-consumer#1");
+        return row;
+    }
+
+    private static JsonObject targetRequestConsumer(
+            String requestKey, String edgeId, long sent, long received) {
+        String port = "XCH.12345678-1234-3234-8234-123456789abc.req";
+        JsonObject edge = deliveryEdge(TARGET_OCCURRENCE, edgeId,
+                "VALUE_FRONTIER", port);
+        edge.addProperty("requestKey", requestKey);
+        edge.addProperty("senderEventSeq", sent);
+        edge.addProperty("receiverEventSeq", received);
+        edge.addProperty("direction", "REQUEST");
+        edge.addProperty("fromRegion", "REGION.T");
+        edge.addProperty("toRegion", "REGION.server");
+        edge.addProperty("toOccurrenceId",
+                "cluster/server#epoch0/region/REGION.server#1");
+
+        JsonObject row = planRow("cluster/server#epoch0",
+                "cluster/server#epoch0/region/REGION.server#1",
+                "REGION.server", "cluster/server/relation/REGION.server");
+        row.addProperty("requestKey", requestKey);
+        JsonObject goal = goalRow("GOAL.OUTPUT_RELATION.server",
+                "OUTPUT_RELATION_CLOSURE", "<S: void serve()>");
+        goal.getAsJsonObject("admission").addProperty("state",
+                "DISCOVERED");
+        goal.add("symbolize", new JsonArray());
+        goal.add("edgeBindings", one(edge));
         attach(row, goal);
         return row;
     }

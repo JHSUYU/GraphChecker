@@ -121,7 +121,7 @@ public class RuntimeTraceContextTest {
      * workload opens is attributed to one: a restart advances the epoch
      * without rewriting what the old runtime object already reported, a
      * spawned thread inherits its parent's source on a lane of its own, and
-     * an RPC receive switches to the registered server source while carrying
+     * a message receive switches to the registered server source while carrying
      * the caller as its remote parent.
      */
     @Test
@@ -171,8 +171,8 @@ public class RuntimeTraceContextTest {
         assertEquals(parent.spanId, spawned.get().parentSpanId);
         assertNotEquals(parent.laneId, spawned.get().laneId);
 
-        // An RPC receive runs on the server's source, keeps the caller as its
-        // remote parent, and leaves the caller's own source untouched.
+        // Request and response use the same carried context. Correlation is
+        // intentionally absent: it names graph topology, never context.
         RuntimeTraceContext.resetForTests();
         Object client = new Object();
         Object nameNode = new Object();
@@ -182,18 +182,61 @@ public class RuntimeTraceContextTest {
                 "CLUSTER_NODE", "NAMENODE", "cluster0/nn0", 1L);
         RuntimeTraceContext.registerSource(client, clientSource);
         RuntimeTraceContext.registerSource(nameNode, serverSource);
+        long request = RuntimeTraceContext.beginRequest(client,
+                "fetchindex");
         RuntimeTraceContext.View caller = RuntimeTraceContext.enterRoot(client);
-        RuntimeTraceContext.rpc("SEND", "RPC", "call-source", "REQUEST",
-                null);
+        String requestHeader = RuntimeTraceContext.outboundHeader(client);
         final AtomicReference<RuntimeTraceContext.View> receive =
                 new AtomicReference<>();
-        Thread server = new Thread(() -> receive.set(
-                RuntimeTraceContext.rpc("RECEIVE", "RPC", "call-source",
-                        "REQUEST", nameNode)));
+        final AtomicReference<RuntimeTraceContext.View> serverSpan =
+                new AtomicReference<>();
+        final AtomicReference<String> responseHeader = new AtomicReference<>();
+        Thread server = new Thread(() -> {
+            long scope = RuntimeTraceContext.enterInbound(requestHeader,
+                    nameNode);
+            try {
+                receive.set(RuntimeTraceContext.current());
+                RuntimeTraceContext.View handler =
+                        RuntimeTraceContext.enterRoot(nameNode);
+                serverSpan.set(handler);
+                responseHeader.set(RuntimeTraceContext.outboundHeader(
+                        nameNode));
+                RuntimeTraceContext.exitRoot(handler.spanId);
+            } finally {
+                RuntimeTraceContext.exitInbound(scope);
+            }
+        });
         server.start();
         server.join();
         assertEquals(serverSource, receive.get().source);
         assertEquals(caller.spanId, receive.get().remoteParentSpanId);
+        assertEquals(caller.requestKey, receive.get().requestKey);
+
+        long response = RuntimeTraceContext.enterInbound(
+                responseHeader.get(), client);
+        RuntimeTraceContext.View completed = RuntimeTraceContext.current();
+        assertEquals(clientSource, completed.source);
+        assertEquals(serverSpan.get().spanId, completed.remoteParentSpanId);
+        assertEquals(caller.requestKey, completed.requestKey);
+        RuntimeTraceContext.exitInbound(response);
         assertEquals(clientSource, RuntimeTraceContext.currentSource());
+        assertEquals(0L, RuntimeTraceContext.current().remoteParentSpanId);
+        RuntimeTraceContext.exitRoot(caller.spanId);
+        RuntimeTraceContext.endRequest(request);
+    }
+
+    @Test
+    public void messageContextRejectsMissingNonCanonicalAndUnknownHeaders() {
+        for (String malformed : new String[]{null, "", "0|1|2|a|b|c|d|e",
+                "1|-1|0|QQ|Qg|Qw|RA|RQ", "1|0|0|QQ==|Qg|Qw|RA|RQ"}) {
+            try {
+                RuntimeTraceContext.enterInbound(malformed, null);
+                throw new AssertionError("accepted malformed header: "
+                        + malformed);
+            } catch (IllegalArgumentException expected) {
+                assertEquals("malformed trace context header",
+                        expected.getMessage());
+            }
+        }
     }
 }

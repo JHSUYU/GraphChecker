@@ -13,12 +13,18 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -214,6 +220,170 @@ public class ConcolicRegionRuntimeSourceRootAdmissionTest {
             RuntimeTraceContext.endRequest(request);
             RuntimeTraceContext.resetForTests();
         }
+    }
+
+    @Test
+    public void responseProducerWaitsForItsExactRequestExchange()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        String taskId = "TASK.response-producer";
+        String occurrence = "test/server#epoch0/region/HTTP_STATUS#4";
+        String root = "<example.HttpCall: void writeResponse()>";
+        JsonObject task = baseTask(taskId, "HTTP_STATUS", occurrence, root,
+                "TARGET_REACH_CLOSURE");
+        JsonObject anchor = task.getAsJsonObject("rootSelector")
+                .getAsJsonObject("causalAnchor");
+        anchor.addProperty("kind", "INHERITED_CONTEXT");
+        anchor.addProperty("requestApi", "fetchindex");
+        JsonObject response = new JsonObject();
+        response.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
+        response.addProperty("transportKind", "HTTP");
+        response.addProperty("direction", "RESPONSE");
+        response.addProperty("protocolDirection", "RESPONSE");
+        response.addProperty("exchangeLeg",
+                "solr-http-9\n9\nRESPONSE");
+        response.addProperty("fromOccurrenceId", occurrence);
+        response.addProperty("toOccurrenceId",
+                "test/client#epoch0/region/HTTP_CLIENT#3");
+        task.getAsJsonArray("edgeBindings").add(response);
+
+        Path plan = folder.newFile("response-exchange-plan.jsonl").toPath();
+        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id", taskId);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve(
+                        "response-exchange-results.jsonl").toString());
+
+        Object client = new Object();
+        Object server = new Object();
+        SourceRef clientSource = new SourceRef(
+                "CLUSTER_NODE", "FOLLOWER", "test/client", 0L);
+        SourceRef serverSource = new SourceRef(
+                "CLUSTER_NODE", "LEADER", "test/server", 0L);
+        RuntimeTraceContext.registerSource(client, clientSource);
+        RuntimeTraceContext.registerSource(server, serverSource);
+        long request = RuntimeTraceContext.beginRequest(
+                clientSource, "fetchindex");
+        String header = RuntimeTraceContext.outboundHeader(client);
+        try {
+            long stale = RuntimeTraceContext.enterInbound(header, "HTTP",
+                    "solr-http-8", "8", "REQUEST", server);
+            try {
+                assertEquals("",
+                        ConcolicRegionRuntime.admitCampaignTaskForTests(
+                                taskId, root, server, new Object[0]));
+            } finally {
+                RuntimeTraceContext.exitInbound(stale);
+            }
+
+            long selected = RuntimeTraceContext.enterInbound(header, "HTTP",
+                    "solr-http-9", "9", "REQUEST", server);
+            try {
+                assertEquals(taskId,
+                        ConcolicRegionRuntime.admitCampaignTaskForTests(
+                                taskId, root, server, new Object[0]));
+            } finally {
+                RuntimeTraceContext.exitInbound(selected);
+            }
+        } finally {
+            RuntimeTraceContext.endRequest(request);
+            RuntimeTraceContext.resetForTests();
+        }
+    }
+
+    @Test
+    public void responseConsumerCancelsOnlyMismatchedRequestExchange()
+            throws Exception {
+        String consumerId = "TASK.response-consumer";
+        String plainId = "TASK.plain-consumer";
+        String consumerOccurrence =
+                "test/client#epoch0/region/HTTP_CLIENT#4";
+        String port = "HTTP.response.status";
+        String plainOccurrence = "test/client#epoch0/region/PLAIN#1";
+        String root = "<example.HttpClient: void execute()>";
+        String plainRoot = "<example.PlainClient: void execute()>";
+        JsonObject consumer = baseTask(consumerId, "HTTP_CLIENT",
+                consumerOccurrence, root, "TARGET_REACH_CLOSURE");
+        JsonObject response = new JsonObject();
+        response.addProperty("kind", "RUNTIME_PROTOCOL_FLOW");
+        response.addProperty("transportKind", "HTTP");
+        response.addProperty("direction", "RESPONSE");
+        response.addProperty("exchangeLeg", "solr-http-9\n9\nRESPONSE");
+        response.addProperty("fromOccurrenceId",
+                "test/server#epoch0/region/HTTP_STATUS#4");
+        response.addProperty("toOccurrenceId", consumerOccurrence);
+        response.addProperty("fromOutputPort", port);
+        response.addProperty("toInputPort", port);
+        consumer.getAsJsonArray("edgeBindings").add(response);
+        JsonObject handoff = new JsonObject();
+        handoff.addProperty("portId", port);
+        handoff.addProperty("handoffLeafPath", port);
+        handoff.addProperty("direction", "RESPONSE");
+        handoff.addProperty("side", "IN");
+        handoff.addProperty("captureKind", "CALL_RETURN");
+        handoff.addProperty("definitionMethod", root);
+        handoff.addProperty("declaredCallee",
+                "<example.StatusLine: int getStatusCode()>");
+        handoff.addProperty("definitionUnitIndex", 1);
+        handoff.addProperty("javaType", "int");
+        JsonArray handoffs = new JsonArray();
+        handoffs.add(handoff);
+        consumer.add("communicationHandoffs", handoffs);
+        JsonObject plain = baseTask(plainId, "PLAIN", plainOccurrence,
+                plainRoot, "TARGET_REACH_CLOSURE");
+        Path plan = folder.newFile("response-consumer-plan.jsonl").toPath();
+        Files.write(plan, (consumer + "\n" + plain + "\n")
+                .getBytes(StandardCharsets.UTF_8));
+        System.setProperty("causynth.concolic.task.plan", plan.toString());
+        System.setProperty("causynth.concolic.task.id",
+                consumerId + "," + plainId);
+        System.setProperty("causynth.concolic.results",
+                folder.getRoot().toPath().resolve(
+                        "response-consumer-results.jsonl").toString());
+        installCleanupEngine();
+        CleanupVm.cleanups = 0;
+
+        Object consumerReceiver = new Object();
+        RuntimeTraceContext.registerSource(consumerReceiver, new SourceRef(
+                "CLUSTER_NODE", "FOLLOWER", "test/client", 0L));
+        assertEquals(consumerId,
+                ConcolicRegionRuntime.admitCampaignTaskForTests(
+                        consumerId, root, consumerReceiver, new Object[0]));
+        activate(consumerId, consumerReceiver, 101L);
+        assertFalse(ConcolicRegionRuntime.retainOutboundExchange(
+                "HTTP", "solr-http-8", "8", "REQUEST"));
+        assertNull(currentToken().get());
+
+        // Cancellation released the address, so its exact attempt can claim
+        // and remain live.
+        assertEquals(consumerId,
+                ConcolicRegionRuntime.admitCampaignTaskForTests(
+                        consumerId, root, consumerReceiver, new Object[0]));
+        activate(consumerId, consumerReceiver, 102L);
+        assertTrue(ConcolicRegionRuntime.retainOutboundExchange(
+                "HTTP", "solr-http-9", "9", "REQUEST"));
+        assertEquals(Long.valueOf(102L), currentToken().get());
+        ConcolicRegionRuntime.attachCommunicationLeaf(port,
+                new ConcolicRegionRuntime.HandoffLeafCarrier(), "i", "I");
+        assertEquals("", unconfirmedAttach(102L));
+        assertFalse(ConcolicRegionRuntime.retainOutboundExchange(
+                "HTTP", "solr-http-8", "8", "REQUEST"));
+
+        Object plainReceiver = new Object();
+        RuntimeTraceContext.registerSource(plainReceiver, new SourceRef(
+                "CLUSTER_NODE", "FOLLOWER", "test/client", 0L));
+        assertEquals(plainId,
+                ConcolicRegionRuntime.admitCampaignTaskForTests(
+                        plainId, plainRoot, plainReceiver, new Object[0]));
+        activate(plainId, plainReceiver, 103L);
+        assertTrue(ConcolicRegionRuntime.retainOutboundExchange(
+                "HTTP", "solr-http-8", "8", "REQUEST"));
+        assertEquals(Long.valueOf(103L), currentToken().get());
+        assertEquals(2, CleanupVm.cleanups);
+        activeRegions().remove(103L);
+        currentToken().remove();
+        ConcolicRegionRuntime.endLiveSelectedRegion();
     }
 
     /**
@@ -676,6 +846,69 @@ public class ConcolicRegionRuntimeSourceRootAdmissionTest {
         }
     }
 
+    private static void activate(String taskId, Object receiver, long token)
+            throws Exception {
+        Field configured = ConcolicRegionRuntime.class.getDeclaredField(
+                "configuration");
+        configured.setAccessible(true);
+        Object configuration = configured.get(null);
+        Method taskById = configuration.getClass().getDeclaredMethod(
+                "taskById", String.class);
+        taskById.setAccessible(true);
+        Object task = taskById.invoke(configuration, taskId);
+        Class<?> activeType = Class.forName(
+                ConcolicRegionRuntime.class.getName() + "$ActiveRegion");
+        Constructor<?> constructor = activeType.getDeclaredConstructor(
+                long.class, task.getClass(), Object.class, Thread.class);
+        constructor.setAccessible(true);
+        activeRegions().put(token, constructor.newInstance(
+                token, task, receiver, Thread.currentThread()));
+        currentToken().set(token);
+        ConcolicRegionRuntime.beginLiveSelectedRegion();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<Long, Object> activeRegions() throws Exception {
+        Field field = ConcolicRegionRuntime.class.getDeclaredField("ACTIVE");
+        field.setAccessible(true);
+        return (Map<Long, Object>) field.get(null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ThreadLocal<Long> currentToken() throws Exception {
+        Field field = ConcolicRegionRuntime.class.getDeclaredField(
+                "CURRENT_TOKEN");
+        field.setAccessible(true);
+        return (ThreadLocal<Long>) field.get(null);
+    }
+
+    private static String unconfirmedAttach(long token) throws Exception {
+        Object active = activeRegions().get(token);
+        Method method = active.getClass().getDeclaredMethod(
+                "unconfirmedSelectedAttachEndpoint");
+        method.setAccessible(true);
+        return (String) method.invoke(active);
+    }
+
+    private static void installCleanupEngine() throws Exception {
+        Class<?> type = Class.forName(
+                ConcolicRegionRuntime.class.getName() + "$EngineApi");
+        Constructor<?> constructor = type.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        Object engine = constructor.newInstance();
+        for (String name : new String[]{"pausePathCondition",
+                "resumePathCondition", "cleanupEnd"}) {
+            Field field = type.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(engine, CleanupVm.class.getDeclaredMethod(
+                    "cleanupEnd".equals(name) ? "cleanup" : name));
+        }
+        Field installed = ConcolicRegionRuntime.class.getDeclaredField(
+                "engineApi");
+        installed.setAccessible(true);
+        installed.set(null, engine);
+    }
+
     private static void restore(String property, String value) {
         if (value == null) System.clearProperty(property);
         else System.setProperty(property, value);
@@ -684,6 +917,16 @@ public class ConcolicRegionRuntimeSourceRootAdmissionTest {
     private static final class FlagHolder {
         @SuppressWarnings("unused")
         private boolean enabled = true;
+    }
+
+    public static final class CleanupVm {
+        private static int cleanups;
+
+        public static void pausePathCondition() { }
+
+        public static void resumePathCondition() { }
+
+        public static void cleanup() { cleanups++; }
     }
 
     @org.junit.Test

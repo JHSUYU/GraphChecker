@@ -624,9 +624,8 @@ public final class ConcolicSummaryImporter {
                 issues.add("OMITTED_PATH_CONDITION_ENGINE_INACTIVE");
             }
         } else if (bool(engine, "active", false)) {
-            // README PC-1 and the P0 tombstone's "full-path compatibility
-            // fallback": the selected-branch plus bounded auxiliary channel is
-            // the only admitted shape.
+            // Only the selected branch plus bounded auxiliary channel is
+            // admitted.
             issues.add("AMBIENT_PATH_CONDITION_NOT_ADMITTED");
         }
         if (!bool(engine, "complete", false)) {
@@ -1553,15 +1552,14 @@ public final class ConcolicSummaryImporter {
         JsonObject canonical = new JsonObject();
         canonical.add("pathCondition", pathCondition.deepCopy());
         canonical.add("branchMappings", mappings.deepCopy());
-        int exactWitnesses = 0;
+        int exactMappings = 0;
         try {
             for (SummaryBranchMapping mapping
                     : SummaryBranchMapping.fromSummary(canonical)) {
-                if (mapping.isWitnessed()
-                        && event.matches(mapping.siteId(),
+                if (event.matches(mapping.siteId(),
                         mapping.occurrence(),
                         mapping.sourceTakenOutcome())) {
-                    exactWitnesses++;
+                    exactMappings++;
                 }
             }
         } catch (IllegalArgumentException malformed) {
@@ -1570,10 +1568,10 @@ public final class ConcolicSummaryImporter {
                             + firstNonBlank(malformed.getMessage(),
                             "UNKNOWN"), diagnostics, observation);
         }
-        if (exactWitnesses != 1) {
+        if (exactMappings != 1) {
             return refuse(row, "TARGET_REACH_EVENT_MISMATCH",
-                    "event has " + exactWitnesses
-                            + " exact witnessed branch mapping(s)",
+                    "event has " + exactMappings
+                            + " exact branch mapping(s)",
                     diagnostics, observation);
         }
         return event.toJson();
@@ -1652,7 +1650,6 @@ public final class ConcolicSummaryImporter {
         for (OutputCaptureSpec request : task.outputCaptures()) {
             if (!(request.capturesCallArgument()
                     || request.capturesCommunicationEffect()
-                    || request.capturesHandoffBoundLeaf()
                     || request.capturesFieldWriteState()
                     || request.capturesMutationState())) {
                 continue;
@@ -1660,19 +1657,12 @@ public final class ConcolicSummaryImporter {
             for (JsonObject capture
                     : row.captures(request.captureBindingId())) {
                 JsonElement expression = capture.get("expression");
-                JsonElement concreteLeaf = capture.get("concreteLeaf");
                 boolean related = request.capturesCommunicationEffect()
                         ? "COMMUNICATION_EFFECT".equals(
                         string(capture, "interactionKind"))
                         && "INSTRUMENTED_INTERACTION_SITE_V1".equals(
                         string(capture, "authority"))
-                        // A leaf the VM reported concrete is presented
-                        // evidence, not a missing relation.
-                        : request.capturesHandoffBoundLeaf()
-                        && concreteLeaf != null
-                        && !concreteLeaf.isJsonNull()
-                        && concreteLeaf.getAsBoolean()
-                        || expression != null && !expression.isJsonNull();
+                        : expression != null && !expression.isJsonNull();
                 if (related
                         && exactOutputCaptureOccurrence(request, capture)) {
                     return true;
@@ -1839,24 +1829,12 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             List<JsonObject> admitted = new ArrayList<>();
-            List<OutputCaptureSpec> concreteLeafSpecs = new ArrayList<>();
             if (specs != null) {
                 for (OutputCaptureSpec spec : specs) {
                     for (JsonObject value
                             : row.captures(spec.captureBindingId())) {
                         JsonElement expression = value.get("expression");
                         if (expression == null || expression.isJsonNull()) {
-                            // A leaf the VM answered NOT_SYMBOLIC is a
-                            // presented output, not an unobserved one --
-                            // {@link #hasCapturedDemandedOutput} and the
-                            // recorder's own successfulExactOutputCapture
-                            // both admit it.  It carries no expression to
-                            // lower, so this port is named by the reason it
-                            // could not be lowered rather than by a capture
-                            // count that says the site was never reached.
-                            if (concreteHandoffLeaf(spec, value)) {
-                                concreteLeafSpecs.add(spec);
-                            }
                             // A guarded observation of an occurrence that
                             // produced nothing; another occurrence of the
                             // same site may still carry the relation.
@@ -1902,16 +1880,6 @@ public final class ConcolicSummaryImporter {
                         : string(row.rootOutput, "kind")));
                 continue;
             }
-            if (!concreteLeafSpecs.isEmpty()) {
-                // Named for what it is: the occurrence presented this leaf
-                // and the VM held no expression for it, so the recorder left
-                // an audit note instead of a value the Composer can lower.
-                // Reporting it as a capture count of zero blamed the replay
-                // for a boundary it did reach.
-                issues.add("OUTPUT_CONCRETE_LEAF_NOT_LOWERABLE:" + port + ":"
-                        + concreteLeafSpecs.get(0).outputSiteId());
-                continue;
-            }
             // Once-only-root rule (OutputCaptureSpec#INSTANCE_SCOPED_PRODUCER)
             // -- the same question the recorder already answers this way in
             // ConcolicRegionRuntime#completeExactOutputBoundary.  A field
@@ -1929,19 +1897,6 @@ public final class ConcolicSummaryImporter {
                     + admitted.size());
         }
         return result;
-    }
-
-    /** Whether one capture is a handoff leaf the VM reported concrete. */
-    static boolean concreteHandoffLeaf(OutputCaptureSpec spec,
-                                               JsonObject capture) {
-        JsonElement concrete = capture == null ? null
-                : capture.get("concreteLeaf");
-        return spec != null
-                && spec.capturesHandoffBoundLeaf()
-                && concrete != null
-                && !concrete.isJsonNull()
-                && concrete.getAsBoolean()
-                && exactOutputCaptureOccurrence(spec, capture);
     }
 
     /** Case-local declared interaction events observed by this execution. */
@@ -2238,17 +2193,6 @@ public final class ConcolicSummaryImporter {
             // emits one entry per recorded condition -- a real expression or
             // a truncation marker -- so the three counts agree
             // unconditionally, and a disagreement is a genuine fault again.
-            if (!auxiliary.has(EMITTED_CONDITION_COUNT)) {
-                // A run whose VM predates the marker serializer published a
-                // short array with no way to tell a byte-capped window from a
-                // dropped one.  It is refused under its own name rather than
-                // tolerated: the reader can then see that the run, not the
-                // schema, is what needs replacing.
-                issues.add("AUXILIARY_PATH_CONDITION_LEGACY_NO_EMITTED_COUNT:"
-                        + conditions.size() + "/" + count);
-                return fromSparseEvidence(evidence,
-                        Math.max(size, watermark), branchMappings);
-            }
             int emitted = exactInteger(auxiliary,
                     EMITTED_CONDITION_COUNT, -1);
             if (watermark < 0 || count < 0 || count != indices.size()

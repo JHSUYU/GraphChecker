@@ -8,6 +8,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
@@ -323,23 +324,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         assertFalse(pathRecordingStarted(active));
         assertEquals(1, symbolizedRows(active).size());
         assertEquals(1, symbolicSources(active).size());
-    }
-
-    /** A VM without the recorded carrier APIs cannot authorize propagation. */
-    @Test
-    public void legacyVmCannotMaterializeAPropagatedSourceCarrier()
-            throws Exception {
-        installLegacyFakeEngine();
-        loadTask(task(false), "legacy-carrier-refused");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 752L);
-
-        assertFalse(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        assertFalse(ConcolicRegionRuntime.resumePropagatedField(
-                receiver, VALUE_FIELD));
-        assertTrue(unresolved(active).toString(), unresolved(active).stream()
-                .anyMatch(value -> value.contains(
-                        "configured source carrier selection failed")));
     }
 
     /**
@@ -963,19 +947,17 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
 
     private static JsonObject responseAttach() {
         JsonObject site = new JsonObject();
-        site.addProperty("schemaVersion", 1);
-        site.addProperty("kind", CommunicationHandoffSpec.KIND);
-        site.addProperty("role", CommunicationHandoffSpec.ROLE_ATTACH);
+        site.addProperty(CommunicationHandoffSpec.SIDE,
+                CommunicationHandoffSpec.IN);
+        site.addProperty(CommunicationHandoffSpec.CAPTURE_KIND,
+                CommunicationCatalogContract.CAPTURE_CALL_RETURN);
         site.addProperty("portId", RPC_PORT);
         site.addProperty("handoffLeafPath", "response/value");
         site.addProperty("direction", "RESPONSE");
         site.addProperty("javaType", "int");
-        site.addProperty("exchangeSiteKey", "XCH.remote");
-        site.addProperty("componentOfPortId", "XCH.remote.response");
-        site.addProperty("encodingAuthority", "TEST_ENCODING_V1");
-        site.addProperty("manualCarrierClass", TargetState.class.getName());
-        site.addProperty("manualCarrierField", "remoteValue");
-        site.addProperty("manualCarrierDescriptor", "I");
+        site.addProperty("definitionMethod", ROOT);
+        site.addProperty("definitionUnitIndex", 50);
+        site.addProperty("declaredCallee", SOURCE_HOOK_CALLEE);
         return site;
     }
 
@@ -1152,10 +1134,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         bind(engine, "activate", FakeVm.class.getDeclaredMethod(
                 "activateEventLedger"));
         install(engine);
-    }
-
-    private static void installLegacyFakeEngine() throws Exception {
-        install(fakeEngineWithoutSharedState());
     }
 
     private static Object fakeEngineWithoutSharedState() throws Exception {

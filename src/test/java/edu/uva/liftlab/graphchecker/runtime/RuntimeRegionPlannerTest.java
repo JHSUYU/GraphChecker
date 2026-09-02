@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -183,81 +184,6 @@ public class RuntimeRegionPlannerTest {
     }
 
     /**
-     * An adapter-carried component has its own typed leaf and exact storage
-     * on each side. Planning retains both endpoint declarations without
-     * turning the structured parent's Java value into the component value.
-     */
-    @Test
-    public void componentHandoffKeepsExactRoleLocalCarrier()
-            throws Exception {
-        String exchange = "XCH.00000000-0000-3000-8000-000000000001";
-        String parentId = exchange + ".req.p0";
-        String componentId = exchange + ".req.keyId";
-        String callee = "<example.Transport: void send(java.lang.String)>";
-        Map<String, Object> region = fullRegion();
-        region.put("symbolicInputs", Arrays.asList(
-                communicationParent(parentId, exchange, "IN",
-                        "CONCRETE_STRUCTURE_CARRIER", "ENTRY_PARAMETER",
-                        TARGET, -1, "", 0),
-                communicationComponent(componentId, parentId, exchange,
-                        "IN")));
-        region.put("outputs", Arrays.asList(
-                communicationParent(parentId, exchange, "OUT",
-                        "CONCRETE_STRUCTURE_CARRIER", "CALL_ARGUMENT",
-                        ROOT, 7, callee, 3),
-                communicationComponent(componentId, parentId, exchange,
-                        "OUT")));
-        File regions = jsonl("component-regions.jsonl", region);
-        File edges = jsonl("component-edges.jsonl");
-        Map<String, Object> refined = candidateEdge();
-        refined.put("refinementSchemaVersion", 1);
-        refined.put("graphKind", "RUNTIME_REFINED_DATAFLOW");
-        File refinedFile = jsonl("component-refined.jsonl", refined);
-
-        RuntimeRegionPlanner.Result result = planFiles(
-                regions, edges, refinedFile, Collections.singletonList(
-                        activation("REGION.1", 1, ROOT,
-                                Arrays.asList(1L, 2L))),
-                methods(), runtime(), Collections.emptyList());
-
-        Map<String, Object> plan = result.regionPlans.get(0);
-        List<Map<String, Object>> encoded = rows(plan.get(
-                CommunicationHandoffSpec.FIELD));
-        assertEquals(2, encoded.size());
-        Map<String, Object> export = encoded.stream()
-                .filter(row -> "EXPORT".equals(row.get("role")))
-                .findFirst().get();
-        Map<String, Object> attach = encoded.stream()
-                .filter(row -> "ATTACH".equals(row.get("role")))
-                .findFirst().get();
-        assertEquals(componentId, export.get("portId"));
-        assertEquals("HANDSHAKE/keyId", export.get("handoffLeafPath"));
-        assertEquals(parentId, export.get("componentOfPortId"));
-        assertEquals("TEST_ENCODING_V1", export.get("encodingAuthority"));
-        assertEquals("example.ExportCarrier",
-                export.get("manualCarrierClass"));
-        assertEquals("keyId", export.get("manualCarrierField"));
-        assertEquals("I", export.get("manualCarrierDescriptor"));
-        assertFalse(export.containsKey("definitionMethod"));
-        assertFalse(export.containsKey("argumentIndex"));
-        assertEquals("example.AttachCarrier",
-                attach.get("manualCarrierClass"));
-
-        RegionInstancePlan decoded = RegionInstancePlan.decode(
-                GSON.toJsonTree(plan).getAsJsonObject());
-        assertEquals(1, decoded.goals().size());
-        com.google.gson.JsonObject holder = new com.google.gson.JsonObject();
-        holder.add(CommunicationHandoffSpec.FIELD,
-                GSON.toJsonTree(encoded));
-        List<CommunicationHandoffSpec> sites =
-                CommunicationHandoffSpec.decode(holder);
-        assertTrue(sites.get(0).component());
-        assertTrue(sites.get(0).manualCarrier());
-        assertFalse(sites.get(0).exportsCutArgument());
-        assertFalse(sites.get(1).attachesEntryParameter());
-    }
-
-    /**
      * A declared output port the trace shows no consumer for states a named
      * blocker, and a declared port a consumer did demand states none.
      *
@@ -280,8 +206,8 @@ public class RuntimeRegionPlannerTest {
 
         Map<String, Object> target = fullRegion();
         target.put("symbolicInputs", Collections.singletonList(
-                communicationParent(consumedPort, consumedExchange, "IN",
-                        "CONCRETE_STRUCTURE_CARRIER", "ENTRY_PARAMETER",
+                communicationParent(consumedPort, consumedExchange,
+                        "CONCRETE_STRUCTURE_CARRIER", "METHOD_PARAMETER",
                         TARGET, -1, "", 0)));
         Map<String, Object> producer = object(
                 "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
@@ -294,12 +220,12 @@ public class RuntimeRegionPlannerTest {
                 "symbolicInputs", Collections.emptyList(),
                 "outputs", Arrays.asList(
                         ownedByRootCall(communicationParent(consumedPort,
-                                consumedExchange, "OUT",
+                                consumedExchange,
                                 "CONCRETE_STRUCTURE_CARRIER",
                                 "CALL_ARGUMENT", producerRoot, 7, callee, 3),
                                 3),
                         ownedByRootCall(communicationParent(silentPort,
-                                silentExchange, "OUT",
+                                silentExchange,
                                 "CONCRETE_STRUCTURE_CARRIER",
                                 "CALL_ARGUMENT", producerRoot, 8, callee, 3),
                                 3)),
@@ -368,148 +294,116 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
-    public void responseComponentIsDistinctFromConcreteResponseEffect() {
-        String occurrence = "cluster0/server0#epoch1/region/REGION.1#3";
-        String exchange = "XCH.00000000-0000-3000-8000-000000000002";
-        String parentId = exchange + ".resp";
-        String componentId = exchange + ".resp.keyId";
-        String definition = "<example.Server: example.Response reply()>";
-        Map<String, Object> parent = object(
-                "portId", parentId,
-                "sourceKind", "COMMUNICATION_SITE_PORT",
-                "dependencyRole", "CONCRETE_STRUCTURE_CARRIER",
-                "direction", "RESPONSE",
-                "handoffLeafPath", "resp",
-                "exchangeSiteKey", exchange,
-                "outputCaptureKind", "ENTRY_RETURN",
-                "definitionMethod", definition,
-                "occurrenceId", occurrence);
-        Map<String, Object> component = object(
-                "portId", componentId,
-                "sourceKind", "COMMUNICATION_SITE_PORT",
-                "dependencyRole", "VALUE_FRONTIER",
-                "direction", "RESPONSE",
-                "componentOfPortId", parentId,
-                "encodingAuthority", "TEST_RESPONSE_ENCODING_V1",
-                "handoffLeafPath", "resp/currentKey/keyId",
-                "exchangeSiteKey", exchange,
-                "outputCaptureKind", "ENTRY_RETURN",
-                "definitionMethod", definition,
-                "occurrenceId", occurrence);
-        StaticProgram.RegionRow region = StaticProgram.regionRows(
-                Collections.singletonList(object(
-                        "schemaVersion", 3,
-                        "kind", "SYMBOLIC_REGION",
-                        "regionId", "REGION.semantic-endpoint",
-                        "rootMethod", definition,
-                        "methods", Collections.singletonList(definition),
-                        "outputs", Arrays.asList(parent, component))),
-                "SYMBOLIC_REGION", "test").get(0);
+    public void oneCaptureClosesTwoDistinctWirePorts() throws Exception {
+        String producerRoot = "<example.Transport: void respond(int)>";
+        String firstConsumer = "<example.FirstClient: int status()>";
+        String secondConsumer = "<example.SecondClient: int status()>";
+        String callee =
+                "<javax.servlet.http.HttpServletResponse: void setStatus(int)>";
+        String firstExchange =
+                "XCH.00000000-0000-3000-8000-00000000000a";
+        String secondExchange =
+                "XCH.00000000-0000-3000-8000-00000000000b";
+        String requestExchange =
+                "XCH.00000000-0000-3000-8000-00000000000c";
+        String firstPort = firstExchange + ".resp.status";
+        String secondPort = secondExchange + ".resp.status";
+        String inputPort = requestExchange + ".req.status";
+        String producerOccurrence = retained("REGION.P", 1).get(0);
+        String firstOccurrence = retained("REGION.C1", 1).get(0);
+        String secondOccurrence = retained("REGION.C2", 1).get(0);
+        String captureSite = producerRoot + "#u7";
+        String valueCell = producerRoot + ".param0:int";
 
-        String parentEndpoint = RuntimeRegionPlanner.semanticOutputEndpoint(
-                object("fromOutputPort", parentId), region, occurrence);
-        String componentEndpoint = RuntimeRegionPlanner
-                .semanticOutputEndpoint(
-                        object("fromOutputPort", componentId), region,
-                        occurrence);
+        Map<String, Object> producerInput = wirePort(inputPort,
+                requestExchange, "REQUEST", "METHOD_PARAMETER",
+                producerRoot, -1, "", 0, "");
+        Map<String, Object> firstOutput = wirePort(firstPort,
+                firstExchange, "RESPONSE", "CALL_ARGUMENT",
+                producerRoot, 7, callee, 0, producerOccurrence);
+        Map<String, Object> secondOutput = wirePort(secondPort,
+                secondExchange, "RESPONSE", "CALL_ARGUMENT",
+                producerRoot, 7, callee, 0, producerOccurrence);
+        Map<String, Object> producer = object(
+                "schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", "REGION.P", "rootMethod", producerRoot,
+                "anchorMethod", "", "selection", "STATE_CONTEXT",
+                "runtimeOccurrenceIds", retained("REGION.P", 1),
+                "methods", Collections.singletonList(producerRoot),
+                "symbolicInputs", Collections.singletonList(producerInput),
+                "outputs", Arrays.asList(firstOutput, secondOutput),
+                "branchPolicies", Collections.emptyList());
+        Map<String, Object> first = wireConsumerRegion("REGION.C1",
+                firstConsumer, firstOccurrence, firstPort, firstExchange);
+        Map<String, Object> second = wireConsumerRegion("REGION.C2",
+                secondConsumer, secondOccurrence, secondPort,
+                secondExchange);
+        File regions = jsonl("wire-fanout-regions.jsonl",
+                producer, first, second);
+        File edges = jsonl("wire-fanout-edges.jsonl",
+                protocolFlow("RPC.first", "REGION.P", "REGION.C1",
+                        producerOccurrence, firstOccurrence, firstPort,
+                        1L, 2L),
+                protocolFlow("RPC.second", "REGION.P", "REGION.C2",
+                        producerOccurrence, secondOccurrence, secondPort,
+                        1L, 3L));
+        Map<String, Object> identity = object(
+                "schemaVersion", 3, "refinementSchemaVersion", 1,
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "id", "DF.wire.fanout.argument",
+                "kind", "identity_binding",
+                "transferKind", "IDENTITY_BINDING",
+                "method", producerRoot, "siteId", captureSite,
+                "unitIndex", 7, "fromCell", valueCell,
+                "toCell", callee + ".param0:int",
+                "regionIds", Collections.singletonList("REGION.P"));
+        File refined = jsonl("wire-fanout-refined.jsonl", identity);
+        List<RuntimeRegionPlanner.MethodEvent> methods = Arrays.asList(
+                new RuntimeRegionPlanner.MethodEvent(1, "test", "producer",
+                        7, producerRoot, 10, "example.Transport", 1, 0, 0,
+                        0L, 0L, 0L, 0L, null, false, "", ""),
+                new RuntimeRegionPlanner.MethodEvent(2, "test", "first",
+                        8, firstConsumer, 20, "example.FirstClient", 2, 0, 0,
+                        0L, 0L, 0L, 0L, null, false, "", ""),
+                new RuntimeRegionPlanner.MethodEvent(3, "test", "second",
+                        9, secondConsumer, 30, "example.SecondClient", 3, 0,
+                        0, 0L, 0L, 0L, 0L, null, false, "", ""));
+        List<RuntimeRegionPlanner.RuntimeEvent> runtime =
+                Collections.singletonList(new RuntimeRegionPlanner.RuntimeEvent(
+                        10L, "CALL_ARGUMENT", producerRoot, 1L, 100L, 0L,
+                        captureSite, callee, 0, "", 0, "500",
+                        null, null, "", ""));
 
-        assertEquals("COMMUNICATION_EFFECT\n" + definition
-                + "\nRESPONSE", parentEndpoint);
-        assertEquals("HANDOFF_COMPONENT\n" + exchange
-                + "\nRESPONSE\nresp/currentKey/keyId",
-                componentEndpoint);
-        assertFalse(parentEndpoint.equals(componentEndpoint));
-    }
-
-    /** One response delivery carries both its concrete parent and component. */
-    @Test
-    public void exactDeliveryKeepsParentAndComponentDespiteEdgeOrdering() {
-        String occurrence = "node/client#epoch0/region/REGION.C#1";
-        String producer = "node/server#epoch0/region/REGION.R#2";
-        String exchange = "XCH.00000000-0000-3000-8000-000000000003";
-        Map<String, Object> parent = object(
-                "edgeId", "RPC.100-parent-sorts-first",
-                "exchangeSiteKey", exchange,
-                "fromOccurrenceId", producer,
-                "toOccurrenceId", occurrence,
-                "fromOutputPort", exchange + ".resp",
-                "toInputPort", exchange + ".resp",
-                "attemptId", "0", "direction", "RESPONSE",
-                "senderEventSeq", 40L, "receiverEventSeq", 50L);
-        Map<String, Object> component = object(
-                "edgeId", "RPC.900-component-sorts-last",
-                "exchangeSiteKey", exchange,
-                "fromOccurrenceId", producer,
-                "toOccurrenceId", occurrence,
-                "fromOutputPort", exchange + ".resp.keyId",
-                "toInputPort", exchange + ".resp.keyId",
-                "attemptId", "0", "direction", "RESPONSE",
-                "senderEventSeq", 40L, "receiverEventSeq", 50L);
-        Map<String, Object> parentDeclaration = object(
-                "portId", exchange + ".resp");
-        Map<String, Object> componentDeclaration = object(
-                "portId", exchange + ".resp.keyId",
-                "componentOfPortId", exchange + ".resp");
-
-        Map<String, String> selected = RuntimeRegionPlanner
-                .exactProtocolDeliveryInputs(Arrays.asList(
-                        parent, component), Arrays.asList(
-                        parentDeclaration, componentDeclaration));
-
-        assertEquals(2, selected.size());
-        assertEquals("RPC.100-parent-sorts-first",
-                selected.get(exchange + ".resp"));
-        assertEquals("RPC.900-component-sorts-last",
-                selected.get(exchange + ".resp.keyId"));
-    }
-
-    /**
-     * A component inherits the structured response's value/control frontier,
-     * not every trusted read that happened earlier in the handler.
-     */
-    @Test
-    public void responseComponentIntersectsParentReturnAndKeepsExactRfEdges() {
-        String occurrence = "node/server#epoch0/region/REGION.R#1";
-        String keys = "REGION.R.in.keys";
-        String guard = "REGION.R.in.guard";
-        String stats = "REGION.R.in.stats";
-        List<Map<String, Object>> beforeSend = Arrays.asList(
-                object("portId", keys), object("portId", guard),
-                object("portId", stats));
-
-        List<Map<String, Object>> retained = RuntimeRegionPlanner
-                .retainParentReturnInputs(beforeSend,
-                        new LinkedHashSet<>(Arrays.asList(keys, guard)));
-        assertEquals(Arrays.asList(keys, guard), Arrays.asList(
-                retained.get(0).get("portId"),
-                retained.get(1).get("portId")));
-
-        Map<String, Object> goal = object("edgeBindings", Arrays.asList(
-                runtimeReadFrom("RF.keys", occurrence, keys, 10, 20),
-                runtimeReadFrom("RF.guard", occurrence, guard, 11, 21),
-                runtimeReadFrom("RF.stats", occurrence, stats, 12, 22)));
-        Set<String> edges = RuntimeRegionPlanner.componentCausalEdgeIds(
-                goal, occurrence, 30,
-                new LinkedHashSet<>(Arrays.asList(keys, guard)),
-                "RPC.component");
-
-        assertEquals(new LinkedHashSet<>(Arrays.asList(
-                "RPC.component", "RF.keys", "RF.guard")), edges);
-        assertFalse(edges.contains("RF.stats"));
-
-        Map<String, Object> component = object(
-                CommunicationCatalogContract.PORT_HANDOFF_PATH,
+        RuntimeRegionPlanner.Result result = planFiles(
+                regions, edges, refined,
                 Arrays.asList(
-                        object("kind", "FIELD", "declaration",
-                                "<example.Response: example.Key current>"),
-                        object("kind", "UNIQUE_ARRAY_ELEMENT",
-                                "runtimeClass", "example.Command"),
-                        object("kind", "FIELD", "declaration",
-                                "<example.Key: int keyId>")));
-        assertEquals(new LinkedHashSet<>(Arrays.asList(
-                        "<example.Response: example.Key current>",
-                        "<example.Key: int keyId>")),
-                RuntimeRegionPlanner.handoffPathFieldDeclarations(component));
+                        activation("REGION.P", 1L, producerRoot,
+                                Collections.singletonList(1L)),
+                        activation("REGION.C1", 2L, firstConsumer,
+                                Collections.singletonList(2L)),
+                        activation("REGION.C2", 3L, secondConsumer,
+                                Collections.singletonList(3L))),
+                methods, runtime, Collections.emptyList());
+
+        Map<String, Object> producerPlan = null;
+        for (Map<String, Object> plan : result.regionPlans) {
+            if ("REGION.P".equals(plan.get("regionId"))) producerPlan = plan;
+        }
+        assertTrue(String.valueOf(result.regionPlans), producerPlan != null);
+        Map<String, Object> goal = rows(
+                producerPlan.get("closureGoals")).get(0);
+        assertEquals("READY", ((Map<?, ?>) goal.get("admission"))
+                .get("state"));
+        assertFalse(String.valueOf(goal), String.valueOf(
+                goal.get("excludedOutputBlockers"))
+                .contains("OUTPUT_ENDPOINT_AMBIGUOUS"));
+        OutputClosureContract closure = OutputClosureCodec.decodeEnvelope(
+                GSON.toJsonTree(goal.get("outputClosure"))
+                        .getAsJsonObject());
+        assertEquals(new java.util.TreeSet<>(Arrays.asList(
+                firstPort, secondPort)), closure.outputPorts());
+        assertEquals(2, closure.members().size());
     }
 
     /**
@@ -1533,7 +1427,7 @@ public class RuntimeRegionPlannerTest {
     }
 
     private static Map<String, Object> communicationParent(
-            String portId, String exchange, String side, String role,
+            String portId, String exchange, String role,
             String capture, String method, int unitIndex, String callee,
             int argumentIndex) {
         Map<String, Object> port = object(
@@ -1552,22 +1446,63 @@ public class RuntimeRegionPlannerTest {
         return port;
     }
 
-    private static Map<String, Object> communicationComponent(
-            String portId, String parentId, String exchange, String side) {
-        return object(
+    private static Map<String, Object> wirePort(
+            String portId, String exchange, String direction,
+            String capture, String method, int unitIndex, String callee,
+            int argumentIndex, String occurrenceId) {
+        Map<String, Object> port = object(
                 "portId", portId,
                 "sourceKind", "COMMUNICATION_SITE_PORT",
                 "dependencyRole", "VALUE_FRONTIER",
                 "javaType", "int",
-                "direction", "REQUEST",
-                "componentOfPortId", parentId,
-                "encodingAuthority", "TEST_ENCODING_V1",
-                "handoffLeafPath", "HANDSHAKE/keyId",
+                "direction", direction,
+                "handoffLeafPath", portId,
                 "exchangeSiteKey", exchange,
-                "manualCarrierClass", "OUT".equals(side)
-                        ? "example.ExportCarrier" : "example.AttachCarrier",
-                "manualCarrierField", "keyId",
-                "manualCarrierDescriptor", "I");
+                "callSiteId", unitIndex < 0 ? method
+                        : method + "#u" + unitIndex,
+                "outputCaptureKind", capture,
+                "definitionMethod", method);
+        if (unitIndex >= 0) port.put("definitionUnitIndex", unitIndex);
+        if (!callee.isEmpty()) port.put("declaredCallee", callee);
+        if (argumentIndex >= 0) port.put("argumentIndex", argumentIndex);
+        if (!occurrenceId.isEmpty()) port.put("occurrenceId", occurrenceId);
+        return port;
+    }
+
+    private static Map<String, Object> wireConsumerRegion(
+            String regionId, String root, String occurrenceId,
+            String portId, String exchange) {
+        return object("schemaVersion", 3, "kind", "SYMBOLIC_REGION",
+                "graphKind", "RUNTIME_REFINED_DATAFLOW",
+                "regionId", regionId, "rootMethod", root,
+                "anchorMethod", "", "selection", "STATE_CONTEXT",
+                "runtimeOccurrenceIds", Collections.singletonList(
+                        occurrenceId),
+                "methods", Collections.singletonList(root),
+                "symbolicInputs", Collections.singletonList(wirePort(
+                        portId, exchange, "RESPONSE", "CALL_RETURN",
+                        root, 5, "<example.Response: int code()>", -1, "")),
+                "outputs", Collections.emptyList(),
+                "branchPolicies", Collections.emptyList());
+    }
+
+    private static Map<String, Object> protocolFlow(
+            String edgeId, String fromRegion, String toRegion,
+            String fromOccurrence, String toOccurrence, String portId,
+            long fromRootCallId, long toRootCallId) {
+        return object("schemaVersion", 3,
+                "kind", "RUNTIME_PROTOCOL_FLOW", "edgeId", edgeId,
+                "fromRegion", fromRegion, "toRegion", toRegion,
+                "fromPort", portId, "toPort", portId,
+                "fromRootCallId", fromRootCallId,
+                "toRootCallId", toRootCallId,
+                "fromOccurrenceId", fromOccurrence,
+                "toOccurrenceId", toOccurrence,
+                "direction", "RESPONSE", "attemptId", "attempt-1",
+                "exchangeLeg", edgeId + "\nattempt-1\nRESPONSE",
+                "senderEventSeq", 20L, "receiverEventSeq", 30L,
+                "dependencyRole", "VALUE_FRONTIER",
+                "authority", AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY);
     }
 
     private static Map<String, Object> candidateEdge() {

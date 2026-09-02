@@ -92,13 +92,11 @@ public class RuntimePlanPortCompactionTest {
                 !compacted.has("runtimeAccesses"));
     }
 
-    /** The cut identity and server parameter survive compaction. */
+    /** The wire-flow identity survives compaction. */
     @Test
     public void theCutIdentitySurvivesCompaction()
             throws Exception {
         JsonObject port = requestPort();
-        port.addProperty(
-                CommunicationCatalogContract.PORT_SERVER_PARAMETER_INDEX, 0);
         port.addProperty(CommunicationCatalogContract.PORT_DIRECTION,
                 CommunicationCatalogContract.DIRECTION_REQUEST);
         port.addProperty("portRole", "SERVER");
@@ -110,7 +108,6 @@ public class RuntimePlanPortCompactionTest {
         JsonObject compacted = roundTrip(port).get(0)
                 .getAsJsonArray("outputs").get(0).getAsJsonObject();
 
-        assertEquals(0, compacted.get(CommunicationCatalogContract.PORT_SERVER_PARAMETER_INDEX).getAsInt());
         assertEquals(CommunicationCatalogContract.DIRECTION_REQUEST,
                 compacted.get(CommunicationCatalogContract.PORT_DIRECTION)
                         .getAsString());
@@ -121,40 +118,6 @@ public class RuntimePlanPortCompactionTest {
                 CommunicationCatalogContract.EXCHANGE_SITE_KEY).getAsString());
         assertEquals(CLIENT + "#u14", compacted.get(
                 CommunicationCatalogContract.CALL_SITE_ID).getAsString());
-    }
-
-    @Test
-    public void manualComponentCarrierSurvivesCompaction() throws Exception {
-        JsonObject port = requestPort();
-        port.addProperty(CommunicationCatalogContract.PORT_COMPONENT_OF,
-                "XCH.example.req.parent");
-        port.addProperty(CommunicationCatalogContract.PORT_ENCODING_AUTHORITY,
-                "TEST_ENCODING_V1");
-        port.addProperty(
-                CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
-                "WIRE/value");
-        port.addProperty(
-                CommunicationCatalogContract.PORT_MANUAL_CARRIER_CLASS,
-                "example.Carrier");
-        port.addProperty(
-                CommunicationCatalogContract.PORT_MANUAL_CARRIER_FIELD,
-                "value");
-        port.addProperty(
-                CommunicationCatalogContract.PORT_MANUAL_CARRIER_DESCRIPTOR,
-                "I");
-
-        JsonObject compacted = roundTrip(port).get(0)
-                .getAsJsonArray("outputs").get(0).getAsJsonObject();
-
-        assertEquals("example.Carrier", compacted.get(
-                CommunicationCatalogContract.PORT_MANUAL_CARRIER_CLASS)
-                .getAsString());
-        assertEquals("value", compacted.get(
-                CommunicationCatalogContract.PORT_MANUAL_CARRIER_FIELD)
-                .getAsString());
-        assertEquals("I", compacted.get(
-                CommunicationCatalogContract.PORT_MANUAL_CARRIER_DESCRIPTOR)
-                .getAsString());
     }
 
     @Test

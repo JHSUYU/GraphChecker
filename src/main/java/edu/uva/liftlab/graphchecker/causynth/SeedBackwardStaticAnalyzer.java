@@ -181,10 +181,6 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, List<String>> dispatchTargetsCache =
             new LinkedHashMap<>();
-    private final Map<String, List<String>> protocolClientTargetsCache =
-            new LinkedHashMap<>();
-    private final Map<String, List<ProtocolStubMapping>>
-            protocolMappingsByClientTargetCache = new LinkedHashMap<>();
     private final Map<String, Map<Integer, String>>
             directlyMutatedContainerParametersCache = new LinkedHashMap<>();
     private final Map<String, Set<String>> hierarchyNamesCache =
@@ -203,7 +199,7 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, List<ExceptionGuard>> requiredPathGuardsByFact =
             new LinkedHashMap<>();
-    private final ConfiguredProtocolStubs protocolStubs;
+    private final WireFlowCatalog wireFlows;
     /** README section 5's per-loop {@code K_L}, as this campaign declares it. */
     private final DeclaredLoopBodyBounds loopBodyBounds;
     private boolean globalStaticIndexBuilt;
@@ -224,11 +220,11 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         try {
-            this.protocolStubs = ConfiguredProtocolStubs.fromConfiguration(
+            this.wireFlows = WireFlowCatalog.fromConfiguration(
                     allMethodsBySignature);
         } catch (IOException exception) {
             throw new IllegalStateException(
-                    "Could not load configured protocol stubs", exception);
+                    "Could not load communication mappings", exception);
         }
         try {
             this.loopBodyBounds =
@@ -277,6 +273,7 @@ final class SeedBackwardStaticAnalyzer {
                             + targetMethod);
         }
         initializeExceptionSeedAnchors();
+        seedDeclaredWireFlows();
         runWorklist();
         if (discoveredExceptionSeedCount != 1) {
             throw new IllegalStateException("Annotated exception target did "
@@ -310,10 +307,7 @@ final class SeedBackwardStaticAnalyzer {
         Collections.sort(selected);
         CommunicationCatalogPlanner.Result discovered =
                 CommunicationCatalogPlanner.plan(selected,
-                        this::jimpleBody,
-                        new HadoopCommunicationAdapter(
-                                allMethodsBySignature,
-                                protocolStubs),
+                        this::jimpleBody, wireFlows.flows(),
                         loopBodyBounds);
         // The pass is a pure function of the selected method set, so the
         // rows it publishes replace any earlier ones rather than being
@@ -322,14 +316,11 @@ final class SeedBackwardStaticAnalyzer {
         result.retainedLoops.clear();
         result.communicationGaps.clear();
         result.communicationCallSiteCallees.clear();
-        result.regionEnvelopeExclusions.clear();
         result.communicationCallSites.addAll(discovered.callSites);
         result.retainedLoops.addAll(discovered.loops);
         result.communicationGaps.addAll(discovered.gaps);
         result.communicationCallSiteCallees.addAll(
                 discovered.callSiteCallees);
-        result.regionEnvelopeExclusions.addAll(
-                discovered.regionEnvelopeExclusions);
     }
 
     private SootMethod concreteMethod(String signature) {
@@ -412,14 +403,20 @@ final class SeedBackwardStaticAnalyzer {
         }
         for (int throwIndex = 0; throwIndex < facts.size(); throwIndex++) {
             Fact throwFact = facts.get(throwIndex);
-            if (annotatedExceptionAllocation(facts,
-                    throwIndex) == null) {
+            if (annotatedExceptionAllocation(facts, throwIndex) == null) {
                 continue;
             }
 
             String exceptionNode = factNode(throwFact) + "#exception:"
                     + target.seedException;
             Set<String> methodRelevant = relevant(method);
+            String thrown = canonical(method,
+                    ((ThrowStmt) throwFact.unit).getOp().toString());
+            if (!ignoreNode(thrown)) {
+                methodRelevant.add(thrown);
+                addEdge("exception_throw", thrown, exceptionNode,
+                        method, throwFact);
+            }
             // Every branch on at least one path to the exact throw.
             forEachGuardOperand(method, branchGuards(method, throwFact,
                     false), (guard, node) -> {
@@ -444,6 +441,57 @@ final class SeedBackwardStaticAnalyzer {
         LOG.info("Discovered {} direct throw sites for {} in {} methods",
                 discoveredExceptionSeedCount, target.seedException,
                 discoveredExceptionSeedCount == 0 ? 0 : 1);
+    }
+
+    /**
+     * A configured wire flow is already an explicit workload boundary.  Seed
+     * both exact captures here; runtime request-flow evidence later decides
+     * which dynamic occurrences belong to the target execution.
+     */
+    private void seedDeclaredWireFlows() {
+        for (WireFlowCatalog.WireFlow flow : wireFlows.flows()) {
+            SootMethod producerMethod = concreteMethod(flow.producer.method);
+            SootMethod consumerMethod = concreteMethod(flow.consumer.method);
+            if (producerMethod == null || consumerMethod == null
+                    || !ensureLoaded(producerMethod)
+                    || !ensureLoaded(consumerMethod)) {
+                throw new IllegalStateException(
+                        "Could not load wire flow endpoints: " + flow.id);
+            }
+            Fact producerFact = captureFact(flow.producer);
+            Fact consumerFact = captureFact(flow.consumer);
+            String producer = captureNode(flow.producer, producerFact);
+            String consumer = captureNode(flow.consumer, consumerFact);
+            if (producer.isEmpty() || consumer.isEmpty()) {
+                throw new IllegalStateException(
+                        "Could not resolve wire flow captures: " + flow.id);
+            }
+            relevant(flow.producer.method).add(producer);
+            relevant(flow.consumer.method).add(consumer);
+            selectedMethods.add(flow.producer.method);
+            selectedMethods.add(flow.consumer.method);
+            if (WireFlowCatalog.CaptureSite.CALL_ARGUMENT.equals(
+                    flow.producer.kind)) {
+                MethodSig callee = parseMethodSig(flow.producer.callee);
+                if (callee == null) {
+                    throw new IllegalStateException(
+                            "Could not resolve wire producer call: "
+                                    + flow.id);
+                }
+                addEdge("wire_capture_argument", producer,
+                        formalParam(callee, flow.producer.index),
+                        flow.producer.method, producerFact);
+            }
+            addEdge("wire_handoff", producer, consumer,
+                    flow.consumer.method,
+                    consumerFact == null ? producerFact : consumerFact);
+        }
+    }
+
+    private boolean ensureLoaded(SootMethod method) {
+        return method != null
+                && (factsByMethod.containsKey(method.getSignature())
+                || loadMethod(method));
     }
 
     private Fact annotatedExceptionAllocation(
@@ -665,7 +713,7 @@ final class SeedBackwardStaticAnalyzer {
 
     private void runWorklist() {
         // Monotone fixed point over finite Jimple cells, declared fields and
-        // explicit RPC/dispatch boundaries.
+        // explicit message/dispatch boundaries.
         while (!dirtyMethods.isEmpty()) {
             String method = dirtyMethods.iterator().next();
             dirtyMethods.remove(method);
@@ -673,7 +721,6 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             processMethod(method);
-            expandRpcCallers(method);
             expandDispatchCallers(method);
             expandFieldWriters(method);
             expandConstructorCallers(method);
@@ -1647,7 +1694,7 @@ final class SeedBackwardStaticAnalyzer {
 
         if (!dynamicDispatch) {
             propagateCallArguments("call_argument",
-                    callerMethod, fact, callee, actuals, null,
+                    callerMethod, fact, callee, actuals,
                     callerRelevant, calleeRelevant, expandableCallee);
             if (!modeledContainerResult) {
                 propagateCallReturns("call_return",
@@ -1656,8 +1703,6 @@ final class SeedBackwardStaticAnalyzer {
                         expandableCallee);
             }
         }
-        processRpcInvoke(callerMethod, fact, callee, defs, actuals,
-                callerRelevant);
         processDispatchInvoke(callerMethod, fact, callee, defs, actuals,
                 callerRelevant);
     }
@@ -1690,31 +1735,21 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * One forward argument walk. {@code ports} names the (actual, formal)
-     * index pairs a transport binds; a null {@code ports} binds index to
-     * index, which is what an ordinary Java call site does. A null {@code
-     * kind} is a transport the slice does not walk: the value crosses it
-     * unchanged, but no Java edge carries it.
+     * One forward argument walk for an ordinary Java call.
      */
     private boolean propagateCallArguments(
             String kind, String callerMethod, Fact fact,
             MethodSig target, List<String> actuals,
-            List<ProtocolPortMapping> ports,
             Set<String> callerRelevant, Set<String> targetRelevant,
             boolean targetExpandable) {
         boolean relevantFlow = false;
-        int count = ports == null
-                ? Math.min(actuals.size(), target.params.size())
-                : ports.size();
+        int count = Math.min(actuals.size(), target.params.size());
         for (int index = 0; index < count; index++) {
-            ProtocolPortMapping port = ports == null ? null : ports.get(index);
-            String actual = actuals.get(
-                    port == null ? index : port.clientArgument);
+            String actual = actuals.get(index);
             if (ignoreNode(actual)) {
                 continue;
             }
-            String formal = formalParam(target,
-                    port == null ? index : port.serverParameter);
+            String formal = formalParam(target, index);
             if (!targetExpandable || !targetRelevant.contains(formal)) {
                 continue;
             }
@@ -2220,72 +2255,6 @@ final class SeedBackwardStaticAnalyzer {
         return new StructuralFieldAccessor(method, field);
     }
 
-    private void processRpcInvoke(String callerMethod, Fact fact,
-                                  MethodSig callee, List<String> defs,
-                                  List<String> actuals,
-                                  Set<String> callerRelevant) {
-        List<ProtocolStubMapping> mappings =
-                protocolMappingsForClientTarget(callee);
-        if (mappings.isEmpty()) {
-            return;
-        }
-        expandProtocolClientImplementations(callerMethod, fact, callee,
-                mappings);
-        for (ProtocolStubMapping mapping : mappings) {
-            String target = mapping.serverStub;
-            if (target.equals(callee.raw)) {
-                continue;
-            }
-            SootMethod targetMethod = concreteMethod(target);
-            if (targetMethod == null) {
-                continue;
-            }
-            loadMethod(targetMethod);
-            MethodSig targetSig = parseMethodSig(target);
-            if (targetSig == null) {
-                continue;
-            }
-            Set<String> targetRelevant = relevant(target);
-            propagateCallArguments(null, callerMethod, fact, targetSig,
-                    actuals, mapping.request, callerRelevant, targetRelevant,
-                    true);
-            if (mapping.response) {
-                propagateCallReturns(null, callerMethod, fact, target, defs,
-                        callerRelevant, targetRelevant, true);
-            }
-        }
-    }
-
-    /**
-     * Binds a configured client stub call site to the concrete stub that
-     * actually runs on the caller's side of the transport.
-     */
-    private void expandProtocolClientImplementations(
-            String callerMethod, Fact fact, MethodSig callee,
-            List<ProtocolStubMapping> mappings) {
-        Set<String> expanded = new LinkedHashSet<>();
-        for (ProtocolStubMapping mapping : mappings) {
-            for (String implementation : protocolClientTargets(mapping)) {
-                if (implementation.equals(mapping.clientStub)
-                        || implementation.equals(callee.raw)
-                        || !protocolStubs.sources(implementation).isEmpty()
-                        || !expanded.add(implementation)) {
-                    continue;
-                }
-                SootMethod implementationMethod =
-                        concreteMethod(implementation);
-                if (implementationMethod == null
-                        || !implementationMethod.isConcrete()) {
-                    continue;
-                }
-                loadMethod(implementationMethod);
-                selectActivationCaller("dispatch_activation", implementation,
-                        callerMethod, fact, true);
-                selectedMethods.add(implementation);
-            }
-        }
-    }
-
     private void processDispatchInvoke(String callerMethod, Fact fact,
                                        MethodSig callee, List<String> defs,
                                        List<String> actuals,
@@ -2312,7 +2281,7 @@ final class SeedBackwardStaticAnalyzer {
             Set<String> targetRelevant = relevant(targetMethod);
             boolean callRelevant = exactIntersects(callerRelevant, defs);
             callRelevant |= propagateCallArguments("dispatch_argument",
-                    callerMethod, fact, targetSig, actuals, null,
+                    callerMethod, fact, targetSig, actuals,
                     callerRelevant, targetRelevant, true);
             propagateCallReturns("dispatch_return",
                     callerMethod, fact, targetMethod, defs,
@@ -2332,8 +2301,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private List<String> resolveDispatchTargets(MethodSig callee) {
-        if (callee == null || skipDispatchOwner(callee.owner)
-                || protocolStubs.isClientOwner(callee.owner)) {
+        if (callee == null || skipDispatchOwner(callee.owner)) {
             return Collections.emptyList();
         }
         return memoized(dispatchTargetsCache, callee.raw, ignored -> {
@@ -2346,42 +2314,6 @@ final class SeedBackwardStaticAnalyzer {
                     callee);
             return targets.isEmpty() ? Collections.<String>emptyList()
                     : Collections.unmodifiableList(targets);
-        });
-    }
-
-    /**
-     * Returns configured protocol entry methods that may be named at a Java
-     * callsite.
-     */
-    private List<String> protocolClientTargets(
-            ProtocolStubMapping mapping) {
-        return memoized(protocolClientTargetsCache, mapping.clientStub,
-                ignored -> {
-            LinkedHashSet<String> targets = new LinkedHashSet<>();
-            targets.add(mapping.clientStub);
-            MethodSig client = parseMethodSig(mapping.clientStub);
-            if (client != null) {
-                targets.addAll(applicationImplementationSignatures(client));
-            }
-            return Collections.unmodifiableList(new ArrayList<>(targets));
-        });
-    }
-
-    private List<ProtocolStubMapping> protocolMappingsForClientTarget(
-            MethodSig callee) {
-        if (callee == null) {
-            return Collections.emptyList();
-        }
-        return memoized(protocolMappingsByClientTargetCache, callee.raw,
-                ignored -> {
-            LinkedHashSet<ProtocolStubMapping> matches = new LinkedHashSet<>(
-                    protocolStubs.targets(callee.raw));
-            for (ProtocolStubMapping mapping : protocolStubs.mappings()) {
-                if (protocolClientTargets(mapping).contains(callee.raw)) {
-                    matches.add(mapping);
-                }
-            }
-            return Collections.unmodifiableList(new ArrayList<>(matches));
         });
     }
 
@@ -2425,36 +2357,41 @@ final class SeedBackwardStaticAnalyzer {
                 || owner.startsWith("org.slf4j.");
     }
 
-    private void expandRpcCallers(String targetMethod) {
-        List<ProtocolStubMapping> mappings =
-                protocolStubs.sources(targetMethod);
-        if (mappings.isEmpty()) {
-            return;
+    private Fact captureFact(WireFlowCatalog.CaptureSite site) {
+        if (site.unitIndex >= 0) {
+            return indexedFact(site.method, site.unitIndex);
         }
-        MethodSig targetSig = parseMethodSig(targetMethod);
-        if (targetSig == null) {
-            return;
-        }
-        Set<String> targetRelevant = relevant(targetMethod);
-        buildGlobalStaticIndex();
-        for (ProtocolStubMapping mapping : mappings) {
-            Set<String> visitedCallsites = new LinkedHashSet<>();
-            for (String clientTarget : protocolClientTargets(mapping)) {
-                forEachCallsite(methodCallersByCallee, clientTarget,
-                        (callsite, callsiteFact) -> {
-                    if (!visitedCallsites.add(callsite.method + "\n"
-                            + callsite.unitIndex)) {
-                        return;
-                    }
-                    selectActivationCaller("communication_activation",
-                            targetMethod, callsite.method, callsiteFact, false);
-                    expandCallerArguments("RPC_CALLER_PARAM", null,
-                            targetMethod, mapping.clientStub, targetSig,
-                            targetRelevant, mapping.request, callsite,
-                            callsiteFact, relevant(callsite.method));
-                });
+        List<Fact> facts = factsByMethod.get(site.method);
+        if (facts == null) return null;
+        for (Fact fact : facts) {
+            if (WireFlowCatalog.CaptureSite.METHOD_RETURN.equals(site.kind)
+                    && fact.isReturn) return fact;
+            if (WireFlowCatalog.CaptureSite.METHOD_PARAMETER.equals(site.kind)
+                    && fact.unitText.contains("@parameter" + site.index)) {
+                return fact;
             }
         }
+        return null;
+    }
+
+    private String captureNode(WireFlowCatalog.CaptureSite site, Fact fact) {
+        MethodSig signature = parseMethodSig(site.method);
+        if (WireFlowCatalog.CaptureSite.METHOD_PARAMETER.equals(site.kind)) {
+            return signature == null ? "" : formalParam(signature, site.index);
+        }
+        if (WireFlowCatalog.CaptureSite.METHOD_RETURN.equals(site.kind)) {
+            return site.method + ".return";
+        }
+        if (fact == null) return "";
+        if (WireFlowCatalog.CaptureSite.CALL_ARGUMENT.equals(site.kind)) {
+            List<String> actuals = canonicalPositionList(site.method,
+                    actualInvokeArgs(fact.unitText));
+            if (site.index >= actuals.size()) return "";
+            String actual = actuals.get(site.index);
+            return ignoreNode(actual) ? factNode(fact) : actual;
+        }
+        List<String> defs = canonicalDefs(site.method, fact);
+        return defs.isEmpty() ? factNode(fact) : defs.get(0);
     }
 
     private void expandDispatchCallers(String targetMethod) {
@@ -2479,7 +2416,7 @@ final class SeedBackwardStaticAnalyzer {
                         "DISPATCH_CALLER_PARAM",
                         "dispatch_caller_argument",
                         targetMethod, sourceMethod, targetSig, targetRelevant,
-                        null, callsite, callsiteFact, callerRelevant);
+                        callsite, callsiteFact, callerRelevant);
                 if (targetThisRelevant) {
                     relevantFlow |= expandCallerReceiver(true, targetMethod,
                             targetThis, callsite, callsiteFact);
@@ -2517,40 +2454,25 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * One backward argument expansion at one call site: for every (actual,
-     * formal) index pair the site binds, demand the caller's actual when the
-     * callee's formal is already relevant. {@code ports} names the pairs a
-     * transport binds and a null {@code ports} binds index to index; a null
-     * {@code edgeKind} is a transport the slice does not walk, so the demand
-     * crosses it but no Java edge does. {@code demandScope} is the second
-     * component of the demand key: the dispatch source for a virtual call,
-     * the client stub for a transport.
+     * formal) positional pair the site binds, demand the caller's actual when
+     * the callee's formal is already relevant.
      */
     private boolean expandCallerArguments(
             String demandKind, String edgeKind,
             String targetMethod, String demandScope, MethodSig target,
-            Set<String> targetRelevant, List<ProtocolPortMapping> ports,
-            Callsite callsite,
+            Set<String> targetRelevant, Callsite callsite,
             Fact callsiteFact, Set<String> callerRelevant) {
         boolean expanded = false;
-        int count = ports == null
-                ? Math.min(callsite.actuals.size(), target.params.size())
-                : ports.size();
+        int count = Math.min(callsite.actuals.size(), target.params.size());
         for (int index = 0; index < count; index++) {
-            ProtocolPortMapping port = ports == null ? null : ports.get(index);
-            String formal = formalParam(target,
-                    port == null ? index : port.serverParameter);
-            Object[] demand = port == null
-                    ? new Object[]{targetMethod, demandScope, index,
-                            callsite.method, callsite.unitIndex}
-                    : new Object[]{targetMethod, demandScope,
-                            port.clientArgument, port.serverParameter,
-                            callsite.method, callsite.unitIndex};
+            String formal = formalParam(target, index);
+            Object[] demand = new Object[]{targetMethod, demandScope, index,
+                    callsite.method, callsite.unitIndex};
             if (!targetRelevant.contains(formal)
                     || !expandOnce(demandKind, demand)) {
                 continue;
             }
-            String actual = callsite.actuals.get(
-                    port == null ? index : port.clientArgument);
+            String actual = callsite.actuals.get(index);
             if (ignoreNode(actual)) {
                 continue;
             }
@@ -2604,7 +2526,6 @@ final class SeedBackwardStaticAnalyzer {
                 SootClass candidate = classesByName.get(candidateName);
                 if (candidate == null || !candidate.isApplicationClass()
                         || skipDispatchOwner(candidate.getName())
-                        || protocolStubs.isClientOwner(candidate.getName())
                         || (!candidate.isInterface()
                         && !candidate.isAbstract())) {
                     continue;

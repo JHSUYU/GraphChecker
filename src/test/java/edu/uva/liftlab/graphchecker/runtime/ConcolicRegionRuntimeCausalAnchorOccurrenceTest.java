@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
@@ -472,6 +474,10 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
 
     private static JsonObject attachPort(String portId, int unitIndex) {
         JsonObject port = new JsonObject();
+        port.addProperty(CommunicationHandoffSpec.SIDE,
+                CommunicationHandoffSpec.IN);
+        port.addProperty(CommunicationHandoffSpec.CAPTURE_KIND,
+                CommunicationCatalogContract.CAPTURE_CALL_RETURN);
         port.addProperty("portId", portId);
         port.addProperty("handoffLeafPath", "resp/keys");
         port.addProperty("direction", "RESPONSE");
@@ -479,7 +485,6 @@ public class ConcolicRegionRuntimeCausalAnchorOccurrenceTest {
         port.addProperty("definitionMethod", ROOT);
         port.addProperty("definitionUnitIndex", unitIndex);
         port.addProperty("declaredCallee", CALLEE);
-        port.addProperty("role", "ATTACH");
         return port;
     }
 

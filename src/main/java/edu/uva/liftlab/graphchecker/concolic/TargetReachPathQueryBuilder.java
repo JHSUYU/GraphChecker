@@ -41,8 +41,12 @@ public final class TargetReachPathQueryBuilder {
             "RUNTIME_SOURCE_EVENT_AND_WITNESS_FLIP_V1";
     static final String REQUIRED_FATAL_BRANCH_AUTHORITY =
             "RUNTIME_REQUIRED_TARGET_EVENT_V1";
+    static final String REQUIRED_CONCRETE_BRANCH_AUTHORITY =
+            "RUNTIME_REQUIRED_CONCRETE_TARGET_EVENT_V1";
     static final String TARGET_BRANCH_WITNESS =
             "targetBranchWitness";
+    static final String TARGET_CONCRETE_OBSERVATION =
+            "targetConcreteObservation";
     private static final Gson JSON = new GsonBuilder()
             .disableHtmlEscaping().create();
 
@@ -157,19 +161,49 @@ public final class TargetReachPathQueryBuilder {
         SelectedOccurrence selected = SelectedOccurrence.decode(
                 object(seed, "selectedTargetOccurrence"), region,
                 occurrenceId, "target seed query");
-        BranchReplayContract targetReplay;
-        try {
-            targetReplay = BranchReplayContract.fromJson(
-                    object(seed, "replayContract"));
-        } catch (IllegalArgumentException malformed) {
-            throw new IOException("malformed target replay contract",
-                    malformed);
+        BranchReplayContract targetReplay = null;
+        ExactConcreteBranchObservation targetConcrete = null;
+        JsonElement encodedConcrete = seed.get(TARGET_CONCRETE_OBSERVATION);
+        boolean hasConcrete = encodedConcrete != null
+                && !encodedConcrete.isJsonNull();
+        boolean hasReplay = seed.has("replayContract")
+                && !seed.get("replayContract").isJsonNull();
+        if (hasConcrete == hasReplay) {
+            throw new IOException("target seed must have exactly one branch "
+                    + "authority");
         }
-        if (!targetSite.equals(targetReplay.source().siteId())) {
-            throw new IOException(
-                    "target replay contract does not match target site");
+        int targetOccurrence;
+        if (hasConcrete) {
+            if (!encodedConcrete.isJsonObject()) {
+                throw new IOException(
+                        "malformed concrete target observation");
+            }
+            try {
+                targetConcrete = ExactConcreteBranchObservation.fromJson(
+                        encodedConcrete.getAsJsonObject());
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException(
+                        "malformed concrete target observation", malformed);
+            }
+            if (!targetSite.equals(targetConcrete.siteId())) {
+                throw new IOException("concrete target observation does not "
+                        + "match target site");
+            }
+            targetOccurrence = targetConcrete.occurrence();
+        } else {
+            try {
+                targetReplay = BranchReplayContract.fromJson(
+                        object(seed, "replayContract"));
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException("malformed target replay contract",
+                        malformed);
+            }
+            if (!targetSite.equals(targetReplay.source().siteId())) {
+                throw new IOException(
+                        "target replay contract does not match target site");
+            }
+            targetOccurrence = targetReplay.source().occurrence();
         }
-        int targetOccurrence = targetReplay.source().occurrence();
         JsonElement fatalOutcome = seed.get("fatalRequiredTakenOutcome");
         if (fatalOutcome == null || !fatalOutcome.isJsonPrimitive()
                 || !fatalOutcome.getAsJsonPrimitive().isBoolean()) {
@@ -177,9 +211,12 @@ public final class TargetReachPathQueryBuilder {
                     "target seed query has no fatal branch outcome");
         }
         boolean fatalRequiredOutcome = fatalOutcome.getAsBoolean();
-        if (fatalRequiredOutcome != targetReplay.requiredTakenOutcome()) {
-            throw new IOException("target seed desired outcome is not the "
-                    + "exact source witness flip");
+        if (targetConcrete != null) {
+            if (fatalRequiredOutcome
+                    != targetConcrete.sourceTakenOutcome()) {
+                throw new IOException("concrete target observation did not "
+                        + "take the required outcome");
+            }
         }
 
         List<JsonObject> summaries = ArtifactIO.readJsonl(arguments.summaries,
@@ -192,14 +229,16 @@ public final class TargetReachPathQueryBuilder {
         // first looks at it.
         Map<JsonObject, PathObservation> observations =
                 new IdentityHashMap<>();
-        TargetDecision progressed = progressedTargetDecision(seed,
-                summaries, observations, region, occurrenceId, goalId,
-                targetSite);
-        if (progressed != null) {
-            targetSite = progressed.siteId;
-            targetOccurrence = progressed.occurrence;
-            fatalRequiredOutcome = progressed.requiredOutcome;
-            targetReplay = progressed.replayContract;
+        if (targetReplay != null) {
+            TargetDecision progressed = progressedTargetDecision(seed,
+                    summaries, observations, region, occurrenceId, goalId,
+                    targetSite);
+            if (progressed != null) {
+                targetSite = progressed.siteId;
+                targetOccurrence = progressed.occurrence;
+                fatalRequiredOutcome = progressed.requiredOutcome;
+                targetReplay = progressed.replayContract;
+            }
         }
 
         Map<String, JsonObject> pathsByKey = new LinkedHashMap<>();
@@ -235,10 +274,20 @@ public final class TargetReachPathQueryBuilder {
             if (targetMapping == null) {
                 continue;
             }
-            BranchWitness sourceWitness = targetReplay.source();
-            if (!sourceWitness.decisionIdentity().equals(
-                    targetMapping.witness().decisionIdentity())) {
-                continue;
+            BranchWitness sourceWitness = targetReplay == null
+                    ? null : targetReplay.source();
+            if (targetConcrete != null) {
+                if (!targetMapping.isConcreteObservation()
+                        || !targetMapping.decisionIdentity().equals(
+                        concreteDecisionIdentity(targetConcrete))) {
+                    continue;
+                }
+            } else {
+                if (!targetMapping.isWitnessed()
+                        || !sourceWitness.decisionIdentity().equals(
+                        targetMapping.witness().decisionIdentity())) {
+                    continue;
+                }
             }
             final PathObservation.TargetReachEvent targetReach;
             try {
@@ -253,7 +302,8 @@ public final class TargetReachPathQueryBuilder {
                     targetMapping.sourceTakenOutcome())) {
                 continue;
             }
-            boolean sourceAttested = sourceWitness.sourceTakenOutcome()
+            boolean sourceAttested = sourceWitness != null
+                    && sourceWitness.sourceTakenOutcome()
                     == targetMapping.sourceTakenOutcome();
             boolean requiredAttested = fatalRequiredOutcome
                     == targetMapping.sourceTakenOutcome();
@@ -280,13 +330,17 @@ public final class TargetReachPathQueryBuilder {
                 path.add(SharedStateEvidence.RECORDED_FIELD,
                         shared.deepCopy());
             }
-            JsonArray constraints = requiredAttested
+            JsonArray constraints = targetMapping.isConcreteObservation()
+                    ? observation.relationPathCondition()
+                    : requiredAttested
                     ? witnessedTargetConstraints(summary, observation,
                     targetMapping)
                     : flippedTargetConstraints(summary, observation,
                     targetMapping);
             path.addProperty("fatalBranchConditionAuthority",
-                    requiredAttested
+                    targetMapping.isConcreteObservation()
+                            ? REQUIRED_CONCRETE_BRANCH_AUTHORITY
+                            : requiredAttested
                             ? REQUIRED_FATAL_BRANCH_AUTHORITY
                             : SOURCE_FATAL_BRANCH_AUTHORITY);
             path.addProperty(TARGET_ATTESTATION_ROLE,
@@ -295,8 +349,13 @@ public final class TargetReachPathQueryBuilder {
             path.add(PathObservation.TargetReachEvent.FIELD,
                     targetReach.toJson());
             // The producer cases selected for this fresh replay may attach a
-            path.add(TARGET_BRANCH_WITNESS,
-                    targetMapping.witness().toJson());
+            if (targetMapping.isConcreteObservation()) {
+                path.add(TARGET_CONCRETE_OBSERVATION,
+                        targetMapping.concreteObservation().toJson());
+            } else {
+                path.add(TARGET_BRANCH_WITNESS,
+                        targetMapping.witness().toJson());
+            }
             path.addProperty("desiredTakenOutcome",
                     fatalRequiredOutcome);
             // The attached expression belongs to this exact target replay.
@@ -355,7 +414,12 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("targetOccurrence", targetOccurrence);
         result.addProperty("requiredTakenOutcome", fatalRequiredOutcome);
         result.add("paths", encodedPaths);
-        result.add("seedReplayContract", targetReplay.toJson());
+        if (targetConcrete != null) {
+            result.add(TARGET_CONCRETE_OBSERVATION,
+                    targetConcrete.toJson());
+        } else {
+            result.add("seedReplayContract", targetReplay.toJson());
+        }
         seedLoopBound.writeTo(result);
         JsonObject symbolicContext =
                 object(seed, "symbolicContext").deepCopy();
@@ -492,7 +556,8 @@ public final class TargetReachPathQueryBuilder {
             if (!successors.contains(index)) continue;
             SummaryBranchMapping mapping = targetSiteMapping(observation,
                     reach.siteId(), reach.occurrence());
-            if (mapping == null || !reach.matches(mapping.siteId(),
+            if (mapping == null || !mapping.isWitnessed()
+                    || !reach.matches(mapping.siteId(),
                     mapping.occurrence(),
                     mapping.sourceTakenOutcome())) {
                 continue;
@@ -606,7 +671,7 @@ public final class TargetReachPathQueryBuilder {
                 throw new IOException("Malformed target reach event: "
                         + malformed.getMessage(), malformed);
             }
-            if (mapping == null || !mapping.isWitnessed()
+            if (mapping == null
                     || mapping.sourceTakenOutcome() != requiredOutcome
                     || event == null || !event.matches(targetSite,
                     targetOccurrence, requiredOutcome)) {
@@ -626,6 +691,13 @@ public final class TargetReachPathQueryBuilder {
      */
     private static JsonObject decidingSeed(List<JsonObject> ready) {
         if (ready.size() == 1) return ready.get(0);
+        JsonObject direct = null;
+        for (JsonObject candidate : ready) {
+            if (!candidate.has(TARGET_CONCRETE_OBSERVATION)) continue;
+            if (direct != null) return null;
+            direct = candidate;
+        }
+        if (direct != null) return direct;
         for (JsonObject candidate : ready) {
             BranchReplayContract contract = replayContract(candidate);
             if (contract == null) continue;
@@ -796,18 +868,23 @@ public final class TargetReachPathQueryBuilder {
         return decoded;
     }
 
-    /** The witnessed decision of the exact target site, or null. */
+    /** The exact decision of the target site, or null. */
     private static SummaryBranchMapping targetSiteMapping(
             PathObservation observation, String siteId, int occurrence) {
         for (SummaryBranchMapping mapping
                 : observation.branchMappings()) {
-            if (mapping.isWitnessed()
-                    && siteId.equals(mapping.siteId())
+            if (siteId.equals(mapping.siteId())
                     && occurrence == mapping.occurrence()) {
                 return mapping;
             }
         }
         return null;
+    }
+
+    private static String concreteDecisionIdentity(
+            ExactConcreteBranchObservation observation) {
+        return observation.siteId() + "\u0000" + observation.occurrence()
+                + "\u0000" + 0;
     }
 
     /**

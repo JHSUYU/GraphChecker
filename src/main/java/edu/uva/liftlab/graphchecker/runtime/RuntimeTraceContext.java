@@ -1,10 +1,13 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.Base64;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -23,8 +26,6 @@ final class RuntimeTraceContext {
             new LinkedHashMap<>();
     private static final IdentityHashMap<Object, Seed> ASYNC_SEEDS =
             new IdentityHashMap<>();
-    private static final Map<String, Seed> RPC_SENDS =
-            new LinkedHashMap<>();
     private static final Map<String, Long> REQUEST_OCCURRENCES =
             new LinkedHashMap<>();
     private static final InheritableThreadLocal<State> CURRENT =
@@ -113,12 +114,8 @@ final class RuntimeTraceContext {
         String requestKey = source.key() + "/request/" + normalizedApi
                 + "#" + requestOccurrence;
         Frame activeFrame = state.frames.peek();
-        state.requests.push(new RequestFrame(requestId,
-                state.source, activeFrame,
-                activeFrame == null ? null : activeFrame.source,
-                state.requestId, state.requestKey, state.requestApi));
+        state.scopes.push(new ScopeFrame(requestId, state, activeFrame));
         state.source = source;
-        state.requestId = requestId;
         state.requestKey = requestKey;
         state.requestApi = normalizedApi;
         if (activeFrame != null) {
@@ -130,21 +127,7 @@ final class RuntimeTraceContext {
 
     /** Exits the matching request scope and restores the caller source. */
     static void endRequest(long requestId) {
-        State state = CURRENT.get();
-        RequestFrame request = state.requests.peek();
-        if (request == null || request.requestId != requestId) {
-            throw new IllegalStateException(
-                    "request scopes must end in LIFO order");
-        }
-        state.requests.pop();
-        state.source = request.previousSource;
-        state.requestId = request.previousRequestId;
-        state.requestKey = request.previousRequestKey;
-        state.requestApi = request.previousRequestApi;
-        if (request.activeFrame != null
-                && state.frames.peek() == request.activeFrame) {
-            request.activeFrame.source = request.previousFrameSource;
-        }
+        restoreScope(requestId);
     }
 
     /** Advances one logical source to a new lifecycle epoch. */
@@ -181,8 +164,9 @@ final class RuntimeTraceContext {
         View view = state.view();
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
-                    view.source, view.requestId, view.requestKey,
-                    view.requestApi));
+                    view.source, view.requestKey, view.requestApi,
+                    view.exchangeTransport, view.exchangeCorrelationId,
+                    view.exchangeAttemptId, view.exchangeHalf));
         }
     }
 
@@ -201,11 +185,9 @@ final class RuntimeTraceContext {
         // activation has to say which one named it.
         boolean receiverAttributed = source != null;
         if (source == null && seed != null) source = seed.source;
-        if (source == null) source = state.pendingRemoteSource;
         if (source == null) source = state.source;
         // A receiver that named no source of its own keeps the ambient stamp,
         // which is the only answer available while the trace is being written.
-        long requestId = seed == null ? state.requestId : seed.requestId;
         String requestKey = seed == null ? state.requestKey : seed.requestKey;
         String requestApi = seed == null ? state.requestApi : seed.requestApi;
         long parentSpanId = seed == null ? state.currentSpan() : seed.parentSpanId;
@@ -218,11 +200,18 @@ final class RuntimeTraceContext {
         long remoteParentSpanId = state.pendingRemoteParentSpanId;
         Frame frame = new Frame(spanId, parentSpanId, remoteParentSpanId,
                 state.source, source, receiverAttributed,
-                state.requestId, state.requestKey, state.requestApi);
+                state.requestKey, state.requestApi,
+                state.exchangeTransport, state.exchangeCorrelationId,
+                state.exchangeAttemptId, state.exchangeHalf);
         state.source = source;
-        state.requestId = requestId;
         state.requestKey = requestKey;
         state.requestApi = requestApi;
+        if (seed != null) {
+            state.exchangeTransport = seed.exchangeTransport;
+            state.exchangeCorrelationId = seed.exchangeCorrelationId;
+            state.exchangeAttemptId = seed.exchangeAttemptId;
+            state.exchangeHalf = seed.exchangeHalf;
+        }
         state.frames.push(frame);
         publishCausalSource(state);
         return state.view();
@@ -234,9 +223,12 @@ final class RuntimeTraceContext {
         if (frame == null || frame.spanId != spanId) return;
         state.frames.pop();
         state.source = frame.previousSource;
-        state.requestId = frame.previousRequestId;
         state.requestKey = frame.previousRequestKey;
         state.requestApi = frame.previousRequestApi;
+        state.exchangeTransport = frame.previousExchangeTransport;
+        state.exchangeCorrelationId = frame.previousExchangeCorrelationId;
+        state.exchangeAttemptId = frame.previousExchangeAttemptId;
+        state.exchangeHalf = frame.previousExchangeHalf;
     }
 
     static View current() {
@@ -247,52 +239,98 @@ final class RuntimeTraceContext {
         return CURRENT.get().view().source;
     }
 
-    /** Registers an RPC endpoint. */
-    static View rpc(String direction, String transport, String correlationId,
-                    String half, Object localOwner) {
+    /** Encodes the current node and request flow for the next message. */
+    static String outboundHeader(Object localOwner) {
         State state = CURRENT.get();
+        bindLocalOwner(state, localOwner);
+        View view = state.view();
+        if (view.source == null || view.requestKey.isEmpty()
+                || view.requestApi.isEmpty()) {
+            throw new IllegalStateException(
+                    "outbound message requires source and request flow");
+        }
+        SourceRef source = view.source;
+        return "1|" + view.spanId + "|" + source.epoch()
+                + "|" + encoded(source.kind())
+                + "|" + encoded(source.role())
+                + "|" + encoded(source.id())
+                + "|" + encoded(view.requestKey)
+                + "|" + encoded(view.requestApi);
+    }
+
+    /** Installs exactly the context carried by a received message. */
+    static long enterInbound(String header, Object localOwner) {
+        return enterInbound(header, "", "", "", "", localOwner);
+    }
+
+    /** Installs one received message and its exact transport exchange. */
+    static long enterInbound(String header, String transport,
+                             String correlationId, String attemptId,
+                             String half, Object localOwner) {
+        MessageContext remote = MessageContext.parse(header);
+        State state = CURRENT.get();
+        Frame activeFrame = state.frames.peek();
+        long token = nextId();
+        state.scopes.push(new ScopeFrame(token, state, activeFrame));
         SourceRef localSource = sourceFor(localOwner);
-        // A short-lived transport object is commonly unregistered.
-        if (localSource != null) {
-            state.source = localSource;
-            Frame frame = state.frames.peek();
-            if (frame != null) {
-                frame.source = localSource;
-            }
-        }
-        String key = MapFields.safe(transport) + "\n" + MapFields.safe(correlationId) + "\n"
-                + MapFields.safe(half);
-        if ("SEND".equalsIgnoreCase(MapFields.safe(direction))) {
-            View view = state.view();
-            synchronized (LOCK) {
-                RPC_SENDS.put(key, new Seed(view.spanId,
-                        view.source, view.requestId,
-                        view.requestKey, view.requestApi));
-            }
-            // The exact local endpoint is also the source of the active
-            // producer occurrence.
-            publishCausalSource(state);
-            return view;
-        }
-        if ("RECEIVE".equalsIgnoreCase(MapFields.safe(direction))) {
-            state.pendingRemoteSource = localSource;
-            Seed remote = null;
-            synchronized (LOCK) {
-                remote = RPC_SENDS.remove(key);
-            }
-            if (remote != null) {
-                state.pendingRemoteParentSpanId = remote.parentSpanId;
-                state.requestId = remote.requestId;
-                state.requestKey = remote.requestKey;
-                state.requestApi = remote.requestApi;
-                Frame frame = state.frames.peek();
-                if (frame != null) {
-                    frame.remoteParentSpanId = remote.parentSpanId;
-                }
-            }
+        state.source = localSource == null ? remote.source : localSource;
+        state.requestKey = remote.requestKey;
+        state.requestApi = remote.requestApi;
+        state.pendingRemoteParentSpanId = remote.parentSpanId;
+        state.exchangeTransport = normalizedUpper(transport);
+        state.exchangeCorrelationId = normalized(correlationId);
+        state.exchangeAttemptId = normalized(attemptId);
+        state.exchangeHalf = normalizedUpper(half);
+        if (activeFrame != null) {
+            activeFrame.source = state.source;
+            activeFrame.remoteParentSpanId = remote.parentSpanId;
         }
         publishCausalSource(state);
+        return token;
+    }
+
+    static void exitInbound(long token) {
+        restoreScope(token);
+    }
+
+    /** Attributes a local exchange leg without inferring any remote state. */
+    static View exchange(Object localOwner) {
+        State state = CURRENT.get();
+        bindLocalOwner(state, localOwner);
+        publishCausalSource(state);
         return state.view();
+    }
+
+    private static void bindLocalOwner(State state, Object localOwner) {
+        SourceRef source = sourceFor(localOwner);
+        if (source == null) return;
+        state.source = source;
+        Frame frame = state.frames.peek();
+        if (frame != null) frame.source = source;
+    }
+
+    private static void restoreScope(long token) {
+        State state = CURRENT.get();
+        ScopeFrame scope = state.scopes.peek();
+        if (scope == null || scope.token != token) {
+            throw new IllegalStateException(
+                    "context scopes must end in LIFO order");
+        }
+        state.scopes.pop();
+        state.source = scope.source;
+        state.requestKey = scope.requestKey;
+        state.requestApi = scope.requestApi;
+        state.pendingRemoteParentSpanId = scope.remoteParentSpanId;
+        state.exchangeTransport = scope.exchangeTransport;
+        state.exchangeCorrelationId = scope.exchangeCorrelationId;
+        state.exchangeAttemptId = scope.exchangeAttemptId;
+        state.exchangeHalf = scope.exchangeHalf;
+        if (scope.activeFrame != null
+                && state.frames.peek() == scope.activeFrame) {
+            scope.activeFrame.source = scope.frameSource;
+            scope.activeFrame.remoteParentSpanId = scope.frameRemoteParentSpanId;
+        }
+        publishCausalSource(state);
     }
 
     /**
@@ -310,7 +348,6 @@ final class RuntimeTraceContext {
             SOURCE_ALIASES.clear();
             SOURCES_BY_KEY.clear();
             ASYNC_SEEDS.clear();
-            RPC_SENDS.clear();
             REQUEST_OCCURRENCES.clear();
         }
         CURRENT.remove();
@@ -389,9 +426,12 @@ final class RuntimeTraceContext {
         if (parent == null) return child;
         View inherited = parent.view();
         child.source = inherited.source;
-        child.requestId = inherited.requestId;
         child.requestKey = inherited.requestKey;
         child.requestApi = inherited.requestApi;
+        child.exchangeTransport = inherited.exchangeTransport;
+        child.exchangeCorrelationId = inherited.exchangeCorrelationId;
+        child.exchangeAttemptId = inherited.exchangeAttemptId;
+        child.exchangeHalf = inherited.exchangeHalf;
         return child;
     }
 
@@ -409,37 +449,46 @@ final class RuntimeTraceContext {
         /** Whether {@link #source} is the root receiver's own registration
          *  rather than the context this thread inherited. */
         final boolean receiverAttributed;
-        final long requestId;
         final String requestKey;
         final String requestApi;
+        final String exchangeTransport;
+        final String exchangeCorrelationId;
+        final String exchangeAttemptId;
+        final String exchangeHalf;
 
         private View(long laneId, long spanId,
                      long parentSpanId, long remoteParentSpanId,
                      SourceRef source, boolean receiverAttributed,
-                     long requestId,
-                     String requestKey, String requestApi) {
+                     String requestKey, String requestApi,
+                     String exchangeTransport, String exchangeCorrelationId,
+                     String exchangeAttemptId, String exchangeHalf) {
             this.laneId = laneId;
             this.spanId = spanId;
             this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.receiverAttributed = receiverAttributed;
-            this.requestId = requestId;
             this.requestKey = MapFields.safe(requestKey);
             this.requestApi = MapFields.safe(requestApi);
+            this.exchangeTransport = normalizedUpper(exchangeTransport);
+            this.exchangeCorrelationId = normalized(exchangeCorrelationId);
+            this.exchangeAttemptId = normalized(exchangeAttemptId);
+            this.exchangeHalf = normalizedUpper(exchangeHalf);
         }
     }
 
     private static final class State {
         private long laneId;
         private SourceRef source;
-        private SourceRef pendingRemoteSource;
         private long pendingRemoteParentSpanId;
-        private long requestId;
         private String requestKey = "";
         private String requestApi = "";
+        private String exchangeTransport = "";
+        private String exchangeCorrelationId = "";
+        private String exchangeAttemptId = "";
+        private String exchangeHalf = "";
         private final Deque<Frame> frames = new ArrayDeque<>();
-        private final Deque<RequestFrame> requests = new ArrayDeque<>();
+        private final Deque<ScopeFrame> scopes = new ArrayDeque<>();
 
         private State(long laneId) {
             this.laneId = laneId;
@@ -459,7 +508,8 @@ final class RuntimeTraceContext {
                             : frame.remoteParentSpanId,
                     frame == null ? source : frame.source,
                     frame != null && frame.receiverAttributed,
-                    requestId, requestKey, requestApi);
+                    requestKey, requestApi, exchangeTransport,
+                    exchangeCorrelationId, exchangeAttemptId, exchangeHalf);
         }
     }
 
@@ -470,66 +520,157 @@ final class RuntimeTraceContext {
         private final SourceRef previousSource;
         private SourceRef source;
         private final boolean receiverAttributed;
-        private final long previousRequestId;
         private final String previousRequestKey;
         private final String previousRequestApi;
+        private final String previousExchangeTransport;
+        private final String previousExchangeCorrelationId;
+        private final String previousExchangeAttemptId;
+        private final String previousExchangeHalf;
 
         private Frame(long spanId, long parentSpanId,
                       long remoteParentSpanId, SourceRef previousSource,
                       SourceRef source, boolean receiverAttributed,
-                      long previousRequestId,
-                      String previousRequestKey, String previousRequestApi) {
+                      String previousRequestKey, String previousRequestApi,
+                      String previousExchangeTransport,
+                      String previousExchangeCorrelationId,
+                      String previousExchangeAttemptId,
+                      String previousExchangeHalf) {
             this.spanId = spanId;
             this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.previousSource = previousSource;
             this.source = source;
             this.receiverAttributed = receiverAttributed;
-            this.previousRequestId = previousRequestId;
             this.previousRequestKey = MapFields.safe(previousRequestKey);
             this.previousRequestApi = MapFields.safe(previousRequestApi);
+            this.previousExchangeTransport = normalizedUpper(
+                    previousExchangeTransport);
+            this.previousExchangeCorrelationId = normalized(
+                    previousExchangeCorrelationId);
+            this.previousExchangeAttemptId = normalized(
+                    previousExchangeAttemptId);
+            this.previousExchangeHalf = normalizedUpper(previousExchangeHalf);
         }
     }
 
     private static final class Seed {
         private final long parentSpanId;
         private final SourceRef source;
-        private final long requestId;
         private final String requestKey;
         private final String requestApi;
+        private final String exchangeTransport;
+        private final String exchangeCorrelationId;
+        private final String exchangeAttemptId;
+        private final String exchangeHalf;
 
         private Seed(long parentSpanId, SourceRef source,
-                     long requestId, String requestKey, String requestApi) {
+                     String requestKey, String requestApi,
+                     String exchangeTransport, String exchangeCorrelationId,
+                     String exchangeAttemptId, String exchangeHalf) {
             this.parentSpanId = parentSpanId;
             this.source = source;
-            this.requestId = requestId;
             this.requestKey = MapFields.safe(requestKey);
             this.requestApi = MapFields.safe(requestApi);
+            this.exchangeTransport = normalizedUpper(exchangeTransport);
+            this.exchangeCorrelationId = normalized(exchangeCorrelationId);
+            this.exchangeAttemptId = normalized(exchangeAttemptId);
+            this.exchangeHalf = normalizedUpper(exchangeHalf);
         }
     }
 
-    private static final class RequestFrame {
-        private final long requestId;
-        private final SourceRef previousSource;
+    private static final class ScopeFrame {
+        private final long token;
+        private final SourceRef source;
         private final Frame activeFrame;
-        private final SourceRef previousFrameSource;
-        private final long previousRequestId;
-        private final String previousRequestKey;
-        private final String previousRequestApi;
+        private final SourceRef frameSource;
+        private final long frameRemoteParentSpanId;
+        private final long remoteParentSpanId;
+        private final String requestKey;
+        private final String requestApi;
+        private final String exchangeTransport;
+        private final String exchangeCorrelationId;
+        private final String exchangeAttemptId;
+        private final String exchangeHalf;
 
-        private RequestFrame(long requestId,
-                             SourceRef previousSource, Frame activeFrame,
-                             SourceRef previousFrameSource,
-                             long previousRequestId,
-                             String previousRequestKey,
-                             String previousRequestApi) {
-            this.requestId = requestId;
-            this.previousSource = previousSource;
+        private ScopeFrame(long token, State state, Frame activeFrame) {
+            this.token = token;
+            this.source = state.source;
             this.activeFrame = activeFrame;
-            this.previousFrameSource = previousFrameSource;
-            this.previousRequestId = previousRequestId;
-            this.previousRequestKey = MapFields.safe(previousRequestKey);
-            this.previousRequestApi = MapFields.safe(previousRequestApi);
+            this.frameSource = activeFrame == null ? null : activeFrame.source;
+            this.frameRemoteParentSpanId = activeFrame == null ? 0L
+                    : activeFrame.remoteParentSpanId;
+            this.remoteParentSpanId = state.pendingRemoteParentSpanId;
+            this.requestKey = state.requestKey;
+            this.requestApi = state.requestApi;
+            this.exchangeTransport = state.exchangeTransport;
+            this.exchangeCorrelationId = state.exchangeCorrelationId;
+            this.exchangeAttemptId = state.exchangeAttemptId;
+            this.exchangeHalf = state.exchangeHalf;
+        }
+    }
+
+    private static String normalized(String value) {
+        return MapFields.safe(value).trim();
+    }
+
+    private static String normalizedUpper(String value) {
+        return normalized(value).toUpperCase(Locale.ROOT);
+    }
+
+    private static String encoded(String value) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(
+                value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String decoded(String value) {
+        try {
+            String decoded = new String(Base64.getUrlDecoder().decode(value),
+                    StandardCharsets.UTF_8);
+            if (!encoded(decoded).equals(value)) throw new IllegalArgumentException();
+            return decoded;
+        } catch (IllegalArgumentException malformed) {
+            throw new IllegalArgumentException("malformed trace context header");
+        }
+    }
+
+    private static final class MessageContext {
+        private final long parentSpanId;
+        private final SourceRef source;
+        private final String requestKey;
+        private final String requestApi;
+
+        private MessageContext(long parentSpanId, SourceRef source,
+                               String requestKey, String requestApi) {
+            this.parentSpanId = parentSpanId;
+            this.source = source;
+            this.requestKey = requestKey;
+            this.requestApi = requestApi;
+        }
+
+        private static MessageContext parse(String header) {
+            String[] parts = MapFields.safe(header).split("\\|", -1);
+            try {
+                if (parts.length != 8 || !"1".equals(parts[0])) {
+                    throw new IllegalArgumentException();
+                }
+                long parentSpan = Long.parseLong(parts[1]);
+                long epoch = Long.parseLong(parts[2]);
+                if (parentSpan < 0L || epoch < 0L) {
+                    throw new IllegalArgumentException();
+                }
+                SourceRef source = new SourceRef(decoded(parts[3]),
+                        decoded(parts[4]), decoded(parts[5]), epoch);
+                String requestKey = decoded(parts[6]);
+                String requestApi = decoded(parts[7]);
+                if (requestKey.isEmpty() || requestApi.isEmpty()) {
+                    throw new IllegalArgumentException();
+                }
+                return new MessageContext(parentSpan, source,
+                        requestKey, requestApi);
+            } catch (RuntimeException malformed) {
+                throw new IllegalArgumentException(
+                        "malformed trace context header");
+            }
         }
     }
 
