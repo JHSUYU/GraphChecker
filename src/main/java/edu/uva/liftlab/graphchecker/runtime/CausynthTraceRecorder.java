@@ -146,13 +146,17 @@ public final class CausynthTraceRecorder {
         RuntimeTraceContext.View context = parent == null
                 ? RuntimeTraceContext.enterRoot(receiver)
                 : RuntimeTraceContext.current();
+        boolean receiverAttributed = parent == null
+                ? context.receiverAttributed
+                : context.source != null && context.source.equals(
+                RuntimeTraceContext.sourceFor(receiver));
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         threadName, tid, method, objectId,
                         runtimeType(receiver), id, parentCallId, parentSiteId,
                         context.laneId, context.spanId, context.parentSpanId,
                         context.remoteParentSpanId, context.source,
-                        context.receiverAttributed,
+                        receiverAttributed,
                         context.requestKey, context.requestApi);
         calls.push(new ActiveCall(id, parentSiteId, method,
                 context.spanId, parent == null));
@@ -178,6 +182,10 @@ public final class CausynthTraceRecorder {
         RuntimeTraceContext.View context = parent == null
                 ? RuntimeTraceContext.enterRoot(receiver)
                 : RuntimeTraceContext.current();
+        boolean receiverAttributed = parent == null
+                ? context.receiverAttributed
+                : context.source != null && context.source.equals(
+                RuntimeTraceContext.sourceFor(receiver));
         // Keep the nesting stack balanced even after the trace budget has
         // been exhausted; the silent exit hook must not pop the parent.
         calls.push(new ActiveCall(id, 0L, method, context.spanId,
@@ -192,7 +200,7 @@ public final class CausynthTraceRecorder {
                         threadName, thread.getId(), method, 0, "", id,
                         parentCallId, 0L, context.laneId, context.spanId,
                         context.parentSpanId, context.remoteParentSpanId,
-                        context.source, context.receiverAttributed,
+                        context.source, receiverAttributed,
                         context.requestKey, context.requestApi);
         if (!contextOnlyConcolicReplay) {
             synchronized (LOCK) {
@@ -455,8 +463,6 @@ public final class CausynthTraceRecorder {
         } catch (IllegalStateException noFlow) {
             return "";
         }
-        ConcolicRegionRuntime.retainOutboundExchange(transport,
-                correlationId, attemptId, half);
         recordExchange("SEND", transport, correlationId, attemptId, half,
                 localOwner);
         return header;

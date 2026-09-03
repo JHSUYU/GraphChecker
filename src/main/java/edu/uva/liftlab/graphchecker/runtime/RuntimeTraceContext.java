@@ -273,7 +273,8 @@ final class RuntimeTraceContext {
         long token = nextId();
         state.scopes.push(new ScopeFrame(token, state, activeFrame));
         SourceRef localSource = sourceFor(localOwner);
-        state.source = localSource == null ? remote.source : localSource;
+        state.source = localSource != null ? localSource
+                : state.source != null ? state.source : remote.source;
         state.requestKey = remote.requestKey;
         state.requestApi = remote.requestApi;
         state.pendingRemoteParentSpanId = remote.parentSpanId;

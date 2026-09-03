@@ -4,7 +4,7 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.A
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
-import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CallArgumentOutputCapture;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CallOutputCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ExactHeapOutputCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.CommunicationEffectCapture;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.RootedOutputCapture;
@@ -544,8 +544,7 @@ public final class CausynthPipeline {
                                           CampaignEnvelope envelope) {
         List<RootedOutputCapture> outputCaptureSelection =
                 plan.outputCaptures();
-        List<CallArgumentOutputCapture> callArgumentOutputs =
-                plan.callArgumentOutputs();
+        List<CallOutputCapture> callOutputs = plan.callOutputs();
         List<CommunicationEffectCapture> communicationEffects =
                 plan.communicationEffects();
         List<ExactHeapOutputCapture> exactHeapOutputs =
@@ -678,7 +677,7 @@ public final class CausynthPipeline {
                             + signature + " at replay entry "
                             + replayEntrySignature, exception);
         }
-        instrumentConcolicCallArgumentOutputs(callArgumentOutputs, refs);
+        instrumentConcolicCallOutputs(callOutputs, refs);
         LOG.info("Instrumented symbolic-region root {} at replay entry {} "
                         + "for concolic replay; loop bodies bounded at {} "
                         + "iterations",
@@ -855,10 +854,10 @@ public final class CausynthPipeline {
     }
 
     /** Captures the exact value presented at a configured protocol call. */
-    private void instrumentConcolicCallArgumentOutputs(
-            Collection<CallArgumentOutputCapture> captures,
+    private void instrumentConcolicCallOutputs(
+            Collection<CallOutputCapture> captures,
             HookCatalog refs) {
-        for (CallArgumentOutputCapture capture : captures) {
+        for (CallOutputCapture capture : captures) {
             SootMethod method = concreteSelected(capture.method(),
                     "OUTPUT_CAPTURE_CALLER_UNAVAILABLE: "
                             + capture.captureBindingId(),
@@ -874,24 +873,29 @@ public final class CausynthPipeline {
                                 + capture.captureBindingId());
             }
             InvokeExpr invoke = selected.getInvokeExpr();
+            int argument = capture.argumentIndex();
             if (!capture.declaredCallee().equals(
                     invoke.getMethodRef().getSignature())
-                    || capture.argumentIndex() < 0
-                    || capture.argumentIndex() >= invoke.getArgCount()) {
+                    || argument >= invoke.getArgCount()) {
                 throw new IllegalStateException(
-                        "OUTPUT_CAPTURE_CALL_ARGUMENT_MISMATCH: "
+                        "OUTPUT_CAPTURE_CALL_MISMATCH: "
                                 + capture.captureBindingId());
             }
-            List<Unit> before = new ArrayList<>();
-            // A primitive argument is a value the boundary publishes just as
-            // much as a reference is.
-            Value value = boxedCaptureValue(body,
-                    invoke.getArg(capture.argumentIndex()),
-                    invoke.getMethodRef().parameterType(
-                            capture.argumentIndex()), before);
-            refs.bracket(before, Hook.RECORD_CALL_ARGUMENT_OUTPUT,
+            if (argument < 0 && !(selected instanceof AssignStmt)) {
+                throw new IllegalStateException(
+                        "OUTPUT_CAPTURE_CALL_RETURN_UNAVAILABLE: "
+                                + capture.captureBindingId());
+            }
+            List<Unit> hook = new ArrayList<>();
+            Value raw = argument < 0 ? ((AssignStmt) selected).getLeftOp()
+                    : invoke.getArg(argument);
+            Type type = argument < 0 ? invoke.getMethodRef().returnType()
+                    : invoke.getMethodRef().parameterType(argument);
+            Value value = boxedCaptureValue(body, raw, type, hook);
+            refs.bracket(hook, Hook.RECORD_CALL_OUTPUT,
                     StringConstant.v(capture.captureBindingId()), value);
-            insertBeforeSequence(body, selected, before);
+            if (argument < 0) insertAfterSequence(body, selected, hook);
+            else insertBeforeSequence(body, selected, hook);
         }
     }
 
@@ -3210,7 +3214,7 @@ public final class CausynthPipeline {
         SELECT_FIELD_WRITE_CARRIER,
         RECORD_FIELD_WRITE,
         RECORD_REGION_EXIT_FIELD_OUTPUT,
-        RECORD_CALL_ARGUMENT_OUTPUT,
+        RECORD_CALL_OUTPUT,
         RECORD_COMMUNICATION_EFFECT,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
@@ -3369,8 +3373,8 @@ public final class CausynthPipeline {
                     .add(Hook.RECORD_REGION_EXIT_FIELD_OUTPUT, runtime,
                             "recordRegionExitFieldOutput", VoidType.v(),
                             string, object, object)
-                    .add(Hook.RECORD_CALL_ARGUMENT_OUTPUT, runtime,
-                            "recordCallArgumentOutput", VoidType.v(),
+                    .add(Hook.RECORD_CALL_OUTPUT, runtime,
+                            "recordCallOutput", VoidType.v(),
                             string, object)
                     .add(Hook.RECORD_COMMUNICATION_EFFECT, runtime,
                             "recordCommunicationEffect", VoidType.v(),

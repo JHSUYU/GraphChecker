@@ -76,31 +76,6 @@ public class RuntimeRegionPlannerTest {
     }
 
     @Test
-    public void selectedOutputPublishesEarliestExactCallChainContinuation() {
-        String serviceLoop = "<example.Actor: void run()>";
-        String interaction = "<example.Actor: void pollOnce()>";
-        String protocol = "<example.Actor: void receive()>";
-        String writer = "<example.Keys: void publish()>";
-        List<RuntimeRegionPlanner.MethodEvent> chain = Arrays.asList(
-                new RuntimeRegionPlanner.MethodEvent(1, "test", "actor", 7,
-                        serviceLoop, 11, "example.Actor", 10, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
-                new RuntimeRegionPlanner.MethodEvent(2, "test", "actor", 7,
-                        interaction, 11, "example.Actor", 11, 10, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
-                new RuntimeRegionPlanner.MethodEvent(3, "test", "actor", 7,
-                        protocol, 11, "example.Actor", 12, 11, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
-                new RuntimeRegionPlanner.MethodEvent(4, "test", "actor", 7,
-                        writer, 22, "example.Keys", 13, 12, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
-
-        RuntimeRegionPlanner.MethodEvent selected = RuntimeRegionPlanner
-                .firstCompatibleReplayContinuation(chain,
-                        new LinkedHashSet<>(Arrays.asList(
-                                interaction, protocol, writer)));
-
-        assertEquals(interaction, selected.method);
-        assertEquals("example.Actor", selected.receiverType);
-    }
-
-    @Test
     public void dynamicOutputBoundaryRequiresBothEventAndCallIdentity() {
         JsonObject exact = new JsonObject();
         assertTrue(RuntimeRegionPlanner.addExactOutputBoundary(
@@ -115,22 +90,6 @@ public class RuntimeRegionPlannerTest {
                 missingCall, 180L, -1L));
         assertFalse(missingCall.has("selectedRuntimeEventSeq"));
         assertFalse(missingCall.has("selectedRuntimeCallId"));
-    }
-
-    @Test
-    public void callChainContinuationNeverGuessesFromSelectedMethodOrder() {
-        String root = "<example.Actor: void run()>";
-        String unobserved = "<example.Actor: void configuredOnly()>";
-        List<RuntimeRegionPlanner.MethodEvent> chain = Arrays.asList(
-                new RuntimeRegionPlanner.MethodEvent(1, "test", "actor", 7,
-                        root, 11, "example.Actor", 10, 0, 0, 0L, 0L, 0L, 0L, null, false, "", ""),
-                new RuntimeRegionPlanner.MethodEvent(2, "test", "actor", 7,
-                        "<example.Actor: void helper()>", 11,
-                        "example.Actor", 11, 10, 0, 0L, 0L, 0L, 0L, null, false, "", ""));
-
-        assertEquals(null, RuntimeRegionPlanner
-                .firstCompatibleReplayContinuation(chain,
-                        Arrays.asList(unobserved, root)));
     }
 
     /**

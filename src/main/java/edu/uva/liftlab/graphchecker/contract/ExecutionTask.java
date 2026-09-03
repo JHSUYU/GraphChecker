@@ -110,8 +110,8 @@ public final class ExecutionTask extends PlanRow {
         if (edgeBindings.size() > 0) {
             task.add("edgeBindings", edgeBindings.deepCopy());
         }
-        retainSelectedCommunicationHandoffs(task, inputActions,
-                edgeBindings, selectedClosure);
+        retainSelectedCommunicationHandoffs(task, edgeBindings,
+                selectedClosure);
         demoteNestedLoopRootOutsideSelectedContinuation(task,
                 selectedClosure);
         promoteSelectedReplayEntry(task, selectedClosure);
@@ -250,7 +250,7 @@ public final class ExecutionTask extends PlanRow {
      * task's complete interaction frontier.
      */
     private static void retainSelectedCommunicationHandoffs(
-            JsonObject task, JsonArray inputActions, JsonArray edgeBindings,
+            JsonObject task, JsonArray edgeBindings,
             OutputClosureContract selectedClosure) {
         JsonArray declared = array(task, CommunicationHandoffSpec.FIELD);
         if (declared.size() == 0) return;
@@ -262,22 +262,10 @@ public final class ExecutionTask extends PlanRow {
             addPort(selectedPorts, string(edge, "fromOutputPort"));
             addPort(selectedPorts, string(edge, "toInputPort"));
         }
-        for (JsonElement element : inputActions) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            addPort(selectedPorts, string(action, "symbol"));
-            addPort(selectedPorts, string(action, "portId"));
-        }
         if (selectedClosure != null) {
             for (OutputClosureContract.Member member
                     : selectedClosure.members()) {
                 addPort(selectedPorts, member.portId());
-                for (JsonElement element
-                        : array(member.slice(), "inputPorts")) {
-                    if (element.isJsonPrimitive()) {
-                        addPort(selectedPorts, element.getAsString());
-                    }
-                }
             }
         }
 

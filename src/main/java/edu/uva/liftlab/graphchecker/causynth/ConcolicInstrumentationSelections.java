@@ -118,7 +118,7 @@ public final class ConcolicInstrumentationSelections {
         private final Set<String> rootLoopControlSites;
         private final ConcolicMaterializationSelection materializations;
         private final List<RootedOutputCapture> outputCaptures;
-        private final List<CallArgumentOutputCapture> callArgumentOutputs;
+        private final List<CallOutputCapture> callOutputs;
         private final List<CommunicationEffectCapture> communicationEffects;
         private final List<ExactHeapOutputCapture> exactHeapOutputs;
         /**
@@ -164,9 +164,9 @@ public final class ConcolicInstrumentationSelections {
                     task.sharedCarriers(), inputActions.all());
             outputCaptures = rootedOutputCaptures(task.outputCaptures(),
                     inputActions.all());
-            callArgumentOutputs = selectedCaptures(task.outputCaptures(),
-                    OutputCaptureSpec::capturesCallArgument,
-                    CallArgumentOutputCapture::new);
+            callOutputs = selectedCaptures(task.outputCaptures(),
+                    OutputCaptureSpec::capturesCallOutput,
+                    CallOutputCapture::new);
             communicationEffects = selectedCaptures(task.outputCaptures(),
                     OutputCaptureSpec::capturesCommunicationEffect,
                     CommunicationEffectCapture::new);
@@ -191,7 +191,7 @@ public final class ConcolicInstrumentationSelections {
                 methods.addAll(branches.methods());
                 anchorMethods.addAll(branches.methods());
             }
-            addCaptureMethods(methods, callArgumentOutputs);
+            addCaptureMethods(methods, callOutputs);
             addCaptureMethods(methods, communicationEffects);
             addCaptureMethods(methods, exactHeapOutputs);
             // A concrete shared-state carrier is not a fresh symbolic input,
@@ -369,8 +369,8 @@ public final class ConcolicInstrumentationSelections {
             return outputCaptures;
         }
 
-        List<CallArgumentOutputCapture> callArgumentOutputs() {
-            return callArgumentOutputs;
+        List<CallOutputCapture> callOutputs() {
+            return callOutputs;
         }
 
         List<CommunicationEffectCapture> communicationEffects() {
@@ -429,7 +429,7 @@ public final class ConcolicInstrumentationSelections {
             methods.addAll(materializations.methodArgumentMethods());
             methods.addAll(materializations.accessorCallerMethods());
             addCaptureMethods(methods, exactHeapOutputs);
-            addCaptureMethods(methods, callArgumentOutputs);
+            addCaptureMethods(methods, callOutputs);
             addCaptureMethods(methods, communicationEffects);
             for (CommunicationHandoffSpec handoff : communicationHandoffs) {
                 methods.add(handoff.method());
@@ -579,8 +579,8 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    static final class CallArgumentOutputCapture extends SpecCapture {
-        private CallArgumentOutputCapture(OutputCaptureSpec capture) {
+    static final class CallOutputCapture extends SpecCapture {
+        private CallOutputCapture(OutputCaptureSpec capture) {
             super(capture);
         }
 

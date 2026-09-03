@@ -1722,9 +1722,22 @@ public final class ConcolicScheduler {
                             "CONCRETE_CONTAINER_RESULT_RETURN");
                     continue;
                 }
-                JsonArray sites = definitions.returnSites(cell,
+                String returnCell = cell;
+                String sourceKind = string(action, "sourceKind");
+                if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
+                        .equals(sourceKind)
+                        || RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
+                        .equals(sourceKind)) {
+                    String callee = string(action, "declaredCallee");
+                    if (!callee.isEmpty()) returnCell = callee + ".return";
+                }
+                JsonArray sites = definitions.returnSites(returnCell,
                         scope == null ? regionMethods : scope.methods(),
-                        scope);
+                        RuntimeSelectedRegionFinalizer
+                                .EXPLICIT_SYMBOLIC_FAULT.equals(sourceKind)
+                                || RuntimeSelectedRegionFinalizer
+                                .EXTERNAL_CALL_RETURN.equals(sourceKind)
+                                ? null : scope);
                 sites = exactCallReturnSite(action, sites);
                 if (sites.size() == 0) {
                     addConcreteInputAction(result, represented, binding,
@@ -1936,14 +1949,15 @@ public final class ConcolicScheduler {
         for (OutputClosureContract.Member member : outputClosure.members()) {
             String anchor = string(member.slice(), "captureAnchorPort");
             if (!anchor.isEmpty()) result.add(anchor);
-            boolean cutArgument = false;
+            boolean callOutput = false;
             for (JsonElement element : member.captures()) {
                 if (!element.isJsonObject()) continue;
                 JsonObject capture = element.getAsJsonObject();
-                cutArgument |= OutputCaptureSpec.CALL_ARGUMENT.equals(
-                        string(capture, "captureKind"));
+                String kind = string(capture, "captureKind");
+                callOutput |= OutputCaptureSpec.CALL_ARGUMENT.equals(kind)
+                        || OutputCaptureSpec.CALL_RETURN.equals(kind);
             }
-            if (!cutArgument) continue;
+            if (!callOutput) continue;
             for (JsonElement port : array(member.slice(), "inputPorts")) {
                 if (port.isJsonPrimitive()) result.add(port.getAsString());
             }

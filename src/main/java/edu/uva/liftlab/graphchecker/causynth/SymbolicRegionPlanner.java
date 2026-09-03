@@ -25,6 +25,8 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 final class SymbolicRegionPlanner {
     /** A demanded shared-state writer no enclosing task region can own. */
     static final String STATE_WRITER_ENTRY = "STATE_WRITER_ENTRY";
+    /** An explicit fault call is itself a replayable request boundary. */
+    static final String EXPLICIT_FAULT_ENTRY = "EXPLICIT_FAULT_ENTRY";
     /** {@code rootAuthority} of a region rooted at an object initializer. */
     static final String INITIALIZATION_ENTRY = "INITIALIZATION_ENTRY";
     /** {@code selection} of a region admitted by a demanded state birth. */
@@ -87,6 +89,13 @@ final class SymbolicRegionPlanner {
         String target = text(program.targetResolved.get("method"));
         Map<String, String> regionAuthorities = new LinkedHashMap<>(
                 program.executionContextAuthorities);
+        for (Map<String, Object> edge : program.edges) {
+            String method = text(edge.get("method"));
+            if (selected.contains(method) && Boolean.TRUE.equals(
+                    edge.get("explicitSymbolicFault"))) {
+                regionAuthorities.put(method, EXPLICIT_FAULT_ENTRY);
+            }
+        }
         if (!target.isEmpty()) {
             regionAuthorities.putIfAbsent(target, "FAILURE_TARGET_ENTRY");
         }
@@ -272,6 +281,7 @@ final class SymbolicRegionPlanner {
             for (String field : new String[]{
                     CommunicationCatalogContract.PORT_NAME,
                     CommunicationCatalogContract.PORT_JAVA_TYPE,
+                    CommunicationCatalogContract.TRANSPORT,
                     CommunicationCatalogContract.PORT_DIRECTION,
                     CommunicationCatalogContract.EXCHANGE_SITE_KEY,
                     CommunicationCatalogContract.CALL_SITE_ID}) {

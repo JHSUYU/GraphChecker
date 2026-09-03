@@ -274,14 +274,32 @@ public final class InitialContainerObservation {
     private static boolean observedRead(JsonElement readElement,
                                         JsonElement valueElement) {
         if (readElement == null || !readElement.isJsonObject()
-                || !concreteScalar(valueElement)
                 || !valueElement.isJsonObject()) {
             return false;
         }
-        Read read = initialRead(readElement.getAsJsonObject());
-        return read != null && read.concreteSelector()
-                && primitiveFamily(read.javaType).equals(primitiveFamily(
-                string(valueElement.getAsJsonObject(), "_java_type")));
+        JsonObject relation = readElement.getAsJsonObject();
+        JsonObject value = valueElement.getAsJsonObject();
+        String symbol = string(value, "_exp");
+        if ("ContainerRelation".equals(string(relation, "_type"))
+                && ("READ".equals(string(relation, "operation"))
+                || "NEXT".equals(string(relation, "operation")))
+                && "L".equals(string(relation, "_java_type"))
+                && "SymbolExpression".equals(string(value, "_type"))
+                && ("N".equals(symbol)
+                || VmExpressionIr.isAllocatedInstanceReference(symbol))) {
+            return true;
+        }
+        Read read = initialRead(relation);
+        if (read == null || !read.concreteSelector()
+                && !read.dynamicAssociativeSelector()) {
+            return false;
+        }
+        if (concreteScalar(value)) {
+            return read.concreteSelector()
+                    && primitiveFamily(read.javaType).equals(
+                    primitiveFamily(string(value, "_java_type")));
+        }
+        return false;
     }
 
     private static boolean replayableMapKey(JsonObject expression) {

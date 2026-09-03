@@ -335,6 +335,7 @@ public final class RuntimePlanArtifact {
                     // them a consumer has to re-derive the direction from the
                     // id's spelling.
                     CommunicationCatalogContract.PORT_DIRECTION,
+                    CommunicationCatalogContract.TRANSPORT,
                     "portRole",
                     CommunicationCatalogContract.EXCHANGE_SITE_KEY,
                     CommunicationCatalogContract.CALL_SITE_ID,

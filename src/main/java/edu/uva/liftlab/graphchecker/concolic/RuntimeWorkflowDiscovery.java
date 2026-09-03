@@ -181,13 +181,27 @@ public final class RuntimeWorkflowDiscovery {
         // older presentation of the same protocol value.
         List<Target> candidates = new ArrayList<>(
                 discovery.admissibleTargets());
+        IOException closureFailure = null;
         for (Target candidate : candidates) {
             try {
                 candidate.rank = discovery.discoverDemandClosure(candidate,
                         sourceOutputSelection);
             } catch (IOException invalidClosure) {
                 candidate.rank = TargetRank.invalid();
+                if (closureFailure == null || !string(candidate.plan.json(),
+                        "requestKey").isEmpty()) {
+                    closureFailure = invalidClosure;
+                }
             }
+        }
+        if (!candidates.stream().anyMatch(candidate -> candidate.rank.valid)
+                && closureFailure != null) {
+            throw closureFailure;
+        }
+        if (candidates.stream().anyMatch(candidate -> candidate.rank.valid
+                && !string(candidate.plan.json(), "requestKey").isEmpty())) {
+            candidates.removeIf(candidate -> candidate.rank.valid
+                    && string(candidate.plan.json(), "requestKey").isEmpty());
         }
         candidates.sort(Target::compare);
         Target selected = candidates.get(0);
@@ -215,12 +229,6 @@ public final class RuntimeWorkflowDiscovery {
                     + outputGoalAdmissions());
         }
         return closure.demands;
-    }
-
-    private TargetRank discoverDemandClosure(Target selectedTarget)
-            throws IOException {
-        return discoverDemandClosure(selectedTarget,
-                (regionId, closure) -> Collections.emptySet());
     }
 
     private TargetRank discoverDemandClosure(
@@ -339,28 +347,6 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
 
-        Set<Endpoint> discharged = producerByEndpoint.keySet();
-        Set<String> blocked = new LinkedHashSet<>();
-        for (Endpoint downstream : frontier.endpoints()) {
-            if (discharged.contains(downstream)) continue;
-            for (ProducerCandidate candidate
-                    : producersByDownstream.getOrDefault(downstream,
-                    java.util.Collections.emptyList())) {
-                if (!candidate.ready()) {
-                    blocked.add("endpoint=" + downstream.binding()
-                            + "; " + context(candidate.plan,
-                            candidate.goal));
-                }
-            }
-        }
-        if (!blocked.isEmpty()) {
-            throw new IOException("runtime read-from graph has blocked exact "
-                    + "producer closure; targetRegion="
-                    + selectedTarget.regionId + "; targetInstance="
-                    + selectedTarget.occurrenceId
-                    + "; blockedProducers=" + blocked);
-        }
-
         List<Demand> result = new ArrayList<>(selected.values());
         Map<Endpoint, JsonObject> selectedEdgeByEndpoint =
                 new LinkedHashMap<>();
@@ -432,7 +418,9 @@ public final class RuntimeWorkflowDiscovery {
         }
         int residualFatalInputs = 0;
         for (Endpoint input : fatalInputs) {
-            if (!discharged.contains(input)) residualFatalInputs++;
+            if (!producerByEndpoint.containsKey(input)) {
+                residualFatalInputs++;
+            }
         }
         // Producer demands cannot execute a target-only campaign.
         return result.isEmpty() ? TargetRank.invalid()
@@ -457,7 +445,7 @@ public final class RuntimeWorkflowDiscovery {
         if (requestKey.isEmpty() || cutoff < 0L) {
             return Collections.emptyList();
         }
-        List<JsonObject> result = new ArrayList<>();
+        Map<String, JsonObject> byDelivery = new LinkedHashMap<>();
         for (JsonObject edge : protocolEdgesById.values()) {
             if (!requestKey.equals(string(edge, "requestKey"))
                     || !DependencyRole.VALUE_FRONTIER.equals(
@@ -480,12 +468,33 @@ public final class RuntimeWorkflowDiscovery {
                     continue;
                 }
             }
-            result.add(edge.deepCopy());
+            String delivery = string(edge, "transportKind") + "\n"
+                    + productionEvent(edge) + "\n" + arrivalEvent(edge)
+                    + "\n" + string(edge, "toOccurrenceId") + "\n"
+                    + string(edge, "toInputPort") + "\n"
+                    + string(edge, "fromOutputPort");
+            JsonObject prior = byDelivery.get(delivery);
+            if (prior == null || registeredProjection(edge)
+                    && !registeredProjection(prior)) {
+                byDelivery.put(delivery, edge.deepCopy());
+            }
         }
+        List<JsonObject> result = new ArrayList<>(byDelivery.values());
         result.sort(Comparator.comparingLong(
                 RuntimeWorkflowDiscovery::productionEvent)
                 .thenComparing(edge -> string(edge, "edgeId")));
         return result;
+    }
+
+    /** One transport event may be visible through overlapping static roots;
+     * its registered node/application owner is the canonical projection. */
+    private boolean registeredProjection(JsonObject edge) {
+        ProducerCandidate producer = producerCandidatesByOccurrence.get(
+                string(edge, "fromOccurrenceId"));
+        if (producer == null) return false;
+        JsonObject selector = object(producer.plan.json(), "rootSelector");
+        return !"UNREGISTERED_SOURCE".equals(string(
+                object(selector, "causalAnchor"), "kind"));
     }
 
     /** Whether the fatal method itself reads an exact admitted state value.
@@ -994,16 +1003,6 @@ public final class RuntimeWorkflowDiscovery {
             throw new IOException("expected at least one target reach closure; "
                     + "found 0");
         }
-        for (Target candidate : matches) {
-            try {
-                candidate.rank = discoverDemandClosure(candidate);
-            } catch (IOException invalidClosure) {
-                // Listing candidates remains useful when one alternative is
-                // malformed.
-                candidate.rank = TargetRank.invalid();
-            }
-        }
-        matches.sort(Target::compare);
         return matches;
     }
 
@@ -1498,7 +1497,7 @@ public final class RuntimeWorkflowDiscovery {
                 if (action != null) {
                     if (causalAction(action)
                             || exactCausalProducer(endpoint,
-                            producersByDownstream, true)) {
+                            producersByDownstream, false)) {
                         requiredInputEndpoints.add(endpoint);
                         frontier.addFromSlice(endpoint, selectedSlice,
                                 producersByDownstream);
@@ -2066,15 +2065,12 @@ public final class RuntimeWorkflowDiscovery {
                     + goal.goalId();
         }
 
-        /**
-         * The latest recorded moment an exchange this occurrence produced
-         * reached {@code endpoint}, or {@code -1} when the trace recorded
-         * no arrival for it.  Only this occurrence's own edges answer: an
-         * arrival another occurrence's edge recorded is that occurrence's.
-         */
-        private long arrivalAt(Endpoint endpoint,
-                               Set<String> allowedEdgeIds) {
-            long arrival = -1L;
+        /** Latest version this occurrence produced and delivered before the
+         * demanded consumer event. */
+        private long latestProductionBefore(Endpoint endpoint,
+                                            Set<String> allowedEdgeIds,
+                                            long consumerEvent) {
+            long latest = -1L;
             for (JsonObject edge : edgesFor(endpoint)) {
                 if (!occurrence.occurrenceId.equals(
                         string(edge, "fromOccurrenceId"))) {
@@ -2085,9 +2081,12 @@ public final class RuntimeWorkflowDiscovery {
                         string(edge, "edgeId"))) {
                     continue;
                 }
-                arrival = Math.max(arrival, arrivalEvent(edge));
+                long arrival = arrivalEvent(edge);
+                if (arrival >= 0L && arrival <= consumerEvent) {
+                    latest = Math.max(latest, productionEvent(edge));
+                }
             }
-            return arrival;
+            return latest;
         }
 
         private static String edgeSortKey(JsonObject edge) {
@@ -2166,15 +2165,12 @@ public final class RuntimeWorkflowDiscovery {
                 Map<Long, String> anchoredHere = new LinkedHashMap<>();
                 for (Long production : productions) {
                     String anchor = "";
-                    long latestArrival = -1L;
+                    long latestVersion = -1L;
                     for (ProducerCandidate candidate : candidates) {
-                        long arrival = candidate.arrivalAt(endpoint, allowed);
-                        if (arrival < 0L
-                                || arrival > production.longValue()) {
-                            continue;
-                        }
-                        if (arrival > latestArrival) {
-                            latestArrival = arrival;
+                        long version = candidate.latestProductionBefore(
+                                endpoint, allowed, production.longValue());
+                        if (version > latestVersion) {
+                            latestVersion = version;
                             anchor = candidate.occurrence.occurrenceId;
                         }
                     }
@@ -2226,17 +2222,12 @@ public final class RuntimeWorkflowDiscovery {
     private static final class ProducerChoice {
         private static final Comparator<ProducerChoice> ORDER =
                 Comparator.comparingInt(
-                        (ProducerChoice value) -> value.coveredEndpoints.size())
-                        .reversed()
-                        // The consumer's recorded arrival/read-from is exact
-                        // dynamic identity, so it outranks structural closure
-                        // size and reuse.  Otherwise a smaller registration
-                        // response can replace the later heartbeat version
-                        // which actually preceded the demanded state write.
-                        .thenComparingInt(
-                                value -> -value.anchoredProductions)
+                        (ProducerChoice value) ->
+                                -value.anchoredProductions)
                         .thenComparingLong(
                                 value -> -value.latestAnchoredProduction)
+                        .thenComparingInt(
+                                value -> -value.coveredEndpoints.size())
                         .thenComparing(value -> !value.alreadySelected)
                         .thenComparingInt(value -> value.unrelatedEndpoints)
                         .thenComparingInt(value -> value.unrelatedOutputs)

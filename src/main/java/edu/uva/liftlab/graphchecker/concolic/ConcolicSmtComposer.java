@@ -7662,6 +7662,11 @@ public final class ConcolicSmtComposer {
                 String equalityAssertion = assertPortBindingEqualityNamed(
                         outputOccurrence, inputOccurrence, label);
                 if (!equalityAssertion.isEmpty()) {
+                    if (isInputOccurrence(inputOccurrence)) {
+                        markSuppliedInput(inputOccurrence);
+                        recordInputAuthority(inputOccurrence,
+                                COMMUNICATION_LEAF, string(binding, "edgeId"));
+                    }
                     emitRecordedBindingOrder(binding, label,
                             equalityAssertion);
                     emittedEdgeBindings.add(edgeBindingKey(binding));

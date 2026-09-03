@@ -4,7 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
-import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
+import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
@@ -438,7 +438,7 @@ final class RuntimeRefinedGraphBuilder {
             if ("CALL_SITE_ENTER".equals(event.kind)
                     && event.invocationId > 0L
                     && (event.objectId != 0
-                    || CausynthFault.isBooleanMarkerSignature(
+                    || Debug.isBooleanMarkerSignature(
                     event.declaredCallee))) {
                 int occurrence = occurrences.getOrDefault(site, 0) + 1;
                 occurrences.put(site, occurrence);

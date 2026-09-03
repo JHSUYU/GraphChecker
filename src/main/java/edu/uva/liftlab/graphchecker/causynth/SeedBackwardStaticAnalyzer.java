@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.annotation.CausynthFault;
+import edu.uva.liftlab.graphchecker.annotation.Debug;
 
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
@@ -1657,7 +1657,7 @@ final class SeedBackwardStaticAnalyzer {
         if (callee == null) {
             return;
         }
-        if (CausynthFault.isBooleanMarkerSignature(callee.raw)) {
+        if (Debug.isBooleanMarkerSignature(callee.raw)) {
             propagateCallReturns("explicit_symbolic_fault",
                     callerMethod, fact, callee.raw, defs,
                     callerRelevant, Collections.<String>emptySet(),

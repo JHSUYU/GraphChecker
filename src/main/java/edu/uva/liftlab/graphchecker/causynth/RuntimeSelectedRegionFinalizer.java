@@ -199,7 +199,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     regionId, "HEAP_READ", "IN",
                     occurrenceByRecordedRootCall);
             inputs.addAll(accessorPorts(program, regionId,
-                    branchPolicies, occurrenceByRecordedRootCall));
+                    occurrenceByRecordedRootCall));
             inputs.addAll(externalCallReturnPorts(program, regionId,
                     branchPolicies, runtimeObservations));
             inputs.removeIf(RuntimeSelectedRegionFinalizer
@@ -300,6 +300,12 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
                 Map<String, Object> row = new LinkedHashMap<>(port);
                 row.remove(REGION_PORT_SIDE);
+                Set<String> cells = callReturnValueCells(
+                        program.regionGraph(text(region.get("regionId"))),
+                        row);
+                if (cells.size() == 1) {
+                    row.put("dependencyCells", new ArrayList<>(cells));
+                }
                 if ("IN".equals(side)) {
                     if (inputIds.add(portId)) inputs.add(row);
                 } else if ("OUT".equals(side)) {
@@ -2257,8 +2263,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         seenAccesses.computeIfAbsent(key,
                                 ignored -> new LinkedHashSet<>()));
                 addUniqueValue(port, "dependencyCells",
-                        text(edge.get("HEAP_WRITE".equals(transfer)
-                                ? "toCell" : "fromCell")));
+                        text(edge.get("fromCell")));
             }
         }
         return new ArrayList<>(unique.values());
@@ -2313,16 +2318,16 @@ public final class RuntimeSelectedRegionFinalizer {
 
     private static List<Map<String, Object>> accessorPorts(
             StaticProgram program, String regionId,
-            List<Map<String, Object>> branchPolicies,
             Map<String, String> occurrenceByRecordedRootCall) {
-        Set<String> demandedEdges = semanticAccessorEdges(
-                program.regionIncoming(regionId), branchPolicies);
-        if (demandedEdges.isEmpty()) return Collections.emptyList();
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
         Map<String, Integer> retainedByActivationStream =
                 new LinkedHashMap<>();
         for (Map<String, Object> edge : program.regionGraph(regionId)) {
-            if (!demandedEdges.contains(text(edge.get("id")))) continue;
+            if (!"accessor_field_return".equals(text(edge.get("kind")))
+                    || !Boolean.TRUE.equals(booleanValue(
+                    edge.get("runtimeObserved")))) {
+                continue;
+            }
             String field = first(text(edge.get("declaredFieldSignature")),
                     text(edge.get("fromCell")));
             DeclaredFieldCell declaration = DeclaredFieldCell.parse(field);
@@ -2374,8 +2379,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 port.put("portId", portId(regionId, ".in.", key));
                 port.put("cell", field);
                 port.put("sourceKind", "ACCESSOR_RETURN");
-                // An accessor port is emitted only after the exact primitive
-                // field return reaches a semantic branch operand.
                 port.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
                 port.put("transportKind", "ACTIVATION_LOCAL");
                 port.put("rootKind", "OBSERVED_FIELD_RECEIVER");
@@ -2586,7 +2589,12 @@ public final class RuntimeSelectedRegionFinalizer {
                 Map<String, Object> port = new LinkedHashMap<>(binding);
                 port.put("occurrenceId", occurrenceId);
                 port.put("portId", portId(regionId, ".in.", key));
-                port.put("cell", returnCell);
+                // The caller local is the region input consumed by the
+                // branch.  The call-return identity remains on the exact
+                // site/callee binding below; naming the callee's abstract
+                // return cell here leaves the real guard operand outside the
+                // occurrence boundary.
+                port.put("cell", edge.get("toCell"));
                 port.put("sourceKind", EXPLICIT_SYMBOLIC_FAULT);
                 port.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
                 port.put("transportKind", "ACTIVATION_LOCAL");
@@ -2598,7 +2606,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 port.put("declaredCallee", edge.get("invoke"));
                 port.put("symbolicName", edge.get("symbolicName"));
                 port.put("dependencyCells",
-                        Collections.singletonList(returnCell));
+                        Collections.singletonList(edge.get("toCell")));
                 port.put("replayOccurrence", occurrence);
                 unique.put(key, port);
             }
@@ -2606,33 +2614,28 @@ public final class RuntimeSelectedRegionFinalizer {
         return new ArrayList<>(unique.values());
     }
 
-    private static Set<String> semanticAccessorEdges(
-            Map<String, List<Map<String, Object>>> incoming,
-            List<Map<String, Object>> branchPolicies) {
-        List<String> seeds = new ArrayList<>();
-        for (Map<String, Object> branch : branchPolicies) {
-            if ("EXPLORE".equals(text(branch.get("policy")))) {
-                seeds.addAll(strings(branch.get("operandCells")));
+    /** Caller locals assigned by one declared application call return. */
+    private static Set<String> callReturnValueCells(
+            Collection<Map<String, Object>> edges,
+            Map<String, Object> port) {
+        Set<String> cells = new LinkedHashSet<>();
+        if (!CommunicationCatalogContract.CAPTURE_CALL_RETURN.equals(
+                text(port.get(CommunicationCatalogContract
+                        .PORT_OUTPUT_CAPTURE_KIND)))) return cells;
+        String returned = text(port.get(CommunicationCatalogContract
+                .DECLARED_CALLEE)) + ".return";
+        for (Map<String, Object> edge : edges) {
+            if ("call_return".equals(text(edge.get("kind")))
+                    && text(port.get(CommunicationCatalogContract
+                    .PORT_DEFINITION_METHOD)).equals(text(edge.get("method")))
+                    && text(port.get(CommunicationCatalogContract
+                    .CALL_SITE_ID)).equals(text(edge.get("siteId")))
+                    && returned.equals(text(edge.get("fromCell")))) {
+                cells.add(text(edge.get("toCell")));
             }
         }
-        Set<String> selected = new LinkedHashSet<>();
-        walkValueSources(seeds, incoming, cell -> {
-            boolean accessorLeaf = false;
-            for (Map<String, Object> edge : incoming.getOrDefault(
-                    cell, Collections.<Map<String, Object>>emptyList())) {
-                if (!"accessor_field_return".equals(text(edge.get("kind")))
-                        || !Boolean.TRUE.equals(booleanValue(
-                        edge.get("runtimeObserved")))) {
-                    continue;
-                }
-                String id = text(edge.get("id"));
-                if (!id.isEmpty()) selected.add(id);
-                accessorLeaf = true;
-            }
-            // An observed structural getter is the exact symbolic boundary.
-            return accessorLeaf;
-        });
-        return selected;
+        cells.remove("");
+        return cells;
     }
 
     /**
@@ -3428,6 +3431,9 @@ public final class RuntimeSelectedRegionFinalizer {
                 boundedMutationFrontiersByOutput = new LinkedHashMap<>();
         private final Map<String, List<String>> localIncoming =
                 new LinkedHashMap<>();
+        /** Control predecessors remain live when value flow hits a port. */
+        private final Map<String, List<String>> guardIncoming =
+                new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
         private final Map<String, List<String>> fatalSeeds =
@@ -3483,6 +3489,10 @@ public final class RuntimeSelectedRegionFinalizer {
                     if (!selectedRegions.contains(regionId)) continue;
                     addUnique(localIncoming, contextKey(regionId, to),
                             from);
+                    if ("GUARD".equals(text(edge.get("transferKind")))) {
+                        addUnique(guardIncoming, contextKey(regionId, to),
+                                from);
+                    }
                     // A generic exception cell is only a fallback for a region
                     // without an explicit failureTarget policy.
                     if (to.contains("#exception:")
@@ -3863,7 +3873,11 @@ public final class RuntimeSelectedRegionFinalizer {
                         Collections.<String>emptyList());
                 if (!boundary.isEmpty()) {
                     result.addAll(boundary);
-                    return Collections.<String>emptyList();
+                    // A value boundary stops value provenance, but not the
+                    // guard deciding whether the consuming operation runs.
+                    return guardIncoming.getOrDefault(
+                            contextKey(regionId, cell),
+                            Collections.<String>emptyList());
                 }
                 return localIncoming.getOrDefault(
                         contextKey(regionId, cell),

@@ -108,13 +108,15 @@ public final class JUnitMethodRunner {
         Object test = testClass.newInstance();
         Throwable failure = null;
         try {
-            invokeLifecycle(test, testClass, "org.junit.Before", true);
+            invokeLifecycle(test, testClass, true,
+                    "org.junit.Before", "org.junit.jupiter.api.BeforeEach");
             invoke(test, testClass.getMethod(methodName));
         } catch (Throwable throwable) {
             failure = throwable;
         } finally {
             try {
-                invokeLifecycle(test, testClass, "org.junit.After", false);
+                invokeLifecycle(test, testClass, false,
+                        "org.junit.jupiter.api.AfterEach", "org.junit.After");
             } catch (Throwable throwable) {
                 if (failure == null) {
                     failure = throwable;
@@ -135,8 +137,8 @@ public final class JUnitMethodRunner {
     }
 
     private static void invokeLifecycle(Object test, Class<?> testClass,
-                                        String annotationName,
-                                        boolean superclassFirst)
+                                        boolean superclassFirst,
+                                        String... annotationNames)
             throws Throwable {
         List<Class<?>> hierarchy = new ArrayList<>();
         for (Class<?> type = testClass; type != null;
@@ -148,7 +150,7 @@ public final class JUnitMethodRunner {
         }
         for (Class<?> type : hierarchy) {
             for (Method method : type.getDeclaredMethods()) {
-                if (hasAnnotation(method, annotationName)) {
+                if (hasAnnotation(method, annotationNames)) {
                     method.setAccessible(true);
                     invoke(test, method);
                 }
@@ -156,10 +158,12 @@ public final class JUnitMethodRunner {
         }
     }
 
-    private static boolean hasAnnotation(Method method, String name) {
+    private static boolean hasAnnotation(Method method, String... names) {
         for (Annotation annotation : method.getDeclaredAnnotations()) {
-            if (name.equals(annotation.annotationType().getName())) {
-                return true;
+            for (String name : names) {
+                if (name.equals(annotation.annotationType().getName())) {
+                    return true;
+                }
             }
         }
         return false;

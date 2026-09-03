@@ -177,17 +177,7 @@ apply_environment_overrides() {
 }
 
 canonical_path() {
-  local path=$1
-  if command -v realpath >/dev/null 2>&1; then
-    realpath -m -- "${path}"
-  else
-    # The repository's existing scripts require realpath. Keep a conservative
-    # fallback for environments that only provide pwd.
-    case "${path}" in
-      /*) printf '%s\n' "${path}" ;;
-      *) printf '%s/%s\n' "$(pwd -P)" "${path}" ;;
-    esac
-  fi
+  realpath -m -- "$1"
 }
 
 resolve_path() {
@@ -2305,16 +2295,11 @@ campaign_explore_member() {
     set -e
     require_nonempty "${role} path worklist manifest" \
       "${planner_dir}/region_path_manifest.json"
-    # A planner that crashed is an infrastructure failure and stays fatal. A
-    # worklist it declared unexecutable is a semantic outcome: it is named as
-    # this member's terminal gap and the classifier and Composer decide what it
-    # costs, because the shell cannot tell a blocked selected obligation from a
-    # blocked unselected one.
     if [[ "${status}" -eq 2 ]]; then
       campaign_report_worklist "${planner_dir}"
-      campaign_record_gap "${iteration_dir}" WORKLIST_NOT_EXECUTABLE "${task}" \
+      campaign_fail EXPLORE RegionPathWorklist \
+        "${planner_dir}/region_path_manifest.json" \
         "the ${role} path worklist is not executable"
-      break
     fi
     [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ConcolicPathFlipPlanner \
       "${planner_dir}/region_path_manifest.json" \
@@ -2329,9 +2314,9 @@ campaign_explore_member() {
     fi
     if ! jq -e '.state == "PENDING"' \
         "${planner_dir}/region_path_manifest.json" >/dev/null; then
-      campaign_record_gap "${iteration_dir}" WORKLIST_STATE_UNRESOLVED \
-        "${task}" "the ${role} path planner published no pending or closed state"
-      break
+      campaign_fail EXPLORE RegionPathWorklist \
+        "${planner_dir}/region_path_manifest.json" \
+        "the ${role} path planner published no pending or closed state"
     fi
     if ! key_rows=$(campaign_decode_worklist_keys \
         "${planner_dir}/region_path_worklist.jsonl" \
@@ -2343,9 +2328,9 @@ campaign_explore_member() {
     keys=()
     [[ -z "${key_rows}" ]] || mapfile -t keys <<<"${key_rows}"
     if [[ ${#keys[@]} -eq 0 ]]; then
-      campaign_record_gap "${iteration_dir}" WORKLIST_WITHOUT_OBLIGATION \
-        "${task}" "a pending ${role} worklist named no deterministic obligation"
-      break
+      campaign_fail EXPLORE RegionPathWorklist \
+        "${planner_dir}/region_path_worklist.jsonl" \
+        "a pending ${role} worklist named no deterministic obligation"
     fi
     campaign_log "${role} wave ${wave}: ${#keys[@]} obligation(s), workers=${concolic_worker_count}"
     pids=()
@@ -2363,41 +2348,22 @@ campaign_explore_member() {
     status=0
     campaign_wait_workers "${pids[@]}" || status=1
     if [[ "${status}" -ne 0 ]]; then
-      # An obligation that did not finish is one unexplored case, not a reason
-      # to end the campaign before anything can classify it.
       campaign_report_wave "${planner_dir}"
-      campaign_record_gap "${iteration_dir}" OBLIGATION_WAVE_INCOMPLETE \
-        "${task}" "the ${role} obligation wave ${wave} did not finish"
-      break
+      campaign_fail EXPLORE CAMPAIGN "${planner_dir}" \
+        "the ${role} obligation wave ${wave} did not finish"
     fi
     campaign_publish_wave "${planner_dir}" "${summaries}" "${tasks}" \
       "${records}"
     wave=$((wave + 1))
   done
-  # A wave that ends without closing has not improved the relation; it has
-  # not invalidated it either.  The planner already merged the seed-only
-  # relation, so carry that rather than discarding the relation because
-  # exploration added nothing. Best-effort merging produces what it has and
-  # names what it lost; the Composer may still accept a satisfying witness,
-  # while its separate UNSAT-closure authority forbids reading this partial
-  # path set as bounded unreachability.
-  if [[ ! -s "${member}/merged_summary.jsonl" \
-        && -s "${planner_dir}/merged_region_summaries.jsonl" ]]; then
-    cp -f "${planner_dir}/merged_region_summaries.jsonl" \
-      "${member}/merged_summary.jsonl"
-    campaign_record_gap "${iteration_dir}" MERGED_RELATION_SEED_ONLY "${task}" \
-      "the ${role} member merged its seed relation without a closed worklist"
-  fi
   [[ -s "${member}/merged_summary.jsonl" || "${role}" == "TARGET" ]] \
-    || campaign_record_gap "${iteration_dir}" MERGED_RELATION_ABSENT "${task}" \
-      "the ${role} member left no merged relation behind"
+    || campaign_fail EXPLORE RegionPathWorklist "${member}" \
+      "the ${role} member left no closed relation behind"
   campaign_log "${role} exploration stopped after ${wave} wave(s)"
 }
 
 # The builder requires exactly one solver-ready target seed and publishes the
-# exact observed target paths it can justify. A partial worklist remains a
-# usable SAT under-approximation and carries named coverage gaps; failure to
-# publish any exact query is recorded here.
+# exact observed target paths it can justify.
 campaign_target_reach_query() {
   local iteration_dir=$1 task=$2
   local member="${iteration_dir}/workers/${task}"
@@ -2406,9 +2372,8 @@ campaign_target_reach_query() {
   [[ ! -s "${resolved}" ]] \
     || exception=$(jq -r '.exception // ""' "${resolved}")
   if [[ -z "${exception}" ]]; then
-    campaign_record_gap "${iteration_dir}" TARGET_ATTESTATION_ABSENT "${task}" \
-      "no target attestation names the selected exception: ${resolved}"
-    return 0
+    campaign_fail EXPLORE TargetReachPathQueryBuilder "${resolved}" \
+      "no target attestation names the selected exception"
   fi
   set +e
   run_java_main \
@@ -2420,10 +2385,8 @@ campaign_target_reach_query() {
   status=$?
   set -e
   if [[ "${status}" -ne 0 || ! -s "${member}/reach_query.jsonl" ]]; then
-    campaign_record_gap "${iteration_dir}" TARGET_REACH_QUERY_REFUSED \
-      "${task}" \
+    campaign_fail EXPLORE TargetReachPathQueryBuilder "${member}" \
       "TargetReachPathQueryBuilder published no exact reach query (exit ${status})"
-    return 0
   fi
   campaign_log "target reach paths: $(jq -r '.paths | length' \
     "${member}/reach_query.jsonl")"
@@ -2434,9 +2397,9 @@ campaign_explore() {
   local role campaign_id region occurrence goal task target_task=""
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     if [[ ! -s "${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl" ]]; then
-      campaign_record_gap "${iteration_dir}" MEMBER_NOT_EXPLORED "${task}" \
+      campaign_fail EXPLORE ConcolicSummaryImporter \
+        "${iteration_dir}/workers/${task}" \
         "this member has no imported summary to explore from"
-      continue
     fi
     campaign_explore_member "${iteration_dir}" "${iteration_id}" \
       "${role}" "${region}" "${occurrence}" "${goal}" "${task}"
@@ -2561,16 +2524,7 @@ campaign_publish_iteration_manifest() {
   ln -sfn "$(basename "${iteration_dir}")" "${campaign_root}/latest"
 }
 
-# The composition consumes the target's reach query and the members' merged
-# relations. A task that failed closed leaves one of them behind, and the layer
-# that owns why already named it -- the shell does not adjudicate that a second
-# time. Both inputs are handed over as named, missing or not, and the Composer
-# publishes the composition it could make together with the refusal that says
-# what it could not.
-#
-# The infrastructure failures stay failures and are named as themselves: a
-# frozen index with no target member is a broken plan, and a Composer that threw
-# is a Composer failure. Neither is a task that failed closed.
+# The composition consumes one closed relation for every selected producer.
 campaign_compose() {
   local iteration_dir=$1
   local role campaign_id region occurrence goal task
@@ -2584,10 +2538,10 @@ campaign_compose() {
       target_occurrence=${occurrence}
       continue
     fi
-    # A member that left no merged relation was already named as this
-    # iteration's gap where it happened; it is not composed and it is not a
-    # second refusal here.
-    [[ -s "${iteration_dir}/workers/${task}/merged_summary.jsonl" ]] || continue
+    [[ -s "${iteration_dir}/workers/${task}/merged_summary.jsonl" ]] \
+      || campaign_fail COMPOSE RegionPathWorklist \
+        "${iteration_dir}/workers/${task}" \
+        "selected producer has no closed relation"
     merged+=("${iteration_dir}/workers/${task}/merged_summary.jsonl")
   done <<<"${campaign_member_rows}"
   [[ -n "${target_task}" ]] || campaign_fail COMPOSE ConcolicScheduler \
@@ -2596,10 +2550,8 @@ campaign_compose() {
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
   mkdir -p "${campaign_final}"
-  # A member set that left no merged relation is still composed, and so is a
-  # target that published no reach query: both are closures the Composer
-  # refuses by name, not missing inputs the shell decides on.
   fatal_queries="${iteration_dir}/workers/${target_task}/reach_query.jsonl"
+  require_nonempty "target reach query" "${fatal_queries}"
   compose_summary_inputs=$(IFS=:; printf '%s' "${merged[*]}")
   composed_smt="${campaign_final}/candidate.smt2"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
@@ -2682,6 +2634,14 @@ campaign_write_coverage_gaps() {
        + [$reach.gaps[]?
            | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
               detail: ""}]
+       + [$pathClosures[]? as $closure
+           | $closure.coverageGaps[]?
+           | {stage: "EXPLORE", source: "PATH_WORKLIST",
+              code: (.kind // ""),
+              subject: (.queryKey // .regionId
+                        // .evidenceIdentity.taskId // ""),
+              detail: ([(.reason // ""), (.detail // "")]
+                       | map(select(. != "")) | join(": "))}]
        | unique_by([.stage, .source, .code, .subject, .detail])) as $gaps |
     ([$composed.canonicalModel.gaps[]?
            | {stage: "MODEL", source: (.source // "COMPOSER"),
@@ -2695,19 +2655,6 @@ campaign_write_coverage_gaps() {
            | {stage: "CLASSIFY", source: (.source // "IMPORTER"),
               code: (.code // .deltaKind), subject: (.taskId // ""),
               detail: (.reason // .gap // "")}]
-       + [$pathClosures[]? as $closure
-           | $closure.coverageGaps[]?
-           # A worklist gap names its own region; a gap the worklist only
-           # forwarded from an imported summary names the recorded evidence
-           # identity instead, and that identity is the only subject it has.
-           # Both carry a free-text detail worth more than the reason code
-           # alone, so the row states the code and the detail it has.
-           | {stage: "EXPLORE", source: "PATH_WORKLIST",
-              code: (.kind // ""),
-              subject: (.queryKey // .regionId
-                        // .evidenceIdentity.taskId // ""),
-              detail: ([(.reason // ""), (.detail // "")]
-                       | map(select(. != "")) | join(": "))}]
        | unique_by([.stage, .source, .code, .subject, .detail]))
        as $telemetry |
     {schemaVersion: 1,
@@ -2773,9 +2720,7 @@ campaign_emit() {
       "a path-closure JSON is malformed or could not be enumerated"
   fi
 
-  # The Composer and solver own acceptance blockers. Model, importer,
-  # classifier and worklist findings remain visible as telemetry and do not
-  # re-score the selected causal witness.
+  # A selected path closure must be complete; its coverage gaps are blockers.
   campaign_write_coverage_gaps \
     "${composition_manifest}" \
     "${reach_report}" \
@@ -2788,13 +2733,7 @@ campaign_emit() {
     || campaign_fail EMIT CAMPAIGN "${campaign_final}/gaps.json" \
       "the generated gaps JSON is malformed"
 
-  # The claim is copied, never reconstructed. The Composer publishes the sole
-  # FINAL_READY decision and its selected blockers; the solver publishes the
-  # reachability it parsed. Reachability on its own is not a candidate; the
-  # Composer's own members are not re-scored here into a second verdict, and
-  # nothing rebuilds a retired trust state to stand in for the decision. The
-  # Importer/classifier coverage rows remain telemetry for the next
-  # best-effort replay; they do not re-score the Composer's selected chain.
+  # The claim is copied from the Composer and solver decisions.
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition_manifest}" \

@@ -539,8 +539,7 @@ public final class OutputClosureCodec {
         return new OutputClosureContract.Member(output, slice);
     }
 
-    /** If the reusable output endpoint declares one occurrence every capture
-     *  must agree; a merged best-effort member omits the declaration. */
+    /** If the output declares one occurrence every capture must agree. */
     private static void validateOutputOccurrenceIdentity(
             JsonObject output, JsonArray bindings, String path) {
         if (!hasOutputOccurrenceIdentity(output)) return;
@@ -594,8 +593,10 @@ public final class OutputClosureCodec {
                         path + " capture identity is inconsistent");
             }
             String captureKind = text(binding, "captureKind");
-            if (OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind)) {
-                validateCallArgumentEndpoint(binding, path, descriptor);
+            if (OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind)
+                    || OutputCaptureSpec.CALL_RETURN.equals(captureKind)) {
+                validateCallEndpoint(binding, cell, path, descriptor,
+                        OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind));
             } else if (OutputCaptureSpec.COMMUNICATION_EFFECT.equals(
                     captureKind)) {
                 validateCommunicationEffectEndpoint(binding, cell, path,
@@ -622,17 +623,24 @@ public final class OutputClosureCodec {
         }
     }
 
-    private static void validateCallArgumentEndpoint(
-            JsonObject binding, String path, String descriptor) {
+    private static void validateCallEndpoint(
+            JsonObject binding, String cell, String path, String descriptor,
+            boolean argument) {
         String javaType = requiredText(binding, "javaType");
         if (!descriptor.equals(javaTypeDescriptor(javaType))
                 || requireIntAtLeast(binding, "definitionUnitIndex", 0) < 0
-                || requireIntAtLeast(binding, "argumentIndex", 0) < 0) {
+                || argument != binding.has("argumentIndex")) {
             throw new IllegalArgumentException(
-                    path + " call-argument capture is inconsistent");
+                    path + " call capture is inconsistent");
         }
         requiredText(binding, "definitionMethod");
-        requiredText(binding, "declaredCallee");
+        String callee = requiredText(binding, "declaredCallee");
+        if (argument) {
+            requireIntAtLeast(binding, "argumentIndex", 0);
+        } else if (!cell.equals(callee + ".return")) {
+            throw new IllegalArgumentException(
+                    path + " call-return cell is inconsistent");
+        }
     }
 
     private static void validateCommunicationEffectEndpoint(

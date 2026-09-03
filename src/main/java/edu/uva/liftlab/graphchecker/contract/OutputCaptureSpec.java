@@ -11,6 +11,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 /** One canonical output endpoint captured by a scheduled execution task. */
 public final class OutputCaptureSpec {
     public static final String CALL_ARGUMENT = "CALL_ARGUMENT";
+    public static final String CALL_RETURN = "CALL_RETURN";
     /** A declared communication effect reached at a normal method return. */
     public static final String COMMUNICATION_EFFECT =
             "COMMUNICATION_EFFECT";
@@ -121,6 +122,10 @@ public final class OutputCaptureSpec {
 
     public boolean capturesCallArgument() {
         return CALL_ARGUMENT.equals(captureKind);
+    }
+
+    public boolean capturesCallOutput() {
+        return capturesCallArgument() || CALL_RETURN.equals(captureKind);
     }
 
     /** Records a communication event; its value is carried only by the VM. */

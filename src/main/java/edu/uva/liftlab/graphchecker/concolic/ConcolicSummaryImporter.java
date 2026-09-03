@@ -1648,7 +1648,7 @@ public final class ConcolicSummaryImporter {
             return false;
         }
         for (OutputCaptureSpec request : task.outputCaptures()) {
-            if (!(request.capturesCallArgument()
+            if (!(request.capturesCallOutput()
                     || request.capturesCommunicationEffect()
                     || request.capturesFieldWriteState()
                     || request.capturesMutationState())) {

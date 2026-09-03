@@ -199,7 +199,7 @@ final class RuntimeRegionPlanner {
         stampSynchronousServerTransactions(result.runtimeInstances, trace,
                 protocolEvents, protocolByActivationRoot);
         bindObservedCommunicationCaptures(result.runtimeInstances,
-                protocolByActivationRoot);
+                protocolByActivationRoot, protocolEvents);
 
         Map<String, List<Map<String, Object>>> receivedBy =
                 new LinkedHashMap<>();
@@ -667,6 +667,8 @@ final class RuntimeRegionPlanner {
                 capture.put("side", side);
                 capture.put("portId", portId);
                 capture.put("direction", direction);
+                capture.put("transport", port.get(
+                        CommunicationCatalogContract.TRANSPORT));
                 capture.put("eventSeq", event.seq);
                 observed.add(capture);
             }
@@ -709,46 +711,78 @@ final class RuntimeRegionPlanner {
                 capture) && "METHOD_EXIT_NORMAL".equals(event.kind);
     }
 
-    /** Binds each capture to its adjacent matching transport leg. */
+    /** Binds each capture to the boundary of its matching logical exchange. */
     private static void bindObservedCommunicationCaptures(
             Collection<Map<String, Object>> activations,
-            Map<Long, List<ProtocolEvent>> protocolByActivationRoot) {
+            Map<Long, List<ProtocolEvent>> protocolByActivationRoot,
+            List<ProtocolEvent> protocolEvents) {
         for (Map<String, Object> activation : activations) {
+            long rootCallId = longNumber(activation.get("rootCallId"), -1L);
             List<Map<String, Object>> bound = new ArrayList<>();
-            List<ProtocolEvent> protocol = protocolByActivationRoot
-                    .getOrDefault(longNumber(
-                            activation.get("rootCallId"), -1L),
-                            Collections.<ProtocolEvent>emptyList());
+            List<ProtocolEvent> protocol = new ArrayList<>(
+                    protocolByActivationRoot.getOrDefault(rootCallId,
+                            Collections.<ProtocolEvent>emptyList()));
+            long laneId = longNumber(activation.get("laneId"), -1L);
+            for (ProtocolEvent event : protocolEvents == null
+                    ? Collections.<ProtocolEvent>emptyList()
+                    : protocolEvents) {
+                if (laneId > 0L && event.laneId == laneId
+                        && !protocol.contains(event)) {
+                    protocol.add(event);
+                }
+            }
             for (Map<String, Object> capture : rows(activation.get(
                     RuntimeSelectedRegionFinalizer
                             .OBSERVED_COMMUNICATION_CAPTURES))) {
                 String side = stringValue(capture.get("side"));
                 String direction = stringValue(capture.get("direction"));
+                String transport = stringValue(capture.get("transport"));
                 long capturedAt = longNumber(capture.get("eventSeq"), -1L);
-                ProtocolEvent adjacent = null;
+                ProtocolEvent boundary = null;
                 for (ProtocolEvent event : protocol) {
-                    if (!direction.equals(event.half)
+                    if (!transport.equals(event.transport)
+                            || !direction.equals(event.half)
                             || !("OUT".equals(side)
                             ? "SEND".equals(event.direction)
                             : "RECEIVE".equals(event.direction))) {
                         continue;
                     }
                     if ("OUT".equals(side) && event.seq > capturedAt
-                            && (adjacent == null
-                            || event.seq < adjacent.seq)) {
-                        adjacent = event;
+                            && (boundary == null
+                            || event.seq < boundary.seq)) {
+                        boundary = event;
                     } else if ("IN".equals(side) && event.seq < capturedAt
-                            && (adjacent == null
-                            || event.seq > adjacent.seq)) {
-                        adjacent = event;
+                            && (boundary == null
+                            || event.seq > boundary.seq)) {
+                        boundary = event;
                     }
                 }
-                if (adjacent == null) continue;
+                if ("IN".equals(side) && boundary != null) {
+                    // A logical exchange may use several physical frames.
+                    // Rewind from the adjacent frame to that exchange's
+                    // first frame, where its carried values entered.
+                    String exchange = boundary.exchangeLeg();
+                    for (ProtocolEvent event : protocol) {
+                        if (transport.equals(event.transport)
+                                && direction.equals(event.half)
+                                && "RECEIVE".equals(event.direction)
+                                && event.seq < capturedAt
+                                && exchange.equals(event.exchangeLeg())
+                                && event.seq < boundary.seq) {
+                            boundary = event;
+                        }
+                    }
+                }
+                if (boundary == null) continue;
                 Map<String, Object> exact = new LinkedHashMap<>(capture);
-                exact.put("exchangeLeg", adjacent.exchangeLeg());
-                exact.put("attemptId", adjacent.attemptId);
-                exact.put("transportEventSeq", adjacent.seq);
+                exact.put("exchangeLeg", boundary.exchangeLeg());
+                exact.put("attemptId", boundary.attemptId);
+                exact.put("transportEventSeq", boundary.seq);
                 bound.add(exact);
+                List<ProtocolEvent> owned = protocolByActivationRoot
+                        .computeIfAbsent(rootCallId,
+                                ignored -> new ArrayList<ProtocolEvent>());
+                if (!owned.contains(boundary)) owned.add(boundary);
             }
             activation.put(RuntimeSelectedRegionFinalizer
                     .OBSERVED_COMMUNICATION_CAPTURES, bound);
@@ -770,6 +804,7 @@ final class RuntimeRegionPlanner {
         return "THREAD_ENTRY".equals(authority)
                 || "TASK_ENTRY".equals(authority)
                 || "MAIN_ENTRY".equals(authority)
+                || "EXPLICIT_FAULT_ENTRY".equals(authority)
                 // The annotated target's own activation, planned as a root
                 // because no execution-context entry statically reaches it.
                 || "FAILURE_TARGET_ENTRY".equals(authority);
@@ -1838,6 +1873,8 @@ final class RuntimeRegionPlanner {
                             .PORT_OUTPUT_CAPTURE_KIND));
             boolean cutArgument = CommunicationCatalogContract
                     .CAPTURE_CALL_ARGUMENT.equals(capture);
+            boolean callReturn = CommunicationCatalogContract
+                    .CAPTURE_CALL_RETURN.equals(capture);
             boolean symbolicCutArgument = cutArgument
                     && symbolicLeafType(stringValue(cutPort.get(
                             "javaType")));
@@ -1862,18 +1899,19 @@ final class RuntimeRegionPlanner {
                 // transport instead of on a heap cell the transport owns;
                 // and a server return is an interaction site, not a
                 // symbolic whole-object value.
-                OutputClosureContract closure = cutArgument
+                OutputClosureContract closure = cutArgument || callReturn
                         || communicationEffect
                         ? declaredCutOutputClosure(plan, goal,
                         producerRegion, output, version, refinedFlow,
-                        trace, loopBodyBound, heapBlockers, cutArgument)
+                        trace, loopBodyBound, heapBlockers, capture)
                         : directHeapOutputClosure(plan, goal,
                         producerRegion, output, version, refinedFlow,
                         trace, loopBodyBound, heapBlockers);
                 if (closure == null) {
                     if (!heapBlockers.isEmpty()) {
                         addReasonsOnce(blockers, heapBlockers);
-                    } else if (cutArgument || communicationEffect) {
+                    } else if (cutArgument || callReturn
+                            || communicationEffect) {
                         // Not "pending".
                         addReasonOnce(blockers,
                                 "OUTPUT_CLOSURE_CROSSES_CUT:" + output);
@@ -1986,28 +2024,15 @@ final class RuntimeRegionPlanner {
                     OutputClosureCodec.merge(members);
             Set<String> inputs = new LinkedHashSet<>(
                     closure.executionScope().inputPorts());
-            Set<String> causalEdges = new LinkedHashSet<>(
-                    closure.executionScope().causalEdgeIds());
-            Set<String> exactProtocolInputs = new LinkedHashSet<>();
-            for (Map<String, Object> incoming : incomingBindings) {
-                if ("RUNTIME_PROTOCOL_FLOW".equals(
-                        stringValue(incoming.get("kind")))
-                        && causalEdges.contains(
-                        stringValue(incoming.get("edgeId")))) {
-                    exactProtocolInputs.add(
-                            stringValue(incoming.get("toInputPort")));
-                }
-            }
             List<Map<String, Object>> executableBindings =
                     new ArrayList<>();
             for (Map<String, Object> incoming : incomingBindings) {
                 String input = stringValue(incoming.get("toInputPort"));
-                boolean exactProtocol = "RUNTIME_PROTOCOL_FLOW".equals(
-                        stringValue(incoming.get("kind")))
-                        && exactProtocolInputs.contains(input);
-                if (inputs.contains(input)
-                        && (!exactProtocol || causalEdges.contains(
-                        stringValue(incoming.get("edgeId"))))) {
+                // Failure closure already selected protocol topology.  Keep
+                // its exact traced delivery even when the selected local
+                // output path does not consume the carried scalar.
+                if (inputs.contains(input) || "RUNTIME_PROTOCOL_FLOW".equals(
+                        stringValue(incoming.get("kind")))) {
                     executableBindings.add(incoming);
                 }
             }
@@ -2847,10 +2872,12 @@ final class RuntimeRegionPlanner {
                     + number(capture.get("definitionUnitIndex"), -1);
             String callee = stringValue(capture.get("declaredCallee"));
             String field = stringValue(capture.get("fieldSignature"));
-            if (OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind)) {
+            if (OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind)
+                    || OutputCaptureSpec.CALL_RETURN.equals(captureKind)) {
                 endpoints.add(captureKind + ":" + unit + ":" + callee
-                        + "#arg"
-                        + number(capture.get("argumentIndex"), -1));
+                        + (OutputCaptureSpec.CALL_ARGUMENT.equals(captureKind)
+                        ? "#arg" + number(capture.get("argumentIndex"), -1)
+                        : ""));
             } else if (OutputCaptureSpec.COMMUNICATION_EFFECT.equals(
                     captureKind)) {
                 endpoints.add(captureKind + ":" + method);
@@ -3072,15 +3099,11 @@ final class RuntimeRegionPlanner {
         methodSet.add(definitionMethod);
         methods = new ArrayList<>(methodSet);
         long definitionCallId = mutationFold == null
-                ? trace.callAt(outputEventSeq)
+                ? trace.eventCallIdBySeq.uniqueValue(outputEventSeq)
                 : mutationFold.definitionCallId;
         long evidenceRootCall = traceEvidenceRootCall(plan);
-        MethodEvent replayContinuation = rootOwnsSelectedCommunicationInput(
-                planRootMethod, exactCommunicationInputs,
-                regionInputs)
-                ? trace.methodByCall.get(evidenceRootCall)
-                : trace.exactReplayContinuation(
-                evidenceRootCall, definitionCallId, methodSet);
+        MethodEvent replayContinuation = trace.methodByCall.get(
+                evidenceRootCall);
         if (!addReachingAccessorMaterializations(inputPorts, regionInputs,
                 occurrenceId, methodSet, relationBoundarySeq,
                 invocationCalls, rejectionReasons, outputPort)) {
@@ -3430,21 +3453,6 @@ final class RuntimeRegionPlanner {
                 + longNumber(binding.get("receiverEventSeq"), -1L);
     }
 
-    /** True when a demanded delivery is attached in the occurrence root. */
-    private static boolean rootOwnsSelectedCommunicationInput(
-            String rootMethod, Map<String, String> selected,
-            List<Map<String, Object>> regionInputs) {
-        if (rootMethod.isEmpty() || selected.isEmpty()) return false;
-        for (Map<String, Object> input : regionInputs) {
-            if (selected.containsKey(stringValue(input.get("portId")))
-                    && rootMethod.equals(
-                    stringValue(input.get("definitionMethod")))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /** Writes the two-part identity every dynamic output boundary requires. */
     static boolean addExactOutputBoundary(
             JsonObject destination, long eventSeq, long callId) {
@@ -3484,6 +3492,9 @@ final class RuntimeRegionPlanner {
     private static final String CUT_ARGUMENT_BOUNDARY =
             "EXACT_CALL_ARGUMENT_AT_CUT";
 
+    private static final String CUT_RETURN_BOUNDARY =
+            "EXACT_CALL_RETURN_AT_CUT";
+
     /** A semantic server return reached its declared response event. */
     private static final String COMMUNICATION_EFFECT_BOUNDARY =
             "DECLARED_COMMUNICATION_EFFECT";
@@ -3502,17 +3513,20 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> bindings,
             RefinedFlowIndex refinedFlow, TraceIndex trace,
             int loopBodyBound, List<String> rejectionReasons,
-            boolean callArgument) {
+            String captureKind) {
         if (region == null) return null;
-        String reason = callArgument
-                ? "CUT_ARGUMENT" : "COMMUNICATION_EFFECT";
+        boolean callArgument = CommunicationCatalogContract
+                .CAPTURE_CALL_ARGUMENT.equals(captureKind);
+        boolean callReturn = CommunicationCatalogContract
+                .CAPTURE_CALL_RETURN.equals(captureKind);
+        boolean callOutput = callArgument || callReturn;
+        String reason = callArgument ? "CUT_ARGUMENT"
+                : callReturn ? "CUT_RETURN" : "COMMUNICATION_EFFECT";
         String occurrenceId = stringValue(plan.get("occurrenceId"));
         String regionId = stringValue(plan.get("regionId"));
         Map<String, Object> port = uniquePort(region.outputs,
                 outputPort, occurrenceId);
-        if (port == null || !(callArgument
-                ? CommunicationCatalogContract.CAPTURE_CALL_ARGUMENT
-                : CommunicationCatalogContract.CAPTURE_METHOD_RETURN).equals(
+        if (port == null || !captureKind.equals(
                 stringValue(port.get(CommunicationCatalogContract
                         .PORT_OUTPUT_CAPTURE_KIND)))) {
             return null;
@@ -3529,8 +3543,9 @@ final class RuntimeRegionPlanner {
                 CommunicationCatalogContract.CALL_SITE_ID));
         // Both halves of a cut site have to agree.
         if (definitionMethod.isEmpty() || javaType.isEmpty()
-                || callArgument && (definitionUnitIndex < 0
-                || argumentIndex < 0 || declaredCallee.isEmpty()
+                || callOutput && (definitionUnitIndex < 0
+                || callArgument && argumentIndex < 0
+                || declaredCallee.isEmpty()
                 || !symbolicLeafType(javaType)
                 || !cutSiteId.equals(definitionMethod + "#u"
                 + definitionUnitIndex))) {
@@ -3554,17 +3569,22 @@ final class RuntimeRegionPlanner {
         long rootCallId = traceEvidenceRootCall(plan);
         String sliceCell = definitionMethod + ".return";
         RuntimeEvent boundary;
-        if (callArgument) {
+        if (callOutput) {
             sliceCell = refinedFlow.cutArgumentCell(regionId,
                     definitionMethod, cutSiteId, declaredCallee,
                     argumentIndex);
+            if (callReturn) {
+                sliceCell = refinedFlow.callReturnCell(regionId,
+                        definitionMethod, cutSiteId, declaredCallee);
+            }
             if (sliceCell.isEmpty()) {
                 rejectionReasons.add(reason + "_VALUE_CELL_UNRESOLVED:"
                         + outputPort);
                 return null;
             }
-            List<RuntimeEvent> evaluations = trace.callArgumentEvents(
+            List<RuntimeEvent> evaluations = trace.callEvents(
                     trace.subtree(rootCallId), cutSiteId, declaredCallee,
+                    callArgument ? "CALL_ARGUMENT" : "CALL_SITE_RETURN",
                     argumentIndex);
             if (evaluations.size() != 1) {
                 if (evaluations.isEmpty()) {
@@ -3599,7 +3619,7 @@ final class RuntimeRegionPlanner {
         Set<String> corridorMethods = trace.methodNames(invocationCalls);
         Set<String> allowed = new LinkedHashSet<>(
                 strings(goal.get("runtimeDefinitionMethods")));
-        if (callArgument) {
+        if (callOutput) {
             // One long-lived region occurrence may execute several
             // independent interactions before this output.
             Set<String> baselineMethods = new LinkedHashSet<>(strings(
@@ -3611,7 +3631,7 @@ final class RuntimeRegionPlanner {
         // The corridor is the call chain the cut argument was evaluated in;
         // a server return declares its own definition instead.
         if (!allowed.contains(definitionMethod)) {
-            if (callArgument) return null;
+            if (callOutput) return null;
             allowed.add(definitionMethod);
         }
 
@@ -3654,20 +3674,22 @@ final class RuntimeRegionPlanner {
         // is not this occurrence's relation: it says the request is constant,
         // which would let the campaign run a producer that can never answer
         // a different question than the seed already did.
-        if (callArgument && inputPorts.isEmpty()) {
+        if (callOutput && inputPorts.isEmpty()) {
             rejectionReasons.add(reason + "_RELATION_HAS_NO_INPUT:"
                     + outputPort);
             return null;
         }
 
         List<String> staticSites = new ArrayList<>(outputSlice.staticSites);
-        if (callArgument && !staticSites.contains(cutSiteId)) {
+        if (callOutput && !staticSites.contains(cutSiteId)) {
             staticSites.add(cutSiteId);
         }
-        String outputCell = callArgument ? sliceCell
+        String outputCell = callOutput ? (callReturn
+                ? declaredCallee + ".return" : sliceCell)
                 : definitionMethod + ".communication.response";
-        String boundaryKind = callArgument
-                ? CUT_ARGUMENT_BOUNDARY : COMMUNICATION_EFFECT_BOUNDARY;
+        String boundaryKind = callArgument ? CUT_ARGUMENT_BOUNDARY
+                : callReturn ? CUT_RETURN_BOUNDARY
+                : COMMUNICATION_EFFECT_BOUNDARY;
 
         JsonObject slice = new JsonObject();
         slice.addProperty("outputPort", outputPort);
@@ -3699,31 +3721,32 @@ final class RuntimeRegionPlanner {
         JsonObject capture = new JsonObject();
         capture.addProperty("captureBindingId", "CAPTURE."
                 + UUID.nameUUIDFromBytes((occurrenceId + "\n" + outputPort
-                + "\n" + (callArgument
+                + "\n" + (callOutput
                 ? cutSiteId + "\n" + declaredCallee + "\n" + argumentIndex
                 : definitionMethod + "\nCOMMUNICATION_EFFECT"))
                 .getBytes(StandardCharsets.UTF_8)));
-        capture.addProperty("captureKind", callArgument
-                ? OutputCaptureSpec.CALL_ARGUMENT
+        capture.addProperty("captureKind", callOutput ? captureKind
                 : OutputCaptureSpec.COMMUNICATION_EFFECT);
         capture.addProperty("outputPort", outputPort);
         capture.addProperty("outputCell", outputCell);
         capture.addProperty("javaType", javaType);
         capture.addProperty("definitionMethod", definitionMethod);
-        if (callArgument) {
+        if (callOutput) {
             capture.addProperty("definitionUnitIndex", definitionUnitIndex);
             capture.addProperty("declaredCallee", declaredCallee);
-            capture.addProperty("argumentIndex", argumentIndex);
+            if (callArgument) {
+                capture.addProperty("argumentIndex", argumentIndex);
+            }
         }
         capture.addProperty("occurrenceScope",
                 OutputCaptureSpec.REGION_ACTIVATION_SCOPE);
         capture.addProperty("outputBoundaryKind", boundaryKind);
         // The same static endpoint assignOutputOccurrenceIdentity derives, so
         // the contract sees one answer here and one answer there.
-        capture.addProperty("outputSiteId", callArgument
-                ? OutputCaptureSpec.CALL_ARGUMENT + ":" + definitionMethod
-                + "#u" + definitionUnitIndex + ":" + declaredCallee
-                + "#arg" + argumentIndex
+        capture.addProperty("outputSiteId", callOutput
+                ? captureKind + ":" + definitionMethod + "#u"
+                + definitionUnitIndex + ":" + declaredCallee
+                + (callArgument ? "#arg" + argumentIndex : "")
                 : OutputCaptureSpec.COMMUNICATION_EFFECT + ":"
                 + definitionMethod);
         capture.addProperty("outputOccurrence", 1);
@@ -3733,7 +3756,7 @@ final class RuntimeRegionPlanner {
             return OutputClosureCodec.singleton(
                     stringValue(plan.get("relationKey")), regionId,
                     declaredOutputPortIds(regionOutputs), outputPort,
-                    outputCell, callArgument
+                    outputCell, callOutput
                             ? "REGION_OUTPUT" : "INTERACTION_EVENT",
                     javaType, slice);
         } catch (IllegalArgumentException refused) {
@@ -5414,6 +5437,26 @@ final class RuntimeRegionPlanner {
                     : cells.iterator().next();
         }
 
+        /** The caller-side local assigned by one declared call return. */
+        private String callReturnCell(String regionId, String method,
+                                      String siteId, String callee) {
+            Map<String, List<FlowEdge>> incoming =
+                    incomingByRegion.get(regionId);
+            if (incoming == null) return "";
+            Set<String> cells = new LinkedHashSet<>();
+            for (List<FlowEdge> edges : incoming.values()) {
+                for (FlowEdge edge : edges) {
+                    if ("FUNCTION_RETURN".equals(edge.transferKind)
+                            && method.equals(edge.method)
+                            && siteId.equals(edge.siteId)
+                            && (callee + ".return").equals(edge.fromCell)) {
+                        cells.add(edge.toCell);
+                    }
+                }
+            }
+            return cells.size() == 1 ? cells.iterator().next() : "";
+        }
+
         /** Builds one failure-sliced relation frontier. Runtime fixes the
          * activation and the concrete heap access sites; static value/control
          * flow may then prove an alternate callee relevant even when the
@@ -5706,8 +5749,7 @@ final class RuntimeRegionPlanner {
                 result.visitedCells.add(current.cell);
                 List<Map<String, Object>> direct = current.forcedWrite()
                         ? Collections.emptyList() : selectBoundaries(
-                        directInputs.get(current.cell), boundaryUpperSeq,
-                        true);
+                        directInputs.get(current.cell), boundaryUpperSeq);
                 if (!direct.isEmpty()) {
                     for (Map<String, Object> input : direct) {
                         result.inputPorts.add(stringValue(input.get("portId")));
@@ -5738,7 +5780,7 @@ final class RuntimeRegionPlanner {
                         String key = edge.siteId + "\n" + edge.fromCell;
                         List<Map<String, Object>> selectedInputs =
                                 selectBoundaries(heapInputs.get(key),
-                                        boundaryUpperSeq, false);
+                                        boundaryUpperSeq);
                         boolean unresolvedBoundary =
                                 selectedInputs.isEmpty();
                         for (Map<String, Object> input : selectedInputs) {
@@ -5878,8 +5920,7 @@ final class RuntimeRegionPlanner {
         /** A configured boundary array may contribute several independently
          * replayable scalar occurrences at one static read site. */
         private static List<Map<String, Object>> selectBoundaries(
-                List<Map<String, Object>> candidates, long upperSeq,
-                boolean allowProtocolOccurrence) {
+                List<Map<String, Object>> candidates, long upperSeq) {
             if (candidates == null || candidates.isEmpty()) {
                 return Collections.emptyList();
             }
@@ -6248,28 +6289,6 @@ final class RuntimeRegionPlanner {
             this.source = owner;
             this.sourceKey = owner.key();
         }
-    }
-
-    /** Selects a replay continuation from an already proven root-to-output
-     * call chain. */
-    static MethodEvent firstCompatibleReplayContinuation(
-            List<MethodEvent> rootToOutput,
-            Collection<String> selectedMethods) {
-        if (rootToOutput == null || rootToOutput.size() < 2
-                || selectedMethods == null || selectedMethods.isEmpty()) {
-            return null;
-        }
-        Set<String> selected = selectedMethods instanceof Set
-                ? (Set<String>) selectedMethods
-                : new LinkedHashSet<>(selectedMethods);
-        for (int index = 1; index < rootToOutput.size(); index++) {
-            MethodEvent event = rootToOutput.get(index);
-            if (event != null && selected.contains(event.method)
-                    && !event.receiverType.isEmpty()) {
-                return event;
-            }
-        }
-        return null;
     }
 
     static final class ProtocolEvent {
@@ -6744,19 +6763,20 @@ final class RuntimeRegionPlanner {
 
         /** Every recorded evaluation of one exact call argument inside one
          * activation, in recorded order. */
-        private List<RuntimeEvent> callArgumentEvents(
+        private List<RuntimeEvent> callEvents(
                 Set<Long> calls, String siteId, String declaredCallee,
-                int argumentIndex) {
+                String kind, int argumentIndex) {
             List<RuntimeEvent> result = new ArrayList<>();
             if (calls == null || siteId.isEmpty()
-                    || declaredCallee.isEmpty() || argumentIndex < 0) {
+                    || declaredCallee.isEmpty()) {
                 return result;
             }
             for (RuntimeEvent event : runtime(calls)) {
-                if ("CALL_ARGUMENT".equals(event.kind)
+                if (kind.equals(event.kind)
                         && siteId.equals(event.siteId)
                         && declaredCallee.equals(event.declaredCallee)
-                        && event.argumentIndex == argumentIndex) {
+                        && (argumentIndex < 0
+                        || event.argumentIndex == argumentIndex)) {
                     result.add(event);
                 }
             }
@@ -6794,34 +6814,6 @@ final class RuntimeRegionPlanner {
             }
             throw new IllegalArgumentException("call " + descendant
                     + " is not below authoritative owner " + ancestor);
-        }
-
-        private long callAt(long eventSeq) {
-            return eventCallIdBySeq.uniqueValue(eventSeq);
-        }
-
-        /** The earliest selected application continuation on the exact
-         * root-to-definition call chain. */
-        private MethodEvent exactReplayContinuation(
-                long rootCallId, long definitionCallId,
-                Set<String> selectedMethods) {
-            if (rootCallId <= 0L || definitionCallId <= 0L
-                    || selectedMethods == null || selectedMethods.isEmpty()) {
-                return null;
-            }
-            Set<Long> callPath;
-            try {
-                callPath = path(rootCallId, definitionCallId);
-            } catch (IllegalArgumentException ignored) {
-                return null;
-            }
-            List<MethodEvent> chain = new ArrayList<>();
-            for (Long callId : callPath) {
-                MethodEvent event = methodByCall.get(callId);
-                if (event != null) chain.add(event);
-            }
-            return firstCompatibleReplayContinuation(chain,
-                    selectedMethods);
         }
 
         /** Narrows a long-lived root to the invocation that produced one exact

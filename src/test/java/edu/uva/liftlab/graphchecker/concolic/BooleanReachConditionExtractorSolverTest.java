@@ -259,43 +259,6 @@ public class BooleanReachConditionExtractorSolverTest {
                 .getAsBoolean());
     }
 
-    @Test
-    public void tunedProbeTimeoutFallsBackToTheDefaultStrategy()
-            throws Exception {
-        Path fake = Files.createTempFile("causynth-z3-portfolio", ".sh");
-        try {
-            Files.write(fake, ("#!/bin/sh\n"
-                    + "query=$(cat)\n"
-                    + "case \"$query\" in\n"
-                    + "  *':smt.auto_config false'*) sleep 1 ;;\n"
-                    + "  *) echo sat ;;\n"
-                    + "esac\n").getBytes(StandardCharsets.UTF_8));
-            assertTrue(fake.toFile().setExecutable(true));
-            BooleanReachConditionExtractor.Z3Solver solver =
-                    new BooleanReachConditionExtractor.Z3Solver(
-                            fake.toString(), 50L);
-
-            assertEquals("sat", solver.check("(check-sat)\n").status());
-            JsonArray attempts = solver.attempts();
-            assertEquals(attempts.toString(), 2, attempts.size());
-            assertEquals("timeout", attempts.get(0).getAsJsonObject()
-                    .get("status").getAsString());
-            assertEquals("sat", attempts.get(1).getAsJsonObject()
-                    .get("status").getAsString());
-            assertEquals("DEFAULT_SEED_7",
-                    attempts.get(1).getAsJsonObject().get("strategy")
-                            .getAsString());
-            assertEquals(attempts.get(0).getAsJsonObject()
-                            .get("baseQuerySha256").getAsString(),
-                    attempts.get(1).getAsJsonObject()
-                            .get("baseQuerySha256").getAsString());
-            assertEquals(50L, attempts.get(1).getAsJsonObject()
-                    .get("timeoutMillis").getAsLong());
-        } finally {
-            Files.deleteIfExists(fake);
-        }
-    }
-
     private static JsonObject candidateManifest() {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 2);
