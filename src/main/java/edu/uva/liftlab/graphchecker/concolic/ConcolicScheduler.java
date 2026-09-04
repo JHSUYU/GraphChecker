@@ -128,11 +128,13 @@ public final class ConcolicScheduler {
     private static Result scheduleLoaded(
             Arguments arguments, LoadedInputs loaded,
             ProducerOutputProjection producerProjection,
-            SymbolicMechanismCatalog.Selection mechanismSelection)
+            SymbolicMechanismCatalog.Selection mechanismSelection,
+            Set<String> inheritedSeedFieldDemands)
             throws IOException {
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
-                loaded.definitions, producerProjection);
+                loaded.definitions, producerProjection,
+                inheritedSeedFieldDemands);
         Collections.sort(candidates, Candidate.ORDER);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
@@ -705,8 +707,9 @@ public final class ConcolicScheduler {
                     + arguments.maxJobs);
         }
 
+        SymbolicMechanismCatalog.Selection mechanismSelection = null;
         List<Result> scheduled = scheduleSelections(arguments, loaded,
-                workflow, null);
+                workflow, null, Collections.<String>emptySet());
         List<JsonObject> observations = new ArrayList<>();
         for (Result selected : scheduled) {
             observations.addAll(selected.mechanismObservations);
@@ -728,7 +731,6 @@ public final class ConcolicScheduler {
                     "symbolic root proposal");
             proposalIdentity = artifactIdentity(
                     arguments.symbolicRootProposal);
-            SymbolicMechanismCatalog.Selection mechanismSelection;
             try {
                 SymbolicRootProposal proposal = SymbolicRootProposal.decode(
                         ArtifactIO.readObject(
@@ -744,7 +746,15 @@ public final class ConcolicScheduler {
             // Proposal selection changes only materialization.  Target/producer
             // discovery above is intentionally unchanged.
             scheduled = scheduleSelections(arguments, loaded, workflow,
-                    mechanismSelection);
+                    mechanismSelection,
+                    Collections.<String>emptySet());
+        }
+
+        Set<String> seedFieldDemands =
+                genuineSeedFieldDemands(scheduled);
+        if (!seedFieldDemands.isEmpty()) {
+            scheduled = scheduleSelections(arguments, loaded, workflow,
+                    mechanismSelection, seedFieldDemands);
         }
 
         Map<String, ExecutionTask> tasks = new LinkedHashMap<>();
@@ -821,10 +831,36 @@ public final class ConcolicScheduler {
         return result;
     }
 
+    /** Exact seed field versions that already have a solver-backed use. */
+    private static Set<String> genuineSeedFieldDemands(
+            List<Result> scheduled) {
+        Set<String> result = new LinkedHashSet<>();
+        for (Result selection : scheduled) {
+            for (ExecutionTask task : selection.executionTasks) {
+                for (JsonElement element : task.inputActions().all()) {
+                    JsonObject action = element.getAsJsonObject();
+                    if (!InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                            string(action, "mode"))) {
+                        continue;
+                    }
+                    String identity = RuntimePlanArtifact
+                            .seedFieldIdentityKey(action);
+                    String demand = string(action, "symbolicDemand");
+                    if (!identity.isEmpty()
+                            && !"EXACT_SEED_FIELD_VERSION".equals(demand)) {
+                        result.add(identity);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
     private static List<Result> scheduleSelections(
             Arguments arguments, LoadedInputs loaded,
             RuntimeWorkflowDiscovery.RankedWorkflow workflow,
-            SymbolicMechanismCatalog.Selection mechanismSelection)
+            SymbolicMechanismCatalog.Selection mechanismSelection,
+            Set<String> inheritedSeedFieldDemands)
             throws IOException {
         List<Result> result = new ArrayList<>();
         for (RuntimeWorkflowDiscovery.Selection selection
@@ -832,7 +868,7 @@ public final class ConcolicScheduler {
             try {
                 result.add(scheduleLoaded(arguments.forSelection(selection),
                         loaded, selection.producerProjection,
-                        mechanismSelection));
+                        mechanismSelection, inheritedSeedFieldDemands));
             } catch (IllegalArgumentException failure) {
                 String projection = selection.producerProjection == null
                         ? "TARGET" : CanonicalJson.render(
@@ -1129,7 +1165,8 @@ public final class ConcolicScheduler {
                                               Map<String, Region> regions,
                                               DefinitionIndex definitions,
                                               ProducerOutputProjection
-                                                      producerProjection)
+                                                      producerProjection,
+                                              Set<String> seedFieldDemands)
             throws IOException {
         List<Candidate> result = new ArrayList<>();
         for (RegionInstancePlan plan : regionPlans) {
@@ -1155,7 +1192,8 @@ public final class ConcolicScheduler {
                     continue;
                 }
                 appendGoalCandidates(arguments, result, goal,
-                        definitions, producerProjection);
+                        definitions, producerProjection,
+                        seedFieldDemands);
             }
         }
         return result;
@@ -1196,7 +1234,8 @@ public final class ConcolicScheduler {
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
             DefinitionIndex definitions,
-            ProducerOutputProjection producerProjection)
+            ProducerOutputProjection producerProjection,
+            Set<String> seedFieldDemands)
             throws IOException {
             Set<String> definitionMethods =
                     goal.runtimeDefinitionMethods();
@@ -1226,7 +1265,7 @@ public final class ConcolicScheduler {
                         goal, goal.symbolize(), definitions, definitionMethods,
                         outputClosure, branches,
                         goal.plan().occurrenceId(),
-                        Collections.<String>emptySet());
+                        Collections.<String>emptySet(), seedFieldDemands);
                 result.add(new Candidate(goal, branches,
                         TargetBranch.outputCapture(), true,
                         inputActions, true,
@@ -1272,7 +1311,8 @@ public final class ConcolicScheduler {
             // guarded throw.
             JsonArray targetSourceFrontier = materializationPlan(goal,
                     goal.symbolize(), definitions, definitionMethods, null,
-                    branches, queryInstance, arguments.targetEdgeIds);
+                    branches, queryInstance, arguments.targetEdgeIds,
+                    seedFieldDemands);
             for (int index = 0; index < branches.size(); index++) {
                 JsonElement element = branches.get(index);
                 if (!element.isJsonObject()) {
@@ -1306,7 +1346,8 @@ public final class ConcolicScheduler {
                 JsonArray inputActions = materializationPlan(goal,
                         goal.symbolize(), definitions,
                         definitionMethods, null, reachSlice,
-                        queryInstance, arguments.targetEdgeIds);
+                        queryInstance, arguments.targetEdgeIds,
+                        seedFieldDemands);
                 inputActions = targetSymbolicFrontier(goal, inputActions,
                         queryInstance);
                 inputActions = mergeSymbolicFrontier(inputActions,
@@ -1573,7 +1614,8 @@ public final class ConcolicScheduler {
             OutputClosureContract outputClosure,
             JsonArray demandedBranches,
             String bindingInstance,
-            Set<String> selectedTargetEdgeIds) {
+            Set<String> selectedTargetEdgeIds,
+            Set<String> seedFieldDemands) {
         JsonArray result = new JsonArray();
         Set<String> represented = new LinkedHashSet<>();
         // The frame the root-entry hooks are injected into.
@@ -1602,11 +1644,23 @@ public final class ConcolicScheduler {
             String cell = string(action, "cell");
             String dependencyRole = DependencyRole.normalize(
                     action.get("dependencyRole"));
+            String outputDemand = scope == null ? ""
+                    : outputSymbolicDemand(goal, action, definitions,
+                            exactOutputGuardDependent, captureAnchors,
+                            bindingInstance, seedFieldDemands);
             if (scope == null
                     && JavaContainerTypes.shape(string(action, "javaType"))
                     != JavaContainerTypes.Shape.NONE) {
                 binding.addProperty("symbolicDemand",
                         "BOUNDED_CONTAINER_STATE");
+                binding.addProperty("dependencyRole",
+                        DependencyRole.VALUE_FRONTIER);
+                dependencyRole = DependencyRole.VALUE_FRONTIER;
+            }
+            if ("EXACT_OUTPUT_CAPTURE_ANCHOR".equals(outputDemand)
+                    && "CONCRETE_REFERENCE_BOUNDARY_REPLAY".equals(
+                    string(binding, "symbolicDemand"))) {
+                binding.addProperty("symbolicDemand", outputDemand);
                 binding.addProperty("dependencyRole",
                         DependencyRole.VALUE_FRONTIER);
                 dependencyRole = DependencyRole.VALUE_FRONTIER;
@@ -1642,10 +1696,6 @@ public final class ConcolicScheduler {
                         "CONCRETE_STRUCTURE_CONTROL");
                 continue;
             }
-            String outputDemand = scope == null ? ""
-                    : outputSymbolicDemand(goal, action, definitions,
-                    exactOutputGuardDependent, captureAnchors,
-                    bindingInstance);
             if (scope != null && outputDemand.isEmpty()) {
                 // Output capture is demand-first.
                 addConcreteInputAction(result, represented, binding,
@@ -1912,7 +1962,8 @@ public final class ConcolicScheduler {
     private static String outputSymbolicDemand(
             Goal goal, JsonObject action, DefinitionIndex definitions,
             Set<String> guardDependent, Set<String> captureAnchors,
-            String bindingInstance) {
+            String bindingInstance,
+            Set<String> seedFieldDemands) {
         String authored = string(action, "symbolicDemand");
         if ("BOUNDED_CONTAINER_STATE".equals(authored)
                 || "BOUNDED_STATE_FRONTIER".equals(authored)) {
@@ -1937,6 +1988,10 @@ public final class ConcolicScheduler {
                 || "ARGUMENT_FIELD".equals(location)
                 || "ARGUMENT_FIELD_PATH".equals(location)) {
             return "EXACT_ROOT_INPUT_TO_OUTPUT";
+        }
+        if (seedFieldDemands.contains(
+                RuntimePlanArtifact.seedFieldIdentityKey(action))) {
+            return "EXACT_SEED_FIELD_VERSION";
         }
         return "";
     }

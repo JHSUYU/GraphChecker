@@ -729,9 +729,6 @@ public final class TargetReachPathQueryBuilder {
         }
     }
 
-    /**
-     * query at all.  README: observed cases are an existential
-     */
     private static void collectRuntimeBindings(
             JsonObject summary, Map<String, JsonObject> bindings,
             Map<String, String> contested) {
@@ -743,10 +740,12 @@ public final class TargetReachPathQueryBuilder {
             JsonObject previous = bindings.putIfAbsent(id,
                     binding.deepCopy());
             if (previous != null
-                    && !comparable(previous).equals(comparable(binding))) {
+                    && !SharedStateEvidence.comparableBinding(previous)
+                    .equals(SharedStateEvidence.comparableBinding(binding))) {
                 bindings.remove(id);
                 contested.put(id, disagreementDetail(
-                        comparable(previous), comparable(binding)));
+                        SharedStateEvidence.comparableBinding(previous),
+                        SharedStateEvidence.comparableBinding(binding)));
             }
         }
     }
@@ -765,61 +764,6 @@ public final class TargetReachPathQueryBuilder {
             }
         }
         return reasons.isEmpty() ? "none" : String.join(";", reasons);
-    }
-
-    /**
-     * The binding members two sessions must agree on.  The VM's own
-     * session-local location name is dropped, and the canonical name is read
-     * at its planned address, so that the two activation-local spellings of
-     * one location are the one member.  Every other member is compared
-     * exactly as recorded: a binding that disagrees on anything else is still
-     * contested.
-     */
-    private static JsonObject comparable(JsonObject binding) {
-        String location = string(binding, LOCATION_FIELD);
-        String planned = plannedLocationKey(location);
-        boolean session =
-                binding.has(SharedStateEvidence.SESSION_LOCATION_FIELD);
-        if (!session && planned.equals(location)) {
-            return binding;
-        }
-        JsonObject copy = binding.deepCopy();
-        copy.remove(SharedStateEvidence.SESSION_LOCATION_FIELD);
-        if (!planned.equals(location)) {
-            copy.addProperty(LOCATION_FIELD, planned);
-        }
-        return copy;
-    }
-
-    /** The member naming the shared location one binding read from. */
-    private static final String LOCATION_FIELD = "locationKey";
-
-    /**
-     * OCC-1: one canonical location name read at its planned address.
-     *
-     * <p>{@link SharedStateEvidence#canonicalLocationKey} names a location
-     * {@code <kind>/<occurrenceId>@receiver:<id>@<field>#<slot>}, and the
-     * occurrence it embeds is the per-activation name
-     * {@code <plannedAddress>#a<ordinal>}.  One task activated many times in
-     * an iteration therefore records the same location under one name per
-     * activation -- the VM's own session-local name for all of them is a
-     * single string -- while the reach query is stated over the planned
-     * address, exactly as {@code inScope} matches summaries.  Only the
-     * occurrence segment is re-read, and only by
-     * {@link PathObservation#plannedOccurrenceOf}: the receiver, the field
-     * and the slot are left as recorded, so two genuinely different
-     * locations still disagree.  A name this rule cannot read -- any key
-     * that is not a canonical location -- is returned unchanged.</p>
-     */
-    private static String plannedLocationKey(String locationKey) {
-        int kind = locationKey.indexOf('/');
-        if (kind <= 0) return locationKey;
-        int receiver = locationKey.indexOf('@', kind + 1);
-        if (receiver <= kind + 1) return locationKey;
-        String occurrence = PathObservation.plannedOccurrenceOf(
-                locationKey.substring(kind + 1, receiver));
-        return locationKey.substring(0, kind + 1) + occurrence
-                + locationKey.substring(receiver);
     }
 
     private static String disagreementDetail(JsonObject left,

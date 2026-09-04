@@ -17,10 +17,12 @@ report="${test_tmp}/z3-result.json"
 jq -n '{symbolicVariableModels: [{
   schemaVersion: 1, kind: "SYMBOLIC_VARIABLE_MODEL", valuationOrdinal: 0,
   variables: [
-    {sourceKey: "cluster/dn0#epoch0", sourceId: "RPC_COMPARE.A",
+    {inputKind: "CONFIGURED_SOURCE_FIELD",
+     sourceKey: "cluster/dn0#epoch0", sourceId: "RPC_COMPARE.A",
      sourcePhaseId: "SOURCE_PHASE.a", fieldSignature: "<DataNode: long a>",
      value: "7"},
-    {sourceKey: "cluster/dn1#epoch0", sourceId: "RPC_COMPARE.B",
+    {inputKind: "CONFIGURED_SOURCE_FIELD",
+     sourceKey: "cluster/dn1#epoch0", sourceId: "RPC_COMPARE.B",
      sourcePhaseId: "SOURCE_PHASE.b", fieldSignature: "<DataNode: long b>",
      value: "9"}]}]}' >"${report}"
 

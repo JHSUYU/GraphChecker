@@ -214,11 +214,11 @@ public final class RelationSummary {
         }
         JsonArray cases = new JsonArray();
         for (PathObservation path : orderedCases) {
-            appendPathCases(cases, path);
+            cases.add(pathCase(path));
         }
         if (coverage != null) {
-            // One path yields one case per version its output boundary
-            // published, so the case count is what ties the relation here.
+            // A case is one observed path; bounded output versions remain
+            // independently guarded values inside that case.
             coverage.addProperty("observedCaseCount", cases.size());
         }
 
@@ -350,66 +350,13 @@ public final class RelationSummary {
         return other != null && summaryId().equals(other.summaryId());
     }
 
-    /** Expands one imported path into its guarded cases: every
-     *  path-times-version combination becomes one case whose guard also
-     *  selects the version. */
-    private static void appendPathCases(JsonArray cases,
-                                        PathObservation path) {
-        JsonObject outputs = path.outputExpressions();
-        NavigableMap<String, JsonObject> versioned = new TreeMap<>();
-        for (String port : outputs.keySet()) {
-            JsonElement value = outputs.get(port);
-            if (BoundedOutputVersions.isVersionSet(value)) {
-                versioned.put(port, value.getAsJsonObject());
-            }
-        }
-        List<Map<String, Integer>> selections =
-                independentVersionSelections(versioned);
-        for (Map<String, Integer> selection : selections) {
-            cases.add(pathCase(path, selection));
-        }
-    }
-
-    private static List<Map<String, Integer>> independentVersionSelections(
-            NavigableMap<String, JsonObject> versioned) {
-        List<Map<String, Integer>> selections = new ArrayList<>();
-        selections.add(new LinkedHashMap<String, Integer>());
-        for (Map.Entry<String, JsonObject> entry : versioned.entrySet()) {
-            List<Map<String, Integer>> expanded = new ArrayList<>();
-            for (Map<String, Integer> prefix : selections) {
-                for (Integer ordinal : BoundedOutputVersions.versions(
-                        entry.getValue()).keySet()) {
-                    Map<String, Integer> next =
-                            new LinkedHashMap<>(prefix);
-                    next.put(entry.getKey(), ordinal);
-                    expanded.add(next);
-                }
-            }
-            selections = expanded;
-        }
-        return selections;
-    }
-
-    private static JsonObject pathCase(PathObservation path,
-                                       Map<String, Integer> selection) {
+    /** Keeps one base relation case per imported path. */
+    private static JsonObject pathCase(PathObservation path) {
         JsonObject item = new JsonObject();
-        StringBuilder caseId = new StringBuilder("CASE.")
-                .append(path.relationKey());
+        String caseId = "CASE." + path.relationKey();
         JsonArray conditions = path.relationPathCondition();
         JsonObject outputs = path.outputExpressions();
-        for (Map.Entry<String, Integer> chosen : selection.entrySet()) {
-            String port = chosen.getKey();
-            JsonObject versionSet = outputs.getAsJsonObject(port);
-            NavigableMap<Integer, JsonElement> versions =
-                    BoundedOutputVersions.versions(versionSet);
-            conditions.add(BoundedOutputVersions.versionSelectionCondition(
-                    port, BoundedOutputVersions.outputSiteId(versionSet),
-                    chosen.getValue(), versions.lastKey()));
-            outputs.add(port,
-                    versions.get(chosen.getValue()).deepCopy());
-            caseId.append(".V.").append(chosen.getValue());
-        }
-        item.addProperty("caseId", caseId.toString());
+        item.addProperty("caseId", caseId);
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "PATH_CONDITION");
         guard.add("conditions", conditions);
@@ -457,6 +404,16 @@ public final class RelationSummary {
             item.add(SharedStateEvidence.RECORDED_FIELD, recordedSharedState);
         }
         JsonArray pathBindings = path.edgeBindings();
+        for (JsonElement encoded : pathBindings) {
+            if (!encoded.isJsonObject()) continue;
+            JsonObject binding = encoded.getAsJsonObject();
+            if (path.plannedOccurrenceId().equals(
+                    string(binding, "toOccurrenceId"))
+                    && !binding.has("toValueOccurrenceId")) {
+                binding.addProperty("toValueOccurrenceId",
+                        path.occurrenceId());
+            }
+        }
         if (pathBindings.size() > 0) {
             item.add(EDGE_BINDINGS, pathBindings);
         }

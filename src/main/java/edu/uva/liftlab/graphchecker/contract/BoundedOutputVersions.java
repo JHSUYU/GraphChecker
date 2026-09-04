@@ -17,16 +17,13 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * several write versions at one static site.  The version ordinal is the
  * site-local bounded occurrence index inside one region activation, not a
  * cross-execution identity: which version a reader observes is settled by the
- * composed versioned channel, so every bounded version is exported and each
- * becomes one guarded relation case.
+ * composed versioned channel, so every bounded version is exported and
+ * lowered under its own choice guard inside the path that observed it.
  */
 public final class BoundedOutputVersions {
     public static final String KIND = "BOUNDED_OUTPUT_VERSION_SET";
     public static final String AUTHORITY =
             "SITE_LOCAL_BOUNDED_OUTPUT_VERSION_INDEX_V1";
-    /** Guard condition type selecting exactly one exported version. */
-    public static final String VERSION_SELECTION_TYPE =
-            "OutputVersionSelection";
 
     private BoundedOutputVersions() {
     }
@@ -99,31 +96,5 @@ public final class BoundedOutputVersions {
 
     public static String outputSiteId(JsonObject versionSet) {
         return string(versionSet, "outputSiteId");
-    }
-
-    /** One guard condition binding a relation case to one exported version;
-     *  the bound is the largest exported ordinal of the site-local index. */
-    public static JsonObject versionSelectionCondition(
-            String outputPort, String outputSiteId, int versionOrdinal,
-            int versionBound) {
-        if (outputPort == null || outputPort.isEmpty()
-                || versionOrdinal < 1 || versionBound < versionOrdinal) {
-            throw new IllegalArgumentException(
-                    "invalid output version selection");
-        }
-        JsonObject condition = new JsonObject();
-        condition.addProperty("_type", VERSION_SELECTION_TYPE);
-        condition.addProperty("authority", AUTHORITY);
-        condition.addProperty("outputPort", outputPort);
-        condition.addProperty("outputSiteId",
-                outputSiteId == null ? "" : outputSiteId);
-        condition.addProperty("versionOrdinal", versionOrdinal);
-        condition.addProperty("versionBound", versionBound);
-        return condition;
-    }
-
-    public static boolean isVersionSelection(JsonObject expression) {
-        return expression != null && VERSION_SELECTION_TYPE.equals(
-                string(expression, "_type"));
     }
 }

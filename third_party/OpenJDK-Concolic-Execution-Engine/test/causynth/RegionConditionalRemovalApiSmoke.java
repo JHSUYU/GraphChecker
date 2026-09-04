@@ -28,8 +28,8 @@ import java.util.Map;
  *
  * What it checks:
  *   1. the branch is NOT taken concretely -- the key remains in the map;
- *   2. the map's recorded state nonetheless carries a REMOVE_IF whose single
- *      argument is that key (the map key, not an iterator ordinal);
+ *   2. the map's recorded state carries a REMOVE_IF whose key remains a
+ *      projection of the symbolic input map (not a replay-local constant);
  *   3. its guard is a real predicate naming the key's own symbolic expiry --
  *      the flippable branch -- and is the removal condition ("&lt;"), not the
  *      concrete branch's kept-arm;
@@ -103,9 +103,13 @@ public final class RegionConditionalRemovalApiSmoke {
                 "no conditional removal was recorded: " + head(relation));
 
         // (2)(3) the REMOVE_IF for THIS key names it and guards on its expiry.
-        String removeIf = removeIfOpFor(relation, KEY_ID);
+        String removeIf = removeIfGuardedBy(relation, EXPIRY_SYMBOL);
         require(removeIf != null,
-                "no REMOVE_IF names key " + KEY_ID + ": " + head(relation));
+                "no REMOVE_IF for key " + KEY_ID + ": " + head(relation));
+        require(removeIf.contains("\"operation\":\"NEXT\"")
+                        && removeIf.contains("\"operation\":\"KEY_VIEW\""),
+                "the REMOVE_IF key is not projected from the input map: "
+                        + head(removeIf));
         String guard = valueOf(removeIf, "guard");
         require(guard != null,
                 "the REMOVE_IF carries no guard: " + head(removeIf));
@@ -155,11 +159,14 @@ public final class RegionConditionalRemovalApiSmoke {
                 "the un-expired entry-set key must remain in the map");
         // The target key was the first inserted, so it is visited first: its
         // guard is the occurrence-0 expiry symbol.
-        String removeIf = removeIfOpFor(relation, KEY_ID);
+        String removeIf = removeIfGuardedBy(relation, "es_expiry_0");
         require(removeIf != null,
-                "entrySet loop recorded no REMOVE_IF naming key " + KEY_ID
-                        + " (the key was not recovered from the entry): "
+                "entrySet loop recorded no REMOVE_IF for key " + KEY_ID + ": "
                         + head(relation));
+        require(removeIf.contains("\"operation\":\"KEY\"")
+                        && removeIf.contains("\"operation\":\"NEXT\""),
+                "the REMOVE_IF key is not projected from the entry: "
+                        + head(removeIf));
         String guard = valueOf(removeIf, "guard");
         require(guard != null && guard.contains("es_expiry_0"),
                 "the entrySet REMOVE_IF guard does not name the entry's "
@@ -201,11 +208,9 @@ public final class RegionConditionalRemovalApiSmoke {
     // ---- a small JSON scan (depth/quote aware) -----------------------------
 
     /**
-     * The balanced text of the {@code REMOVE_IF} ContainerRelation whose first
-     * argument is the const {@code Y_I_<keyId>}, or null if none.
+     * The balanced text of the {@code REMOVE_IF} carrying the named guard.
      */
-    private static String removeIfOpFor(String json, int keyId) {
-        String keyLiteral = "\"_exp\":\"Y_I_" + keyId + "\"";
+    private static String removeIfGuardedBy(String json, String guardSymbol) {
         int at = 0;
         while (true) {
             int op = json.indexOf("\"operation\":\"REMOVE_IF\"", at);
@@ -213,10 +218,8 @@ public final class RegionConditionalRemovalApiSmoke {
             int objectStart = objectStartBefore(json, op);
             int objectEnd = balancedEnd(json, objectStart);
             String object = json.substring(objectStart, objectEnd);
-            // Its own arguments -- not a nested op's -- name the key: check the
-            // arguments array that belongs to this object.
-            String arguments = valueOf(shallow(object), "arguments");
-            if (arguments != null && arguments.contains(keyLiteral)) {
+            String guard = valueOf(shallow(object), "guard");
+            if (guard != null && guard.contains(guardSymbol)) {
                 return object;
             }
             at = op + 1;

@@ -57,6 +57,7 @@ public final class CausynthTraceRecorder {
     private static final int DEFAULT_MAX_EVENTS = 200000;
     /** A concolic replay keeps call stacks but does not publish a trace. */
     private static volatile boolean contextOnlyConcolicReplay;
+    private static volatile boolean recordingEnabled = true;
 
     private static volatile File outputDir;
     private static volatile String testName;
@@ -68,6 +69,12 @@ public final class CausynthTraceRecorder {
     private static boolean shutdownHookRegistered;
 
     private CausynthTraceRecorder() {
+    }
+
+    /** Opens the workload-defined trace boundary after source initialization. */
+    public static void startRecording() {
+        initialize();
+        recordingEnabled = true;
     }
 
     private static boolean configuredContextOnlyConcolicReplay() {
@@ -740,20 +747,6 @@ public final class CausynthTraceRecorder {
         return MapFields.safe(method) + "#u" + unitIndex;
     }
 
-    /**
-     * The trace identity this run already gave {@code value}, or 0 when the
-     * trace has never recorded it.
-     */
-    static int recordedObjectId(Object value) {
-        if (value == null) {
-            return 0;
-        }
-        synchronized (LOCK) {
-            Integer existing = OBJECT_IDS.get(value);
-            return existing == null ? 0 : existing;
-        }
-    }
-
     private static int identity(Object value) {
         if (value == null) {
             return 0;
@@ -843,6 +836,8 @@ public final class CausynthTraceRecorder {
                     System.getenv("CAUSYNTH_TRACE_TEST"), "unknown-test");
             boolean configuredContextOnly =
                     configuredContextOnlyConcolicReplay();
+            recordingEnabled = !Boolean.getBoolean(
+                    "causynth.trace.start.paused");
             File configuredOutputDir = configuredContextOnly ? null
                     : new File(firstNonBlank(
                     System.getProperty("causynth.trace.output.dir"),
@@ -1360,6 +1355,7 @@ public final class CausynthTraceRecorder {
         OBJECT_IDS.clear();
         nextObjectId = 1;
         contextOnlyConcolicReplay = false;
+        recordingEnabled = true;
         traceWriteFailure = false;
         traceWriter = null;
     }
@@ -1596,34 +1592,6 @@ public final class CausynthTraceRecorder {
                 new ConcurrentHashMap<String, String>());
     }
 
-    /** Reads whole trace rows exactly as aggregation reads them. */
-    static TraceData parseTraceLinesForTests(List<String> lines)
-            throws IOException {
-        TraceData trace = new TraceData();
-        int lineNumber = 1;
-        for (String line : lines) {
-            parseTraceLine(trace, line, lineNumber++,
-                    new File("runtime-trace-test.jsonl"), "test", false,
-                    new ConcurrentHashMap<String, String>());
-        }
-        trace.sort();
-        return trace;
-    }
-
-    /** Reads the minimal pass-1 domain used to authenticate client entries. */
-    static TraceData parseSkeletonTraceLinesForTests(List<String> lines)
-            throws IOException {
-        TraceData trace = new TraceData();
-        int lineNumber = 1;
-        for (String line : lines) {
-            parseTraceLine(trace, line, lineNumber++,
-                    new File("runtime-trace-test.jsonl"), "test", true,
-                    new ConcurrentHashMap<String, String>());
-        }
-        trace.sort();
-        return trace;
-    }
-
     private static boolean isExecutionEventKind(String kind) {
         return "METHOD_ARGUMENT".equals(kind)
                 || "METHOD_EXIT_NORMAL".equals(kind)
@@ -1637,6 +1605,7 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeTraceLine(RuntimeRegionPlanner.MethodEvent event) {
+        if (!recordingEnabled) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", "METHOD_ENTER",
@@ -1667,6 +1636,7 @@ public final class CausynthTraceRecorder {
 
     private static void writeFieldTraceLine(
             RuntimeRegionPlanner.FieldAccessEvent event) {
+        if (!recordingEnabled) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", event.kind,
@@ -1683,6 +1653,7 @@ public final class CausynthTraceRecorder {
 
     private static void writeArrayTraceLine(
             RuntimeRegionPlanner.ArrayAccessEvent event) {
+        if (!recordingEnabled) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", event.kind,
@@ -1707,6 +1678,7 @@ public final class CausynthTraceRecorder {
 
     private static void writeProtocolTraceLine(
             RuntimeRegionPlanner.ProtocolEvent event) {
+        if (!recordingEnabled) return;
         String kind = protocolEventKind(event.direction);
         writeTraceRow(
                 "schemaVersion", 3,
@@ -1776,7 +1748,7 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeExecutionTraceLine(ExecutionEvent event) {
-        if (event == null) return;
+        if (event == null || !recordingEnabled) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", event.kind,

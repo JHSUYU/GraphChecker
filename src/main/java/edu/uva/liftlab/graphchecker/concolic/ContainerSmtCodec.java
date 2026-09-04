@@ -1,9 +1,9 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -163,70 +163,26 @@ public final class ContainerSmtCodec {
         ));
     }
 
-    /**
-     * Removal, written over the container bound rather than as a rewriting of
-    /** The slot a removal names, when the recorder named a constant one. */
-    private static String literalSlot(String index) {
-        String text = index.trim();
-        if (text.isEmpty() || !text.chars().allMatch(Character::isDigit)) {
-            return "";
-        }
-        try {
-            int slot = Integer.parseInt(text);
-            return slot >= 0
-                    && slot < LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY
-                    ? text : "";
-        } catch (NumberFormatException notASlot) {
-            return "";
-        }
-    }
-
-    /** Removal at a slot the recorder already knows. */
-    private static String removeAtSlot(String receiver, int removed) {
-        int bound = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
-        StringBuilder order = new StringBuilder("(assoc_order s)");
-        StringBuilder position = new StringBuilder("(assoc_position s)");
-        for (int slot = removed; slot < bound; slot++) {
-            String next = "(select (assoc_order s) " + (slot + 1) + ")";
-            order.insert(0, "(store ").append(' ').append(slot)
-                    .append(' ').append(next).append(')');
-            position.insert(0, "(store ").append(' ').append(next)
-                    .append(' ').append(slot).append(')');
-        }
-        String key = "(select (assoc_order s) " + removed + ")";
-        return "(let ((s " + receiver + ")) (ite (assoc_has s " + key + ")"
-                + " (mkAssocState (- (assoc_size s) 1)"
-                + " (store (assoc_present s) " + key + " false)"
-                + " (assoc_values s) " + order
-                + " (store " + position + " " + key + " (- 1)))"
-                + " s))";
-    }
-
     private static String associativeRemoveDefinition() {
         int bound = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
         StringBuilder order = new StringBuilder("(assoc_order s)");
-        for (int slot = 0; slot < bound; slot++) {
-            order.insert(0, "(store ")
-                    .append(' ').append(slot)
-                    .append(" (ite (and (<= p ").append(slot)
-                    .append(") (< ").append(slot)
-                    .append(" (- (assoc_size s) 1)))")
-                    .append(" (select (assoc_order s) ").append(slot + 1)
-                    .append(") (select (assoc_order s) ").append(slot)
-                    .append(")))");
-        }
         StringBuilder position =
                 new StringBuilder("(store (assoc_position s) k (- 1))");
         for (int slot = 0; slot < bound; slot++) {
             String key = "(select (assoc_order s) " + slot + ")";
-            String was = "(select (assoc_position s) " + key + ")";
-            position.insert(0, "(store ")
-                    .append(' ').append(key)
+            String oldPosition = "(select (assoc_position s) " + key + ")";
+            order.insert(0, "(store ").append(' ').append(slot)
+                    .append(" (ite (and (<= p ").append(slot)
+                    .append(") (< ").append(slot)
+                    .append(" (- (assoc_size s) 1))) ")
+                    .append("(select (assoc_order s) ").append(slot + 1)
+                    .append(") ").append(key).append("))");
+            position.insert(0, "(store ").append(' ').append(key)
                     .append(" (ite (and (not (= ").append(key).append(" k))")
-                    .append(" (assoc_has s ").append(key).append(')')
-                    .append(" (> ").append(was).append(" p))")
-                    .append(" (- ").append(was).append(" 1) ")
-                    .append(was).append("))");
+                    .append(" (assoc_has s ").append(key).append(") (> ")
+                    .append(oldPosition).append(" p)) (- ")
+                    .append(oldPosition).append(" 1) ")
+                    .append(oldPosition).append("))");
         }
         return "(define-fun assoc_remove ((s AssocState) (k Value))"
                 + " AssocState"
@@ -235,8 +191,7 @@ public final class ContainerSmtCodec {
                 + " (mkAssocState"
                 + " (- (assoc_size s) 1)"
                 + " (store (assoc_present s) k false)"
-                + " (assoc_values s) "
-                + order + " " + position + "))"
+                + " (assoc_values s) " + order + " " + position + "))"
                 + " s))";
     }
 
@@ -674,13 +629,9 @@ public final class ContainerSmtCodec {
                 Term index = host.operand(arguments.get(0), Sort.INT);
                 if (index == null) return null;
                 requireAssociativeMember(receiver, index, host);
-                String literal = literalSlot(index.text);
-                return literal.isEmpty()
-                        ? new Term("(assoc_remove " + receiver.text
+                return new Term("(assoc_remove " + receiver.text
                         + " (assoc_key_at " + receiver.text + " "
-                        + index.text + "))", Sort.ASSOCIATIVE)
-                        : new Term(removeAtSlot(receiver.text,
-                        Integer.parseInt(literal)), Sort.ASSOCIATIVE);
+                        + index.text + "))", Sort.ASSOCIATIVE);
             }
             if ("REMOVE".equals(operation) && arguments.size() == 1) {
                 Term key = host.box(arguments.get(0));
@@ -816,12 +767,23 @@ public final class ContainerSmtCodec {
             JsonArray arguments = array(relation, "arguments");
             JsonElement receiverIr = relation.get("receiver");
             if ("REMOVE".equals(operation) && arguments.size() == 1) {
-                Term state = host.operand(receiverIr, Sort.ASSOCIATIVE);
                 Term key = host.box(arguments.get(0));
-                if (state != null && key != null) {
+                Term present = key == null ? null
+                        : associativeHas(receiverIr, key, host);
+                if (present != null) {
+                    result.add(new AssociativeRemovalEffect(
+                            key, present.text));
+                }
+            } else if ("REMOVE_IF".equals(operation)
+                    && arguments.size() == 1) {
+                Term key = host.box(arguments.get(0));
+                Term guard = host.operand(relation.get("guard"), Sort.BOOL);
+                Term present = key == null ? null
+                        : associativeHas(receiverIr, key, host);
+                if (present != null && guard != null) {
                     result.add(new AssociativeRemovalEffect(key,
-                            "(assoc_has " + state.text + " "
-                                    + key.text + ")"));
+                            "(and " + guard.text + " "
+                                    + present.text + ")"));
                 }
             } else if ("REMOVE_AT".equals(operation)
                     && arguments.size() == 1) {
@@ -836,6 +798,7 @@ public final class ContainerSmtCodec {
             }
             if (!("PUT".equals(operation)
                     || "REMOVE".equals(operation)
+                    || "REMOVE_IF".equals(operation)
                     || "REMOVE_AT".equals(operation))) {
                 break;
             }

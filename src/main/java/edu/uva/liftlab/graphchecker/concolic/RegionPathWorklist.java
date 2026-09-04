@@ -670,6 +670,12 @@ public final class RegionPathWorklist {
                 if (!mapping.siteId().equals(string(branch, "siteId"))) {
                     continue;
                 }
+                Boolean required = TargetReachPathQueryBuilder
+                        .requiredOutcome(branch);
+                if (!bool(branch, "failureTarget", false)
+                        && required != null && required != desired) {
+                    return true;
+                }
                 for (JsonElement row
                         : array(branch, "guardedSiteOutcomes")) {
                     if (!row.isJsonObject()) continue;

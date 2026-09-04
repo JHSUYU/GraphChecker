@@ -985,7 +985,7 @@ final class RuntimeRegionPlanner {
                     occurrenceId);
             registerExactPorts(region, occurrenceId, exactPorts);
             List<Map<String, Object>> occurrenceSymbolize = symbolize(
-                    region.symbolicInputs, occurrenceId);
+                    region.symbolicInputs, occurrenceId, trace);
             List<Map<String, Object>> occurrenceBranches = branches;
             Set<String> occurrenceObserved =
                     new LinkedHashSet<>(observedMethods);
@@ -3104,7 +3104,9 @@ final class RuntimeRegionPlanner {
         long evidenceRootCall = traceEvidenceRootCall(plan);
         MethodEvent replayContinuation = trace.methodByCall.get(
                 evidenceRootCall);
-        if (!addReachingAccessorMaterializations(inputPorts, regionInputs,
+        List<String> staticSites = new ArrayList<>(stateSlice.staticSites);
+        if (!addReachingAccessorMaterializations(inputPorts, staticSites,
+                regionInputs,
                 occurrenceId, methodSet, relationBoundarySeq,
                 invocationCalls, rejectionReasons, outputPort)) {
             return null;
@@ -3146,7 +3148,6 @@ final class RuntimeRegionPlanner {
         String captureAnchorPort = latestAccessorInputPort(
                 inputPorts, regionInputs);
 
-        List<String> staticSites = new ArrayList<>(stateSlice.staticSites);
         if (!staticSites.contains(staticAccessSiteId)) {
             staticSites.add(staticAccessSiteId);
         }
@@ -3167,7 +3168,7 @@ final class RuntimeRegionPlanner {
         slice.add("sites", stringsJson(stateSlice.branchSites));
         slice.add("staticSites", stringsJson(staticSites));
         slice.add("methods", stringsJson(methods));
-        if (replayContinuation != null) {
+        if (replayContinuation != null && !replayContinuation.receiverType.isEmpty()) {
             slice.add(ExecutionTask.REPLAY_ENTRY, toJsonTreeFast(object(
                     "method", replayContinuation.method,
                     "receiverClass", replayContinuation.receiverType)));
@@ -3464,29 +3465,6 @@ final class RuntimeRegionPlanner {
         return true;
     }
 
-    /** Publishes the one function entry shared by every selected output in a
-     * goal. */
-    private static boolean declareReplayEntry(
-            Map<String, Object> goal, MethodEvent entry) {
-        if (goal == null || entry == null || entry.method.isEmpty()
-                || entry.receiverType.isEmpty()) {
-            return false;
-        }
-        Map<String, Object> declared = row(goal.get(
-                edu.uva.liftlab.graphchecker.contract.ExecutionTask
-                        .REPLAY_ENTRY));
-        if (!declared.isEmpty()) {
-            return entry.method.equals(stringValue(declared.get("method")))
-                    && entry.receiverType.equals(stringValue(
-                    declared.get("receiverClass")));
-        }
-        goal.put(edu.uva.liftlab.graphchecker.contract.ExecutionTask
-                        .REPLAY_ENTRY,
-                object("method", entry.method,
-                        "receiverClass", entry.receiverType));
-        return true;
-    }
-
     /** Boundary label of a relation whose output is a value handed to a cut.
      */
     private static final String CUT_ARGUMENT_BOUNDARY =
@@ -3546,7 +3524,8 @@ final class RuntimeRegionPlanner {
                 || callOutput && (definitionUnitIndex < 0
                 || callArgument && argumentIndex < 0
                 || declaredCallee.isEmpty()
-                || !symbolicLeafType(javaType)
+                || !DependencyRole.VALUE_FRONTIER.equals(
+                effectiveDependencyRole(port, javaType))
                 || !cutSiteId.equals(definitionMethod + "#u"
                 + definitionUnitIndex))) {
             rejectionReasons.add(reason + "_PORT_INCOMPLETE:" + outputPort);
@@ -3656,7 +3635,9 @@ final class RuntimeRegionPlanner {
         methodSet.add(definitionMethod);
         methodSet.retainAll(allowed);
         if (methodSet.isEmpty()) return null;
-        if (!addReachingAccessorMaterializations(inputPorts, regionInputs,
+        List<String> staticSites = new ArrayList<>(outputSlice.staticSites);
+        if (!addReachingAccessorMaterializations(inputPorts, staticSites,
+                regionInputs,
                 occurrenceId, methodSet, boundary.seq, invocationCalls,
                 rejectionReasons, outputPort)) {
             return null;
@@ -3680,7 +3661,6 @@ final class RuntimeRegionPlanner {
             return null;
         }
 
-        List<String> staticSites = new ArrayList<>(outputSlice.staticSites);
         if (callOutput && !staticSites.contains(cutSiteId)) {
             staticSites.add(cutSiteId);
         }
@@ -3838,6 +3818,7 @@ final class RuntimeRegionPlanner {
      * output. */
     private static boolean addReachingAccessorMaterializations(
             List<String> inputPorts,
+            List<String> staticSites,
             List<Map<String, Object>> regionInputs,
             String occurrenceId, Set<String> selectedMethods,
             long outputBoundarySeq, Set<Long> invocationCalls,
@@ -3890,10 +3871,9 @@ final class RuntimeRegionPlanner {
             selected.sort(Comparator.comparingLong(value ->
                     longNumber(value.get("eventSeq"), Long.MAX_VALUE)));
             for (Map<String, Object> candidate : selected) {
-                String port = stringValue(candidate.get("portId"));
-                if (!port.isEmpty() && !inputPorts.contains(port)) {
-                    inputPorts.add(port);
-                }
+                addNonBlankUnique(inputPorts,
+                        stringValue(candidate.get("portId")));
+                addNonBlankUnique(staticSites, accessorSiteKey(candidate));
             }
             return true;
         }
@@ -3943,12 +3923,16 @@ final class RuntimeRegionPlanner {
                         + selected.getKey().replace('\n', '|'));
                 continue;
             }
-            String port = stringValue(selected.getValue().get("portId"));
-            if (!port.isEmpty() && !inputPorts.contains(port)) {
-                inputPorts.add(port);
-            }
+            Map<String, Object> candidate = selected.getValue();
+            addNonBlankUnique(inputPorts,
+                    stringValue(candidate.get("portId")));
+            addNonBlankUnique(staticSites, accessorSiteKey(candidate));
         }
         return true;
+    }
+
+    private static void addNonBlankUnique(List<String> values, String value) {
+        if (!value.isEmpty() && !values.contains(value)) values.add(value);
     }
 
     /**
@@ -4243,22 +4227,6 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> ports, String portId,
             String occurrenceId) {
         return uniquePort(ports, portId, occurrenceId, false);
-    }
-
-    /** The one region-level declaration of a cut port, never an instance. */
-    private static Map<String, Object> uniqueDeclaredPort(
-            List<Map<String, Object>> ports, String portId) {
-        Map<String, Object> match = null;
-        for (Map<String, Object> port : ports) {
-            if (!portId.equals(stringValue(port.get("portId")))
-                    || !declaredCutPort(port)
-                    || !stringValue(port.get("occurrenceId")).isEmpty()) {
-                continue;
-            }
-            if (match != null) return null;
-            match = port;
-        }
-        return match;
     }
 
     /** The one port of this activation with {@code portId}, or null when the
@@ -4806,7 +4774,8 @@ final class RuntimeRegionPlanner {
      * README section 3's {@code Req_in}, {@code Resp_in}, {@code Live_in} -
      * and its site comes from the capture the declaration carries.</p> */
     private static List<Map<String, Object>> symbolize(
-            List<Map<String, Object>> ports, String occurrenceId) {
+            List<Map<String, Object>> ports, String occurrenceId,
+            TraceIndex trace) {
         // A declared cut port can appear twice: the region-level declaration
         // and, once a recorded delivery named it, this occurrence's own
         // stamped copy of it.
@@ -4816,6 +4785,11 @@ final class RuntimeRegionPlanner {
         for (Map<String, Object> port : ports) {
             if (!boundToInput(port, occurrenceId)) {
                 continue;
+            }
+            Map<String, Object> seedIdentity = trace.seedFieldIdentity(port);
+            if (!seedIdentity.isEmpty()) {
+                port.put(RuntimePlanArtifact.SEED_FIELD_IDENTITY,
+                        seedIdentity);
             }
             if (declaredCutPort(port)) {
                 if (stringValue(port.get("occurrenceId")).isEmpty()
@@ -5903,20 +5877,6 @@ final class RuntimeRegionPlanner {
                     ignored -> new ArrayList<>()).add(input);
         }
 
-        /** Selects one exact boundary port; distinct candidates fail closed. */
-        private static Map<String, Object> selectBoundary(
-                List<Map<String, Object>> candidates) {
-            if (candidates == null || candidates.isEmpty()) return null;
-            Map<String, Object> first = candidates.get(0);
-            String port = stringValue(first.get("portId"));
-            for (Map<String, Object> candidate : candidates) {
-                if (!port.equals(stringValue(candidate.get("portId")))) {
-                    return null;
-                }
-            }
-            return first;
-        }
-
         /** A configured boundary array may contribute several independently
          * replayable scalar occurrences at one static read site. */
         private static List<Map<String, Object>> selectBoundaries(
@@ -5943,9 +5903,7 @@ final class RuntimeRegionPlanner {
             if (boundedCandidates.isEmpty() || allConcreteResidual) {
                 return Collections.emptyList();
             }
-            Map<String, Object> one = selectBoundary(boundedCandidates);
-            return one == null ? Collections.emptyList()
-                    : Collections.singletonList(one);
+            return boundedCandidates;
         }
 
         private static long outputBoundarySeq(
@@ -6655,41 +6613,6 @@ final class RuntimeRegionPlanner {
             return result;
         }
 
-        /** Exact field reads below a planned function entry and before one
-         * selected interaction event. */
-        private List<FieldAccessEvent> fieldsThroughReplayEntry(
-                long rootCallId, String replayMethod, String receiverClass,
-                long boundarySeq) {
-            long eventCall = eventCallIdBySeq.uniqueValue(boundarySeq);
-            if (rootCallId <= 0L || eventCall <= 0L
-                    || replayMethod == null || replayMethod.isEmpty()
-                    || receiverClass == null || receiverClass.isEmpty()) {
-                return Collections.emptyList();
-            }
-            MethodEvent current = methodByCall.get(eventCall);
-            MethodEvent entry = null;
-            Set<Long> seen = new LinkedHashSet<>();
-            while (current != null && seen.add(current.callId)) {
-                if (replayMethod.equals(current.method)
-                        && receiverClass.equals(current.receiverType)) {
-                    entry = current;
-                }
-                if (current.callId == rootCallId) break;
-                current = methodByCall.get(current.parentCallId);
-            }
-            if (entry == null) return Collections.emptyList();
-            Set<Long> calls = subtreeThrough(entry.callId, boundarySeq);
-            List<FieldAccessEvent> result = new ArrayList<>();
-            for (FieldAccessEvent access : fields) {
-                if (access.seq > boundarySeq) break;
-                if ("FIELD_READ".equals(access.kind)
-                        && calls.contains(access.callId)) {
-                    result.add(access);
-                }
-            }
-            return result;
-        }
-
         private Set<String> methodNames(Set<Long> calls) {
             Set<String> result = new LinkedHashSet<>();
             for (Long call : calls) {
@@ -6745,6 +6668,52 @@ final class RuntimeRegionPlanner {
 
         private ProtocolEvent protocol(long seq) {
             return protocolBySeq.get(seq);
+        }
+
+        /** Exact seed field version observed by an accessor materialization.
+         * Concrete values deliberately do not participate in this identity. */
+        private Map<String, Object> seedFieldIdentity(
+                Map<String, Object> port) {
+            if (!"ACCESSOR_RETURN".equals(stringValue(
+                    port.get("sourceKind")))) {
+                return Collections.emptyMap();
+            }
+            String sourceKey = stringValue(port.get("sourceKey"));
+            long receiver = longNumber(port.get("fieldReceiverObjectId"),
+                    longNumber(port.get("receiverObjectId"), 0L));
+            List<String> declarations = strings(
+                    port.get("fieldPathDeclarations"));
+            String leaf = declarations.isEmpty()
+                    ? stringValue(port.get("declaredFieldSignature"))
+                    : declarations.get(declarations.size() - 1);
+            long readSeq = longNumber(port.get("eventSeq"), -1L);
+            long readCall = eventCallIdBySeq.uniqueValue(readSeq);
+            MethodEvent reader = methodByCall.get(readCall);
+            if (sourceKey.isEmpty() || receiver <= 0L || leaf.isEmpty()
+                    || readSeq < 0L || reader == null
+                    || !sourceKey.equals(reader.sourceKey)) {
+                return Collections.emptyMap();
+            }
+            long lastWriter = -1L;
+            for (FieldAccessEvent field : fields) {
+                if (field.seq >= readSeq) break;
+                MethodEvent owner = methodByCall.get(field.callId);
+                if ("FIELD_WRITE".equals(field.kind)
+                        && field.receiverObjectId == receiver
+                        && leaf.equals(field.field) && owner != null
+                        && sourceKey.equals(owner.sourceKey)) {
+                    lastWriter = field.seq;
+                }
+            }
+            Map<String, Object> identity = new LinkedHashMap<>();
+            identity.put("schemaVersion", 1);
+            identity.put("authority",
+                    RuntimePlanArtifact.SEED_FIELD_IDENTITY_AUTHORITY);
+            identity.put("sourceKey", sourceKey);
+            identity.put("receiverObjectId", receiver);
+            identity.put("leafFieldSignature", leaf);
+            identity.put("lastWriterEventSeq", lastWriter);
+            return identity;
         }
 
         /** Remote request span carried by an event's nearest recorded frame. */
@@ -6830,6 +6799,20 @@ final class RuntimeRegionPlanner {
                 corridor = path(rootCallId, caller);
             } catch (IllegalArgumentException ignored) {
                 return null;
+            }
+            MethodEvent outputCall = methodByCall.get(caller);
+            if (CausynthStaticFacts.constructor(outputCall.method)) {
+                for (MethodEvent candidate : methodByCall.values()) {
+                    if (candidate.objectId == outputCall.objectId
+                            && candidate.parentCallId
+                            == outputCall.parentCallId
+                            && candidate.parentSiteId
+                            == outputCall.parentSiteId
+                            && CausynthStaticFacts.constructor(
+                            candidate.method)) {
+                        corridor.add(candidate.callId);
+                    }
+                }
             }
             corridor.addAll(subtreeThrough(caller, outputEventSeq));
             return corridor;

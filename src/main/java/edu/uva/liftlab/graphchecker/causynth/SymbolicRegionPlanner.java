@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -278,6 +279,10 @@ final class SymbolicRegionPlanner {
             row.put("sourceKind",
                     RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT);
             row.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
+            if (JavaContainerTypes.shape(text(flow.get("javaType")))
+                    != JavaContainerTypes.Shape.NONE) {
+                row.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
+            }
             for (String field : new String[]{
                     CommunicationCatalogContract.PORT_NAME,
                     CommunicationCatalogContract.PORT_JAVA_TYPE,

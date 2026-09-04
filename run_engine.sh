@@ -634,6 +634,7 @@ do_reach() {
     --output "${reach_report}" \
     --z3 "${z3_bin}" \
     --timeout-ms "${solver_timeout_ms}" \
+    --workers "${concolic_worker_count}" \
     --max-inputs "${reach_max_inputs}" \
     --max-valuations "${reach_max_valuations}" "$@"
 }
@@ -822,10 +823,9 @@ campaign_require_json() {
     "${path}" >/dev/null
 }
 
-# Prints the solver's materializable configured-source witness without
-# exposing internal SMT term names as the user-facing identity.  sourceKey is
-# the tracing authority that distinguishes nodes/threads/epochs; sourceId and
-# sourcePhaseId distinguish several declared fields or phases on that source.
+# Prints every materializable symbolic root without exposing internal SMT
+# terms.  Configured fields and automatically selected region inputs share
+# this one model contract.
 campaign_print_symbolic_variable_models() {
   local report=$1 model_count
   campaign_require_json "Z3 symbolic variable report" "${report}" \
@@ -838,10 +838,12 @@ campaign_print_symbolic_variable_models() {
       and (.valuationOrdinal | type) == "number"
       and (.variables | type) == "array"
       and all(.variables[];
-        (.sourceKey | type) == "string" and (.sourceKey | length) > 0
-        and (.sourceId | type) == "string" and (.sourceId | length) > 0
-        and (.sourcePhaseId | type) == "string"
-        and (.fieldSignature | type) == "string"
+        (.inputKind == "CONFIGURED_SOURCE_FIELD"
+         and ([.sourceKey, .sourceId, .sourcePhaseId, .fieldSignature]
+              | all(type == "string" and length > 0))
+         or .inputKind == "REGION_INPUT_PORT"
+         and ([.occurrenceId, .portId]
+              | all(type == "string" and length > 0)))
         and has("value")))
   ' "${report}" >/dev/null || return 1
   model_count=$(jq -r '.symbolicVariableModels | length' "${report}")
@@ -849,12 +851,14 @@ campaign_print_symbolic_variable_models() {
     campaign_log "symbolic variables: no satisfying model"
     return 0
   fi
-  while IFS=$'\t' read -r valuation source_key source_id phase field value nullness; do
-    campaign_log "symbolic valuation=${valuation} source=${source_key} variable=${source_id} phase=${phase} field=${field} value=${value}${nullness:+ nullness=${nullness}}"
+  while IFS=$'\t' read -r valuation kind source variable phase field value nullness; do
+    campaign_log "symbolic valuation=${valuation} kind=${kind} source=${source} variable=${variable} phase=${phase} field=${field} value=${value}${nullness:+ nullness=${nullness}}"
   done < <(jq -r '
     .symbolicVariableModels[] as $model
     | $model.variables[]
-    | [$model.valuationOrdinal, .sourceKey, .sourceId, .sourcePhaseId,
+    | [$model.valuationOrdinal, .inputKind,
+       (.sourceKey // .occurrenceId), (.sourceId // .portId),
+       (.sourcePhaseId // ""),
        .fieldSignature, (.value | tostring),
        (.nullnessValue // "" | tostring)]
     | @tsv

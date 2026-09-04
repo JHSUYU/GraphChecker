@@ -14,7 +14,6 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NavigableMap;
-import java.util.Set;
 import java.util.TreeMap;
 
 import static org.junit.Assert.assertEquals;
@@ -56,14 +55,9 @@ public class RelationSummaryTest {
                 path.relationPathCondition().size());
     }
 
-    /**
-     * The guarded merge expands a versioned output into exactly one guarded
-     * case per version, and a merge that only partly covered its paths keeps
-     * the cases it did observe as a partial relation -- neither dropped nor
-     * promoted to a complete one.
-     */
+    /** A merge keeps one case per observed path and carries its versions. */
     @Test
-    public void versionedOutputExpandsToOneGuardedCasePerVersion() {
+    public void versionedOutputRemainsInOneBaseCase() {
         JsonObject summary = versionedSummary(3);
         PathObservation path = PathObservation.decode(summary, null);
         RelationSummary merged = RelationSummary.guardedPathMerge(
@@ -78,28 +72,21 @@ public class RelationSummaryTest {
 
         JsonArray cases = merged.toJson()
                 .getAsJsonObject("regionRelation").getAsJsonArray("cases");
-        assertEquals(3, cases.size());
-        Set<String> caseIds = new LinkedHashSet<>();
-        for (int index = 0; index < cases.size(); index++) {
-            JsonObject item = cases.get(index).getAsJsonObject();
-            caseIds.add(item.get("caseId").getAsString());
-            JsonArray conditions = item.getAsJsonObject("guard")
-                    .getAsJsonArray("conditions");
-            assertEquals(1, conditions.size());
-            JsonObject selection = conditions.get(0).getAsJsonObject();
-            assertTrue(BoundedOutputVersions.isVersionSelection(selection));
-            assertEquals(port(),
-                    selection.get("outputPort").getAsString());
-            assertEquals(3, selection.get("versionBound").getAsInt());
-            int ordinal = selection.get("versionOrdinal").getAsInt();
-            // The case binds exactly the expression of its own version.
-            JsonObject bound = item.getAsJsonObject("outputExpressions")
-                    .getAsJsonObject(port());
-            assertFalse(BoundedOutputVersions.isVersionSet(bound));
+        assertEquals(1, cases.size());
+        JsonObject item = cases.get(0).getAsJsonObject();
+        assertEquals(0, item.getAsJsonObject("guard")
+                .getAsJsonArray("conditions").size());
+        JsonObject versionSet = item.getAsJsonObject("outputExpressions")
+                .getAsJsonObject(port());
+        assertTrue(BoundedOutputVersions.isVersionSet(versionSet));
+        NavigableMap<Integer, JsonElement> versions =
+                BoundedOutputVersions.versions(versionSet);
+        assertEquals(3, versions.size());
+        for (int ordinal = 1; ordinal <= 3; ordinal++) {
             assertEquals("Y_I_" + ordinal,
-                    bound.get("_exp").getAsString());
+                    versions.get(ordinal).getAsJsonObject()
+                            .get("_exp").getAsString());
         }
-        assertEquals(3, caseIds.size());
 
         JsonObject partialSummary = versionedSummary(1);
         PathObservation partialPath = PathObservation.decode(
@@ -161,6 +148,9 @@ public class RelationSummaryTest {
         assertEquals(1, rowLevel.size());
         assertEquals("EDGE.AGREED", rowLevel.get(0).getAsJsonObject()
                 .get("edgeId").getAsString());
+        assertEquals("REGION.V/occurrence-1#a1",
+                rowLevel.get(0).getAsJsonObject()
+                        .get("toValueOccurrenceId").getAsString());
 
         JsonArray cases = row.getAsJsonObject("regionRelation")
                 .getAsJsonArray("cases");

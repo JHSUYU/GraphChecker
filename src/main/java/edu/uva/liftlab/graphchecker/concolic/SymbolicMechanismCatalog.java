@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicRootProposal.Decision;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicRootProposal.DecisionKind;
+import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 
 import java.util.ArrayList;
@@ -522,6 +523,13 @@ final class SymbolicMechanismCatalog {
                         || "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED".equals(
                         string(prior, "symbolicDemand"))) {
                     selected.add(prior.deepCopy());
+                    continue;
+                }
+                if ("EXACT_SEED_FIELD_VERSION".equals(
+                        string(action, "symbolicDemand"))
+                        && !RuntimePlanArtifact.seedFieldIdentityKey(action)
+                        .isEmpty()) {
+                    selected.add(action.deepCopy());
                     continue;
                 }
                 String candidateId = candidateId(action, anchors);

@@ -603,7 +603,8 @@ public final class RuntimeWorkflowDiscovery {
                     if (demand == null) demand = candidate.materialize();
                     ProducerChoice choice = new ProducerChoice(candidate,
                             demand, unresolved, frontier,
-                            selected.containsKey(candidate), anchors);
+                            selected.containsKey(candidate), anchors,
+                            producersByDownstream);
                     if (!choice.coveredEndpoints.isEmpty()) {
                         choices.add(choice);
                     }
@@ -974,7 +975,6 @@ public final class RuntimeWorkflowDiscovery {
                 .equals(evidence)
                 || AutomaticRegionEdge.CONTAINER_MUTATION_READ_FROM
                 .equals(evidence))
-                && longInteger(edge, "valueObjectId", 0L) != 0L
                 && AutomaticRegionEdge.trustedRuntimeReadFromBinding(edge);
     }
 
@@ -2221,7 +2221,10 @@ public final class RuntimeWorkflowDiscovery {
     /** Deterministic greedy choice among alternative producer relations. */
     private static final class ProducerChoice {
         private static final Comparator<ProducerChoice> ORDER =
-                Comparator.comparingInt(
+                Comparator.comparing(
+                        (ProducerChoice value) ->
+                                value.unbackedProtocolInput)
+                        .thenComparingInt(
                         (ProducerChoice value) ->
                                 -value.anchoredProductions)
                         .thenComparingLong(
@@ -2243,6 +2246,7 @@ public final class RuntimeWorkflowDiscovery {
         private final int unrelatedOutputs;
         private final int unrelatedInputs;
         private final int demandedInputs;
+        private final boolean unbackedProtocolInput;
         private final int anchoredProductions;
         private final long latestAnchoredProduction;
 
@@ -2250,7 +2254,9 @@ public final class RuntimeWorkflowDiscovery {
                                Set<Endpoint> unresolved,
                                CausalFrontier frontier,
                                boolean alreadySelected,
-                               CausalAnchorIndex anchors)
+                               CausalAnchorIndex anchors,
+                               Map<Endpoint, List<ProducerCandidate>>
+                                       producersByDownstream)
                 throws IOException {
             this.candidate = candidate;
             this.demand = demand;
@@ -2271,6 +2277,14 @@ public final class RuntimeWorkflowDiscovery {
                 selectedOutputs.add(member.portId());
                 Demand.addSliceInputs(selectedInputs, member);
             }
+            boolean unbacked = false;
+            for (String input : selectedInputs) {
+                Endpoint endpoint = new Endpoint(demand.occurrenceId, input);
+                unbacked |= CommunicationCatalogContract.declaredPortId(input)
+                        && !exactCausalProducer(endpoint,
+                        producersByDownstream, true);
+            }
+            unbackedProtocolInput = unbacked;
             OutputClosureContract closure = demand.goal.outputClosure();
             unrelatedEndpoints = candidate.downstreamEndpoints.size()
                     - coveredEndpoints.size();
@@ -2655,12 +2669,20 @@ public final class RuntimeWorkflowDiscovery {
                 compared = TargetRank.compareStateWriters(
                         left.rank, right.rank);
                 if (compared != 0) return compared;
-                if (TargetRank.sameStateWriters(left.rank, right.rank)) {
+                String request = string(left.plan.json(), "requestKey");
+                if (!request.isEmpty() && request.equals(string(
+                        right.plan.json(), "requestKey"))
+                        && TargetRank.sameStateWriters(
+                        left.rank, right.rank)) {
                     compared = Long.compare(left.rootCallId(),
                             right.rootCallId());
                     if (compared != 0) return compared;
                 }
             }
+            compared = Integer.compare(
+                    right.rank.observedSelectedSemanticGuards,
+                    left.rank.observedSelectedSemanticGuards);
+            if (compared != 0) return compared;
             compared = TargetRank.compareCost(left.rank, right.rank);
             if (compared != 0) return compared;
             compared = left.relationKey.compareTo(right.relationKey);
@@ -2770,13 +2792,6 @@ public final class RuntimeWorkflowDiscovery {
             compared = Boolean.compare(
                     right.propagatedBoundedStateTransition,
                     left.propagatedBoundedStateTransition);
-            if (compared != 0) return compared;
-            // Among equally closed/stateful targets, prefer the exact
-            // occurrence that actually exercised more semantic decisions in
-            // the selected producer members.
-            compared = Integer.compare(
-                    right.observedSelectedSemanticGuards,
-                    left.observedSelectedSemanticGuards);
             if (compared != 0) return compared;
             compared = Integer.compare(left.fatalInputs,
                     right.fatalInputs);

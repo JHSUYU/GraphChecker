@@ -32,6 +32,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
@@ -58,7 +64,9 @@ public final class BooleanReachConditionExtractor {
         validateArtifactBindings(arguments.smt, arguments.runtimePlan,
                 manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
-                arguments.timeoutMillis);
+                arguments.timeoutMillis,
+                array(manifest, "caseSelectorPartitions"),
+                arguments.workers);
         JsonObject report = extract(smt, manifest, regions, solver,
                 arguments.maxInputs, arguments.maxValuations);
         report.add("solverAttempts", solver.attempts());
@@ -167,18 +175,15 @@ public final class BooleanReachConditionExtractor {
                         }
                     }
                 }
-                JsonArray configuredWitness = configuredSourceWitness(
+                JsonArray modelWitness = symbolicWitness(
                         inputs, values, witness);
-                if (configuredWitness.size() > 0) {
-                    row.add("configuredSourceWitness",
-                            configuredWitness);
+                if (modelWitness.size() > 0) {
                     JsonObject symbolicModel = new JsonObject();
                     symbolicModel.addProperty("schemaVersion", 1);
                     symbolicModel.addProperty("kind",
                             SYMBOLIC_VARIABLE_MODEL_KIND);
                     symbolicModel.addProperty("valuationOrdinal", ordinal);
-                    symbolicModel.add("variables",
-                            configuredWitness.deepCopy());
+                    symbolicModel.add("variables", modelWitness);
                     symbolicVariableModels.add(symbolicModel);
                 }
             } else if (!"unsat".equals(status)) {
@@ -501,35 +506,103 @@ public final class BooleanReachConditionExtractor {
         private final long timeoutMillis;
         private final JsonObject artifact;
         private final JsonArray attempts = new JsonArray();
+        private final List<List<String>> casePartitions = new ArrayList<>();
+        private final int workers;
         private int queryOrdinal;
 
-        Z3Solver(String executable, long timeoutMillis) throws IOException {
+        Z3Solver(String executable, long timeoutMillis,
+                 JsonArray partitions, int workers) throws IOException {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
             this.executable = resolveExecutable(firstNonBlank(executable,
                     "z3"));
             this.artifact = ArtifactIO.artifact(this.executable);
+            this.workers = Math.max(1, workers);
+            for (JsonElement element : partitions) {
+                if (!element.isJsonArray()) continue;
+                List<String> partition = new ArrayList<>();
+                for (JsonElement selector : element.getAsJsonArray()) {
+                    if (selector.isJsonPrimitive()) {
+                        partition.add(selector.getAsString());
+                    }
+                }
+                if (!partition.isEmpty()
+                        && partition.size() <= this.workers) {
+                    casePartitions.add(partition);
+                }
+            }
         }
 
         JsonObject artifact() {
             return artifact.deepCopy();
         }
 
-        JsonArray attempts() {
+        synchronized JsonArray attempts() {
             return attempts.deepCopy();
         }
 
         ConcolicConstraintSolver.SolverOutput check(String smt)
                 throws IOException,
                 InterruptedException {
-            return attempt(queryOrdinal++, 0, "Z3", smt, "",
-                    timeoutMillis);
+            int currentQuery = queryOrdinal++;
+            PartitionPlan plan = splitPartitions(smt);
+            if (plan.primary.isEmpty()) {
+                return attempt(currentQuery, 0, "Z3", smt,
+                        timeoutMillis, Collections.emptyList());
+            }
+            List<PartitionQuery> queries = conditionedQueries(smt,
+                    plan.primary);
+            if (!plan.refinement.isEmpty()) {
+                queries.addAll(refinementQueries(queries,
+                        plan.refinement));
+                queries.sort(Comparator.comparingInt(
+                        query -> query.smt.length()));
+            }
+            ExecutorService pool = Executors.newFixedThreadPool(
+                    Math.min(workers, queries.size()));
+            CompletionService<ConcolicConstraintSolver.SolverOutput>
+                    completed = new ExecutorCompletionService<>(pool);
+            long waves = (queries.size() + workers - 1L) / workers;
+            long attemptTimeout = Math.max(1L, timeoutMillis / waves);
+            for (int index = 0; index < queries.size(); index++) {
+                final int ordinal = index;
+                PartitionQuery query = queries.get(index);
+                completed.submit(() -> attempt(currentQuery, ordinal,
+                        "CASE_FRONTIER_" + ordinal, query.smt,
+                        attemptTimeout, query.selectors));
+            }
+            ConcolicConstraintSolver.SolverOutput unsat = null;
+            ConcolicConstraintSolver.SolverOutput undecided = null;
+            try {
+                for (int index = 0; index < queries.size(); index++) {
+                    ConcolicConstraintSolver.SolverOutput result;
+                    try {
+                        result = completed.take().get();
+                    } catch (ExecutionException failed) {
+                        Throwable cause = failed.getCause();
+                        if (cause instanceof IOException) {
+                            throw (IOException) cause;
+                        }
+                        if (cause instanceof InterruptedException) {
+                            throw (InterruptedException) cause;
+                        }
+                        throw new IOException("partition solver failed", cause);
+                    }
+                    if ("sat".equals(result.status())) return result;
+                    if ("unsat".equals(result.status())) unsat = result;
+                    else undecided = result;
+                }
+                return undecided == null ? unsat : undecided;
+            } finally {
+                pool.shutdownNow();
+                pool.awaitTermination(10, TimeUnit.SECONDS);
+            }
         }
 
         private ConcolicConstraintSolver.SolverOutput attempt(
                 int currentQuery, int ordinal, String strategy,
-                String baseQuery, String options, long attemptTimeout)
+                String query, long attemptTimeout,
+                List<String> selectedCaseSelectors)
                 throws IOException, InterruptedException {
-            String query = options + baseQuery;
             long started = System.nanoTime();
             ConcolicConstraintSolver.SolverOutput result =
                     ConcolicConstraintSolver.run(executable, query,
@@ -540,15 +613,146 @@ public final class BooleanReachConditionExtractor {
             row.addProperty("queryOrdinal", currentQuery);
             row.addProperty("attemptOrdinal", ordinal);
             row.addProperty("strategy", strategy);
-            row.addProperty("baseQuerySha256",
-                    ArtifactIO.sha256(baseQuery));
             row.addProperty("solverQuerySha256", ArtifactIO.sha256(query));
+            if (!selectedCaseSelectors.isEmpty()) {
+                row.add("selectedCaseSelectors",
+                        GSON.toJsonTree(selectedCaseSelectors));
+            }
             row.addProperty("timeoutMillis", attemptTimeout);
             row.addProperty("elapsedMillis", elapsedMillis);
             row.addProperty("status", result.status());
-            row.addProperty("options", options.trim());
-            attempts.add(row);
+            synchronized (this) {
+                attempts.add(row);
+            }
             return result;
+        }
+
+        private PartitionPlan splitPartitions(String smt) {
+            Map<List<String>, Long> scores = new LinkedHashMap<>();
+            List<List<String>> selected = new ArrayList<>();
+            List<List<String>> ranked = new ArrayList<>();
+            for (List<String> partition : casePartitions) {
+                if (partition.size() == 1) {
+                    selected.add(partition);
+                    continue;
+                }
+                long score = 0;
+                for (int chosen = 0; chosen < partition.size(); chosen++) {
+                    score += smt.length()
+                            - condition(smt, partition, chosen).length();
+                }
+                scores.put(partition, score / partition.size());
+                ranked.add(partition);
+            }
+            ranked.sort(Comparator.comparingLong(scores::get).reversed());
+            long combinations = 1L;
+            long limit = (long) workers * workers;
+            List<String> refinement = Collections.emptyList();
+            for (List<String> partition : ranked) {
+                if (combinations > limit / partition.size()) {
+                    if (refinement.isEmpty()) refinement = partition;
+                    continue;
+                }
+                selected.add(partition);
+                combinations *= partition.size();
+            }
+            return new PartitionPlan(selected, refinement);
+        }
+
+        private static String condition(String smt, List<String> partition,
+                                        int chosen) {
+            return simplify(replaceSelectors(smt, partition, chosen));
+        }
+
+        private static String replaceSelectors(String smt,
+                                               List<String> partition,
+                                               int chosen) {
+            String result = smt;
+            for (int index = 0; index < partition.size(); index++) {
+                String selector = partition.get(index);
+                result = result.replace("(declare-const " + selector
+                        + " Bool)", "");
+                result = result.replace(selector,
+                        index == chosen ? "true" : "false");
+            }
+            return result;
+        }
+
+        private static String simplify(String smt) {
+            return SmtLibQueries.dropUnusedDefinitions(
+                    SmtLibQueries.propagateAssertedComparisons(
+                            SmtLibQueries.foldConstants(smt)));
+        }
+
+        private static List<PartitionQuery> conditionedQueries(
+                String smt, List<List<String>> partitions) {
+            List<List<Integer>> assignments = new ArrayList<>();
+            assignments.add(Collections.emptyList());
+            for (List<String> partition : partitions) {
+                List<List<Integer>> expanded = new ArrayList<>();
+                for (List<Integer> assignment : assignments) {
+                    for (int chosen = 0; chosen < partition.size(); chosen++) {
+                        List<Integer> next = new ArrayList<>(assignment);
+                        next.add(chosen);
+                        expanded.add(next);
+                    }
+                }
+                assignments = expanded;
+            }
+            List<PartitionQuery> result = new ArrayList<>();
+            for (List<Integer> assignment : assignments) {
+                String query = smt;
+                List<String> selectors = new ArrayList<>();
+                for (int index = 0; index < partitions.size(); index++) {
+                    List<String> partition = partitions.get(index);
+                    int chosen = assignment.get(index);
+                    selectors.add(partition.get(chosen));
+                    query = replaceSelectors(query, partition, chosen);
+                }
+                result.add(new PartitionQuery(simplify(query), selectors));
+            }
+            result.sort(Comparator.comparingInt(query -> query.smt.length()));
+            return result;
+        }
+
+        private List<PartitionQuery> refinementQueries(
+                List<PartitionQuery> parents, List<String> partition) {
+            List<PartitionQuery> result = new ArrayList<>();
+            for (int parentIndex = 0;
+                 parentIndex < Math.min(workers, parents.size());
+                 parentIndex++) {
+                PartitionQuery parent = parents.get(parentIndex);
+                for (int chosen = 0; chosen < partition.size(); chosen++) {
+                    List<String> selectors = new ArrayList<>(
+                            parent.selectors);
+                    selectors.add(partition.get(chosen));
+                    result.add(new PartitionQuery(
+                            condition(parent.smt, partition, chosen),
+                            selectors));
+                }
+            }
+            return result;
+        }
+
+        private static final class PartitionPlan {
+            private final List<List<String>> primary;
+            private final List<String> refinement;
+
+            private PartitionPlan(List<List<String>> primary,
+                                  List<String> refinement) {
+                this.primary = primary;
+                this.refinement = refinement;
+            }
+        }
+
+        private static final class PartitionQuery {
+            private final String smt;
+            private final List<String> selectors;
+
+            private PartitionQuery(String smt, List<String> selectors) {
+                this.smt = smt;
+                this.selectors = selectors;
+            }
         }
 
         private static Path resolveExecutable(String requested)
@@ -658,6 +862,10 @@ public final class BooleanReachConditionExtractor {
                 result.addProperty("inputKind", "REGION_INPUT_PORT");
                 result.addProperty("portId", port.id);
                 result.addProperty("occurrenceId", occurrenceId);
+                if (!port.fieldSignature.isEmpty()) {
+                    result.addProperty("fieldSignature",
+                            port.fieldSignature);
+                }
             }
             result.addProperty("javaTypeDescriptor", port.descriptor);
             result.addProperty("solverTerm", solverTerm);
@@ -794,25 +1002,19 @@ public final class BooleanReachConditionExtractor {
         return witness;
     }
 
-    /** Materializable configured fields, separated from anonymous ports. */
-    private static JsonArray configuredSourceWitness(
+    /** Every materializable symbolic root in one satisfying model. */
+    private static JsonArray symbolicWitness(
             List<RootInput> booleanRoots, boolean[] booleanValues,
             JsonArray existentialWitness) {
         JsonArray result = new JsonArray();
         for (int index = 0; index < booleanRoots.size(); index++) {
             RootInput root = booleanRoots.get(index);
-            if (!root.port.configuredSource) continue;
             JsonObject row = root.toJson();
             row.addProperty("value", booleanValues[index]);
             result.add(row);
         }
         for (JsonElement element : existentialWitness) {
-            if (!element.isJsonObject()) continue;
-            JsonObject row = element.getAsJsonObject();
-            if ("CONFIGURED_SOURCE_FIELD".equals(
-                    string(row, "inputKind"))) {
-                result.add(row.deepCopy());
-            }
+            if (element.isJsonObject()) result.add(element.deepCopy());
         }
         return result;
     }
@@ -935,7 +1137,11 @@ public final class BooleanReachConditionExtractor {
                     String id = string(row, "portId");
                     if (!id.isEmpty()) {
                         result.inputs.put(id, new PortInfo(id,
-                                MaterializationSpec.logicalJavaType(row)));
+                                MaterializationSpec.logicalJavaType(row),
+                                false, firstNonBlank(
+                                string(row, "leafFieldSignature"),
+                                string(row, "declaredFieldSignature"),
+                                string(row, "cell"))));
                     }
                 }
             }
@@ -1177,6 +1383,7 @@ public final class BooleanReachConditionExtractor {
         private long timeoutMillis = 20_000L;
         private int maxInputs = 12;
         private int maxValuations = 4096;
+        private int workers = 8;
 
         private static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<>();
@@ -1210,6 +1417,7 @@ public final class BooleanReachConditionExtractor {
             result.maxInputs = positiveInt(values.get("max-inputs"), 12);
             result.maxValuations = positiveInt(values.get(
                     "max-valuations"), 4096);
+            result.workers = positiveInt(values.get("workers"), 8);
             return result;
         }
 
@@ -1219,7 +1427,8 @@ public final class BooleanReachConditionExtractor {
                     || "output".equals(key) || "z3".equals(key)
                     || "timeout-ms".equals(key)
                     || "max-inputs".equals(key)
-                    || "max-valuations".equals(key);
+                    || "max-valuations".equals(key)
+                    || "workers".equals(key);
         }
 
         private static Path required(Map<String, String> values,

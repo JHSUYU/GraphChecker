@@ -2091,7 +2091,7 @@ public class ConcolicSmtComposerTest {
                     Arrays.asList(targetRegion,
                             region("REGION.1", false, true)),
                     new BooleanReachConditionExtractor.Z3Solver(
-                            "z3", 20_000L), 8, 64);
+                            "z3", 20_000L, new JsonArray(), 1), 8, 64);
             JsonArray models = reach.getAsJsonArray(
                     BooleanReachConditionExtractor
                             .SYMBOLIC_VARIABLE_MODELS);
@@ -3171,7 +3171,8 @@ public class ConcolicSmtComposerTest {
         return BooleanReachConditionExtractor.extract(result.smtLib, manifest,
                 Arrays.asList(region("REGION.0", true, false),
                         region("REGION.1", true, true)),
-                new BooleanReachConditionExtractor.Z3Solver("z3", 20_000L),
+                new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1),
                 8, 64).getAsJsonObject("reachCondition");
     }
 

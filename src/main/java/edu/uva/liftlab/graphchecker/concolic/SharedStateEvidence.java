@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -420,6 +421,38 @@ public final class SharedStateEvidence {
                 + locationKey.substring(slot);
     }
 
+    /** Binding identity after removing replay-local location spelling. */
+    static JsonObject comparableBinding(JsonObject binding) {
+        String location = string(binding, "locationKey");
+        String comparable = location;
+        if (!location.isEmpty() && !location.contains("@receiver:")) {
+            String canonical = canonicalLocationKey(location,
+                    string(binding, RecordedReadFrom.EDGE_FIELD),
+                    PathObservation.plannedOccurrenceOf(
+                            string(binding, "toOccurrenceId")),
+                    longInteger(binding, "receiverObjectId", 0L));
+            if (!canonical.isEmpty()) comparable = canonical;
+        }
+        comparable = plannedLocationKey(comparable);
+        JsonObject copy = binding.deepCopy();
+        copy.remove(SESSION_LOCATION_FIELD);
+        if (!comparable.equals(location)) {
+            copy.addProperty("locationKey", comparable);
+        }
+        return copy;
+    }
+
+    private static String plannedLocationKey(String locationKey) {
+        int kind = locationKey.indexOf('/');
+        if (kind <= 0) return locationKey;
+        int receiver = locationKey.indexOf('@', kind + 1);
+        if (receiver <= kind + 1) return locationKey;
+        String occurrence = PathObservation.plannedOccurrenceOf(
+                locationKey.substring(kind + 1, receiver));
+        return locationKey.substring(0, kind + 1) + occurrence
+                + locationKey.substring(receiver);
+    }
+
     public static String sessionLocationKey(JsonObject row) {
         String session = string(row, SESSION_LOCATION_FIELD);
         return session.isEmpty() ? string(row, "locationKey") : session;
@@ -549,7 +582,7 @@ public final class SharedStateEvidence {
         }
     }
 
-    private static long associativeStateOwner(String symbol) {
+    static long associativeStateOwner(String symbol) {
         if (symbol == null || !symbol.startsWith("M_L")) return 0L;
         int separator = symbol.lastIndexOf('_');
         if (separator < 0 || separator + 1 >= symbol.length()) return 0L;
@@ -579,8 +612,12 @@ public final class SharedStateEvidence {
 
     private static void rename(JsonObject row, String session,
                                String canonical) {
-        if (row.has(SESSION_LOCATION_FIELD)) return;
-        row.addProperty(SESSION_LOCATION_FIELD, session);
+        String heldSession = string(row, SESSION_LOCATION_FIELD);
+        if (!heldSession.isEmpty()
+                && !heldSession.equals(string(row, "locationKey"))) return;
+        if (heldSession.isEmpty()) {
+            row.addProperty(SESSION_LOCATION_FIELD, session);
+        }
         row.addProperty("locationKey", canonical);
     }
 

@@ -112,7 +112,6 @@ public class RecordedReadFromTest {
         evicted.getAsJsonArray("versions").get(1).getAsJsonObject()
                 .remove(SharedStateEvidence.WRITER_OCCURRENCE_ID);
         RecordedReadFrom partial = index(evicted);
-        assertFalse(partial.writerSetComplete(FIELD, siteOf(READER)));
         JsonArray evictedRun = candidateEdges();
         partial.resolve(rows(evictedRun));
         assertEquals(SharedStateEvidence.UNKNOWN_WRITER_SELECTOR,
@@ -172,8 +171,6 @@ public class RecordedReadFromTest {
                 otherObjectStore(bothReads));
         assertEquals(RecordedReadFrom.Decision.NO_RECORDED_EVIDENCE,
                 ambiguous.decide(FIELD, siteOf(WRITER_A), siteOf(READER)));
-        assertEquals("", ambiguous.locationKey(FIELD, siteOf(READER)));
-        assertFalse(ambiguous.writerSetComplete(FIELD, siteOf(READER)));
     }
 
     @Test
@@ -209,6 +206,33 @@ public class RecordedReadFromTest {
                 index.decide(FIELD, siteOf(WRITER_A), siteOf(READER)));
     }
 
+    @Test
+    public void aUniquePredecessorFeedsItsExactEntryPort() {
+        String port = READER + ".in.value";
+        JsonObject initial = version(11L, READER, "TASK.reader",
+                symbol("M_I_field_" + port + "_example/State"),
+                SharedStateEvidence.emptyConjunction());
+        initial.addProperty("versionKind", "INITIAL");
+        JsonArray versions = new JsonArray();
+        versions.add(initial);
+        RecordedReadFrom index = index(versionsEnvelope(7L, 24, versions,
+                new JsonArray()));
+
+        JsonObject selected = tracedEntryCandidate(WRITER_A, port);
+        assertEquals(1, index.resolve(Collections.singletonList(selected)));
+        assertEquals(RecordedReadFrom.PROVENANCE_INITIAL_BOUNDARY,
+                selected.get(RecordedReadFrom.EDGE_PROVENANCE).getAsString());
+        assertFalse(selected.has(RecordedReadFrom.EDGE_PROVENANCE_GAP));
+
+        JsonObject first = tracedEntryCandidate(WRITER_A, port);
+        JsonObject second = tracedEntryCandidate(WRITER_B, port);
+        assertEquals(0, index.resolve(Arrays.asList(first, second)));
+        assertEquals(RecordedReadFrom.PROVENANCE_CANDIDATE,
+                first.get(RecordedReadFrom.EDGE_PROVENANCE).getAsString());
+        assertEquals(RecordedReadFrom.PROVENANCE_CANDIDATE,
+                second.get(RecordedReadFrom.EDGE_PROVENANCE).getAsString());
+    }
+
     /** A second object holding the same declared field. */
     private static JsonObject otherObjectStore(JsonArray reads) {
         JsonArray versions = new JsonArray();
@@ -242,6 +266,27 @@ public class RecordedReadFromTest {
                 RecordedReadFrom.PROVENANCE_CANDIDATE);
         edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE_GAP,
                 "SHARED_STATE_NOT_SELECTED");
+        return edge;
+    }
+
+    private static JsonObject tracedEntryCandidate(String writerRegion,
+                                                   String inputPort) {
+        JsonObject edge = candidateEdge(writerRegion);
+        edge.addProperty("schemaVersion", 3);
+        edge.addProperty("kind", "RUNTIME_FIELD_FLOW");
+        edge.addProperty("state", "CONFIRMED_RUNTIME_IDENTITY");
+        edge.addProperty("evidenceKind",
+                AutomaticRegionEdge.FIELD_ASSIGNMENT_READ_FROM);
+        edge.addProperty("correlationAuthority",
+                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
+        edge.addProperty("fromOutputPort", writerRegion + ".out.value");
+        edge.addProperty("toInputPort", inputPort);
+        edge.addProperty("receiverObjectId", 7L);
+        edge.addProperty("writerEventSeq", 10L);
+        edge.addProperty("readerEventSeq", 11L);
+        edge.addProperty("writerLaneId", 1);
+        edge.addProperty("readerLaneId", 1);
+        edge.addProperty("programOrderRequired", true);
         return edge;
     }
 

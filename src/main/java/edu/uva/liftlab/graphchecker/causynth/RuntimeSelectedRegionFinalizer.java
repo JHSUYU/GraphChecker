@@ -368,6 +368,8 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, Map<String, Object>> activationsById =
                 program.activationsByActivationId();
         Map<String, Map<String, Object>> regionsById = program.regionsById();
+        Map<String, Map<Long, Integer>> captureOrdinals =
+                communicationCaptureOrdinals(activationsById.values());
         List<Map<String, Object>> flows = new ArrayList<>();
         Set<String> emitted = new LinkedHashSet<>();
         for (Map<String, Object> link : occurrenceLinks == null
@@ -416,11 +418,13 @@ public final class RuntimeSelectedRegionFinalizer {
                         link.get("senderEventSeq"), -1L);
                 long receiverEventSeq = longNumber(
                         link.get("receiverEventSeq"), -1L);
-                if (!observedCommunicationCapture(from, "OUT", portId,
-                        exchangeLeg, senderEventSeq)
-                        || !observedCommunicationCapture(
+                Set<Integer> sent = observedCommunicationCaptureOrdinals(
+                        from, "OUT", portId, exchangeLeg, senderEventSeq,
+                        captureOrdinals);
+                Set<Integer> received = observedCommunicationCaptureOrdinals(
                         exactTo, "IN", portId, exchangeLeg,
-                        receiverEventSeq)) {
+                        receiverEventSeq, captureOrdinals);
+                if (Collections.disjoint(sent, received)) {
                     continue;
                 }
                 String identity = text(from.get("occurrenceId")) + "\n"
@@ -441,10 +445,45 @@ public final class RuntimeSelectedRegionFinalizer {
         return flows;
     }
 
-    private static boolean observedCommunicationCapture(
+    private static Map<String, Map<Long, Integer>>
+    communicationCaptureOrdinals(
+            Collection<Map<String, Object>> activations) {
+        Map<String, Set<Long>> events = new LinkedHashMap<>();
+        for (Map<String, Object> activation : activations) {
+            for (Map<String, Object> capture : rows(activation.get(
+                    OBSERVED_COMMUNICATION_CAPTURES))) {
+                String key = captureOrdinalKey(capture);
+                long event = longNumber(capture.get("eventSeq"), -1L);
+                if (!key.isEmpty() && event >= 0L) {
+                    events.computeIfAbsent(key,
+                            ignored -> new TreeSet<>()).add(event);
+                }
+            }
+        }
+        Map<String, Map<Long, Integer>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Set<Long>> entry : events.entrySet()) {
+            Map<Long, Integer> ordinals = new LinkedHashMap<>();
+            int ordinal = 0;
+            for (Long event : entry.getValue()) ordinals.put(event, ordinal++);
+            result.put(entry.getKey(), ordinals);
+        }
+        return result;
+    }
+
+    private static String captureOrdinalKey(Map<String, Object> capture) {
+        String side = text(capture.get("side"));
+        String port = text(capture.get("portId"));
+        String exchange = text(capture.get("exchangeLeg"));
+        return side.isEmpty() || port.isEmpty() || exchange.isEmpty() ? ""
+                : side + '\n' + port + '\n' + exchange;
+    }
+
+    private static Set<Integer> observedCommunicationCaptureOrdinals(
             Map<String, Object> activation, String side, String portId,
-            String exchangeLeg, long transportEventSeq) {
-        if (exchangeLeg.isEmpty() || transportEventSeq < 0L) return false;
+            String exchangeLeg, long transportEventSeq,
+            Map<String, Map<Long, Integer>> captureOrdinals) {
+        Set<Integer> result = new LinkedHashSet<>();
+        if (exchangeLeg.isEmpty() || transportEventSeq < 0L) return result;
         for (Map<String, Object> capture : rows(activation.get(
                 OBSERVED_COMMUNICATION_CAPTURES))) {
             long capturedAt = longNumber(capture.get("eventSeq"), -1L);
@@ -456,10 +495,13 @@ public final class RuntimeSelectedRegionFinalizer {
                     && ("OUT".equals(side)
                     ? capturedAt >= 0L && capturedAt < transportEventSeq
                     : capturedAt > transportEventSeq)) {
-                return true;
+                Integer ordinal = captureOrdinals.getOrDefault(
+                        captureOrdinalKey(capture),
+                        Collections.<Long, Integer>emptyMap()).get(capturedAt);
+                if (ordinal != null) result.add(ordinal);
             }
         }
-        return false;
+        return result;
     }
 
     /**
@@ -1234,7 +1276,7 @@ public final class RuntimeSelectedRegionFinalizer {
                             producedAt);
                     addDemands(next, demands.priorCommunicationInputs(
                             fromOccurrence, producedAt), producedAt);
-                    addDemands(next, demands.priorHeapValueInputs(
+                    addDemands(next, demands.priorValueInputs(
                             fromOccurrence, producedAt), producedAt);
                 }
             }
@@ -2422,12 +2464,13 @@ public final class RuntimeSelectedRegionFinalizer {
         if (demanded.isEmpty() || runtimeObservations == null) {
             return Collections.emptyList();
         }
-        Map<Long, String> occurrenceByCall = new LinkedHashMap<>();
+        Map<Long, List<String>> occurrencesByCall = new LinkedHashMap<>();
         for (Map.Entry<String, Map<String, Object>> activation
                 : program.activations.entrySet()) {
             for (Long callId : StaticProgram.longValues(
                     activation.getValue().get("callIds"))) {
-                occurrenceByCall.put(callId, activation.getKey());
+                occurrencesByCall.computeIfAbsent(callId,
+                        ignored -> new ArrayList<>()).add(activation.getKey());
             }
         }
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
@@ -2452,48 +2495,50 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 long callId = longNumber(observation.get("callId"), -1L);
-                String occurrenceId = occurrenceByCall.get(callId);
-                if (occurrenceId == null) continue;
-                String stream = occurrenceId + "\n" + callId + "\n"
-                        + site;
-                int ordinal = ordinals.getOrDefault(stream, 0) + 1;
-                ordinals.put(stream, ordinal);
-                String key = stream + "\n" + ordinal;
-                Map<String, Object> port = new LinkedHashMap<>();
-                port.put("occurrenceId", occurrenceId);
-                port.put("portId", portId(regionId, ".in.", key));
-                port.put("cell", text(edge.get("fromCell")));
-                port.put("sourceKind", EXTERNAL_CALL_RETURN);
-                port.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
-                port.put("transportKind", "ACTIVATION_LOCAL");
-                port.put("rootKind", "CALL_RETURN");
-                port.put("javaType", javaType);
-                port.put("method", caller);
-                port.put("rootMethod", caller);
-                port.put("callerMethod", caller);
-                port.put("definitionMethod", caller);
-                port.put("unitIndex", unitIndex);
-                port.put("definitionUnitIndex", unitIndex);
-                port.put("siteId", site);
-                port.put("staticAccessSiteId", site);
-                port.put("declaredCallee", callee);
-                port.put("eventSeq", observation.get("eventSeq"));
-                port.put("callId", callId);
-                port.put("primitiveValue",
-                        observation.get("primitiveValue"));
-                port.put("dependencyCells",
-                        Collections.singletonList(text(edge.get("toCell"))));
-                port.put("replayOccurrence", ordinal);
-                port.put("observed", true);
-                for (String context : new String[]{"callSourceKey",
-                        "requestKey", "requestApi"}) {
-                    if (!text(observation.get(context)).isEmpty()) {
-                        port.put("callSourceKey".equals(context)
-                                ? "sourceKey" : context,
-                                observation.get(context));
+                List<String> occurrenceIds = occurrencesByCall.get(callId);
+                if (occurrenceIds == null) continue;
+                for (String occurrenceId : occurrenceIds) {
+                    String stream = occurrenceId + "\n" + callId + "\n"
+                            + site;
+                    int ordinal = ordinals.getOrDefault(stream, 0) + 1;
+                    ordinals.put(stream, ordinal);
+                    String key = stream + "\n" + ordinal;
+                    Map<String, Object> port = new LinkedHashMap<>();
+                    port.put("occurrenceId", occurrenceId);
+                    port.put("portId", portId(regionId, ".in.", key));
+                    port.put("cell", text(edge.get("fromCell")));
+                    port.put("sourceKind", EXTERNAL_CALL_RETURN);
+                    port.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
+                    port.put("transportKind", "ACTIVATION_LOCAL");
+                    port.put("rootKind", "CALL_RETURN");
+                    port.put("javaType", javaType);
+                    port.put("method", caller);
+                    port.put("rootMethod", caller);
+                    port.put("callerMethod", caller);
+                    port.put("definitionMethod", caller);
+                    port.put("unitIndex", unitIndex);
+                    port.put("definitionUnitIndex", unitIndex);
+                    port.put("siteId", site);
+                    port.put("staticAccessSiteId", site);
+                    port.put("declaredCallee", callee);
+                    port.put("eventSeq", observation.get("eventSeq"));
+                    port.put("callId", callId);
+                    port.put("primitiveValue",
+                            observation.get("primitiveValue"));
+                    port.put("dependencyCells", Collections.singletonList(
+                            text(edge.get("toCell"))));
+                    port.put("replayOccurrence", ordinal);
+                    port.put("observed", true);
+                    for (String context : new String[]{"callSourceKey",
+                            "requestKey", "requestApi"}) {
+                        if (!text(observation.get(context)).isEmpty()) {
+                            port.put("callSourceKey".equals(context)
+                                    ? "sourceKey" : context,
+                                    observation.get(context));
+                        }
                     }
+                    unique.put(key, port);
                 }
-                unique.put(key, port);
             }
         }
         return new ArrayList<>(unique.values());
@@ -2846,19 +2891,24 @@ public final class RuntimeSelectedRegionFinalizer {
 
     private static Boolean consistentRequiredOutcome(
             Collection<Map<String, Object>> guards) {
-        Set<Boolean> values = requiredOutcomes(guards);
-        return values.size() == 1 ? values.iterator().next() : null;
-    }
-
-    /** The distinct Jimple outcomes these guards were proved to require. */
-    private static Set<Boolean> requiredOutcomes(
-            Collection<Map<String, Object>> guards) {
         Set<Boolean> values = new LinkedHashSet<>();
         for (Map<String, Object> guard : guards) {
-            Boolean value = booleanValue(guard.get("requiredOutcome"));
-            if (value != null) values.add(value);
+            List<Map<String, Object>> controlled = new ArrayList<>();
+            controlled.addAll(rows(guard.get("guardedMutations")));
+            controlled.addAll(rows(guard.get("controlledDefinitions")));
+            controlled.addAll(rows(guard.get("guardedEffects")));
+            if (controlled.isEmpty()) {
+                Boolean value = booleanValue(guard.get("requiredOutcome"));
+                if (value != null) values.add(value);
+                continue;
+            }
+            for (Map<String, Object> row : controlled) {
+                Boolean value = booleanValue(row.get("requiredOutcome"));
+                if (value == null) return null;
+                values.add(value);
+            }
         }
-        return values;
+        return values.size() == 1 ? values.iterator().next() : null;
     }
 
     /** Classifies only positively proven structural traversal guards. */
@@ -3568,14 +3618,16 @@ public final class RuntimeSelectedRegionFinalizer {
             return result;
         }
 
-        /**
-         * Exact observed heap reads in this occurrence before one demanded
-         * output was published.
-         */
-        private List<String> priorHeapValueInputs(
+        /** Exact observed value inputs before one demanded output. */
+        private List<String> priorValueInputs(
                 String occurrenceId, long producedAt) {
             if (producedAt < 0L) return Collections.emptyList();
             return instanceInputs(occurrenceId, port -> {
+                if ("ACCESSOR_RETURN".equals(
+                        text(port.get("sourceKind")))) {
+                    long event = longNumber(port.get("eventSeq"), -1L);
+                    return event >= 0L && event <= producedAt;
+                }
                 if (!"HEAP".equals(text(port.get("transportKind")))
                         || !DependencyRole.valueFrontier(
                         port.get("dependencyRole"))) {

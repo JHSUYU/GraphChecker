@@ -16,6 +16,59 @@ import static org.junit.Assert.assertTrue;
 public class BooleanReachConditionExtractorSolverTest {
 
     @Test
+    public void exactOneCasePartitionsAreSplitWithoutLosingSat()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String reduced = SmtLibQueries.dropUnusedDefinitions(
+                "(define-fun base () Int 1)\n"
+                        + "(define-fun live () Int (+ base 1))\n"
+                        + "(define-fun dead () Int 3)\n"
+                        + "(assert (= live 2))\n");
+        assertTrue(reduced.contains("define-fun base"));
+        assertTrue(reduced.contains("define-fun live"));
+        assertTrue(!reduced.contains("define-fun dead"));
+        assertEquals("(assert live)\n",
+                SmtLibQueries.foldConstants(
+                        "(assert (and true"
+                                + " (or false (ite false dead live))))\n"));
+        String propagated = SmtLibQueries.propagateAssertedComparisons(
+                "(define-fun selected () Int (ite (< expiry now) 1 2))\n"
+                        + "(assert (! (>= expiry now) :named path))\n");
+        assertTrue(propagated.contains(
+                "(define-fun selected () Int 2)"));
+        assertTrue(propagated.contains("(>= expiry now)"));
+        JsonArray selectors = new JsonArray();
+        selectors.add("case_selector__zero");
+        selectors.add("case_selector__one");
+        JsonArray second = new JsonArray();
+        second.add("case_selector__alpha");
+        second.add("case_selector__beta");
+        JsonArray partitions = new JsonArray();
+        partitions.add(selectors);
+        partitions.add(second);
+        BooleanReachConditionExtractor.Z3Solver solver =
+                new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, partitions, 2);
+
+        ConcolicConstraintSolver.SolverOutput answer = solver.check(
+                "(declare-const case_selector__zero Bool)\n"
+                        + "(declare-const case_selector__one Bool)\n"
+                        + "(declare-const case_selector__alpha Bool)\n"
+                        + "(declare-const case_selector__beta Bool)\n"
+                        + "(assert (= (+ (ite case_selector__zero 1 0)"
+                        + " (ite case_selector__one 1 0)) 1))\n"
+                        + "(assert (= (+ (ite case_selector__alpha 1 0)"
+                        + " (ite case_selector__beta 1 0)) 1))\n"
+                        + "(assert (not case_selector__zero))\n"
+                        + "(assert (not case_selector__alpha))\n"
+                        + "(check-sat)\n");
+
+        assertEquals("sat", answer.status());
+        assertTrue(solver.attempts().toString().contains(
+                "selectedCaseSelectors"));
+    }
+
+    @Test
     public void configuredLongSourceIsPublishedWithItsSolverWitness()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -30,8 +83,7 @@ public class BooleanReachConditionExtractorSolverTest {
                 + "(assert (= source__a 7))\n"
                 + "(check-sat)\n";
         BooleanReachConditionExtractor.Z3Solver solver =
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L);
+                solver();
 
         JsonObject report = BooleanReachConditionExtractor.extract(
                 smt, manifest, Collections.<JsonObject>emptyList(), solver,
@@ -41,9 +93,11 @@ public class BooleanReachConditionExtractorSolverTest {
                 report.get("state").getAsString());
         assertEquals(1, report.getAsJsonObject("roots")
                 .getAsJsonArray("existentialInputs").size());
-        JsonObject witness = report.getAsJsonArray("valuations")
-                .get(0).getAsJsonObject()
-                .getAsJsonArray("configuredSourceWitness")
+        JsonArray models = report.getAsJsonArray(
+                BooleanReachConditionExtractor.SYMBOLIC_VARIABLE_MODELS);
+        assertEquals(models.toString(), 1, models.size());
+        JsonObject model = models.get(0).getAsJsonObject();
+        JsonObject witness = model.getAsJsonArray("variables")
                 .get(0).getAsJsonObject();
         assertEquals("SOURCE.A", witness.get("sourceId").getAsString());
         assertEquals("node/dn0#1",
@@ -53,13 +107,7 @@ public class BooleanReachConditionExtractorSolverTest {
         assertEquals(sourcePhase("SOURCE.A", "a"),
                 witness.get("sourcePhaseId").getAsString());
         assertEquals("7", witness.get("value").getAsString());
-        JsonArray models = report.getAsJsonArray(
-                BooleanReachConditionExtractor.SYMBOLIC_VARIABLE_MODELS);
-        assertEquals(models.toString(), 1, models.size());
-        JsonObject model = models.get(0).getAsJsonObject();
         assertEquals(0, model.get("valuationOrdinal").getAsInt());
-        assertEquals(witness,
-                model.getAsJsonArray("variables").get(0).getAsJsonObject());
         // One base solve plus one rejected neighboring value.  Witness
         // extraction is part of the base query and does not repeat it.
         assertEquals(solver.attempts().toString(), 2,
@@ -89,8 +137,7 @@ public class BooleanReachConditionExtractorSolverTest {
 
         JsonObject report = BooleanReachConditionExtractor.extract(
                 smt, manifest, Collections.<JsonObject>emptyList(),
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L), 8, 64);
+                solver(), 8, 64);
 
         JsonArray models = report.getAsJsonArray(
                 BooleanReachConditionExtractor.SYMBOLIC_VARIABLE_MODELS);
@@ -138,8 +185,7 @@ public class BooleanReachConditionExtractorSolverTest {
 
         JsonObject report = BooleanReachConditionExtractor.extract(
                 smt, manifest, Collections.<JsonObject>emptyList(),
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L), 8, 64);
+                solver(), 8, 64);
 
         assertEquals("CANDIDATE_READY", report.get("state").getAsString());
         JsonArray roots = report.getAsJsonObject("roots")
@@ -159,8 +205,7 @@ public class BooleanReachConditionExtractorSolverTest {
         JsonObject missingReport = BooleanReachConditionExtractor.extract(
                 "(check-sat)\n", missing,
                 Collections.<JsonObject>emptyList(),
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L), 8, 64);
+                solver(), 8, 64);
         assertEquals("CANDIDATE_WITH_GAPS",
                 missingReport.get("state").getAsString());
         assertTrue(missingReport.getAsJsonArray("gaps").toString(),
@@ -177,8 +222,7 @@ public class BooleanReachConditionExtractorSolverTest {
                 BooleanReachConditionExtractor.extract(
                         "(check-sat)\n", undeclared,
                         Collections.<JsonObject>emptyList(),
-                        new BooleanReachConditionExtractor.Z3Solver(
-                                "z3", 20_000L), 8, 64);
+                        solver(), 8, 64);
         assertEquals("CANDIDATE_WITH_GAPS",
                 undeclaredReport.get("state").getAsString());
         assertTrue(undeclaredReport.getAsJsonArray("gaps").toString(),
@@ -199,8 +243,7 @@ public class BooleanReachConditionExtractorSolverTest {
                         "(declare-const source__a Int)\n(check-sat)\n",
                         missingPhase,
                         Collections.<JsonObject>emptyList(),
-                        new BooleanReachConditionExtractor.Z3Solver(
-                                "z3", 20_000L), 8, 64);
+                        solver(), 8, 64);
         assertEquals("CANDIDATE_WITH_GAPS",
                 missingPhaseReport.get("state").getAsString());
         assertTrue(missingPhaseReport.getAsJsonArray("gaps").toString(),
@@ -217,8 +260,7 @@ public class BooleanReachConditionExtractorSolverTest {
                 .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, new JsonArray());
         addUnsatClosure(open, false, true, false);
         BooleanReachConditionExtractor.Z3Solver solver =
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L);
+                solver();
 
         JsonObject sat = BooleanReachConditionExtractor.extract(
                 "(assert true)\n(check-sat)\n", open,
@@ -229,8 +271,7 @@ public class BooleanReachConditionExtractorSolverTest {
         JsonObject unsat = BooleanReachConditionExtractor.extract(
                 "(assert false)\n(check-sat)\n", open,
                 Collections.<JsonObject>emptyList(),
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L), 8, 64);
+                solver(), 8, 64);
         assertEquals("UNKNOWN", unsat.getAsJsonObject("reachCondition")
                 .get("reachability").getAsString());
         assertEquals("INCONCLUSIVE_OPEN_PATH_CLOSURE",
@@ -250,8 +291,7 @@ public class BooleanReachConditionExtractorSolverTest {
         JsonObject report = BooleanReachConditionExtractor.extract(
                 "(assert false)\n(check-sat)\n", closed,
                 Collections.<JsonObject>emptyList(),
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L), 8, 64);
+                solver(), 8, 64);
 
         assertEquals("UNREACHABLE", report.getAsJsonObject("reachCondition")
                 .get("reachability").getAsString());
@@ -269,6 +309,12 @@ public class BooleanReachConditionExtractorSolverTest {
                 ConcolicSmtComposer.FINAL_READY);
         manifest.add("portOccurrences", new JsonArray());
         return manifest;
+    }
+
+    private static BooleanReachConditionExtractor.Z3Solver solver()
+            throws Exception {
+        return new BooleanReachConditionExtractor.Z3Solver(
+                "z3", 20_000L, new JsonArray(), 1);
     }
 
     private static void addUnsatClosure(JsonObject manifest,

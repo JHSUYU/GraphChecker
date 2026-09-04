@@ -3230,15 +3230,18 @@ public final class ConcolicConstraintSolver {
         try (OutputStream stream = process.getOutputStream()) {
             stream.write(input.getBytes(StandardCharsets.UTF_8));
         }
-        boolean finished = process.waitFor(timeoutMillis,
-                TimeUnit.MILLISECONDS);
-        if (!finished) {
+        try {
+            if (process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
+                return new SolverOutput(false,
+                        readAll(process.getInputStream()));
+            }
             process.destroyForcibly();
             process.waitFor();
             return new SolverOutput(true, "");
+        } catch (InterruptedException interrupted) {
+            process.destroyForcibly();
+            throw interrupted;
         }
-        String stdout = readAll(process.getInputStream());
-        return new SolverOutput(false, stdout);
     }
 
     private static String readAll(InputStream stream) throws IOException {

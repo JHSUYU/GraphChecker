@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -31,6 +30,9 @@ public final class RecordedReadFrom {
     public static final String PROVENANCE_EXACT = "VM_RECORDED_EXACT";
     /** Provenance stamped on an edge the recorded evidence kept guarded. */
     public static final String PROVENANCE_GUARDED = "VM_RECORDED_GUARDED";
+    /** A runtime predecessor feeding the VM's exact region-entry state. */
+    public static final String PROVENANCE_INITIAL_BOUNDARY =
+            "VM_RECORDED_INITIAL_BOUNDARY";
     public static final String PROVENANCE_CANDIDATE =
             "TRACE_CANDIDATE_WRITER";
     /** Provenance stamped on a candidate the recorded evidence ruled out. */
@@ -153,11 +155,11 @@ public final class RecordedReadFrom {
      * The one location of {@code field} that recorded a read by this reader.
      */
     private Location deciding(String field, String readerSite) {
-        return deciding(field, readerSite, 0L);
+        return deciding(field, readerSite, 0L, "");
     }
 
     private Location deciding(String field, String readerSite,
-                              long receiverObjectId) {
+                              long receiverObjectId, String inputPort) {
         if (readerSite == null || readerSite.isEmpty()) return null;
         List<Location> matches = new ArrayList<>();
         for (Location location : locations(field)) {
@@ -165,7 +167,7 @@ public final class RecordedReadFrom {
                     && receiverObjectId != location.receiverObjectId) {
                 continue;
             }
-            if (!location.reads(readerSite)) continue;
+            if (!location.reads(readerSite, inputPort)) continue;
             matches.add(location);
         }
         if (matches.size() == 1) return matches.get(0);
@@ -193,16 +195,18 @@ public final class RecordedReadFrom {
      */
     public Decision decide(String field, String writerSite,
                            String readerSite) {
-        return decide(field, writerSite, readerSite, 0L);
-    }
-
-    private Decision decide(String field, String writerSite,
-                            String readerSite, long receiverObjectId) {
-        Location location = deciding(field, readerSite, receiverObjectId);
+        Location location = deciding(field, readerSite);
         if (location == null || writerSite == null || writerSite.isEmpty()) {
             return Decision.NO_RECORDED_EVIDENCE;
         }
         return location.decide(writerSite, readerSite);
+    }
+
+    /** Whether provenance carries a selected value into the composition. */
+    public static boolean selected(String provenance) {
+        return PROVENANCE_EXACT.equals(provenance)
+                || PROVENANCE_GUARDED.equals(provenance)
+                || PROVENANCE_INITIAL_BOUNDARY.equals(provenance);
     }
 
     /**
@@ -218,78 +222,52 @@ public final class RecordedReadFrom {
         return sites.size() != 1 ? "" : sites.iterator().next();
     }
 
-    /** The location this reader's recorded read was performed on, or "". */
-    public String locationKey(String field, String readerSite) {
-        Location location = deciding(field, readerSite);
-        return location == null ? "" : location.locationKey;
-    }
-
-    private String locationKey(String field, String readerSite,
-                               long receiverObjectId) {
-        Location location = deciding(field, readerSite, receiverObjectId);
-        return location == null ? "" : location.locationKey;
-    }
-
-    /**
-     * Whether every writer of one field is both recorded and addressable.
-     */
-    public boolean writerSetComplete(String field, String readerSite) {
-        Location location = deciding(field, readerSite);
-        return location != null && location.writerSetComplete
-                && location.unaddressableWriters == 0;
-    }
-
-    private boolean writerSetComplete(String field, String readerSite,
-                                      long receiverObjectId) {
-        Location location = deciding(field, readerSite, receiverObjectId);
-        return location != null && location.writerSetComplete
-                && location.unaddressableWriters == 0;
-    }
-
-    /**
-     * Whether the VM dropped read-log entries for this field's location.
-     */
-    public boolean readLogTruncated(String field, String readerSite) {
-        Location location = deciding(field, readerSite);
-        return location != null && location.readLogTruncated;
-    }
-
-    private boolean readLogTruncated(String field, String readerSite,
-                                     long receiverObjectId) {
-        Location location = deciding(field, readerSite, receiverObjectId);
-        return location != null && location.readLogTruncated;
-    }
-
-    private String exactWriterSite(String field, String readerSite,
-                                   long receiverObjectId,
-                                   String requestedWriter) {
-        Location location = deciding(field, readerSite, receiverObjectId);
-        return location == null ? ""
-                : location.writerSite(requestedWriter, readerSite);
-    }
-
-    private String exactReaderSite(String field, String readerSite,
-                                   long receiverObjectId) {
-        Location location = deciding(field, readerSite, receiverObjectId);
-        return location == null ? "" : location.readerSite(readerSite);
-    }
-
-    private String sessionLocationKey(String field, String readerSite,
-                                      long receiverObjectId) {
-        Location location = deciding(field, readerSite, receiverObjectId);
-        return location == null ? "" : location.sessionLocationKey;
-    }
-
-
     /**
      * Resolves the trace's candidate writers against this run's recorded
      */
     public int resolve(Iterable<JsonObject> bindings) {
         int decided = 0;
         if (bindings == null) return 0;
+        List<JsonObject> rows = new ArrayList<>();
+        Map<String, Set<String>> boundaryPredecessors =
+                new LinkedHashMap<>();
         for (JsonObject binding : bindings) {
-            if (binding == null || !PROVENANCE_CANDIDATE.equals(
-                    string(binding, EDGE_PROVENANCE))) {
+            if (binding == null) continue;
+            rows.add(binding);
+            String provenance = string(binding, EDGE_PROVENANCE);
+            if ((!PROVENANCE_CANDIDATE.equals(provenance)
+                    && !(PROVENANCE_EXCLUDED.equals(provenance)
+                    && SharedStateEvidence.reason(
+                    SharedStateEvidence.NOT_SELECTED).equals(
+                    string(binding, EDGE_PROVENANCE_GAP)))
+                    && !PROVENANCE_INITIAL_BOUNDARY.equals(provenance))
+                    || !AutomaticRegionEdge
+                    .trustedRuntimeReadFromBinding(binding)) {
+                continue;
+            }
+            String field = string(binding, EDGE_FIELD);
+            String readerSite = RecordedEvidenceIdentity.siteKey(
+                    string(binding, "toOccurrenceId"));
+            long receiverObjectId = longInteger(binding,
+                    "receiverObjectId", 0L);
+            Location location = deciding(field, readerSite,
+                    receiverObjectId, string(binding, "toInputPort"));
+            if (location != null && location.readsInitial(readerSite,
+                    string(binding, "toInputPort"))) {
+                boundaryPredecessors.computeIfAbsent(boundaryKey(binding),
+                        ignored -> new LinkedHashSet<>()).add(
+                        string(binding, "edgeId") + "\n"
+                                + string(binding, "fromOccurrenceId") + "\n"
+                                + string(binding, "fromOutputPort"));
+            }
+        }
+        for (JsonObject binding : rows) {
+            String provenance = string(binding, EDGE_PROVENANCE);
+            if (!PROVENANCE_CANDIDATE.equals(provenance)
+                    && !(PROVENANCE_EXCLUDED.equals(provenance)
+                    && SharedStateEvidence.reason(
+                    SharedStateEvidence.NOT_SELECTED).equals(
+                    string(binding, EDGE_PROVENANCE_GAP)))) {
                 continue;
             }
             String field = string(binding, EDGE_FIELD);
@@ -302,57 +280,76 @@ public final class RecordedReadFrom {
             }
             long receiverObjectId = longInteger(binding,
                     "receiverObjectId", 0L);
-            Decision decision = decide(field,
-                    RecordedEvidenceIdentity.siteKey(
-                            writerOccurrence),
-                    readerSite, receiverObjectId);
-            if (!decision.decides()) continue;
+            Location readLocation = deciding(field, readerSite,
+                    receiverObjectId, string(binding, "toInputPort"));
+            String writerSite = RecordedEvidenceIdentity.siteKey(
+                    writerOccurrence);
+            Decision decision = readLocation == null
+                    ? Decision.NO_RECORDED_EVIDENCE
+                    : readLocation.decide(writerSite, readerSite);
+            boolean initialBoundary = readLocation != null
+                    && readLocation.readsInitial(readerSite,
+                    string(binding, "toInputPort"))
+                    && !writerSite.equals(readerSite)
+                    && AutomaticRegionEdge
+                    .trustedRuntimeReadFromBinding(binding)
+                    && boundaryPredecessors.getOrDefault(
+                    boundaryKey(binding), Collections.emptySet()).size()
+                    == 1;
+            if (!decision.decides() && !initialBoundary) continue;
             decided++;
-            String exactWriter = exactWriterSite(field, readerSite,
-                    receiverObjectId, writerOccurrence);
+            String exactWriter = readLocation.writerSite(writerOccurrence,
+                    readerSite);
             if (!exactWriter.isEmpty()) {
                 binding.addProperty("fromValueOccurrenceId", exactWriter);
             }
-            String exactReader = exactReaderSite(field, readerSite,
-                    receiverObjectId);
+            String exactReader = readLocation.readerSite(readerSite);
             if (!exactReader.isEmpty()) {
                 binding.addProperty("toValueOccurrenceId", exactReader);
             }
-            binding.addProperty(EDGE_PROVENANCE, decision.provenance());
+            binding.addProperty(EDGE_PROVENANCE, initialBoundary
+                    ? PROVENANCE_INITIAL_BOUNDARY
+                    : decision.provenance());
             binding.remove(EDGE_PROVENANCE_GAP);
-            String location = locationKey(field, readerSite,
-                    receiverObjectId);
+            String location = readLocation.locationKey;
             if (!location.isEmpty()) {
                 binding.addProperty("locationKey", location);
             }
-            String sessionLocation = sessionLocationKey(field, readerSite,
-                    receiverObjectId);
+            String sessionLocation = readLocation.sessionLocationKey;
             if (!sessionLocation.isEmpty()) {
                 binding.addProperty(
                         SharedStateEvidence.SESSION_LOCATION_FIELD,
                         sessionLocation);
             }
-            if (decision == Decision.RECORDED_EXCLUDED) {
+            if (decision == Decision.RECORDED_EXCLUDED && !initialBoundary) {
                 binding.addProperty(EDGE_PROVENANCE_GAP,
                         SharedStateEvidence.reason(
                                 SharedStateEvidence.NOT_SELECTED));
             }
             // The unknown arm is a property of the location, not of the arm
             // that happens to be selected: a writer set that is incomplete or
-            if (!writerSetComplete(field, readerSite, receiverObjectId)) {
+            if (!readLocation.writerSetComplete
+                    || readLocation.unaddressableWriters != 0) {
                 binding.addProperty(EDGE_UNKNOWN_ARM,
                         SharedStateEvidence.UNKNOWN_WRITER_SELECTOR);
                 // A truncated read log is an open writer set for a different
                 // reason, and the difference is what a reader acts on, so it
                 binding.addProperty(EDGE_PROVENANCE_GAP,
                         SharedStateEvidence.reason(
-                                readLogTruncated(field, readerSite,
-                                        receiverObjectId)
+                                readLocation.readLogTruncated
                                 ? SharedStateEvidence.READ_LOG_TRUNCATED
                                 : SharedStateEvidence.UNKNOWN_WRITER));
             }
         }
         return decided;
+    }
+
+    private static String boundaryKey(JsonObject binding) {
+        return string(binding, EDGE_FIELD) + "\n"
+                + RecordedEvidenceIdentity.siteKey(string(binding,
+                "toOccurrenceId")) + "\n"
+                + longInteger(binding, "receiverObjectId", 0L) + "\n"
+                + string(binding, "toInputPort");
     }
 
     /**
@@ -417,7 +414,12 @@ public final class RecordedReadFrom {
         private final Set<String> guardedReaders = new LinkedHashSet<>();
         private final Map<String, Set<String>> exactWriters =
                 new LinkedHashMap<>();
-        /** Exact selected edge ids of planned producer-state reads. */
+        /** Whether every exact read at one site selected its local INITIAL. */
+        private final Map<String, Boolean> initialReaders =
+                new LinkedHashMap<>();
+        /** Entry symbols published by selecting a symbolized input field. */
+        private final Map<String, Set<String>> initialSymbols =
+                new LinkedHashMap<>();
         /** Activations of each static region, for region-only callers. */
         private final Map<String, Set<String>> sitesByRegion =
                 new LinkedHashMap<>();
@@ -464,6 +466,7 @@ public final class RecordedReadFrom {
             readLogTruncated = readLogTruncated
                     || SharedStateEvidence.readLogTruncated(envelope);
             Map<Long, String> siteByVersion = new LinkedHashMap<>();
+            Set<Long> initialVersions = new LinkedHashSet<>();
             for (JsonElement element : array(envelope, "versions")) {
                 JsonObject version = element.getAsJsonObject();
                 String site = SharedStateEvidence.writerSite(version);
@@ -475,6 +478,13 @@ public final class RecordedReadFrom {
                 }
                 siteByVersion.put(longInteger(version, "fieldVersionId", 0L),
                         site);
+                if ("INITIAL".equals(string(version, "versionKind"))) {
+                    initialVersions.add(longInteger(version,
+                            "fieldVersionId", 0L));
+                    collectSymbols(version.get("expression"),
+                            initialSymbols.computeIfAbsent(site,
+                                    ignored -> new LinkedHashSet<>()));
+                }
                 writers.add(site);
                 register(string(version, "regionId"), site);
             }
@@ -488,12 +498,12 @@ public final class RecordedReadFrom {
                     String writer = siteByVersion.get(longInteger(read,
                             "chosenFieldVersionId", 0L));
                     if (writer == null) continue;
-                    Set<String> exact = exactWriters.get(reader);
-                    if (exact == null) {
-                        exact = new LinkedHashSet<>();
-                        exactWriters.put(reader, exact);
-                    }
-                    exact.add(writer);
+                    exactWriters.computeIfAbsent(reader,
+                            ignored -> new LinkedHashSet<>()).add(writer);
+                    initialReaders.merge(reader,
+                            initialVersions.contains(longInteger(read,
+                                    "chosenFieldVersionId", 0L)),
+                            (left, right) -> left && right);
                 } else {
                     guardedReaders.add(reader);
                 }
@@ -501,19 +511,68 @@ public final class RecordedReadFrom {
         }
 
         /** Whether this store recorded a read performed by {@code site}. */
-        private boolean reads(String site) {
-            if (exactWriters.containsKey(site)
-                    || guardedReaders.contains(site)) {
+        private boolean reads(String site, String inputPort) {
+            return containsSite(exactWriters.keySet(), site)
+                    || containsSite(guardedReaders, site)
+                    || initialInput(site, inputPort);
+        }
+
+        /** The read's selected value is precisely this replay region's input. */
+        private boolean readsInitial(String reader, String inputPort) {
+            if (!caseMembers.isEmpty()) {
+                for (Location member : caseMembers) {
+                    if (!member.readsInitial(reader, inputPort)) return false;
+                }
                 return true;
             }
-            String address = planned(site);
-            for (String reader : exactWriters.keySet()) {
-                if (address.equals(planned(reader))) return true;
+            Boolean direct = initialReaders.get(reader);
+            if (direct != null) return direct;
+            if (containsSite(guardedReaders, reader)) return false;
+            String address = planned(reader);
+            Boolean result = null;
+            for (Map.Entry<String, Boolean> entry
+                    : initialReaders.entrySet()) {
+                if (!address.equals(planned(entry.getKey()))) continue;
+                result = result == null ? entry.getValue()
+                        : result && entry.getValue();
             }
-            for (String reader : guardedReaders) {
-                if (address.equals(planned(reader))) return true;
+            return result == null
+                    ? initialInput(reader, inputPort)
+                    : result;
+        }
+
+        private boolean initialInput(String reader, String inputPort) {
+            if (inputPort == null || inputPort.isEmpty()) return false;
+            String address = planned(reader);
+            for (Map.Entry<String, Set<String>> entry
+                    : initialSymbols.entrySet()) {
+                if (!address.equals(planned(entry.getKey()))) continue;
+                for (String symbol : entry.getValue()) {
+                    if (symbol.equals(inputPort) || symbol.contains(
+                            "_field_" + inputPort + "_")) return true;
+                }
             }
             return false;
+        }
+
+        private static void collectSymbols(JsonElement element,
+                                           Set<String> symbols) {
+            if (element == null || element.isJsonNull()) return;
+            if (element.isJsonArray()) {
+                for (JsonElement child : element.getAsJsonArray()) {
+                    collectSymbols(child, symbols);
+                }
+                return;
+            }
+            if (!element.isJsonObject()) return;
+            JsonObject object = element.getAsJsonObject();
+            if ("SymbolExpression".equals(string(object, "_type"))) {
+                String symbol = string(object, "_exp");
+                if (!symbol.isEmpty()) symbols.add(symbol);
+            }
+            for (Map.Entry<String, JsonElement> child : object.entrySet()) {
+                collectSymbols(child.getValue(), symbols);
+            }
         }
 
         private Decision decide(String writer, String reader) {
@@ -595,32 +654,26 @@ public final class RecordedReadFrom {
                 return sites.size() == 1
                         ? sites.iterator().next() : "";
             }
-            if (writers.contains(requested)) return requested;
-            String address = planned(requested);
-            String answer = "";
-            for (String writer : writers) {
-                if (!address.equals(planned(writer))) continue;
-                if (!answer.isEmpty() && !answer.equals(writer)) return "";
-                answer = writer;
-            }
-            return answer;
+            return uniqueSite(writers, requested);
         }
 
         private String readerSite(String requested) {
             if (!caseMembers.isEmpty()) return "";
-            if (exactWriters.containsKey(requested)
-                    || guardedReaders.contains(requested)) {
-                return requested;
-            }
-            String address = planned(requested);
-            String answer = "";
             Set<String> readers = new LinkedHashSet<>(
                     exactWriters.keySet());
             readers.addAll(guardedReaders);
-            for (String reader : readers) {
-                if (!address.equals(planned(reader))) continue;
-                if (!answer.isEmpty() && !answer.equals(reader)) return "";
-                answer = reader;
+            return uniqueSite(readers, requested);
+        }
+
+        private static String uniqueSite(Set<String> sites,
+                                         String requested) {
+            if (sites.contains(requested)) return requested;
+            String address = planned(requested);
+            String answer = "";
+            for (String site : sites) {
+                if (!address.equals(planned(site))) continue;
+                if (!answer.isEmpty() && !answer.equals(site)) return "";
+                answer = site;
             }
             return answer;
         }
@@ -642,45 +695,8 @@ public final class RecordedReadFrom {
 
         private void register(String regionId, String site) {
             if (regionId == null || regionId.isEmpty()) return;
-            Set<String> sites = sitesByRegion.get(regionId);
-            if (sites == null) {
-                sites = new LinkedHashSet<>();
-                sitesByRegion.put(regionId, sites);
-            }
-            sites.add(site);
+            sitesByRegion.computeIfAbsent(regionId,
+                    ignored -> new LinkedHashSet<>()).add(site);
         }
-    }
-
-
-    /** One artifact-ready description of what the index decided from. */
-    public JsonObject toJson() {
-        JsonObject index = new JsonObject();
-        index.addProperty("schemaVersion", 1);
-        index.addProperty("kind", "RECORDED_READ_FROM_INDEX");
-        index.addProperty("authority", AUTHORITY);
-        JsonArray fields = new JsonArray();
-        // One row per watched location, never one per declared field: a field
-        // several objects share is several stores, and averaging them into
-        for (Map.Entry<String, Map<String, Location>> entry
-                : byField.entrySet()) {
-            for (Location location : entry.getValue().values()) {
-                JsonObject row = new JsonObject();
-                row.addProperty("field", entry.getKey());
-                row.addProperty("locationKey", location.locationKey);
-                row.addProperty("writerSetComplete",
-                        location.writerSetComplete
-                                && location.unaddressableWriters == 0);
-                row.addProperty("readLogTruncated", location.readLogTruncated);
-                row.addProperty("writerSites", location.writers.size());
-                row.addProperty("unaddressableWriters",
-                        location.unaddressableWriters);
-                row.addProperty("exactReaders", location.exactWriters.size());
-                row.addProperty("guardedReaders",
-                        location.guardedReaders.size());
-                fields.add(row);
-            }
-        }
-        index.add("fields", fields);
-        return index;
     }
 }

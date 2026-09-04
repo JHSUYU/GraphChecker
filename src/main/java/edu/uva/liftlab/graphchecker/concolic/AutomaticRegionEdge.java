@@ -202,8 +202,7 @@ public final class AutomaticRegionEdge {
         if (!trustedRuntimeCompositionBinding(binding)) return false;
         String provenance = string(binding,
                 RecordedReadFrom.EDGE_PROVENANCE);
-        return RecordedReadFrom.PROVENANCE_EXACT.equals(provenance)
-                || RecordedReadFrom.PROVENANCE_GUARDED.equals(provenance);
+        return RecordedReadFrom.selected(provenance);
     }
 
     /**
@@ -218,8 +217,7 @@ public final class AutomaticRegionEdge {
         }
         String provenance = string(binding,
                 RecordedReadFrom.EDGE_PROVENANCE);
-        return !RecordedReadFrom.PROVENANCE_EXACT.equals(provenance)
-                && !RecordedReadFrom.PROVENANCE_GUARDED.equals(provenance);
+        return !RecordedReadFrom.selected(provenance);
     }
 
     public static boolean trustedReadFromEvidence(JsonObject evidence) {
@@ -251,12 +249,15 @@ public final class AutomaticRegionEdge {
         long writerContainer = longInteger(evidence, "valueObjectId", 0L);
         long readerContainer = longInteger(evidence,
                 "readerValueObjectId", 0L);
-        return fieldRead >= 0L && enter > fieldRead
+        return integer(evidence, "schemaVersion", -1) == 3
+                && "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1".equals(
+                string(evidence, "correlationAuthority"))
+                && fieldRead >= 0L && enter > fieldRead
                 && completion > enter && writer == completion
                 && fieldReceiver != 0L
                 && longInteger(evidence, "mutationInvocationId", 0L) > 0L
                 && writerContainer != 0L
-                && readerContainer != 0L
+                && writerContainer == readerContainer
                 && observedChannelOrder(evidence, completion);
     }
 

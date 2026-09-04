@@ -549,7 +549,6 @@ public final class ConcolicRegionRuntime {
         CURRENT_TOKEN.remove();
         ROOT_INVOCATION_FRAMES.remove();
         CURRENT_ACCESSOR_CALL_CONTEXT.remove();
-        beforePublicationDecodeForTests = null;
         synchronized (PUBLICATION_LOCK) {
             if (resultPublicationsInFlight != 0) {
                 throw new IllegalStateException(
@@ -1468,7 +1467,6 @@ public final class ConcolicRegionRuntime {
         if (active == null || owner == null) return;
         int occurrence = active.materializationOccurrences.field(
                 method, unitIndex);
-        selectAccessOwnerSharedCarriers(active, owner, fieldSignature);
         // An accessor can be an exact causal slot without being a new symbolic
         // live-in.
         // Every occurrence riding this activation, not only the one it was
@@ -1500,7 +1498,11 @@ public final class ConcolicRegionRuntime {
                     break;
                 }
             }
-            if (!composedInput) return;
+            if (!composedInput) {
+                selectAccessOwnerSharedCarriers(active, owner,
+                        fieldSignature);
+                return;
+            }
         }
         active.snapshotReferenceAliasSources(owner);
         for (SymbolizeAction action : claimed) {
@@ -1633,6 +1635,7 @@ public final class ConcolicRegionRuntime {
                         + rootCause(throwable));
             }
         }
+        selectAccessOwnerSharedCarriers(active, owner, fieldSignature);
     }
 
     static boolean writeObservedPrimitiveField(
@@ -2729,10 +2732,6 @@ public final class ConcolicRegionRuntime {
         public double d;
         public Object o;
     }
-
-    /** Symbolic demand of a field a configured source mints per occurrence. */
-    private static final String CONFIGURED_SOURCE_FIELD_DEMAND =
-            "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED";
 
     private static final String CARRIER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime"
@@ -4966,7 +4965,6 @@ public final class ConcolicRegionRuntime {
         writeSkipped(active.activation, skipKind, reason, null);
     }
 
-    /** Releases an incomplete candidate so a later invocation can answer. */
     /** Ends one selected occurrence at its declared boundary. */
     private static void finish(long token, String exitKind,
                                String exceptionType, Object output) {
@@ -5290,13 +5288,6 @@ public final class ConcolicRegionRuntime {
                 rawEngineSummary, rawSharedState);
     }
 
-    /** Test-only gate run immediately before asynchronous JSON decoding. */
-    private static volatile Runnable beforePublicationDecodeForTests;
-
-    static void setBeforePublicationDecodeForTests(Runnable gate) {
-        beforePublicationDecodeForTests = gate;
-    }
-
     /** Transfers one completed native read-out to the bounded daemon pool. */
     private static boolean submitCompletedResultPublication(
             final ActiveRegion active, final JsonObject result,
@@ -5342,8 +5333,6 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, JsonObject result,
             String rawEngineSummary, RawSharedStateReadOut rawSharedState) {
         try {
-            Runnable gate = beforePublicationDecodeForTests;
-            if (gate != null) gate.run();
             assembleRecordedSharedState(active, rawSharedState);
             addRecordedSharedStateToResult(result, active,
                     rawSharedState == null ? evidenceIdentity(active)
@@ -7478,7 +7467,6 @@ public final class ConcolicRegionRuntime {
         /** Terminal outcome, frozen when the occurrence stops running. */
         private boolean abandoned;
         private boolean closed;
-        /** A selected response input attached; later requests are new hops. */
         /** Loop bodies this activation has charged. */
         private volatile long chargedLoopBodies;
         /**
@@ -7523,7 +7511,6 @@ public final class ConcolicRegionRuntime {
         /** Exact configured source roots materialized by this activation. */
         private final Map<String, JsonObject> symbolicSources =
                 new LinkedHashMap<>();
-        /** Replay ordinal of each exact configured-source hook site. */
         /**
          * Mint sites, and the fields they mint, this activation reached.
          *
@@ -8178,19 +8165,6 @@ public final class ConcolicRegionRuntime {
                 }
             }
             return false;
-        }
-
-        /** The occurrence that declared one demanded binding. */
-        private RuntimeTask owningClaimant(String captureBindingId) {
-            if (activation.outputCapture(captureBindingId) != null) {
-                return activation;
-            }
-            for (RuntimeTask sibling : siblingClaimants) {
-                if (sibling.outputCapture(captureBindingId) != null) {
-                    return sibling;
-                }
-            }
-            return activation;
         }
 
         /**
@@ -10330,8 +10304,6 @@ public final class ConcolicRegionRuntime {
             return branchPolicies.containsKey(safe(siteId));
         }
 
-        /** Whether this branch event is the target this task selected. */
-        /** Whether this task selected a target branch event at all. */
         /** The next activation ordinal of this address. */
         private synchronized int nextActivationOrdinal() {
             return ++publishedActivations;

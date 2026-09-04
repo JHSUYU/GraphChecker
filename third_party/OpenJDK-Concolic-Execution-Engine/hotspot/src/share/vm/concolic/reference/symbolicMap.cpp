@@ -39,21 +39,23 @@ static bool is_entry_map_iterator(oop receiver) {
       || name->equals("java/util/LinkedHashMap$LinkedEntryIterator");
 }
 
-// The key expression of the element a map iterator's next() just returned, or
-// NULL if this iterator does not name an element whose key we can recover.  A
-// key iterator returns the key itself; an entry iterator returns the node,
-// whose declared `key` field is read directly (removeExpiredKeys never calls
-// getKey()).  Either way the result is the same Y_I_<keyId> const the map's
-// PUT and get use for that key, so a REMOVE_IF argument compares like for like.
-static Expression *iterated_entry_key(oop cursor, oop result_object) {
-  if (result_object == NULL) return NULL;
+// Preserve the key as a projection of the iterator's symbolic input state.
+// A concrete replay may populate the same map with different keys, so folding
+// the returned object here would break composition across executions.
+static Expression *iterated_entry_key(oop cursor, oop result_object,
+                                      Expression *next) {
+  if (result_object == NULL || next == NULL) return NULL;
   if (is_key_map_iterator(cursor)) {
-    return ContainerSupport::concrete_value(result_object);
+    return next;
   }
   if (is_entry_map_iterator(cursor)) {
     oop key_object = OopUtils::key_of_map_node(result_object);
-    return key_object == NULL ? NULL
-        : ContainerSupport::concrete_value(key_object);
+    if (key_object == NULL) return NULL;
+    exp_list_t no_arguments;
+    return new ContainerExpression(
+        "ASSOCIATIVE", "KEY", next, no_arguments,
+        ContainerSupport::result_type(key_object, T_OBJECT),
+        ContainerSupport::java_type(key_object, T_OBJECT));
   }
   return NULL;
 }
@@ -385,18 +387,6 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   const std::string result_java_type = ContainerSupport::java_type(
       result_object, handle.get_result_type());
 
-  // A map iterator's next() names the element now under consideration for a
-  // conditional removal.  Its concrete key expression is what a REMOVE_IF must
-  // carry so the composer compares the read key against the removed key; for an
-  // entry iterator that key is read out of the returned node, since the
-  // removeExpiredKeys shape never calls getKey().
-  if (method == "next") {
-    Expression *entry_key = iterated_entry_key(receiver_object, result_object);
-    if (entry_key != NULL) {
-      ConcolicMngr::ctx->begin_conditional_removal(entry_key);
-    }
-  }
-
   Expression *result = NULL;
   // Every observation of a selected root map binds to the state it may have
   // observed rather than to whichever state happens to be installed when the
@@ -426,6 +416,11 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     result = new ContainerExpression(
         "ASSOCIATIVE", operation, receiver, arguments,
         expression_type, result_java_type);
+  }
+  if (method == "next") {
+    Expression *key = iterated_entry_key(
+        receiver_object, result_object, result);
+    if (key != NULL) ConcolicMngr::ctx->begin_conditional_removal(key);
   }
   if (observation_admitted
       && (method == "get" || method == "containsKey"
