@@ -1,1 +1,2 @@
 {"loopSiteId":"<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>#u7","loopBodyBound":8,"reason":"covers the retained expiry scan"}
+{"loopSiteId":"<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.security.token.block.BlockKey[] convertBlockKeys(java.util.List)>#u6","loopBodyBound":8,"reason":"covers the bounded block-key reply conversion"}

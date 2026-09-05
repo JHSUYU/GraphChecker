@@ -182,13 +182,13 @@ canonical_path() {
 
 resolve_path() {
   local raw=$1
-  local fallback_base=${2:-${workflow_path_base}}
+  local path_base=${2:-${workflow_path_base}}
   local candidate
   [[ -n "${raw}" ]] || return 0
   case "${raw}" in
     /*) candidate=${raw} ;;
     @config/*) candidate="${config_dir}/${raw#@config/}" ;;
-    @project/*|@graphchecker/*)
+    @project/*)
       candidate="${graphchecker_dir}/${raw#*/}"
       ;;
     @repo/*)
@@ -196,14 +196,14 @@ resolve_path() {
       candidate="${project_repo}/${raw#@repo/}"
       ;;
     *)
-      case "${fallback_base}" in
+      case "${path_base}" in
         config) candidate="${config_dir}/${raw}" ;;
-        project|graphchecker) candidate="${graphchecker_dir}/${raw}" ;;
+        project) candidate="${graphchecker_dir}/${raw}" ;;
         repo)
           [[ -n "${project_repo}" ]] || die "workflow_path_base=repo requires project_repo"
           candidate="${project_repo}/${raw}"
           ;;
-        *) die "workflow_path_base must be config, project, graphchecker, or repo" ;;
+        *) die "workflow_path_base must be config, project, or repo" ;;
       esac
       ;;
   esac
@@ -1025,7 +1025,7 @@ campaign_seed_cache_key() {
     --arg workloadCommand "${workload_command}" \
     --arg traceTest "${trace_test}" \
     --arg configSeedSha "${config_seed_sha}" '
-    {schemaVersion: 2, kind: "CAMPAIGN_SEED_CACHE_KEY",
+    {schemaVersion: 3, kind: "CAMPAIGN_SEED_CACHE_KEY",
      inputs: {
        jar: .jar.sha256,
        config: $configSeedSha,
@@ -1036,6 +1036,7 @@ campaign_seed_cache_key() {
        productionClasses: .productionClasses.sha256,
        workloadTestClasses: .workload.testClasses.sha256,
        workloadClasspath: .workload.classpathSha256,
+       graphCheckerSource: .source.graphchecker,
        workloadSource: .source.workload},
      seedConfiguration: {
        analysisScope: $analysisScope,

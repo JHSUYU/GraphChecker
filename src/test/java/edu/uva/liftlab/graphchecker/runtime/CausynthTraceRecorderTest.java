@@ -159,28 +159,19 @@ public class CausynthTraceRecorderTest {
         assertEquals(invocationId, context.invocationId());
     }
 
-    /**
-     * A frame stamped before its receiver was registered is attributed to
-     * that receiver after the trace is re-read.
-     *
-     * <p>This is the production sequence and it is deliberately awkward: the
-     * registration is written, the process state is cleared, and only the
-     * durable trace is left to answer.  A DataNode starts its
-     * {@code BPServiceActor} thread long before it declares which source owns
-     * it, so the frame freezes on whoever started the thread; the
-     * registration that corrects it arrives later in the same run.  The row
-     * therefore has to carry the recorded object identity, because a class
-     * name cannot tell two nodes' service objects apart.</p>
-     */
+    /** A late alias affects later frames without rewriting earlier history. */
     @Test
-    public void aFrameIsAttributedToItsReceiverAfterTheTraceIsReread()
+    public void aSourceAliasIsAppliedFromItsRecordedSequenceForward()
             throws Exception {
         String outputProperty = System.getProperty(
                 "causynth.trace.output.dir");
         Path output = folder.newFolder("late-registration").toPath();
-        String actorRun = "<example.ServiceActor: void run()>";
-        String helperRun = "<example.Helper: void run()>";
-        String otherRun = "<example.OtherService: void run()>";
+        String actorBefore = "<example.ServiceActor: void beforeAlias()>";
+        String helperBefore = "<example.Helper: void beforeAlias()>";
+        String otherBefore = "<example.OtherService: void beforeAlias()>";
+        String actorAfter = "<example.ServiceActor: void afterAlias()>";
+        String helperAfter = "<example.Helper: void afterAlias()>";
+        String otherAfter = "<example.OtherService: void afterAlias()>";
         try {
             clear();
             System.setProperty("causynth.trace.output.dir",
@@ -193,13 +184,16 @@ public class CausynthTraceRecorderTest {
 
             // The service thread runs first; nothing about its owner is known
             // and the frame is stamped with what is ambient, which is nothing.
-            long frame = CausynthTraceRecorder.enterMethod(actorRun, actor);
+            long frame = CausynthTraceRecorder.enterMethod(
+                    actorBefore, actor);
             long helperFrame = CausynthTraceRecorder.enterMethod(
-                    helperRun, helper);
+                    helperBefore, helper);
             CausynthTraceRecorder.exitMethod(helperFrame, null, "");
             long otherFrame = CausynthTraceRecorder.enterMethod(
-                    otherRun, otherService);
+                    otherBefore, otherService);
             CausynthTraceRecorder.exitMethod(otherFrame, null, "");
+            CausynthTraceRecorder.exitMethod(frame, null, "");
+
             // The node declares itself and claims the actor afterwards.
             CausynthTraceRecorder.registerSource(node, "CLUSTER_NODE",
                     "DATANODE", "cluster0/dn0", 1L);
@@ -208,6 +202,15 @@ public class CausynthTraceRecorderTest {
                     "DATANODE", "cluster0/dn1", 1L);
             CausynthTraceRecorder.registerSourceAlias(otherService,
                     otherNode);
+
+            // The same receivers enter again after their aliases exist.
+            frame = CausynthTraceRecorder.enterMethod(actorAfter, actor);
+            helperFrame = CausynthTraceRecorder.enterMethod(
+                    helperAfter, helper);
+            CausynthTraceRecorder.exitMethod(helperFrame, null, "");
+            otherFrame = CausynthTraceRecorder.enterMethod(
+                    otherAfter, otherService);
+            CausynthTraceRecorder.exitMethod(otherFrame, null, "");
             CausynthTraceRecorder.exitMethod(frame, null, "");
             shutdown();
 
@@ -232,22 +235,28 @@ public class CausynthTraceRecorderTest {
                 sources.put(event.method, event.sourceKey);
                 receiverOwned.put(event.method, event.receiverAttributed);
             }
-            assertEquals("cluster0/dn0#epoch1", sources.get(actorRun));
+            assertEquals(RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
+                    sources.get(actorBefore));
+            assertEquals(RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
+                    sources.get(helperBefore));
+            assertEquals(RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
+                    sources.get(otherBefore));
+            assertEquals("cluster0/dn0#epoch1", sources.get(actorAfter));
             assertEquals("an unregistered synchronous descendant inherits "
                             + "the nearest registered receiver owner",
-                    "cluster0/dn0#epoch1", sources.get(helperRun));
+                    "cluster0/dn0#epoch1", sources.get(helperAfter));
             assertEquals("a descendant's own registered receiver wins",
-                    "cluster0/dn1#epoch1", sources.get(otherRun));
+                    "cluster0/dn1#epoch1", sources.get(otherAfter));
 
             // Which authority answered is recorded, because replay can
             // re-check a receiver's own registration by object identity and
             // can only re-check an inherited one by context.
             assertEquals("the actor's own alias named it",
-                    Boolean.TRUE, receiverOwned.get(actorRun));
+                    Boolean.TRUE, receiverOwned.get(actorAfter));
             assertEquals("the helper was named by its caller's registration",
-                    Boolean.FALSE, receiverOwned.get(helperRun));
+                    Boolean.FALSE, receiverOwned.get(helperAfter));
             assertEquals("the other service's own alias named it",
-                    Boolean.TRUE, receiverOwned.get(otherRun));
+                    Boolean.TRUE, receiverOwned.get(otherAfter));
         } finally {
             shutdown();
             clear();

@@ -575,10 +575,15 @@ public final class CausynthPipeline {
             tagOriginalUnits(originalUnits);
             CfgLoopControl.NaturalLoop rootLoop = plan.loopBodyRoot()
                     ? rootedLoop(body, method, plan) : null;
+            CfgLoopControl.Edge controlBodyEdge = rootLoop == null
+                    ? null : loopBodyEntry(body, rootLoop,
+                    plan.rootLoopControlSites());
+            CfgLoopControl.Edge loopBodyEntryEdge = rootLoop == null
+                    ? null : loopBodyInsertionEdge(body, rootLoop,
+                    controlBodyEdge);
             Unit insertionPoint = rootLoop == null
                     ? safeInstrumentationEntry(body, method)
-                    : loopBodyEntry(body, rootLoop,
-                            originalUnit(body, plan.rootLoopHeaderUnitIndex()));
+                    : loopBodyEntryEdge.target;
             if (method.isConstructor() && insertionPoint == null) {
                 throw new IllegalStateException(
                         "Selected constructor root has no initialized-this "
@@ -639,14 +644,22 @@ public final class CausynthPipeline {
                         Hook.MATERIALIZE_ARGUMENT, Hook.SYMBOLIZE_ARGUMENT,
                         refs);
             }
-            insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+            Unit loopBodyEntryStart = null;
+            if (rootLoop == null) {
+                insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+            } else {
+                loopBodyEntryStart = insertLoopBodyEntry(body, method,
+                        rootLoop, loopBodyEntryEdge, entry,
+                        rootLoop.identity(method));
+            }
 
             if (rootLoop != null) {
                 // One iteration is one activation: the frame closes on every
                 // edge that leaves the body, the backedge into the next
                 // iteration included.
                 insertLoopBodyRegionExits(body, method, rootLoop, plan,
-                        signature, refs);
+                        signature, refs, loopBodyEntryEdge,
+                        loopBodyEntryStart);
             } else {
                 for (Unit unit : originalUnits) {
                     if (!(unit instanceof Stmt)) {
@@ -737,32 +750,198 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Where a loop-body region's frame opens: the header's successor inside
-     * the loop, so the frame is pushed once per iteration that actually runs
-     * a body rather than once per header test.
+     * Where a loop-body region's frame opens: the sole in-loop successor of
+     * the exact iteration-control branch named by the plan.
+     *
+     * <p>An enhanced-for loop commonly has a dominance header that computes
+     * {@code Iterator.hasNext()}, followed by the {@link IfStmt} that chooses
+     * between its body and exit.  The header's lexical successor is therefore
+     * the guard itself, not the body.  Treating that successor as the entry
+     * opens an activation even for the terminal false check.  Resolve the
+     * declared control site instead, and refuse any shape that does not prove
+     * exactly one body edge.</p>
      */
-    private static Unit loopBodyEntry(Body body,
-                                      CfgLoopControl.NaturalLoop loop,
-                                      Unit guard) {
+    static CfgLoopControl.Edge loopBodyEntry(
+            Body body, CfgLoopControl.NaturalLoop loop,
+            Set<String> controlSites) {
+        String loopId = loop == null || body == null
+                ? "<unknown-loop>" : loop.identity(body.getMethod());
+        if (body == null || loop == null || controlSites == null
+                || controlSites.isEmpty()) {
+            throw new IllegalStateException(
+                    "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                            + " has no declared loop control site");
+        }
+
         Set<Unit> members = loop.members();
-        // The body starts after the loop's own guard (the original header),
-        // not after a counter an earlier pass inserted in front of it.
-        Unit head = guard != null && members.contains(guard) ? guard
-                : loop.header;
-        CausynthBranchShape shape = CausynthBranchShape.from(body, head);
-        if (shape != null) {
-            for (Unit successor : shape.successors) {
-                if (members.contains(successor) && successor != head) {
-                    return successor;
-                }
+        Set<String> matchedSites = new LinkedHashSet<>();
+        List<CfgLoopControl.Edge> bodyEdges = new ArrayList<>();
+        for (Unit unit : body.getUnits()) {
+            int index = originalUnitIndex(unit);
+            if (index < 0) continue;
+            String candidateSite = siteId(body.getMethod().getSignature(),
+                    index);
+            if (!controlSites.contains(candidateSite)) continue;
+            if (!matchedSites.add(candidateSite)) {
+                throw new IllegalStateException(
+                        "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                                + " has duplicate control site "
+                                + candidateSite);
+            }
+            if (!(unit instanceof IfStmt)) {
+                throw new IllegalStateException(
+                        "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                                + " control site " + candidateSite
+                                + " is not an IfStmt");
+            }
+            List<CfgLoopControl.Edge> continuations =
+                    continuationEdgesFrom(body, unit, members);
+            if (continuations.size() != 1) {
+                throw new IllegalStateException(
+                        "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                                + " control site " + candidateSite
+                                + " does not prove exactly one in-loop body "
+                                + "successor");
+            }
+            bodyEdges.add(continuations.get(0));
+        }
+        if (!matchedSites.equals(controlSites) || bodyEdges.size() != 1) {
+            throw new IllegalStateException(
+                    "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                            + " expected exactly one declared control site "
+                            + controlSites + " but matched " + matchedSites);
+        }
+        return bodyEdges.get(0);
+    }
+
+    /**
+     * Resolves the exact edge immediately entering original loop-body code.
+     *
+     * <p>The loop-bound pass runs first and may have split the declared
+     * control edge with an untagged, single-successor hook bridge.  The region
+     * entry belongs after that gate.  Only that exact transparent chain may be
+     * crossed; an untagged branch or a path that leaves the proved loop is an
+     * explicit refusal.</p>
+     */
+    static CfgLoopControl.Edge loopBodyInsertionEdge(
+            Body body, CfgLoopControl.NaturalLoop loop,
+            CfgLoopControl.Edge controlEdge) {
+        String loopId = loop == null || body == null
+                ? "<unknown-loop>" : loop.identity(body.getMethod());
+        if (body == null || loop == null || controlEdge == null
+                || controlEdge.source == null || controlEdge.target == null) {
+            throw new IllegalStateException(
+                    "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                            + " has no exact control-to-body edge");
+        }
+        Set<Unit> members = loop.members();
+        Set<Unit> visited = Collections.newSetFromMap(
+                new IdentityHashMap<Unit, Boolean>());
+        Unit source = controlEdge.source;
+        Unit target = controlEdge.target;
+        while (originalUnitIndex(target) < 0) {
+            if (!members.contains(target) || !visited.add(target)) {
+                throw new IllegalStateException(
+                        "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                                + " has a cyclic or out-of-loop synthetic "
+                                + "control-to-body bridge");
+            }
+            List<Unit> successors = normalSuccessors(body, target);
+            if (successors.size() != 1
+                    || !members.contains(successors.get(0))) {
+                throw new IllegalStateException(
+                        "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                                + " has a non-transparent synthetic "
+                                + "control-to-body bridge");
+            }
+            source = target;
+            target = successors.get(0);
+        }
+        return new CfgLoopControl.Edge(source, target);
+    }
+
+    /**
+     * Inserts a straight-line bridge on the selected body edge; a
+     * latch-controlled header also admits its proved initial-entry paths.
+     */
+    static Unit insertLoopBodyEntry(
+            Body body, SootMethod method, CfgLoopControl.NaturalLoop loop,
+            CfgLoopControl.Edge edge, List<Unit> entry, String loopId) {
+        if (body == null || method == null || loop == null || edge == null
+                || edge.source == null || edge.target == null
+                || entry == null || entry.isEmpty()) {
+            throw new IllegalStateException(
+                    "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId);
+        }
+        List<UnitBox> matchingTargets = new ArrayList<>();
+        for (UnitBox targetBox : edge.source.getUnitBoxes()) {
+            if (targetBox.getUnit() == edge.target) {
+                matchingTargets.add(targetBox);
             }
         }
-        Unit fallThrough = body.getUnits().getSuccOf(head);
-        if (fallThrough != null && members.contains(fallThrough)) {
-            return fallThrough;
+        boolean fallThrough = edge.source.fallsThrough()
+                && body.getUnits().getSuccOf(edge.source) == edge.target;
+        if (matchingTargets.isEmpty() && !fallThrough) {
+            throw new IllegalStateException(
+                    "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                            + " no longer has its selected body edge in "
+                            + method.getSignature());
         }
-        throw new IllegalStateException("LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: "
-                + loop.identity(body.getMethod()));
+
+        Unit first = entry.get(0);
+        boolean headerEntry = edge.target == loop.header;
+        if (headerEntry) {
+            // A latch-controlled loop reaches the same header from its method
+            // preheader on the first iteration and from one or more latches on
+            // later iterations. All normal header entries open an activation;
+            // UnitBoxes owned by traps are deliberately not rewritten.
+            matchingTargets.clear();
+            for (Unit source : body.getUnits()) {
+                for (UnitBox targetBox : source.getUnitBoxes()) {
+                    if (targetBox.getUnit() == edge.target) {
+                        matchingTargets.add(targetBox);
+                    }
+                }
+            }
+        } else if (!fallThrough) {
+            Unit lexicalPredecessor = body.getUnits().getPredOf(edge.target);
+            if (lexicalPredecessor != null
+                    && lexicalPredecessor.fallsThrough()
+                    && body.getUnits().getSuccOf(lexicalPredecessor)
+                    == edge.target) {
+                // The selected edge is an explicit target. Keep an unrelated
+                // lexical fallthrough into the same block on its old path;
+                // only the selected UnitBox may enter this activation.
+                body.getUnits().insertBeforeNoRedirect(
+                        Jimple.v().newGotoStmt(edge.target), edge.target);
+            }
+        }
+        insertBeforeOrAppendNoRedirect(body, edge.target, entry);
+        for (UnitBox targetBox : matchingTargets) {
+            targetBox.setUnit(first);
+        }
+        if (fallThrough
+                && body.getUnits().getSuccOf(edge.source) != first) {
+            throw new IllegalStateException(
+                    "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
+                            + " could not preserve its body fallthrough in "
+                            + method.getSignature());
+        }
+        return first;
+    }
+
+    /** Normal successors only; trap-handler edges never identify loop entry. */
+    private static List<Unit> normalSuccessors(Body body, Unit source) {
+        Set<Unit> successors = Collections.newSetFromMap(
+                new IdentityHashMap<Unit, Boolean>());
+        if (source.fallsThrough()) {
+            Unit fallThrough = body.getUnits().getSuccOf(source);
+            if (fallThrough != null) successors.add(fallThrough);
+        }
+        for (UnitBox target : source.getUnitBoxes()) {
+            if (target.getUnit() != null) successors.add(target.getUnit());
+        }
+        return new ArrayList<>(successors);
     }
 
     /**
@@ -803,7 +982,8 @@ public final class CausynthPipeline {
      */
     private void insertLoopBodyRegionExits(
             Body body, SootMethod method, CfgLoopControl.NaturalLoop loop,
-            InstrumentationPlan plan, String rootMethod, HookCatalog refs) {
+            InstrumentationPlan plan, String rootMethod, HookCatalog refs,
+            CfgLoopControl.Edge entryEdge, Unit entryStart) {
         String loopId = loop.identity(method);
         int installed = 0;
         for (CfgLoopControl.Edge edge : loopBodyClosingEdges(method, loop,
@@ -813,7 +993,15 @@ public final class CausynthPipeline {
                     StringConstant.v(plan.instrumentationSelector()),
                     StringConstant.v(rootMethod), NullConstant.v(),
                     StringConstant.v(""));
-            redirectEdge(body, method, edge.source, edge.target, bridge,
+            Unit target = entryEdge != null && entryStart != null
+                    && ((edge.source == entryEdge.source
+                    && edge.target == entryEdge.target)
+                    || (entryEdge.target == loop.header
+                    && edge.target == loop.header))
+                    ? entryStart : edge.target;
+            // A latch-controlled loop closes the current activation before it
+            // traverses the same edge that opens the next one.
+            redirectEdge(body, method, edge.source, target, bridge,
                     "Could not close loop-body region on ", loopId);
             installed++;
         }

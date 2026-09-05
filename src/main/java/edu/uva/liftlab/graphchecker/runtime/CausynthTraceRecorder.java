@@ -567,6 +567,12 @@ public final class CausynthTraceRecorder {
                 identity(alias));
     }
 
+    /** Captures the submitting context for an application-owned task queue. */
+    public static void captureAsync(Object carrier) {
+        initialize();
+        RuntimeTraceContext.captureAsync(carrier);
+    }
+
     /** Starts an external API request without changing the application data. */
     public static long beginSourceRequest(Object sourceAnchor,
                                           String apiName) {
@@ -1279,34 +1285,28 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * Applies every source registration this trace recorded to the frames of
-     * the object it registered.
+     * Applies source registrations to frames entered after the registration.
+     *
+     * <p>A source row describes a lifecycle transition, not timeless object
+     * metadata.  Applying the final owner table to earlier frames creates a
+     * replay address that did not exist when those frames were entered: seed
+     * planning then calls it {@code REGISTERED_SOURCE}, while replay quite
+     * correctly observes the receiver before its alias has arrived.  Walk the
+     * two already-sorted streams together so an owner becomes available only
+     * after its durable source event.</p>
      */
     private static void reattributeFramesToRegisteredOwners(TraceData trace) {
         Map<Integer, SourceRef> owners = new LinkedHashMap<>();
         Set<Integer> disputed = new LinkedHashSet<>();
-        for (SourceTraceEvent event : trace.sources) {
-            if (event.objectId <= 0 || event.source == null) continue;
-            if (!"SOURCE_REGISTER".equals(event.kind)
-                    && !"SOURCE_ALIAS".equals(event.kind)
-                    && !"SOURCE_RESTART".equals(event.kind)) {
-                continue;
-            }
-            SourceRef owner = "SOURCE_RESTART".equals(event.kind)
-                    ? event.relatedSource : event.source;
-            if (owner == null) continue;
-            SourceRef previous = owners.put(event.objectId, owner);
-            if (previous != null && !previous.equals(owner)) {
-                disputed.add(event.objectId);
-            }
-        }
-        for (Integer objectId : disputed) {
-            owners.remove(objectId);
-        }
-        if (owners.isEmpty()) return;
         Map<Long, SourceRef> recordedSources = new LinkedHashMap<>();
         Map<Long, SourceRef> registeredContexts = new LinkedHashMap<>();
+        int sourceIndex = 0;
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+            while (sourceIndex < trace.sources.size()
+                    && trace.sources.get(sourceIndex).seq < event.seq) {
+                applySourceLifecycle(trace.sources.get(sourceIndex++),
+                        owners, disputed);
+            }
             SourceRef recorded = event.source;
             SourceRef owner = owners.get(event.objectId);
             // The receiver's own registration, and not the calling frame's.
@@ -1328,6 +1328,33 @@ public final class CausynthTraceRecorder {
                 registeredContexts.put(event.callId, owner);
             }
             recordedSources.put(event.callId, recorded);
+        }
+    }
+
+    /** Advances one object's source binding at its recorded lifecycle point. */
+    private static void applySourceLifecycle(
+            SourceTraceEvent event, Map<Integer, SourceRef> owners,
+            Set<Integer> disputed) {
+        if (event.objectId <= 0) return;
+        boolean restart = "SOURCE_RESTART".equals(event.kind);
+        if (!restart && !"SOURCE_REGISTER".equals(event.kind)
+                && !"SOURCE_ALIAS".equals(event.kind)) {
+            return;
+        }
+        SourceRef owner = restart ? event.relatedSource : event.source;
+        if (owner == null) return;
+        if (restart) {
+            owners.put(event.objectId, owner);
+            disputed.remove(event.objectId);
+            return;
+        }
+        if (disputed.contains(event.objectId)) return;
+        SourceRef previous = owners.get(event.objectId);
+        if (previous == null || previous.equals(owner)) {
+            owners.put(event.objectId, owner);
+        } else {
+            owners.remove(event.objectId);
+            disputed.add(event.objectId);
         }
     }
 

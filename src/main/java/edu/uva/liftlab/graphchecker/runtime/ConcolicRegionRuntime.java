@@ -2053,7 +2053,6 @@ public final class ConcolicRegionRuntime {
 
         recordRegionExitFieldOutput(active, request, fieldOwner, fieldValue,
                 occurrence);
-        finishLocalOutputRelation(active, fieldValue);
     }
 
     /** Records one exact value at a configured protocol call. */
@@ -2090,11 +2089,6 @@ public final class ConcolicRegionRuntime {
                     + rootCause(throwable));
         } finally {
             active.outputCaptures.add(row);
-            if (active.activation.communicationHandoff(
-                    request.outputPort(), true) != null) {
-                finishStagedCommunicationRelation(
-                        active, request.outputPort(), value);
-            }
         }
     }
 
@@ -2119,7 +2113,6 @@ public final class ConcolicRegionRuntime {
             row.addProperty("exportEventId", exported.longValue());
         }
         active.outputCaptures.add(row);
-        finishLocalOutputRelation(active, null);
     }
 
     /** Starts one definition-invocation-local occurrence stream. */
@@ -2232,8 +2225,9 @@ public final class ConcolicRegionRuntime {
                     + ": mutation-state output capture failed: "
                     + rootCause(throwable));
         } finally {
+            // A captured version is evidence within the occurrence, not its
+            // terminal. The instrumented root exit or throw closes it.
             active.outputCaptures.add(row);
-            finishLocalOutputRelation(active, pending.container);
         }
     }
 
@@ -2282,8 +2276,8 @@ public final class ConcolicRegionRuntime {
                     + ": field-write output capture failed: "
                     + rootCause(throwable));
         } finally {
+            // A field may be written again before the root exits or throws.
             active.outputCaptures.add(row);
-            finishLocalOutputRelation(active, fieldValue);
         }
     }
 
@@ -2744,30 +2738,9 @@ public final class ConcolicRegionRuntime {
     private static boolean stageMessageExpression(String portId,
                                                   long handle) {
         ActiveRegion active = activeRegion();
-        boolean staged = active != null && SymbolicMessageEnvelope.stage(
+        return active != null && SymbolicMessageEnvelope.stage(
                 portId, handle, active.activation.taskId,
                 active.occurrenceId());
-        if (staged) active.stagedCommunicationPorts.add(portId);
-        return staged;
-    }
-
-    /** Closes a producer once its complete relation is resident on the wire. */
-    private static void finishStagedCommunicationRelation(
-            ActiveRegion active, String portId, Object output) {
-        if (active != null && active.activation.relationOnlySeed()
-                && active.stagedCommunicationPorts.contains(portId)
-                && active.demandedOutputRelationComplete()) {
-            finish(active.token, "NORMAL", "", output);
-        }
-    }
-
-    /** Closes a producer once every exact local output has been captured. */
-    private static void finishLocalOutputRelation(
-            ActiveRegion active, Object output) {
-        if (active != null && active.activation.relationOnlySeed()
-                && active.demandedOutputRelationComplete()) {
-            finish(active.token, "NORMAL", "", output);
-        }
     }
 
     // ------------------------------------------------------------------
@@ -2810,8 +2783,6 @@ public final class ConcolicRegionRuntime {
                     result.ok() ? result.handle() : 0L,
                     "communication leaf could not enter the message: "
                             + site.portId()));
-        } else {
-            finishStagedCommunicationRelation(active, site.portId(), carrier);
         }
     }
 
@@ -7563,8 +7534,6 @@ public final class ConcolicRegionRuntime {
          */
         private final Map<String, Long> exportEventByPort =
                 new LinkedHashMap<>();
-        private final Set<String> stagedCommunicationPorts =
-                new LinkedHashSet<>();
         private final List<JsonObject> rpcHandoffGaps = new ArrayList<>();
 
         /**

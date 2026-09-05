@@ -2046,8 +2046,8 @@ public final class ConcolicSmtComposer {
         RelationSummary selected = unique.values().iterator().next();
         String instance = firstNonBlank(requestedInstance,
                 selected.occurrenceId());
-        Set<String> valueOccurrences = producerValueOccurrences(selected,
-                output);
+        ProducerValueOccurrences valueOccurrences =
+                producerValueOccurrences(selected, output);
         if (valueOccurrences.isEmpty()
                 && AutomaticRegionEdge.composerTraversalBinding(
                 preferredBinding)
@@ -2061,12 +2061,22 @@ public final class ConcolicSmtComposer {
                             + " materialized that value");
             return null;
         }
-        // A planned loop occurrence can own several activation cases.  When
-        // exactly one of them actually materialized this demanded output,
-        // carry that case occurrence into value lowering.  The graph remains
-        // keyed by the planned address; only the SMT port is case-exact.
-        String valueInstance = valueOccurrences.size() == 1
-                ? valueOccurrences.iterator().next() : instance;
+        // A planned loop occurrence can own several semantic activations.
+        // Carry the sole producer, or the last producer in the authoritative
+        // activation order, into value lowering.  The graph remains keyed by
+        // the planned address; only the SMT port is activation-exact.
+        String valueInstance = valueOccurrences.selected();
+        if (valueInstance.isEmpty() && valueOccurrences.size() > 1) {
+            graph.gap("AmbiguousProducerValueOccurrence:"
+                            + producerLabel(region, requestedInstance,
+                            demandedOutputs),
+                    "the selected summary records " + valueOccurrences.size()
+                            + " output-producing occurrences, but their exact"
+                            + " activation ordinals do not identify one last"
+                            + " semantic occurrence");
+            return null;
+        }
+        valueInstance = firstNonBlank(valueInstance, instance);
         ProducerKey key = new ProducerKey(region, instance, valueInstance,
                 output, selected.summaryId());
         RelationSummary held = graph.selectedProducerSummaries.get(key);
@@ -2089,11 +2099,12 @@ public final class ConcolicSmtComposer {
     }
 
     /** Cases that contain runtime value evidence for one declared output. */
-    private static Set<String> producerValueOccurrences(
+    private static ProducerValueOccurrences producerValueOccurrences(
             RelationSummary summary, String output) {
-        Set<String> occurrences = new LinkedHashSet<>();
+        Map<String, Integer> occurrences = new LinkedHashMap<>();
+        boolean exact = true;
         if (summary == null || output == null || output.isEmpty()) {
-            return occurrences;
+            return new ProducerValueOccurrences(occurrences, false);
         }
         for (JsonElement element : summary.cases()) {
             if (!element.isJsonObject()) continue;
@@ -2112,12 +2123,68 @@ public final class ConcolicSmtComposer {
                 }
             }
             if (produces) {
-                occurrences.add(firstNonBlank(
+                String occurrence = firstNonBlank(
                         string(pathCase, "occurrenceId"),
-                        summary.occurrenceId()));
+                        summary.occurrenceId());
+                int ordinal = integer(pathCase,
+                        PathObservation.ACTIVATION_ORDINAL, 0);
+                Integer held = occurrences.putIfAbsent(occurrence, ordinal);
+                if (held != null && held.intValue() != ordinal) exact = false;
             }
         }
-        return occurrences;
+        if (occurrences.size() > 1) {
+            Set<Integer> ordinals = new LinkedHashSet<>();
+            String planned = plannedOccurrence(summary.occurrenceId());
+            for (Map.Entry<String, Integer> occurrence
+                    : occurrences.entrySet()) {
+                if (occurrence.getValue() < 1
+                        || !ordinals.add(occurrence.getValue())
+                        || !planned.equals(plannedOccurrence(
+                        occurrence.getKey()))) {
+                    exact = false;
+                }
+            }
+        }
+        return new ProducerValueOccurrences(occurrences, exact);
+    }
+
+    /** Output-producing occurrences and their authoritative execution order. */
+    private static final class ProducerValueOccurrences {
+        private final Map<String, Integer> ordinals;
+        private final boolean exact;
+
+        private ProducerValueOccurrences(Map<String, Integer> ordinals,
+                                         boolean exact) {
+            this.ordinals = ordinals;
+            this.exact = exact;
+        }
+
+        private int size() {
+            return ordinals.size();
+        }
+
+        private boolean isEmpty() {
+            return ordinals.isEmpty();
+        }
+
+        /** One value occurrence, or the last exact semantic activation. */
+        private String selected() {
+            if (ordinals.isEmpty()) return "";
+            if (ordinals.size() == 1) {
+                return ordinals.keySet().iterator().next();
+            }
+            if (!exact) return "";
+            String selected = "";
+            int last = 0;
+            for (Map.Entry<String, Integer> occurrence
+                    : ordinals.entrySet()) {
+                if (occurrence.getValue() > last) {
+                    last = occurrence.getValue();
+                    selected = occurrence.getKey();
+                }
+            }
+            return selected;
+        }
     }
 
     /** Adds the already-validated value-producing case to an edge row. */
@@ -9649,16 +9716,6 @@ public final class ConcolicSmtComposer {
                     + term.text + ")", Sort.VALUE), term);
             unsupported.add("CannotBox:" + term.sort);
             return unsupportedTerm(Sort.VALUE);
-        }
-
-        private void bindPort(String port, Term value) {
-            PortOccurrence occurrence = currentOccurrence(port);
-            if (currentGuard.isEmpty() && boundPorts.contains(occurrence)) {
-                return;
-            }
-            if (emitPortBinding(port, value)) {
-                boundPorts.add(occurrence);
-            }
         }
 
         private boolean emitPortBinding(String port, Term value) {

@@ -184,9 +184,8 @@ public class ConcolicRegionRuntimeTerminalBoundaryTest {
     }
 
     /**
-     * One field-write relation whose recorded value is a closed constant, so
-     * the capture needs no VM expression and the test states only what the
-     * terminal rule does.
+     * One field-write relation whose fake VM returns a closed constant, so the
+     * test states only what the terminal rule does.
      */
     private static JsonObject outputClosure() {
         JsonObject capture = new JsonObject();
@@ -196,7 +195,6 @@ public class ConcolicRegionRuntimeTerminalBoundaryTest {
         capture.addProperty("outputCell", FIELD);
         capture.addProperty("fieldSignature", FIELD);
         capture.addProperty("javaType", "int");
-        capture.addProperty("recordedPrimitiveValue", "7");
         capture.addProperty("definitionMethod", ROOT);
         capture.addProperty("definitionUnitIndex", 2);
         capture.addProperty("definitionCompletionSeq", 2L);
@@ -319,6 +317,9 @@ public class ConcolicRegionRuntimeTerminalBoundaryTest {
 
     private static void installFakeEngine() throws Exception {
         Object engine = newEngine();
+        bind(engine, "getFieldExpression", FakeVm.class.getDeclaredMethod(
+                "fieldExpression", Object.class, String.class, String.class,
+                String.class, Object.class));
         bind(engine, "finishRegion", FakeVm.class.getDeclaredMethod("finish"));
         bind(engine, "pausePathCondition",
                 FakeVm.class.getDeclaredMethod("pause"));
@@ -360,6 +361,14 @@ public class ConcolicRegionRuntimeTerminalBoundaryTest {
         public static void pause() { }
 
         public static void resume() { }
+
+        public static String fieldExpression(
+                Object owner, String declaringClass, String field,
+                String descriptor, Object value) {
+            return "{\"expression\":{\"_type\":\"ConstExpr\","
+                    + "\"_java_type\":\"I\",\"_exp\":\"Y_I_"
+                    + value + "\"}}";
+        }
 
         public static String finish() {
             return "{\"schemaVersion\":1,"

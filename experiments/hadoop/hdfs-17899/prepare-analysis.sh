@@ -24,12 +24,13 @@ copy_family() {
   }
 }
 
-shared=/opt/hadoop-hdfs-17899-bug3
-common=${shared}/hadoop-common-project/hadoop-common/target/classes
-client=${shared}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes
+common=${repo}/hadoop-common-project/hadoop-common/target/classes
+client=${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes
 hdfs=${module}/target/classes
 
 copy_family "${common}" org/apache/hadoop/ipc/CausynthMessagePropagation
+copy_family "${common}" org/apache/hadoop/ipc/Client
+copy_family "${common}" org/apache/hadoop/security/token/delegation/DelegationKey
 copy_family "${client}" org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil
 copy_family "${client}" org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient
 copy_family "${client}" org/apache/hadoop/hdfs/security/token/block/DataEncryptionKey

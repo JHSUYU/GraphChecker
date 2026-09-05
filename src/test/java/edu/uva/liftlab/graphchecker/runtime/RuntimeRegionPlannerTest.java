@@ -382,7 +382,7 @@ public class RuntimeRegionPlannerTest {
         input.put("dependencyRole", "VALUE_FRONTIER");
         input.put("symbolicDemand", "BOUNDED_STATE_FRONTIER");
         input.put("boundedStateFrontierAuthority",
-                "STATIC_ACCESSOR_SEMANTIC_MUTATION_GUARD_V1");
+                "STATIC_VALUE_SEMANTIC_MUTATION_GUARD_V1");
         input.put("boundedMutationGuardSites",
                 Collections.singletonList(ROOT + "#u3"));
 

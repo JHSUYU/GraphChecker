@@ -789,8 +789,10 @@ public class ConcolicSmtComposerTest {
         String target = "TEST_DRIVER/test#epoch0/region/REGION.0#target";
         String planned = "TEST_DRIVER/test#epoch0/region/REGION.1#1";
         String output = "REGION.1.out.0";
-        JsonObject edge = protocolBinding("EDGE.MAP.TIMELINE", planned,
-                output, target, "REGION.0.in.0");
+        JsonObject edge = binding("EDGE.MAP.TIMELINE", planned, output,
+                target, "REGION.0.in.0", 1, 2);
+        edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_INITIAL_BOUNDARY);
 
         JsonObject a1State = assocPut(assocStateSymbol(
                 "M_L'java/util/HashMap'_59"), 1, 101);
@@ -839,6 +841,12 @@ public class ConcolicSmtComposerTest {
                 "(assoc_put " + a1Port + " "));
         assertTrue(result.smtLib, result.smtLib.contains(
                 "(assoc_put " + a2Port + " "));
+        assertEquals(result.manifest.toString(),
+                ConcolicSmtComposer.FINAL_READY,
+                result.manifest.get(ConcolicSmtComposer.FINAL_STATUS)
+                        .getAsString());
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
         assertFalse(result.manifest.toString(), result.manifest.toString()
                 .contains("OccurrenceMap"));
     }

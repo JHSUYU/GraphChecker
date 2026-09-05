@@ -259,6 +259,14 @@ mkdir -p "${campaign_root}"
 campaign_seed
 [[ $(<"${seed_calls}") -eq 1 ]] \
   || fail "a changed root proposal invalidated reusable seed analysis"
+campaign_provenance=$(jq \
+  '.source.graphchecker.worktreeDigest = "changed-tool-source"' \
+  <<<"${campaign_provenance}")
+[[ $(campaign_seed_cache_key) != "${baseline_seed_key}" ]] \
+  || fail "changed GraphChecker source did not invalidate the seed cache"
+campaign_provenance=$(jq \
+  '.source.graphchecker.worktreeDigest = "gd"' \
+  <<<"${campaign_provenance}")
 campaign_provenance=$(jq '.loopBounds.sha256 = "changed-bounds"' \
   <<<"${campaign_provenance}")
 configure_seed_outputs "${test_tmp}/seed-output-three"
@@ -369,21 +377,21 @@ forwarded_gaps="${test_tmp}/forwarded-gaps.json"
 campaign_write_coverage_gaps "${large_composition}" "${large_reach}" \
   "${large_diagnostics}" "${test_tmp}/empty-delta.jsonl" \
   "${forwarded_closures}" "${forwarded_gaps}"
-[[ $(jq -r '.gapCount' "${forwarded_gaps}") -eq 0 ]] \
-  || fail "forwarded worklist telemetry became an acceptance blocker"
-[[ $(jq -r '.telemetryCount' "${forwarded_gaps}") -eq 2 ]] \
+[[ $(jq -r '.gapCount' "${forwarded_gaps}") -eq 2 ]] \
+  || fail "worklist coverage gaps stopped blocking incomplete claims"
+[[ $(jq -r '.telemetryCount' "${forwarded_gaps}") -eq 0 ]] \
   || fail "forwarded coverage gaps were not both projected"
-[[ $(jq -r '.telemetryGaps[] | select(.code == "RPC_HANDOFF_GAP") | .subject' \
+[[ $(jq -r '.gaps[] | select(.code == "RPC_HANDOFF_GAP") | .subject' \
       "${forwarded_gaps}") == "task-consumer" ]] \
   || fail "a forwarded gap was projected without its evidence subject"
-[[ $(jq -r '.telemetryGaps[] | select(.code == "RPC_HANDOFF_GAP") | .detail' \
+[[ $(jq -r '.gaps[] | select(.code == "RPC_HANDOFF_GAP") | .detail' \
       "${forwarded_gaps}") \
     == "RPC_HANDOFF_UNKNOWN_HANDLE: required communication port carried no live VM handle: XCH.p" ]] \
   || fail "a forwarded gap lost its detail"
-[[ $(jq -r '.telemetryGaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .subject' \
+[[ $(jq -r '.gaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .subject' \
       "${forwarded_gaps}") == "REGION.own" ]] \
   || fail "a worklist gap stopped naming its own region"
-[[ $(jq -r '.telemetryGaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .detail' \
+[[ $(jq -r '.gaps[] | select(.code == "OUTPUT_VERSION_ALIGNMENT_GAP") | .detail' \
       "${forwarded_gaps}") == "BOUND_EXCEEDED" ]] \
   || fail "a worklist gap stopped naming its reason"
 

@@ -16,8 +16,8 @@ export CAUSYNTH_CLASSES_DIR=${analysis}
 export CAUSYNTH_TEST_CLASSES_DIR=${module}/target/test-classes
 export CAUSYNTH_CLASSPATH
 CAUSYNTH_CLASSPATH=$("${here}/classpath.sh" "${case_id}")
-export CAUSYNTH_OUTPUT_DIR=/tmp/graphchecker-hdfs-17899-${case_id}
-export CAUSYNTH_CACHE_DIR=/tmp/graphchecker-hdfs-17899-${case_id}-cache
+export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-hdfs-17899-${case_id}}
+export CAUSYNTH_CACHE_DIR=${CAUSYNTH_CACHE_DIR:-/tmp/graphchecker-hdfs-17899-${case_id}-cache}
 export CAUSYNTH_ANALYSIS_SCOPE=hdfs-17899-${case_id}
 export CAUSYNTH_WORKLOAD_WORK_DIR=${repo}
 export CAUSYNTH_WORKLOAD_COMMAND="${here}/execute.sh ${case_id}"

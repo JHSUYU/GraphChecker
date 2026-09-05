@@ -100,6 +100,34 @@ external proposal can narrow independent roots; its strict contract is in
 [docs/SYMBOLIC_ROOT_LLM.md](docs/SYMBOLIC_ROOT_LLM.md). Use a different fresh
 output root for the subsequent campaign.
 
+## HDFS experiments
+
+All GraphChecker experiments run from `main`. The Hadoop workloads have separate
+checkouts so that their source changes and compiled classes remain independent.
+
+| Case | Hadoop checkout | Experiment entry point |
+| --- | --- | --- |
+| HDFS-11741 | `/opt/hadoop-hdfs-11741` | `experiments/hadoop/hdfs-11741/run.sh` |
+| HDFS-17897 | `/opt/hadoop-hdfs-17897` | `experiments/hadoop/hdfs-17897/run.sh` |
+| HDFS-17899 Balancer | `/opt/hadoop-hdfs-17899-bug1` | `experiments/hadoop/hdfs-17899/run.sh bug1` |
+| HDFS-17899 SPS | `/opt/hadoop-hdfs-17899-bug2` | `experiments/hadoop/hdfs-17899/run.sh bug2` |
+| HDFS-17899 DataNode | `/opt/hadoop-hdfs-17899-bug3` | `experiments/hadoop/hdfs-17899/run.sh bug3` |
+
+Append `build` to compile a workload and run its concrete test. Append `campaign`
+to execute the full GraphChecker pipeline. For example:
+
+```bash
+experiments/hadoop/hdfs-17899/run.sh bug1 build
+CAUSYNTH_OUTPUT_DIR=/tmp/hdfs-17899-bug1-fresh \
+  experiments/hadoop/hdfs-17899/run.sh bug1 campaign
+```
+
+Use a fresh output directory for each campaign. Keep its workflow, mappings,
+compiled classes and replay scripts unchanged until it finishes. The shared
+build and classpath helpers ensure Hadoop compiles against the current
+GraphChecker API and loads its own common/client classes, even when another
+case has installed the same Hadoop SNAPSHOT coordinates in Maven's cache.
+
 ## SOLR-18406
 
 The current workload targets follower replication when the selected leader

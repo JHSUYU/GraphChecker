@@ -28,16 +28,6 @@ final class SymbolicRegionPlanner {
     static final String STATE_WRITER_ENTRY = "STATE_WRITER_ENTRY";
     /** An explicit fault call is itself a replayable request boundary. */
     static final String EXPLICIT_FAULT_ENTRY = "EXPLICIT_FAULT_ENTRY";
-    /** {@code rootAuthority} of a region rooted at an object initializer. */
-    static final String INITIALIZATION_ENTRY = "INITIALIZATION_ENTRY";
-    /** {@code selection} of a region admitted by a demanded state birth. */
-    static final String INITIALIZATION_CONTEXT = "INITIALIZATION_CONTEXT";
-    /** Region-row member: the demanded fields born under this root. */
-    static final String INITIALIZATION_DEMAND = "initializationDemand";
-    /** Region-row member: the write sites those fields are born at. */
-    static final String INITIALIZATION_WRITE_SITES =
-            "initializationWriteSites";
-
     private SymbolicRegionPlanner() {
     }
 
@@ -151,8 +141,6 @@ final class SymbolicRegionPlanner {
                     outgoing, regionAuthorities, transportBoundaries);
         }
 
-        planInitializationRegions(program, selected, outgoing,
-                regionAuthorities, transportBoundaries);
         declareCommunicationPorts(program);
         declareRetainedLoops(program);
     }
@@ -306,70 +294,6 @@ final class SymbolicRegionPlanner {
                     "NO_REGION_HOLDS_WIRE_CAPTURE", method,
                     text(flow.get(CommunicationCatalogContract.CALL_SITE_ID)),
                     portId));
-        }
-    }
-
-    /**
-     * Plans one candidate region per offered initialization root.
-     *
-     * <p>An initializer writes state before any service region's activation
-     * begins, so the region catalog holds no root that can observe the write
-     * and the value it publishes reaches the failure with no symbolic origin.
-     * {@link StaticProgram#initializationRootDecisions} decides which
-     * initializers may be offered a root of their own -- bounded by the
-     * failure-directed demand it is handed, and refused outright whenever a
-     * root there would capture the write without the derivation of the value
-     * written.  This plans exactly the offers it made.</p>
-     *
-     * <p>The row is an offer to observe, and nothing more: it names a root,
-     * the initializer as its own anchor, the frames the root reaches, and the
-     * demanded writes that admitted it.  It states no port, no value and no
-     * occurrence, so a write the trace did not record still produces nothing.
-     * A run with no decisions -- every static seed pass -- plans none.</p>
-     */
-    private static void planInitializationRegions(
-            StaticProgram program, Set<String> selected,
-            Map<String, Set<String>> outgoing,
-            Map<String, String> regionAuthorities,
-            Set<String> transportBoundaries) {
-        Set<String> planned = new LinkedHashSet<>();
-        for (Map<String, Object> region : program.regions) {
-            planned.add(text(region.get("regionId")));
-        }
-        for (Map<String, Object> decision
-                : program.initializationDecisions) {
-            String root = text(decision.get(
-                    StaticProgram.INITIALIZATION_ROOT));
-            if (!StaticProgram.INITIALIZATION_OFFERED.equals(text(
-                    decision.get(StaticProgram.INITIALIZATION_DECISION)))
-                    || !CausynthStaticFacts.constructor(root)
-                    || !selected.contains(root)) {
-                // Only an offered initializer is planned, and only where the
-                // selected slice already holds its frame.
-                continue;
-            }
-            Map<String, Object> row = skeletonRow(root,
-                    INITIALIZATION_ENTRY);
-            if (!planned.add(text(row.get("regionId")))) {
-                continue;
-            }
-            List<String> methods = forwardClosure(root, outgoing,
-                    regionAuthorities);
-            row.put("anchorMethod", root);
-            row.put("anchorMethods",
-                    new ArrayList<>(Collections.singletonList(root)));
-            row.put("methods", methods);
-            row.put(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE,
-                    anchorRootedScope(root,
-                            Collections.singletonList(root), methods,
-                            outgoing, regionAuthorities,
-                            transportBoundaries));
-            row.put("selection", INITIALIZATION_CONTEXT);
-            row.put(INITIALIZATION_DEMAND, strings(decision.get(
-                    StaticProgram.INITIALIZATION_FIELDS)));
-            row.put(INITIALIZATION_WRITE_SITES, strings(decision.get(
-                    StaticProgram.INITIALIZATION_WRITE_SITES)));
-            program.regions.add(row);
         }
     }
 

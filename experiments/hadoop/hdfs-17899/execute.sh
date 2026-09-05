@@ -25,7 +25,8 @@ else
   trace=${CAUSYNTH_TRACE_OUTPUT_DIR:?missing trace output directory}
   jdk=/usr/lib/jvm/java-8-openjdk-amd64
   properties=("-Dcausynth.trace.output.dir=${trace}"
-    "-Dcausynth.trace.test=${test_name}")
+    "-Dcausynth.trace.test=${test_name}"
+    "-Dcausynth.trace.start.paused=true")
 fi
 
 mkdir -p "${work}/temp" "${work}/data" ${trace:+"${trace}"} \

@@ -923,7 +923,9 @@ public final class RuntimeWorkflowDiscovery {
                 : producersByDownstream.getOrDefault(endpoint,
                 java.util.Collections.emptyList())) {
             for (JsonObject edge : candidate.edgesFor(endpoint)) {
-                if (!protocolOnly && exactSharedStateConduit(edge)
+                if ((!protocolOnly && DependencyRole.valueFrontier(
+                        edge.get("dependencyRole"))
+                        && exactSharedStateConduit(edge))
                         || protocolValueFrontier(edge)) {
                     return true;
                 }
