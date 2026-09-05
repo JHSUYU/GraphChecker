@@ -35,7 +35,7 @@ set +e
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
   -Djava.io.tmpdir="${work}/temp" -Dtest.build.data="${work}/data" \
   -Dcausynth.junit.ignore.timeout=true -Dcausynth.junit.exit.after.run=true \
-  "${properties[@]}" -cp "${classes}:${cp}:${jar}" \
+  "${properties[@]}" -cp "${classes}:${jar}:${cp}" \
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}"
 status=$?
