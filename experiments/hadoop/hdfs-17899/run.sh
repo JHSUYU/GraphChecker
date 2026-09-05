@@ -19,6 +19,7 @@ CAUSYNTH_CLASSPATH=$("${here}/classpath.sh" "${case_id}")
 export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-hdfs-17899-${case_id}}
 export CAUSYNTH_CACHE_DIR=${CAUSYNTH_CACHE_DIR:-/tmp/graphchecker-hdfs-17899-${case_id}-cache}
 export CAUSYNTH_ANALYSIS_SCOPE=hdfs-17899-${case_id}
+export CAUSYNTH_LOOP_BOUNDS=${loop_bounds}
 export CAUSYNTH_WORKLOAD_WORK_DIR=${repo}
 export CAUSYNTH_WORKLOAD_COMMAND="${here}/execute.sh ${case_id}"
 export CAUSYNTH_TRACE_TEST=${test_name}
