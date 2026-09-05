@@ -1945,6 +1945,54 @@ public class ConcolicSmtComposerTest {
     }
 
     @Test
+    public void fieldDeclaredLongOutputUsesVLongWithoutFlatJavaType()
+            throws Exception {
+        String targetOccurrence = "REGION.0@Test#long-field-target";
+        String producerOccurrence = "REGION.1@Test#long-field-source";
+        JsonObject edge = binding("EDGE.LONG.FIELD", producerOccurrence,
+                "REGION.1.out.0", targetOccurrence, "REGION.0.in.0", 20,
+                30);
+        edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
+                RecordedReadFrom.PROVENANCE_INITIAL_BOUNDARY);
+
+        long expiry = 1_788_748_288_832L;
+        RelationSummary producer = summary("LONG_FIELD_SOURCE",
+                producerOccurrence, longInteger(expiry),
+                Collections.<String>emptyList(),
+                Collections.singletonList(edge), "long");
+
+        JsonObject producerRegion = region("REGION.1", "", "long");
+        JsonObject output = producerRegion.getAsJsonArray("outputs").get(0)
+                .getAsJsonObject();
+        output.remove("javaType");
+        output.addProperty("cell", "<ExampleKey: void write(long)>#u7"
+                + ".fieldReceiver");
+        JsonArray declarations = new JsonArray();
+        declarations.add("<ExampleKey: long expiryDate>");
+        output.add("fieldPathDeclarations", declarations);
+
+        JsonArray constraints = new JsonArray();
+        constraints.add(binary(reference("REGION.0.in.0", "J"), "==",
+                longInteger(expiry)));
+        ConcolicSmtComposer.Result result = compose(targetOccurrence,
+                Collections.singletonList(producer),
+                Arrays.asList(region("REGION.0", "long", ""),
+                        producerRegion), constraints, edge);
+
+        String producerPort = "port__REGION_1_out_0__instance__"
+                + "REGION_1_Test_long_field_source";
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(= " + producerPort + " (VLong " + expiry + "))"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(= " + producerPort + " (VInt " + expiry + "))"));
+        assertFalse(result.smtLib, result.smtLib.contains(
+                "(assert false) ; fail closed: unsupported"));
+        if (z3Available()) {
+            assertEquals(result.smtLib, "sat", z3(result.smtLib));
+        }
+    }
+
+    @Test
     public void twoRpcProducersAndMultipleTargetSourcesShareOneFatalFormula()
             throws Exception {
         String targetOccurrence = "REGION.0@Test#nested-target";
@@ -4413,6 +4461,14 @@ public class ConcolicSmtComposerTest {
         result.addProperty("_type", "ConstExpr");
         result.addProperty("_java_type", "I");
         result.addProperty("_exp", "Y_I_" + value);
+        return result;
+    }
+
+    private static JsonObject longInteger(long value) {
+        JsonObject result = new JsonObject();
+        result.addProperty("_type", "ConstExpr");
+        result.addProperty("_java_type", "J");
+        result.addProperty("_exp", "Y_J_" + value);
         return result;
     }
 

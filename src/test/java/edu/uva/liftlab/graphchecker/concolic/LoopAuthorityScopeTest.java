@@ -1,14 +1,18 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import org.junit.Test;
 
@@ -120,5 +124,42 @@ public class LoopAuthorityScopeTest {
         assertTrue(ConcolicSmtComposer.loopAuthorityRefuses(
                 LoopBoundPolicy.PATH_ARRAY_CARDINALITY_MISSING,
                 ADD_KEYS + "#u20", selected));
+    }
+
+    @Test
+    public void unsatClosureFiltersOnlyOffSliceLoopTelemetry() {
+        BoundedLoopComposition loops = BoundedLoopComposition.empty();
+        loops.gap(BoundedLoopComposition.LOOP_BODY_BOUND_UNDECLARED,
+                "cluster0/worker0#epoch0/region/REGION.OUTSIDE#1\n"
+                        + SUBSTITUTE_VARS + "#u10",
+                "retained loop has no selected task-derived authority");
+
+        List<JsonObject> coverage = new ArrayList<>(loops.gaps());
+        int closureGapCount = ConcolicSmtComposer
+                .unsatClosureCoverageGapCount(coverage, scope(ADD_KEYS));
+        assertEquals(0, closureGapCount);
+        assertEquals(1, coverage.size());
+        JsonObject fatal = new JsonObject();
+        fatal.add("coverageGaps", new JsonArray());
+        assertTrue(ConcolicSmtComposer.unsatClosureEvidence(true,
+                Collections.emptyList(), fatal, true, closureGapCount).get(
+                ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE).getAsBoolean());
+
+        loops.gap(BoundedLoopComposition.LOOP_BODY_BOUND_UNDECLARED,
+                "cluster0/nn0#epoch0/region/REGION.SELECTED#1\n"
+                        + ADD_KEYS + "#u20",
+                "selected loop has no task-derived authority");
+        coverage = new ArrayList<>(loops.gaps());
+        coverage.add(CoverageDivergence.of(CoverageDivergence.Kind.FLOW,
+                "RECORDED_FLOW_OPEN", "EDGE.OTHER", "unclosed flow"));
+
+        closureGapCount = ConcolicSmtComposer
+                .unsatClosureCoverageGapCount(coverage, scope(ADD_KEYS));
+        assertEquals(2, closureGapCount);
+        assertFalse(ConcolicSmtComposer.unsatClosureEvidence(true,
+                Collections.emptyList(), fatal, true, closureGapCount).get(
+                ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE).getAsBoolean());
+        // The decision count is scope-filtered; the raw telemetry is intact.
+        assertEquals(3, coverage.size());
     }
 }

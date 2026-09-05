@@ -465,9 +465,12 @@ public final class ConcolicSmtComposer {
         manifest.addProperty(PATH_SET_COMPLETE,
                 pathSetComplete(loweredRelations, fatal));
         manifest.add("finalStatusRefusals", gate.refusals);
+        int compositionCoverageGapCount =
+                unsatClosureCoverageGapCount(coverage,
+                        selectedScopeMethods);
         JsonObject unsatClosure = unsatClosureEvidence(
                 recordedModelComplete, loweredRelations, fatal, finalReady,
-                coverage.size());
+                compositionCoverageGapCount);
         manifest.addProperty(UNSAT_CLOSURE_COMPLETE,
                 bool(unsatClosure, UNSAT_CLOSURE_COMPLETE, false));
         manifest.add(UNSAT_CLOSURE_EVIDENCE, unsatClosure);
@@ -1006,6 +1009,31 @@ public final class ConcolicSmtComposer {
                                                 Set<String> scopeMethods) {
         return LOOP_AUTHORITY_REFUSALS.contains(reason)
                 && touchesSelectedScope(subject, scopeMethods);
+    }
+
+    /**
+     * Counts coverage gaps that can invalidate UNSAT over the selected slice.
+     *
+     * <p>The manifest retains every observed loop gap as replay telemetry. A
+     * retained loop in an occurrence outside every selected relation cannot,
+     * however, affect the formula whose UNSAT result is being closed. Apply
+     * the same method-scope rule as the acceptance gate while leaving every
+     * non-loop coverage gap conservative.</p>
+     */
+    static int unsatClosureCoverageGapCount(
+            Collection<JsonObject> coverage,
+            Set<String> selectedScopeMethods) {
+        int count = 0;
+        for (JsonObject gap : coverage) {
+            if (BoundedLoopComposition.GAP_KIND.equals(
+                    string(gap, "kind"))
+                    && !touchesSelectedScope(string(gap, "subject"),
+                    selectedScopeMethods)) {
+                continue;
+            }
+            count++;
+        }
+        return count;
     }
 
     private static final class AcceptanceGate {
@@ -5745,12 +5773,13 @@ public final class ConcolicSmtComposer {
                 }
                 if (schema != null
                         && JavaPrimitiveBoxing.wrapperType(
-                        schema.javaType)) {
+                        schema.declaredJavaType())) {
                     if (expected == Sort.REF) {
                         return canonicalBoxedPrimitiveReferenceTerm(port);
                     }
+                    String declaredJavaType = schema.declaredJavaType();
                     return canonicalPortTerm(port,
-                            sortOfJava(schema.javaType), schema.javaType);
+                            sortOfJava(declaredJavaType), declaredJavaType);
                 }
             }
 
@@ -5775,7 +5804,8 @@ public final class ConcolicSmtComposer {
         private Term canonicalPortTerm(String port, Sort sort,
                                        String expressionJavaType) {
             Port schema = ports.get(port);
-            String schemaJavaType = schema == null ? "" : schema.javaType;
+            String schemaJavaType = schema == null
+                    ? "" : schema.declaredJavaType();
             String integralJavaType = canonicalIntegralJavaType(
                     schemaJavaType, expressionJavaType);
             if (sort == Sort.REF
@@ -6488,7 +6518,8 @@ public final class ConcolicSmtComposer {
             String port = findPort(string(object, "_exp"));
             Port schema = ports.get(port);
             return schema != null
-                    && JavaPrimitiveBoxing.wrapperType(schema.javaType);
+                    && JavaPrimitiveBoxing.wrapperType(
+                    schema.declaredJavaType());
         }
 
         private Term floatingPromotion(Term term, Sort target,
@@ -8989,8 +9020,8 @@ public final class ConcolicSmtComposer {
                         if (!stateBound || value.sort != Sort.MAP) continue;
                     }
                     Term bound = portSort == Sort.VALUE
-                            ? asValue(value, ports.get(consumer.portId) == null
-                            ? "" : ports.get(consumer.portId).javaType) : value;
+                            ? asValue(value,
+                            declaredPortJavaType(consumer.portId)) : value;
                     if (bound.sort != portSort) {
                         unsupported.add("RecordedReadPortSortConflict:"
                                 + consumer + ":" + portSort + "!="
@@ -9765,7 +9796,7 @@ public final class ConcolicSmtComposer {
                     return "";
                 }
                 Term boxed = asValue(value,
-                        schema == null ? "" : schema.javaType);
+                        schema == null ? "" : schema.declaredJavaType());
                 String formula = and(Arrays.asList(boxed.precondition,
                         "(= " + portName(occurrence) + " " + boxed.text
                                 + ")"));
