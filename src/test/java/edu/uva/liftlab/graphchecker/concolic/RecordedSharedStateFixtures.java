@@ -3,20 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureCodec;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
-import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.RelationSummary;
-import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
 
 /**
  * Builders for the VM envelopes the recorded shared-state layer admits.
@@ -38,10 +25,6 @@ final class RecordedSharedStateFixtures {
         return TEST_SOURCE + "/region/" + regionId + "#1";
     }
 
-    /** The cross-run address of one region's fixture activation. */
-    static String siteOf(String regionId) {
-        return RecordedEvidenceIdentity.siteKey(occurrenceOf(regionId));
-    }
 
     /** One complete evidence identity, taken at snapshot {@code ordinal}. */
     static RecordedEvidenceIdentity identity(String regionId, long ordinal) {
@@ -315,14 +298,6 @@ final class RecordedSharedStateFixtures {
         return record;
     }
 
-    /** One summary row carrying an execution's recorded shared state. */
-    static JsonObject recordedRow(JsonObject versionsEnvelope,
-                                  JsonObject ledgerEnvelope, String field) {
-        JsonObject row = new JsonObject();
-        row.add(SharedStateEvidence.RECORDED_FIELD,
-                recordedMember(versionsEnvelope, ledgerEnvelope, field));
-        return row;
-    }
 
     /** One {@code recordedSharedState} member of an execution. */
     static JsonObject recordedMember(JsonObject versionsEnvelope,
@@ -396,36 +371,7 @@ final class RecordedSharedStateFixtures {
         return ledgerEnvelope(events, order);
     }
 
-    /**
-     * A recorded session whose single row carries a guarded read over the
-     * two-writer ledger, with each candidate attributed to its writer region.
-     */
-    static RecordedSessionModel selectedReadCutModel() {
-        JsonObject envelope = twoWriterEnvelope(
-                SharedStateEvidence.RESOLUTION_GUARDED, "AMBIGUOUS_WRITERS",
-                0L);
-        SharedStateEvidence.normalizeGuards(envelope);
-        JsonObject guarded = guardedRead(21L, 7L, 24);
-        // The recorded term's own writer regions, so the gate's cross-run key
-        // names the regions the version store published from.
-        JsonArray candidates = guarded.getAsJsonArray("candidates");
-        candidates.get(0).getAsJsonObject()
-                .addProperty("regionId", "REGION.writerA");
-        candidates.get(1).getAsJsonObject()
-                .addProperty("regionId", "REGION.writerB");
-        SharedStateEvidence.normalizeGuards(guarded);
-        envelope.getAsJsonArray("versions").get(0).getAsJsonObject()
-                .add("expression", guarded);
-        return RecordedSessionModel.of(
-                java.util.Collections.singletonList(recordedRow(envelope,
-                        twoWriterLedger(), "example.State#value")),
-                null, "REGION.reader");
-    }
 
-    /** The read-cut payload a query carries, built from recorded evidence. */
-    static JsonObject selectedReadCutQuery() {
-        return selectedReadCutModel().queryPayload();
-    }
 
     // ----- composed goldens ----------------------------------------------
     //
@@ -438,314 +384,18 @@ final class RecordedSharedStateFixtures {
     static final String PRODUCER_OCCURRENCE = "REGION.1@Test#call20";
     static final String COMPOSED_SOURCE_KEY = "TEST_DRIVER/test#epoch0";
 
-    /**
-     * One undecided read of two competing writers, composed.
-     *
-     * <p>Its formula carries three read-from arms - two recorded writers and
-     * the unconditional unknown one - the consumer port binding that hands the
-     * target that value, and the two-writer ledger's own order.</p>
-     */
-    static ConcolicSmtComposer.Result composedGuardedGolden(Path directory)
-            throws Exception {
-        JsonObject edge = binding("EDGE.GUARDED", "REGION.1.out.0",
-                "REGION.0.in.0");
-        edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
-                RecordedReadFrom.PROVENANCE_GUARDED);
-        edge.addProperty(RecordedReadFrom.EDGE_UNKNOWN_ARM,
-                SharedStateEvidence.UNKNOWN_WRITER_SELECTOR);
-        edge.addProperty("locationKey", "INSTANCE_FIELD/7#24");
-        JsonObject envelope = twoWriterEnvelope(
-                SharedStateEvidence.RESOLUTION_GUARDED, "AMBIGUOUS_WRITERS",
-                0L);
-        envelope.getAsJsonArray("reads").get(0).getAsJsonObject()
-                .addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
-                        TARGET_OCCURRENCE);
-        SharedStateEvidence.normalizeGuards(envelope);
-        JsonObject guarded = guardedRead(21L, 7L, 24);
-        SharedStateEvidence.normalizeGuards(guarded);
-        RelationSummary producer = withRecorded(
-                producerSummary("GUARDED", edge), envelope,
-                twoWriterLedger());
-        return compose(directory, producer,
-                binary(guarded, "==", constant(1)), edge);
-    }
 
-    /**
-     * One proven read-from beside one candidate nothing decided, composed.
-     *
-     * <p>The VM named the writer, so the formula holds a direct equality and
-     * the recorded {@code write &lt; read} order beside it. The second trace
-     * edge into the same consumer port is resolved and never lowered: it stays
-     * a candidate, which is the fifth evidence state the drawing has to be
-     * able to show.</p>
-     */
-    static ConcolicSmtComposer.Result composedExactGolden(Path directory)
-            throws Exception {
-        JsonObject edge = binding("EDGE.EXACT", "REGION.1.out.0",
-                "REGION.0.in.0");
-        edge.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
-                RecordedReadFrom.PROVENANCE_EXACT);
-        edge.addProperty("fieldVersionId", 11);
-        edge.addProperty("readEventId", 21);
-        edge.addProperty("locationKey", "INSTANCE_FIELD/7#24");
-        JsonObject competing = binding("EDGE.COMPETING", "REGION.1.out.1",
-                "REGION.0.in.0");
-        JsonObject envelope = twoWriterEnvelope(
-                SharedStateEvidence.RESOLUTION_EXACT, "UNIQUE_VERSION", 11L);
-        JsonObject read = envelope.getAsJsonArray("reads").get(0)
-                .getAsJsonObject();
-        read.addProperty("regionId", "REGION.0");
-        read.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
-                TARGET_OCCURRENCE);
-        SharedStateEvidence.normalizeGuards(envelope);
-        RelationSummary producer = withRecorded(withCompetingOutput(
-                producerSummary("EXACT", edge, competing)), envelope,
-                twoWriterLedger());
-        return compose(directory, producer,
-                binary(reference("REGION.0.in.0"), "==", constant(10)),
-                Arrays.asList(edge, competing),
-                Arrays.asList(region("REGION.0", true, false),
-                        producerRegion()));
-    }
 
-    /** A second producer output, so the competing candidate is observable. */
-    private static RelationSummary withCompetingOutput(
-            RelationSummary summary) {
-        JsonObject row = summary.toJson();
-        OutputClosureContract second = OutputClosureCodec.singleton(
-                "REL.REGION.1", "REGION.1",
-                java.util.Collections.singletonList("REGION.1.out.1"),
-                "REGION.1.out.1", "<Test: int competing>", "REGION_OUTPUT",
-                "int", outputSlice("REGION.1.out.1",
-                        "<Test: int competing>"));
-        OutputClosureCodec.writeTo(row, OutputClosureCodec.merge(
-                Arrays.asList(OutputClosureCodec.decode(row), second)));
-        row.getAsJsonObject("regionRelation").getAsJsonArray("cases").get(0)
-                .getAsJsonObject().getAsJsonObject("outputExpressions")
-                .add("REGION.1.out.1", constant(20));
-        return RelationSummary.decode(row);
-    }
 
-    private static JsonObject producerRegion() {
-        JsonObject producer = region("REGION.1", false, true);
-        producer.getAsJsonArray("outputs").add(port("REGION.1.out.1",
-                "competing"));
-        return producer;
-    }
 
-    private static RelationSummary withRecorded(RelationSummary summary,
-                                                JsonObject envelope,
-                                                JsonObject ledger) {
-        JsonObject row = summary.toJson();
-        row.add(SharedStateEvidence.RECORDED_FIELD,
-                recordedMember(envelope, ledger, "example.State#value"));
-        return RelationSummary.decode(row);
-    }
 
-    private static JsonObject outputSlice(String port, String cell) {
-        JsonObject slice = new JsonObject();
-        slice.addProperty("outputPort", port);
-        slice.addProperty("outputCell", cell);
-        JsonArray inputs = new JsonArray();
-        inputs.add("REGION.1.in.0");
-        slice.add("inputPorts", inputs);
-        for (String member : new String[]{"sites", "staticSites", "methods",
-                "causalEdgeIds", "captureBindings", "captureBindingIssues"}) {
-            slice.add(member, new JsonArray());
-        }
-        return slice;
-    }
 
-    /** The one upstream relation these goldens compose against. */
-    private static RelationSummary producerSummary(String id,
-                                                   JsonObject... edges) {
-        OutputClosureContract closure = OutputClosureCodec.singleton(
-                "REL.REGION.1", "REGION.1",
-                java.util.Collections.singletonList("REGION.1.out.0"),
-                "REGION.1.out.0", "<Test: int output>", "REGION_OUTPUT",
-                "int", outputSlice("REGION.1.out.0", "<Test: int output>"));
-        JsonObject row = new JsonObject();
-        row.addProperty("schemaVersion", RelationSummary.SCHEMA_VERSION);
-        row.addProperty("kind", RelationSummary.KIND);
-        row.addProperty("summaryId", "SUMMARY." + id);
-        row.addProperty("sourceKey", COMPOSED_SOURCE_KEY);
-        row.addProperty("occurrenceId", PRODUCER_OCCURRENCE);
-        ClosureGoalKind.OUTPUT_RELATION_CLOSURE.writeToTask(row);
-        OutputClosureCodec.writeTo(row, closure);
-        JsonArray bindings = new JsonArray();
-        for (JsonObject edge : edges) bindings.add(edge.deepCopy());
-        row.add("edgeBindings", bindings);
-        JsonObject path = new JsonObject();
-        path.addProperty("caseId", "CASE." + id);
-        path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
-                new JsonArray());
-        path.addProperty("sourceTaskId", "TASK." + id);
-        JsonObject guard = new JsonObject();
-        guard.addProperty("kind", "PATH_CONDITION");
-        guard.add("conditions", new JsonArray());
-        path.add("guard", guard);
-        JsonObject outputs = new JsonObject();
-        outputs.add("REGION.1.out.0", constant(10));
-        path.add("outputExpressions", outputs);
-        JsonArray cases = new JsonArray();
-        cases.add(path);
-        JsonObject relation = new JsonObject();
-        relation.addProperty("schemaVersion", 1);
-        relation.addProperty("kind", "GUARDED_PATH_MERGE");
-        relation.add("cases", cases);
-        row.add("regionRelation", relation);
-        row.addProperty("relationallyComplete", true);
-        return RelationSummary.decode(row);
-    }
 
-    private static ConcolicSmtComposer.Result compose(
-            Path directory, RelationSummary producer,
-            JsonObject targetPredicate, JsonObject firstHop)
-            throws Exception {
-        return compose(directory, producer, targetPredicate,
-                Collections.singletonList(firstHop),
-                Arrays.asList(region("REGION.0", true, false),
-                        region("REGION.1", false, true)));
-    }
 
-    private static ConcolicSmtComposer.Result compose(
-            Path directory, RelationSummary producer,
-            JsonObject targetPredicate, List<JsonObject> firstHops,
-            List<JsonObject> regions) throws Exception {
-        Files.createDirectories(directory);
-        Path fatal = directory.resolve("fatal.jsonl");
-        Path summaries = directory.resolve("summaries.jsonl");
-        Path plan = directory.resolve("runtime_plan.jsonl");
-        Path output = directory.resolve("candidate.smt2");
-        Path manifest = directory.resolve("composed_smt_manifest.json");
-        write(fatal, fatalQuery(targetPredicate, firstHops) + "\n");
-        write(summaries, producer.toJson() + "\n");
-        write(plan, RuntimePlanArtifact.encode(
-                Collections.<JsonObject>emptyList(),
-                Collections.<JsonObject>emptyList(), regions));
-        return ConcolicSmtComposer.compose(
-                ConcolicSmtComposer.Arguments.parse(new String[]{
-                        "--fatal-query", fatal.toString(),
-                        "--summaries", summaries.toString(),
-                        "--runtime-plan", plan.toString(),
-                        "--output", output.toString(),
-                        "--manifest", manifest.toString(),
-                        "--fatal-region", "REGION.0",
-                        "--occurrence-id", TARGET_OCCURRENCE}));
-    }
 
-    private static JsonObject fatalQuery(JsonObject targetPredicate,
-                                         List<JsonObject> firstHops) {
-        JsonObject fatal = new JsonObject();
-        fatal.addProperty("schemaVersion",
-                TargetReachPathQueryBuilder.SCHEMA_VERSION);
-        fatal.addProperty("kind", "TARGET_REACH_PATH_SET_QUERY");
-        fatal.addProperty("queryKey", "QUERY.RECORDED.SHARED.STATE");
-        fatal.addProperty("regionId", "REGION.0");
-        fatal.addProperty("occurrenceId", TARGET_OCCURRENCE);
-        fatal.addProperty("targetSiteId", "<Test: void consume()>#u1");
-        fatal.addProperty("targetOccurrence", 1);
-        fatal.addProperty("requiredTakenOutcome", false);
-        fatal.addProperty("constraintAuthority", "RECORDED_TARGET_PREFIX_V1");
-        JsonArray constraints = new JsonArray();
-        constraints.add(targetPredicate);
-        JsonObject path = new JsonObject();
-        path.add("constraints", constraints);
-        path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD, new JsonArray());
-        path.addProperty("desiredTakenOutcome", false);
-        path.addProperty(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE,
-                TargetReachPathQueryBuilder.SOURCE_TARGET_REACH_EVENT);
-        path.addProperty("fatalBranchConditionAuthority",
-                TargetReachPathQueryBuilder.SOURCE_FATAL_BRANCH_AUTHORITY);
-        JsonObject targetReach = new JsonObject();
-        targetReach.addProperty("kind",
-                PathObservation.TargetReachEvent.KIND);
-        targetReach.addProperty("siteId", "<Test: void consume()>#u1");
-        targetReach.addProperty("occurrence", 1);
-        targetReach.addProperty("outcome", true);
-        path.add(PathObservation.TargetReachEvent.FIELD, targetReach);
-        JsonArray paths = new JsonArray();
-        paths.add(path);
-        fatal.add("paths", paths);
-        fatal.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
-                new JsonArray());
-        JsonObject metadata = new JsonObject();
-        metadata.addProperty("predicateNormalization", "IDENTITY");
-        BranchWitness witness = BranchWitness.vmPc(
-                "<Test: void consume()>#u1", "<Test: void consume()>", 1, 1,
-                true, BranchPredicateAlgebra.complement(targetPredicate),
-                0, metadata);
-        path.add(TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS,
-                witness.toJson());
-        fatal.add("seedReplayContract", BranchReplayContract.flip(
-                Collections.<BranchWitness>emptyList(), witness).toJson());
-        LoopBoundPolicy.cfgBackedges(8).writeTo(fatal);
-        JsonArray selectedTargetBindings = new JsonArray();
-        for (JsonObject firstHop : firstHops) {
-            selectedTargetBindings.add(firstHop.deepCopy());
-        }
-        fatal.add("selectedTargetBindings", selectedTargetBindings);
-        JsonObject context = new JsonObject();
-        context.addProperty("occurrenceId", TARGET_OCCURRENCE);
-        fatal.add("symbolicContext", context);
-        return fatal;
-    }
 
-    private static JsonObject binding(String edgeId, String fromPort,
-                                      String toPort) {
-        JsonObject binding = new JsonObject();
-        binding.addProperty("edgeId", edgeId);
-        binding.addProperty("fromRegion", "REGION.1");
-        binding.addProperty("toRegion", "REGION.0");
-        binding.addProperty("fromOccurrenceId", PRODUCER_OCCURRENCE);
-        binding.addProperty("toOccurrenceId", TARGET_OCCURRENCE);
-        binding.addProperty("fromOutputPort", fromPort);
-        binding.addProperty("toInputPort", toPort);
-        binding.addProperty("evidenceKind", "FIELD_ASSIGNMENT_READ_FROM_V1");
-        binding.addProperty("schemaVersion", 3);
-        binding.addProperty("correlationAuthority",
-                "EXACT_RUNTIME_RECEIVER_VALUE_IDENTITY_V1");
-        binding.addProperty("writerLaneId", "lane.writer");
-        binding.addProperty("readerLaneId", "lane.reader");
-        binding.addProperty("programOrderRequired", false);
-        binding.addProperty("writerEventSeq", 20);
-        binding.addProperty("readerEventSeq", 30);
-        binding.addProperty("receiverObjectId", 7);
-        return binding;
-    }
 
-    private static JsonObject region(String id, boolean hasInput,
-                                     boolean hasOutput) {
-        JsonObject region = new JsonObject();
-        region.addProperty("schemaVersion", 3);
-        region.addProperty("kind", "SYMBOLIC_REGION");
-        region.addProperty("regionId", id);
-        JsonArray inputs = new JsonArray();
-        if (hasInput) inputs.add(port(id + ".in.0", "input"));
-        region.add("symbolicInputs", inputs);
-        JsonArray outputs = new JsonArray();
-        if (hasOutput) outputs.add(port(id + ".out.0", "output"));
-        region.add("outputs", outputs);
-        return region;
-    }
 
-    private static JsonObject port(String id, String role) {
-        JsonObject port = new JsonObject();
-        port.addProperty("portId", id);
-        port.addProperty("cell", "<Test: int " + role + ">");
-        port.addProperty("javaType", "int");
-        return port;
-    }
 
-    private static JsonObject reference(String symbol) {
-        JsonObject value = new JsonObject();
-        value.addProperty("_type", "SymbolExpression");
-        value.addProperty("_java_type", "I");
-        value.addProperty("_exp", symbol);
-        return value;
-    }
 
-    private static void write(Path path, String content) throws Exception {
-        Files.write(path, content.getBytes(StandardCharsets.UTF_8));
-    }
 }

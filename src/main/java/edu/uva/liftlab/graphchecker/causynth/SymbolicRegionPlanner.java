@@ -14,9 +14,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.asMap;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
 /**

@@ -1720,27 +1720,6 @@ public final class RuntimeWorkflowDiscovery {
             return result;
         }
 
-        private Set<String> projectedInputPorts() throws IOException {
-            Set<String> result = new LinkedHashSet<>();
-            if (materialization) {
-                for (String output : projection().outputPorts()) {
-                    OutputClosureContract.Member member =
-                            goal.outputClosure().member(output);
-                    if (member == null) {
-                        throw new IOException("materialized output has no "
-                                + "closure member: " + output);
-                    }
-                    addSliceInputs(result, member);
-                }
-                return result;
-            }
-            for (JsonObject edge : selectedEdges.values()) {
-                OutputClosureContract.Member member = member(edge);
-                addSliceInputs(result, selectedVersionSlice(member, edge));
-            }
-            return result;
-        }
-
         private Occurrence exactProducerOccurrence() throws IOException {
             if (materialization) return occurrence;
             Set<String> instances = new LinkedHashSet<>();

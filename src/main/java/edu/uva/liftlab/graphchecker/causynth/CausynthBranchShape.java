@@ -11,7 +11,6 @@ import soot.jimple.TableSwitchStmt;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 /** Canonical, Soot-CFG-independent identity for one conditional successor. */
 final class CausynthBranchShape {

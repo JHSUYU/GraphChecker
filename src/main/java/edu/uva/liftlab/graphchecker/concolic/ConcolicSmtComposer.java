@@ -304,7 +304,7 @@ public final class ConcolicSmtComposer {
         BoundedLoopComposition loops = lowering.loops;
         RecordedSessionModel recorded = lowering.recorded;
         lowerFatalTargetPaths(emitter, fatal, fatalSite);
-        runCausalPasses(emitter, ports, resolved, loweredRelations,
+        runCausalPasses(emitter, resolved, loweredRelations,
                 caseEvidenceRows, allCaseEvidenceRows, loops, recorded);
         EmissionFinish emission = finishEmission(emitter, resolved);
         List<JsonObject> sourceEpochDivergences =
@@ -628,7 +628,7 @@ public final class ConcolicSmtComposer {
         emitter.bindTargetPathPartition(fatalPathSelectors);
     }
 
-    private static void runCausalPasses(Emitter emitter, PortIndex ports,
+    private static void runCausalPasses(Emitter emitter,
                                         ResolvedSummaryGraph resolved,
                                         List<RelationSummary> relations,
                                         List<JsonObject> caseEvidenceRows,
@@ -647,8 +647,7 @@ public final class ConcolicSmtComposer {
         emitter.finishFatalAbsenceMutationWitness();
         emitter.finishBindings();
         emitter.finishCausalWitnessPin();
-        auditDroppedEdgeEvidence(emitter, ports,
-                resolved.valueBindingRows());
+        auditDroppedEdgeEvidence(emitter, resolved.valueBindingRows());
     }
 
     private static EmissionFinish finishEmission(
@@ -1535,7 +1534,6 @@ public final class ConcolicSmtComposer {
      * Names evidence that was proven and then dropped.
      */
     private static void auditDroppedEdgeEvidence(Emitter emitter,
-                                                 PortIndex ports,
                                                  List<JsonObject> edges) {
         Set<PortOccurrence> unbound = new LinkedHashSet<>();
         for (PortOccurrence occurrence : emitter.mentionedPorts) {
@@ -7276,7 +7274,7 @@ public final class ConcolicSmtComposer {
                     for (int index : entry.getValue()) {
                         JsonObject item = cases.get(index).getAsJsonObject();
                         OccurrenceMapCase candidate = occurrenceMapCase(
-                                region, sourceKey, output, item, index);
+                                region, sourceKey, output, item);
                         if (candidate == null) {
                             heapGap("OccurrenceMapCarrierGap@" + region
                                     + ":" + index + ":" + output);
@@ -7385,7 +7383,7 @@ public final class ConcolicSmtComposer {
 
         private OccurrenceMapCase occurrenceMapCase(
                 String region, String sourceKey, String output,
-                JsonObject item, int index) {
+                JsonObject item) {
             String occurrence = string(item, "occurrenceId");
             int ordinal = integer(item,
                     PathObservation.ACTIVATION_ORDINAL, 0);
@@ -7996,9 +7994,8 @@ public final class ConcolicSmtComposer {
             // An exact read-from is an equality, not a choice: the VM
             // proved which write the read took, so a selector over one
             if (RecordedReadFrom.PROVENANCE_EXACT.equals(provenance)) {
-                if (bindRecordedExactWriter(binding, outputOccurrence,
+                if (!bindRecordedExactWriter(binding, outputOccurrence,
                         inputOccurrence, label)) {
-                } else {
                     heapGap("UnresolvedRecordedExactBinding:"
                             + string(binding, "edgeId"));
                 }
@@ -8019,7 +8016,7 @@ public final class ConcolicSmtComposer {
                 }
                 recordInputAuthority(inputOccurrence, READ_FROM_ARM,
                         string(binding, "edgeId"));
-                emitRecordedBindingOrder(binding, label, equality);
+                emitRecordedBindingOrder(binding, equality);
                 emittedEdgeBindings.add(edgeBindingKey(binding));
                 failureWitness.connect(binding, outputOccurrence,
                         inputOccurrence, "true", portName(inputOccurrence));
@@ -8034,8 +8031,7 @@ public final class ConcolicSmtComposer {
                         recordInputAuthority(inputOccurrence,
                                 COMMUNICATION_LEAF, string(binding, "edgeId"));
                     }
-                    emitRecordedBindingOrder(binding, label,
-                            equalityAssertion);
+                    emitRecordedBindingOrder(binding, equalityAssertion);
                     emittedEdgeBindings.add(edgeBindingKey(binding));
                     failureWitness.connect(binding, outputOccurrence,
                             inputOccurrence, "true",
@@ -8693,7 +8689,6 @@ public final class ConcolicSmtComposer {
          * States one exact binding's recorded order in the one order domain.
          */
         private void emitRecordedBindingOrder(JsonObject binding,
-                                              String label,
                                               String equalityAssertion) {
             JsonObject evidence = exactValueBinding(binding,
                     equalityAssertion);

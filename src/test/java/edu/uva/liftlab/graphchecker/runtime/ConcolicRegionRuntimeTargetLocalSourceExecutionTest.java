@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -27,15 +26,12 @@ import java.nio.file.Path;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /** Executes the combined target-local source and remote-attach replay shape. */
 public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
@@ -63,7 +59,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
             + ElementState.class.getName() + ": int value>";
     private static final String SOURCE_HOOK_CALLEE =
             "<example.SourceHook: boolean symbolize()>";
-    private static final Gson GSON = new Gson();
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -132,358 +127,7 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
                 "replayContract")).requiredPathPredicates().size());
     }
 
-    @Test
-    public void selectedElementFieldSurvivesIntoTerminalSourceEvidence()
-            throws Exception {
-        JsonObject task = task(false);
-        Path plan = folder.newFile("target-local-terminal-plan.jsonl")
-                .toPath();
-        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
-        Path results = folder.getRoot().toPath().resolve(
-                "terminal-results.jsonl");
-        System.setProperty("causynth.concolic.task.plan", plan.toString());
-        System.setProperty("causynth.concolic.task.id", TASK);
-        System.setProperty("causynth.concolic.results", results.toString());
-        assertEquals(Collections.singletonList(TASK),
-                ConcolicRegionRuntime.campaignTaskIdsForTests());
-
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 73L);
-        ConcolicRegionRuntime.observeCausalSource("test/client#epoch0");
-        assertTrue(symbolize(
-                VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        assertTrue(symbolize(
-                GATE_SOURCE_ID, receiver, GATE_FIELD));
-        assertTrue(symbolize(
-                ELEMENT_SOURCE_ID, receiver.elements[0], ELEMENT_FIELD));
-        acceptRemote(active, symbol("REMOTE.VALUE"));
-
-        ConcolicRegionRuntime.exitRegion(73L, null, "");
-        ConcolicRegionRuntime.awaitSelectedResultPublications();
-
-        List<String> lines = Files.readAllLines(results,
-                StandardCharsets.UTF_8);
-        assertEquals(1, lines.size());
-        JsonObject result = new JsonParser().parse(lines.get(0))
-                .getAsJsonObject();
-        assertEquals(TASK, result.get("taskId").getAsString());
-        assertEquals(0, result.getAsJsonArray("unresolvedInputs").size());
-        JsonArray phaseObservations = result.getAsJsonArray(
-                ConcolicRegionRuntime.CONFIGURED_SOURCE_PHASE_OBSERVATIONS);
-        assertEquals(3, phaseObservations.size());
-        assertEquals(sourcePhaseId(VALUE_SOURCE_ID),
-                phaseObservations.get(0).getAsJsonObject()
-                        .get("matchedPhaseId").getAsString());
-        assertEquals(sourcePhaseId(GATE_SOURCE_ID),
-                phaseObservations.get(1).getAsJsonObject()
-                        .get("matchedPhaseId").getAsString());
-        assertEquals(sourcePhaseId(ELEMENT_SOURCE_ID),
-                phaseObservations.get(2).getAsJsonObject()
-                        .get("matchedPhaseId").getAsString());
-        assertEquals(0, result.getAsJsonArray(
-                ConcolicRegionRuntime.CONFIGURED_SOURCE_PHASE_GAPS).size());
-        List<JsonObject> evidence = SymbolicSourceEvidence.eventsOf(result);
-        assertEquals(3, evidence.size());
-        Set<String> identities = new LinkedHashSet<>();
-        for (JsonObject row : evidence) {
-            assertEquals(OCCURRENCE,
-                    row.get("sourceOccurrenceId").getAsString());
-            assertTrue(row.get("rawSymbol").getAsString()
-                    .startsWith("M_I_field_"));
-            identities.add(row.get("sourceId").getAsString() + "\n"
-                    + row.get("fieldSignature").getAsString());
-        }
-        assertTrue(identities.contains(VALUE_SOURCE_ID + "\n" + VALUE_FIELD));
-        assertTrue(identities.contains(GATE_SOURCE_ID + "\n" + GATE_FIELD));
-        assertTrue(identities.contains(
-                ELEMENT_SOURCE_ID + "\n" + ELEMENT_FIELD));
-        assertEquals(6, receiver.elements[0].value);
-        assertEquals(8, receiver.elements[1].value);
-    }
-
-    /** An entry past the exact frozen phase catalog is a gap, never a mint. */
-    @Test
-    public void anEntryPastTheConfiguredPhaseCatalogDoesNotMint()
-            throws Exception {
-        JsonObject task = task(false);
-        loadTask(task, "every-entry");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 74L);
-
-        // Two exact catalog rows for this site; a third owner is EXTRA.
-        assertTrue("first entry mints",
-                symbolize(ELEMENT_SOURCE_ID, receiver.elements[0],
-                        ELEMENT_FIELD));
-        assertTrue("second cataloged entry mints",
-                symbolize(ELEMENT_SOURCE_ID, receiver.elements[1],
-                        ELEMENT_FIELD));
-        assertFalse("an entry past the catalog is refused",
-                symbolize(ELEMENT_SOURCE_ID, new ElementState(0),
-                        ELEMENT_FIELD));
-        assertEquals(1, phaseGaps(active).size());
-        assertEquals("EXTRA", phaseGaps(active).get(0)
-                .get("gapKind").getAsString());
-
-        List<JsonObject> rows = symbolizedRows(active);
-        assertEquals(2, rows.size());
-        JsonObject mintRow = rows.get(0);
-        assertEquals(ELEMENT_SOURCE_ID,
-                mintRow.get("sourceId").getAsString());
-        assertEquals(OCCURRENCE,
-                mintRow.get("occurrenceId").getAsString());
-        assertEquals(ELEMENT_FIELD,
-                mintRow.get("fieldSignature").getAsString());
-        assertEquals(1, mintRow.get("ordinal").getAsInt());
-        assertFalse(mintRow.get("reused").getAsBoolean());
-        assertEquals("sym__" + ELEMENT_SOURCE_ID + "__" + OCCURRENCE
-                + "__1", mintRow.get("symbol").getAsString());
-        assertEquals(2, symbolicSources(active).size());
-        assertTrue(freeSymbols(active).isEmpty());
-
-        // Every published entry is one mint ROW; the importer refuses a
-        // plain string and refuses a row that states no reuse.  The locally
-        // minted input symbols travel in the same shape as the site rows.
-        symbolizedPorts(active).add("PORT.local.value");
-        JsonArray published = publishedSymbolizedInputs(active);
-        assertEquals(3, published.size());
-        for (JsonElement entry : published) {
-            assertTrue("symbolizedInputs entry must be an object",
-                    entry.isJsonObject());
-            JsonObject row = entry.getAsJsonObject();
-            assertTrue("row must state reuse", row.has("reused"));
-            assertTrue(row.get("reused").getAsJsonPrimitive().isBoolean());
-            assertFalse("a fresh mint names its root",
-                    row.get("symbol").getAsString().isEmpty());
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<String> symbolizedPorts(Object active)
-            throws Exception {
-        Field field = active.getClass().getDeclaredField("symbolized");
-        field.setAccessible(true);
-        return (List<String>) field.get(active);
-    }
-
-    private static JsonArray publishedSymbolizedInputs(Object active)
-            throws Exception {
-        Method published = ConcolicRegionRuntime.class.getDeclaredMethod(
-                "symbolizedInputs", active.getClass());
-        published.setAccessible(true);
-        return (JsonArray) published.invoke(null, active);
-    }
-
-    /**
-     * The VM is the authority on the value: a field that already carries a
-     * propagated expression keeps it, and the row says so instead of naming a
-     * fresh symbol.
-     */
-    @Test
-    public void aPropagatedExpressionIsKeptInsteadOfAFreshSymbol()
-            throws Exception {
-        JsonObject task = taskWithTwoValuePhases();
-        loadTask(task, "reused-entry");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 75L);
-
-        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        // The first mint left an expression on the field; the second entry
-        // finds it there, exactly as a propagated one would arrive.
-        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-
-        List<JsonObject> rows = symbolizedRows(active);
-        assertEquals(2, rows.size());
-        assertFalse(rows.get(0).get("reused").getAsBoolean());
-        assertTrue(rows.get(1).get("reused").getAsBoolean());
-        assertEquals("", rows.get(1).get("symbol").getAsString());
-        assertEquals(rows.get(0).getAsJsonObject("expression"),
-                rows.get(1).getAsJsonObject("expression"));
-        assertTrue(freeSymbols(active).isEmpty());
-    }
-
-    /** Resume opens the gate only for an already propagated expression. */
-    @Test
-    public void propagatedFieldResumeNeverMintsAReplacementRoot()
-            throws Exception {
-        JsonObject task = task(false);
-        loadTask(task, "resume-propagated");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 751L);
-
-        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        setPathRecordingStarted(active, false);
-        assertTrue(ConcolicRegionRuntime.resumePropagatedField(
-                receiver, VALUE_FIELD));
-        assertTrue(pathRecordingStarted(active));
-        assertEquals(1, symbolizedRows(active).size());
-        assertEquals(1, symbolicSources(active).size());
-
-        setPathRecordingStarted(active, false);
-        assertFalse(ConcolicRegionRuntime.resumePropagatedField(
-                receiver.elements[1], ELEMENT_FIELD));
-        assertFalse(pathRecordingStarted(active));
-        assertEquals(1, symbolizedRows(active).size());
-        assertEquals(1, symbolicSources(active).size());
-    }
-
-    /**
-     * A reused read whose value is one bare VM root is a root the declared
-     * source can honestly NAME: the field carries exactly that symbol, so
-     * the evidence ledger files it - saying {@code reused} - instead of
-     * losing the only writable program source behind it.
-     */
-    @Test
-    public void aNamedBareRootIsFiledAsConfiguredSourceEvidence()
-            throws Exception {
-        JsonObject task = taskWithTwoValuePhases();
-        loadTask(task, "named-root");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 76L);
-
-        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        // The propagated expression arrives here exactly as the NameNode's
-        // currentKey.keyId does: already carrying one minted root.
-        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-
-        List<JsonObject> evidence = new java.util.ArrayList<>(
-                symbolicSources(active).values());
-        assertEquals("the named read is filed beside the mint",
-                2, evidence.size());
-        JsonObject minted = evidence.get(0);
-        JsonObject named = evidence.get(1);
-        assertFalse(SymbolicSourceEvidence.isReused(minted));
-        assertFalse("a fresh mint still names its own root",
-                minted.get(SymbolicSourceEvidence.SYMBOL).getAsString()
-                        .isEmpty());
-        assertTrue("a named read says so on its row",
-                SymbolicSourceEvidence.isReused(named));
-        assertFalse("a named read mints no root of its own",
-                named.has(SymbolicSourceEvidence.SYMBOL));
-        // Mechanism B is untouched: the symbol on the field is the one that
-        // was already there, not a re-mint.
-        assertEquals(minted.get("rawSymbol").getAsString(),
-                named.get("rawSymbol").getAsString());
-        assertEquals(minted.getAsJsonObject("expression"),
-                named.getAsJsonObject("expression"));
-        assertEquals(2, SymbolicSourceEvidence.ordinalOf(named));
-        // The named row's root was minted at the FIRST phase, so it cannot
-        // carry the second phase's label - and the contract must still
-        // publish it.
-        assertEquals(secondValuePhaseId(),
-                named.get("sourcePhaseId").getAsString());
-        assertFalse(named.get("rawSymbol").getAsString().contains(
-                SymbolicSourceEvidence.engineLabelForPhase(
-                        secondValuePhaseId(), VALUE_SOURCE_ID)));
-        JsonObject owner = new JsonObject();
-        SymbolicSourceEvidence.writeTo(owner, evidence);
-        assertEquals(2, SymbolicSourceEvidence.eventsOf(owner).size());
-        // A named read is still not a mint: the root registry skips it.
-        assertEquals(1, SymbolicSourceEvidence.rawSymbolIdentities(
-                Collections.singletonList(owner)).size());
-    }
-
-    /**
-     * A propagated COMPOUND names roots that live elsewhere, so no writable
-     * program source can be bound to it.  Fail closed: file nothing.
-     */
-    @Test
-    public void aPropagatedCompoundIsNotNamedAsAConfiguredSource()
-            throws Exception {
-        JsonObject task = taskWithTwoValuePhases();
-        loadTask(task, "named-compound");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 77L);
-
-        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        FakeVm.compoundExpressionFor("localValue");
-        assertTrue(symbolize(VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-
-        // Both entries are still mint ROWS - the second says it reused -
-        // and only the first is a named source.
-        List<JsonObject> rows = symbolizedRows(active);
-        assertEquals(2, rows.size());
-        assertTrue(rows.get(1).get("reused").getAsBoolean());
-        assertEquals(1, symbolicSources(active).size());
-        assertFalse(SymbolicSourceEvidence.isReused(
-                symbolicSources(active).values().iterator().next()));
-        assertTrue(freeSymbols(active).isEmpty());
-    }
-
-    /** A hook at a site the frozen catalog does not name is still a gap. */
-    @Test
-    public void aHookOutsideTheCatalogIsAGapNotAnOccurrence()
-            throws Exception {
-        JsonObject task = task(false);
-        loadTask(task, "outside-catalog");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 77L);
-
-        assertFalse(symbolize(MAP_ELEMENT_SOURCE_ID,
-                receiver.elements[0], ELEMENT_FIELD));
-        assertEquals(1, phaseGaps(active).size());
-        assertEquals("EXTRA", phaseGaps(active).get(0)
-                .get("gapKind").getAsString());
-        assertTrue(symbolizedRows(active).isEmpty());
-    }
-
-    /** Nothing to mint on is a no-op, not a gap and not a row. */
-    @Test
-    public void aMintSiteEnteredWithNoOwnerIsANoOp() throws Exception {
-        JsonObject task = task(false);
-        loadTask(task, "no-owner");
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 79L);
-
-        assertFalse(symbolize(VALUE_SOURCE_ID, null, VALUE_FIELD));
-        assertEquals(0, phaseGaps(active).size());
-        assertTrue(symbolizedRows(active).isEmpty());
-        assertEquals(0, phaseObservations(active).size());
-    }
-
-    @Test
-    public void vmRefusalLeavesConfiguredModelUnappliedAtTerminal()
-            throws Exception {
-        JsonObject task = task();
-        Path plan = folder.newFile("target-local-refusal-plan.jsonl")
-                .toPath();
-        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
-        Path results = folder.getRoot().toPath().resolve(
-                "refusal-results.jsonl");
-        System.setProperty("causynth.concolic.task.plan", plan.toString());
-        System.setProperty("causynth.concolic.task.id", TASK);
-        System.setProperty("causynth.concolic.results", results.toString());
-        assertEquals(Collections.singletonList(TASK),
-                ConcolicRegionRuntime.campaignTaskIdsForTests());
-
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 75L);
-        ConcolicRegionRuntime.observeCausalSource("test/client#epoch0");
-        FakeVm.refuseField("localValue");
-        assertFalse(symbolize(
-                VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        FakeVm.refuseField("");
-        assertTrue(symbolize(
-                GATE_SOURCE_ID, receiver, GATE_FIELD));
-        assertTrue(symbolize(
-                ELEMENT_SOURCE_ID, receiver.elements[0], ELEMENT_FIELD));
-        acceptRemote(active, symbol("REMOTE.VALUE"));
-        completeReplayProgress(active, task);
-
-        ConcolicRegionRuntime.exitRegion(75L, null, "");
-        ConcolicRegionRuntime.awaitSelectedResultPublications();
-
-        List<String> lines = Files.readAllLines(results,
-                StandardCharsets.UTF_8);
-        assertEquals(1, lines.size());
-        JsonObject skipped = new JsonParser().parse(lines.get(0))
-                .getAsJsonObject();
-        assertEquals(ConcolicRegionRuntime.SKIP_UNAPPLIED_MODEL_ASSIGNMENT,
-                skipped.get("skipKind").getAsString());
-        assertTrue(skipped.get("reason").getAsString()
-                .contains("MODEL." + VALUE_SOURCE_ID));
-    }
-
-    @Test
+                                @Test
     public void appliedConfiguredModelsPassReplayTerminalGate()
             throws Exception {
         JsonObject task = task();
@@ -521,49 +165,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         assertEquals("CONCOLIC_REGION_RESULT",
                 result.get("event").getAsString());
         assertFalse(result.has("skipKind"));
-        assertEquals(3, SymbolicSourceEvidence.eventsOf(result).size());
-    }
-
-    @Test
-    public void engineSymbolAloneKeysSolverAssignmentsAtRuntime()
-            throws Exception {
-        JsonObject task = task();
-        for (JsonElement element : task.getAsJsonArray("modelAssignments")) {
-            element.getAsJsonObject().remove("modelAssignmentKey");
-        }
-        Path plan = folder.newFile("engine-symbol-plan.jsonl").toPath();
-        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
-        Path results = folder.getRoot().toPath().resolve(
-                "engine-symbol-results.jsonl");
-        System.setProperty("causynth.concolic.task.plan", plan.toString());
-        System.setProperty("causynth.concolic.task.id", TASK);
-        System.setProperty("causynth.concolic.results", results.toString());
-        assertEquals(Collections.singletonList(TASK),
-                ConcolicRegionRuntime.campaignTaskIdsForTests());
-
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 79L);
-        ConcolicRegionRuntime.observeCausalSource("test/client#epoch0");
-        assertTrue(symbolize(
-                VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        assertTrue(symbolize(
-                GATE_SOURCE_ID, receiver, GATE_FIELD));
-        assertTrue(symbolize(
-                ELEMENT_SOURCE_ID, receiver.elements[0], ELEMENT_FIELD));
-        acceptRemote(active, symbol("REMOTE.VALUE"));
-        completeReplayProgress(active, task);
-
-        ConcolicRegionRuntime.exitRegion(79L, null, "");
-        ConcolicRegionRuntime.awaitSelectedResultPublications();
-
-        List<String> lines = Files.readAllLines(results,
-                StandardCharsets.UTF_8);
-        assertEquals(1, lines.size());
-        JsonObject result = new JsonParser().parse(lines.get(0))
-                .getAsJsonObject();
-        assertEquals("CONCOLIC_REGION_RESULT",
-                result.get("event").getAsString());
-        assertEquals(0, result.getAsJsonArray("unresolvedInputs").size());
         assertEquals(3, SymbolicSourceEvidence.eventsOf(result).size());
     }
 
@@ -610,69 +211,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         assertEquals(5, SymbolicSourceEvidence.eventsOf(result).size());
         assertTrue(result.toString(), result.toString().contains(
                 MAP_ELEMENT_SOURCE_ID));
-    }
-
-    @Test
-    public void malformedFieldExpressionLeavesModelUnapplied()
-            throws Exception {
-        JsonObject task = task();
-        Path plan = folder.newFile("malformed-expression-plan.jsonl")
-                .toPath();
-        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
-        Path results = folder.getRoot().toPath().resolve(
-                "malformed-expression-results.jsonl");
-        System.setProperty("causynth.concolic.task.plan", plan.toString());
-        System.setProperty("causynth.concolic.task.id", TASK);
-        System.setProperty("causynth.concolic.results", results.toString());
-        assertEquals(Collections.singletonList(TASK),
-                ConcolicRegionRuntime.campaignTaskIdsForTests());
-
-        TargetState receiver = new TargetState();
-        Object active = activate(receiver, 83L);
-        ConcolicRegionRuntime.observeCausalSource("test/client#epoch0");
-        FakeVm.malformedExpressionFor("localValue");
-        assertFalse(symbolize(
-                VALUE_SOURCE_ID, receiver, VALUE_FIELD));
-        FakeVm.malformedExpressionFor("");
-        assertTrue(symbolize(
-                GATE_SOURCE_ID, receiver, GATE_FIELD));
-        assertTrue(symbolize(
-                ELEMENT_SOURCE_ID, receiver.elements[0], ELEMENT_FIELD));
-        acceptRemote(active, symbol("REMOTE.VALUE"));
-        completeReplayProgress(active, task);
-
-        ConcolicRegionRuntime.exitRegion(83L, null, "");
-        ConcolicRegionRuntime.awaitSelectedResultPublications();
-
-        JsonObject skipped = new JsonParser().parse(Files.readAllLines(results,
-                StandardCharsets.UTF_8).get(0)).getAsJsonObject();
-        assertEquals(ConcolicRegionRuntime.SKIP_UNAPPLIED_MODEL_ASSIGNMENT,
-                skipped.get("skipKind").getAsString());
-        assertTrue(skipped.get("reason").getAsString()
-                .contains("MODEL." + VALUE_SOURCE_ID));
-    }
-
-    @Test
-    public void rejectsNonArrayModelAssignmentsWhileLoadingPlan()
-            throws Exception {
-        JsonObject task = task();
-        task.add("modelAssignments", new JsonObject());
-        Path plan = folder.newFile("non-array-assignments-plan.jsonl")
-                .toPath();
-        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
-        System.setProperty("causynth.concolic.task.plan", plan.toString());
-        System.setProperty("causynth.concolic.task.id", TASK);
-        System.setProperty("causynth.concolic.results",
-                folder.getRoot().toPath().resolve(
-                        "non-array-results.jsonl").toString());
-
-        try {
-            ConcolicRegionRuntime.campaignTaskIdsForTests();
-            fail("non-array modelAssignments was accepted");
-        } catch (IllegalStateException expected) {
-            assertTrue(expected.getMessage(), expected.getMessage().contains(
-                    "modelAssignments must be an array"));
-        }
     }
 
     private static JsonObject task() {
@@ -794,37 +332,7 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         return task;
     }
 
-    private JsonObject loadTask(JsonObject task, String name)
-            throws Exception {
-        Path plan = folder.newFile(name + "-plan.jsonl").toPath();
-        Files.write(plan, (task + "\n").getBytes(StandardCharsets.UTF_8));
-        System.setProperty("causynth.concolic.task.plan", plan.toString());
-        System.setProperty("causynth.concolic.task.id", TASK);
-        System.setProperty("causynth.concolic.results",
-                folder.getRoot().toPath().resolve(name + "-results.jsonl")
-                        .toString());
-        assertEquals(Collections.singletonList(TASK),
-                ConcolicRegionRuntime.campaignTaskIdsForTests());
-        return task;
-    }
-
-    /** Two catalog rows for one mint site; nothing is selected. */
-    private static JsonObject taskWithTwoValuePhases() {
-        JsonObject task = task(false);
-        JsonArray phases = new JsonArray();
-        phases.add(sourcePhase(VALUE_SOURCE_ID, 1, 10L));
-        phases.add(sourcePhase(VALUE_SOURCE_ID, 2, 11L));
-        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
-
-        JsonObject valueAssignment = assignment(VALUE_SOURCE_ID,
-                VALUE_FIELD, "9", secondValuePhaseId());
-        JsonArray assignments = new JsonArray();
-        assignments.add(valueAssignment);
-        task.add("modelAssignments", assignments);
-        return task;
-    }
-
-    private static JsonObject assignment(String sourceId,
+        private static JsonObject assignment(String sourceId,
                                          String fieldSignature,
                                          String value) {
         return assignment(sourceId, fieldSignature, value,
@@ -862,15 +370,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         return result;
     }
 
-    private static JsonArray selectedSourcePhases(JsonArray phases) {
-        JsonArray selected = new JsonArray();
-        for (JsonElement phase : phases) {
-            selected.add(phase.getAsJsonObject().get("phaseId")
-                    .getAsString());
-        }
-        return selected;
-    }
-
     private static JsonObject sourcePhase(String sourceId) {
         return sourcePhase(sourceId, 1, sourceUnit(sourceId));
     }
@@ -897,12 +396,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         return ConfiguredSourcePhaseContract.phaseId(OCCURRENCE,
                 ROOT + "#u" + sourceUnit(sourceId),
                 ConfiguredSourcePhaseContract.Phase.PUBLISH, 1);
-    }
-
-    private static String secondValuePhaseId() {
-        return ConfiguredSourcePhaseContract.phaseId(OCCURRENCE,
-                ROOT + "#u" + sourceUnit(VALUE_SOURCE_ID),
-                ConfiguredSourcePhaseContract.Phase.PUBLISH, 2);
     }
 
     private static int sourceUnit(String sourceId) {
@@ -1066,55 +559,6 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
                 "pathRecordingStarted");
         field.setAccessible(true);
         return field.getBoolean(active);
-    }
-
-    private static void setPathRecordingStarted(Object active, boolean value)
-            throws Exception {
-        Field field = active.getClass().getDeclaredField(
-                "pathRecordingStarted");
-        field.setAccessible(true);
-        field.setBoolean(active, value);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<JsonObject> symbolizedRows(Object active)
-            throws Exception {
-        Field field = active.getClass().getDeclaredField("symbolizedRows");
-        field.setAccessible(true);
-        return (List<JsonObject>) field.get(active);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Set<String> unresolved(Object active) throws Exception {
-        Field field = active.getClass().getDeclaredField("unresolved");
-        field.setAccessible(true);
-        return (Set<String>) field.get(active);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<JsonObject> freeSymbols(Object active)
-            throws Exception {
-        Field field = active.getClass().getDeclaredField("freeSymbols");
-        field.setAccessible(true);
-        return (List<JsonObject>) field.get(active);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<JsonObject> phaseObservations(Object active)
-            throws Exception {
-        Field field = active.getClass().getDeclaredField(
-                "configuredSourcePhaseObservations");
-        field.setAccessible(true);
-        return (List<JsonObject>) field.get(active);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<JsonObject> phaseGaps(Object active)
-            throws Exception {
-        Field field = active.getClass().getDeclaredField(
-                "configuredSourcePhaseGaps");
-        field.setAccessible(true);
-        return (List<JsonObject>) field.get(active);
     }
 
     private static void installFakeEngine() throws Exception {

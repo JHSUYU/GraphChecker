@@ -59,7 +59,6 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -2759,7 +2758,6 @@ public final class ConcolicRegionRuntime {
     public static void exportCommunicationLeaf(String portId, Object carrier,
                                                String field,
                                                String descriptor) {
-        ActiveRegion active = activeRegion();
         CommunicationHandoffSpec site;
         beginBookkeeping();
         try {
@@ -2823,7 +2821,6 @@ public final class ConcolicRegionRuntime {
         if (leafCarried && handle == 0L) {
             ActiveRegion active = activeRegion();
             if (active != null && acceptCommunicationEndpoint(active, site,
-                    carried.producerTaskId(),
                     carried.producerOccurrenceId())) {
                 active.observedInputSlots.add(site.portId());
                 active.symbolized.remove(site.portId());
@@ -2839,7 +2836,7 @@ public final class ConcolicRegionRuntime {
         String plannedProducer = active == null ? ""
                 : active.activation.attachProducerOccurrence(site.portId());
         if (!leafCarried && handle == 0L && !plannedProducer.isEmpty()
-                && acceptCommunicationEndpoint(active, site, "",
+                && acceptCommunicationEndpoint(active, site,
                 plannedProducer)) {
             active.observedInputSlots.add(site.portId());
             active.symbolized.remove(site.portId());
@@ -2999,7 +2996,7 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, CommunicationHandoffSpec site,
             long exportEvent, long attachEvent, JsonElement expression,
             String producerTaskId, String producerOccurrenceId) {
-        if (!acceptCommunicationEndpoint(active, site, producerTaskId,
+        if (!acceptCommunicationEndpoint(active, site,
                 producerOccurrenceId)) return;
         active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
                 exportEvent, attachEvent, expression, producerTaskId,
@@ -3019,7 +3016,7 @@ public final class ConcolicRegionRuntime {
     /** Checks that one message entry came from its planned producer. */
     private static boolean acceptCommunicationEndpoint(
             ActiveRegion active, CommunicationHandoffSpec site,
-            String producerTaskId, String producerOccurrenceId) {
+            String producerOccurrenceId) {
         String expectedProducer = active.activation
                 .attachProducerOccurrence(site.portId());
         String actualProducer = PathObservation.plannedOccurrenceOf(
@@ -3494,10 +3491,6 @@ public final class ConcolicRegionRuntime {
      * <p>The VM stamps a write with the {@code taskId} of the context that
      * published it and a read with its {@code regionId}.</p>
      */
-    private static void addActivationIdentity(JsonObject envelope) {
-        addActivationIdentity(envelope, activeRegion());
-    }
-
     private static void addActivationIdentity(JsonObject envelope,
                                               ActiveRegion active) {
         Configuration config = configuration();
@@ -4281,7 +4274,7 @@ public final class ConcolicRegionRuntime {
         if (active == null || !active.pathRecordingStarted) return 0L;
         try {
             PreparedBranch prepared = active.prepareBranch(method, unitIndex,
-                    expression, engine());
+                    expression);
             return prepared == null ? 0L : prepared.handle;
         } catch (Throwable throwable) {
             active.addUnresolvedOnce("branch event preparation failed: "
@@ -4502,8 +4495,6 @@ public final class ConcolicRegionRuntime {
                             safe(method), unitIndex, occurrence,
                             observedOutcome).toJson());
         }
-        boolean pathConditionShrank = !noVmCondition
-                && rawPathConditionSize < baseline;
         active.lastPathConditionSize = rawPathConditionSize;
         active.branchMappings.add(mapping);
         if (mapping.has("witness") || mapping.has("concreteObservation")) {
@@ -7888,11 +7879,6 @@ public final class ConcolicRegionRuntime {
             }
         }
 
-        private String seedOutcomeConflict() {
-            return ConcolicRegionRuntime.seedOutcomeConflict(
-                    activation.seedOutcomes, witnessedOutcomes);
-        }
-
         private boolean observeReplayBranch(
                 String siteId, int occurrence, boolean outcome) {
             boolean matched = replayProgress.observe(
@@ -8059,8 +8045,8 @@ public final class ConcolicRegionRuntime {
          * executes it.
          */
         private PreparedBranch prepareBranch(
-                String method, int unitIndex, String expression,
-                EngineApi api) throws Exception {
+                String method, int unitIndex, String expression)
+                throws Exception {
             String site = safe(method) + "#u" + unitIndex;
             int occurrence = nextBranchOccurrence(site);
             long sequence = ++preparedBranchSequence;
@@ -10806,14 +10792,6 @@ public final class ConcolicRegionRuntime {
             }
         }
 
-        /** Records that a candidate was the occurrence and published it. */
-        private synchronized void claimOccurrence(RuntimeTask task) {
-            int index = tasks.indexOf(task);
-            if (index < 0) return;
-            candidateLive[index] = false;
-            occurrenceClaimed[index] = true;
-        }
-
         /** Marks durable evidence without clearing a newer live candidate. */
         private synchronized void markOccurrencePublished(RuntimeTask task) {
             int index = tasks.indexOf(task);
@@ -11158,175 +11136,6 @@ public final class ConcolicRegionRuntime {
             ids.add(task.taskId);
         }
         return ids;
-    }
-
-    /**
-     * Test seam mimicking {@code admitRegion}'s bounded-loop occurrence cap
-     * over {@code admissions} sequential admissions of one task: each
-     * admission that is not a bounded cut publishes one occurrence (takes an
-     * ordinal), and the returned count is how many published.  A loop-body
-     * region caps at K_L; any other region is uncapped.  The one bounded-cut
-     * marker, when written, lands in the configured results file.
-     */
-    static int simulateAdmissionsForTests(String taskId, int admissions) {
-        RuntimeTask task = configuration().taskById(taskId);
-        if (task == null) return 0;
-        int published = 0;
-        for (int index = 0; index < admissions; index++) {
-            if (boundedLoopOccurrenceCut(task)) continue;
-            task.nextActivationOrdinal();
-            published++;
-        }
-        return published;
-    }
-
-    /**
-     * Test seam running one bounded loop body turn by turn, where turn
-     * {@code index} carried the region's selected causal anchor exactly when
-     * {@code anchored[index]}, and naming the turns whose occurrence the
-     * address kept.
-     */
-    static List<Integer> simulateAnchoredTurnsForTests(
-            String taskId, boolean[] anchored) {
-        RuntimeTask task = configuration().taskById(taskId);
-        if (task == null) return Collections.emptyList();
-        List<Integer> kept = new ArrayList<>();
-        for (int turn = 0; turn < anchored.length; turn++) {
-            if (boundedLoopOccurrenceCut(task)) continue;
-            int ordinal = task.nextActivationOrdinal();
-            Set<String> carried = new LinkedHashSet<>();
-            if (anchored[turn]) {
-                Set<String> missing = task.missingSemanticAnchorIds();
-                if (!missing.isEmpty()) {
-                    carried.add(missing.iterator().next());
-                }
-            }
-            Set<String> fresh = task.newSemanticAnchorIds(carried);
-            if (task.releasesUnanchoredLoopTurn(!fresh.isEmpty())) {
-                task.releaseActivationOrdinal(ordinal);
-            } else {
-                kept.add(turn + 1);
-                task.commitSemanticAnchorIds(fresh);
-            }
-        }
-        return kept;
-    }
-
-    /** Exact-identity variant used to exercise duplicate and co-located anchors. */
-    static List<Integer> simulateSemanticAnchorTurnsForTests(
-            String taskId, String[][] phaseIdsByTurn,
-            String[][] responsePortsByTurn) {
-        RuntimeTask task = configuration().taskById(taskId);
-        if (task == null) return Collections.emptyList();
-        int turns = Math.max(phaseIdsByTurn == null ? 0
-                        : phaseIdsByTurn.length,
-                responsePortsByTurn == null ? 0
-                        : responsePortsByTurn.length);
-        List<Integer> kept = new ArrayList<>();
-        for (int turn = 0; turn < turns; turn++) {
-            if (boundedLoopOccurrenceCut(task)) continue;
-            int ordinal = task.nextActivationOrdinal();
-            Set<String> carried = new LinkedHashSet<>();
-            if (phaseIdsByTurn != null && turn < phaseIdsByTurn.length
-                    && phaseIdsByTurn[turn] != null) {
-                for (String phaseId : phaseIdsByTurn[turn]) {
-                    carried.add(task.sourcePhaseAnchorId(phaseId));
-                }
-            }
-            if (responsePortsByTurn != null
-                    && turn < responsePortsByTurn.length
-                    && responsePortsByTurn[turn] != null) {
-                for (String portId : responsePortsByTurn[turn]) {
-                    carried.add(task.attachAnchorId(portId));
-                }
-            }
-            Set<String> fresh = task.newSemanticAnchorIds(carried);
-            if (task.releasesUnanchoredLoopTurn(!fresh.isEmpty())) {
-                task.releaseActivationOrdinal(ordinal);
-            } else {
-                kept.add(turn + 1);
-                task.commitSemanticAnchorIds(fresh);
-            }
-        }
-        return kept;
-    }
-
-    /** Provisional task-scoped source ordinal; does not consume it. */
-    static int configuredSourcePhaseOrdinalForTests(
-            String taskId, String key, int localOrdinal) {
-        RuntimeTask task = configuration().taskById(taskId);
-        return task == null ? 0
-                : task.configuredSourcePhaseOrdinal(key, localOrdinal);
-    }
-
-    /** Commits a source phase exactly as one published activation does. */
-    static void commitConfiguredSourcePhaseOrdinalsForTests(
-            String taskId, String key, int used) {
-        RuntimeTask task = configuration().taskById(taskId);
-        if (task == null) return;
-        Map<String, Integer> phases = new LinkedHashMap<>();
-        phases.put(key, used);
-        task.reserveConfiguredSourcePhaseOrdinals(phases);
-    }
-
-    /** Test seam for exact task-directed admission. */
-    static String admitCampaignTaskForTests(
-            String taskId, String rootMethod, Object receiver,
-            Object[] rootArguments) {
-        RuntimeTask requested = configuration().taskById(taskId);
-        if (requested == null) return "";
-        RuntimeTask admitted = configuration().select(
-                requested.instrumentationSelector, rootMethod, receiver,
-                rootArguments);
-        return admitted == null ? "" : admitted.taskId;
-    }
-
-    /**
-     * Test seam listing the other occurrences one activation would carry
-     * alongside the named task.
-     */
-    static List<String> claimSiblingOccurrencesForTests(
-            String taskId, String rootMethod, Object receiver,
-            Object[] rootArguments) {
-        return claimSiblingOccurrencesForTests(taskId, rootMethod, receiver,
-                rootArguments, RuntimeTraceContext.current().requestApi);
-    }
-
-    /**
-     * Test seam listing the other occurrences one activation entered under
-     * the named request API would carry alongside the named task.
-     */
-    static List<String> claimSiblingOccurrencesForTests(
-            String taskId, String rootMethod, Object receiver,
-            Object[] rootArguments, String requestApi) {
-        Configuration configured = configuration();
-        RuntimeTask primary = configured.taskById(taskId);
-        List<String> claimed = new ArrayList<>();
-        if (primary == null) return claimed;
-        for (RuntimeTask task : configured.claimSiblingOccurrences(primary,
-                rootMethod, receiver, rootArguments,
-                Thread.currentThread().getName(), requestApi)) {
-            claimed.add(task.taskId);
-        }
-        return claimed;
-    }
-
-    /**
-     * Test seam admitting one activation and answering its address with it,
-     * so README {@code OCC-1} ambiguity can be exercised without a VM.
-     */
-    static boolean claimCampaignTaskForTests(
-            String taskId, String rootMethod, Object receiver,
-            Object[] rootArguments) {
-        Configuration configured = configuration();
-        RuntimeTask requested = configured.taskById(taskId);
-        if (requested == null) return false;
-        RuntimeTask admitted = configured.select(
-                requested.instrumentationSelector, rootMethod, receiver,
-                rootArguments);
-        if (admitted == null) return false;
-        configured.claimOccurrence(admitted);
-        return true;
     }
 
     /**

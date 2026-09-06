@@ -1435,19 +1435,19 @@ public final class RuntimeSelectedRegionFinalizer {
             region.put("runtimeOccurrenceIds",
                     new ArrayList<>(occurrences));
             region.put("symbolicInputs", filterPorts(
-                    rows(region.get("symbolicInputs")), regionId,
+                    rows(region.get("symbolicInputs")),
                     occurrences, false, walk.demandedInputs,
                     demandedAccesses, fatalPrefixCutoffs));
             region.put("outputs", filterPorts(
-                    rows(region.get("outputs")), regionId,
+                    rows(region.get("outputs")),
                     occurrences, true, walk.demandedOutputs,
                     demandedAccesses, fatalPrefixCutoffs));
         }
     }
 
     private static List<Map<String, Object>> filterPorts(
-            List<Map<String, Object>> ports, String regionId,
-            Set<String> occurrences, boolean output,
+            List<Map<String, Object>> ports, Set<String> occurrences,
+            boolean output,
             Set<String> demandedPorts,
             Map<String, Set<Long>> demandedAccesses,
             Map<String, Long> fatalPrefixCutoffs)
@@ -1470,7 +1470,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     selected.get("dependencyRole"))) {
                 trimFatalPrefixAccesses(selected, cutoff);
             }
-            retainExactRuntimeAccesses(selected, demand, output,
+            retainExactRuntimeAccesses(selected, demand,
                     demandedAccesses.getOrDefault(demand,
                             Collections.<Long>emptySet()));
             retained.add(selected);
@@ -1520,7 +1520,7 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     private static void retainExactRuntimeAccesses(
-            Map<String, Object> port, String demand, boolean output,
+            Map<String, Object> port, String demand,
             Set<Long> eventSeqs) throws IOException {
         if (!"HEAP".equals(text(port.get("transportKind")))) return;
         // The retained edges name their occurrences exactly, so those survive
@@ -1661,11 +1661,9 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> producerRegion = regionsById.get(fromRegion);
             Map<String, Object> consumerRegion = regionsById.get(toRegion);
             Map<String, Object> output = exactRegionPort(producerRegion,
-                    "outputs", text(edge.get("fromPort")), fromOccurrence,
-                    true);
+                    "outputs", text(edge.get("fromPort")), fromOccurrence);
             Map<String, Object> consumer = exactRegionPort(consumerRegion,
-                    "symbolicInputs", text(edge.get("toPort")), toOccurrence,
-                    false);
+                    "symbolicInputs", text(edge.get("toPort")), toOccurrence);
             if (output == null || consumer == null) continue;
             markBoundedContainerPort(output, leaf.type);
             markBoundedContainerPort(consumer, leaf.type);
@@ -1674,7 +1672,7 @@ public final class RuntimeSelectedRegionFinalizer {
 
     private static Map<String, Object> exactRegionPort(
             Map<String, Object> region, String field, String portId,
-            String occurrenceId, boolean output) {
+            String occurrenceId) {
         if (region == null || portId.isEmpty() || occurrenceId.isEmpty()) {
             return null;
         }
@@ -2157,8 +2155,7 @@ public final class RuntimeSelectedRegionFinalizer {
         for (Integer receiver : receivers) {
             for (Map<String, Object> carrier : carriers.getOrDefault(receiver,
                     Collections.<Map<String, Object>>emptyList())) {
-                projected.add(boxedLeafProjection(carrier, leaf,
-                        field.owner, declaration));
+                projected.add(boxedLeafProjection(carrier, leaf));
             }
         }
         return projected.isEmpty() ? null : projected;
@@ -2168,8 +2165,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * One carrier edge restated as the producer of the boxed value it carried.
      */
     private static Map<String, Object> boxedLeafProjection(
-            Map<String, Object> carrier, Map<String, Object> leaf,
-            String wrapper, String declaration) {
+            Map<String, Object> carrier, Map<String, Object> leaf) {
         String leafPort = text(leaf.get("portId"));
         String identity = text(carrier.get("edgeId")) + "\n" + leafPort;
         Map<String, Object> edge = new LinkedHashMap<>(carrier);

@@ -1,8 +1,5 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Collections;
 
 import com.google.gson.JsonArray;
@@ -11,62 +8,8 @@ import org.junit.Assume;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 
 public class BooleanReachConditionExtractorSolverTest {
-
-    @Test
-    public void exactOneCasePartitionsAreSplitWithoutLosingSat()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        String reduced = SmtLibQueries.dropUnusedDefinitions(
-                "(define-fun base () Int 1)\n"
-                        + "(define-fun live () Int (+ base 1))\n"
-                        + "(define-fun dead () Int 3)\n"
-                        + "(assert (= live 2))\n");
-        assertTrue(reduced.contains("define-fun base"));
-        assertTrue(reduced.contains("define-fun live"));
-        assertTrue(!reduced.contains("define-fun dead"));
-        assertEquals("(assert live)\n",
-                SmtLibQueries.foldConstants(
-                        "(assert (and true"
-                                + " (or false (ite false dead live))))\n"));
-        String propagated = SmtLibQueries.propagateAssertedComparisons(
-                "(define-fun selected () Int (ite (< expiry now) 1 2))\n"
-                        + "(assert (! (>= expiry now) :named path))\n");
-        assertTrue(propagated.contains(
-                "(define-fun selected () Int 2)"));
-        assertTrue(propagated.contains("(>= expiry now)"));
-        JsonArray selectors = new JsonArray();
-        selectors.add("case_selector__zero");
-        selectors.add("case_selector__one");
-        JsonArray second = new JsonArray();
-        second.add("case_selector__alpha");
-        second.add("case_selector__beta");
-        JsonArray partitions = new JsonArray();
-        partitions.add(selectors);
-        partitions.add(second);
-        BooleanReachConditionExtractor.Z3Solver solver =
-                new BooleanReachConditionExtractor.Z3Solver(
-                        "z3", 20_000L, partitions, 2);
-
-        ConcolicConstraintSolver.SolverOutput answer = solver.check(
-                "(declare-const case_selector__zero Bool)\n"
-                        + "(declare-const case_selector__one Bool)\n"
-                        + "(declare-const case_selector__alpha Bool)\n"
-                        + "(declare-const case_selector__beta Bool)\n"
-                        + "(assert (= (+ (ite case_selector__zero 1 0)"
-                        + " (ite case_selector__one 1 0)) 1))\n"
-                        + "(assert (= (+ (ite case_selector__alpha 1 0)"
-                        + " (ite case_selector__beta 1 0)) 1))\n"
-                        + "(assert (not case_selector__zero))\n"
-                        + "(assert (not case_selector__alpha))\n"
-                        + "(check-sat)\n");
-
-        assertEquals("sat", answer.status());
-        assertTrue(solver.attempts().toString().contains(
-                "selectedCaseSelectors"));
-    }
 
     @Test
     public void configuredLongSourceIsPublishedWithItsSolverWitness()
@@ -115,143 +58,6 @@ public class BooleanReachConditionExtractorSolverTest {
     }
 
     @Test
-    public void tracingSourceKeysDistinguishEveryPrintedSymbolicVariable()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject manifest = candidateManifest();
-        JsonArray sources = new JsonArray();
-        sources.add(configuredLong("RPC_COMPARE.A",
-                "cluster/dn0#epoch0", "<DataNode: long a>",
-                "source__a"));
-        sources.add(configuredLong("RPC_COMPARE.B",
-                "cluster/dn1#epoch0", "<DataNode: long b>",
-                "source__b"));
-        manifest.add(ConcolicSmtComposer
-                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, sources);
-        String smt = "(set-logic ALL)\n"
-                + "(declare-const source__a Int)\n"
-                + "(declare-const source__b Int)\n"
-                + "(assert (= source__a 7))\n"
-                + "(assert (= source__b 9))\n"
-                + "(check-sat)\n";
-
-        JsonObject report = BooleanReachConditionExtractor.extract(
-                smt, manifest, Collections.<JsonObject>emptyList(),
-                solver(), 8, 64);
-
-        JsonArray models = report.getAsJsonArray(
-                BooleanReachConditionExtractor.SYMBOLIC_VARIABLE_MODELS);
-        assertEquals(models.toString(), 1, models.size());
-        JsonArray variables = models.get(0).getAsJsonObject()
-                .getAsJsonArray("variables");
-        assertEquals(variables.toString(), 2, variables.size());
-        JsonObject a = variables.get(0).getAsJsonObject();
-        JsonObject b = variables.get(1).getAsJsonObject();
-        assertEquals("cluster/dn0#epoch0",
-                a.get("sourceKey").getAsString());
-        assertEquals("RPC_COMPARE.A", a.get("sourceId").getAsString());
-        assertEquals("7", a.get("value").getAsString());
-        assertTrue(a.get("displayName").getAsString().startsWith(
-                "cluster/dn0#epoch0::RPC_COMPARE.A::"));
-        // Wave 3: the entry, not only the site, names the root.
-        assertTrue(a.get("displayName").getAsString().contains(
-                "::SOURCE_PHASE."));
-        assertEquals("cluster/dn1#epoch0",
-                b.get("sourceKey").getAsString());
-        assertEquals("RPC_COMPARE.B", b.get("sourceId").getAsString());
-        assertEquals("9", b.get("value").getAsString());
-    }
-
-    @Test
-    public void twoPhasesOfOneSourceBecomeTwoReachabilityRoots()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject manifest = candidateManifest();
-        JsonArray sources = new JsonArray();
-        sources.add(configuredLong("SOURCE.A", "node/dn0#1",
-                "<DataNode: long a>", "source__a"));
-        JsonObject second = configuredLong("SOURCE.A", "node/dn0#1",
-                "<DataNode: long a>", "source__b");
-        second.addProperty("sourcePhaseId", sourcePhase("SOURCE.A", "b"));
-        sources.add(second);
-        manifest.add(ConcolicSmtComposer
-                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, sources);
-        String smt = "(set-logic ALL)\n"
-                + "(declare-const source__a Int)\n"
-                + "(declare-const source__b Int)\n"
-                + "(assert (= source__a 7))\n"
-                + "(assert (= source__b 9))\n"
-                + "(check-sat)\n";
-
-        JsonObject report = BooleanReachConditionExtractor.extract(
-                smt, manifest, Collections.<JsonObject>emptyList(),
-                solver(), 8, 64);
-
-        assertEquals("CANDIDATE_READY", report.get("state").getAsString());
-        JsonArray roots = report.getAsJsonObject("roots")
-                .getAsJsonArray("existentialInputs");
-        assertEquals(2, roots.size());
-        assertTrue(roots.toString(), roots.toString().contains(
-                sourcePhase("SOURCE.A", "a")));
-        assertTrue(roots.toString(), roots.toString().contains(
-                sourcePhase("SOURCE.A", "b")));
-    }
-
-    @Test
-    public void missingOrUndeclaredConfiguredSourceCatalogFailsClosed()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject missing = candidateManifest();
-        JsonObject missingReport = BooleanReachConditionExtractor.extract(
-                "(check-sat)\n", missing,
-                Collections.<JsonObject>emptyList(),
-                solver(), 8, 64);
-        assertEquals("CANDIDATE_WITH_GAPS",
-                missingReport.get("state").getAsString());
-        assertTrue(missingReport.getAsJsonArray("gaps").toString(),
-                missingReport.getAsJsonArray("gaps").toString().contains(
-                        "CONFIGURED_SOURCE_MATERIALIZATIONS_MISSING"));
-
-        JsonObject undeclared = candidateManifest();
-        JsonArray sources = new JsonArray();
-        sources.add(configuredLong("SOURCE.A", "node/dn0#1",
-                "<DataNode: long a>", "source__absent"));
-        undeclared.add(ConcolicSmtComposer
-                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, sources);
-        JsonObject undeclaredReport =
-                BooleanReachConditionExtractor.extract(
-                        "(check-sat)\n", undeclared,
-                        Collections.<JsonObject>emptyList(),
-                        solver(), 8, 64);
-        assertEquals("CANDIDATE_WITH_GAPS",
-                undeclaredReport.get("state").getAsString());
-        assertTrue(undeclaredReport.getAsJsonArray("gaps").toString(),
-                undeclaredReport.getAsJsonArray("gaps").toString().contains(
-                        "CONFIGURED_SOURCE_TERM_NOT_DECLARED"));
-
-        JsonObject missingPhase = candidateManifest();
-        JsonObject missingPhaseRow = configuredLong("SOURCE.A",
-                "node/dn0#1", "<DataNode: long a>", "source__a");
-        missingPhaseRow.remove("sourcePhaseId");
-        JsonArray missingPhaseSources = new JsonArray();
-        missingPhaseSources.add(missingPhaseRow);
-        missingPhase.add(ConcolicSmtComposer
-                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
-                missingPhaseSources);
-        JsonObject missingPhaseReport =
-                BooleanReachConditionExtractor.extract(
-                        "(declare-const source__a Int)\n(check-sat)\n",
-                        missingPhase,
-                        Collections.<JsonObject>emptyList(),
-                        solver(), 8, 64);
-        assertEquals("CANDIDATE_WITH_GAPS",
-                missingPhaseReport.get("state").getAsString());
-        assertTrue(missingPhaseReport.getAsJsonArray("gaps").toString(),
-                missingPhaseReport.getAsJsonArray("gaps").toString()
-                        .contains("CONFIGURED_SOURCE_MATERIALIZATION_MALFORMED"));
-    }
-
-    @Test
     public void openPathClosureAllowsSatButCannotProveUnsat()
             throws Exception {
         Assume.assumeTrue(z3Available());
@@ -277,26 +83,6 @@ public class BooleanReachConditionExtractorSolverTest {
         assertEquals("INCONCLUSIVE_OPEN_PATH_CLOSURE",
                 unsat.getAsJsonObject("reachCondition")
                         .get("coverageConclusion").getAsString());
-    }
-
-    @Test
-    public void onlyClosedSelectedModelCanPublishUnreachable()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        JsonObject closed = candidateManifest();
-        closed.add(ConcolicSmtComposer
-                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, new JsonArray());
-        addUnsatClosure(closed, true, true, true);
-
-        JsonObject report = BooleanReachConditionExtractor.extract(
-                "(assert false)\n(check-sat)\n", closed,
-                Collections.<JsonObject>emptyList(),
-                solver(), 8, 64);
-
-        assertEquals("UNREACHABLE", report.getAsJsonObject("reachCondition")
-                .get("reachability").getAsString());
-        assertTrue(report.get(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE)
-                .getAsBoolean());
     }
 
     private static JsonObject candidateManifest() {

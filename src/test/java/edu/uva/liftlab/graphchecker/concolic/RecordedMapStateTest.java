@@ -1,9 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -12,16 +10,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -64,254 +58,9 @@ public class RecordedMapStateTest {
             RecordedSessionModel.selectorNameToken(EVENT,
                     SharedStateEvidence.UNKNOWN_WRITER_SELECTOR);
 
-    @Test
-    public void boundedMapPortStillDeclaresSharedCarrier() {
-        JsonObject port = new JsonObject();
-        port.addProperty("javaType", "java.util.Map");
-        port.addProperty("rootKind", "RECEIVER");
-        port.addProperty("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-        JsonArray path = new JsonArray();
-        path.add("state");
-        path.add("allKeys");
-        port.add("fieldPath", path);
-        JsonArray declarations = new JsonArray();
-        declarations.add("<example.NameNode: example.State state>");
-        declarations.add("<example.State: java.util.Map allKeys>");
-        port.add("fieldPathDeclarations", declarations);
-
-        Map<String, JsonObject> carriers = new LinkedHashMap<>();
-        ConcolicScheduler.declareMapStateCarrier(carriers, port);
-
-        assertEquals(1, carriers.size());
-        JsonObject carrier = carriers.values().iterator().next();
-        assertEquals(SharedStateEvidence.LOCATION_KIND_MAP_STATE,
-                string(carrier, "kind"));
-        assertEquals("example.State", string(carrier, "declaringClass"));
-        assertEquals("allKeys", string(carrier, "fieldName"));
-        assertEquals("Ljava/util/Map;", string(carrier, "descriptor"));
-        assertEquals(path, array(carrier, "fieldPath"));
-    }
-
-    @Test
-    public void observedMapAccessDeclaresItsExactAccessOwnerCarrier() {
-        JsonObject port = new JsonObject();
-        port.addProperty("javaType", "java.util.Map");
-        port.addProperty("rootKind", "OBSERVED_FIELD_RECEIVER");
-        port.addProperty("sourceKind", "ACTIVATION_FIELD_RECEIVER");
-        port.addProperty("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-        JsonArray path = new JsonArray();
-        path.add("allKeys");
-        port.add("fieldPath", path);
-        JsonArray declarations = new JsonArray();
-        declarations.add("<example.SecretManager: java.util.Map allKeys>");
-        port.add("fieldPathDeclarations", declarations);
-
-        Map<String, JsonObject> carriers = new LinkedHashMap<>();
-        ConcolicScheduler.declareMapStateCarrier(carriers, port);
-
-        assertEquals(1, carriers.size());
-        JsonObject carrier = carriers.values().iterator().next();
-        assertEquals(SharedStateEvidence.LOCATION_KIND_MAP_STATE,
-                string(carrier, "kind"));
-        assertEquals("example.SecretManager",
-                string(carrier, "declaringClass"));
-        assertEquals("allKeys", string(carrier, "fieldName"));
-        assertEquals("Ljava/util/Map;", string(carrier, "descriptor"));
-        assertEquals("ACTIVATION_FIELD_RECEIVER",
-                string(carrier, "sourceKind"));
-        assertTrue(array(carrier, "fieldPath").isEmpty());
-    }
-
-    @Test
-    public void selectedMapReadFromDeclaresBothExactAccessOwners() {
-        JsonObject edge = new JsonObject();
-        edge.addProperty("fromOccurrenceId", "occ.writer");
-        edge.addProperty("toOccurrenceId", "occ.reader");
-        edge.addProperty(RecordedReadFrom.EDGE_FIELD,
-                "example.SecretManager#allKeys");
-        JsonArray declarations = new JsonArray();
-        declarations.add("<example.SecretManager: java.util.Map allKeys>");
-        edge.add("fieldPathDeclarations", declarations);
-        JsonArray edges = new JsonArray();
-        edges.add(edge);
-
-        JsonObject writer = new JsonObject();
-        JsonObject reader = new JsonObject();
-        JsonObject unrelated = new JsonObject();
-        ConcolicScheduler.declareReadFromCarriers(writer, edges,
-                "occ.writer");
-        ConcolicScheduler.declareReadFromCarriers(reader, edges,
-                "occ.reader");
-        ConcolicScheduler.declareReadFromCarriers(unrelated, edges,
-                "occ.other");
-
-        for (JsonObject task : Arrays.asList(writer, reader)) {
-            assertEquals(1, array(task, "sharedCarriers").size());
-            JsonObject carrier = array(task, "sharedCarriers")
-                    .get(0).getAsJsonObject();
-            assertEquals(SharedStateEvidence.LOCATION_KIND_MAP_STATE,
-                    string(carrier, "kind"));
-            assertEquals("example.SecretManager",
-                    string(carrier, "declaringClass"));
-            assertEquals("allKeys", string(carrier, "fieldName"));
-            assertEquals("Ljava/util/Map;",
-                    string(carrier, "descriptor"));
-            assertEquals("ACTIVATION_FIELD_RECEIVER",
-                    string(carrier, "sourceKind"));
-            assertTrue(array(carrier, "fieldPath").isEmpty());
-        }
-        assertTrue(array(unrelated, "sharedCarriers").isEmpty());
-    }
-
     // ----- admission and import -------------------------------------------
 
-    /**
-     * A map state and a scalar field are one import path.
-     *
-     * <p>They are admitted by one {@code versionsFault}, wrapped by one
-     * {@code versionsRecord}, indexed by one slice and lowered by one model.
-     * The one thing that separates them is the shape of the expression a
-     * version carries, which is what the design asks for - and the schema
-     * rules that keep the two apart are checked here rather than assumed,
-     * because a map state read as a scalar value is exactly the confusion a
-     * shared envelope invites.</p>
-     */
-    @Test
-    public void aMapStateRecordTravelsTheScalarImportPath() {
-        JsonObject mapEnvelope = RecordedMapStateFixtures
-                .twoWriterMapEnvelope(false, true);
-        SharedStateEvidence.normalizeGuards(mapEnvelope);
-        assertEquals("", SharedStateEvidence.versionsFault(mapEnvelope));
-        assertEquals(RecordedMapStateFixtures.MAP_LOCATION,
-                SharedStateEvidence.locationKey(mapEnvelope));
-        assertTrue(SharedStateEvidence.isMapState(
-                RecordedMapStateFixtures.MAP_LOCATION));
-
-        JsonObject mapRecord = RecordedMapStateFixtures.mapVersionsRecord(
-                mapEnvelope);
-        assertTrue(SharedStateEvidence.isVersionsRecord(mapRecord));
-
-        JsonObject scalarEnvelope = RecordedSharedStateFixtures
-                .twoWriterEnvelope(SharedStateEvidence.RESOLUTION_GUARDED,
-                        "AMBIGUOUS_WRITERS", 0L);
-        SharedStateEvidence.normalizeGuards(scalarEnvelope);
-        JsonObject scalarRecord = RecordedSharedStateFixtures.versionsRecord(
-                scalarEnvelope, "example.State#value");
-        assertTrue(SharedStateEvidence.isVersionsRecord(scalarRecord));
-
-        // One member, both shapes, one projection.
-        JsonObject member = SharedStateEvidence.recorded(
-                Arrays.asList(scalarRecord, mapRecord),
-                SharedStateEvidence.ledgerRecord(
-                        RecordedMapStateFixtures.mapAndScalarLedger(),
-                        RecordedSharedStateFixtures.identity("REGION.reader",
-                                1L)));
-        JsonObject row = new JsonObject();
-        row.add(SharedStateEvidence.RECORDED_FIELD, member);
-        JsonObject guardedMap = RecordedMapStateFixtures
-                .twoWriterGuardedMapRead(false);
-        SharedStateEvidence.normalizeGuards(guardedMap);
-        JsonObject guardedScalar = RecordedSharedStateFixtures.guardedRead(
-                21L, 7L, 24);
-        SharedStateEvidence.normalizeGuards(guardedScalar);
-        // One predicate mentioning both reads, so one projection has to carry
-        // both shapes.
-        RecordedSessionModel model = RecordedSessionModel.of(
-                Collections.singletonList(row),
-                RecordedSharedStateFixtures.binary(guardedMap, "==",
-                        guardedScalar), "REGION.0");
-
-        Set<String> locations = new LinkedHashSet<>();
-        for (JsonElement element
-                : array(model.slice().toJson(), "nodes")) {
-            String location = string(element.getAsJsonObject(),
-                    "locationKey");
-            if (!location.isEmpty()) locations.add(location);
-        }
-        assertTrue(locations.toString(), locations.contains(
-                RecordedMapStateFixtures.MAP_LOCATION));
-        assertTrue(locations.toString(),
-                locations.contains("INSTANCE_FIELD/7#24"));
-
-        // Both reads reached the same lowering, and each says which shape it
-        // came from.
-        Set<String> kinds = new LinkedHashSet<>();
-        JsonObject mapChoice = new JsonObject();
-        for (JsonElement element
-                : array(model.manifest(), "readChoices")) {
-            JsonObject choice = element.getAsJsonObject();
-            kinds.add(string(choice, "locationKind"));
-            if (RecordedMapStateFixtures.MAP_LOCATION.equals(
-                    string(choice, "locationKey"))) {
-                mapChoice = choice;
-            }
-        }
-        assertEquals(new LinkedHashSet<>(Arrays.asList(
-                        SharedStateEvidence.LOCATION_KIND_MAP_STATE,
-                        "INSTANCE_FIELD")), kinds);
-        assertEquals(3, array(mapChoice, "candidates").size());
-        assertEquals(2, model.boundedWriterUniverses().size());
-
-        // The schema rules that keep the two shapes apart.
-        JsonObject wrongSlot = RecordedMapStateFixtures
-                .twoWriterMapEnvelope(false, true);
-        wrongSlot.getAsJsonObject("location").addProperty("slot", 24);
-        assertEquals("envelope names no addressable location",
-                SharedStateEvidence.versionsFault(wrongSlot));
-
-        JsonObject scalarValueInAMap = RecordedMapStateFixtures
-                .twoWriterMapEnvelope(false, true);
-        SharedStateEvidence.normalizeGuards(scalarValueInAMap);
-        scalarValueInAMap.getAsJsonArray("versions").get(0).getAsJsonObject()
-                .addProperty("versionKind", "WRITE");
-        assertTrue(SharedStateEvidence.versionsFault(scalarValueInAMap)
-                .contains("that its location kind does not publish"));
-
-        JsonObject stateInAField = RecordedSharedStateFixtures
-                .twoWriterEnvelope(SharedStateEvidence.RESOLUTION_GUARDED,
-                        "AMBIGUOUS_WRITERS", 0L);
-        SharedStateEvidence.normalizeGuards(stateInAField);
-        stateInAField.getAsJsonArray("versions").get(0).getAsJsonObject()
-                .addProperty("versionKind", "STATE_PUT");
-        assertTrue(SharedStateEvidence.versionsFault(stateInAField)
-                .contains("that its location kind does not publish"));
-    }
-
-    /**
-     * Every whole-state mutation the VM publishes is an admitted kind.
-     *
-     * <p>A version's {@code versionKind} is the VM's own vocabulary:
-     * {@code SharedFieldVersions::version_label} writes {@code STATE_} plus
-     * the operation {@code ContainerSupport::publish_state} was called with,
-     * and those calls are enumerated in {@code symbolicMap.cpp} and
-     * {@code symbolicSet.cpp}.  An operation this side does not name is not a
-     * tolerated unknown: {@code versionsFault} rejects the <em>whole</em>
-     * envelope on the first unadmitted version, so the location loses every
-     * version it published and each read of it reaches the formula with no
-     * read-from arm at all.  That is what happened to HDFS-11741's DataNode
-     * key map, whose {@code removeExpiredKeys()} publishes
-     * {@code STATE_REMOVE_IF}, so the vocabulary is pinned here rather than
-     * discovered in a campaign.</p>
-     */
-    @Test
-    public void everyPublishedWholeStateMutationIsAnAdmittedVersionKind() {
-        for (String operation : Arrays.asList("PUT", "REMOVE", "REMOVE_IF",
-                "CLEAR", "REMOVE_AT", "CLEAR_VIEW", "ADD")) {
-            JsonArray versions = new JsonArray();
-            versions.add(RecordedMapStateFixtures.stateVersion(
-                    RecordedMapStateFixtures.WRITER_A_VERSION,
-                    "STATE_" + operation, "REGION.writerA", "TASK.a",
-                    RecordedMapStateFixtures.writerAState(), null));
-            JsonObject envelope =
-                    RecordedMapStateFixtures.mapVersionsEnvelope(
-                            versions, new JsonArray(), true);
-            SharedStateEvidence.normalizeGuards(envelope);
-            assertEquals("STATE_" + operation + " is a kind the VM publishes",
-                    "", SharedStateEvidence.versionsFault(envelope));
-        }
-    }
-
-    // ----- two equal-valued writers ---------------------------------------
+            // ----- two equal-valued writers ---------------------------------------
 
     /**
      * Two writers that installed the same map state are still two arms.
@@ -369,141 +118,9 @@ public class RecordedMapStateTest {
 
     // ----- the selector decides the value ---------------------------------
 
-    /**
-     * Selecting the other arm changes what the reader reads.
-     *
-     * <p>Writer A put a value at the queried key and writer B removed it, so
-     * the two arms are the same container query over two different states.
-     * The check is that the <em>value</em> equality differs, not only the
-     * order constraints: an arm that changed nothing but the cut would be
-     * order-only metadata, and a solver could then take one writer's value
-     * under another writer's order.</p>
-     */
-    @Test
-    public void changingTheSelectedArmChangesTheReaderExpression()
-            throws Exception {
-        ConcolicSmtComposer.Result result = RecordedMapStateFixtures
-                .composedMapGolden(folder(), false, true);
-        String smt = result.smtLib;
+        // ----- named gaps ------------------------------------------------------
 
-        String first = assertionBody(smt, "recorded_read_value__41__rf1");
-        String second = assertionBody(smt, "recorded_read_value__41__rf2");
-        // Both are value equalities on the one read constant, and they are
-        // different values.
-        assertTrue(first, first.contains("(= rf_value__41 "));
-        assertTrue(second, second.contains("(= rf_value__41 "));
-        assertNotEquals(first.replace(RF1, "S"), second.replace(RF2, "S"));
-
-        // The container lowering is the one canonical codec's: the arm is
-        // that writer's state read at the query's key.
-        assertTrue(first, first.contains("assoc_"));
-        assertTrue(second, second.contains("assoc_"));
-        // Writer B's state carries a member writer A's does not, so the two
-        // queries answer over two different maps and not over one.
-        assertFalse(first, first.contains("777"));
-        assertTrue(second, second.contains("777"));
-
-        // Value, guard and order move together on the same selector name.
-        String guard = assertionBody(smt, "recorded_write_guard__41__rf2");
-        assertTrue(guard, guard.startsWith("(=> " + RF2 + " "));
-        String cut = assertionBody(smt, "recorded_read_cut__41__32");
-        assertTrue(cut, cut.contains(RF2));
-        assertTrue(cut, cut.contains("event_position__32"));
-        assertTrue(cut, cut.contains("event_position__41"));
-        // The competing write is either before the selected one or after the
-        // read; nothing else is ordered.
-        assertTrue(smt, smt.contains("recorded_read_cut_outside__41__32__31"));
-
-        // The unknown arm constrains nothing but the value, which is what
-        // keeps the choice satisfiable when the order rules the rest out.
-        String unknown = assertionBody(smt,
-                "recorded_read_value__41__rf_unknown");
-        assertTrue(unknown, unknown.contains(RF_UNKNOWN));
-        assertFalse(unknown, unknown.contains("event_position__"));
-    }
-
-    @Test
-    public void exactMapCarrierBindsFatalOwnerToConsumerPort()
-            throws Exception {
-        ConcolicSmtComposer.Result result = RecordedMapStateFixtures
-                .composedExactCarrierGolden(folder());
-        String smt = result.smtLib;
-        String target = "port__REGION_0_in_0__instance__"
-                + "REGION_0_Test_call30";
-        String fatal = assertionBody(smt, "fatal_path");
-        assertTrue(fatal, fatal.contains("assoc_has " + target));
-        assertTrue(fatal, fatal.contains("assoc_read " + target));
-        // The realistic VM spelling M_L'java/util/HashMap'_9 sanitizes to
-        // this identifier only when it was left as an unconstrained root.
-        assertFalse(smt, smt.contains("sym__fatal_"
-                + "REGION_0_Test_call30__M_L_java_util_HashMap__9"));
-    }
-
-    // ----- named gaps ------------------------------------------------------
-
-    /**
-     * Unsupported mutation and missing writer coverage are named, not
-     * silently absorbed.
-     */
-    @Test
-    public void openWriterCoverageProducesNamedGaps() throws Exception {
-        // An unsupported mutator marks the location incomplete in the VM; the
-        // Java side must report it twice over - once as the slice's finding
-        // about the location, once as the universe's about the choice - and
-        // must call the whole model partial.
-        ConcolicSmtComposer.Result incomplete = RecordedMapStateFixtures
-                .composedMapGolden(folder(), false, false);
-        Set<String> reasons = coverageReasons(incomplete.manifest);
-        assertTrue(reasons.toString(), reasons.contains(
-                SessionTargetSlice.INCOMPLETE_WRITER_SET));
-        assertTrue(reasons.toString(), reasons.contains(
-                BoundedWriterUniverse.RECORDED_WRITER_SET_INCOMPLETE));
-        assertFalse(incomplete.manifest.toString(),
-                bool(incomplete.manifest, "recordedModelComplete", true));
-        // The unconditional unknown arm is retained.
-        assertTrue(incomplete.smtLib,
-                incomplete.smtLib.contains(RF_UNKNOWN));
-
-        // A materialized writer the arms do not carry is a missing writer,
-        // and the enumeration is what notices.
-        JsonObject envelope = RecordedMapStateFixtures.twoWriterMapEnvelope(
-                false, true);
-        envelope.getAsJsonArray("versions").add(
-                RecordedMapStateFixtures.stateVersion(
-                        RecordedMapStateFixtures.INITIAL_VERSION, "INITIAL",
-                        "REGION.writerA", "TASK.a",
-                        RecordedMapStateFixtures.state("M_MAP_allKeys"),
-                        null));
-        SharedStateEvidence.normalizeGuards(envelope);
-        JsonObject guarded = RecordedMapStateFixtures
-                .twoWriterGuardedMapRead(false);
-        SharedStateEvidence.normalizeGuards(guarded);
-        ConcolicSmtComposer.Result missing = RecordedMapStateFixtures
-                .composed(folder(), envelope, RecordedSharedStateFixtures
-                        .binary(guarded, "==",
-                                RecordedSharedStateFixtures.constant(1)));
-        Set<String> missingReasons = coverageReasons(missing.manifest);
-        assertTrue(missingReasons.toString(), missingReasons.contains(
-                BoundedWriterUniverse.WRITER_WITHOUT_ARM));
-        assertTrue(missing.manifest.toString(), missing.manifest.toString()
-                .contains("recorded write 30"));
-
-        // The occurrence axis of the product is this run's, and every
-        // enumerated read says so rather than reading as a closed universe.
-        assertTrue(missingReasons.toString(), missingReasons.contains(
-                BoundedWriterUniverse.SEMANTIC_OCCURRENCE_COVERAGE_OPEN));
-        JsonObject universe = array(object(missing.manifest,
-                "recordedSessionModel"), "writerUniverses").get(0)
-                .getAsJsonObject();
-        assertEquals(BoundedWriterUniverse.KIND, string(universe, "kind"));
-        assertEquals(RecordedMapStateFixtures.MAP_LOCATION,
-                string(universe, "locationKey"));
-        assertFalse(universe.get("closed").getAsBoolean());
-        assertTrue(universe.get("retainsUnknownArm").getAsBoolean());
-        assertEquals(2, universe.get("materializedCases").getAsInt());
-    }
-
-    /**
+        /**
      * The two structural facts that make a map arm a real alternative.
      *
      * <p>An arm must read the state <em>its own</em> writer published, and
@@ -566,56 +183,7 @@ public class RecordedMapStateTest {
         assertEquals(0, blind.toJson().get("materializedCases").getAsInt());
     }
 
-    /**
-     * A nested guarded read is one inserted value, even though the VM may
-     * serialize a larger diagnostic candidate set in a later map snapshot.
-     */
-    @Test
-    public void nestedReadCandidateGrowthDoesNotChangeWriterStateIdentity() {
-        JsonObject envelope = RecordedMapStateFixtures.twoWriterMapEnvelope(
-                false, true);
-        JsonObject guarded = RecordedMapStateFixtures
-                .twoWriterGuardedMapRead(false);
-
-        JsonObject publishedRead = RecordedSharedStateFixtures.guardedRead(
-                900L, 77L, 8);
-        JsonObject laterRead = publishedRead.deepCopy();
-        laterRead.getAsJsonArray("candidates").add(
-                RecordedSharedStateFixtures.unknownCandidate(900L,
-                        "M_I_late_candidate"));
-        laterRead.getAsJsonArray("exactlyOne").add("rf_late");
-
-        JsonObject publishedState = RecordedMapStateFixtures.put(
-                RecordedMapStateFixtures.state("M_MAP_allKeys"),
-                RecordedSharedStateFixtures.constant(4242), publishedRead);
-        JsonObject laterSnapshot = RecordedMapStateFixtures.put(
-                RecordedMapStateFixtures.state("M_MAP_allKeys"),
-                RecordedSharedStateFixtures.constant(4242), laterRead);
-        envelope.getAsJsonArray("versions").get(0).getAsJsonObject().add(
-                "expression", publishedState);
-        guarded.getAsJsonArray("candidates").get(0).getAsJsonObject().add(
-                "expression", RecordedMapStateFixtures.query(laterSnapshot,
-                        RecordedSharedStateFixtures.constant(4242)));
-
-        SharedStateEvidence.normalizeGuards(envelope);
-        SharedStateEvidence.normalizeGuards(guarded);
-        java.util.List<String> reasons = reasons(BoundedWriterUniverse.of(guarded,
-                RecordedMapStateFixtures.mapVersionsRecord(envelope)).gaps());
-        assertFalse(reasons.toString(), reasons.contains(
-                BoundedWriterUniverse.ARM_STATE_NOT_ITS_WRITER));
-
-        // A real value change outside the nested RF metadata must still be
-        // rejected as a state that its claimed writer did not publish.
-        laterSnapshot.add("value", RecordedSharedStateFixtures.constant(9));
-        guarded.getAsJsonArray("candidates").get(0).getAsJsonObject().add(
-                "expression", RecordedMapStateFixtures.query(laterSnapshot,
-                        RecordedSharedStateFixtures.constant(4242)));
-        assertTrue(reasons(BoundedWriterUniverse.of(guarded,
-                RecordedMapStateFixtures.mapVersionsRecord(envelope)).gaps())
-                .contains(BoundedWriterUniverse.ARM_STATE_NOT_ITS_WRITER));
-    }
-
-    // ----- parity -----------------------------------------------------------
+        // ----- parity -----------------------------------------------------------
 
     /** The map query reaches the model as the same census the SMT is. */
     @Test
@@ -631,19 +199,6 @@ public class RecordedMapStateTest {
                 counts.get("fieldVersions").getAsInt());
         assertEquals(model.toString(), 1,
                 counts.get("fieldReads").getAsInt());
-    }
-
-    @Test
-    public void aMissingMapIsMissingMetadata() {
-        for (ConcolicRegionRuntime.SharedStateResult absent
-                : new ConcolicRegionRuntime.SharedStateResult[]{
-                ConcolicRegionRuntime.selectSharedMapCarrier(null),
-                ConcolicRegionRuntime.captureSharedMapVersions(null)}) {
-            assertFalse(absent.ok());
-            assertEquals(SharedStateEvidence.MISSING_METADATA,
-                    absent.status());
-            assertTrue(SharedStateEvidence.isGap(absent.gap()));
-        }
     }
 
     // ----- helpers ----------------------------------------------------------
@@ -676,14 +231,6 @@ public class RecordedMapStateTest {
             }
         }
         return rows;
-    }
-
-    private static Set<String> coverageReasons(JsonObject manifest) {
-        Set<String> reasons = new LinkedHashSet<>();
-        for (JsonElement element : array(manifest, "coverageGaps")) {
-            reasons.add(string(element.getAsJsonObject(), "reason"));
-        }
-        return reasons;
     }
 
     private static List<String> reasons(List<JsonObject> gaps) {

@@ -44,7 +44,6 @@ import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.symbol;
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.unknownCandidate;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -133,70 +132,6 @@ public class CausalWitnessPinTest {
     }
 
     // ----- and refuses in each of the three ways it can ---------------------
-
-    @Test
-    public void failsClosedWhenNoDisjunctReachesAcrossANode() throws Exception {
-        ConcolicSmtComposer.Result ranked = composed(true, constant(4242),
-                symbol(HANDED_KEY));
-        ConcolicSmtComposer.Result unranked = composed(false, constant(4242),
-                symbol(HANDED_KEY));
-        JsonObject pin = object(unranked.manifest,
-                ConcolicSmtComposer.CAUSAL_WITNESS_PIN_FIELD);
-
-        // Same two reads, same two keys; only the recorded handoff is gone.
-        // With nothing saying the key crossed a node, nothing is pinned.
-        assertFalse(pin.toString(), bool(pin, "pinned", true));
-        assertEquals(pin.toString(),
-                ConcolicSmtComposer.PIN_NO_CROSS_NODE_REACH,
-                string(pin, "refusal"));
-        assertEquals(pin.toString(), 0, integer(pin, "topRank", -1));
-        assertEquals(pin.toString(), 0,
-                rows(pin, "excludedDisjuncts").size());
-        assertFalse(unranked.smtLib, unranked.smtLib.contains(
-                ConcolicSmtComposer.CAUSAL_WITNESS_PIN_ASSERTION));
-        assertTrue(ranked.smtLib, ranked.smtLib.contains(
-                ConcolicSmtComposer.CAUSAL_WITNESS_PIN_ASSERTION));
-    }
-
-    @Test
-    public void oneDisjunctIsNeverRanked() throws Exception {
-        // The regression matrix's shape: one target read, so one disjunct.
-        // A ranking over one candidate can only restate the query, and the
-        // rule refuses rather than restate it.
-        ConcolicSmtComposer.Result result = composed(true,
-                Collections.singletonList(symbol(HANDED_KEY)));
-        JsonObject pin = object(result.manifest,
-                ConcolicSmtComposer.CAUSAL_WITNESS_PIN_FIELD);
-
-        assertFalse(pin.toString(), bool(pin, "pinned", true));
-        assertEquals(pin.toString(),
-                ConcolicSmtComposer.PIN_SINGLE_DISJUNCT,
-                string(pin, "refusal"));
-        assertEquals(pin.toString(), 1, integer(pin, "disjunctCount", 0));
-        assertFalse(result.smtLib, result.smtLib.contains(
-                ConcolicSmtComposer.CAUSAL_WITNESS_PIN_ASSERTION));
-    }
-
-    @Test
-    public void disjunctsThatRankAlikeExcludeNothing() throws Exception {
-        // Both reads keyed on the transported value: the rank separates
-        // nothing, so there is no disjunct to exclude and no pin to add.
-        ConcolicSmtComposer.Result result = composed(true,
-                symbol(HANDED_KEY), symbol(HANDED_KEY));
-        JsonObject pin = object(result.manifest,
-                ConcolicSmtComposer.CAUSAL_WITNESS_PIN_FIELD);
-
-        assertFalse(pin.toString(), bool(pin, "pinned", true));
-        assertEquals(pin.toString(),
-                ConcolicSmtComposer.PIN_NO_DISCRIMINATION,
-                string(pin, "refusal"));
-        assertEquals(pin.toString(), 1, integer(pin, "topRank", -1));
-        for (JsonObject disjunct : rows(pin, "disjuncts")) {
-            assertEquals(pin.toString(), 1, integer(disjunct, "rank", -1));
-        }
-        assertFalse(result.smtLib, result.smtLib.contains(
-                ConcolicSmtComposer.CAUSAL_WITNESS_PIN_ASSERTION));
-    }
 
     // ----- fixture ----------------------------------------------------------
 

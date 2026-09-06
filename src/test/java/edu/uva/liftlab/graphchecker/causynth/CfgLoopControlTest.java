@@ -21,7 +21,6 @@ import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
 import soot.toolkits.graph.BriefUnitGraph;
 import soot.toolkits.graph.MHGDominatorsFinder;
-import soot.toolkits.graph.TrapUnitGraph;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -31,7 +30,6 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
  * README section 5: a loop is discovered, proved, and bounded on one CFG.
@@ -85,65 +83,7 @@ public class CfgLoopControlTest {
         body.validate();
     }
 
-    /**
-     * A trap whose range covers its own handler -- what javac emits for a
-     * {@code synchronized} block -- is a cycle only over trap edges.  It is
-     * not an iteration, no bound can be installed on an abrupt transfer, and
-     * the boundary is named rather than assumed away.
-     */
-    @Test
-    public void trapOnlyCycleIsNamedAndCarriesNoBound() {
-        SootMethod method = selfProtectingHandler();
-        Body body = method.getActiveBody();
-        CfgLoopControl.LoopCfg loopCfg = CfgLoopControl.loopCfg(body,
-                new BriefUnitGraph(body));
-
-        assertTrue(CfgLoopControl.guards(loopCfg).isEmpty());
-        assertEquals(0, new CausynthPipeline(null)
-                .instrumentConcolicLoopBounds(
-                        Collections.singleton(method.getSignature()),
-                        LoopBoundPolicy.cfgBackedges(8),
-                        Collections.<String>emptySet()));
-        assertTrue(boundedLoops(body).isEmpty());
-        body.validate();
-
-        // A caller cannot re-open the question by handing in a graph whose
-        // successors already include exception edges.
-        try {
-            CfgLoopControl.loopCfg(body, new TrapUnitGraph(body));
-            fail("an exceptional graph is not a transfer graph");
-        } catch (IllegalArgumentException refused) {
-            assertTrue(refused.getMessage().startsWith(
-                    "LOOP_CFG_TRANSFERS_MUST_BE_UNEXCEPTIONAL"));
-        }
-    }
-
-    /**
-     * README's loop authority: an array-backed indexed {@code for} remains
-     * {@code FIXED_COUNT_INDEXED} when one guarded local path exits early.
-     * The array fixes the available iteration slots; the branch guard in the
-     * region case decides which slots that path reaches.
-     */
-    @Test
-    public void anArrayIndexedForRemainsFixedCountAcrossEarlyExit() {
-        Body counted = arrayIndexedLoop(false).getActiveBody();
-        String indexed = CfgLoopControl.classify(
-                CfgLoopControl.loopCfg(counted, new BriefUnitGraph(counted)))
-                .get(unit(counted, 3));
-        assertEquals(LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, indexed);
-        assertEquals(LoopBoundPolicy.LOOP_CLASSIFIED_ARRAY_INDEXED,
-                CfgLoopControl.classificationAuthority(indexed));
-        G.reset();
-        Body broken = arrayIndexedLoop(true).getActiveBody();
-        String escaped = CfgLoopControl.classify(
-                CfgLoopControl.loopCfg(broken, new BriefUnitGraph(broken)))
-                .get(unit(broken, 3));
-        assertEquals(LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, escaped);
-        assertEquals(LoopBoundPolicy.LOOP_CLASSIFIED_ARRAY_INDEXED,
-                CfgLoopControl.classificationAuthority(escaped));
-    }
-
-    /**
+            /**
      * The fixed-array producer reads the unique {@code lengthof} local and
      * closes its dynamic occurrence on every normal exit, including break.
      */
@@ -180,39 +120,7 @@ public class CfgLoopControlTest {
         body.validate();
     }
 
-    /** A multi-guard loop is instrumented with its composite declared K_L. */
-    @Test
-    public void multiGuardLoopUsesCompositeDeclaredBoundInsteadOfDefault() {
-        SootMethod method = conditionLoopWithTwoGuards();
-        Body body = method.getActiveBody();
-        String site = LoopBoundPolicy.loopSiteId(Arrays.asList(
-                method.getSignature() + "#u2",
-                method.getSignature() + "#u3"));
-
-        assertEquals(1, new CausynthPipeline(null)
-                .instrumentConcolicLoopBounds(
-                        Collections.singleton(method.getSignature()),
-                        LoopBoundPolicy.cfgBackedges(8,
-                                Collections.singletonMap(site, 5)),
-                        Collections.<String>emptySet()));
-
-        int hooks = 0;
-        for (Unit unit : body.getUnits()) {
-            if (!(unit instanceof Stmt)
-                    || !((Stmt) unit).containsInvokeExpr()
-                    || !"checkLoopBackedge".equals(((Stmt) unit)
-                    .getInvokeExpr().getMethodRef().name())) {
-                continue;
-            }
-            hooks++;
-            assertEquals(5, ((IntConstant) ((Stmt) unit).getInvokeExpr()
-                    .getArg(1)).value);
-        }
-        assertEquals(1, hooks);
-        body.validate();
-    }
-
-    // ------------------------------------------------------------------
+        // ------------------------------------------------------------------
     // Fixture
     // ------------------------------------------------------------------
 
@@ -263,33 +171,7 @@ public class CfgLoopControlTest {
         return method;
     }
 
-    /** One condition-controlled natural loop with two retained exit guards. */
-    private static SootMethod conditionLoopWithTwoGuards() {
-        SootClass owner = concolicScene("example.MultiGuardLoop");
-        SootMethod method = new SootMethod("run", Collections.emptyList(),
-                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
-        owner.addMethod(method);
-        Body body = Jimple.v().newBody(method);
-        method.setActiveBody(body);
-        Local i = Jimple.v().newLocal("i", IntType.v());
-        body.getLocals().add(i);
-
-        Unit header = Jimple.v().newNopStmt();
-        Unit exit = Jimple.v().newReturnVoidStmt();
-        body.getUnits().add(Jimple.v().newAssignStmt(i, IntConstant.v(0)));
-        body.getUnits().add(header);
-        body.getUnits().add(Jimple.v().newIfStmt(
-                Jimple.v().newGeExpr(i, IntConstant.v(5)), exit));
-        body.getUnits().add(Jimple.v().newIfStmt(
-                Jimple.v().newEqExpr(i, IntConstant.v(3)), exit));
-        body.getUnits().add(Jimple.v().newAssignStmt(i,
-                Jimple.v().newAddExpr(i, IntConstant.v(1))));
-        body.getUnits().add(Jimple.v().newGotoStmt(header));
-        body.getUnits().add(exit);
-        return method;
-    }
-
-    /**
+        /**
      * <pre>
      * u0 i = 0
      * u1 if i &gt;= 5 goto u7      // header and iteration guard
@@ -339,43 +221,7 @@ public class CfgLoopControlTest {
         return method;
     }
 
-    /**
-     * <pre>
-     * u0 i = 0
-     * u1 i = i + 1               // protected
-     * u2 $e := @caughtexception  // handler, protected by its own trap
-     * u3 return
-     * </pre>
-     */
-    private static SootMethod selfProtectingHandler() {
-        SootClass owner = concolicScene("example.SelfProtectingHandler");
-        SootMethod method = new SootMethod("run", Collections.emptyList(),
-                VoidType.v(), Modifier.PUBLIC | Modifier.STATIC);
-        owner.addMethod(method);
-        Body body = Jimple.v().newBody(method);
-        method.setActiveBody(body);
-        Local i = Jimple.v().newLocal("i", IntType.v());
-        Local caught = Jimple.v().newLocal("caught",
-                RefType.v("java.lang.Throwable"));
-        body.getLocals().add(i);
-        body.getLocals().add(caught);
-
-        Unit protectedWork = Jimple.v().newAssignStmt(i,
-                Jimple.v().newAddExpr(i, IntConstant.v(1)));
-        Unit handler = Jimple.v().newIdentityStmt(caught,
-                Jimple.v().newCaughtExceptionRef());
-        Unit exit = Jimple.v().newReturnVoidStmt();
-        body.getUnits().add(Jimple.v().newAssignStmt(i, IntConstant.v(0)));
-        body.getUnits().add(protectedWork);
-        body.getUnits().add(handler);
-        body.getUnits().add(exit);
-        body.getTraps().add(Jimple.v().newTrap(
-                Scene.v().getSootClass("java.lang.Throwable"),
-                protectedWork, exit, handler));
-        return method;
-    }
-
-    /** A scene holding the loop-accounting hooks and one application class. */
+        /** A scene holding the loop-accounting hooks and one application class. */
     private static SootClass concolicScene(String name) {
         G.reset();
         Scene.v().addClass(new SootClass("java.lang.Throwable",

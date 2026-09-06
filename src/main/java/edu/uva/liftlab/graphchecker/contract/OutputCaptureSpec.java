@@ -40,8 +40,6 @@ public final class OutputCaptureSpec {
     private final String captureBindingId;
     private final String outputPort;
     private final String captureKind;
-    private final String outputCell;
-    private final String javaType;
     private final String accessRootInputPort;
     private final List<String> fieldPath;
     private final String fieldSignature;
@@ -66,8 +64,6 @@ public final class OutputCaptureSpec {
         // reaches this constructor: a spec exists only for a binding of a
         // decoded closure, and that ledger refuses every other kind.
         captureKind = string(encoded, "captureKind");
-        outputCell = string(encoded, "outputCell");
-        javaType = string(encoded, "javaType");
         accessRootInputPort = string(encoded, "accessRootInputPort");
         fieldPath = Collections.unmodifiableList(new ArrayList<>(
                 FieldPathSpec.stringArray(encoded, "fieldPath")));

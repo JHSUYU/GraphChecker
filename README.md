@@ -128,34 +128,6 @@ build and classpath helpers ensure Hadoop compiles against the current
 GraphChecker API and loads its own common/client classes, even when another
 case has installed the same Hadoop SNAPSHOT coordinates in Maven's cache.
 
-## SOLR-18406
-
-The current workload targets follower replication when the selected leader
-commit expires between `filelist` and `filecontent`. It pauses the follower
-after the file list, lets the reservation expire, commits a newer generation,
-then resumes the download. The expected repaired behavior is to renegotiate and
-install the newer generation.
-
-The checked-in declarations are:
-
-- [target.yaml](experiments/solr/solr-18406/target.yaml)
-- [communication-mappings.jsonl](experiments/solr/solr-18406/communication-mappings.jsonl)
-- [loop-bounds.jsonl](experiments/solr/solr-18406/loop-bounds.jsonl)
-
-The mappings cover the generation carried by `indexversion`, `filelist`, and
-`filecontent`, plus the HTTP status response. The instrumented Solr workload
-registers leader/follower node owners and one outer follower fetch request flow;
-its HTTP bridge carries trace and symbolic headers on both directions.
-
-The same directory contains the complete workflow and replay adapter. After
-building the instrumented checkout at `/opt/solr`, run the generic toolchain
-against [workflow.properties](experiments/solr/solr-18406/workflow.properties):
-
-```bash
-./run_engine.sh --config experiments/solr/solr-18406/workflow.properties catalog
-./run_engine.sh --config experiments/solr/solr-18406/workflow.properties campaign
-```
-
 ## Results
 
 The final directory contains the composed SMT, composition/reachability reports,

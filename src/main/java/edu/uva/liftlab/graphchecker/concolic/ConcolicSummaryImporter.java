@@ -663,7 +663,7 @@ public final class ConcolicSummaryImporter {
         List<ConfiguredSourcePhaseContract.Occurrence> mintSites =
                 task.configuredSourcePhases();
         validateConfiguredSourcePhaseObservations(row, mintSites, issues);
-        JsonArray symbolicSources = symbolicSourceEvidence(row, task,
+        JsonArray symbolicSources = symbolicSourceEvidence(row,
                 mintSites, issues);
         // A replay that carried a selected read cut is validated against
         // its own recorded evidence, never against the reference run's
@@ -1150,7 +1150,7 @@ public final class ConcolicSummaryImporter {
      * Every occurrence of a declared site is its own symbol, so nothing
      * here predicts which of them a given replay executed. */
     private static JsonArray symbolicSourceEvidence(
-            ResultRow row, ExecutionTask task,
+            ResultRow row,
             List<ConfiguredSourcePhaseContract.Occurrence> catalog,
             List<String> issues) {
         Map<String, ConfiguredSourcePhaseContract.Occurrence> mintSites =

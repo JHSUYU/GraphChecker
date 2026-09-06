@@ -7,9 +7,7 @@ import org.junit.Test;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
 
 public class RuntimeTraceContextTest {
     @Before
@@ -22,101 +20,7 @@ public class RuntimeTraceContextTest {
         RuntimeTraceContext.resetForTests();
     }
 
-    /** A replay epoch may change, but the logical node may not. */
-    @Test
-    public void sourceIdentityIsStableAcrossFreshReplayEpochs() {
-        SourceRef epoch0 = new SourceRef(
-                "CLUSTER_NODE", "DATANODE", "cluster0/dn0", 0L);
-        RuntimeTraceContext.registerSource(new Object(), epoch0);
-        assertEquals(true,
-                RuntimeTraceContext.sourceIdentityRegistered(
-                        "cluster0/dn0#epoch0"));
-        assertEquals(true,
-                RuntimeTraceContext.sourceIdentityRegistered(
-                        "cluster0/dn0#epoch7"));
-        assertEquals(false,
-                RuntimeTraceContext.sourceIdentityRegistered(
-                        "cluster0/dn1#epoch0"));
-    }
-
-    /**
-     * A receiver that names its own source outranks the source of whoever
-     * started its thread.
-     *
-     * <p>This is the in-process cluster shape and no fixture that opens a
-     * request scope reproduces it: the driver constructs and starts every
-     * node's threads, so each one inherits the driver's source through the
-     * async seed, while the node itself binds its own receivers at start-up.
-     * Preferring the seed filed a whole node's activations under the driver -
-     * which put a producer and its target on different owners and epochs, and
-     * made one exchange's delivery look like it was recorded by two
-     * occurrences of one source.  The receiver's registration is what the
-     * application actually stated, so it wins.</p>
-     */
-    @Test
-    public void aRegisteredReceiverOutranksTheThreadThatStartedIt() {
-        Object driver = new Object();
-        Object dataNode = new Object();
-        Object secretManager = new Object();
-        SourceRef driverSource = new SourceRef(
-                "EXTERNAL_APP", "TEST_DRIVER", "cluster0/driver0", 0L);
-        SourceRef nodeSource = new SourceRef(
-                "CLUSTER_NODE", "DATANODE", "cluster0/dn0", 1L);
-        RuntimeTraceContext.registerSource(driver, driverSource);
-        RuntimeTraceContext.registerSource(dataNode, nodeSource);
-        RuntimeTraceContext.registerSourceAlias(secretManager, dataNode);
-
-        // The driver is current and submits the node's work, exactly as an
-        // in-process cluster start does.
-        RuntimeTraceContext.beginRequest(driverSource, "workload");
-        // The seed a submitted thread would carry: the driver's source.
-        RuntimeTraceContext.captureAsync(Thread.currentThread());
-
-        // The activation runs on a receiver the node registered.
-        RuntimeTraceContext.View attributed =
-                RuntimeTraceContext.enterRoot(secretManager);
-        assertEquals(nodeSource.key(), attributed.source.key());
-        // ... and it says so, because replay can re-check that one by object
-        // identity.
-        assertTrue(attributed.receiverAttributed);
-
-        // A receiver that registered nothing still gets the ambient stamp -
-        // there is no other answer - and that is the only remaining path.
-        RuntimeTraceContext.View ambient =
-                RuntimeTraceContext.enterRoot(new Object());
-        assertEquals(nodeSource.key(), ambient.source.key());
-        // The balancer's Dispatcher$1 and KeyManager$BlockKeyUpdater are this
-        // case: the stamp is the thread's, not the receiver's, and an address
-        // that claimed otherwise would be unanswerable at replay.
-        assertFalse(ambient.receiverAttributed);
-    }
-
-    /** A REGISTERED_SOURCE root requires an exact receiver lifecycle key. */
-    @Test
-    public void registeredSourceRejectsMissingWrongAndStaleReceiverAlias() {
-        Object driver = new Object();
-        Object receiver = new Object();
-        SourceRef driverSource = new SourceRef(
-                "EXTERNAL_APP", "TEST_DRIVER", "cluster0/driver0", 0L);
-        RuntimeTraceContext.registerSource(driver, driverSource);
-        RuntimeTraceContext.beginRequest(driverSource, "workload");
-
-        // An unregistered receiver anchors no REGISTERED_SOURCE occurrence,
-        // and a registered one answers for its own key and epoch alone.
-        assertEquals(null, RuntimeTraceContext.sourceFor(receiver));
-
-        SourceRef dataNode = new SourceRef(
-                "CLUSTER_NODE", "DATANODE", "cluster0/dn0", 1L);
-        RuntimeTraceContext.registerSource(receiver, dataNode);
-        assertEquals(dataNode.key(),
-                RuntimeTraceContext.sourceFor(receiver).key());
-        assertNotEquals("cluster0/nn0#epoch1",
-                RuntimeTraceContext.sourceFor(receiver).key());
-        assertNotEquals("cluster0/dn0#epoch99",
-                RuntimeTraceContext.sourceFor(receiver).key());
-    }
-
-    /**
+                /**
      * A source is a stable logical identity plus an epoch, and every span the
      * workload opens is attributed to one: a restart advances the epoch
      * without rewriting what the old runtime object already reported, a

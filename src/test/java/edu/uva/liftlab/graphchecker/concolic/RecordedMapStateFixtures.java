@@ -20,7 +20,6 @@ import java.util.Collections;
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.binary;
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.candidate;
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.constant;
-import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.edge;
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.event;
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.ledgerEnvelope;
 import static edu.uva.liftlab.graphchecker.concolic.RecordedSharedStateFixtures.occurrenceOf;
@@ -327,29 +326,6 @@ final class RecordedMapStateFixtures {
         return ledgerEnvelope(events, order);
     }
 
-    /**
-     * One order domain holding a scalar location's events and a map's.
-     *
-     * <p>There is one ledger per session, not one per shape, so a fixture
-     * that watched both a field and a map has both in the same relation -
-     * which is what lets a single projection place both reads.</p>
-     */
-    static JsonObject mapAndScalarLedger() {
-        JsonArray events = new JsonArray();
-        events.add(event(11L, "FIELD_WRITE", 101L, "REGION.writerA"));
-        events.add(event(12L, "FIELD_WRITE", 102L, "REGION.writerB"));
-        events.add(event(21L, "FIELD_READ", 103L, "REGION.reader"));
-        events.add(event(WRITER_A_VERSION, "FIELD_WRITE", 101L,
-                "REGION.writerA", MAP_OWNER));
-        events.add(event(WRITER_B_VERSION, "FIELD_WRITE", 102L,
-                "REGION.writerB", MAP_OWNER));
-        events.add(event(QUERY_EVENT, "FIELD_READ", 103L, "REGION.0",
-                MAP_OWNER));
-        JsonArray order = new JsonArray();
-        order.add(edge(11L, WRITER_A_VERSION, "PROGRAM_ORDER"));
-        order.add(edge(12L, WRITER_B_VERSION, "PROGRAM_ORDER"));
-        return ledgerEnvelope(events, order);
-    }
 
     /** One {@code recordedSharedState} member carrying map-state evidence. */
     static JsonObject recordedMapMember(JsonObject envelope) {
@@ -383,50 +359,6 @@ final class RecordedMapStateFixtures {
                 binary(guarded, "==", constant(1)));
     }
 
-    /**
-     * One exact VM map-state edge whose target predicate reads the same map
-     * through its engine-local symbolic owner rather than through a port
-     * symbol.  This is the shape emitted by a real getfield followed by
-     * {@code Map.get}: the edge and the expression must meet on owner 9.
-     */
-    static ConcolicSmtComposer.Result composedExactCarrierGolden(
-            Path directory) throws Exception {
-        JsonObject firstHop = binding();
-        firstHop.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
-                RecordedReadFrom.PROVENANCE_EXACT);
-        firstHop.remove(RecordedReadFrom.EDGE_UNKNOWN_ARM);
-        JsonObject baseline = firstHop.deepCopy();
-        baseline.addProperty(RecordedReadFrom.EDGE_PROVENANCE,
-                RecordedReadFrom.PROVENANCE_GUARDED);
-        baseline.remove("locationKey");
-        RelationSummary producer = exactMapProducerSummary(baseline);
-        JsonObject predicate = binary(query(state(
-                "M_L'java/util/HashMap'_" + MAP_OWNER), constant(4242)),
-                "==", constant(1));
-
-        Files.createDirectories(directory);
-        Path fatal = directory.resolve("fatal.jsonl");
-        Path summaries = directory.resolve("summaries.jsonl");
-        Path plan = directory.resolve("runtime_plan.jsonl");
-        Path output = directory.resolve("candidate.smt2");
-        Path manifest = directory.resolve("composed_smt_manifest.json");
-        write(fatal, fatalQuery(predicate, firstHop) + "\n");
-        write(summaries, producer.toJson() + "\n");
-        write(plan, RuntimePlanArtifact.encode(
-                Collections.<JsonObject>emptyList(),
-                Collections.<JsonObject>emptyList(),
-                Arrays.asList(mapRegion("REGION.0", true, false),
-                        mapRegion("REGION.1", false, true))));
-        return ConcolicSmtComposer.compose(
-                ConcolicSmtComposer.Arguments.parse(new String[]{
-                        "--fatal-query", fatal.toString(),
-                        "--summaries", summaries.toString(),
-                        "--runtime-plan", plan.toString(),
-                        "--output", output.toString(),
-                        "--manifest", manifest.toString(),
-                        "--fatal-region", "REGION.0",
-                        "--occurrence-id", TARGET_OCCURRENCE}));
-    }
 
     /**
      * The same composition over any envelope and target predicate, so a test
@@ -562,22 +494,6 @@ final class RecordedMapStateFixtures {
         return RelationSummary.decode(row);
     }
 
-    private static RelationSummary exactMapProducerSummary(
-            JsonObject firstHop) {
-        JsonObject row = producerSummary(firstHop).toJson();
-        JsonObject closure = row.getAsJsonObject("outputClosure");
-        for (JsonElement element : closure.getAsJsonArray("members")) {
-            JsonObject member = element.getAsJsonObject();
-            member.addProperty("javaType", "java.util.Map");
-            member.addProperty("outputCell", "<Test: java.util.Map output>");
-        }
-        JsonObject relation = row.getAsJsonObject("regionRelation");
-        relation.getAsJsonArray("cases").get(0).getAsJsonObject()
-                .getAsJsonObject("outputExpressions")
-                .add("REGION.1.out.0", state(
-                        "M_L'java/util/HashMap'_" + MAP_OWNER));
-        return RelationSummary.decode(row);
-    }
 
     private static JsonObject outputSlice() {
         JsonObject slice = new JsonObject();
@@ -666,20 +582,6 @@ final class RecordedMapStateFixtures {
         return region;
     }
 
-    private static JsonObject mapRegion(String id, boolean hasInput,
-                                        boolean hasOutput) {
-        JsonObject region = new JsonObject();
-        region.addProperty("schemaVersion", 3);
-        region.addProperty("kind", "SYMBOLIC_REGION");
-        region.addProperty("regionId", id);
-        JsonArray inputs = new JsonArray();
-        if (hasInput) inputs.add(mapPort(id + ".in.0", "input"));
-        region.add("symbolicInputs", inputs);
-        JsonArray outputs = new JsonArray();
-        if (hasOutput) outputs.add(mapPort(id + ".out.0", "output"));
-        region.add("outputs", outputs);
-        return region;
-    }
 
     private static JsonObject port(String id, String role) {
         JsonObject port = new JsonObject();
@@ -689,13 +591,6 @@ final class RecordedMapStateFixtures {
         return port;
     }
 
-    private static JsonObject mapPort(String id, String role) {
-        JsonObject port = new JsonObject();
-        port.addProperty("portId", id);
-        port.addProperty("cell", "<Test: java.util.Map " + role + ">");
-        port.addProperty("javaType", "java.util.Map");
-        return port;
-    }
 
     private static void write(Path path, String content) throws Exception {
         Files.write(path, content.getBytes(StandardCharsets.UTF_8));

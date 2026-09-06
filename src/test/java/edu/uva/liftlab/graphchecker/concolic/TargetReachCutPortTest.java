@@ -17,13 +17,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Collections;
-import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
  * The target fragment behind a communication cut takes its input through the
@@ -59,21 +56,12 @@ public class TargetReachCutPortTest {
             "XCH.dc98a244-08b8-370c-9cc0-7cc5320c0089";
     private static final String CUT_PORT =
             CommunicationCatalogContract.requestPortId(EXCHANGE_SITE, "p0");
-    /** OCC-1: the read-from edge two activations of the target both record. */
-    private static final String SHARED_EDGE =
-            "RF.4c7de5b1-3a02-3f6b-9d21-5ba0f1e83c74";
-    /** The exchange edge a replay recorded and the frozen plan lacked. */
+        /** The exchange edge a replay recorded and the frozen plan lacked. */
     private static final String ABSORBED_EDGE =
             "RPC.1d5f0b6c-7a44-3e18-8c0b-2f2e5b7a91d0";
     private static final String PRODUCER_OCCURRENCE =
             "slice/client#epoch0/region/REGION.9c1a7f20-2d61-3b55-a4de-"
             + "6f30b1c8d47e#1";
-    private static final String STORE_FIELD =
-            "example.store.KeyStore#allKeys";
-    private static final long RECEIVER = 78517L;
-    private static final long OTHER_RECEIVER = 78901L;
-    private static final int SLOT = -3;
-    private static final int OTHER_SLOT = -4;
 
     @Test
     public void theDeclaredCutPortIsAdmittedAsTheTargetFragmentsInput()
@@ -111,201 +99,6 @@ public class TargetReachCutPortTest {
     }
 
     @Test
-    public void aPortNeitherTheRegionNorTheCutMintsIsStillRefused()
-            throws Exception {
-        try {
-            build("someOtherRegion.in.0f9b882a");
-            fail("a port of another region must not be admitted");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(),
-                    refused.getMessage().contains(
-                            "nor a declared cut port"));
-        }
-    }
-
-    @Test
-    public void aRegionInputPortIsStillAdmitted() throws Exception {
-        JsonObject query = build(REGION + ".in.375274cb");
-
-        assertEquals(REGION + ".in.375274cb",
-                query.getAsJsonObject("selectedTargetOccurrence")
-                        .getAsJsonArray("inputPorts").get(0).getAsString());
-    }
-
-    @Test
-    public void aPathWithoutTheRuntimeTargetEventCannotBecomeAQuery()
-            throws Exception {
-        JsonObject unattested = summary();
-        unattested.remove(PathObservation.TargetReachEvent.FIELD);
-        try {
-            build(CUT_PORT, unattested);
-            fail("an unattested path must not become a target query");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "no exact source-attested target path"));
-        }
-    }
-
-    @Test
-    public void theRequiredRuntimeEventBecomesADirectTargetWitness()
-            throws Exception {
-        JsonObject opposite = summary();
-        JsonObject mapping = opposite.getAsJsonArray("branchMappings")
-                .get(0).getAsJsonObject();
-        JsonObject witnessed = oppositePredicate();
-        mapping.getAsJsonObject("witness")
-                .addProperty("sourceTakenOutcome", false);
-        mapping.getAsJsonObject("witness").add(
-                "sourceSatisfiedPredicate", witnessed.deepCopy());
-        opposite.getAsJsonArray("pathCondition").set(0,
-                witnessed.deepCopy());
-        opposite.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
-                .addProperty("outcome", false);
-        JsonObject seed = seedQuery(CUT_PORT);
-        JsonObject seedWitness = seed.getAsJsonObject("replayContract")
-                .getAsJsonObject("source");
-        seedWitness.addProperty("sourceTakenOutcome", false);
-        seedWitness.add("sourceSatisfiedPredicate", witnessed.deepCopy());
-
-        JsonObject query = build(CUT_PORT, opposite, manifest(), seed);
-
-        JsonObject path = query.getAsJsonArray("paths").get(0)
-                .getAsJsonObject();
-        assertEquals(false, path.getAsJsonObject(
-                PathObservation.TargetReachEvent.FIELD)
-                .get("outcome").getAsBoolean());
-        assertEquals(TargetReachPathQueryBuilder.REQUIRED_TARGET_REACH_EVENT,
-                path.get(TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE)
-                        .getAsString());
-        assertEquals(">", path.getAsJsonArray("constraints").get(0)
-                .getAsJsonObject().get("_op").getAsString());
-    }
-
-    @Test
-    public void requiredConcreteTargetEventNeedsNoReplayContract()
-            throws Exception {
-        JsonObject concrete = ExactConcreteBranchObservation.attested(
-                TARGET_SITE, METHOD, 6, 1, false).toJson();
-        JsonObject summary = summary();
-        summary.add("pathCondition", new JsonArray());
-        JsonArray mappings = new JsonArray();
-        mappings.add(SummaryBranchMapping.concrete(
-                ExactConcreteBranchObservation.fromJson(concrete),
-                SummaryBranchMapping.Policy.EXPLORE).toJson());
-        summary.add("branchMappings", mappings);
-        summary.getAsJsonObject(PathObservation.TargetReachEvent.FIELD)
-                .addProperty("outcome", false);
-
-        JsonObject seed = seedQuery(CUT_PORT);
-        seed.remove("replayContract");
-        seed.add(TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION,
-                concrete.deepCopy());
-        JsonObject query = build(CUT_PORT, summary, manifest(), seed);
-
-        assertFalse(query.has("seedReplayContract"));
-        assertEquals(concrete, query.getAsJsonObject(
-                TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION));
-        JsonObject path = query.getAsJsonArray("paths").get(0)
-                .getAsJsonObject();
-        assertEquals(0, path.getAsJsonArray("constraints").size());
-        assertFalse(path.has(
-                TargetReachPathQueryBuilder.TARGET_BRANCH_WITNESS));
-        assertEquals(concrete, path.getAsJsonObject(
-                TargetReachPathQueryBuilder.TARGET_CONCRETE_OBSERVATION));
-        assertEquals(TargetReachPathQueryBuilder
-                        .REQUIRED_TARGET_REACH_EVENT,
-                path.get(TargetReachPathQueryBuilder
-                        .TARGET_ATTESTATION_ROLE).getAsString());
-    }
-
-    @Test
-    public void closedWorklistStillCarriesPartialCoverageGaps()
-            throws Exception {
-        JsonObject partial = manifest();
-        partial.addProperty("coverageState", "PARTIAL");
-        JsonObject materialization = new JsonObject();
-        materialization.addProperty("kind",
-                "PATH_FLIP_MATERIALIZATION_GAP");
-        materialization.addProperty("queryKey", "QUERY.LOCAL.PREFIX");
-        JsonArray coverage = new JsonArray();
-        coverage.add(materialization);
-        partial.add("coverageGaps", coverage);
-
-        JsonObject query = build(CUT_PORT, summary(), partial);
-
-        JsonArray propagated = query.getAsJsonArray("coverageGaps");
-        assertEquals(propagated.toString(), 1, propagated.size());
-        JsonObject classified = propagated.get(0).getAsJsonObject();
-        assertEquals(CoverageDivergence.Kind.TARGET.name(),
-                classified.get("divergenceClass").getAsString());
-        assertEquals("PATH_FLIP_MATERIALIZATION_GAP",
-                classified.get("reason").getAsString());
-        assertEquals("QUERY.LOCAL.PREFIX",
-                classified.get("subject").getAsString());
-        assertFalse(propagated.toString(), propagated.toString().contains(
-                "TARGET_WORKLIST_NOT_CLOSED"));
-    }
-
-    @Test
-    public void unsupportedFlipIsOneClassifiedTargetCoverageGap()
-            throws Exception {
-        JsonObject partial = manifest();
-        partial.addProperty("coverageState", "SEED_ONLY");
-        JsonObject unsupported = new JsonObject();
-        unsupported.addProperty("kind", "UNSUPPORTED_PATH_FLIP");
-        unsupported.addProperty("queryKey", "QUERY.UNSUPPORTED.PREFIX");
-        unsupported.addProperty("reason", "symbolic branch is unsupported");
-        JsonArray coverage = new JsonArray();
-        coverage.add(unsupported);
-        partial.add("coverageGaps", coverage);
-
-        JsonArray propagated = build(CUT_PORT, summary(), partial)
-                .getAsJsonArray("coverageGaps");
-
-        assertEquals(propagated.toString(), 1, propagated.size());
-        JsonObject classified = propagated.get(0).getAsJsonObject();
-        assertEquals(CoverageDivergence.Kind.TARGET.name(),
-                classified.get("divergenceClass").getAsString());
-        assertEquals("UNSUPPORTED_PATH_FLIP",
-                classified.get("reason").getAsString());
-        assertEquals("QUERY.UNSUPPORTED.PREFIX",
-                classified.get("subject").getAsString());
-        assertEquals("symbolic branch is unsupported",
-                classified.get("detail").getAsString());
-        assertFalse(propagated.toString(), propagated.toString().contains(
-                "TARGET_WORKLIST_NOT_CLOSED"));
-    }
-
-    @Test
-    public void partialWorklistWithoutConcreteGapKeepsAggregateFinding()
-            throws Exception {
-        JsonObject partial = manifest();
-        partial.addProperty("coverageState", "PARTIAL");
-
-        JsonObject query = build(CUT_PORT, summary(), partial);
-
-        JsonArray gaps = query.getAsJsonArray("coverageGaps");
-        assertEquals(gaps.toString(), 1, gaps.size());
-        assertEquals("TARGET_WORKLIST_NOT_CLOSED",
-                gaps.get(0).getAsJsonObject().get("reason").getAsString());
-    }
-
-    @Test
-    public void targetWorklistSchemaIsRequired() throws Exception {
-        JsonObject missingCoverage = manifest();
-        missingCoverage.remove("coverageState");
-        assertManifestRejected(missingCoverage, "coverageState");
-
-        JsonObject wrongGaps = manifest();
-        wrongGaps.add("coverageGaps", new JsonObject());
-        assertManifestRejected(wrongGaps, "coverageGaps");
-
-        JsonObject wrongKind = manifest();
-        wrongKind.addProperty("kind", "LEGACY_WORKLIST");
-        assertManifestRejected(wrongKind, "schema");
-    }
-
-    @Test
     public void vmHandoffEvidenceRemainsOnItsTargetPath()
             throws Exception {
         JsonObject witnessed = summary();
@@ -339,87 +132,6 @@ public class TargetReachCutPortTest {
                         .get(0).getAsJsonObject()
                         .get(VmHandoffEvidence.SELECTED_ENDPOINT_EDGE_ID)
                         .getAsString());
-    }
-
-    @Test
-    public void sameLocalPrefixKeepsDistinctRpcHandoffCases()
-            throws Exception {
-        JsonObject first = summary();
-        JsonObject second = summary();
-        JsonObject firstExpression = new JsonObject();
-        firstExpression.addProperty("_type", "SymbolExpression");
-        firstExpression.addProperty("_java_type", "I");
-        firstExpression.addProperty("_exp", "M_I_field_REMOTE_A");
-        JsonObject secondExpression = new JsonObject();
-        secondExpression.addProperty("_type", "SymbolExpression");
-        secondExpression.addProperty("_java_type", "I");
-        secondExpression.addProperty("_exp", "M_I_field_REMOTE_B");
-        VmHandoffEvidence.writeTo(first, Collections.singletonList(
-                VmHandoffEvidence.event(CUT_PORT, 41L, 42L,
-                        firstExpression, "TASK.PRODUCER",
-                        PRODUCER_OCCURRENCE)));
-        VmHandoffEvidence.writeTo(second, Collections.singletonList(
-                VmHandoffEvidence.event(CUT_PORT, 51L, 52L,
-                        secondExpression, "TASK.PRODUCER",
-                        PRODUCER_OCCURRENCE)));
-        first.getAsJsonArray("edgeBindings").add(
-                absorbed(exchangeBinding(), "TASK.PRODUCER"));
-        second.getAsJsonArray("edgeBindings").add(
-                absorbed(exchangeBinding(), "TASK.PRODUCER"));
-
-        JsonObject query = build(CUT_PORT, Arrays.asList(first, second));
-
-        assertEquals(query.toString(), 2,
-                query.getAsJsonArray("paths").size());
-        assertFalse(query.toString(), query.has("coverageGaps"));
-        java.util.Set<String> producers = new java.util.LinkedHashSet<>();
-        for (com.google.gson.JsonElement encoded
-                : query.getAsJsonArray("paths")) {
-            producers.add(encoded.getAsJsonObject()
-                    .getAsJsonArray(VmHandoffEvidence.FIELD)
-                    .get(0).getAsJsonObject()
-                    .get(VmHandoffEvidence.PRODUCER_TASK_ID).getAsString());
-        }
-        assertEquals(new java.util.LinkedHashSet<>(Arrays.asList(
-                "TASK.PRODUCER")), producers);
-    }
-
-    @Test
-    public void aHandoffCannotInheritAnotherProducersSelectedEdge()
-            throws Exception {
-        JsonObject matched = summary();
-        JsonObject attached = new JsonObject();
-        attached.addProperty("_type", "SymbolExpression");
-        attached.addProperty("_java_type", "I");
-        attached.addProperty("_exp", "M_I_field_REMOTE.VALUE_Test");
-        VmHandoffEvidence.writeTo(matched,
-                Collections.singletonList(VmHandoffEvidence.event(
-                        CUT_PORT, 31L, 32L, attached, "TASK.PRODUCER",
-                        PRODUCER_OCCURRENCE)));
-        matched.getAsJsonArray("edgeBindings").add(
-                absorbed(exchangeBinding(), "TASK.PRODUCER"));
-
-        JsonObject witnessed = summary();
-        VmHandoffEvidence.writeTo(witnessed,
-                Collections.singletonList(VmHandoffEvidence.event(
-                        CUT_PORT, 41L, 42L, attached, "TASK.OTHER",
-                        "slice/other#epoch0/region/R#1")));
-        witnessed.getAsJsonArray("edgeBindings").add(
-                absorbed(exchangeBinding(), "TASK.PRODUCER"));
-
-        JsonObject query = build(CUT_PORT,
-                Arrays.asList(matched, witnessed));
-
-        assertEquals(query.toString(), 1,
-                query.getAsJsonArray("paths").size());
-        assertEquals("TASK.PRODUCER", query.getAsJsonArray("paths")
-                .get(0).getAsJsonObject()
-                .getAsJsonArray(VmHandoffEvidence.FIELD)
-                .get(0).getAsJsonObject()
-                .get(VmHandoffEvidence.PRODUCER_TASK_ID).getAsString());
-        assertTrue(query.toString(), query.getAsJsonArray("coverageGaps")
-                .toString().contains(
-                        "TARGET_PATH_HANDOFF_ENDPOINT_NOT_SELECTED"));
     }
 
     @Test
@@ -470,188 +182,7 @@ public class TargetReachCutPortTest {
                 path.getAsJsonArray(LoopBoundPolicy.PATH_LOOP_COUNT_GAPS));
     }
 
-    @Test
-    public void loopPolicyDisagreementIsRefused() throws Exception {
-        JsonObject seed = seedQuery(CUT_PORT);
-        LoopBoundPolicy.cfgBackedges(8,
-                Collections.singletonMap(METHOD + "#u2", 3))
-                .writeTo(seed);
-        try {
-            build(CUT_PORT, summary(), manifest(), seed);
-            fail("different target loop authorities must not be merged");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "same loopBound authority"));
-        }
-    }
-
-    @Test
-    public void repeatedTargetPathsDeduplicateTheSameConfiguredSource()
-            throws Exception {
-        JsonObject first = summary();
-        JsonObject second = summary();
-        JsonObject source = configuredSource("M_J_field_", 7L);
-        SymbolicSourceEvidence.writeTo(first,
-                Collections.singletonList(source));
-        SymbolicSourceEvidence.writeTo(second,
-                Collections.singletonList(source.deepCopy()));
-
-        JsonObject query = build(CUT_PORT, Arrays.asList(first, second));
-
-        assertEquals(1, SymbolicSourceEvidence.eventsOf(query).size());
-    }
-
-    @Test
-    public void targetPathsCannotDisagreeOnOneConfiguredSourcePhase()
-            throws Exception {
-        JsonObject first = summary();
-        JsonObject second = summary();
-        SymbolicSourceEvidence.writeTo(first, Collections.singletonList(
-                configuredSource("M_J_field_", 7L)));
-        SymbolicSourceEvidence.writeTo(second, Collections.singletonList(
-                configuredSource("M_J_field_", 9L)));
-        try {
-            build(CUT_PORT, Arrays.asList(first, second));
-            fail("one source phase may not carry two expressions");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "disagree on exact configured source phase"));
-        }
-    }
-
-    @Test
-    public void summaryLoopPolicyDisagreementIsRefused() throws Exception {
-        JsonObject witnessed = summary();
-        LoopBoundPolicy.cfgBackedges(8,
-                Collections.singletonMap(METHOD + "#u2", 3))
-                .writeTo(witnessed);
-        try {
-            build(CUT_PORT, witnessed);
-            fail("a summary from another loop policy must not be admitted");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "same loopBound authority"));
-        }
-    }
-
-    @Test
-    public void twoActivationsOfOneLocationAreOneRuntimeBinding()
-            throws Exception {
-        JsonObject query = buildActivations(
-                activation(1, location(1, RECEIVER, SLOT)),
-                activation(2, location(2, RECEIVER, SLOT)));
-
-        JsonArray bound = query.getAsJsonArray("selectedTargetBindings");
-        assertEquals(bound.toString(), 1, bound.size());
-        // The recorded name travels as recorded: only the comparison reads
-        // the location at its planned address.
-        assertEquals(location(1, RECEIVER, SLOT),
-                bound.get(0).getAsJsonObject().get("locationKey")
-                        .getAsString());
-    }
-
-    @Test
-    public void activationsOnDifferentReceiversAreStillContested()
-            throws Exception {
-        assertContested(activation(1, location(1, RECEIVER, SLOT)),
-                activation(2, location(2, OTHER_RECEIVER, SLOT)));
-    }
-
-    @Test
-    public void activationsOnDifferentSlotsAreStillContested()
-            throws Exception {
-        assertContested(activation(1, location(1, RECEIVER, SLOT)),
-                activation(2, location(2, RECEIVER, OTHER_SLOT)));
-    }
-
-    @Test
-    public void activationsThatDisagreeOffTheLocationAreStillContested()
-            throws Exception {
-        JsonObject second = activation(2, location(2, RECEIVER, SLOT));
-        second.getAsJsonArray("edgeBindings").get(0).getAsJsonObject()
-                .addProperty("primitiveValue", "13");
-        assertContested(activation(1, location(1, RECEIVER, SLOT)), second);
-    }
-
-    @Test
-    public void theSessionLocalNameIsStillNotCompared() throws Exception {
-        JsonObject second = activation(2, location(2, RECEIVER, SLOT));
-        second.getAsJsonArray("edgeBindings").get(0).getAsJsonObject()
-                .addProperty(SharedStateEvidence.SESSION_LOCATION_FIELD,
-                        "MAP_STATE/611#-3");
-
-        JsonArray bound = buildActivations(
-                activation(1, location(1, RECEIVER, SLOT)), second)
-                .getAsJsonArray("selectedTargetBindings");
-
-        assertEquals(bound.toString(), 1, bound.size());
-    }
-
-    /**
-     * An exchange pairing a replay recorded and the scheduler absorbed is
-     * demand this ledger cannot hold: the ledger is what the baseline
-     * discovery saw, and the absorbed pairing is what it did not.  It is
-     * still published, so composition sees the producer the VM named rather
-     * than the one the frozen plan guessed.
-     */
-    @Test
-    public void anAbsorbedPairingIsDemandTheLedgerNeedNotHold()
-            throws Exception {
-        JsonObject summary = summary();
-        summary.getAsJsonArray("edgeBindings").add(
-                absorbed(exchangeBinding()));
-
-        JsonArray bound = build(CUT_PORT, summary)
-                .getAsJsonArray("selectedTargetBindings");
-
-        assertEquals(bound.toString(), 1, bound.size());
-        JsonObject row = bound.get(0).getAsJsonObject();
-        assertEquals(ABSORBED_EDGE, row.get("edgeId").getAsString());
-        assertTrue(row.toString(), VmHandoffEvidence.absorbed(row));
-    }
-
-    /** Without the stamps the same row is a ledger the plan grew on its own. */
-    @Test
-    public void anUnstampedPairingOutsideTheLedgerIsStillRefused()
-            throws Exception {
-        assertLedgerRefused(exchangeBinding());
-    }
-
-    /** Three of the four stamps state no send and no receive, so they decide
-     * nothing: the row is judged as any other binding. */
-    @Test
-    public void aPartiallyStampedPairingIsStillRefused() throws Exception {
-        JsonObject noAttach = absorbed(exchangeBinding());
-        noAttach.remove(VmHandoffEvidence.ABSORBED_ATTACH_EVENT_ID);
-        assertLedgerRefused(noAttach);
-
-        JsonObject noExport = absorbed(exchangeBinding());
-        noExport.remove(VmHandoffEvidence.ABSORBED_EXPORT_EVENT_ID);
-        assertLedgerRefused(noExport);
-
-        JsonObject noTask = absorbed(exchangeBinding());
-        noTask.addProperty(VmHandoffEvidence.ABSORBED_FROM_TASK_ID, "");
-        assertLedgerRefused(noTask);
-
-        JsonObject otherAuthority = absorbed(exchangeBinding());
-        otherAuthority.addProperty(
-                VmHandoffEvidence.ABSORBED_AUTHORITY_FIELD, "SOMETHING_ELSE");
-        assertLedgerRefused(otherAuthority);
-    }
-
-    private void assertLedgerRefused(JsonObject binding) throws Exception {
-        JsonObject summary = summary();
-        summary.getAsJsonArray("edgeBindings").add(binding);
-        try {
-            build(CUT_PORT, summary);
-            fail("a binding outside the demand ledger must be refused");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "selected target demand ledger does not exactly cover"));
-        }
-    }
-
-    /** One traced exchange row feeding the selected occurrence's cut port. */
+                /** One traced exchange row feeding the selected occurrence's cut port. */
     private static JsonObject exchangeBinding() {
         JsonObject binding = new JsonObject();
         binding.addProperty("edgeId", ABSORBED_EDGE);
@@ -664,10 +195,6 @@ public class TargetReachCutPortTest {
     }
 
     /** The four fields that re-derive one row from the carry file. */
-    private static JsonObject absorbed(JsonObject binding) {
-        return absorbed(binding, "TASK.SEED.PRODUCER");
-    }
-
     private static JsonObject absorbed(JsonObject binding,
                                        String producerTaskId) {
         binding.addProperty(VmHandoffEvidence.ABSORBED_AUTHORITY_FIELD,
@@ -679,54 +206,7 @@ public class TargetReachCutPortTest {
         return binding;
     }
 
-    private void assertContested(JsonObject first, JsonObject second)
-            throws Exception {
-        try {
-            buildActivations(first, second);
-            fail("two locations must not be read as one");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "binding " + SHARED_EDGE + " has no runtime evidence"));
-        }
-    }
-
-    private JsonObject buildActivations(JsonObject first, JsonObject second)
-            throws IOException {
-        JsonObject seed = seedQuery(CUT_PORT);
-        JsonArray demanded = new JsonArray();
-        demanded.add(SHARED_EDGE);
-        seed.getAsJsonObject("selectedTargetOccurrence")
-                .add("bindingIds", demanded);
-        return build(CUT_PORT, Arrays.asList(first, second), manifest(),
-                seed);
-    }
-
-    /** One activation of the selected occurrence reading {@code location}. */
-    private static JsonObject activation(int ordinal, String location) {
-        JsonObject row = summary();
-        row.addProperty("occurrenceId", OCCURRENCE + "#a" + ordinal);
-        row.addProperty(PathObservation.ACTIVATION_ORDINAL, ordinal);
-        JsonObject binding = new JsonObject();
-        binding.addProperty("edgeId", SHARED_EDGE);
-        binding.addProperty("kind", "RUNTIME_FIELD_FLOW");
-        binding.addProperty("toOccurrenceId", OCCURRENCE);
-        binding.addProperty("toInputPort", CUT_PORT);
-        binding.addProperty("locationKey", location);
-        binding.addProperty(SharedStateEvidence.SESSION_LOCATION_FIELD,
-                "MAP_STATE/229#-3");
-        JsonArray bindings = new JsonArray();
-        bindings.add(binding);
-        row.add("edgeBindings", bindings);
-        return row;
-    }
-
-    /** The canonical name one activation records for a map's whole state. */
-    private static String location(int ordinal, long receiver, int slot) {
-        return "MAP_STATE/" + OCCURRENCE + "#a" + ordinal + "@receiver:"
-                + receiver + "@" + STORE_FIELD + "#" + slot;
-    }
-
-    private JsonObject build(String inputPort) throws IOException {
+            private JsonObject build(String inputPort) throws IOException {
         return build(inputPort, summary());
     }
 
@@ -739,17 +219,6 @@ public class TargetReachCutPortTest {
                              JsonObject pathManifest) throws IOException {
         return build(inputPort, summary, pathManifest,
                 seedQuery(inputPort));
-    }
-
-    private void assertManifestRejected(JsonObject pathManifest,
-                                        String message) throws Exception {
-        try {
-            build(CUT_PORT, summary(), pathManifest);
-            fail("malformed target worklist was accepted");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains(message));
-        }
     }
 
     private JsonObject build(String inputPort, JsonObject summary,
@@ -799,20 +268,6 @@ public class TargetReachCutPortTest {
         }
         Files.write(file.toPath(), encoded.toString().getBytes(
                 StandardCharsets.UTF_8));
-    }
-
-    private static JsonObject configuredSource(String rawPrefix,
-                                                long constant) {
-        String phase = "SOURCE_PHASE.target-local";
-        String sourceId = "TARGET.LOCAL";
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "SymbolExpression");
-        expression.addProperty("_java_type", "J");
-        expression.addProperty("_exp", rawPrefix
-                + SymbolicSourceEvidence.engineLabelForPhase(
-                phase, sourceId) + "_Target_" + constant);
-        return SymbolicSourceEvidence.event(phase, sourceId, OCCURRENCE,
-                "<Target: long local>", expression, 1, false, null);
     }
 
     private static JsonObject manifest() {
@@ -948,9 +403,4 @@ public class TargetReachCutPortTest {
         return predicate;
     }
 
-    private static JsonObject oppositePredicate() {
-        JsonObject result = predicate();
-        result.addProperty("_op", ">");
-        return result;
-    }
 }

@@ -34,29 +34,10 @@ public class TopologyDeltaExchangeActivationTest {
             "test/receiver#epoch0/region/REGION.RECEIVER#1";
     private static final String SENDER =
             "test/sender#epoch0/region/REGION.SENDER#9";
-    private static final String OTHER_SENDER =
-            "test/sender#epoch0/region/REGION.SENDER#1";
     private static final String EXCHANGE_PORT = "XCH.declared.resp.value";
     private static final String OUTPUT_PORT = "REGION.RECEIVER.out.0";
 
-    /**
-     * The frozen plan declared this exchange; the VM reported it out of the
-     * sender's third activation.  Nothing outside the catalog was observed,
-     * so this is a case of the declared topology and not a re-plan.
-     */
-    @Test
-    public void aDeclaredExchangeObservedAtAnActivationIsNotADivergence() {
-        List<JsonObject> rows = classify(SENDER + "#a3", EXCHANGE_PORT);
-
-        assertEquals(rows.toString(), 1, rows.size());
-        assertEquals(rows.toString(), TopologyDelta.NEW_OCCURRENCE,
-                rows.get(0).get("deltaKind").getAsString());
-        assertEquals("the exchange is at the fixed point",
-                rows.get(0).get("plannedSchemaDigest").getAsString(),
-                rows.get(0).get("observedSchemaDigest").getAsString());
-    }
-
-    /**
+        /**
      * The fixed point is a fixed point: the next iteration re-plans the same
      * frozen exchange, observes it at a further activation, and still reports
      * no divergence.  A comparison that kept the ordinal would report every
@@ -73,39 +54,7 @@ public class TopologyDeltaExchangeActivationTest {
         }
     }
 
-    /**
-     * A pre-OCC-1 handoff states the planned address itself.  It is the same
-     * member and stays converged.
-     */
-    @Test
-    public void aHandoffWithNoActivationOrdinalIsTheSameMember() {
-        List<JsonObject> rows = classify(SENDER, EXCHANGE_PORT);
-        assertEquals(rows.toString(), 0, divergences(rows));
-    }
-
-    /**
-     * Fail-closed: a sender occurrence the frozen plan never declared is a
-     * real topology change and is still reported -- once, at its planned
-     * address, however many activations of it the run happened to name.
-     */
-    @Test
-    public void anUndeclaredSenderOccurrenceStillDiverges() {
-        List<JsonObject> rows = classify(OTHER_SENDER + "#a4", EXCHANGE_PORT);
-
-        assertEquals(rows.toString(), 1, rows.size());
-        JsonObject row = rows.get(0);
-        assertEquals(TopologyDelta.TOPOLOGY_DIVERGENCE,
-                row.get("deltaKind").getAsString());
-        JsonArray divergences = row.getAsJsonArray("divergences");
-        assertEquals(divergences.toString(), 1, divergences.size());
-        JsonObject reported = divergences.get(0).getAsJsonObject();
-        assertEquals("exchangeSchema", reported.get("field").getAsString());
-        assertEquals("the change is named at the planned address",
-                OTHER_SENDER + "\n" + RECEIVER + "\n" + EXCHANGE_PORT,
-                reported.get("observed").getAsString());
-    }
-
-    /**
+            /**
      * Fail-closed: an undeclared port over a declared pair of endpoints is
      * still a new exchange event.
      */

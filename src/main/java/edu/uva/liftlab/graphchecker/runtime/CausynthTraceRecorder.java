@@ -19,7 +19,6 @@ import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -1358,21 +1357,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /**
-     * Test seam for load-time re-attribution, run as the planning path runs
-     * it: clear, re-read the durable trace, sort, re-attribute.
-     */
-    static List<RuntimeRegionPlanner.MethodEvent> reattributedFramesForTests(
-            File traceFile, String test) throws IOException {
-        synchronized (LOCK) {
-            clearInMemoryTrace();
-            TraceData trace = loadExistingTrace(traceFile, test, false);
-            trace.sort();
-            reattributeFramesToRegisteredOwners(trace);
-            return trace.methods;
-        }
-    }
-
     private static void clearInMemoryTrace() {
         INITIALIZED.set(false);
         EVENT_COUNTER.set(0L);
@@ -1611,12 +1595,6 @@ public final class CausynthTraceRecorder {
                     row.stringValue("branchKind"),
                     ""));
         }
-    }
-
-    static void parseTraceLineForTests(String line) throws IOException {
-        parseTraceLine(new TraceData(), line, 1,
-                new File("runtime-trace-test.jsonl"), "test", false,
-                new ConcurrentHashMap<String, String>());
     }
 
     private static boolean isExecutionEventKind(String kind) {

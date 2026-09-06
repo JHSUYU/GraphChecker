@@ -238,17 +238,12 @@ resolve_path_list() {
 }
 
 initialize_config() {
-  local requested=${1:-}
+  local requested=$1
   reset_config
-  if [[ -n "${requested}" ]]; then
-    [[ -f "${requested}" ]] || die "config file not found: ${requested}"
-    config_dir=$(cd "$(dirname "${requested}")" && pwd -P)
-    config_file="${config_dir}/$(basename "${requested}")"
-    load_config_file "${config_file}"
-  else
-    config_dir=${graphchecker_dir}
-    config_file=""
-  fi
+  [[ -f "${requested}" ]] || die "config file not found: ${requested}"
+  config_dir=$(cd "$(dirname "${requested}")" && pwd -P)
+  config_file="${config_dir}/$(basename "${requested}")"
+  load_config_file "${config_file}"
   apply_environment_overrides
 
   workflow_path_base=${workflow_path_base:-project}
@@ -506,7 +501,7 @@ do_analyze() {
     "${input_flag}" "${project_classes_dir}" \
     -x "${project_classpath}" \
     -C "${config_file}" \
-    -o "${analysis_classes_dir}" "$@"
+    -o "${analysis_classes_dir}"
 }
 
 do_schedule() {
@@ -548,14 +543,13 @@ do_schedule() {
     args+=(--summaries "${schedule_summaries}")
   fi
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
-    "${args[@]}" "$@"
+    "${args[@]}"
 }
 
 do_import() {
   local iteration_id=${1:-} key status=0 restore_errexit=0
   [[ -n "${iteration_id//[[:space:]]/}" ]] \
     || die "import iteration id is required"
-  shift
   require_file "raw concolic results" "${raw_concolic_results}"
   require_file "import activation plan" "${import_task_plan}"
   require_file "runtime region plan" "${runtime_region_plan}"
@@ -576,7 +570,7 @@ do_import() {
     --output "${imported_summaries}" \
     --diagnostics "${import_diagnostics}" \
     ${import_topology_delta:+--topology-delta "${import_topology_delta}"} \
-    --iteration-id "${iteration_id}" "$@"
+    --iteration-id "${iteration_id}"
   status=$?
   [[ "${restore_errexit}" -eq 0 ]] || set -e
   campaign_store_import_cache "${key}" "${status}"
@@ -619,7 +613,7 @@ do_compose() {
     --runtime-plan "${runtime_region_plan}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    "${selection[@]}" "$@"
+    "${selection[@]}"
 }
 
 do_reach() {
@@ -636,7 +630,7 @@ do_reach() {
     --timeout-ms "${solver_timeout_ms}" \
     --workers "${concolic_worker_count}" \
     --max-inputs "${reach_max_inputs}" \
-    --max-valuations "${reach_max_valuations}" "$@"
+    --max-valuations "${reach_max_valuations}"
 }
 
 run_configured_workload() {

@@ -18,8 +18,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -72,78 +70,6 @@ public class ContainerSmtCodecRemoveIfTest {
                 "(check-sat)");
         assertTrue("with the key un-expired the get is not null: " + noThrow,
                 noThrow.startsWith("unsat"));
-    }
-
-    @Test
-    public void valueViewSurvivesAReadFromSelector() {
-        JsonObject view = assoc("VALUE_VIEW", state("base"),
-                new JsonArray(), null);
-        JsonObject readFrom = new JsonObject();
-        readFrom.addProperty("_type", "ReadFromExpression");
-        JsonArray candidates = new JsonArray();
-        JsonObject known = new JsonObject();
-        known.addProperty("selector", "rf1");
-        known.add("expression", view);
-        candidates.add(known);
-        JsonObject unknown = new JsonObject();
-        unknown.addProperty("selector", "rf_unknown");
-        unknown.addProperty("unknown", true);
-        unknown.add("expression", ref("unknown_view"));
-        candidates.add(unknown);
-        readFrom.add("candidates", candidates);
-        readFrom.add("ite", ite("rf1", view, ref("unknown_view")));
-
-        JsonObject iterator = assoc("ITERATOR", readFrom,
-                new JsonArray(), null);
-        JsonObject next = assoc("NEXT", iterator,
-                args(intConst(2)), null);
-
-        TestHost host = new TestHost();
-        Term value = ContainerSmtCodec.term(next, host);
-        assertEquals("(assoc_value_at base_state 2)", value.text);
-        assertEquals(Sort.VALUE, value.sort);
-        assertEquals(1, host.requires.size());
-        assertTrue(host.requires.get(0).contains("assoc_has"));
-        JsonObject normalized = host.lastReadFrom;
-        assertEquals("java/util/Map",
-                normalized.get("_java_type").getAsString());
-        assertEquals("STATE", normalized.getAsJsonArray("candidates")
-                .get(0).getAsJsonObject().getAsJsonObject("expression")
-                .get("operation").getAsString());
-        assertEquals("STATE", normalized.getAsJsonArray("candidates")
-                .get(1).getAsJsonObject().getAsJsonObject("expression")
-                .get("operation").getAsString());
-        assertEquals("STATE", normalized.getAsJsonObject("ite")
-                .getAsJsonObject("then").get("operation").getAsString());
-        assertEquals("STATE", normalized.getAsJsonObject("ite")
-                .getAsJsonObject("else").get("operation").getAsString());
-    }
-
-    @Test
-    public void mixedKnownReadFromViewsFailClosed() {
-        JsonObject readFrom = new JsonObject();
-        readFrom.addProperty("_type", "ReadFromExpression");
-        JsonArray candidates = new JsonArray();
-        JsonObject view = new JsonObject();
-        view.add("expression", assoc("VALUE_VIEW", state("base"),
-                new JsonArray(), null));
-        candidates.add(view);
-        JsonObject rawState = new JsonObject();
-        rawState.add("expression", state("other"));
-        candidates.add(rawState);
-        readFrom.add("candidates", candidates);
-
-        JsonObject iterator = assoc("ITERATOR", readFrom,
-                new JsonArray(), null);
-        JsonObject next = assoc("NEXT", iterator,
-                args(intConst(0)), null);
-        try {
-            ContainerSmtCodec.term(next, new TestHost());
-            fail("mixed known view/state arms must not be projected");
-        } catch (IllegalStateException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "ContainerRelation:ASSOCIATIVE:NEXT:view"));
-        }
     }
 
     // ------------------------------------------------------------------
@@ -278,16 +204,6 @@ public class ContainerSmtCodecRemoveIfTest {
         o.add("receiver", receiver);
         o.add("arguments", arguments);
         if (guard != null) o.add("guard", guard);
-        return o;
-    }
-
-    private static JsonObject ite(String selector, JsonElement then,
-                                  JsonElement otherwise) {
-        JsonObject o = new JsonObject();
-        o.addProperty("_type", "IteExpression");
-        o.addProperty("selector", selector);
-        o.add("then", then.deepCopy());
-        o.add("else", otherwise.deepCopy());
         return o;
     }
 

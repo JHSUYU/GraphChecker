@@ -21,7 +21,7 @@ case "${case_id}" in
     ;;
   *)
     echo "unknown HDFS-17899 case: ${case_id}" >&2
-    return 2 2>/dev/null || exit 2
+    return 2
     ;;
 esac
 

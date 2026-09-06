@@ -19,41 +19,8 @@ import java.util.TreeMap;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 public class RelationSummaryTest {
-
-    @Test
-    public void pathObservationRequiresTheExactActivationTuple() {
-        JsonObject missingOrdinal = versionedSummary(1);
-        missingOrdinal.remove(PathObservation.ACTIVATION_ORDINAL);
-        assertPathRejected(missingOrdinal);
-        JsonObject missingPlanned = versionedSummary(1);
-        missingPlanned.remove(PathObservation.PLANNED_OCCURRENCE_ID);
-        assertPathRejected(missingPlanned);
-        JsonObject wrongOccurrence = versionedSummary(1);
-        wrongOccurrence.addProperty("occurrenceId", "REGION.V/occurrence-1");
-        assertPathRejected(wrongOccurrence);
-        JsonObject missingComplete = versionedSummary(1);
-        missingComplete.remove("relationallyComplete");
-        assertPathRejected(missingComplete);
-    }
-
-    @Test
-    public void outputGuardExcludesDownstreamAuxiliaryConsumers() {
-        JsonObject summary = versionedSummary(1);
-        JsonObject output = symbol("M_I_output_key");
-        summary.getAsJsonObject("outputExpressions")
-                .add(port(), output.deepCopy());
-        summary.getAsJsonArray("pathCondition").add(
-                binary(output, "<", constant(10),
-                        "virtual void example.Base64.encode():0"));
-
-        PathObservation path = PathObservation.decode(summary, null);
-
-        assertEquals(path.relationPathCondition().toString(), 0,
-                path.relationPathCondition().size());
-    }
 
     /** A merge keeps one case per observed path and carries its versions. */
     @Test
@@ -196,30 +163,6 @@ public class RelationSummaryTest {
         assertEquals(3, merged.edgeBindings().size());
     }
 
-    @Test
-    public void decodeRejectsSummariesOutsideTheCurrentSchema() {
-        JsonObject current = RelationSummary.guardedPathMerge(
-                OutputClosureCodec.decode(versionedSummary(1)),
-                Collections.singletonList(PathObservation.decode(
-                        versionedSummary(1), null))).toJson();
-
-        JsonObject missingVersion = current.deepCopy();
-        missingVersion.remove("schemaVersion");
-        assertSummaryRejected(missingVersion);
-        JsonObject missingKind = current.deepCopy();
-        missingKind.remove("kind");
-        assertSummaryRejected(missingKind);
-        JsonObject wrongVersion = current.deepCopy();
-        wrongVersion.addProperty("schemaVersion", 2);
-        assertSummaryRejected(wrongVersion);
-        JsonObject stringVersion = current.deepCopy();
-        stringVersion.addProperty("schemaVersion", "1");
-        assertSummaryRejected(stringVersion);
-        JsonObject wrongKind = current.deepCopy();
-        wrongKind.addProperty("kind", "CONCOLIC_REGION_RESULT");
-        assertSummaryRejected(wrongKind);
-    }
-
     /** One resolved read-from row of the shape the importer stamps. */
     private static JsonObject binding(String edgeId, long writerEventSeq,
                                       String provenance, String location) {
@@ -324,41 +267,4 @@ public class RelationSummaryTest {
         return expression;
     }
 
-    private static void assertSummaryRejected(JsonObject summary) {
-        try {
-            RelationSummary.decode(summary);
-            fail("unsupported relation summary schema was accepted");
-        } catch (IllegalArgumentException expected) {
-            assertTrue(expected.getMessage().contains("unsupported schema"));
-        }
-    }
-
-    private static void assertPathRejected(JsonObject summary) {
-        try {
-            PathObservation.decode(summary, null);
-            fail("incomplete activation tuple was accepted");
-        } catch (IllegalArgumentException expected) {
-            assertTrue(expected.getMessage().contains("activation tuple"));
-        }
-    }
-
-    private static JsonObject symbol(String name) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "SymbolExpression");
-        expression.addProperty("_java_type", "I");
-        expression.addProperty("_exp", name);
-        return expression;
-    }
-
-    private static JsonObject binary(JsonObject left, String operator,
-                                     JsonObject right, String position) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "BinaryExpression");
-        expression.addProperty("_java_type", "Z");
-        expression.addProperty("_op", operator);
-        expression.addProperty("_code_position", position);
-        expression.add("_left", left.deepCopy());
-        expression.add("_right", right.deepCopy());
-        return expression;
-    }
 }

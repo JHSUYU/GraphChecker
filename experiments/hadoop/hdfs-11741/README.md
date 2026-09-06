@@ -3,7 +3,7 @@
 The workload retains the original HDFS-11741 behavior: the Balancer caches a
 DataEncryptionKey and does not check its expiry on reuse. The Hadoop checkout
 ports that cache predicate to the same current tracing and RPC interfaces used
-by the other experiments. It does not use the retired protocol-stub launcher.
+by the other experiments.
 
 The Balancer caches a key before two ordinary NameNode key rotations. DataNodes
 refresh through the block-key RPC. GraphChecker explores the key IDs and expiry

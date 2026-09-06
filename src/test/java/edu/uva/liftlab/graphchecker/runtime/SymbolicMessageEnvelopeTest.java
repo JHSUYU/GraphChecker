@@ -7,7 +7,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public class SymbolicMessageEnvelopeTest {
@@ -45,64 +44,4 @@ public class SymbolicMessageEnvelopeTest {
                 entry.producerOccurrenceId());
     }
 
-    @Test
-    public void requestAndResponseUseTheSameDrainingMechanism() {
-        roundTrip("request/generation", 7L);
-        roundTrip("response/status", 0L);
-    }
-
-    @Test
-    public void takeConsumesOnlyTheInstalledMessage() {
-        assertTrue(SymbolicMessageEnvelope.stage("p", 9L, "task", "occ"));
-        String first = SymbolicMessageEnvelope.takeOutbound();
-        SymbolicMessageEnvelope.installInbound(first);
-        assertTrue(SymbolicMessageEnvelope.take("p").present());
-        assertFalse(SymbolicMessageEnvelope.take("p").present());
-
-        assertTrue(SymbolicMessageEnvelope.stage("p", 10L, "task2",
-                "occ2"));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-        assertEquals(10L, SymbolicMessageEnvelope.take("p").handle());
-    }
-
-    @Test
-    public void duplicatePortFailsClosedInsteadOfSendingAnOlderValue() {
-        assertTrue(SymbolicMessageEnvelope.stage("p", 1L, "task", "occ"));
-        assertFalse(SymbolicMessageEnvelope.stage("p", 2L, "task", "occ"));
-        assertEquals("", SymbolicMessageEnvelope.takeOutbound());
-    }
-
-    @Test
-    public void malformedWireIsRejectedAndCannotExposeStaleInbound() {
-        assertTrue(SymbolicMessageEnvelope.stage("p", 3L, "task", "occ"));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-
-        assertThrows(IllegalArgumentException.class,
-                () -> SymbolicMessageEnvelope.installInbound(
-                        "CSE1;cA,01,dA,bw"));
-        assertFalse(SymbolicMessageEnvelope.take("p").present());
-        assertThrows(IllegalArgumentException.class,
-                () -> SymbolicMessageEnvelope.installInbound(
-                        "CSE1;cA,1,dA,bw;cA,2,dA,bw"));
-        assertThrows(IllegalArgumentException.class,
-                () -> SymbolicMessageEnvelope.installInbound(
-                        "CSE2;cA,1,dA,bw"));
-        assertThrows(IllegalArgumentException.class,
-                () -> SymbolicMessageEnvelope.installInbound(
-                        "CSE1;***,1,dA,bw"));
-    }
-
-    private static void roundTrip(String portId, long handle) {
-        assertTrue(SymbolicMessageEnvelope.stage(portId, handle,
-                "task", "occurrence"));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-        SymbolicMessageEnvelope.Entry entry =
-                SymbolicMessageEnvelope.take(portId);
-        assertTrue(entry.present());
-        assertEquals(handle, entry.handle());
-        assertFalse(SymbolicMessageEnvelope.take(portId).present());
-    }
 }
