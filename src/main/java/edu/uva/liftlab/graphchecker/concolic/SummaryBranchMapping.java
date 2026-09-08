@@ -223,6 +223,14 @@ public final class SummaryBranchMapping {
                 : concreteObservation.sourceTakenOutcome();
     }
 
+    /** Exact observed decision, including a switch's selected successor. */
+    public String exactDecisionToken() {
+        return witness != null
+                ? ExactConcreteBranchObservation.binaryDecisionToken(
+                witness.sourceTakenOutcome())
+                : concreteObservation.exactDecisionToken();
+    }
+
     public int decisionOrdinal() {
         return witness == null ? 0 : witness.decisionOrdinal();
     }

@@ -56,7 +56,69 @@ public class RuntimeSelectedRegionFinalizerTest {
                 flows.get(0).get("readFromSourceKey"));
     }
 
-            @Test
+    @Test
+    public void atomicMutationFlowsToItsValueAccessor() throws Exception {
+        String outerField = "<example.Owner: "
+                + "java.util.concurrent.atomic.AtomicInteger counter>";
+        String atomicValue = "<java.util.concurrent.atomic.AtomicInteger: "
+                + "int value>";
+        String mutator = "<java.util.concurrent.atomic.AtomicInteger: "
+                + "int getAndDecrement()>";
+        Map<String, Object> mutation = object(
+                "portId", "REGION.writer.out.counter",
+                "transportKind", "HEAP",
+                "sourceKey", "cluster/node#epoch0",
+                "occurrenceId", "node/region/REGION.writer#1",
+                "rootCallId", 10L,
+                "fieldReceiverObjectId", 100,
+                "valueObjectId", 200,
+                "eventSeq", 20L,
+                "bindingKind", "CONTAINER_MUTATION",
+                "writerFieldReadSeq", 16L,
+                "mutatorEnterSeq", 17L,
+                "mutationCompletionSeq", 20L,
+                "mutationInvocationId", 7L,
+                "mutatorDeclaredCallee", mutator,
+                "dependencyRole", DependencyRole.VALUE_FRONTIER,
+                "fieldPathDeclarations",
+                Collections.singletonList(outerField));
+        Map<String, Object> accessor = object(
+                "portId", "REGION.reader.in.value",
+                "sourceKind", "ACCESSOR_RETURN",
+                "sourceKey", "cluster/node#epoch0",
+                "occurrenceId", "node/region/REGION.reader#1",
+                "rootCallId", 30L,
+                "fieldReceiverObjectId", 200,
+                "valueObjectId", 0,
+                "primitiveValue", "1",
+                "eventSeq", 40L,
+                "dependencyRole", DependencyRole.VALUE_FRONTIER,
+                "fieldPathDeclarations",
+                Collections.singletonList(atomicValue));
+
+        List<Map<String, Object>> flows =
+                RuntimeSelectedRegionFinalizer.fieldFlows(
+                        Arrays.asList(
+                                leafRegion("REGION.writer",
+                                        Collections.singletonList(mutation),
+                                        Collections.<Map<String, Object>>
+                                                emptyList()),
+                                leafRegion("REGION.reader",
+                                        Collections.<Map<String, Object>>
+                                                emptyList(),
+                                        Collections.singletonList(accessor))),
+                        Collections.singleton(atomicValue));
+
+        assertEquals(String.valueOf(flows), 1, flows.size());
+        assertEquals("RUNTIME_FIELD_FLOW", flows.get(0).get("kind"));
+        assertEquals(Collections.singletonList(atomicValue),
+                flows.get(0).get("fieldPathDeclarations"));
+        assertEquals(200, flows.get(0).get("receiverObjectId"));
+        assertEquals(200, flows.get(0).get("valueObjectId"));
+        assertEquals(200, flows.get(0).get("readerValueObjectId"));
+    }
+
+    @Test
     public void rpcProducerRetainsExactPriorHeapWriter() throws Exception {
         String writerRoot = "<example.Writer: void run()>";
         String futureWriterRoot = "<example.FutureWriter: void run()>";

@@ -13,12 +13,15 @@ export PATH=${JAVA_HOME}/bin:${PATH}
 # GraphChecker API. The experiment launcher also loads its frozen jar first.
 mvn -q -f "${graphchecker}/pom.xml" -DskipTests install
 cd "${repo}"
+maven=(mvn)
+[[ ! -x ./mvnw ]] || maven=(./mvnw)
+javac=${CAUSYNTH_HADOOP_JAVAC:-${here}/javac8-filter-crc32c.sh}
 common=(-q -Djavac.version=8 -DskipShade -Dskip.npm -Dskip.yarn
   -Dmaven.compiler.fork=true
-  "-Dmaven.compiler.executable=${here}/javac8-filter-crc32c.sh")
-./mvnw "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
+  "-Dmaven.compiler.executable=${javac}")
+"${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
   -am -DskipTests clean install
-./mvnw "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
+"${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
   -Dtest="${test_class##*.}#${test_method}" test
 
 python3 - "${repo}/hadoop-hdfs-project/hadoop-hdfs/target/surefire-reports/TEST-${test_class}.xml" <<'PY'

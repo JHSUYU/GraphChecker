@@ -12,7 +12,9 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -42,6 +44,58 @@ public class ConcolicSummaryImporterTest {
                 summary.getAsJsonObject(
                         PathObservation.TargetReachEvent.FIELD)
                         .get("kind").getAsString());
+    }
+
+    @Test
+    public void exactSwitchSuccessorDistinguishesCaseZeroFromCaseSeven()
+            throws Exception {
+        JsonObject caseSevenTask = pathTask(false);
+        addSwitchSeedPrefix(caseSevenTask, 7);
+        JsonObject caseSevenRaw = pathResult(true, true);
+        addConcreteSwitchMapping(caseSevenRaw, 7);
+        PathImport caseSeven = importPath("switch-case-seven",
+                caseSevenTask, caseSevenRaw);
+        assertEquals(1, caseSeven.result.validSummaryCount);
+        JsonObject caseSevenSummary = ArtifactIO.readJsonl(
+                caseSeven.output).get(0);
+        ExactConcreteBranchObservation imported =
+                switchObservation(caseSevenSummary);
+        assertEquals(ExactConcreteBranchObservation.SWITCH_KIND,
+                imported.toJson().get("kind").getAsString());
+        assertEquals(switchCaseKeys(), imported.caseKeys());
+        assertEquals(7, imported.observedSuccessorIndex());
+
+        JsonObject wrongMappingRaw = pathResult(true, true);
+        addConcreteSwitchMapping(wrongMappingRaw, 0);
+        PathImport wrongMapping = importPath("switch-wrong-mapping",
+                caseSevenTask, wrongMappingRaw);
+        assertEquals(0, wrongMapping.result.validSummaryCount);
+        assertEquals("BRANCH_REPLAY_MISMATCH",
+                ArtifactIO.readJsonl(wrongMapping.diagnostics).get(0)
+                        .get("code").getAsString());
+
+        // The same exact comparison applies before the symbolic gate, where
+        // the event is carried in concreteBranchWitnesses instead.
+        JsonObject wrongPreGateRaw = pathResult(true, true);
+        addConcreteSwitchPrefix(wrongPreGateRaw, 0);
+        PathImport wrongPreGate = importPath("switch-wrong-pregate",
+                caseSevenTask, wrongPreGateRaw);
+        assertEquals(0, wrongPreGate.result.validSummaryCount);
+        assertEquals("BRANCH_REPLAY_MISMATCH",
+                ArtifactIO.readJsonl(wrongPreGate.diagnostics).get(0)
+                        .get("code").getAsString());
+
+        JsonObject caseZeroTask = pathTask(false);
+        addSwitchSeedPrefix(caseZeroTask, 0);
+        JsonObject caseZeroRaw = pathResult(true, true);
+        addConcreteSwitchMapping(caseZeroRaw, 0);
+        PathImport caseZero = importPath("switch-case-zero",
+                caseZeroTask, caseZeroRaw);
+        JsonObject caseZeroSummary = ArtifactIO.readJsonl(
+                caseZero.output).get(0);
+        assertFalse(PathObservation.decode(caseZeroSummary, caseZeroTask)
+                .semanticPathKey().equals(PathObservation.decode(
+                        caseSevenSummary, caseSevenTask).semanticPathKey()));
     }
 
             @Test
@@ -361,6 +415,89 @@ public class ConcolicSummaryImporterTest {
         JsonArray observations = new JsonArray();
         observations.add(observation);
         raw.add("concreteBranchWitnesses", observations);
+    }
+
+    private static void addSwitchSeedPrefix(JsonObject task, int successor) {
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", seedMethod() + "#u2");
+        branch.addProperty("method", seedMethod());
+        branch.addProperty("unitIndex", 2);
+        branch.addProperty("policy", "PATH_ASSUMPTION");
+        JsonObject occurrence = new JsonObject();
+        occurrence.addProperty("occurrence", 1);
+        occurrence.addProperty("outcome", true);
+        addSwitchDecision(occurrence, successor);
+        JsonArray occurrences = new JsonArray();
+        occurrences.add(occurrence);
+        branch.add("occurrences", occurrences);
+        task.getAsJsonArray("branches").add(branch);
+    }
+
+    private static void addConcreteSwitchMapping(
+            JsonObject raw, int successor) {
+        ExactConcreteBranchObservation observation = switchObservation(
+                successor);
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("siteId", observation.siteId());
+        mapping.addProperty("method", observation.method());
+        mapping.addProperty("unitIndex", observation.unitIndex());
+        mapping.addProperty("occurrence", observation.occurrence());
+        mapping.addProperty("rawPathConditionBaseline", 0);
+        mapping.addProperty("rawPathConditionSize", 0);
+        mapping.add("concreteObservation", observation.toJson());
+        JsonArray ordered = new JsonArray();
+        ordered.add(mapping);
+        for (com.google.gson.JsonElement existing
+                : raw.getAsJsonArray("branchMappings")) {
+            ordered.add(existing.deepCopy());
+        }
+        raw.add("branchMappings", ordered);
+    }
+
+    private static void addConcreteSwitchPrefix(
+            JsonObject raw, int successor) {
+        JsonObject witness = new JsonObject();
+        witness.addProperty("siteId", seedMethod() + "#u2");
+        witness.addProperty("sourceTakenOutcome", true);
+        addSwitchDecision(witness, successor);
+        JsonArray observations = new JsonArray();
+        observations.add(witness);
+        raw.add("concreteBranchWitnesses", observations);
+    }
+
+    private static void addSwitchDecision(
+            JsonObject target, int successor) {
+        target.addProperty("branchKind",
+                ExactConcreteBranchObservation.TABLE_SWITCH);
+        JsonArray keys = new JsonArray();
+        for (Integer key : switchCaseKeys()) keys.add(key);
+        target.add("caseKeys", keys);
+        target.addProperty("observedSuccessorIndex", successor);
+    }
+
+    private static ExactConcreteBranchObservation switchObservation(
+            int successor) {
+        return ExactConcreteBranchObservation.attestedSwitch(
+                seedMethod() + "#u2", seedMethod(), 2, 1,
+                ExactConcreteBranchObservation.TABLE_SWITCH,
+                switchCaseKeys(), successor);
+    }
+
+    private static ExactConcreteBranchObservation switchObservation(
+            JsonObject summary) {
+        for (com.google.gson.JsonElement element
+                : summary.getAsJsonArray("branchMappings")) {
+            SummaryBranchMapping mapping = SummaryBranchMapping.fromJson(
+                    element.getAsJsonObject());
+            if (mapping.isConcreteObservation()) {
+                return mapping.concreteObservation();
+            }
+        }
+        throw new AssertionError("summary has no concrete switch");
+    }
+
+    private static List<Integer> switchCaseKeys() {
+        return Arrays.asList(0, 1, 2, 3, 4, 5, 6, 7);
     }
 
     private static JsonObject relationOnlyTask() {

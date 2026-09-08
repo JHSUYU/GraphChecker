@@ -6,6 +6,7 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 
 import edu.uva.liftlab.graphchecker.contract.BoundedOutputVersions;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
@@ -14,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import com.google.gson.Gson;
@@ -266,7 +268,8 @@ public final class ConcolicSmtComposer {
         Emitter emitter = new Emitter(ports,
                 new InvocationKey(string(fatal, "regionId"),
                         string(resolutionContext, "occurrenceId")),
-                failureWitness);
+                failureWitness, resolved.selectedValueDemands());
+        emitter.registerConfiguredSourcePlan(runtimePlan.regionPlans());
         emitter.begin(fatal);
         // A configured source may reach a selected downstream relation
         // through VM value handoff without making its own summary a lowered
@@ -1341,10 +1344,10 @@ public final class ConcolicSmtComposer {
     }
 
     /**
-     * Wave 3 C1/C3: one raw VM symbol denotes one SMT root.  A configured
-     * source is keyed by the symbol the VM minted, not by the source phase -
-     * every entry of a mint site now mints its own symbol, and two entries
-     * that share a phase are two roots, not one.
+     * Wave 3 C1/C3: a raw VM symbol normally denotes one SMT root.  Before
+     * reaching this method, spellings from overlapping region projections are
+     * canonicalized only when the plan joins them to the same exact recorded
+     * source event.  Every other configured mint remains a separate root.
      */
     private static String symbolScopeKey(String raw, String scope,
                                          String sourceIdentity) {
@@ -2594,6 +2597,14 @@ public final class ConcolicSmtComposer {
             return changed;
         }
 
+        private Set<String> outputs(String region, String instance) {
+            return Collections.unmodifiableSet(new LinkedHashSet<>(
+                    outputsByInvocation.getOrDefault(
+                            key(firstNonBlank(region),
+                                    firstNonBlank(instance)),
+                            Collections.<String>emptySet())));
+        }
+
         private static String key(String region, String instance) {
             return firstNonBlank(region) + "\u0000"
                     + firstNonBlank(instance);
@@ -3122,6 +3133,16 @@ public final class ConcolicSmtComposer {
             return selectedProducerSummaries.get(producer);
         }
 
+        /** Demanded ports keyed by the case occurrence that produced them. */
+        private ProducerDemandIndex selectedValueDemands() {
+            ProducerDemandIndex selected = new ProducerDemandIndex();
+            for (ProducerKey producer : selectedProducerSummaries.keySet()) {
+                selected.add(producer.regionId, producer.valueInstanceId,
+                        producer.outputPort);
+            }
+            return selected;
+        }
+
         private void addEdge(ResolvedEdge edge) {
             String edgeId = string(edge.binding, "edgeId");
             if (edgeId.isEmpty()) return;
@@ -3355,10 +3376,64 @@ public final class ConcolicSmtComposer {
         return false;
     }
 
+    /**
+     * One physical configured-source hook execution in the baseline trace.
+     * Region projection may give it several phase ids; source and event are
+     * the identity, while the remaining members must agree across projections.
+     */
+    private static final class RecordedConfiguredSource {
+        private final String sourceKey;
+        private final long eventSeq;
+        private final long invocationId;
+        private final long ownerCallId;
+        private final String sourceId;
+        private final String fieldSignature;
+        private final String siteId;
+        private final String phase;
+        private final String declaredCallee;
+
+        private RecordedConfiguredSource(
+                RegionInstancePlan plan,
+                ConfiguredSourcePhaseContract.Occurrence occurrence) {
+            sourceKey = plan.sourceKey();
+            eventSeq = occurrence.runtimeEventSeq();
+            invocationId = occurrence.runtimeInvocationId();
+            ownerCallId = occurrence.enclosingCallIds().get(0);
+            sourceId = occurrence.sourceId();
+            fieldSignature = occurrence.fieldSignature();
+            siteId = occurrence.siteId();
+            phase = occurrence.phase().name();
+            declaredCallee = occurrence.runtimeDeclaredCallee();
+        }
+
+        private String identity() {
+            return sourceKey + "\u0000" + eventSeq;
+        }
+
+        private boolean sameObservation(RecordedConfiguredSource other) {
+            return other != null
+                    && identity().equals(other.identity())
+                    && invocationId == other.invocationId
+                    && ownerCallId == other.ownerCallId
+                    && sourceId.equals(other.sourceId)
+                    && fieldSignature.equals(other.fieldSignature)
+                    && siteId.equals(other.siteId)
+                    && phase.equals(other.phase)
+                    && declaredCallee.equals(other.declaredCallee);
+        }
+
+        private boolean matches(JsonObject event) {
+            return sourceKey.equals(string(event, "sourceKey"))
+                    && sourceId.equals(string(event, "sourceId"))
+                    && fieldSignature.equals(string(event, "fieldSignature"));
+        }
+    }
+
     private static final class Emitter {
         private final PortIndex ports;
         private final InvocationKey fatalInvocation;
         private final FatalAbsenceMutationWitness failureWitness;
+        private final ProducerDemandIndex selectedValueDemands;
         private final List<String> preamble = new ArrayList<>();
         private final Map<String, String> declarations =
                 new LinkedHashMap<>();
@@ -3629,8 +3704,24 @@ public final class ConcolicSmtComposer {
         /** Configured mint identity -> its authoritative non-reused row. */
         private Map<String, JsonObject> configuredSourceEventByIdentity =
                 Collections.emptyMap();
+        /** Mint identity -> canonical identity for one recorded hook event. */
+        private Map<String, String> configuredSourceCanonicalIdentityByIdentity =
+                Collections.emptyMap();
+        /** Every observed VM spelling -> its component's canonical spelling. */
+        private Map<String, String> configuredSourceCanonicalRawByObservedRaw =
+                Collections.emptyMap();
+        /** Every observed VM spelling -> its component's canonical mint. */
+        private Map<String, String>
+                configuredSourceCanonicalIdentityByObservedRaw =
+                Collections.emptyMap();
         private Map<String, JsonObject> symbolicSourceEvents =
                 Collections.emptyMap();
+        /** Region-specific phase id -> its physical baseline hook event. */
+        private final Map<String, RecordedConfiguredSource>
+                configuredSourceRecordedByPhase = new LinkedHashMap<>();
+        /** Exact (source,event) identity -> consistency authority. */
+        private final Map<String, RecordedConfiguredSource>
+                configuredSourceRecordedByEvent = new LinkedHashMap<>();
         /** Canonical guarded-read payload -> exact producer case event scope. */
         private final Map<String, String> vmHandoffReadScopes =
                 new LinkedHashMap<>();
@@ -3657,11 +3748,48 @@ public final class ConcolicSmtComposer {
         }
 
         private Emitter(PortIndex ports, InvocationKey fatalInvocation,
-                        FatalAbsenceMutationWitness failureWitness) {
+                        FatalAbsenceMutationWitness failureWitness,
+                        ProducerDemandIndex selectedValueDemands) {
             this.ports = ports;
             this.fatalInvocation = fatalInvocation;
             this.currentInvocation = fatalInvocation;
             this.failureWitness = failureWitness;
+            this.selectedValueDemands = new ProducerDemandIndex(
+                    selectedValueDemands);
+        }
+
+        /**
+         * Registers baseline identities before summary evidence is lowered.
+         * The same physical event may occur in several overlapping regions,
+         * but every non-projection member must still describe the same hook.
+         */
+        private void registerConfiguredSourcePlan(
+                Collection<RegionInstancePlan> plans) {
+            for (RegionInstancePlan plan : Objects.requireNonNull(
+                    plans, "plans")) {
+                for (ConfiguredSourcePhaseContract.Occurrence phase
+                        : plan.configuredSourcePhases()) {
+                    RecordedConfiguredSource recorded =
+                            new RecordedConfiguredSource(plan, phase);
+                    RecordedConfiguredSource heldEvent =
+                            configuredSourceRecordedByEvent.putIfAbsent(
+                                    recorded.identity(), recorded);
+                    if (heldEvent != null
+                            && !heldEvent.sameObservation(recorded)) {
+                        unsupported.add("ConfiguredSourceRecordedEventConflict:"
+                                + recorded.sourceKey + ":"
+                                + recorded.eventSeq);
+                    }
+                    RecordedConfiguredSource heldPhase =
+                            configuredSourceRecordedByPhase.putIfAbsent(
+                                    phase.phaseId(), recorded);
+                    if (heldPhase != null
+                            && !heldPhase.sameObservation(recorded)) {
+                        unsupported.add("ConfiguredSourcePhaseEventConflict:"
+                                + phase.phaseId());
+                    }
+                }
+            }
         }
 
         private InvocationKey enterInvocation(InvocationKey invocation) {
@@ -3792,6 +3920,7 @@ public final class ConcolicSmtComposer {
                 symbolicSourceIdentities =
                         SymbolicSourceEvidence.rawSymbolIdentities(owners);
                 Map<String, JsonObject> events = new LinkedHashMap<>();
+                List<JsonObject> observedEvents = new ArrayList<>();
                 Map<String, Set<String>> namedCandidates =
                         new LinkedHashMap<>();
                 for (JsonObject owner : Objects.requireNonNull(owners,
@@ -3802,6 +3931,7 @@ public final class ConcolicSmtComposer {
                         String raw = string(event, "rawSymbol");
                         JsonObject registered = event.deepCopy();
                         registered.addProperty("sourceKey", sourceKey);
+                        observedEvents.add(registered);
                         JsonObject held = events.putIfAbsent(raw, registered);
                         if (held == null) {
                             if (SymbolicSourceEvidence.isReused(event)) {
@@ -3889,6 +4019,106 @@ public final class ConcolicSmtComposer {
                                 event);
                     }
                 }
+                Map<String, String> canonicalRawByIdentity =
+                        new LinkedHashMap<>(mintRawByIdentity);
+                Map<String, String> canonicalIdentityByIdentity =
+                        new LinkedHashMap<>();
+                Map<String, String> canonicalRawByObservedRaw =
+                        new LinkedHashMap<>();
+                Map<String, String> canonicalIdentityByObservedRaw =
+                        new LinkedHashMap<>();
+                Map<String, Set<String>> rawAliases = new LinkedHashMap<>();
+                Map<String, List<String>> rawByRecordedEvent =
+                        new LinkedHashMap<>();
+                for (Map.Entry<String, String> mint
+                        : mintRawByIdentity.entrySet()) {
+                    String identity = mint.getKey();
+                    canonicalIdentityByIdentity.put(identity, identity);
+                }
+                // A broad region can mint a root at event A and only observe
+                // it again at event B, while a nested projection mints its own
+                // VM spelling at that same B.  Use every observation, including
+                // REUSED rows, to connect those spellings.
+                for (JsonObject event : observedEvents) {
+                    RecordedConfiguredSource recorded =
+                            configuredSourceRecordedByPhase.get(
+                                    string(event, "sourcePhaseId"));
+                    // Old artifacts and small unit fixtures may predate the
+                    // plan-side phase catalog.  They retain their VM identity;
+                    // only exact joined evidence is eligible for aliasing.
+                    if (recorded == null) continue;
+                    if (!recorded.matches(event)) {
+                        throw new IllegalArgumentException(
+                                "configured source evidence disagrees with"
+                                        + " recorded event: "
+                                        + string(event, "sourcePhaseId"));
+                    }
+                    String raw = string(event, "rawSymbol");
+                    rawAliases.computeIfAbsent(raw,
+                            ignored -> new LinkedHashSet<>());
+                    rawByRecordedEvent.computeIfAbsent(recorded.identity(),
+                            ignored -> new ArrayList<>()).add(raw);
+                }
+                for (List<String> aliases : rawByRecordedEvent.values()) {
+                    if (aliases.isEmpty()) continue;
+                    String first = aliases.get(0);
+                    for (String alias : aliases) {
+                        rawAliases.computeIfAbsent(first,
+                                ignored -> new LinkedHashSet<>()).add(alias);
+                        rawAliases.computeIfAbsent(alias,
+                                ignored -> new LinkedHashSet<>()).add(first);
+                    }
+                }
+                Set<String> visitedRaw = new LinkedHashSet<>();
+                List<String> roots = new ArrayList<>(
+                        symbolicSourceIdentities.keySet());
+                Collections.sort(roots);
+                for (String root : roots) {
+                    if (!visitedRaw.add(root)) continue;
+                    Set<String> component = new LinkedHashSet<>();
+                    Deque<String> pending = new ArrayDeque<>();
+                    pending.add(root);
+                    while (!pending.isEmpty()) {
+                        String raw = pending.removeFirst();
+                        component.add(raw);
+                        for (String alias : rawAliases.getOrDefault(raw,
+                                Collections.emptySet())) {
+                            if (visitedRaw.add(alias)) pending.addLast(alias);
+                        }
+                    }
+                    List<String> minted = new ArrayList<>();
+                    for (String raw : component) {
+                        if (symbolicSourceIdentities.containsKey(raw)) {
+                            minted.add(raw);
+                        }
+                    }
+                    if (minted.isEmpty()) continue;
+                    Collections.sort(minted);
+                    String canonicalRaw = minted.get(0);
+                    String canonicalIdentity =
+                            symbolicSourceIdentities.get(canonicalRaw);
+                    String canonicalJavaType = string(
+                            mintEventByIdentity.get(canonicalIdentity),
+                            "javaType");
+                    for (String raw : minted) {
+                        String identity = symbolicSourceIdentities.get(raw);
+                        JsonObject event = mintEventByIdentity.get(identity);
+                        if (!canonicalJavaType.equals(string(event,
+                                "javaType"))) {
+                            throw new IllegalArgumentException(
+                                    "one recorded configured source event has"
+                                            + " incompatible Java types");
+                        }
+                        canonicalRawByIdentity.put(identity, canonicalRaw);
+                        canonicalIdentityByIdentity.put(identity,
+                                canonicalIdentity);
+                    }
+                    for (String raw : component) {
+                        canonicalRawByObservedRaw.put(raw, canonicalRaw);
+                        canonicalIdentityByObservedRaw.put(raw,
+                                canonicalIdentity);
+                    }
+                }
                 Map<String, String> named = new LinkedHashMap<>();
                 for (Map.Entry<String, Set<String>> candidate
                         : namedCandidates.entrySet()) {
@@ -3912,15 +4142,29 @@ public final class ConcolicSmtComposer {
                 symbolicSourceEvents = Collections.unmodifiableMap(events);
                 namedSourceIdentities = Collections.unmodifiableMap(named);
                 configuredSourceRawByIdentity = Collections.unmodifiableMap(
-                        mintRawByIdentity);
+                        canonicalRawByIdentity);
                 configuredSourceEventByIdentity = Collections.unmodifiableMap(
                         mintEventByIdentity);
+                configuredSourceCanonicalIdentityByIdentity =
+                        Collections.unmodifiableMap(
+                                canonicalIdentityByIdentity);
+                configuredSourceCanonicalRawByObservedRaw =
+                        Collections.unmodifiableMap(canonicalRawByObservedRaw);
+                configuredSourceCanonicalIdentityByObservedRaw =
+                        Collections.unmodifiableMap(
+                                canonicalIdentityByObservedRaw);
             } catch (IllegalArgumentException malformed) {
                 symbolicSourceIdentities = Collections.emptyMap();
                 symbolicSourceEvents = Collections.emptyMap();
                 namedSourceIdentities = Collections.emptyMap();
                 configuredSourceRawByIdentity = Collections.emptyMap();
                 configuredSourceEventByIdentity = Collections.emptyMap();
+                configuredSourceCanonicalIdentityByIdentity =
+                        Collections.emptyMap();
+                configuredSourceCanonicalRawByObservedRaw =
+                        Collections.emptyMap();
+                configuredSourceCanonicalIdentityByObservedRaw =
+                        Collections.emptyMap();
                 unsupported.add("SymbolicSourceEvidenceMalformed:"
                         + firstNonBlank(malformed.getMessage(), "UNKNOWN"));
             }
@@ -5995,23 +6239,33 @@ public final class ConcolicSmtComposer {
                 // false materialization conflict.
                 if (namedIdentity != null) sourceIdentity = namedIdentity;
             }
-            String sourceRaw = sourceIdentity == null ? raw
-                    : configuredSourceRawByIdentity.getOrDefault(
-                            sourceIdentity, raw);
+            String rootIdentity =
+                    configuredSourceCanonicalIdentityByObservedRaw.get(raw);
+            if (rootIdentity == null && sourceIdentity != null) {
+                rootIdentity = configuredSourceCanonicalIdentityByIdentity
+                        .getOrDefault(sourceIdentity, sourceIdentity);
+            }
+            String sourceRaw = configuredSourceCanonicalRawByObservedRaw
+                    .get(raw);
+            if (sourceRaw == null) {
+                sourceRaw = sourceIdentity == null ? raw
+                        : configuredSourceRawByIdentity.getOrDefault(
+                                sourceIdentity, raw);
+            }
             String key = symbolScopeKey(sourceRaw, currentSymbolScope,
-                    sourceIdentity);
+                    rootIdentity);
             RawSymbol symbol = rawSymbols.get(key);
             if (symbol == null) {
-                String name = sourceIdentity == null
+                String name = rootIdentity == null
                         ? scopedName(prefix, raw)
                         : configuredSourceRootName(sourceRaw,
-                        sourceIdentity);
+                        rootIdentity);
                 symbol = new RawSymbol(name, requested);
                 rawSymbols.put(key, symbol);
                 declare(symbol.name, symbol.sort);
                 // A configured source denotes one concrete Java field across
                 String previousGuard = currentGuard;
-                if (sourceIdentity != null) currentGuard = "";
+                if (rootIdentity != null) currentGuard = "";
                 try {
                     assertJavaIntegralDomain(symbol.name, symbol.sort,
                             javaType, domainLabel);
@@ -6049,9 +6303,10 @@ public final class ConcolicSmtComposer {
          * <p>The producing runtime's own name wins when it published one -
          * {@code sym__<sourceId>__<occurrenceId>__<ordinal>} under wave 3
          * C1 - so the model reports the root the mint site minted.  A row
-         * that publishes none is named from its mint identity.  Two raw
-         * symbols that would land on one name are separated by the symbol
-         * itself, so the map from VM symbol to root stays injective.</p>
+         * that publishes none is named from its mint identity.  The {@code raw}
+         * passed here is already canonical for exact recorded-event projection
+         * aliases; collisions between distinct canonical roots are still
+         * separated by that raw spelling.</p>
          */
         private String configuredSourceRootName(String raw,
                                                 String identity) {
@@ -6084,6 +6339,10 @@ public final class ConcolicSmtComposer {
                 identity = namedSourceIdentities.get(raw);
                 if (identity == null) return;
             }
+            identity = configuredSourceCanonicalIdentityByObservedRaw
+                    .getOrDefault(raw,
+                            configuredSourceCanonicalIdentityByIdentity
+                                    .getOrDefault(identity, identity));
             JsonObject event = configuredSourceEventByIdentity.get(identity);
             if (event == null) event = symbolicSourceEvents.get(raw);
             if (event == null) {
@@ -7124,9 +7383,13 @@ public final class ConcolicSmtComposer {
                             && outputClosure.outputPorts()
                                     .containsAll(casePorts);
                 }
-                boolean selectedOutputOccurrence =
-                        belongsToSelectedOutputOccurrence(item,
-                                outputClosure);
+                Set<String> demandedCaseOutputs = selectedValueDemands
+                        .outputs(region, string(item, "occurrenceId"));
+                boolean selectedOutputOccurrence = demandedCaseOutputs
+                        .isEmpty()
+                        ? belongsToSelectedOutputOccurrence(item,
+                                outputClosure)
+                        : casePorts.containsAll(demandedCaseOutputs);
                 if (outputClosure != null
                         && outputClosure.outputPorts().size() > 1
                         && !casePorts.equals(outputClosure.outputPorts())

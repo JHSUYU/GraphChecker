@@ -64,6 +64,7 @@ public final class RuntimeWorkflowDiscovery {
 
     @FunctionalInterface
     interface SourceOutputSelection {
+        /** Exact output ports whose slices contain a configured source. */
         Set<String> selected(String regionId,
                              OutputClosureContract closure);
     }
@@ -1108,6 +1109,30 @@ public final class RuntimeWorkflowDiscovery {
         return carried;
     }
 
+    /** Exact configured-source executions in this selected version's
+     * history.  Counting phase identities, rather than source ids, lets a
+     * producer rooted above several state transitions outrank a nested
+     * producer that observes only the final transition of the same source.
+     * The fields and production boundary are the same ones used by
+     * {@link #sourceIdsCarriedBy(RegionInstancePlan, JsonObject, long)}, so
+     * unrelated source hooks in a broad replay root do not contribute. */
+    private static Set<String> sourcePhasesCarriedBy(
+            RegionInstancePlan plan, JsonObject selectedSlice,
+            long produced) {
+        Set<String> demandedFields = new LinkedHashSet<>();
+        addStrings(demandedFields, array(selectedSlice,
+                "demandedHeapDeclarations"));
+        Set<String> carried = new LinkedHashSet<>();
+        for (ConfiguredSourcePhaseContract.Occurrence phase
+                : plan.configuredSourcePhases()) {
+            if (phase.runtimeEventSeq() < produced
+                    && demandedFields.contains(phase.fieldSignature())) {
+                carried.add(phase.phaseId());
+            }
+        }
+        return carried;
+    }
+
 
     private static void requireReady(Demand demand) throws IOException {
         if (!"READY".equals(demand.goal.admissionState())) {
@@ -1451,30 +1476,25 @@ public final class RuntimeWorkflowDiscovery {
                 Map<Endpoint, List<ProducerCandidate>> producersByDownstream)
                 throws IOException {
             if (goal.outputClosure() == null) return false;
-            Set<String> configuredCells = selection.selected(regionId,
+            Set<String> configuredOutputs = selection.selected(regionId,
                     goal.outputClosure());
-            if (configuredCells == null || configuredCells.isEmpty()) {
+            if (configuredOutputs == null || configuredOutputs.isEmpty()) {
                 return false;
             }
-            Set<String> alreadySelectedCells = new LinkedHashSet<>();
+            Set<String> alreadySelectedOutputs = new LinkedHashSet<>();
             for (JsonObject edge : selectedEdges.values()) {
-                alreadySelectedCells.add(member(edge).cell());
+                alreadySelectedOutputs.add(member(edge).portId());
             }
             boolean changed = false;
-            for (String cell : configuredCells) {
-                if (alreadySelectedCells.contains(cell)) continue;
-                List<OutputClosureContract.Member> matches =
-                        new ArrayList<>();
-                for (OutputClosureContract.Member member
-                        : goal.outputClosure().members()) {
-                    if (cell.equals(member.cell())) matches.add(member);
-                }
-                if (matches.size() != 1) {
+            for (String output : configuredOutputs) {
+                if (alreadySelectedOutputs.contains(output)) continue;
+                OutputClosureContract.Member member =
+                        goal.outputClosure().member(output);
+                if (member == null) {
                     throw new IOException("configured symbolic source output "
-                            + "is not unique in selected producer closure: "
-                            + cell + " -> " + matches.size());
+                            + "is absent from selected producer closure: "
+                            + output);
                 }
-                OutputClosureContract.Member member = matches.get(0);
                 if (!sourceAugmentedOutputs.add(member.portId())) continue;
                 addMemberInputs(occurrenceId, occurrence, member,
                         member.slice(), frontier, producersByDownstream);
@@ -2211,6 +2231,12 @@ public final class RuntimeWorkflowDiscovery {
                         .thenComparingLong(
                                 value -> -value.latestAnchoredProduction)
                         .thenComparingInt(
+                                value -> -value.carriedSourceIds)
+                        .thenComparingInt(
+                                value -> -value.carriedSourcePhases)
+                        .thenComparingLong(
+                                value -> -value.latestSourceProduction)
+                        .thenComparingInt(
                                 value -> -value.coveredEndpoints.size())
                         .thenComparing(value -> !value.alreadySelected)
                         .thenComparingInt(value -> value.unrelatedEndpoints)
@@ -2230,6 +2256,9 @@ public final class RuntimeWorkflowDiscovery {
         private final boolean unbackedProtocolInput;
         private final int anchoredProductions;
         private final long latestAnchoredProduction;
+        private final int carriedSourceIds;
+        private final int carriedSourcePhases;
+        private final long latestSourceProduction;
 
         private ProducerChoice(ProducerCandidate candidate, Demand demand,
                                Set<Endpoint> unresolved,
@@ -2276,15 +2305,35 @@ public final class RuntimeWorkflowDiscovery {
                     - demandedInputs;
             int anchored = 0;
             long latestAnchored = 0L;
+            Set<String> carriedSources = new LinkedHashSet<>();
+            Set<String> carriedPhases = new LinkedHashSet<>();
+            long latestSource = 0L;
             for (Endpoint endpoint : coveredEndpoints) {
                 anchored += anchors.anchoredProductions(endpoint,
                         demand.occurrence.occurrenceId);
                 latestAnchored = Math.max(latestAnchored,
                         anchors.latestAnchoredProduction(endpoint,
                                 demand.occurrence.occurrenceId));
+                JsonObject edge = candidate.edgeFor(endpoint,
+                        demand.occurrence, frontier.allowedEdges(endpoint));
+                OutputClosureContract.Member member = demand.member(edge);
+                Set<String> edgeSources = sourceIdsCarriedBy(demand.plan,
+                        demand.selectedVersionSlice(member, edge),
+                        productionEvent(edge));
+                if (edgeSources != null && !edgeSources.isEmpty()) {
+                    carriedSources.addAll(edgeSources);
+                    carriedPhases.addAll(sourcePhasesCarriedBy(demand.plan,
+                            demand.selectedVersionSlice(member, edge),
+                            productionEvent(edge)));
+                    latestSource = Math.max(latestSource,
+                            productionEvent(edge));
+                }
             }
             anchoredProductions = anchored;
             latestAnchoredProduction = latestAnchored;
+            carriedSourceIds = carriedSources.size();
+            carriedSourcePhases = carriedPhases.size();
+            latestSourceProduction = latestSource;
         }
     }
 

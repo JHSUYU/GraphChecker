@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "kind": "CAMPAIGN_RESULT",
+  "provenance": {
+    "jar": {
+      "path": "/tmp/graphchecker-hdfs-17960/schedule/frozen-inputs/GraphChecker.jar",
+      "sha256": "7456839bc0462aecdf5db3cfa32a85dadc7f1f6e157001284f1d0c23c4b5de47"
+    },
+    "vm": {
+      "path": "/opt/GraphChecker/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image/bin/java",
+      "sha256": "e635135818f0646a563f0ce3298a0892dd066e1c9bb3a9a1ab82922a02226cdf",
+      "rtJar": {
+        "path": "/opt/GraphChecker/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image/jre/lib/rt.jar",
+        "sha256": "0ef1a30ee7b1a273eb67cb3e2ee1bf5140599e0a0685462fdb8ba37c93c38ec3"
+      },
+      "libjava": {
+        "path": "/opt/GraphChecker/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image/jre/lib/amd64/libjava.so",
+        "sha256": "6563133e7d7dd09bb760c04b1b04d392a3d6730b677a5b788d9400f2b3066750"
+      },
+      "libjvm": {
+        "path": "/opt/GraphChecker/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image/jre/lib/amd64/server/libjvm.so",
+        "sha256": "293b7ce7dc7c9da8064b1da85acfae8d444532a28d7a5459db748a019f7fb951"
+      }
+    },
+    "config": {
+      "path": "/opt/GraphChecker/experiments/hadoop/hdfs-17960/workflow.properties",
+      "sha256": "0528cb7c7a1ddd34cbffd79be46e5606f22d81e332efda9ac7f40ea1d341c801"
+    },
+    "targetSpec": {
+      "path": "/opt/GraphChecker/experiments/hadoop/hdfs-17960/target.yaml",
+      "sha256": "71a4fd49c2218b70a856ac6c1695509085ad666f36ec454a36651bf2cbd096c4"
+    },
+    "communicationMappings": {
+      "path": "",
+      "sha256": ""
+    },
+    "loopBounds": {
+      "path": "/opt/GraphChecker/experiments/hadoop/hdfs-17960/loop-bounds.jsonl",
+      "sha256": "b594f5a52e1ea45ea09f5a7ae891cc03b8ab4705e96ec0fafd5081fcbe1dd55e"
+    },
+    "symbolicInputs": {
+      "path": "/opt/GraphChecker/experiments/hadoop/hdfs-17960/symbolic-inputs.jsonl",
+      "sha256": "94578e8e1c083b1a82ffbdaec2d8362643df175f6e84ecd441b9b955f0ef0c9c"
+    },
+    "symbolicRootProposal": {
+      "path": "",
+      "sha256": ""
+    },
+    "productionClasses": {
+      "path": "/tmp/graphchecker-hdfs-17960-classes",
+      "sha256": "d6b79f2be2b0fe1ce81af11368f97632e77a3c8b929dd81c7cce65dbb6702ae7"
+    },
+    "workload": {
+      "testClass": "org.apache.hadoop.hdfs.server.namenode.snapshot.TestOrderedSnapshotDeletion#testOrderedDeletionWithRestart",
+      "testClasses": {
+        "path": "/opt/hadoop-hdfs-17960-jdk8/hadoop-hdfs-project/hadoop-hdfs/target/test-classes",
+        "sha256": "1d5e168062418bf8508acfbc188799e3bdffd6cbc3f53ee24d6561273b15515e"
+      },
+      "classpath": "/opt/hadoop-hdfs-17960-jdk8/hadoop-hdfs-project/hadoop-hdfs/target/test-classes:/opt/hadoop-hdfs-17960-jdk8/hadoop-hdfs-project/hadoop-hdfs/target/classes:/opt/hadoop-hdfs-17960-jdk8/hadoop-hdfs-project/hadoop-hdfs-client/target/classes:/opt/hadoop-hdfs-17960-jdk8/hadoop-common-project/hadoop-common/target/classes:/users/ZhenyuLi/.m2/repository/org/soot-oss/soot/4.4.1/soot-4.4.1.jar:/users/ZhenyuLi/.m2/repository/org/smali/dexlib2/2.5.2/dexlib2-2.5.2.jar:/users/ZhenyuLi/.m2/repository/org/ow2/asm/asm/5.0.4/asm-5.0.4.jar:/users/ZhenyuLi/.m2/repository/org/ow2/asm/asm-tree/9.4/asm-tree-9.4.jar:/users/ZhenyuLi/.m2/repository/org/ow2/asm/asm-util/9.4/asm-util-9.4.jar:/users/ZhenyuLi/.m2/repository/org/ow2/asm/asm-analysis/9.4/asm-analysis-9.4.jar:/users/ZhenyuLi/.m2/repository/xmlpull/xmlpull/1.1.3.4d_b4_min/xmlpull-1.1.3.4d_b4_min.jar:/users/ZhenyuLi/.m2/repository/de/upb/cs/swt/axml/2.1.3/axml-2.1.3.jar:/users/ZhenyuLi/.m2/repository/ca/mcgill/sable/polyglot/2006/polyglot-2006.jar:/users/ZhenyuLi/.m2/repository/de/upb/cs/swt/heros/1.2.3/heros-1.2.3.jar:/users/ZhenyuLi/.m2/repository/org/functionaljava/functionaljava/4.2/functionaljava-4.2.jar:/users/ZhenyuLi/.m2/repository/ca/mcgill/sable/jasmin/3.0.3/jasmin-3.0.3.jar:/users/ZhenyuLi/.m2/repository/ca/mcgill/sable/java_cup/0.9.2/java_cup-0.9.2.jar:/users/ZhenyuLi/.m2/repository/javax/annotation/javax.annotation-api/1.3.2/javax.annotation-api-1.3.2.jar:/users/ZhenyuLi/.m2/repository/javax/xml/bind/jaxb-api/2.2.11/jaxb-api-2.2.11.jar:/users/ZhenyuLi/.m2/repository/org/glassfish/jaxb/jaxb-runtime/2.4.0-b180830.0438/jaxb-runtime-2.4.0-b180830.0438.jar:/users/ZhenyuLi/.m2/repository/org/glassfish/jaxb/txw2/2.4.0-b180830.0438/txw2-2.4.0-b180830.0438.jar:/users/ZhenyuLi/.m2/repository/com/sun/istack/istack-commons-runtime/3.0.7/istack-commons-runtime-3.0.7.jar:/users/ZhenyuLi/.m2/repository/org/jvnet/staxex/stax-ex/1.8/stax-ex-1.8.jar:/users/ZhenyuLi/.m2/repository/com/sun/xml/fastinfoset/FastInfoset/1.2.15/FastInfoset-1.2.15.jar:/users/ZhenyuLi/.m2/repository/javax/activation/javax.activation-api/1.2.0/javax.activation-api-1.2.0.jar:/users/ZhenyuLi/.m2/repository/com/google/protobuf/protobuf-java-util/3.21.2/protobuf-java-util-3.21.2.jar:/users/ZhenyuLi/.m2/repository/com/google/errorprone/error_prone_annotations/2.5.1/error_prone_annotations-2.5.1.jar:/users/ZhenyuLi/.m2/repository/com/google/guava/guava/32.0.1-jre/guava-32.0.1-jre.jar:/users/ZhenyuLi/.m2/repository/com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.jar:/users/ZhenyuLi/.m2/repository/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar:/users/ZhenyuLi/.m2/repository/org/checkerframework/checker-qual/3.33.0/checker-qual-3.33.0.jar:/users/ZhenyuLi/.m2/repository/com/google/j2objc/j2objc-annotations/2.8/j2objc-annotations-2.8.jar:/users/ZhenyuLi/.m2/repository/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar:/users/ZhenyuLi/.m2/repository/org/slf4j/slf4j-simple/1.7.25/slf4j-simple-1.7.25.jar:/users/ZhenyuLi/.m2/repository/com/google/code/gson/gson/2.9.0/gson-2.9.0.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-auth/3.4.4-SNAPSHOT/hadoop-auth-3.4.4-SNAPSHOT.jar:/users/ZhenyuLi/.m2/repository/org/apache/httpcomponents/httpclient/4.5.13/httpclient-4.5.13.jar:/users/ZhenyuLi/.m2/repository/commons-logging/commons-logging/1.3.0/commons-logging-1.3.0.jar:/users/ZhenyuLi/.m2/repository/com/nimbusds/nimbus-jose-jwt/10.4/nimbus-jose-jwt-10.4.jar:/users/ZhenyuLi/.m2/repository/org/apache/zookeeper/zookeeper/3.8.6/zookeeper-3.8.6.jar:/users/ZhenyuLi/.m2/repository/org/apache/curator/curator-framework/5.2.0/curator-framework-5.2.0.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-core/2.0.3/kerb-core-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerby-pkix/2.0.3/kerby-pkix-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerby-asn1/2.0.3/kerby-asn1-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerby-util/2.0.3/kerby-util-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-util/2.0.3/kerb-util-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerby-config/2.0.3/kerby-config-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-crypto/2.0.3/kerb-crypto-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-common/3.4.4-SNAPSHOT/hadoop-common-3.4.4-SNAPSHOT.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/thirdparty/hadoop-shaded-protobuf_3_25/1.5.0/hadoop-shaded-protobuf_3_25-1.5.0.jar:/users/ZhenyuLi/.m2/repository/org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1.jar:/users/ZhenyuLi/.m2/repository/commons-net/commons-net/3.9.0/commons-net-3.9.0.jar:/users/ZhenyuLi/.m2/repository/org/apache/commons/commons-collections4/4.4/commons-collections4-4.4.jar:/users/ZhenyuLi/.m2/repository/jakarta/activation/jakarta.activation-api/1.2.1/jakarta.activation-api-1.2.1.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-servlet/9.4.57.v20241219/jetty-servlet-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-security/9.4.57.v20241219/jetty-security-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-webapp/9.4.57.v20241219/jetty-webapp-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-xml/9.4.57.v20241219/jetty-xml-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/javax/servlet/jsp/jsp-api/2.1/jsp-api-2.1.jar:/users/ZhenyuLi/.m2/repository/com/sun/jersey/jersey-servlet/1.19.4/jersey-servlet-1.19.4.jar:/users/ZhenyuLi/.m2/repository/com/github/pjfanning/jersey-json/1.22.0/jersey-json-1.22.0.jar:/users/ZhenyuLi/.m2/repository/com/sun/xml/bind/jaxb-impl/2.2.3-1/jaxb-impl-2.2.3-1.jar:/users/ZhenyuLi/.m2/repository/org/codehaus/jettison/jettison/1.5.4/jettison-1.5.4.jar:/users/ZhenyuLi/.m2/repository/org/apache/commons/commons-configuration2/2.10.1/commons-configuration2-2.10.1.jar:/users/ZhenyuLi/.m2/repository/org/apache/commons/commons-lang3/3.18.0/commons-lang3-3.18.0.jar:/users/ZhenyuLi/.m2/repository/org/apache/commons/commons-text/1.14.0/commons-text-1.14.0.jar:/users/ZhenyuLi/.m2/repository/org/apache/avro/avro/1.11.4/avro-1.11.4.jar:/users/ZhenyuLi/.m2/repository/com/google/re2j/re2j/1.1/re2j-1.1.jar:/users/ZhenyuLi/.m2/repository/com/jcraft/jsch/0.1.55/jsch-0.1.55.jar:/users/ZhenyuLi/.m2/repository/org/apache/curator/curator-client/5.2.0/curator-client-5.2.0.jar:/users/ZhenyuLi/.m2/repository/org/apache/curator/curator-recipes/5.2.0/curator-recipes-5.2.0.jar:/users/ZhenyuLi/.m2/repository/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-handler/4.1.135.Final/netty-handler-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-native-epoll/4.1.135.Final/netty-transport-native-epoll-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/org/apache/commons/commons-compress/1.26.1/commons-compress-1.26.1.jar:/users/ZhenyuLi/.m2/repository/org/codehaus/woodstox/stax2-api/4.2.1/stax2-api-4.2.1.jar:/users/ZhenyuLi/.m2/repository/com/fasterxml/woodstox/woodstox-core/5.4.0/woodstox-core-5.4.0.jar:/users/ZhenyuLi/.m2/repository/dnsjava/dnsjava/3.6.1/dnsjava-3.6.1.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-common/3.4.4-SNAPSHOT/hadoop-common-3.4.4-SNAPSHOT-tests.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-hdfs-client/3.4.4-SNAPSHOT/hadoop-hdfs-client-3.4.4-SNAPSHOT.jar:/users/ZhenyuLi/.m2/repository/org/apache/httpcomponents/httpcore/4.4.13/httpcore-4.4.13.jar:/users/ZhenyuLi/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.12.7/jackson-annotations-2.12.7.jar:/users/ZhenyuLi/.m2/repository/org/apache/zookeeper/zookeeper/3.8.6/zookeeper-3.8.6-tests.jar:/users/ZhenyuLi/.m2/repository/org/apache/zookeeper/zookeeper-jute/3.8.6/zookeeper-jute-3.8.6.jar:/users/ZhenyuLi/.m2/repository/org/apache/yetus/audience-annotations/0.12.0/audience-annotations-0.12.0.jar:/users/ZhenyuLi/.m2/repository/io/dropwizard/metrics/metrics-core/3.2.4/metrics-core-3.2.4.jar:/users/ZhenyuLi/.m2/repository/org/xerial/snappy/snappy-java/1.1.10.4/snappy-java-1.1.10.4.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/thirdparty/hadoop-shaded-guava/1.5.0/hadoop-shaded-guava-1.5.0.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-server/9.4.57.v20241219/jetty-server-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-http/9.4.57.v20241219/jetty-http-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-io/9.4.57.v20241219/jetty-io-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-util/9.4.57.v20241219/jetty-util-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/org/eclipse/jetty/jetty-util-ajax/9.4.57.v20241219/jetty-util-ajax-9.4.57.v20241219.jar:/users/ZhenyuLi/.m2/repository/com/sun/jersey/jersey-core/1.19.4/jersey-core-1.19.4.jar:/users/ZhenyuLi/.m2/repository/javax/ws/rs/jsr311-api/1.1.1/jsr311-api-1.1.1.jar:/users/ZhenyuLi/.m2/repository/com/sun/jersey/jersey-server/1.19.4/jersey-server-1.19.4.jar:/users/ZhenyuLi/.m2/repository/commons-cli/commons-cli/1.9.0/commons-cli-1.9.0.jar:/users/ZhenyuLi/.m2/repository/commons-codec/commons-codec/1.15/commons-codec-1.15.jar:/users/ZhenyuLi/.m2/repository/commons-io/commons-io/2.16.1/commons-io-2.16.1.jar:/users/ZhenyuLi/.m2/repository/commons-daemon/commons-daemon/1.0.13/commons-daemon-1.0.13.jar:/users/ZhenyuLi/.m2/repository/ch/qos/reload4j/reload4j/1.2.22/reload4j-1.2.22.jar:/users/ZhenyuLi/.m2/repository/com/google/protobuf/protobuf-java/2.5.0/protobuf-java-2.5.0.jar:/users/ZhenyuLi/.m2/repository/javax/servlet/javax.servlet-api/3.1.0/javax.servlet-api-3.1.0.jar:/users/ZhenyuLi/.m2/repository/com/google/code/findbugs/findbugs/3.0.1/findbugs-3.0.1.jar:/users/ZhenyuLi/.m2/repository/net/jcip/jcip-annotations/1.0/jcip-annotations-1.0.jar:/users/ZhenyuLi/.m2/repository/com/google/code/findbugs/bcel-findbugs/6.0/bcel-findbugs-6.0.jar:/users/ZhenyuLi/.m2/repository/com/google/code/findbugs/jFormatString/2.0.1/jFormatString-2.0.1.jar:/users/ZhenyuLi/.m2/repository/dom4j/dom4j/1.6.1/dom4j-1.6.1.jar:/users/ZhenyuLi/.m2/repository/org/ow2/asm/asm-debug-all/5.0.2/asm-debug-all-5.0.2.jar:/users/ZhenyuLi/.m2/repository/org/ow2/asm/asm-commons/5.0.2/asm-commons-5.0.2.jar:/users/ZhenyuLi/.m2/repository/commons-lang/commons-lang/2.6/commons-lang-2.6.jar:/users/ZhenyuLi/.m2/repository/com/apple/AppleJavaExtensions/1.4/AppleJavaExtensions-1.4.jar:/users/ZhenyuLi/.m2/repository/jaxen/jaxen/1.1.6/jaxen-1.1.6.jar:/users/ZhenyuLi/.m2/repository/junit/junit/4.13.2/junit-4.13.2.jar:/users/ZhenyuLi/.m2/repository/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-minikdc/3.4.4-SNAPSHOT/hadoop-minikdc-3.4.4-SNAPSHOT.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-simplekdc/2.0.3/kerb-simplekdc-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-client/2.0.3/kerb-client-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-common/2.0.3/kerb-common-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/token-provider/2.0.3/token-provider-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-admin/2.0.3/kerb-admin-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-server/2.0.3/kerb-server-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerb-identity/2.0.3/kerb-identity-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/apache/kerby/kerby-xdr/2.0.3/kerby-xdr-2.0.3.jar:/users/ZhenyuLi/.m2/repository/org/jline/jline/3.9.0/jline-3.9.0.jar:/users/ZhenyuLi/.m2/repository/org/mockito/mockito-core/2.28.2/mockito-core-2.28.2.jar:/users/ZhenyuLi/.m2/repository/net/bytebuddy/byte-buddy/1.15.11/byte-buddy-1.15.11.jar:/users/ZhenyuLi/.m2/repository/net/bytebuddy/byte-buddy-agent/1.15.11/byte-buddy-agent-1.15.11.jar:/users/ZhenyuLi/.m2/repository/org/objenesis/objenesis/2.6/objenesis-2.6.jar:/users/ZhenyuLi/.m2/repository/org/slf4j/slf4j-reload4j/1.7.36/slf4j-reload4j-1.7.36.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-all/4.1.135.Final/netty-all-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-buffer/4.1.135.Final/netty-buffer-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec/4.1.135.Final/netty-codec-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-dns/4.1.135.Final/netty-codec-dns-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-haproxy/4.1.135.Final/netty-codec-haproxy-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-http/4.1.135.Final/netty-codec-http-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-http2/4.1.135.Final/netty-codec-http2-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-memcache/4.1.135.Final/netty-codec-memcache-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-mqtt/4.1.135.Final/netty-codec-mqtt-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-redis/4.1.135.Final/netty-codec-redis-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-smtp/4.1.135.Final/netty-codec-smtp-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-socks/4.1.135.Final/netty-codec-socks-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-stomp/4.1.135.Final/netty-codec-stomp-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-codec-xml/4.1.135.Final/netty-codec-xml-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-common/4.1.135.Final/netty-common-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-native-unix-common/4.1.135.Final/netty-transport-native-unix-common-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-handler-proxy/4.1.135.Final/netty-handler-proxy-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-handler-ssl-ocsp/4.1.135.Final/netty-handler-ssl-ocsp-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-resolver/4.1.135.Final/netty-resolver-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-resolver-dns/4.1.135.Final/netty-resolver-dns-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport/4.1.135.Final/netty-transport-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-rxtx/4.1.135.Final/netty-transport-rxtx-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-sctp/4.1.135.Final/netty-transport-sctp-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-udt/4.1.135.Final/netty-transport-udt-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-classes-epoll/4.1.135.Final/netty-transport-classes-epoll-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-classes-kqueue/4.1.135.Final/netty-transport-classes-kqueue-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-resolver-dns-classes-macos/4.1.135.Final/netty-resolver-dns-classes-macos-4.1.135.Final.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-native-epoll/4.1.135.Final/netty-transport-native-epoll-4.1.135.Final-linux-x86_64.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-native-epoll/4.1.135.Final/netty-transport-native-epoll-4.1.135.Final-linux-aarch_64.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-native-epoll/4.1.135.Final/netty-transport-native-epoll-4.1.135.Final-linux-riscv64.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-native-kqueue/4.1.135.Final/netty-transport-native-kqueue-4.1.135.Final-osx-x86_64.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-transport-native-kqueue/4.1.135.Final/netty-transport-native-kqueue-4.1.135.Final-osx-aarch_64.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-resolver-dns-native-macos/4.1.135.Final/netty-resolver-dns-native-macos-4.1.135.Final-osx-x86_64.jar:/users/ZhenyuLi/.m2/repository/io/netty/netty-resolver-dns-native-macos/4.1.135.Final/netty-resolver-dns-native-macos-4.1.135.Final-osx-aarch_64.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-kms/3.4.4-SNAPSHOT/hadoop-kms-3.4.4-SNAPSHOT.jar:/users/ZhenyuLi/.m2/repository/org/slf4j/jul-to-slf4j/1.7.36/jul-to-slf4j-1.7.36.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-kms/3.4.4-SNAPSHOT/hadoop-kms-3.4.4-SNAPSHOT-tests.jar:/users/ZhenyuLi/.m2/repository/org/fusesource/leveldbjni/leveldbjni-all/1.8/leveldbjni-all-1.8.jar:/users/ZhenyuLi/.m2/repository/org/bouncycastle/bcprov-jdk18on/1.85/bcprov-jdk18on-1.85.jar:/users/ZhenyuLi/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.12.7.1/jackson-databind-2.12.7.1.jar:/users/ZhenyuLi/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.12.7/jackson-core-2.12.7.jar:/users/ZhenyuLi/.m2/repository/org/apache/curator/curator-test/5.2.0/curator-test-5.2.0.jar:/users/ZhenyuLi/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.8.2/junit-jupiter-api-5.8.2.jar:/users/ZhenyuLi/.m2/repository/org/opentest4j/opentest4j/1.2.0/opentest4j-1.2.0.jar:/users/ZhenyuLi/.m2/repository/org/junit/platform/junit-platform-commons/1.8.2/junit-platform-commons-1.8.2.jar:/users/ZhenyuLi/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/users/ZhenyuLi/.m2/repository/org/assertj/assertj-core/3.12.2/assertj-core-3.12.2.jar:/users/ZhenyuLi/.m2/repository/at/yawk/lz4/lz4-java/1.11.1/lz4-java-1.11.1.jar:/users/ZhenyuLi/.m2/repository/org/apache/hadoop/hadoop-annotations/3.4.4-SNAPSHOT/hadoop-annotations-3.4.4-SNAPSHOT.jar:/usr/lib/jvm/java-8-openjdk-amd64/lib/tools.jar",
+      "classpathSha256": "29a4abb89203ebf6dea1b4f9f95426a3327b9a3cba8c2a11b624155d70d0ec2f"
+    },
+    "source": {
+      "graphchecker": {
+        "path": "/opt/GraphChecker",
+        "head": "bd81f724a561cf196501c7344b4b79eae359639c",
+        "branch": "main",
+        "worktreeDigest": "6792e4c6c07fa5879d94612dc7229ca6b6f42ff92066921e2ca55b808c541651"
+      },
+      "workload": {
+        "path": "/opt/hadoop-hdfs-17960-jdk8",
+        "head": "6dd24f5815f25431e6eab58e7f16894d1446b708",
+        "branch": "gc/hdfs-17960-snapshot-replay-jdk8",
+        "worktreeDigest": "8de52c142a32b51712c6375e51188efe6e64341baa49d4ccd264d7f3c1df208d"
+      }
+    },
+    "staticCatalog": {
+      "path": "/tmp/graphchecker-hdfs-17960/candidate_dataflow_edges.jsonl.gz",
+      "sha256": "a95da353361c5e5e610c0011d0f1c3e278a2f7d0883dd273c4bc12f4d62e4944"
+    },
+    "regionPlan": {
+      "path": "/tmp/graphchecker-hdfs-17960/runtime/concolic_region_plan.jsonl",
+      "sha256": "b93a1b431e82f38c942062bcfcf5970a8ffdced74171a16a04d276ab7782192b"
+    },
+    "refinedGraph": {
+      "path": "/tmp/graphchecker-hdfs-17960/runtime/refined_dataflow_edges.jsonl.gz",
+      "sha256": "99cc1dc5dea66c91f4b53d8d3ee5f4622edc64e652893b8cf7420db35a2a8d54"
+    }
+  },
+  "claim": "SAT_CANDIDATE",
+  "claimReason": "a valuation satisfies the target predicate inside the recorded model",
+  "reachability": "REACHABLE",
+  "solverState": "CANDIDATE_READY",
+  "finalStatus": "FINAL_READY",
+  "finalStatusRefusals": 0,
+  "freeSymbolCount": 0,
+  "evidence": {
+    "exactBindings": 2,
+    "guardedBindings": 0,
+    "unknownArmBindings": 0,
+    "candidateBindings": 0,
+    "unsatClosureComplete": true,
+    "fieldVersions": 1,
+    "fieldReads": 2
+  },
+  "gapCount": 0,
+  "telemetryCount": 0,
+  "valuations": [
+    {
+      "values": [
+        false
+      ],
+      "status": "sat"
+    },
+    {
+      "values": [
+        true
+      ],
+      "status": "unsat"
+    }
+  ]
+}

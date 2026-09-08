@@ -312,6 +312,7 @@ public final class CausynthTraceRecorder {
                 firstNonBlank(method, methodForCall(callId)), callId);
         event.siteId = siteId(event.method, unitIndex);
         event.branchKind = MapFields.safe(branchKind);
+        event.switchCaseKeys = MapFields.safe(encodedCaseKeys);
         event.successorIndex = successorIndex >= 0 ? successorIndex : null;
         int caseCount = encodedCaseKeys == null
                 || encodedCaseKeys.isEmpty() ? 0
@@ -1053,6 +1054,9 @@ public final class CausynthTraceRecorder {
             if (branch && !event.branchKind.isEmpty()) {
                 row.put("branchKind", event.branchKind);
             }
+            if (branch && !event.switchCaseKeys.isEmpty()) {
+                row.put("switchCaseKeys", event.switchCaseKeys);
+            }
             result.add(row);
         }
         return result;
@@ -1593,7 +1597,7 @@ public final class CausynthTraceRecorder {
                             ? row.intValue("successorIndex", -1)
                             : null,
                     row.stringValue("branchKind"),
-                    ""));
+                    row.stringValue("switchCaseKeys")));
         }
     }
 
@@ -1769,7 +1773,8 @@ public final class CausynthTraceRecorder {
                 "primitiveValue", event.primitiveValue,
                 "outcome", event.outcome,
                 "branchKind", event.branchKind,
-                "successorIndex", event.successorIndex);
+                "successorIndex", event.successorIndex,
+                "switchCaseKeys", event.switchCaseKeys);
     }
 
     private static void writeTraceRow(Object... fields) {
@@ -1864,6 +1869,7 @@ public final class CausynthTraceRecorder {
         private Boolean outcome;
         private String branchKind = "";
         private Integer successorIndex;
+        private String switchCaseKeys = "";
     }
 
     static final class TraceData {

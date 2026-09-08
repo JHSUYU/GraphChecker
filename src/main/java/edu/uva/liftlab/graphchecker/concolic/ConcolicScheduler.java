@@ -700,7 +700,7 @@ public final class ConcolicScheduler {
                 RuntimeWorkflowDiscovery.rankedWorkflow(
                         loaded.regionPlans,
                         loaded.symbolicInputs::selectedForDiscovery,
-                        loaded.symbolicInputs::sourceOutputCellsForDiscovery);
+                        loaded.symbolicInputs::sourceOutputPortsForDiscovery);
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
             throw new IOException("selected exact closure exceeds max jobs: "
                     + workflow.scheduledTaskCount() + " > "
@@ -2446,6 +2446,11 @@ public final class ConcolicScheduler {
                 != candidate.target.requiredOutcome) {
             return null;
         }
+        if (selected.concreteObservation().isMultiwaySwitch()) {
+            throw new IllegalArgumentException(
+                    "multiway concrete target requires an exact successor, "
+                            + "but target policy states only a Boolean outcome");
+        }
         JsonElement encoded = summary.get(
                 PathObservation.TargetReachEvent.FIELD);
         if (encoded == null) {
@@ -3351,7 +3356,7 @@ public final class ConcolicScheduler {
         }
 
         /** Source-derived outputs augment only an already ranked producer. */
-        private Set<String> sourceOutputCellsForDiscovery(
+        private Set<String> sourceOutputPortsForDiscovery(
                 String regionId, OutputClosureContract closure) {
             Set<String> matches = new LinkedHashSet<>();
             if (!configured || closure == null) return matches;
@@ -3364,7 +3369,7 @@ public final class ConcolicScheduler {
                         if (declaration.isJsonPrimitive()
                                 && fieldSignature.equals(
                                 declaration.getAsString())) {
-                            matches.add(member.cell());
+                            matches.add(member.portId());
                         }
                     }
                 }

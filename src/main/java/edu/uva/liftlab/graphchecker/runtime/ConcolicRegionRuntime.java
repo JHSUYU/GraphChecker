@@ -2148,6 +2148,7 @@ public final class ConcolicRegionRuntime {
                         "atomic receiver has no exact value field");
             }
             EngineApi api = engine();
+            selectAccessOwnerSharedCarriers(active, receiver, valueField);
             api.observeExactPrimitiveField(receiver, valueField);
             ensurePathRecordingStarted(active);
         } catch (Throwable throwable) {
@@ -2365,10 +2366,39 @@ public final class ConcolicRegionRuntime {
                 && integer(capture, "outputOccurrence", -1) >= 1;
     }
 
+    /** Fail-closed admission for an absent once-only output on a path flip. */
+    static boolean replayAdmitsAbsentInstanceScopedOutput(
+            OutputCaptureSpec request,
+            boolean pathReplay,
+            boolean replayComplete,
+            boolean replayFailed,
+            int observedOccurrences,
+            boolean captured,
+            boolean captureFailure) {
+        return request != null
+                && request.instanceScopedProducer()
+                && request.capturesExactHeapWrite()
+                && pathReplay
+                && replayComplete
+                && !replayFailed
+                && observedOccurrences == 0
+                && !captured
+                && !captureFailure;
+    }
+
     private static boolean completeExactOutputBoundary(
             boolean capturesOutputRelation,
             List<OutputCaptureSpec> requests,
             List<JsonObject> captures) {
+        return completeExactOutputBoundary(capturesOutputRelation, requests,
+                captures, null);
+    }
+
+    private static boolean completeExactOutputBoundary(
+            boolean capturesOutputRelation,
+            List<OutputCaptureSpec> requests,
+            List<JsonObject> captures,
+            ActiveRegion active) {
         if (!capturesOutputRelation || requests == null || requests.isEmpty()) {
             return false;
         }
@@ -2385,7 +2415,11 @@ public final class ConcolicRegionRuntime {
                 }
             }
             // One admitted observation completes the boundary.
-            if (successfulRows < 1) return false;
+            if (successfulRows < 1 && (active == null
+                    || !active.replayAdmitsAbsentInstanceScopedOutput(
+                    request, captures))) {
+                return false;
+            }
         }
         return true;
     }
@@ -2434,14 +2468,14 @@ public final class ConcolicRegionRuntime {
      * An activation that missed part of it is still an occurrence of the
      * address, and the row says so rather than disappearing.</p>
      */
-    private static boolean relationallyComplete(
-            RuntimeTask task, List<JsonObject> captures) {
+    private static boolean relationallyComplete(ActiveRegion active) {
+        RuntimeTask task = active == null ? null : active.activation;
         if (task == null || !task.capturesOutputRelation
                 || task.outputCaptures.isEmpty()) {
             return true;
         }
         return completeExactOutputBoundary(task.capturesOutputRelation,
-                task.outputCaptures, captures);
+                task.outputCaptures, active.outputCaptures, active);
     }
 
     /**
@@ -3279,8 +3313,31 @@ public final class ConcolicRegionRuntime {
      */
     private static SharedStateResult selectedCarrier(SharedCarrier carrier) {
         ActiveRegion active = activeRegion();
-        carrier.bindPlannedReceiver(active == null
-                ? null : active.activation);
+        return selectedCarrier(carrier, active == null
+                ? null : active.activation, active);
+    }
+
+    /** Selects a carrier using the task that declared this exact access. */
+    private static SharedStateResult selectedCarrier(
+            SharedCarrier carrier, RuntimeTask locator) {
+        return selectedCarrier(carrier, locator, activeRegion());
+    }
+
+    /** Selects one physical carrier while retaining its declaring task. */
+    private static SharedStateResult selectCarrierForClaimant(
+            SharedCarrier carrier, RuntimeTask claimant) {
+        beginBookkeeping();
+        try {
+            return selectedCarrier(carrier, claimant);
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    private static SharedStateResult selectedCarrier(
+            SharedCarrier carrier, RuntimeTask locator,
+            ActiveRegion active) {
+        carrier.bindPlannedReceiver(locator);
         String missing = carrier.missing();
         if (!missing.isEmpty()) {
             return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
@@ -3775,6 +3832,14 @@ public final class ConcolicRegionRuntime {
             return RecordedReadFrom.fieldKey(declaringClass, fieldName);
         }
 
+        /** Activation-local identity of this exact access-bound request. */
+        String accessSelectionKey(Object owner) {
+            return (mapState ? "MAP" : element ? "ELEMENT" : "FIELD")
+                    + "/" + System.identityHashCode(owner) + "/"
+                    + declaringClass + "#" + fieldName + ":" + descriptor
+                    + "@" + index;
+        }
+
         /**
          * Selects this declared location on its exact access owner.
          *
@@ -3785,18 +3850,19 @@ public final class ConcolicRegionRuntime {
          * what the runtime decides here.</p>
          */
         SharedStateResult selectAtAccess(Object owner,
-                                         String fieldSignature) {
-            if (mapState) {
-                return selectSharedMapCarrier(
-                        readExactField(owner, fieldSignature),
-                        declaringClass, fieldName, descriptor);
-            }
-            return selectSharedFieldCarrier(owner, declaringClass,
+                                         String fieldSignature,
+                                         RuntimeTask claimant) {
+            SharedCarrier carrier = mapState
+                    ? SharedCarrier.map(
+                    readExactField(owner, fieldSignature),
+                    declaringClass, fieldName, descriptor)
+                    : SharedCarrier.field(owner, declaringClass,
                     fieldName, descriptor);
+            return selectCarrierForClaimant(carrier, claimant);
         }
 
         /** Selects this carrier for {@code active}, or names why it cannot. */
-        SharedStateResult select(ActiveRegion active) {
+        SharedStateResult select(ActiveRegion active, RuntimeTask claimant) {
             Object owner = resolveOwner(active.receiver);
             if (owner == MissingValue.INSTANCE) {
                 return recordShared(failedShared(
@@ -3806,13 +3872,16 @@ public final class ConcolicRegionRuntime {
                                 + "region receiver: " + describe()), null,
                         active);
             }
-            if (element) return selectSharedElementCarrier(owner, index);
-            if (mapState) {
-                return selectSharedMapCarrier(owner, declaringClass,
-                        fieldName, descriptor);
+            if (element) {
+                return selectCarrierForClaimant(
+                        SharedCarrier.element(owner, index), claimant);
             }
-            return selectSharedFieldCarrier(owner, declaringClass, fieldName,
-                    descriptor);
+            if (mapState) {
+                return selectCarrierForClaimant(SharedCarrier.map(owner,
+                        declaringClass, fieldName, descriptor), claimant);
+            }
+            return selectCarrierForClaimant(SharedCarrier.field(owner,
+                    declaringClass, fieldName, descriptor), claimant);
         }
     }
 
@@ -3824,7 +3893,7 @@ public final class ConcolicRegionRuntime {
             // where the actual declaring object is available.
             if (request.accessOwnerBound()) continue;
             try {
-                request.select(active);
+                request.select(active, claimant);
             } catch (Throwable throwable) {
                 recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
                         SharedStateEvidence.INVOCATION_FAILED, "",
@@ -3854,11 +3923,16 @@ public final class ConcolicRegionRuntime {
             String fieldSignature) {
         for (SharedCarrierRequest request : claimant.sharedCarriers) {
             if (!request.matchesAccess(fieldSignature)) continue;
-            String key = request.declaringClass + "#" + request.fieldName
-                    + "@" + System.identityHashCode(owner);
-            if (!active.accessOwnerCarrierSelections.add(key)) continue;
+            String selectionKey = request.accessSelectionKey(owner);
+            if (active.accessOwnerCarrierSelections.contains(selectionKey)) {
+                continue;
+            }
             try {
-                request.selectAtAccess(owner, fieldSignature);
+                SharedStateResult selected = request.selectAtAccess(owner,
+                        fieldSignature, claimant);
+                if (selected.ok()) {
+                    active.accessOwnerCarrierSelections.add(selectionKey);
+                }
             } catch (Throwable throwable) {
                 recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
                         SharedStateEvidence.INVOCATION_FAILED, "",
@@ -3917,16 +3991,30 @@ public final class ConcolicRegionRuntime {
         }
 
         void bindPlannedReceiver(RuntimeTask task) {
-            if (task == null || SHAPE_ELEMENT.equals(shape)
-                    || declaringClass.isEmpty() || fieldName.isEmpty()) {
+            if (!requiresPlannedReceiver()) {
                 return;
             }
-            bindPlannedReceiver(task.plannedReceiverObjectId(
+            bindPlannedReceiver(task == null ? 0L
+                    : task.plannedReceiverObjectId(
                     declaringClass, fieldName));
         }
 
         void bindPlannedReceiver(long receiverObjectId) {
             plannedReceiverObjectId = Math.max(0L, receiverObjectId);
+        }
+
+        boolean requiresPlannedReceiver() {
+            return !SHAPE_ELEMENT.equals(shape)
+                    && !declaringClass.isEmpty() && !fieldName.isEmpty();
+        }
+
+        long plannedReceiverObjectId() {
+            return plannedReceiverObjectId;
+        }
+
+        String describe() {
+            return shape + " " + declaringClass + "#" + fieldName + ":"
+                    + descriptor;
         }
 
         /** Activation-local dedupe key; never a cross-run address. */
@@ -4065,6 +4153,15 @@ public final class ConcolicRegionRuntime {
         List<RawSharedCarrierReadOut> carriers = new ArrayList<>();
         for (SharedCarrier carrier
                 : new ArrayList<>(active.sharedCarriers.values())) {
+            if (!bindSharedCarrierToFinalClaimant(active, carrier)) {
+                carriers.add(RawSharedCarrierReadOut.failure(carrier,
+                        failedShared(SharedStateEvidence.STAGE_VERSIONS,
+                                SharedStateEvidence.MISSING_METADATA, "",
+                                "final claimant has no unique frozen receiver"
+                                        + " locator for "
+                                        + carrier.describe())));
+                continue;
+            }
             try {
                 String serialized = memoizedReadOut(carrier.key());
                 if (serialized == null) {
@@ -4097,6 +4194,15 @@ public final class ConcolicRegionRuntime {
         }
         return new RawSharedStateReadOut(carriers, ledger, ledgerFailure,
                 identity);
+    }
+
+    /** Binds evidence metadata to the task that actually publishes the row. */
+    private static boolean bindSharedCarrierToFinalClaimant(
+            ActiveRegion active, SharedCarrier carrier) {
+        carrier.bindPlannedReceiver(active == null
+                ? null : active.activation);
+        return !carrier.requiresPlannedReceiver()
+                || carrier.plannedReceiverObjectId() > 0L;
     }
 
     /** Decodes and files raw envelopes after the VM context is closed. */
@@ -4374,13 +4480,12 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = activeRegion();
         if (active == null) return observedSuccessorIndex;
         String branchSite = siteId(method, unitIndex);
-        if (!active.activation.declaresBranch(branchSite)) {
-            active.takePreparedBranch(preparedHandle);
+        if (!active.pathRecordingStarted) {
+            active.recordConcreteSwitchBranch(method, unitIndex, expected);
             return observedSuccessorIndex;
         }
-        if (!active.pathRecordingStarted) {
-            active.recordConcreteBranch(method, unitIndex,
-                    expected.caseArm());
+        if (!active.activation.declaresBranch(branchSite)) {
+            active.takePreparedBranch(preparedHandle);
             return observedSuccessorIndex;
         }
         PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
@@ -4593,9 +4698,10 @@ public final class ConcolicRegionRuntime {
         JsonElement events = parseJson(api.branchEvents());
         List<Integer> eventConditionIndices =
                 vmEventConditionIndices(events, vmEventId);
+        boolean noVmCondition = eventConditionIndices != null
+                && eventConditionIndices.isEmpty();
         PathConditionRead read;
-        if (eventConditionIndices != null
-                && eventConditionIndices.isEmpty()) {
+        if (noVmCondition) {
             read = new PathConditionRead(PathConditionElements.EMPTY, 0,
                     "CONDITIONLESS_EVENT");
         } else if (contiguousConditionIndices(eventConditionIndices)) {
@@ -4613,28 +4719,35 @@ public final class ConcolicRegionRuntime {
         PathConditionElements conditions = read.conditions;
         VmBranchEventAttestation attestation = attestVmBranchEvent(api,
                 active, siteId, expression, expected.caseArm(), vmEventId,
-                occurrence, conditions, baseline, expected, events);
+                occurrence, conditions, noVmCondition ? 0 : baseline,
+                expected, events);
         List<Integer> conditionIndices = attestation.valid
                 ? attestation.conditionIndices
                 : Collections.<Integer>emptyList();
         JsonObject mapping = branchMapping(method, unitIndex, occurrence);
-        mapping.addProperty("rawPathConditionSize", conditions.size());
+        int rawPathConditionSize = noVmCondition
+                ? baseline : conditions.size();
+        mapping.addProperty("rawPathConditionSize", rawPathConditionSize);
         mapping.addProperty("rawPathConditionBaseline", baseline);
         if (!attestation.valid) {
             active.addUnresolvedOnce(siteId
                     + ": exact switch event attestation failed: "
                     + attestation.error);
         } else if (conditionIndices.isEmpty()) {
-            active.addUnresolvedOnce(siteId
-                    + ": exact switch event has no symbolic selector "
-                    + "conditions");
+            mapping.add("concreteObservation",
+                    ExactConcreteBranchObservation.attestedSwitch(siteId,
+                            safe(method), unitIndex, occurrence,
+                            expected.branchKind, expected.caseKeys,
+                            expected.observedSuccessorIndex).toJson());
+            active.witnessOutcome(siteId, expected.caseArm());
         }
-        if ("EXPLORE".equals(active.activation.policy(siteId))) {
+        if (!conditionIndices.isEmpty()
+                && "EXPLORE".equals(active.activation.policy(siteId))) {
             active.addUnresolvedOnce(siteId
                     + ": multiway switch requires successor-aware path "
                     + "enumeration; Boolean outcome negation is prohibited");
         }
-        active.lastPathConditionSize = conditions.size();
+        active.lastPathConditionSize = rawPathConditionSize;
         active.branchMappings.add(mapping);
     }
 
@@ -5300,11 +5413,21 @@ public final class ConcolicRegionRuntime {
                     rawSharedState == null ? evidenceIdentity(active)
                             : rawSharedState.identity);
             boolean written = appendResult(result, rawEngineSummary);
-            if (written) {
+            boolean goalAnswered = written
+                    && resultAnswersSelectedGoal(active.activation, result);
+            if (goalAnswered) {
                 configuration().markOccurrencePublished(active.activation);
             }
-            haltWhenCampaignSettled(active.activation.taskId,
-                    written ? 0 : 2);
+            // A compatible root is only a candidate for an occurrence
+            // address. Keep admitting later compatible roots until one
+            // actually reaches the selected target or completes the demanded
+            // output relation. Otherwise a broad replay entry (for example a
+            // dispatcher or edit-log loop) makes the first unrelated call
+            // terminate the worker before the recorded occurrence runs.
+            if (!written || goalAnswered) {
+                haltWhenCampaignSettled(active.activation.taskId,
+                        written ? 0 : 2);
+            }
         } catch (Throwable failure) {
             // Admission was already reopened after the VM raw read-out.  A
             // failure is terminal because a later activation may have used
@@ -5457,6 +5580,11 @@ public final class ConcolicRegionRuntime {
             JsonObject result, ActiveRegion active, String exitKind,
             String exceptionType, Object output,
             RecordedEvidenceIdentity identity) {
+        // Exit validation may discard an output captured on a THROW exit.
+        // Set relationallyComplete only after that validation has established
+        // the final admitted output set.
+        active.validateOutputCaptures();
+        active.nameUnreachedTargetBranch();
         addResultIdentity(result, active, exitKind, exceptionType);
         if (output instanceof Throwable && !"CUT".equals(exitKind)) {
             result.add("exceptionChain", exceptionChain((Throwable) output));
@@ -5480,8 +5608,6 @@ public final class ConcolicRegionRuntime {
             result.add(LoopBoundPolicy.LOOP_CARDINALITY_GAPS,
                     GSON.toJsonTree(active.loopCardinalityGaps));
         }
-        active.validateRegionExitFieldCaptures(exitKind);
-        active.nameUnreachedTargetBranch();
         if (active.targetReach != null) {
             result.add("targetReach", active.targetReach);
         }
@@ -5525,6 +5651,18 @@ public final class ConcolicRegionRuntime {
         if (!active.readCutGaps.isEmpty()) {
             result.add("readCutGaps", GSON.toJsonTree(active.readCutGaps));
         }
+    }
+
+    /** Whether this candidate supplied the evidence its selected goal needs. */
+    private static boolean resultAnswersSelectedGoal(
+            RuntimeTask task, JsonObject result) {
+        if (task.capturesTargetReach) {
+            return bool(result, "targetReached", false);
+        }
+        if (task.capturesOutputRelation) {
+            return bool(result, "relationallyComplete", false);
+        }
+        return true;
     }
 
     /** Adds decoded shared-state evidence to an otherwise complete result. */
@@ -5575,7 +5713,7 @@ public final class ConcolicRegionRuntime {
         result.addProperty("occurrenceId", active.occurrenceId());
         result.addProperty("activationOrdinal", active.activationOrdinal);
         result.addProperty("relationallyComplete",
-                relationallyComplete(task, active.outputCaptures));
+                relationallyComplete(active));
         if (task.capturesTargetReach) {
             // Only a target-reach address selects on this.
             result.addProperty("targetReached",
@@ -7507,6 +7645,9 @@ public final class ConcolicRegionRuntime {
          */
         private final List<JsonObject> concreteBranchWitnesses =
                 new ArrayList<>();
+        /** Exact pre-gate decisions already emitted, including switch arms. */
+        private final Set<String> concreteBranchDecisionTokens =
+                new LinkedHashSet<>();
         private final List<JsonObject> outputCaptures = new ArrayList<>();
         /** One named gap per output site that ran past its version cap. */
         private final Map<String, JsonObject> outputVersionGaps =
@@ -7851,8 +7992,10 @@ public final class ConcolicRegionRuntime {
             try {
                 String site = siteId(method, unitIndex);
                 if (!activation.declaresBranch(site)) {
-                    Set<Boolean> seen = witnessedOutcomes.get(site);
-                    if (seen == null || !seen.contains(outcome)) {
+                    String token = site + "\u0000"
+                            + ExactConcreteBranchObservation
+                            .binaryDecisionToken(outcome);
+                    if (concreteBranchDecisionTokens.add(token)) {
                         witnessOutcome(site, outcome);
                         concreteBranchWitnesses.add(concreteBranchWitness(
                                 method, unitIndex, outcome));
@@ -7873,6 +8016,55 @@ public final class ConcolicRegionRuntime {
                 if (activation.targetBranchSite.equals(site)
                         && activation.targetBranchOccurrence == occurrence) {
                     recordTargetReach(site, occurrence, outcome);
+                }
+            } catch (Throwable ignored) {
+                // Observation must never alter the workload's own outcome.
+            }
+        }
+
+        /** Records one exact switch successor while the symbolic gate is
+         * closed. */
+        private void recordConcreteSwitchBranch(
+                String method, int unitIndex, SwitchExpectation expected) {
+            try {
+                String site = siteId(method, unitIndex);
+                ExactConcreteBranchObservation observation =
+                        ExactConcreteBranchObservation.attestedSwitch(site,
+                                safe(method), unitIndex,
+                                activation.declaresBranch(site)
+                                        ? nextBranchOccurrence(site) : 1,
+                                expected.branchKind, expected.caseKeys,
+                                expected.observedSuccessorIndex);
+                if (!activation.declaresBranch(site)) {
+                    String token = site + "\u0000"
+                            + observation.exactDecisionToken();
+                    if (concreteBranchDecisionTokens.add(token)) {
+                        witnessOutcome(site, expected.caseArm());
+                        JsonObject witness = concreteBranchWitness(
+                                method, unitIndex, expected.caseArm());
+                        witness.addProperty("branchKind",
+                                expected.branchKind);
+                        JsonArray keys = new JsonArray();
+                        for (Integer key : expected.caseKeys) keys.add(key);
+                        witness.add("caseKeys", keys);
+                        witness.addProperty("observedSuccessorIndex",
+                                expected.observedSuccessorIndex);
+                        concreteBranchWitnesses.add(witness);
+                    }
+                    return;
+                }
+                JsonObject mapping = branchMapping(method, unitIndex,
+                        observation.occurrence());
+                mapping.addProperty("rawPathConditionSize", 0);
+                mapping.addProperty("rawPathConditionBaseline", 0);
+                mapping.add("concreteObservation", observation.toJson());
+                branchMappings.add(mapping);
+                witnessOutcome(site, expected.caseArm());
+                if (activation.targetBranchSite.equals(site)
+                        && activation.targetBranchOccurrence
+                        == observation.occurrence()) {
+                    recordTargetReach(site, observation.occurrence(),
+                            expected.caseArm());
                 }
             } catch (Throwable ignored) {
                 // Observation must never alter the workload's own outcome.
@@ -8067,10 +8259,7 @@ public final class ConcolicRegionRuntime {
             return handle <= 0L ? null : preparedBranches.remove(handle);
         }
 
-        private void validateRegionExitFieldCaptures(String exitKind) {
-            boolean normal = "NORMAL".equals(exitKind)
-                    || activation.capturesOutputRelation
-                    && "BOUNDED".equals(exitKind);
+        private void validateOutputCaptures() {
             for (OutputCaptureSpec request : activation.outputCaptures) {
                 String observedUnit = request.definitionInvocationScoped()
                         ? "definition invocation(s)"
@@ -8081,9 +8270,11 @@ public final class ConcolicRegionRuntime {
                         matches++;
                     }
                 }
-                if (normal && matches < 1) {
-                    // Only now is a failed occurrence a real gap: no
-                    // occurrence of this binding produced the relation.
+                if (matches < 1
+                        && !replayAdmitsAbsentInstanceScopedOutput(
+                        request, outputCaptures)) {
+                    // No locally completed occurrence of this binding
+                    // produced the relation before the root's terminal.
                     for (String failure : guardedOutputCaptureFailures
                             .getOrDefault(request.captureBindingId(),
                                     Collections.<String>emptyList())) {
@@ -8094,10 +8285,6 @@ public final class ConcolicRegionRuntime {
                             + "observed " + outputCaptureOccurrences.observed(
                             request.captureBindingId(), request.outputSiteId())
                             + " " + observedUnit + " and captured " + matches);
-                } else if (!normal && matches != 0) {
-                    addUnresolvedOnce(request.captureBindingId()
-                            + ": field output captured on " + exitKind
-                            + " exit");
                 }
                 // The size of the bound this site actually needed, stated
                 // once now that both counts are final.
@@ -8109,7 +8296,40 @@ public final class ConcolicRegionRuntime {
                             matches);
                 }
             }
-            if (!normal) outputCaptures.clear();
+            // Exact call, mutation, communication, and putfield boundaries
+            // establish their relation when that local boundary completes.
+            // A wider replay root may throw later after another thread has
+            // already consumed the value; that later exit does not erase the
+            // completed heap or communication event.
+        }
+
+        /**
+         * Whether a completed path replay may omit one once-only heap write.
+         *
+         * <p>An instance-scoped producer records a historical object version,
+         * so flipping the path past its guard may legitimately execute zero
+         * instances of that write.  A reached hook or a failed capture is
+         * evidence about an attempted write and remains fail-closed.</p>
+         */
+        private boolean replayAdmitsAbsentInstanceScopedOutput(
+                OutputCaptureSpec request, List<JsonObject> captures) {
+            boolean captured = false;
+            for (JsonObject capture : captures) {
+                if (request.captureBindingId().equals(
+                        string(capture, "captureBindingId"))) {
+                    captured = true;
+                    break;
+                }
+            }
+            return ConcolicRegionRuntime
+                    .replayAdmitsAbsentInstanceScopedOutput(
+                    request, activation.replayContract != null,
+                    replayProgress.complete(), replayProgress.failed(),
+                    outputCaptureOccurrences.observed(
+                    request.captureBindingId(), request.outputSiteId()),
+                    captured, !guardedOutputCaptureFailures.getOrDefault(
+                    request.captureBindingId(),
+                    Collections.<String>emptyList()).isEmpty());
         }
 
         private boolean hasOutputCapture(String captureBindingId) {
@@ -8186,7 +8406,7 @@ public final class ConcolicRegionRuntime {
                     outputCaptures.size());
             return completeExactOutputBoundary(
                     activation.capturesOutputRelation,
-                    activation.outputCaptures, captures);
+                    activation.outputCaptures, captures, this);
         }
 
         /**
@@ -9864,7 +10084,8 @@ public final class ConcolicRegionRuntime {
                     task.goalKind().capturesTargetReach();
             this.executionScopeMethods = new LinkedHashSet<>();
             this.edgeBindings = task.edgeBindings().deepCopy();
-            indexPlannedReceiverObjectIds(edgeBindings);
+            indexPlannedReceiverObjectIds(edgeBindings,
+                    task.inputActions().all());
             // The plan row decoded this catalog once; phase ids are already
             // one strict ordered ledger by then, so this is an index, not a
             // second admission.
@@ -10134,7 +10355,8 @@ public final class ConcolicRegionRuntime {
             return safe(attachProducerOccurrenceByPort.get(safe(portId)));
         }
 
-        private void indexPlannedReceiverObjectIds(JsonArray bindings) {
+        private void indexPlannedReceiverObjectIds(
+                JsonArray bindings, JsonArray inputActions) {
             Map<String, Set<Long>> candidates = new LinkedHashMap<>();
             for (JsonElement element : bindings) {
                 if (!element.isJsonObject()) continue;
@@ -10153,6 +10375,18 @@ public final class ConcolicRegionRuntime {
                 long receiver = longInteger(binding, "receiverObjectId", 0L);
                 if (field.isEmpty() || receiver <= 0L) continue;
                 candidates.computeIfAbsent(field,
+                        ignored -> new LinkedHashSet<>()).add(receiver);
+            }
+            for (JsonElement element : inputActions) {
+                if (!element.isJsonObject()) continue;
+                JsonObject action = element.getAsJsonObject();
+                long receiver = longInteger(action,
+                        "fieldReceiverObjectId", 0L);
+                DeclaredField field = FieldPathSpec.declaredField(
+                        firstNonBlank(string(action, "leafFieldSignature"),
+                                string(action, "accessFieldSignature")));
+                if (field == null || receiver <= 0L) continue;
+                candidates.computeIfAbsent(field.owner() + "#" + field.name(),
                         ignored -> new LinkedHashSet<>()).add(receiver);
             }
             for (Map.Entry<String, Set<Long>> entry : candidates.entrySet()) {

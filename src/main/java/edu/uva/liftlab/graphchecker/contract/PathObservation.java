@@ -78,12 +78,14 @@ public final class PathObservation {
         this.branchMappings = Collections.unmodifiableList(decoded);
         this.branchMappingIssue = issue;
         this.alpha = new AlphaNormalizer(raw);
+        JsonArray concreteDecisions = concreteDecisionSequence(
+                branchMappings);
         this.pathKey = stablePathKey(raw, scope,
                 raw.get("pathCondition"), alpha,
-                occurrenceId);
+                occurrenceId, concreteDecisions);
         this.semanticPathKey = stablePathKey(raw, scope,
                 raw.get("pathCondition"), alpha,
-                plannedOccurrenceId);
+                plannedOccurrenceId, concreteDecisions);
         this.relationPathPositions = Collections.unmodifiableList(
                 projectRelationPathCondition(raw, scope, branchMappings,
                         alpha));
@@ -99,7 +101,7 @@ public final class PathObservation {
                 relationPathCondition, new AlphaNormalizer(raw)));
         this.relationKey = stablePathKey(raw, scope,
                 relationPathCondition, new AlphaNormalizer(raw),
-                occurrenceId);
+                occurrenceId, new JsonArray());
     }
 
     public static PathObservation decode(JsonObject summary, JsonObject task) {
@@ -394,11 +396,30 @@ public final class PathObservation {
         component(value, scope.identity);
         component(value, alphaCanonical(
                 prefixBefore(mapping.summaryPcIndex()), alpha));
+        JsonArray concretePrefix = concretePrefixBefore(mapping);
+        if (concretePrefix.size() > 0) {
+            component(value, CanonicalJson.render(concretePrefix));
+        }
         component(value, mapping.siteId());
         component(value, String.valueOf(mapping.occurrence()));
         component(value, String.valueOf(mapping.decisionOrdinal()));
         component(value, String.valueOf(desiredOutcome));
         return CanonicalJson.sha256(value.toString());
+    }
+
+    /** Conditionless decisions executed before a later symbolic flip. */
+    private JsonArray concretePrefixBefore(SummaryBranchMapping target) {
+        JsonArray result = new JsonArray();
+        for (SummaryBranchMapping mapping : branchMappings) {
+            if (mapping.decisionIdentity().equals(
+                    target.decisionIdentity())) {
+                break;
+            }
+            if (mapping.isConcreteObservation()) {
+                result.add(concreteDecision(mapping));
+            }
+        }
+        return result;
     }
 
     public JsonObject replayPayload() { return raw.deepCopy(); }
@@ -488,7 +509,8 @@ public final class PathObservation {
 
     private static String stablePathKey(
             JsonObject summary, Scope scope, JsonElement pathCondition,
-            AlphaNormalizer alpha, String occurrenceIdentity) {
+            AlphaNormalizer alpha, String occurrenceIdentity,
+            JsonArray concreteDecisions) {
         StringBuilder value = new StringBuilder();
         component(value, scope.outputClosure == null
                 ? string(summary, "regionId")
@@ -497,6 +519,9 @@ public final class PathObservation {
         component(value, occurrenceIdentity);
         component(value, scope.identity);
         component(value, alphaCanonical(pathCondition, alpha));
+        if (concreteDecisions.size() > 0) {
+            component(value, CanonicalJson.render(concreteDecisions));
+        }
         component(value, alphaCanonical(summary.get("outputExpressions"),
                 alpha));
         component(value, alphaCanonical(summary.get(
@@ -506,6 +531,27 @@ public final class PathObservation {
         component(value, string(summary, "normalExit"));
         component(value, string(summary, "exceptionType"));
         return CanonicalJson.sha256(value.toString());
+    }
+
+    /** Ordered no-PC branch decisions that distinguish concrete paths. */
+    private static JsonArray concreteDecisionSequence(
+            List<SummaryBranchMapping> mappings) {
+        JsonArray result = new JsonArray();
+        for (SummaryBranchMapping mapping : mappings) {
+            if (mapping.isConcreteObservation()) {
+                result.add(concreteDecision(mapping));
+            }
+        }
+        return result;
+    }
+
+    private static JsonObject concreteDecision(
+            SummaryBranchMapping mapping) {
+        JsonObject result = new JsonObject();
+        result.addProperty("siteId", mapping.siteId());
+        result.addProperty("occurrence", mapping.occurrence());
+        result.addProperty("decision", mapping.exactDecisionToken());
+        return result;
     }
 
     /**

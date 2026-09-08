@@ -189,6 +189,11 @@ public final class TargetReachPathQueryBuilder {
                 throw new IOException("concrete target observation does not "
                         + "match target site");
             }
+            if (targetConcrete.isMultiwaySwitch()) {
+                throw new IOException("multiway concrete target requires an "
+                        + "exact successor; fatal target policy states only "
+                        + "a Boolean outcome");
+            }
             targetOccurrence = targetConcrete.occurrence();
         } else {
             try {
@@ -278,8 +283,8 @@ public final class TargetReachPathQueryBuilder {
                     ? null : targetReplay.source();
             if (targetConcrete != null) {
                 if (!targetMapping.isConcreteObservation()
-                        || !targetMapping.decisionIdentity().equals(
-                        concreteDecisionIdentity(targetConcrete))) {
+                        || !targetMapping.concreteObservation()
+                        .sameDecision(targetConcrete)) {
                     continue;
                 }
             } else {
@@ -823,12 +828,6 @@ public final class TargetReachPathQueryBuilder {
             }
         }
         return null;
-    }
-
-    private static String concreteDecisionIdentity(
-            ExactConcreteBranchObservation observation) {
-        return observation.siteId() + "\u0000" + observation.occurrence()
-                + "\u0000" + 0;
     }
 
     /**

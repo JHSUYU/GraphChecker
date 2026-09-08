@@ -5,9 +5,11 @@ import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
@@ -3010,7 +3012,7 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /** Every writer the trace observed for each demanded shared-field read. */
-    private static List<Map<String, Object>> fieldFlows(
+    static List<Map<String, Object>> fieldFlows(
             List<Map<String, Object>> regions,
             Set<String> demandedFields) throws IOException {
         // Reads state the demand, so they are collected first under the plain
@@ -3050,7 +3052,10 @@ public final class RuntimeSelectedRegionFinalizer {
                                 write.mutationInvocationId);
                         edge.put("mutatorDeclaredCallee",
                                 write.mutatorDeclaredCallee);
-                        edge.put("readerValueObjectId", read.valueObject);
+                        edge.put("readerValueObjectId",
+                                write.atomicValueProjection
+                                        ? read.receiver
+                                        : read.evidenceValueObject);
                     }
                     return edge;
                 });
@@ -3135,7 +3140,7 @@ public final class RuntimeSelectedRegionFinalizer {
         edge.put("fromRootCallId", write.rootCallId);
         edge.put("toRootCallId", read.rootCallId);
         edge.put("receiverObjectId", write.receiver);
-        edge.put("valueObjectId", write.valueObject);
+        edge.put("valueObjectId", write.evidenceValueObject);
         edge.put("primitiveValue", write.primitiveValue);
         edge.put("writerEventSeq", write.seq);
         edge.put("readerEventSeq", read.seq);
@@ -3227,6 +3232,12 @@ public final class RuntimeSelectedRegionFinalizer {
                 // Constructor writes are ordinary definitions of the
                 // constructed object's scalar leaves.
                 dynamicallyDefined.add(field);
+                String atomicValue = atomicMutationValueField(field,
+                        first(text(edge.get("mutatorDeclaredCallee")),
+                                text(edge.get("invoke"))));
+                if (!atomicValue.isEmpty()) {
+                    dynamicallyDefined.add(atomicValue);
+                }
             }
         }
         fields.retainAll(dynamicallyDefined);
@@ -3294,6 +3305,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 accesses = Collections.singletonList(port);
             }
             for (Map<String, Object> access : accesses) {
+                SemanticHeapAddress address = semanticHeapAddress(
+                        port, access);
                 target.add(new BoundPort(region, text(port.get("portId")),
                         first(text(access.get("sourceKey")),
                                 text(port.get("sourceKey"))),
@@ -3301,15 +3314,13 @@ public final class RuntimeSelectedRegionFinalizer {
                                 text(port.get("occurrenceId"))),
                         longNumber(access.get("rootCallId"),
                                 longNumber(port.get("rootCallId"), 0L)),
-                        number(access.get("fieldReceiverObjectId"),
-                                number(port.get("fieldReceiverObjectId"), 0)),
+                        address.receiver,
                         longNumber(access.get("eventSeq"),
                                 longNumber(port.get("eventSeq"), 0L)),
-                        strings(access.containsKey("fieldPathDeclarations")
-                                ? access.get("fieldPathDeclarations")
-                                : port.get("fieldPathDeclarations")),
-                        number(access.get("valueObjectId"),
-                                number(port.get("valueObjectId"), 0)),
+                        address.declarations,
+                        address.valueObject,
+                        address.evidenceValueObject,
+                        address.atomicValueProjection,
                         first(text(access.get("primitiveValue")),
                                 text(port.get("primitiveValue"))),
                         first(text(access.get("bindingKind")),
@@ -3329,6 +3340,62 @@ public final class RuntimeSelectedRegionFinalizer {
                                 1)));
             }
         }
+    }
+
+    /**
+     * Gives a supported Atomic arithmetic mutation the same semantic heap
+     * address as an accessor of the Atomic's primitive value. The trace keeps
+     * the outer field receiver as provenance, while {@code valueObjectId}
+     * identifies the concrete Atomic instance whose state changed.
+     */
+    private static SemanticHeapAddress semanticHeapAddress(
+            Map<String, Object> port, Map<String, Object> access) {
+        int receiver = number(access.get("fieldReceiverObjectId"),
+                number(port.get("fieldReceiverObjectId"), 0));
+        List<String> declarations = strings(
+                access.containsKey("fieldPathDeclarations")
+                        ? access.get("fieldPathDeclarations")
+                        : port.get("fieldPathDeclarations"));
+        int valueObject = number(access.get("valueObjectId"),
+                number(port.get("valueObjectId"), 0));
+        String bindingKind = first(text(access.get("bindingKind")),
+                text(port.get("bindingKind")));
+        String declaredCallee = first(
+                text(access.get("mutatorDeclaredCallee")),
+                text(port.get("mutatorDeclaredCallee")));
+        String atomicValue = "CONTAINER_MUTATION".equals(bindingKind)
+                && !declarations.isEmpty()
+                ? atomicMutationValueField(
+                declarations.get(declarations.size() - 1), declaredCallee)
+                : "";
+        if (!atomicValue.isEmpty() && valueObject > 0
+                && !declarations.isEmpty()) {
+            FieldPathSpec.DeclaredField leaf =
+                    FieldPathSpec.declaredField(atomicValue);
+            if (leaf != null) {
+                List<String> semanticDeclarations =
+                        new ArrayList<>(declarations);
+                semanticDeclarations.add(leaf.signature());
+                return new SemanticHeapAddress(valueObject,
+                        semanticDeclarations, 0, valueObject, true);
+            }
+        }
+        return new SemanticHeapAddress(receiver, declarations, valueObject,
+                valueObject, false);
+    }
+
+    /** Primitive value field summarized by a supported Atomic mutation. */
+    private static String atomicMutationValueField(
+            String carrierDeclaration, String declaredCallee) {
+        String atomicValue = OutputCaptureSpec
+                .atomicArithmeticValueFieldSignature(declaredCallee);
+        FieldPathSpec.DeclaredField carrier =
+                FieldPathSpec.declaredField(carrierDeclaration);
+        FieldPathSpec.DeclaredField leaf =
+                FieldPathSpec.declaredField(atomicValue);
+        return carrier != null && leaf != null
+                && carrier.type().equals(leaf.owner())
+                ? leaf.signature() : "";
     }
 
     /**
@@ -3414,20 +3481,16 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return (port, access) -> {
-            int receiver = number(access.get("fieldReceiverObjectId"),
-                    number(port.get("fieldReceiverObjectId"), 0));
-            List<String> declarations = strings(
-                    access.containsKey("fieldPathDeclarations")
-                            ? access.get("fieldPathDeclarations")
-                            : port.get("fieldPathDeclarations"));
-            if (receiver == 0 || declarations.isEmpty()) return false;
-            String location = receiver + "\n"
-                    + declarations.get(declarations.size() - 1);
-            int valueObject = number(access.get("valueObjectId"),
-                    number(port.get("valueObjectId"), 0));
-            return valueObject > 0
+            SemanticHeapAddress address = semanticHeapAddress(port, access);
+            if (address.receiver == 0 || address.declarations.isEmpty()) {
+                return false;
+            }
+            String location = address.receiver + "\n"
+                    + address.declarations.get(
+                    address.declarations.size() - 1);
+            return address.valueObject > 0
                     ? demandedReferenceValues.contains(location + "\n"
-                    + valueObject)
+                    + address.valueObject)
                     : demanded.contains(location);
         };
     }
@@ -3978,6 +4041,9 @@ public final class RuntimeSelectedRegionFinalizer {
         private final long seq;
         private final List<String> declarations;
         private final int valueObject;
+        /** Reference identity retained while an Atomic join uses its leaf. */
+        private final int evidenceValueObject;
+        private final boolean atomicValueProjection;
         private final String primitiveValue;
         private final String bindingKind;
         private final long writerFieldReadSeq;
@@ -3993,6 +4059,8 @@ public final class RuntimeSelectedRegionFinalizer {
                           String occurrenceId,
                           long rootCallId, int receiver, long seq,
                           List<String> declarations, int valueObject,
+                          int evidenceValueObject,
+                          boolean atomicValueProjection,
                           String primitiveValue, String bindingKind,
                           long writerFieldReadSeq, long mutatorEnterSeq,
                           long mutationCompletionSeq,
@@ -4009,6 +4077,8 @@ public final class RuntimeSelectedRegionFinalizer {
             this.seq = seq;
             this.declarations = declarations;
             this.valueObject = valueObject;
+            this.evidenceValueObject = evidenceValueObject;
+            this.atomicValueProjection = atomicValueProjection;
             this.primitiveValue = primitiveValue;
             this.bindingKind = bindingKind;
             this.writerFieldReadSeq = writerFieldReadSeq;
@@ -4024,6 +4094,28 @@ public final class RuntimeSelectedRegionFinalizer {
         private String leafDeclaration() {
             return declarations.isEmpty() ? ""
                     : declarations.get(declarations.size() - 1);
+        }
+
+    }
+
+    /** Canonical runtime address used only to join observed heap accesses. */
+    private static final class SemanticHeapAddress {
+        private final int receiver;
+        private final List<String> declarations;
+        private final int valueObject;
+        private final int evidenceValueObject;
+        private final boolean atomicValueProjection;
+
+        private SemanticHeapAddress(int receiver,
+                                    List<String> declarations,
+                                    int valueObject,
+                                    int evidenceValueObject,
+                                    boolean atomicValueProjection) {
+            this.receiver = receiver;
+            this.declarations = declarations;
+            this.valueObject = valueObject;
+            this.evidenceValueObject = evidenceValueObject;
+            this.atomicValueProjection = atomicValueProjection;
         }
     }
 

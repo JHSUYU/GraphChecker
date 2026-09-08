@@ -10,7 +10,9 @@ import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -211,6 +213,127 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
         assertEquals(5, SymbolicSourceEvidence.eventsOf(result).size());
         assertTrue(result.toString(), result.toString().contains(
                 MAP_ELEMENT_SOURCE_ID));
+    }
+
+    @Test
+    public void absentInstanceScopedOutputNeedsCompletedCleanReplay()
+            throws Exception {
+        OutputCaptureSpec onceOnly = outputCapture(true);
+        assertTrue(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(onceOnly,
+                        true, true, false, 0, false, false));
+        assertFalse(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(onceOnly,
+                        false, true, false, 0, false, false));
+        assertFalse(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(onceOnly,
+                        true, false, false, 0, false, false));
+        assertFalse(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(onceOnly,
+                        true, true, true, 0, false, false));
+        assertFalse(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(onceOnly,
+                        true, true, false, 1, false, false));
+        assertFalse(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(onceOnly,
+                        true, true, false, 0, true, false));
+        assertFalse(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(onceOnly,
+                        true, true, false, 0, false, true));
+        assertFalse(ConcolicRegionRuntime
+                .replayAdmitsAbsentInstanceScopedOutput(outputCapture(false),
+                        true, true, false, 0, false, false));
+    }
+
+    @Test
+    public void accessCarrierUsesOnlyTheFinalClaimantsReceiverLocator()
+            throws Exception {
+        JsonObject enteredPlan = task(false);
+        JsonObject siblingPlan = task(false);
+        siblingPlan.addProperty("taskId", "TASK.sibling-carrier");
+        for (JsonElement element
+                : siblingPlan.getAsJsonArray("inputActions")) {
+            JsonObject action = element.getAsJsonObject();
+            if (VALUE_FIELD.equals(action.has("accessFieldSignature")
+                    ? action.get("accessFieldSignature").getAsString()
+                    : "")) {
+                action.addProperty("fieldReceiverObjectId", 916L);
+            }
+        }
+        JsonObject declaration = new JsonObject();
+        declaration.addProperty("kind", "INSTANCE_FIELD");
+        declaration.addProperty("sourceKind",
+                "ACTIVATION_FIELD_RECEIVER");
+        declaration.addProperty("declaringClass",
+                TargetState.class.getName());
+        declaration.addProperty("fieldName", "localValue");
+        declaration.addProperty("descriptor", "I");
+        JsonArray carriers = new JsonArray();
+        carriers.add(declaration);
+        siblingPlan.add(ExecutionTask.SHARED_CARRIERS, carriers);
+
+        Object entered = runtimeTask(enteredPlan);
+        Object sibling = runtimeTask(siblingPlan);
+        TargetState receiver = new TargetState();
+        Object active = activate(receiver, 91L, entered);
+        Field siblings = active.getClass().getDeclaredField(
+                "siblingClaimants");
+        siblings.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Object> siblingClaimants = (List<Object>) siblings.get(active);
+        siblingClaimants.add(sibling);
+
+        ConcolicRegionRuntime.selectFieldWriteCarrier(receiver, VALUE_FIELD);
+
+        Field selected = active.getClass().getDeclaredField("sharedCarriers");
+        selected.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> selectedCarriers =
+                (Map<String, Object>) selected.get(active);
+        assertEquals(1, selectedCarriers.size());
+        Object carrier = selectedCarriers.values().iterator().next();
+        Field locator = carrier.getClass().getDeclaredField(
+                "plannedReceiverObjectId");
+        locator.setAccessible(true);
+        assertEquals(916L, locator.getLong(carrier));
+
+        Method bindFinal = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "bindSharedCarrierToFinalClaimant", active.getClass(),
+                carrier.getClass());
+        bindFinal.setAccessible(true);
+        assertFalse((Boolean) bindFinal.invoke(null, active, carrier));
+        assertEquals(0L, locator.getLong(carrier));
+
+        Field activation = active.getClass().getDeclaredField("activation");
+        activation.setAccessible(true);
+        activation.set(active, sibling);
+        assertTrue((Boolean) bindFinal.invoke(null, active, carrier));
+        assertEquals(916L, locator.getLong(carrier));
+    }
+
+    private static OutputCaptureSpec outputCapture(boolean instanceScoped)
+            throws Exception {
+        JsonObject encoded = new JsonObject();
+        encoded.addProperty("captureBindingId", "CAPTURE.once-only");
+        encoded.addProperty("captureKind",
+                OutputCaptureSpec.FIELD_WRITE_STATE);
+        encoded.addProperty("outputPort", "TARGET.out.state");
+        encoded.addProperty("outputCell", VALUE_FIELD);
+        encoded.addProperty("fieldSignature", VALUE_FIELD);
+        encoded.add("fieldPath", new JsonArray());
+        encoded.addProperty("javaType", "int");
+        encoded.addProperty("definitionMethod", ROOT);
+        encoded.addProperty("definitionUnitIndex", 7);
+        encoded.addProperty("outputSiteId", "FIELD_WRITE:" + ROOT + "#u7");
+        encoded.addProperty("outputOccurrence", 1);
+        encoded.addProperty("occurrenceScope",
+                OutputCaptureSpec.REGION_ACTIVATION_SCOPE);
+        encoded.addProperty(OutputCaptureSpec.INSTANCE_SCOPED_PRODUCER,
+                instanceScoped);
+        Constructor<OutputCaptureSpec> constructor = OutputCaptureSpec.class
+                .getDeclaredConstructor(JsonObject.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(encoded);
     }
 
     private static JsonObject task() {
@@ -464,6 +587,20 @@ public class ConcolicRegionRuntimeTargetLocalSourceExecutionTest {
                 "taskById", String.class);
         taskById.setAccessible(true);
         Object task = taskById.invoke(configuration, TASK);
+        return activate(receiver, token, task);
+    }
+
+    private static Object runtimeTask(JsonObject encoded) throws Exception {
+        Class<?> taskType = Class.forName(
+                ConcolicRegionRuntime.class.getName() + "$RuntimeTask");
+        Constructor<?> constructor = taskType.getDeclaredConstructor(
+                ExecutionTask.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(ExecutionTask.decode(encoded));
+    }
+
+    private static Object activate(TargetState receiver, long token,
+                                   Object task) throws Exception {
         Class<?> activeType = Class.forName(
                 ConcolicRegionRuntime.class.getName() + "$ActiveRegion");
         Constructor<?> constructor = activeType.getDeclaredConstructor(

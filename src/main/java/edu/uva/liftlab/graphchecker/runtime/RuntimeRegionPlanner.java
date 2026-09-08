@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
+import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.concolic.RecordedReadFrom;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
@@ -4094,10 +4095,13 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> occurrences = new ArrayList<>();
             for (int index = 0; index < selected.size(); index++) {
                 RuntimeEvent event = selected.get(index);
-                occurrences.add(object("occurrence", index + 1,
+                Map<String, Object> occurrence = object(
+                        "occurrence", index + 1,
                         "outcome", event.outcome,
                         "eventSeq", event.seq,
-                        "callId", event.callId));
+                        "callId", event.callId);
+                addExactSwitchDecision(occurrence, event);
+                occurrences.add(occurrence);
             }
             replay.put("occurrences", occurrences);
             result.add(replay);
@@ -5116,9 +5120,13 @@ final class RuntimeRegionPlanner {
                     Collections.emptyList());
             List<Map<String, Object>> encoded = new ArrayList<>();
             for (int index = 0; index < occurrences.size(); index++) {
-                encoded.add(object("occurrence", index + 1, "outcome",
-                        occurrences.get(index).outcome, "eventSeq",
-                        occurrences.get(index).seq));
+                RuntimeEvent event = occurrences.get(index);
+                Map<String, Object> occurrence = object(
+                        "occurrence", index + 1,
+                        "outcome", event.outcome,
+                        "eventSeq", event.seq);
+                addExactSwitchDecision(occurrence, event);
+                encoded.add(occurrence);
             }
             int selectedIndex = 0;
             Object required = policy.get("requiredOutcome");
@@ -5144,6 +5152,52 @@ final class RuntimeRegionPlanner {
             }
             branch.put("occurrences", encoded);
             result.add(branch);
+        }
+        return result;
+    }
+
+    /** Copies a complete switch successor authority into a task occurrence. */
+    private static void addExactSwitchDecision(
+            Map<String, Object> occurrence, RuntimeEvent event) {
+        boolean statesSwitch = event != null
+                && (!event.branchKind.isEmpty()
+                || !event.switchCaseKeys.isEmpty()
+                || event.successorIndex != null);
+        if (!statesSwitch) return;
+        if (event.branchKind.isEmpty() || event.switchCaseKeys.isEmpty()
+                || event.successorIndex == null) {
+            throw new IllegalArgumentException(
+                    "incomplete exact switch decision at " + event.siteId);
+        }
+        List<Integer> keys = parseSwitchCaseKeys(event.switchCaseKeys);
+        // One validation owner for runtime summaries and seed tasks.
+        ExactConcreteBranchObservation.switchDecisionToken(
+                event.branchKind, keys, event.successorIndex);
+        boolean outcome = event.successorIndex < keys.size();
+        if (event.outcome == null || event.outcome != outcome) {
+            throw new IllegalArgumentException(
+                    "switch outcome differs from exact successor at "
+                            + event.siteId);
+        }
+        occurrence.put("branchKind", event.branchKind);
+        occurrence.put("caseKeys", keys);
+        occurrence.put("observedSuccessorIndex", event.successorIndex);
+    }
+
+    private static List<Integer> parseSwitchCaseKeys(String encoded) {
+        List<Integer> result = new ArrayList<>();
+        for (String token : safe(encoded).split(",", -1)) {
+            if (!token.matches("-?(?:0|[1-9][0-9]*)")) {
+                throw new IllegalArgumentException(
+                        "malformed switch case key " + token);
+            }
+            try {
+                result.add(Integer.valueOf(token));
+            } catch (NumberFormatException malformed) {
+                throw new IllegalArgumentException(
+                        "switch case key outside int domain " + token,
+                        malformed);
+            }
         }
         return result;
     }

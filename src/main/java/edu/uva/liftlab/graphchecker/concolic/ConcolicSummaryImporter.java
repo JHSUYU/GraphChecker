@@ -1238,8 +1238,15 @@ public final class ConcolicSummaryImporter {
             return observed.issue;
         }
         if (encodedReplay == null) {
+            final Map<String, Set<String>> preGate;
+            try {
+                preGate = concreteBranchOutcomes(row);
+            } catch (IllegalArgumentException malformed) {
+                return "malformed pre-gate concrete branch witness: "
+                        + malformed.getMessage();
+            }
             return exactSeedMismatch(task.goalId(), seed.events,
-                    observed.events, concreteBranchOutcomes(row),
+                    observed.events, preGate,
                     "BOUNDED".equals(row.exitKind));
         }
         if (!encodedReplay.isJsonObject()) {
@@ -1301,7 +1308,14 @@ public final class ConcolicSummaryImporter {
                         && ordinal == targetOccurrence) {
                     continue;
                 }
-                BranchEvent event = new BranchEvent(site, ordinal, outcome);
+                final BranchEvent event;
+                try {
+                    event = branchEvent(site, ordinal, outcome, occurrence);
+                } catch (IllegalArgumentException malformed) {
+                    result.issue = "task branch occurrence is malformed at "
+                            + site + ": " + malformed.getMessage();
+                    return result;
+                }
                 if (result.byIdentity.put(event.identity, event) != null) {
                     result.issue = "duplicate task branch event "
                             + event.display();
@@ -1348,7 +1362,9 @@ public final class ConcolicSummaryImporter {
                 mappingIndex++;
                 continue;
             }
-            BranchEvent event = new BranchEvent(mapping.siteId(),
+            BranchEvent event = mapping.isConcreteObservation()
+                    ? BranchEvent.concrete(mapping.concreteObservation())
+                    : new BranchEvent(mapping.siteId(),
                     mapping.occurrence(), mapping.sourceTakenOutcome());
             if (result.byIdentity.put(event.identity, event) != null) {
                 result.issue = "duplicate runtime branch event "
@@ -1365,20 +1381,20 @@ public final class ConcolicSummaryImporter {
     private static String exactSeedMismatch(
             String replayId, List<BranchEvent> expected,
             List<BranchEvent> observed,
-            Map<String, Set<Boolean>> concrete, boolean earlyStop) {
-        Map<String, Set<Boolean>> wanted = outcomesBySite(expected);
-        Map<String, Set<Boolean>> actual = outcomesBySite(observed);
-        for (Map.Entry<String, Set<Boolean>> entry : wanted.entrySet()) {
-            Set<Boolean> found = union(actual.get(entry.getKey()),
+            Map<String, Set<String>> concrete, boolean earlyStop) {
+        Map<String, Set<String>> wanted = decisionsBySite(expected);
+        Map<String, Set<String>> actual = decisionsBySite(observed);
+        for (Map.Entry<String, Set<String>> entry : wanted.entrySet()) {
+            Set<String> found = union(actual.get(entry.getKey()),
                     concrete.get(entry.getKey()));
             if (found.isEmpty()) {
                 if (earlyStop) continue;
                 return replayDetail(replayId, "missing " + entry.getKey());
             }
-            for (Boolean outcome : entry.getValue()) {
-                if (!found.contains(outcome)) {
-                    return replayDetail(replayId, "wrong outcome at "
-                            + entry.getKey() + ": expected " + outcome
+            for (String decision : entry.getValue()) {
+                if (!found.contains(decision)) {
+                    return replayDetail(replayId, "wrong decision at "
+                            + entry.getKey() + ": expected " + decision
                             + " but observed " + found);
                 }
             }
@@ -1393,9 +1409,9 @@ public final class ConcolicSummaryImporter {
 
     /** Indexes the branches an activation executed before its symbolic gate
      * opened. */
-    private static Map<String, Set<Boolean>> concreteBranchOutcomes(
+    private static Map<String, Set<String>> concreteBranchOutcomes(
             ResultRow row) {
-        Map<String, Set<Boolean>> outcomes = new LinkedHashMap<>();
+        Map<String, Set<String>> outcomes = new LinkedHashMap<>();
         for (JsonElement element : row.concreteBranchWitnesses) {
             if (!element.isJsonObject()) continue;
             JsonObject witness = element.getAsJsonObject();
@@ -1406,18 +1422,26 @@ public final class ConcolicSummaryImporter {
                     || !outcome.getAsJsonPrimitive().isBoolean()) {
                 continue;
             }
-            Set<Boolean> seen = outcomes.get(site);
+            final BranchEvent event;
+            try {
+                event = branchEvent(site, 1, outcome.getAsBoolean(),
+                        witness);
+            } catch (IllegalArgumentException malformed) {
+                throw new IllegalArgumentException(site + ": "
+                        + malformed.getMessage(), malformed);
+            }
+            Set<String> seen = outcomes.get(site);
             if (seen == null) {
                 seen = new LinkedHashSet<>();
                 outcomes.put(site, seen);
             }
-            seen.add(outcome.getAsBoolean());
+            seen.add(event.decisionToken);
         }
         return outcomes;
     }
 
-    private static Set<Boolean> union(Set<Boolean> first, Set<Boolean> second) {
-        Set<Boolean> result = new LinkedHashSet<>();
+    private static Set<String> union(Set<String> first, Set<String> second) {
+        Set<String> result = new LinkedHashSet<>();
         if (first != null) result.addAll(first);
         if (second != null) result.addAll(second);
         return result;
@@ -1445,11 +1469,11 @@ public final class ConcolicSummaryImporter {
             }
             BranchEvent wanted = expected.get(next);
             if (wanted.identity.equals(actual.identity)) {
-                if (wanted.outcome != actual.outcome) {
-                    return replayDetail(replayId, "wrong replay outcome at "
+                if (!wanted.decisionToken.equals(actual.decisionToken)) {
+                    return replayDetail(replayId, "wrong replay decision at "
                             + wanted.siteOccurrence() + ": expected "
-                            + wanted.outcome + " but observed "
-                            + actual.outcome);
+                            + wanted.decisionToken + " but observed "
+                            + actual.decisionToken);
                 }
                 next++;
                 continue;
@@ -1471,14 +1495,43 @@ public final class ConcolicSummaryImporter {
         return "";
     }
 
-    private static Map<String, Set<Boolean>> outcomesBySite(
+    private static Map<String, Set<String>> decisionsBySite(
             List<BranchEvent> events) {
-        Map<String, Set<Boolean>> result = new LinkedHashMap<>();
+        Map<String, Set<String>> result = new LinkedHashMap<>();
         for (BranchEvent event : events) {
             result.computeIfAbsent(event.site,
-                    ignored -> new LinkedHashSet<>()).add(event.outcome);
+                    ignored -> new LinkedHashSet<>()).add(
+                    event.decisionToken);
         }
         return result;
+    }
+
+    /** Decodes either the legacy Boolean decision or one complete switch
+     * successor carried by a task occurrence/pre-gate witness. */
+    private static BranchEvent branchEvent(
+            String site, int occurrence, boolean outcome,
+            JsonObject evidence) {
+        boolean hasKind = evidence.has("branchKind");
+        boolean hasKeys = evidence.has("caseKeys");
+        boolean hasSuccessor = evidence.has("observedSuccessorIndex");
+        if (!hasKind && !hasKeys && !hasSuccessor) {
+            return new BranchEvent(site, occurrence, outcome);
+        }
+        if (!(hasKind && hasKeys && hasSuccessor)) {
+            throw new IllegalArgumentException(
+                    "incomplete exact switch decision");
+        }
+        List<Integer> keys = ExactConcreteBranchObservation.exactCaseKeys(
+                evidence.get("caseKeys"));
+        int successor = JsonFields.exactInteger(evidence,
+                "observedSuccessorIndex", -1);
+        String token = ExactConcreteBranchObservation.switchDecisionToken(
+                exactText(evidence, "branchKind"), keys, successor);
+        if (outcome != (successor < keys.size())) {
+            throw new IllegalArgumentException(
+                    "switch outcome differs from exact successor");
+        }
+        return new BranchEvent(site, occurrence, outcome, token);
     }
 
     private static Boolean exactBoolean(JsonObject object, String field) {
@@ -1593,12 +1646,29 @@ public final class ConcolicSummaryImporter {
         private final int occurrence;
         private final boolean outcome;
         private final String identity;
+        private final String decisionToken;
 
         private BranchEvent(String site, int occurrence, boolean outcome) {
+            this(site, occurrence, outcome,
+                    ExactConcreteBranchObservation.binaryDecisionToken(
+                            outcome));
+        }
+
+        private BranchEvent(String site, int occurrence, boolean outcome,
+                            String decisionToken) {
             this.site = site;
             this.occurrence = occurrence;
             this.outcome = outcome;
             this.identity = site + "\u0000" + occurrence;
+            this.decisionToken = decisionToken;
+        }
+
+        private static BranchEvent concrete(
+                ExactConcreteBranchObservation observation) {
+            return new BranchEvent(observation.siteId(),
+                    observation.occurrence(),
+                    observation.sourceTakenOutcome(),
+                    observation.exactDecisionToken());
         }
 
         private String siteOccurrence() {
@@ -1606,7 +1676,7 @@ public final class ConcolicSummaryImporter {
         }
 
         private String display() {
-            return siteOccurrence() + '=' + outcome;
+            return siteOccurrence() + '=' + decisionToken;
         }
     }
 
