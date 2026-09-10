@@ -5,9 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
-import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -47,17 +45,19 @@ public final class RegionPathWorklist {
      * classified as {@code TOPOLOGY_DIVERGENCE} belongs to the next
      * iteration's plan, so no branch-flip obligation may be built across
      * it.</p> */
-    public static Result plan(List<JsonObject> summaries,
-                              List<JsonObject> executionTasks,
-                              List<JsonObject> explorationRecords,
-                              Bounds bounds,
-                              List<JsonObject> topologyDelta) {
+    static Result plan(List<JsonObject> summaries,
+                       List<JsonObject> executionTasks,
+                       List<JsonObject> explorationRecords,
+                       Bounds bounds,
+                       List<JsonObject> topologyDelta,
+                       String familySnapshotDigest) {
         return new Planner(summaries, executionTasks, explorationRecords,
-                bounds, topologyDelta).run();
+                bounds, topologyDelta, familySnapshotDigest).run();
     }
 
     private static final class Planner {
         private final Bounds bounds;
+        private final String familySnapshotDigest;
         private final Set<String> divergentTasks = new LinkedHashSet<>();
         private final Set<String> divergentOccurrences =
                 new LinkedHashSet<>();
@@ -72,21 +72,19 @@ public final class RegionPathWorklist {
         private final Set<String> coverageGapKeys = new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
-        /** Activation-independent semantic paths already explored. */
-        private final Set<String> plannedSemanticPaths =
+        /** Activation-exact local paths already explored. */
+        private final Set<String> plannedActivationPaths =
                 new LinkedHashSet<>();
-        /** OCC-1: tasks with at least one boundary-complete activation. */
-        private final Set<String> completeActivations = new LinkedHashSet<>();
-        /** OCC-1: path keys of activations carried as partial cases. */
-        private final Set<String> partialActivations = new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
         private Planner(List<JsonObject> summaries,
                         List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
                         Bounds bounds,
-                        List<JsonObject> topologyDelta) {
+                        List<JsonObject> topologyDelta,
+                        String familySnapshotDigest) {
             this.bounds = bounds;
+            this.familySnapshotDigest = familySnapshotDigest;
             for (JsonObject row : topologyDelta) {
                 if (!TopologyDelta.TOPOLOGY_DIVERGENCE.equals(
                         string(row, "deltaKind"))) {
@@ -113,16 +111,12 @@ public final class RegionPathWorklist {
                 collectAlignmentGaps(summary);
             }
             Collections.sort(paths, Comparator.comparing(value ->
-                    value.regionId() + "\n" + value.pathKey()));
+                    value.regionId() + "\n" + value.pathKey() + "\n"
+                            + string(value.replayPayload(), "summaryId")));
         }
 
         private Result run() {
             indexObservedCoverage();
-            for (PathObservation path : paths) {
-                if (path.relationallyComplete()) {
-                    completeActivations.add(path.sourceTaskId());
-                }
-            }
             Set<String> seenPaths = new LinkedHashSet<>();
             Set<String> observedRegions = new TreeSet<>();
             Map<String, PathObservation.Scope> observedScopes =
@@ -150,31 +144,19 @@ public final class RegionPathWorklist {
                             path.branchMappingIssue(), region, pathKey, "", -1);
                     continue;
                 }
-                if (!path.relationallyComplete()) {
-                    // OCC-1: a task publishes one observation per activation
-                    // of its address.  One activation that missed part of the
-                    // boundary does not make the task's relation incomplete
-                    // as long as another activation satisfied it -- it is one
-                    // partial occurrence, carried as its own case and named
-                    // here.  A task no activation of which is complete is the
-                    // pre-OCC-1 case and stays a hard gap.
-                    if (completeActivations.contains(path.sourceTaskId())) {
-                        coverageGap("INCOMPLETE_ACTIVATION",
-                                "ACTIVATION_BOUNDARY_NOT_COMPLETE",
-                                region, pathKey, "", -1);
-                        partialActivations.add(pathKey);
-                        continue;
-                    }
-                    gap("INCOMPLETE_REGION_SUMMARY",
-                            "RELATIONAL_INPUT_OUTPUT_SUMMARY_NOT_COMPLETE",
-                            region, pathKey, "", -1);
-                    continue;
-                }
-                // Keep every activation as a relation case, but plan only
-                // once for the activation-independent semantic path. Invalid
-                // or partial cases never consume the valid path's allowance.
-                boolean plansObligations = plannedSemanticPaths.add(
-                        region + "\n" + path.semanticPathKey());
+                // A case is a local path condition plus its normalized
+                // consumer anchors.  Output capture completeness is not an
+                // exploration contract: the VM-propagated value has already
+                // reached the consumer expression, and later family arms are
+                // admitted as their own local cases.
+                // One bounded region activation owns one local PC.  Keep
+                // distinct activations separate: their loop/access ordinals
+                // and VM read-from/order evidence can differ even when the
+                // branch predicates alpha-normalize to the same text.  Loop
+                // iterations inside this activation remain part of this one
+                // path; pathKey does not turn them into standalone cases.
+                boolean plansObligations = plannedActivationPaths.add(
+                        region + "\n" + path.pathKey());
                 if (plansObligations) {
                     pathCountByRegion.merge(region, 1, Integer::sum);
                 }
@@ -188,190 +170,45 @@ public final class RegionPathWorklist {
                 if (campaignTaskCount() >= bounds.maxTasks) break;
             }
 
-            int remainingPathSlots = bounds.maxPathsPerRegion
-                    - plannedSemanticPaths.size();
-            if (!tasks.isEmpty() && remainingPathSlots <= 0) {
-                coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
-                        manifestRegionId(observedRegions),
-                        "", "", -1);
-                tasks.clear();
-            } else if (tasks.size() > remainingPathSlots) {
-                coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
-                        manifestRegionId(observedRegions),
-                        "", "", -1);
-                tasks.subList(remainingPathSlots, tasks.size()).clear();
-            }
+            enforcePathBounds();
 
             JsonObject manifest = manifest(!seenPaths.isEmpty(),
                     observedRegions, observedScopes);
-            String coverageState = string(manifest, "coverageState");
-            String worklistState = string(manifest, "state");
-            // One relation artifact for both coverage states.
-            List<JsonObject> relations = new ArrayList<>();
-            if (State.CLOSED.name().equals(worklistState)
-                    && "CLOSED".equals(coverageState)) {
-                relations.addAll(outputRelations(observedScopes,
-                        false, coverageState));
-            } else if (State.PENDING.name().equals(worklistState)
-                    || State.CLOSED.name().equals(worklistState)) {
-                relations.addAll(outputRelations(observedScopes,
-                        true, coverageState));
-            }
             if (!gaps.isEmpty()) {
                 tasks.clear();
-                relations.clear();
                 manifest.addProperty("state", State.GAPPED.name());
-                // Relations discovered a gap after the manifest was built,
-                // so the coverage it reported is no longer closed.
                 manifest.addProperty("coverageState",
                         hasReplayPath() ? "PARTIAL" : "SEED_ONLY");
                 manifest.add("gaps", GSON.toJsonTree(gaps));
             }
-            return new Result(tasks, manifest, relations);
+            return new Result(tasks, manifest);
         }
 
-        private List<JsonObject> outputRelations(
-                Map<String, PathObservation.Scope> observedScopes,
-                boolean observedOnly, String coverageState) {
-            if (observedScopes.size() != 1) {
-                return Collections.emptyList();
-            }
-            PathObservation.Scope scope =
-                    observedScopes.values().iterator().next();
-            if (!scope.goalKind().capturesOutputRelation()) {
-                return Collections.emptyList();
-            }
-            if (scope.outputClosure() == null) {
-                gap("INVALID_OUTPUT_CLOSURE",
-                        "CANONICAL_OUTPUT_CLOSURE_REQUIRED",
-                        "", "", "", -1);
-                return Collections.emptyList();
-            }
-
-            String region = scope.outputClosure().producer().regionId();
-            String outputIdentity = scope.outputClosureIdentity();
-            // The contract's own statement of which demanded ports are
-            // produced only by instance-scoped once-only heap writes, read
-            // once for the whole closure.  Empty for every closure the rule
-            // never fired on, so the demand below is unchanged there.
-            Set<String> onceOnlyPorts = scope.outputClosure()
-                    .onceOnlyInstanceScopedPorts();
-            List<PathObservation> validPaths = new ArrayList<>();
-            for (PathObservation path : paths) {
-                if (!path.scope().goalKind().capturesOutputRelation()) {
+        /** Keeps only flips that can still discover a path in their region. */
+        private void enforcePathBounds() {
+            Map<String, Integer> retainedByRegion = new LinkedHashMap<>();
+            Set<String> truncatedRegions = new LinkedHashSet<>();
+            List<JsonObject> retained = new ArrayList<>();
+            for (JsonObject task : tasks) {
+                String region = string(task, "regionId");
+                int observed = pathCountByRegion.getOrDefault(region, 0);
+                int remaining = Math.max(0,
+                        bounds.maxPathsPerRegion - observed);
+                int retainedCount = retainedByRegion.getOrDefault(region, 0);
+                if (retainedCount >= remaining) {
+                    truncatedRegions.add(region);
                     continue;
                 }
-                OutputClosureContract contract = path.scope().outputClosure();
-                if (!outputIdentity.equals(
-                        path.scope().outputClosureIdentity())) {
-                    gap("OUTPUT_CLOSURE_SCOPE_MISMATCH",
-                            "CLOSED_PATHS_HAVE_DIFFERENT_OUTPUT_CLOSURES",
-                            path.regionId(), "", "", -1);
-                    continue;
-                }
-                if (!path.hasExactOutputSet(contract.outputPorts())) {
-                    // OCC-1: a partial activation is expected to carry fewer
-                    // members than the demand -- that is what makes it
-                    // partial.  It becomes a case of exactly what it captured
-                    // and is already named as an INCOMPLETE_ACTIVATION
-                    // coverage gap.  A complete path that misses a demanded
-                    // port is still the hard mismatch it always was.
-                    if (partialActivations.contains(path.pathKey())) {
-                        validPaths.add(path);
-                        continue;
-                    }
-                    // Once-only-root rule
-                    // (OutputCaptureSpec#INSTANCE_SCOPED_PRODUCER) -- the same
-                    // completeness question the recorder answers in
-                    // ConcolicRegionRuntime#completeExactOutputBoundary and
-                    // the importer answers in its output-capture count.  A
-                    // field belongs to the object, not to the seventh loop
-                    // iteration: an instance-scoped heap write's recorded
-                    // version is decided once at instance scope, so an
-                    // occurrence that never sampled the once-entered write
-                    // owes no per-occurrence production of that port and its
-                    // expression set is not a mismatch with the demand.  The
-                    // planner is the third owner of this check and must not
-                    // disagree with the other two.
-                    if (onlyOnceOnlyPortsMissing(path,
-                            contract.outputPorts(), onceOnlyPorts)) {
-                        validPaths.add(path);
-                        continue;
-                    }
-                    gap("OUTPUT_EXPRESSION_SET_MISMATCH",
-                            "OUTPUT_EXPRESSION_SET_DOES_NOT_MATCH_DEMAND",
-                            region, path.pathKey(), "", -1);
-                } else {
-                    validPaths.add(path);
-                }
-                // README CASE-1: a path's edge bindings travel with the path
-                // and are stated by the case its observation becomes.
+                retained.add(task);
+                retainedByRegion.put(region, retainedCount + 1);
             }
-            if (!gaps.isEmpty()) {
-                return Collections.emptyList();
-            }
-            // Two paths whose projected guards are equal and whose relations
-            // are not are two cases the relation guard cannot tell apart, so
-            // the merged summary's "exactly one case selector" would hold of
-            // neither.
-            Map<String, String> relationByGuard = new LinkedHashMap<>();
-            Map<String, PathObservation> caseByPath = new LinkedHashMap<>();
-            for (PathObservation path : validPaths) {
-                // OCC-1: two activations of one address are two occurrences
-                // that both happened, not two alternatives one guard has to
-                // tell apart.  Equal guards across occurrences are normal --
-                // the same code ran twice.  Within one occurrence the
-                // separation requirement is unchanged.
-                String prior = relationByGuard.putIfAbsent(
-                        path.occurrenceId() + "\n" + path.relationGuardKey(),
-                        path.relationKey());
-                if (prior != null && !prior.equals(path.relationKey())) {
-                    gap("RELATION_GUARD_DOES_NOT_SEPARATE_CASES",
-                            "TWO_RELATIONS_SHARE_ONE_PROJECTED_GUARD",
-                            region, path.relationKey(), "", -1);
-                    continue;
-                }
-                caseByPath.putIfAbsent(path.relationKey(), path);
-            }
-            if (!gaps.isEmpty()) {
-                return Collections.emptyList();
-            }
-            if (caseByPath.isEmpty()) {
-                gap("NO_VALID_OUTPUT_CLOSURE_RELATIONS",
-                        "CLOSED_OUTPUT_SCOPE_HAS_NO_CASES",
+            if (retained.size() == tasks.size()) return;
+            tasks.clear();
+            tasks.addAll(retained);
+            for (String region : truncatedRegions) {
+                coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
                         region, "", "", -1);
-                return Collections.emptyList();
             }
-
-            RelationSummary merged = observedOnly
-                    ? RelationSummary.observedPathMerge(
-                    scope.outputClosure(), caseByPath.values(),
-                    coverageState)
-                    : RelationSummary.guardedPathMerge(
-                    scope.outputClosure(), caseByPath.values());
-            return Collections.singletonList(merged.toJson());
-        }
-
-        /**
-         * Whether the only demanded ports this path did not produce are
-         * once-only instance-scoped heap writes.
-         *
-         * <p>Fail-closed: a path that produced a port outside the demand, or
-         * that is missing any port the contract does not name once-only, is
-         * the hard set mismatch it has always been.  A port that did produce
-         * an expression is never relaxed -- it is simply present on both
-         * sides.  {@code onceOnlyPorts} is empty for every closure with no
-         * such capture, which makes this exactly the old set equality.</p>
-         */
-        private static boolean onlyOnceOnlyPortsMissing(
-                PathObservation path, Set<String> demanded,
-                Set<String> onceOnlyPorts) {
-            if (onceOnlyPorts.isEmpty()) return false;
-            Set<String> produced = path.producedOutputPorts();
-            if (!demanded.containsAll(produced)) return false;
-            Set<String> missing = new TreeSet<>(demanded);
-            missing.removeAll(produced);
-            return !missing.isEmpty() && onceOnlyPorts.containsAll(missing);
         }
 
         /** Whether the delta classified this path's own occurrence changed.
@@ -395,7 +232,7 @@ public final class RegionPathWorklist {
             if (path.scope().goalKind().capturesTargetReach()) {
                 candidates.addAll(targetPrefixCandidates(path, task));
             } else {
-                outputRelationCandidates(path, task, candidates);
+                regionPathCandidates(path, task, candidates);
             }
 
             // Classic depth-first concolic order: flip the latest relevant
@@ -429,7 +266,7 @@ public final class RegionPathWorklist {
             }
         }
 
-        private void outputRelationCandidates(
+        private void regionPathCandidates(
                 PathObservation path, JsonObject task,
                 List<SummaryBranchMapping> candidates) {
             Set<String> explicitFaultSymbols = explicitFaultSymbols(task);
@@ -444,11 +281,8 @@ public final class RegionPathWorklist {
                 if (!mapping.isExplore()) continue;
                 if (!explicitFaultSymbols.isEmpty()
                         && !dependsOnAny(mapping.witness()
-                        .sourceSatisfiedPredicate(),
+                        .sourceSatisfiedPredicateView(),
                         explicitFaultSymbols)) {
-                    continue;
-                }
-                if (abandonsDemandedOutputSite(path, task, mapping)) {
                     continue;
                 }
                 candidates.add(mapping);
@@ -524,25 +358,16 @@ public final class RegionPathWorklist {
             // while its observed outcome still contradicted the required
             // failure outcome.
             if (required != null
-                    && fatal.sourceTakenOutcome() != required
-                    && ConcolicConstraintSolver
-                    .hasLocallyWritableReplayRoot(
-                            fatal.witness().sourceSatisfiedPredicate(),
-                            task)) {
+                    && fatal.sourceTakenOutcome() != required) {
                 result.add(fatal);
             }
             for (SummaryBranchMapping mapping : path.branchMappings()) {
                 if (!mapping.isWitnessed()
+                        || mapping.witness().isPcPredicateDecision()
                         || mapping.policy()
                         != SummaryBranchMapping.Policy.PATH_ASSUMPTION
                         || mapping.summaryPcIndex() >= fatalPc
                         || !declaredTargetPrefix(task, mapping)) {
-                    continue;
-                }
-                if (!ConcolicConstraintSolver
-                        .hasLocallyWritableReplayRoot(
-                                mapping.witness()
-                                        .sourceSatisfiedPredicate(), task)) {
                     continue;
                 }
                 result.add(mapping);
@@ -627,7 +452,7 @@ public final class RegionPathWorklist {
         }
 
         /** A task with a named fault input explores that controlled fault and
-         * keeps the rest of the producer path at its witnessed values. */
+         * keeps the rest of its local prefix at witnessed values. */
         private Set<String> explicitFaultSymbols(JsonObject task) {
             Set<String> result = new LinkedHashSet<>();
             for (JsonElement element : array(task, "inputActions")) {
@@ -646,46 +471,35 @@ public final class RegionPathWorklist {
 
         private boolean dependsOnAny(JsonElement predicate,
                                      Set<String> symbols) {
-            String encoded = CanonicalJson.render(predicate);
-            for (String symbol : symbols) {
-                if (encoded.contains(symbol)) return true;
-            }
-            return false;
-        }
-
-        /** True when the flipped successor provably cannot reach a site the
-         * demanded outputs are published at. */
-        private boolean abandonsDemandedOutputSite(
-                PathObservation path, JsonObject task,
-                SummaryBranchMapping mapping) {
-            OutputClosureContract closure = path.scope().outputClosure();
-            if (closure == null || task == null) return false;
-            Set<String> demanded =
-                    closure.executionScope().outputSites();
-            if (demanded.isEmpty()) return false;
-            boolean desired = !mapping.sourceTakenOutcome();
-            for (JsonElement element : array(task, "branches")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject branch = element.getAsJsonObject();
-                if (!mapping.siteId().equals(string(branch, "siteId"))) {
+            if (predicate == null || symbols.isEmpty()) return false;
+            java.util.Deque<JsonElement> pending = new java.util.ArrayDeque<>();
+            Set<JsonElement> visited = Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<JsonElement, Boolean>());
+            pending.push(predicate);
+            while (!pending.isEmpty()) {
+                JsonElement value = pending.pop();
+                if (value == null || value.isJsonNull()) continue;
+                if (value.isJsonPrimitive()) {
+                    if (value.getAsJsonPrimitive().isString()) {
+                        String text = value.getAsString();
+                        for (String symbol : symbols) {
+                            if (text.contains(symbol)) return true;
+                        }
+                    }
                     continue;
                 }
-                Boolean required = TargetReachPathQueryBuilder
-                        .requiredOutcome(branch);
-                if (!bool(branch, "failureTarget", false)
-                        && required != null && required != desired) {
-                    return true;
-                }
-                for (JsonElement row
-                        : array(branch, "guardedSiteOutcomes")) {
-                    if (!row.isJsonObject()) continue;
-                    JsonObject guarded = row.getAsJsonObject();
-                    if (!demanded.contains(string(guarded, "siteId"))) {
-                        continue;
+                if (!visited.add(value)) continue;
+                if (value.isJsonArray()) {
+                    for (JsonElement child : value.getAsJsonArray()) {
+                        if (child != null) pending.push(child);
                     }
-                    Boolean outcome = TargetReachPathQueryBuilder
-                            .requiredOutcome(guarded);
-                    if (outcome != null && outcome != desired) return true;
+                } else {
+                    for (Map.Entry<String, JsonElement> field
+                            : value.getAsJsonObject().entrySet()) {
+                        if (field.getValue() != null) {
+                            pending.push(field.getValue());
+                        }
+                    }
                 }
             }
             return false;
@@ -696,13 +510,21 @@ public final class RegionPathWorklist {
             BranchReplayContract replay = BranchReplayContract.fromSummary(
                     path.replayPayload(), path.branchMappings(), mapping);
             boolean desired = replay.requiredTakenOutcome();
-            String key = path.flipKey(mapping, desired);
+            String semanticKey = path.flipKey(mapping, desired);
+
+            // A local branch is one semantic obligation regardless of which
+            // upstream anchor arm supplied its current payload.  A solver
+            // verdict, however, is valid only for the receiver-family
+            // snapshot it saw: a newly discovered upstream arm can turn a
+            // previously UNSAT flip into a replayable one.
+            String key = CanonicalJson.sha256(semanticKey + "\n"
+                    + familySnapshotDigest);
 
             JsonObject previous = records.get(key);
             if (previous != null && terminal(previous)) {
                 return;
             }
-            if (observedFlipKeys.contains(key)) {
+            if (observedFlipKeys.contains(semanticKey)) {
                 return;
             }
             if (!emitted.add(key)) {
@@ -712,17 +534,22 @@ public final class RegionPathWorklist {
             task.addProperty("schemaVersion", 3);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
+            task.addProperty("semanticFlipKey", semanticKey);
+            task.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
+                    familySnapshotDigest);
             task.addProperty("regionId", path.regionId());
             task.addProperty("goalId", path.scope().goalId());
             path.scope().loopBound().writeTo(task);
             path.scope().goalKind().writeToTask(task);
             task.addProperty("sourceTaskId", path.sourceTaskId());
-            if (path.scope().outputClosure() != null) {
-                task.add(OutputClosureContract.FIELD,
-                        path.scope().outputClosure().toJson());
-            }
+            task.addProperty("sourceSummaryId",
+                    string(path.replayPayload(), "summaryId"));
+            task.addProperty("sourcePathKey", path.pathKey());
+            task.addProperty("sourceActivationOccurrenceId",
+                    path.occurrenceId());
+            task.addProperty("sourceActivationOrdinal",
+                    path.activationOrdinal());
             replay.addTo(task);
-            attachRecordedReadCut(path, replay, task);
             if (path.scope().goalKind().capturesTargetReach()) {
                 VmHandoffEvidence.writeTo(task, path.vmHandoffEvents());
                 JsonArray bindings = path.edgeBindings();
@@ -754,28 +581,8 @@ public final class RegionPathWorklist {
             tasks.add(task);
         }
 
-        /** Carries this path's recorded guarded reads into the query. */
-        private void attachRecordedReadCut(PathObservation path,
-                                           BranchReplayContract replay,
-                                           JsonObject task) {
-            JsonObject recorded = path.recordedSharedState();
-            if (recorded.size() == 0) return;
-            JsonObject row = new JsonObject();
-            row.add(SharedStateEvidence.RECORDED_FIELD, recorded);
-            JsonObject payload = RecordedSessionModel.of(
-                    Collections.singletonList(row),
-                    replay.requiredSatisfiedPredicate(),
-                    path.regionId()).queryPayload();
-            if (payload.size() > 0) {
-                task.add(RecordedSessionModel.QUERY_FIELD, payload);
-            }
-        }
-
         private void indexObservedCoverage() {
             for (PathObservation path : paths) {
-                if (!path.relationallyComplete()) {
-                    continue;
-                }
                 Set<String> observedTargetPrefixes = new LinkedHashSet<>();
                 if (path.scope().goalKind().capturesTargetReach()) {
                     for (SummaryBranchMapping prefix
@@ -789,13 +596,13 @@ public final class RegionPathWorklist {
                     if (!mapping.isWitnessed()) {
                         continue;
                     }
-                    boolean outputExplore = mapping.isExplore()
+                    boolean localExplore = mapping.isExplore()
                             && !path.regionId().isEmpty()
                             && path.scope().branchSites().contains(
                             mapping.siteId());
                     boolean targetPrefix = observedTargetPrefixes.contains(
                             mapping.decisionIdentity());
-                    if (outputExplore || targetPrefix) {
+                    if (localExplore || targetPrefix) {
                         observedFlipKeys.add(path.flipKey(mapping,
                                 mapping.sourceTakenOutcome()));
                     }
@@ -851,20 +658,12 @@ public final class RegionPathWorklist {
                 result.addProperty("occurrenceId",
                         occurrences.iterator().next());
             }
-            if (scopes.size() != 1 || scopes.values().iterator().next()
-                    .outputClosure() == null) {
-                result.addProperty("regionId", regionId);
-            }
+            result.addProperty("regionId", regionId);
             if (scopes.size() == 1) {
                 PathObservation.Scope scope = scopes.values().iterator().next();
                 scope.loopBound().writeTo(result);
-                if (scope.outputClosure() != null) {
-                    result.add(OutputClosureContract.FIELD,
-                            scope.outputClosure().toJson());
-                } else {
-                    result.addProperty("goalId", scope.goalId());
-                    scope.goalKind().writeToTask(result);
-                }
+                result.addProperty("goalId", scope.goalId());
+                scope.goalKind().writeToTask(result);
             }
             result.add("gaps", GSON.toJsonTree(gaps));
             List<JsonObject> pathCoverageGaps = new ArrayList<>();
@@ -949,8 +748,7 @@ public final class RegionPathWorklist {
                 String kind = string(imported, "kind");
                 if (!RpcExpressionHandoff.GAP_KIND.equals(kind)
                         && !SharedStateEvidence.GAP_KIND.equals(kind)
-                        && !SparseReadCutGate.GAP_KIND.equals(kind)
-                        && !"OUTPUT_VERSION_ALIGNMENT_GAP".equals(kind)) {
+                        && !CoverageDivergence.isDivergence(imported)) {
                     continue;
                 }
                 String key = CanonicalJson.render(imported);
@@ -1005,13 +803,10 @@ public final class RegionPathWorklist {
     public static final class Result {
         public final List<JsonObject> tasks;
         public final JsonObject manifest;
-        public final List<JsonObject> relations;
 
-        private Result(List<JsonObject> tasks, JsonObject manifest,
-                       List<JsonObject> relations) {
+        private Result(List<JsonObject> tasks, JsonObject manifest) {
             this.tasks = tasks;
             this.manifest = manifest;
-            this.relations = relations;
         }
     }
 
@@ -1019,8 +814,7 @@ public final class RegionPathWorklist {
         String status = string(record, "status");
         return "UNSAT".equals(status)
                 || !explorationGapKind(status).isEmpty()
-                || "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY".equals(status)
-                || "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY".equals(status);
+                || "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY".equals(status);
     }
 
     /** Names an abandoned flip, or empty when the record is not one. */
@@ -1044,6 +838,9 @@ public final class RegionPathWorklist {
         // materialized".
         if ("MATERIALIZATION_GAP".equals(status)) {
             return "PATH_FLIP_MATERIALIZATION_GAP";
+        }
+        if ("BUNDLE_TOPOLOGY_DIVERGENCE".equals(status)) {
+            return "LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH";
         }
         return "";
     }

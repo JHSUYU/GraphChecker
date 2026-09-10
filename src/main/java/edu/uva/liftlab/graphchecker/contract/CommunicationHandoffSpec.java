@@ -97,8 +97,6 @@ public final class CommunicationHandoffSpec {
     }
 
     public String portId() { return portId; }
-    public String leafPath() { return leafPath; }
-    public String direction() { return direction; }
     public String side() { return side; }
     public String captureKind() { return captureKind; }
     public String method() { return method; }
@@ -106,7 +104,6 @@ public final class CommunicationHandoffSpec {
     public int unitIndex() { return unitIndex; }
     public int argumentIndex() { return argumentIndex; }
     public boolean outgoing() { return OUT.equals(side); }
-    public boolean incoming() { return IN.equals(side); }
 
     public String siteId() {
         return unitIndex < 0 ? method

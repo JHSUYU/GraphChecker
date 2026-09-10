@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
@@ -14,11 +15,11 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
-import edu.uva.liftlab.graphchecker.contract.OutputClosureContract;
+import soot.PrimType;
 import soot.SootClass;
 import soot.SootField;
 import soot.SootFieldRef;
+import soot.SootMethodRef;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -27,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -34,8 +36,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
@@ -63,6 +63,12 @@ public final class ConcolicInstrumentationSelections {
                 String owner = CausynthStaticFacts.methodOwner(signature);
                 if (!owner.isEmpty()) classes.add(owner);
             }
+            // A factory region can publish a value through a freshly-created
+            // object's constructor.  That constructor is not necessarily a
+            // method in the region slice, but its selected carrier field still
+            // has to be registered before the first putfield.
+            classes.addAll(plan.materializations()
+                    .sharedCarrierDeclaringClasses());
         }
         if (classes.isEmpty()) {
             throw new IllegalStateException(
@@ -115,12 +121,9 @@ public final class ConcolicInstrumentationSelections {
          */
         private final String rootLoopMethod;
         private final int rootLoopHeaderUnitIndex;
+        private final int rootLoopDemandedUnitIndex;
         private final Set<String> rootLoopControlSites;
         private final ConcolicMaterializationSelection materializations;
-        private final List<RootedOutputCapture> outputCaptures;
-        private final List<CallOutputCapture> callOutputs;
-        private final List<CommunicationEffectCapture> communicationEffects;
-        private final List<ExactHeapOutputCapture> exactHeapOutputs;
         /**
          * Where this occurrence hands a declared communication port to the VM,
          * or takes one from it.
@@ -152,27 +155,16 @@ public final class ConcolicInstrumentationSelections {
             dynamicAssociativeTarget = declaresDynamicAssociativeTarget(
                     task.modelAssignments());
             branches = ConcolicBranchSelection.from(task.branches());
+            branches.addLoopExitSites(task.retainedLoops());
             loopBound = task.loopBound();
             fixedCountLoopSites = task.fixedCountLoopSites();
             rootLoopMethod = task.rootLoopMethod();
             rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
+            rootLoopDemandedUnitIndex = task.rootLoopDemandedUnitIndex();
             rootLoopControlSites = task.rootLoopControlSites();
             materializations = ConcolicMaterializationSelection.from(symbolic);
-            materializations.addCapturePrerequisiteTargets(
-                    task.outputClosure(), inputActions.all());
             materializations.addSharedCarrierTargets(
                     task.sharedCarriers(), inputActions.all());
-            outputCaptures = rootedOutputCaptures(task.outputCaptures(),
-                    inputActions.all());
-            callOutputs = selectedCaptures(task.outputCaptures(),
-                    OutputCaptureSpec::capturesCallOutput,
-                    CallOutputCapture::new);
-            communicationEffects = selectedCaptures(task.outputCaptures(),
-                    OutputCaptureSpec::capturesCommunicationEffect,
-                    CommunicationEffectCapture::new);
-            exactHeapOutputs = selectedCaptures(task.outputCaptures(),
-                    OutputCaptureSpec::capturesExactHeapWrite,
-                    ExactHeapOutputCapture::new);
             communicationHandoffs = task.communicationHandoffs();
             configuredSourcePhases = task.configuredSourcePhases();
 
@@ -183,17 +175,8 @@ public final class ConcolicInstrumentationSelections {
 
             LinkedHashSet<String> methods = new LinkedHashSet<>();
             methods.add(rootMethod);
-            OutputClosureContract closure = task.outputClosure();
-            if (closure != null) {
-                methods.addAll(closure.executionScope().methods());
-                anchorMethods.addAll(closure.executionScope().methods());
-            } else {
-                methods.addAll(branches.methods());
-                anchorMethods.addAll(branches.methods());
-            }
-            addCaptureMethods(methods, callOutputs);
-            addCaptureMethods(methods, communicationEffects);
-            addCaptureMethods(methods, exactHeapOutputs);
+            methods.addAll(branches.methods());
+            anchorMethods.addAll(branches.methods());
             // A concrete shared-state carrier is not a fresh symbolic input,
             // but its exact read still needs the materialization hook which
             // admits the planner-selected producer version.
@@ -356,6 +339,11 @@ public final class ConcolicInstrumentationSelections {
             return rootLoopHeaderUnitIndex;
         }
 
+        /** Original unit the selected iteration must reach. */
+        int rootLoopDemandedUnitIndex() {
+            return rootLoopDemandedUnitIndex;
+        }
+
         /** Iteration-control sites the region's exits are installed on. */
         Set<String> rootLoopControlSites() {
             return rootLoopControlSites;
@@ -363,22 +351,6 @@ public final class ConcolicInstrumentationSelections {
 
         ConcolicMaterializationSelection materializations() {
             return materializations;
-        }
-
-        List<RootedOutputCapture> outputCaptures() {
-            return outputCaptures;
-        }
-
-        List<CallOutputCapture> callOutputs() {
-            return callOutputs;
-        }
-
-        List<CommunicationEffectCapture> communicationEffects() {
-            return communicationEffects;
-        }
-
-        List<ExactHeapOutputCapture> exactHeapOutputs() {
-            return exactHeapOutputs;
         }
 
         List<CommunicationHandoffSpec> communicationHandoffs() {
@@ -406,10 +378,8 @@ public final class ConcolicInstrumentationSelections {
         /**
          * The methods this task's envelope may rewrite, before the replay
          * entry Soot selects is added to it. This is README section 1's per-
-         * task envelope as the plan states it: the mandatory
-         * target/region/RPC/SASL anchors, the closure the scheduler already
-         * intersected with the seed trace and the current output closure, and
-         * the exact alternative sites this task names.
+         * task envelope as the plan states it: the mandatory target, region,
+         * and communication anchors plus the exact sites this task names.
          */
         Set<String> envelopeMethods() {
             Set<String> methods = replayDemandMethods();
@@ -428,9 +398,6 @@ public final class ConcolicInstrumentationSelections {
             methods.addAll(materializations.localMethods());
             methods.addAll(materializations.methodArgumentMethods());
             methods.addAll(materializations.accessorCallerMethods());
-            addCaptureMethods(methods, exactHeapOutputs);
-            addCaptureMethods(methods, callOutputs);
-            addCaptureMethods(methods, communicationEffects);
             for (CommunicationHandoffSpec handoff : communicationHandoffs) {
                 methods.add(handoff.method());
             }
@@ -455,164 +422,6 @@ public final class ConcolicInstrumentationSelections {
             return false;
         }
 
-        private static List<RootedOutputCapture> rootedOutputCaptures(
-                List<OutputCaptureSpec> captures, JsonArray actions)
-                throws IOException {
-            List<RootedOutputCapture> rooted = new ArrayList<>();
-            for (OutputCaptureSpec capture : captures) {
-                if (!capture.capturesRegionExitField()) continue;
-                JsonObject match = null;
-                for (JsonElement element : actions) {
-                    JsonObject action = element.getAsJsonObject();
-                    if (!capture.accessRootInputPort().equals(
-                            string(action, "symbol"))) {
-                        continue;
-                    }
-                    if (match != null) {
-                        throw new IOException("Output capture "
-                                + capture.captureBindingId()
-                                + " has multiple access-root input actions");
-                    }
-                    match = action;
-                }
-                List<String> path = match == null
-                        ? capture.fieldPath()
-                        : FieldPathSpec.stringArray(match, "fieldPath");
-                if (path.isEmpty()
-                        || capture.fieldPath().size() != 1
-                        || !capture.fieldPath().get(0).equals(
-                        path.get(path.size() - 1))) {
-                    throw new IOException("Output capture "
-                            + capture.captureBindingId()
-                            + " has no exact rooted field path");
-                }
-                // A nested heap owner is identified by the exact field-read
-                // hook at runtime, not by inventing a path from the region
-                // root receiver.
-                if (match != null && "HEAP_OBJECT_FIELD".equals(
-                        string(match, "location"))) {
-                    if (!"SYMBOLIC".equals(string(match, "mode"))
-                            || !"FIELD_ACCESS".equals(
-                            string(match, "bindingMode"))) {
-                        throw new IOException("Output capture "
-                                + capture.captureBindingId()
-                                + " has no symbolic nested field owner");
-                    }
-                    continue;
-                }
-                rooted.add(new RootedOutputCapture(capture, path));
-            }
-            return Collections.unmodifiableList(rooted);
-        }
-
-        private static void addCaptureMethods(Set<String> methods,
-                Collection<? extends SpecCapture> captures) {
-            for (SpecCapture capture : captures) {
-                methods.add(capture.method());
-            }
-        }
-
-        private static <T> List<T> selectedCaptures(
-                List<OutputCaptureSpec> captures,
-                Predicate<OutputCaptureSpec> selects,
-                Function<OutputCaptureSpec, T> build) {
-            List<T> result = new ArrayList<>();
-            for (OutputCaptureSpec capture : captures) {
-                if (selects.test(capture)) result.add(build.apply(capture));
-            }
-            return Collections.unmodifiableList(result);
-        }
-    }
-
-    /** The accessors every {@link OutputCaptureSpec} view shares. */
-    abstract static class SpecCapture {
-        final OutputCaptureSpec capture;
-
-        SpecCapture(OutputCaptureSpec capture) {
-            this.capture = capture;
-        }
-
-        String captureBindingId() {
-            return capture.captureBindingId();
-        }
-
-        String method() {
-            return capture.definitionMethod();
-        }
-
-        int unitIndex() {
-            return capture.definitionUnitIndex();
-        }
-
-        String declaredCallee() {
-            return capture.declaredCallee();
-        }
-    }
-
-    static final class ExactHeapOutputCapture extends SpecCapture {
-        private ExactHeapOutputCapture(OutputCaptureSpec capture) {
-            super(capture);
-        }
-
-        String fieldSignature() {
-            return capture.fieldSignature();
-        }
-
-        List<String> fieldPath() {
-            return capture.fieldPath();
-        }
-
-        boolean mutationState() {
-            return capture.capturesMutationState();
-        }
-
-        boolean atomicArithmeticMutationState() {
-            return !capture.atomicArithmeticValueFieldSignature().isEmpty();
-        }
-
-        boolean definitionInvocationScoped() {
-            return capture.definitionInvocationScoped();
-        }
-
-        boolean fieldWriteState() {
-            return capture.capturesFieldWriteState();
-        }
-    }
-
-    static final class CallOutputCapture extends SpecCapture {
-        private CallOutputCapture(OutputCaptureSpec capture) {
-            super(capture);
-        }
-
-        int argumentIndex() {
-            return capture.argumentIndex();
-        }
-    }
-
-    /** One semantic server method whose return emits a response event. */
-    static final class CommunicationEffectCapture extends SpecCapture {
-        private CommunicationEffectCapture(OutputCaptureSpec capture) {
-            super(capture);
-        }
-    }
-
-    static final class RootedOutputCapture extends SpecCapture {
-        private final List<String> fieldPath;
-
-        private RootedOutputCapture(OutputCaptureSpec capture,
-                                    List<String> fieldPath) {
-            super(capture);
-            this.fieldPath = Collections.unmodifiableList(
-                    new ArrayList<>(fieldPath));
-        }
-
-        String fieldSignature() {
-            return capture.fieldSignature();
-        }
-
-        List<String> fieldPath() {
-            return fieldPath;
-        }
     }
 
     static final class ConcolicBranchSelection {
@@ -640,6 +449,33 @@ public final class ConcolicInstrumentationSelections {
                 }
             }
             return result;
+        }
+
+        /** Loop exits are replay-address boundaries even when they add no SMT
+         * predicate of their own. */
+        private void addLoopExitSites(JsonArray retainedLoops) {
+            for (JsonElement encodedLoop : retainedLoops) {
+                if (encodedLoop == null || !encodedLoop.isJsonObject()) {
+                    continue;
+                }
+                JsonElement encodedExits = encodedLoop.getAsJsonObject().get(
+                        LoopBoundPolicy.LOOP_EXIT_DECISIONS);
+                if (encodedExits == null || !encodedExits.isJsonArray()) {
+                    continue;
+                }
+                for (JsonElement encodedExit : encodedExits.getAsJsonArray()) {
+                    if (encodedExit == null || !encodedExit.isJsonObject()) {
+                        continue;
+                    }
+                    Matcher site = SITE_ID.matcher(string(
+                            encodedExit.getAsJsonObject(), "siteId"));
+                    if (site.matches()) {
+                        unitsByMethod.computeIfAbsent(site.group(1),
+                                ignored -> new LinkedHashSet<>()).add(
+                                Integer.parseInt(site.group(2)));
+                    }
+                }
+            }
         }
 
         Set<String> methods() {
@@ -673,6 +509,31 @@ public final class ConcolicInstrumentationSelections {
      * Soot to expose to the VM.
      */
     static final class ConcolicMaterializationSelection {
+        private static final String ATOMIC_INTEGER_VALUE =
+                "<java.util.concurrent.atomic.AtomicInteger: int value>";
+        private static final String ATOMIC_LONG_VALUE =
+                "<java.util.concurrent.atomic.AtomicLong: long value>";
+        /** Exact calls implemented by the VM's SymbolicAtomic helper. */
+        private static final Set<String> ATOMIC_INTEGER_MUTATIONS =
+                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                        "<java.util.concurrent.atomic.AtomicInteger: int getAndIncrement()>",
+                        "<java.util.concurrent.atomic.AtomicInteger: int getAndDecrement()>",
+                        "<java.util.concurrent.atomic.AtomicInteger: int incrementAndGet()>",
+                        "<java.util.concurrent.atomic.AtomicInteger: int decrementAndGet()>",
+                        "<java.util.concurrent.atomic.AtomicInteger: int getAndAdd(int)>",
+                        "<java.util.concurrent.atomic.AtomicInteger: int addAndGet(int)>",
+                        "<java.util.concurrent.atomic.AtomicInteger: boolean compareAndSet(int,int)>",
+                        "<java.util.concurrent.atomic.AtomicInteger: boolean weakCompareAndSet(int,int)>")));
+        private static final Set<String> ATOMIC_LONG_MUTATIONS =
+                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                        "<java.util.concurrent.atomic.AtomicLong: long getAndIncrement()>",
+                        "<java.util.concurrent.atomic.AtomicLong: long getAndDecrement()>",
+                        "<java.util.concurrent.atomic.AtomicLong: long incrementAndGet()>",
+                        "<java.util.concurrent.atomic.AtomicLong: long decrementAndGet()>",
+                        "<java.util.concurrent.atomic.AtomicLong: long getAndAdd(long)>",
+                        "<java.util.concurrent.atomic.AtomicLong: long addAndGet(long)>",
+                        "<java.util.concurrent.atomic.AtomicLong: boolean compareAndSet(long,long)>",
+                        "<java.util.concurrent.atomic.AtomicLong: boolean weakCompareAndSet(long,long)>")));
         private static final Pattern LOCAL = Pattern.compile(
                 "^(<.+>)::([^#]+)(?:#.*)?$");
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
@@ -701,6 +562,16 @@ public final class ConcolicInstrumentationSelections {
         }
 
         void add(JsonObject action) throws IOException {
+            FieldTarget fieldTarget = concolicFieldTarget(action);
+            if (fieldTarget != null
+                    && SharedFieldFlow.compilerSwitchDispatchField(
+                    fieldTarget.name)) {
+                // javac/ECJ rebuild their synthetic enum dispatch table at
+                // class initialization. It is neither an application input
+                // nor replay state, so emitting a field materializer would
+                // incorrectly try to replace the compiler-owned int[].
+                return;
+            }
             associativeContainerState |= "BOUNDED_CONTAINER_STATE".equals(
                     string(action, "symbolicDemand"))
                     && JavaContainerTypes.shape(string(action, "javaType"))
@@ -760,50 +631,6 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * A concrete input remains concrete, but an exact output capture that
-         * names it as its anchor still needs the action's observation hook.
-         * Select only those explicitly referenced anchors; unrelated concrete
-         * inputs remain outside the instrumentation surface.
-         */
-        void addCapturePrerequisiteTargets(OutputClosureContract closure,
-                                           JsonArray actions)
-                throws IOException {
-            if (closure == null) return;
-            Set<String> anchors = new LinkedHashSet<>();
-            for (OutputClosureContract.Member member : closure.members()) {
-                collectCaptureAnchors(member.slice(), anchors);
-            }
-            if (anchors.isEmpty()) return;
-            Set<String> found = new LinkedHashSet<>();
-            for (JsonElement element : actions) {
-                if (!element.isJsonObject()) continue;
-                JsonObject action = element.getAsJsonObject();
-                String symbol = string(action, "symbol");
-                if (anchors.contains(symbol)) {
-                    add(action);
-                    found.add(symbol);
-                }
-            }
-            anchors.removeAll(found);
-            if (!anchors.isEmpty()) {
-                throw new IOException("Output capture anchor has no input "
-                        + "action: " + anchors.iterator().next());
-            }
-        }
-
-        private static void collectCaptureAnchors(
-                JsonObject slice, Set<String> anchors) {
-            String anchor = string(slice, "captureAnchorPort");
-            if (!anchor.isEmpty()) anchors.add(anchor);
-            for (JsonElement element : JsonFields.array(
-                    slice, "boundedVersionScopes")) {
-                if (element.isJsonObject()) {
-                    collectCaptureAnchors(element.getAsJsonObject(), anchors);
-                }
-            }
-        }
-
-        /**
          * Access-owner shared carriers use the same exact getfield hooks as a
          * heap materialization, but they are not themselves new symbolic
          * inputs.
@@ -822,6 +649,9 @@ public final class ConcolicInstrumentationSelections {
                 String name = string(carrier, "fieldName");
                 if (owner.isEmpty() || name.isEmpty()) {
                     throw unsupported(carrier);
+                }
+                if (SharedFieldFlow.compilerSwitchDispatchField(name)) {
+                    continue;
                 }
                 FieldTarget target = new FieldTarget(owner, name);
                 String fieldKey = target.owner + "|" + target.name;
@@ -938,6 +768,44 @@ public final class ConcolicInstrumentationSelections {
             return matchesSelectedField(field, true, "", -1);
         }
 
+        /** Classes which declare a selected shared-state carrier. */
+        Set<String> sharedCarrierDeclaringClasses() {
+            Set<String> classes = new LinkedHashSet<>();
+            for (String field : sharedCarrierFields) {
+                int separator = field.indexOf('|');
+                if (separator > 0) classes.add(field.substring(0, separator));
+            }
+            return classes;
+        }
+
+        /**
+         * The selected primitive carrier mutated by one VM-modeled Atomic
+         * call, or {@code ""} when this campaign did not declare it.
+         *
+         * <p>Atomic RMWs execute inside the JDK and have no application
+         * {@code putfield} for the ordinary carrier hook to observe.  The
+         * caller must therefore select the exact Atomic receiver before the
+         * invocation.  Returning a field only for a declared carrier keeps
+         * unselected application atomics off the symbolic heap.</p>
+         */
+        String selectedAtomicWriteCarrier(SootMethodRef method) {
+            return selectedAtomicWriteCarrier(method == null
+                    ? "" : method.getSignature());
+        }
+
+        /** String seam used by the small decoder-alignment test. */
+        String selectedAtomicWriteCarrier(String methodSignature) {
+            String field = ATOMIC_INTEGER_MUTATIONS.contains(methodSignature)
+                    ? ATOMIC_INTEGER_VALUE
+                    : ATOMIC_LONG_MUTATIONS.contains(methodSignature)
+                    ? ATOMIC_LONG_VALUE : "";
+            DeclaredField declaration = FieldPathSpec.declaredField(field);
+            if (declaration == null) return "";
+            String fieldKey = declaration.owner() + "|"
+                    + declaration.name();
+            return sharedCarrierFields.contains(fieldKey) ? field : "";
+        }
+
         Set<String> localMethods() {
             return localsByMethod.keySet();
         }
@@ -991,9 +859,19 @@ public final class ConcolicInstrumentationSelections {
             String fieldKey = owner + "|" + fieldName;
             Map<Integer, Set<String>> carrierSites = writeCarrier ? null
                     : sharedCarrierFieldsBySite.get(method);
-            if (writeCarrier ? sharedCarrierFields.contains(fieldKey)
-                    : carrierSites != null && carrierSites.getOrDefault(
-                    unitIndex, Collections.emptySet()).contains(fieldKey)) {
+            boolean exactCarrierRead = carrierSites != null
+                    && carrierSites.getOrDefault(unitIndex,
+                    Collections.emptySet()).contains(fieldKey);
+            boolean sharedCarrier = sharedCarrierFields.contains(fieldKey);
+            if (!writeCarrier && field.isStatic()) {
+                // Static references have no receiver object for the shared
+                // carrier hook. Only the exact primitive read has a supported
+                // static materializer; explicit symbolic fields are checked
+                // separately below.
+                sharedCarrier = field.type() instanceof PrimType
+                        && exactCarrierRead;
+            }
+            if (sharedCarrier) {
                 return true;
             }
             for (FieldTarget target : fields.values()) {

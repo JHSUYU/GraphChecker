@@ -16,9 +16,7 @@ class PathCondition {
    * would push the document past the bound is reported as an explicit
    * TruncatedExpression marker rather than dropped.  See serialize_range().
    *
-   * 32 MB was too small for real workloads -- one DN heartbeat loop iteration
-   * in HDFS-11741 carries 240 conditions and 33.2 MB of expressions, so the
-   * bound cut the answer to 200 entries.  Overridable per run with
+   * The default accommodates large region paths. It is overridable with
    * `-Dcausynth.vm.pathcondition.bytes=<n>[k|m|g]`, which is how a test forces
    * the truncation path without producing hundreds of megabytes.
    */
@@ -168,6 +166,31 @@ public:
       if (truncated) {
         write_truncation_marker(writer, "PATH_CONDITION_RANGE_BYTE_LIMIT",
                                 index, cond);
+        continue;
+      }
+      VmExpressionArtifactScope *artifact =
+          VmExpressionArtifactScope::active();
+      if (artifact != NULL) {
+        Expression *expr = cond->_exp;
+        if (expr == NULL) {
+          write_truncation_marker(writer, "NULL_EXPRESSION", index, cond);
+          continue;
+        }
+        // An artifact condition is a fixed-size session/id reference.  Apply
+        // the existing range bound to that reference before recording the
+        // root, so a rejected condition neither leaves a dangling reference
+        // nor pulls an unreachable DAG into vmExpressionTable.  Definitions
+        // shared by admitted roots are emitted once at the envelope end.
+        const size_t condition_bytes = artifact->reference_size(expr);
+        if (condition_bytes > max_bytes - emitted_bytes) {
+          truncated = true;
+          write_truncation_marker(writer,
+                                  "PATH_CONDITION_RANGE_BYTE_LIMIT",
+                                  index, cond);
+          continue;
+        }
+        expr->serialize(writer);
+        emitted_bytes += condition_bytes;
         continue;
       }
       if (cond->_cache == NULL) {

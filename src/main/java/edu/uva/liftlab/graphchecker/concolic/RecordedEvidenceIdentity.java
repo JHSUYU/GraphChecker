@@ -107,9 +107,4 @@ public final class RecordedEvidenceIdentity {
         return row != null && fault(object(row, FIELD)).isEmpty();
     }
 
-    /** The snapshot ordinal of one stamped row; 0 when it carries none. */
-    public static long snapshotOrdinalOf(JsonObject row) {
-        return row == null ? 0L
-                : longInteger(object(row, FIELD), "snapshotOrdinal", 0L);
-    }
 }

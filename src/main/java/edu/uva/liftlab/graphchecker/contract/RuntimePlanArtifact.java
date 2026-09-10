@@ -38,10 +38,6 @@ public final class RuntimePlanArtifact {
             "CONCOLIC_RUNTIME_MODEL_CATALOG";
     public static final String PLAN_KIND = "CONCOLIC_REGION_PLAN";
     public static final String EDGE_BINDING_IDS = "edgeBindingIds";
-    /** Seed-trace identity of one field version shared by replay tasks. */
-    public static final String SEED_FIELD_IDENTITY = "seedFieldIdentity";
-    public static final String SEED_FIELD_IDENTITY_AUTHORITY =
-            "EXACT_SEED_FIELD_VERSION_V1";
     private static final int REGION_SCHEMA_VERSION = 3;
     private static final String REGION_KIND = "SYMBOLIC_REGION";
 
@@ -66,37 +62,6 @@ public final class RuntimePlanArtifact {
     }
 
     public List<JsonObject> regions() { return copies(regions); }
-
-    /** Validated identity of one field version, excluding extension fields. */
-    public static JsonObject seedFieldIdentity(JsonObject owner) {
-        JsonObject source = object(owner, SEED_FIELD_IDENTITY);
-        long receiver = longInteger(source, "receiverObjectId", 0L);
-        long writer = longInteger(source, "lastWriterEventSeq",
-                Long.MIN_VALUE);
-        if (integer(source, "schemaVersion", -1) != 1
-                || !SEED_FIELD_IDENTITY_AUTHORITY.equals(
-                string(source, "authority"))
-                || string(source, "sourceKey").isEmpty()
-                || receiver <= 0L
-                || string(source, "leafFieldSignature").isEmpty()
-                || writer < -1L) {
-            return new JsonObject();
-        }
-        JsonObject identity = new JsonObject();
-        identity.addProperty("schemaVersion", 1);
-        identity.addProperty("authority", SEED_FIELD_IDENTITY_AUTHORITY);
-        identity.addProperty("sourceKey", string(source, "sourceKey"));
-        identity.addProperty("receiverObjectId", receiver);
-        identity.addProperty("leafFieldSignature",
-                string(source, "leafFieldSignature"));
-        identity.addProperty("lastWriterEventSeq", writer);
-        return identity;
-    }
-
-    public static String seedFieldIdentityKey(JsonObject owner) {
-        JsonObject identity = seedFieldIdentity(owner);
-        return identity.size() == 0 ? "" : CanonicalJson.render(identity);
-    }
 
     /** Encodes compact plans plus one canonical region/edge catalog. */
     public static String encode(Collection<JsonObject> encodedPlans,
@@ -358,7 +323,6 @@ public final class RuntimePlanArtifact {
             for (String field : new String[]{
                     "portId", "symbol", "cell", "javaType",
                     "sourceKind", "dependencyRole", "symbolicDemand",
-                    SEED_FIELD_IDENTITY,
                     "declaredFieldSignature", "accessFieldSignature",
                     "leafFieldSignature", "callerMethod", "unitIndex",
                     // Where a cut port's value is read, by name.  Dropping

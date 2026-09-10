@@ -90,7 +90,7 @@ public:
 
   /**
    * One published symbolic leaf. Communication provenance belongs to the
-   * ledger event; the broker retains only what attach consumes.
+   * application trace; the broker retains only what attach consumes.
    */
   struct Leaf {
     Expression *expression;
@@ -104,8 +104,8 @@ public:
     // No source oop is retained by the broker.
     std::string array_class;
     int array_length;
-    // The ledger event the sender's export is, so that the receiver's attach
-    // can be joined to it by a value-handoff edge in the one order domain.
+    // Session-global identity of the sender's export endpoint. The receiver
+    // returns it alongside its own attach endpoint identity.
     jlong export_event_id;
   };
 

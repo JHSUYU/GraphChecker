@@ -22,10 +22,9 @@ public final class RegionMapValuesToObjectArrayApiSmoke {
         long initial = System.selectSharedMapCarrier(map);
         require(initial > 0L, "map carrier selection rejected: " + initial);
 
-        // Select the empty state first, then publish two real STATE_PUT
-        // versions.  Same-thread program order makes the second put the exact
-        // writer observed by values(); toArray() must inherit that one read,
-        // not issue a second map read of its own.
+        // Select the empty state first, then publish two STATE_PUT versions.
+        // values() keeps all three states as one guarded read; toArray()
+        // inherits it instead of issuing a second map read.
         map.put(Integer.valueOf(7), new Entry(17));
         map.put(Integer.valueOf(11), new Entry(19));
         Entry[] values = map.values().toArray(new Entry[0]);
@@ -46,13 +45,17 @@ public final class RegionMapValuesToObjectArrayApiSmoke {
         require(count(versions, "\"fieldVersionId\"") == 3, versions);
         require(count(versions, "\"versionKind\":\"STATE_PUT\"") == 2,
                 versions);
-        require(versions.contains("\"readsObserved\":1"), versions);
         require(count(versions, "\"readEventId\"") == 1, versions);
-        require(versions.contains("\"resolution\":\"EXACT\""), versions);
-        require(versions.contains("\"candidateCount\":1"), versions);
-        require(numberAfter(versions, "\"chosenFieldVersionId\":", false)
-                        == numberAfter(versions, "\"fieldVersionId\":", true),
-                "values() did not read the latest put: " + versions);
+        require(versions.contains("\"candidateCount\":3"), versions);
+        require(expression.contains("\"_type\":\"ReadFromExpression\""),
+                expression);
+        require(expression.contains(
+                "\"exactlyOne\":[\"rf1\",\"rf2\",\"rf3\"]"), expression);
+        require(count(expression,
+                "\"versionKind\":\"INITIAL\"") == 1, expression);
+        require(count(expression,
+                "\"versionKind\":\"STATE_PUT\"") == 2, expression);
+        require(!expression.contains("\"versionKind\":\"\""), expression);
         require(versions.contains("\"serializationTruncated\":false"),
                 versions);
         require(versions.contains("\"readLogTruncated\":false"), versions);
@@ -70,21 +73,6 @@ public final class RegionMapValuesToObjectArrayApiSmoke {
             cursor += fragment.length();
         }
         return matches;
-    }
-
-    private static long numberAfter(String text, String marker,
-                                    boolean last) {
-        int markerIndex = last ? text.lastIndexOf(marker)
-                : text.indexOf(marker);
-        require(markerIndex >= 0, "missing " + marker + ": " + text);
-        int start = markerIndex + marker.length();
-        int end = start;
-        while (end < text.length()
-                && text.charAt(end) >= '0' && text.charAt(end) <= '9') {
-            end++;
-        }
-        require(end > start, "missing number after " + marker + ": " + text);
-        return Long.parseLong(text.substring(start, end));
     }
 
     private static void require(boolean condition, String detail) {

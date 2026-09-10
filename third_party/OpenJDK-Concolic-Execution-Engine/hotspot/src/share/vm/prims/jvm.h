@@ -142,6 +142,9 @@ JNIEXPORT jlong JNICALL
 JVM_GetCurrentConcolicContextId(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jlong JNICALL
+JVM_GetCurrentConcolicRegionEnterEventId(JNIEnv *env, jclass ignored);
+
+JNIEXPORT jlong JNICALL
 JVM_EndConcolic(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jlong JNICALL
@@ -239,15 +242,13 @@ JVM_SelectSharedFieldCarrier(JNIEnv *env, jclass ignored, jobject owner,
                              jstring descriptor);
 
 JNIEXPORT jlong JNICALL
-JVM_GetCurrentSharedFieldVersion(JNIEnv *env, jclass ignored, jobject owner,
-                                 jstring declaring_class, jstring field_name,
-                                 jstring descriptor);
+JVM_ArmSharedPrimitiveFieldRead(JNIEnv *env, jclass ignored, jobject owner,
+                                jstring declaring_class, jstring field_name,
+                                jstring descriptor, jlong value_bits);
 
 JNIEXPORT jlong JNICALL
-JVM_AdmitSharedFieldVersion(JNIEnv *env, jclass ignored, jobject owner,
-                            jstring declaring_class, jstring field_name,
-                            jstring descriptor, jlong version_id,
-                            jstring selected_edge_id);
+JVM_ConfirmSharedPrimitiveFieldRead(JNIEnv *env, jclass ignored,
+                                    jlong token);
 
 JNIEXPORT jlong JNICALL
 JVM_SelectSharedElementCarrier(JNIEnv *env, jclass ignored, jobject array,
@@ -255,13 +256,6 @@ JVM_SelectSharedElementCarrier(JNIEnv *env, jclass ignored, jobject array,
 
 JNIEXPORT jlong JNICALL
 JVM_SelectSharedMapCarrier(JNIEnv *env, jclass ignored, jobject map);
-
-JNIEXPORT jlong JNICALL
-JVM_GetCurrentSharedMapVersion(JNIEnv *env, jclass ignored, jobject map);
-
-JNIEXPORT jlong JNICALL
-JVM_AdmitSharedMapVersion(JNIEnv *env, jclass ignored, jobject map,
-                          jlong version_id, jstring selected_edge_id);
 
 JNIEXPORT jstring JNICALL
 JVM_GetSharedFieldVersions(JNIEnv *env, jclass ignored, jobject owner,
@@ -274,16 +268,6 @@ JVM_GetSharedElementVersions(JNIEnv *env, jclass ignored, jobject array,
 
 JNIEXPORT jstring JNICALL
 JVM_GetSharedMapVersions(JNIEnv *env, jclass ignored, jobject map);
-
-JNIEXPORT jint JNICALL
-JVM_ProposeEventOrder(JNIEnv *env, jclass ignored, jlong before_event_id,
-                      jlong after_event_id);
-
-JNIEXPORT jstring JNICALL
-JVM_GetEventLedger(JNIEnv *env, jclass ignored);
-
-JNIEXPORT jboolean JNICALL
-JVM_ActivateConcolicEventLedger(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored);

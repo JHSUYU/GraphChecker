@@ -38,7 +38,8 @@ public final class RegionObjectArrayMapApiSmoke {
 
         require(relation.contains("\"operation\":\"PUT\""), relation);
         require(relation.contains("ContainerRelation"), relation);
-        require(relation.contains("_field"), relation);
+        require(relation.contains("\"_type\":\"FieldAccessExpression\""),
+                relation);
         require(summary.contains("\"complete\":true"), summary);
         System.out.println("CAUSYNTH_REGION_OBJECT_ARRAY_MAP_API_SMOKE_OK");
     }

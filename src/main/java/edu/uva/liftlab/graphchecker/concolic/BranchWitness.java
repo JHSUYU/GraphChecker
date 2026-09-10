@@ -17,7 +17,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
  * object.</p>
  */
 public final class BranchWitness {
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     public static final String KIND = "BINARY_BRANCH_WITNESS";
     public static final String IDENTITY_NORMALIZATION = "IDENTITY";
     public static final String CMP_NORMALIZATION =
@@ -34,12 +34,14 @@ public final class BranchWitness {
     private final int vmPcIndex;
     private final String predicateNormalization;
     private final int decisionOrdinal;
+    private final String symbolicSupportDigest;
 
     private BranchWitness(String siteId, String method, int unitIndex,
                           int occurrence, boolean sourceTakenOutcome,
                           JsonElement sourceSatisfiedPredicate,
                           int vmPcIndex, String predicateNormalization,
-                          int decisionOrdinal) {
+                          int decisionOrdinal, boolean immutablePredicate,
+                          String capturedSupportDigest) {
         this.siteId = requireText(siteId, "siteId");
         this.method = requireText(method, "method");
         if (unitIndex < 0) {
@@ -77,30 +79,44 @@ public final class BranchWitness {
         this.unitIndex = unitIndex;
         this.occurrence = occurrence;
         this.sourceTakenOutcome = sourceTakenOutcome;
-        this.sourceSatisfiedPredicate = BranchPredicateAlgebra.canonical(
-                sourceSatisfiedPredicate);
+        this.sourceSatisfiedPredicate = immutablePredicate
+                ? BranchPredicateAlgebra.canonicalView(
+                sourceSatisfiedPredicate)
+                : BranchPredicateAlgebra.canonical(sourceSatisfiedPredicate);
         this.vmPcIndex = vmPcIndex;
         this.predicateNormalization = predicateNormalization;
         this.decisionOrdinal = decisionOrdinal;
+        String captured = capturedSupportDigest == null ? ""
+                : capturedSupportDigest.trim();
+        if (!captured.isEmpty()
+                && !BranchPredicateAlgebra.validSymbolicSupportDigest(
+                captured)) {
+            throw new IllegalArgumentException(
+                    "symbolic support digest is malformed");
+        }
+        // Capture owns this identity. Offline merging may deliberately widen
+        // the expression later; recomputing from that union would lose which
+        // concrete loop element produced the witness.
+        this.symbolicSupportDigest = captured.isEmpty()
+                ? BranchPredicateAlgebra.symbolicSupportDigest(
+                this.sourceSatisfiedPredicate) : captured;
     }
 
-    public static BranchWitness vmPc(
+    /** Runtime capture path for an immutable decoder-owned predicate DAG. */
+    public static BranchWitness vmPcImmutable(
             String siteId, String method, int unitIndex, int occurrence,
             boolean sourceTakenOutcome, JsonElement sourceSatisfiedPredicate,
             int vmPcIndex, JsonObject predicateMetadata) {
-        if (vmPcIndex < 0) {
-            throw new IllegalArgumentException("vmPcIndex must be nonnegative");
-        }
-        if (predicateMetadata == null) {
+        if (vmPcIndex < 0 || predicateMetadata == null) {
             throw new IllegalArgumentException(
-                    "predicateMetadata is required");
+                    "VM predicate index and metadata are required");
         }
         String normalization = primitiveString(predicateMetadata,
                 "predicateNormalization");
         if (normalization.isEmpty()) normalization = IDENTITY_NORMALIZATION;
         return new BranchWitness(siteId, method, unitIndex, occurrence,
                 sourceTakenOutcome, sourceSatisfiedPredicate, vmPcIndex,
-                normalization, 0);
+                normalization, 0, true, "");
     }
 
     /**
@@ -108,7 +124,8 @@ public final class BranchWitness {
      * It is a solver decision even when the final Jimple boolean has no
      * one-to-one VM branch witness.
      */
-    public static BranchWitness pcPredicate(
+    /** Runtime capture path for an immutable decoder-owned switch predicate. */
+    public static BranchWitness pcPredicateImmutable(
             String siteId, String method, int unitIndex, int occurrence,
             int decisionOrdinal, JsonElement sourceSatisfiedPredicate,
             int vmPcIndex) {
@@ -118,10 +135,20 @@ public final class BranchWitness {
         }
         return new BranchWitness(siteId, method, unitIndex, occurrence,
                 true, sourceSatisfiedPredicate, vmPcIndex,
-                PC_PREDICATE_NORMALIZATION, decisionOrdinal);
+                PC_PREDICATE_NORMALIZATION, decisionOrdinal, true, "");
     }
 
     public static BranchWitness fromJson(JsonObject json) {
+        return fromJson(json, false);
+    }
+
+    /** Decoder-owned view used while validating an immutable summary DAG. */
+    static BranchWitness fromImmutableJson(JsonObject json) {
+        return fromJson(json, true);
+    }
+
+    private static BranchWitness fromJson(JsonObject json,
+                                          boolean immutablePredicate) {
         if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(primitiveString(json, "kind"))) {
             throw new IllegalArgumentException(
@@ -142,10 +169,20 @@ public final class BranchWitness {
                 outcome.getAsBoolean(), predicate,
                 primitiveInteger(json, "vmPcIndex", -1),
                 primitiveString(json, "predicateNormalization"),
-                primitiveInteger(json, "decisionOrdinal", 0));
+                primitiveInteger(json, "decisionOrdinal", 0),
+                immutablePredicate,
+                primitiveString(json, "symbolicSupportDigest"));
     }
 
-    public JsonObject toJson() { return coreJson(); }
+    public JsonObject toJson() { return coreJson(true); }
+
+    /**
+     * Runtime artifact view for a predicate obtained from the immutable VM
+     * decoder.  Existing public accessors remain defensive; callers of this
+     * explicitly named method must preserve the expression-table immutability
+     * contract.
+     */
+    public JsonObject toImmutableJsonView() { return coreJson(false); }
 
     public String siteId() { return siteId; }
 
@@ -158,7 +195,12 @@ public final class BranchWitness {
     public boolean sourceTakenOutcome() { return sourceTakenOutcome; }
 
     public JsonElement sourceSatisfiedPredicate() {
-        return CanonicalJson.copy(sourceSatisfiedPredicate);
+        return BranchPredicateAlgebra.canonical(sourceSatisfiedPredicate);
+    }
+
+    /** Package-local immutable view for validators and artifact builders. */
+    JsonElement sourceSatisfiedPredicateView() {
+        return sourceSatisfiedPredicate;
     }
 
     public int vmPcIndex() { return vmPcIndex; }
@@ -167,10 +209,13 @@ public final class BranchWitness {
 
     public boolean isPcPredicateDecision() { return decisionOrdinal > 0; }
 
-    BranchWitness atPcIndex(int pcIndex) {
+    public String symbolicSupportDigest() { return symbolicSupportDigest; }
+
+    BranchWitness atPcIndex(int pcIndex, JsonElement summaryPredicate) {
         return new BranchWitness(siteId, method, unitIndex, occurrence,
-                sourceTakenOutcome, sourceSatisfiedPredicate, pcIndex,
-                predicateNormalization, decisionOrdinal);
+                sourceTakenOutcome, summaryPredicate, pcIndex,
+                predicateNormalization, decisionOrdinal, true,
+                symbolicSupportDigest);
     }
 
     public String decisionIdentity() {
@@ -178,25 +223,33 @@ public final class BranchWitness {
                 + decisionOrdinal;
     }
 
-    private JsonObject coreJson() {
+    private JsonObject coreJson(boolean defensivePredicate) {
         JsonObject result = new JsonObject();
-        result.addProperty("schemaVersion", SCHEMA_VERSION);
-        result.addProperty("kind", KIND);
-        JsonObject site = new JsonObject();
-        site.addProperty("siteId", siteId);
-        site.addProperty("method", method);
-        site.addProperty("unitIndex", unitIndex);
-        site.addProperty("occurrence", occurrence);
-        result.add("site", site);
-        result.addProperty("sourceTakenOutcome", sourceTakenOutcome);
-        result.add("sourceSatisfiedPredicate",
-                CanonicalJson.copy(sourceSatisfiedPredicate));
-        result.addProperty("vmPcIndex", vmPcIndex);
-        result.addProperty("predicateNormalization",
-                predicateNormalization);
+        // Insert in canonical key order.  The predicate was canonicalized in
+        // the constructor, so another recursive sort here only repeats work
+        // on what can be a large propagated container expression.
         if (decisionOrdinal > 0) {
             result.addProperty("decisionOrdinal", decisionOrdinal);
         }
-        return (JsonObject) CanonicalJson.copy(result);
+        result.addProperty("kind", KIND);
+        result.addProperty("predicateNormalization",
+                predicateNormalization);
+        result.addProperty("schemaVersion", SCHEMA_VERSION);
+        JsonObject site = new JsonObject();
+        site.addProperty("method", method);
+        site.addProperty("occurrence", occurrence);
+        site.addProperty("siteId", siteId);
+        site.addProperty("unitIndex", unitIndex);
+        result.add("site", site);
+        result.add("sourceSatisfiedPredicate", defensivePredicate
+                ? BranchPredicateAlgebra.canonical(sourceSatisfiedPredicate)
+                : sourceSatisfiedPredicate);
+        result.addProperty("sourceTakenOutcome", sourceTakenOutcome);
+        if (!symbolicSupportDigest.isEmpty()) {
+            result.addProperty("symbolicSupportDigest",
+                    symbolicSupportDigest);
+        }
+        result.addProperty("vmPcIndex", vmPcIndex);
+        return result;
     }
 }

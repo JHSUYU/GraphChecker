@@ -18,6 +18,7 @@ class ContainerExpression;
 // One iterative rendering of an expression DAG into JSON.  Defined entirely in
 // expression.cpp: nothing outside the serializer needs its shape.
 class SerializationScope;
+class VmExpressionArtifactScope;
 
 /**
  * An expression node is immutable once constructed and is owned by the
@@ -38,6 +39,7 @@ class Expression {
   // The serializer drives serialize_internal directly, one node at a time,
   // instead of letting nodes call each other.
   friend class SerializationScope;
+  friend class VmExpressionArtifactScope;
 
 private:
   // Session-scoped identity.  Allocated from one atomic counter so that
@@ -64,6 +66,17 @@ public:
   // structurally rather than only serialized, and HotSpot is built without
   // RTTI, so the downcast is declared here instead of guessed at.
   virtual ContainerExpression *as_container_expression() { return NULL; }
+
+  // Consumer-boundary nodes are semantic identities.  Pointer identity is
+  // still authoritative for every ordinary expression, but a field/version
+  // check that already accepted `value` must also accept any chain of
+  // consumer boundaries wrapped directly around that same value.  Keeping
+  // this operation virtual avoids RTTI (HotSpot is built without it) and,
+  // unlike stripping every identity node from both operands, cannot collapse
+  // two independently produced expressions that merely share an ancestor.
+  virtual bool is_or_wraps_consumer_value(Expression *value) {
+    return this == value;
+  }
 
   // The boolean negation of this predicate as a *new* node, or NULL when this
   // node is not a negatable relational comparison.  A conditional container
@@ -101,7 +114,9 @@ protected:
 
 public:
   /**
-   * Renders the DAG rooted at this node as one JSON object.
+   * Renders the DAG rooted at this node as one JSON object when no explicit
+   * VmExpressionArtifactScope is active.  An artifact scope writes a compact
+   * session/id reference here and emits the node definitions at envelope end.
    *
    * The walk is iterative.  It used to be one native frame per node -- two,
    * with serialize_internal -- which put the depth of a traced workload's
@@ -123,6 +138,66 @@ public:
   void serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 
   virtual std::string get_name();
+};
+
+/**
+ * One explicit artifact envelope whose expression values are references into
+ * a session-local DAG table.
+ *
+ * Expression::serialize() deliberately keeps its historical tree encoding
+ * unless a caller creates this scope.  While the scope is live, every call to
+ * serialize() writes only a VmExpressionReference.  write_table() then emits
+ * the transitive definitions once, with child expressions represented by the
+ * same references.  The pair (sessionId, expressionId) is the raw identity;
+ * portable/content-addressed identity is assigned by the artifact importer.
+ *
+ * A scope owns no Expression.  All pointers remain owned by the open
+ * GlobalSymbolicSession arena.
+ */
+class VmExpressionArtifactScope {
+private:
+  typedef std::map<uint, Expression *> expression_map_t;
+  typedef std::map<uint, std::string> definition_map_t;
+
+  static __thread VmExpressionArtifactScope *_active;
+
+  VmExpressionArtifactScope *_previous;
+  jlong _session_id;
+  expression_map_t _expressions;
+  std::vector<Expression *> _pending;
+  definition_map_t _definitions;
+  size_t _next_pending;
+  bool _table_written;
+
+  void record(Expression *expression);
+  void render_definition(Expression *expression);
+  void write_reference(
+      rapidjson::Writer<rapidjson::StringBuffer> &writer,
+      Expression *expression, bool record_definition);
+
+  // A scope is stack state.  Copying it would install two owners of the same
+  // thread-local activation and make destruction order ambiguous.
+  VmExpressionArtifactScope(const VmExpressionArtifactScope &);
+  VmExpressionArtifactScope &operator=(const VmExpressionArtifactScope &);
+
+public:
+  VmExpressionArtifactScope();
+  ~VmExpressionArtifactScope();
+
+  static VmExpressionArtifactScope *active() { return _active; }
+
+  /** Exact JSON byte length of one reference, without retaining its node. */
+  size_t reference_size(Expression *expression);
+
+  /** Writes the `vmExpressionTable` member of the currently open object. */
+  void write_table(rapidjson::Writer<rapidjson::StringBuffer> &writer);
+
+  // Called only by Expression::serialize().
+  void serialize_reference(
+      rapidjson::Writer<rapidjson::StringBuffer> &writer,
+      Expression *expression) {
+    write_reference(writer, expression, true);
+  }
 };
 
 class OpSymExpression : public Expression {

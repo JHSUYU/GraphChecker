@@ -5,7 +5,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.OutputCaptureSpec;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.util.ArrayList;
@@ -54,9 +53,6 @@ public final class TopologyDelta {
     public static final String PLANNED_BRANCH_EVENT_NOT_OBSERVED =
             "PLANNED_BRANCH_EVENT_NOT_OBSERVED";
 
-    /** The one schema member set the union instrumentation shares. */
-    private static final String CAPTURE_BINDINGS = "captureBindings";
-
     private static final String[] IDENTITY_FIELDS = {
             "sourceKey", "occurrenceId", "relationKey", "regionId"
     };
@@ -65,8 +61,6 @@ public final class TopologyDelta {
      * the divergence field each is reported under. */
     private static final String[][] SCHEMA_SETS = {
             {"inputSymbols", "inputSchema"},
-            {"outputPorts", "outputSchema"},
-            {CAPTURE_BINDINGS, "outputSchema"},
             // README Step 1: topology is judged at the RPC exchange event.
             // A (sender occurrence, receiver occurrence, port) triple the
             // frozen catalog never declared is the change that re-plans.
@@ -122,26 +116,9 @@ public final class TopologyDelta {
 
     private final String iterationId;
     private final String planDigest;
-    /** Every capture binding id the frozen plan of this iteration declares,
-     * on any of its tasks.
-     *
-     * <p>OCC-1's sibling of the capture side.  Instrumentation is installed
-     * once per iteration over the <em>union</em> of the planned task ids
-     * ({@code run_engine.sh campaign_instrument}), and a capture binding id
-     * reaches the VM only as a string literal compiled into that one class
-     * set.  So an activation reports every binding installed at the bytecode
-     * sites it ran, not only the bindings of the task it was scheduled for:
-     * two occurrences of one region that declare the same output site put two
-     * ids on that one site, and both fire in whichever activation runs it.
-     *
-     * <p>A capture binding id is therefore judged against what the frozen
-     * plan declares, not against what one task declares.  Nothing is
-     * suppressed by widening the scope: the VM never mints a capture id, so
-     * an observed id outside this set can only come from a class set this
-     * plan did not instrument, and that still diverges.</p> */
-    private final Set<String> sessionCaptureBindings = new LinkedHashSet<>();
     private final List<JsonObject> rows = new ArrayList<>();
     private final Set<String> casedOccurrences = new LinkedHashSet<>();
+    private final Set<String> observedLocalCases = new LinkedHashSet<>();
     private final Set<String> namedTasks = new LinkedHashSet<>();
 
     TopologyDelta(String iterationId, Collection<ExecutionTask> planned) {
@@ -155,11 +132,6 @@ public final class TopologyDelta {
         }
         this.iterationId = iterationId.trim();
         this.planDigest = planDigest(planned);
-        for (ExecutionTask task : planned) {
-            for (OutputCaptureSpec spec : task.outputCaptures()) {
-                sessionCaptureBindings.add(spec.captureBindingId());
-            }
-        }
     }
 
     /** The frozen plan digest, in taskId order and independent of file order. */
@@ -190,11 +162,10 @@ public final class TopologyDelta {
         List<String> unobservedSchema = new ArrayList<>();
         JsonObject observedSchema = observedSchema(task, row, observation,
                 plannedSchema, unobservedSchema);
-        List<String> siblingCaptures = new ArrayList<>();
         JsonArray divergences = task == null || observation.unplanned
                 ? notInFrozenPlan(row, plannedIdentity, observation.gap)
                 : divergences(plannedIdentity, observedIdentity,
-                plannedSchema, observedSchema, siblingCaptures);
+                plannedSchema, observedSchema);
 
         JsonObject base = new JsonObject();
         base.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -215,21 +186,25 @@ public final class TopologyDelta {
         base.addProperty("observedSchemaDigest",
                 CanonicalJson.sha256(observedSchema));
         base.addProperty("resultLine", row.line + 1);
+        // Imported summaries receive this verified identity exactly once in
+        // ConcolicSummaryImporter.  Recomputing it here used to re-parse and
+        // compare every branch predicate three more times per row.
+        String localCaseId = observation.summary == null ? ""
+                : string(observation.summary, LocalCaseIdentity.FIELD);
+        if (observation.summary != null && localCaseId.isEmpty()) {
+            throw new IllegalStateException(
+                    "imported summary has no localCaseId");
+        }
         base.addProperty("summaryId", observation.summary == null ? ""
                 : string(observation.summary, "summaryId"));
-        base.addProperty("caseDigest", caseDigest(observation, observedIdentity,
-                observedSchema));
+        base.addProperty(LocalCaseIdentity.FIELD, localCaseId);
+        base.addProperty("caseDigest", caseDigest(observation, localCaseId,
+                observedIdentity, observedSchema));
         if (!unobservedIdentity.isEmpty()) {
             base.add("unobservedIdentityFields", strings(unobservedIdentity));
         }
         if (!unobservedSchema.isEmpty()) {
             base.add("unobservedSchemaFields", strings(unobservedSchema));
-        }
-        // Never silent: the ids this activation reported for a site another
-        // task of the same frozen plan also binds are named on the row.
-        if (!siblingCaptures.isEmpty()) {
-            base.add("siblingDeclaredCaptureBindings",
-                    strings(siblingCaptures));
         }
         if (task != null) namedTasks.add(task.taskId());
 
@@ -238,8 +213,15 @@ public final class TopologyDelta {
             // occurrence, or loop slot may not" add a case.
             emit(base, TOPOLOGY_DIVERGENCE, "").add("divergences", divergences);
         } else if (observation.summary != null) {
-            emit(base, casedOccurrences.add(occurrenceKey(plannedIdentity))
-                    ? NEW_OCCURRENCE : NEW_LOCAL_CASE, "");
+            String occurrence = occurrenceKey(plannedIdentity);
+            boolean firstOccurrence = casedOccurrences.add(occurrence);
+            boolean firstLocalCase = observedLocalCases.add(occurrence + "\n"
+                    + localCaseId);
+            if (firstOccurrence) {
+                emit(base, NEW_OCCURRENCE, "");
+            } else if (firstLocalCase) {
+                emit(base, NEW_LOCAL_CASE, "");
+            }
             if (observation.binding) emit(base, NEW_CAUSAL_BINDING, "");
             if (observation.effect) emit(base, NEW_EFFECT, "");
         }
@@ -276,10 +258,11 @@ public final class TopologyDelta {
     }
 
     private static String caseDigest(Observation observation,
+                                     String localCaseId,
                                      JsonObject observedIdentity,
                                      JsonObject observedSchema) {
         if (observation.summary != null) {
-            return CanonicalJson.sha256(observation.summary);
+            return CanonicalJson.sha256(localCaseId);
         }
         JsonArray evidence = new JsonArray();
         evidence.add(observedIdentity);
@@ -324,8 +307,6 @@ public final class TopologyDelta {
         JsonObject result = new JsonObject();
         if (task == null) {
             result.add("inputSymbols", new JsonArray());
-            result.add("outputPorts", new JsonArray());
-            result.add("captureBindings", new JsonArray());
             result.add("branchSites", new JsonArray());
             result.add("configuredSourcePhases", new JsonArray());
             result.add("exchangeEvents", new JsonArray());
@@ -340,10 +321,6 @@ public final class TopologyDelta {
                     string(element.getAsJsonObject(), "portId"));
             if (!symbol.isEmpty()) symbols.add(symbol);
         }
-        SortedSet<String> captures = new TreeSet<>();
-        for (OutputCaptureSpec spec : task.outputCaptures()) {
-            captures.add(spec.captureBindingId());
-        }
         SortedSet<String> sites = new TreeSet<>();
         for (JsonElement element : task.branches()) {
             if (!element.isJsonObject()) continue;
@@ -351,10 +328,6 @@ public final class TopologyDelta {
             if (!site.isEmpty()) sites.add(site);
         }
         result.add("inputSymbols", strings(symbols));
-        result.add("outputPorts", strings(task.outputClosure() == null
-                ? Collections.<String>emptySet()
-                : task.outputClosure().outputPorts()));
-        result.add("captureBindings", strings(captures));
         result.add("branchSites", strings(sites));
         // The catalog of mint SITES is the frozen schema: an execution of a
         // site the plan never declared is the topology change, and which
@@ -401,18 +374,6 @@ public final class TopologyDelta {
         }
         recordObservedSet(result, "inputSymbols", planned, resolved,
                 unobserved);
-
-        if (observation.summary == null) {
-            unobserved.add("outputPorts");
-        } else {
-            SortedSet<String> ports = new TreeSet<>(object(observation.summary,
-                    "outputExpressions").keySet());
-            recordObservedSet(result, "outputPorts", planned, ports,
-                    unobserved);
-        }
-
-        recordObservedSet(result, "captureBindings", planned,
-                row.observedCaptureBindings, unobserved);
 
         if (row.statesBranchEvidence) {
             result.add("branchSites", strings(row.observedBranchSites));
@@ -504,8 +465,7 @@ public final class TopologyDelta {
 
     private JsonArray divergences(
             JsonObject plannedIdentity, JsonObject observedIdentity,
-            JsonObject plannedSchema, JsonObject observedSchema,
-            List<String> siblingCaptures) {
+            JsonObject plannedSchema, JsonObject observedSchema) {
         JsonArray result = new JsonArray();
         for (String field : IDENTITY_FIELDS) {
             String planned = string(plannedIdentity, field);
@@ -518,14 +478,8 @@ public final class TopologyDelta {
         // iteration.
         for (String[] set : SCHEMA_SETS) {
             Set<String> declared = textSet(array(plannedSchema, set[0]));
-            boolean sessionScoped = CAPTURE_BINDINGS.equals(set[0]);
             for (String observed : textSet(array(observedSchema, set[0]))) {
                 if (declared.contains(observed)) continue;
-                if (sessionScoped
-                        && sessionCaptureBindings.contains(observed)) {
-                    siblingCaptures.add(observed);
-                    continue;
-                }
                 result.add(divergence(set[1], "", observed));
             }
         }

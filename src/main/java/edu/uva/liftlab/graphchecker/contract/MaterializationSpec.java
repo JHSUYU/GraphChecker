@@ -79,29 +79,6 @@ public final class MaterializationSpec {
                 implementation);
     }
 
-    public static String logicalJavaType(JsonObject port) {
-        MaterializationSpec materialization = decode(port);
-        return materialization.javaType.isEmpty()
-                ? text(port, "javaType") : materialization.javaType;
-    }
-
-    public Kind kind() { return kind; }
-
-    public String rootField() { return rootField; }
-
-    public List<String> path() { return path; }
-
-    public String method() { return method; }
-
-    public String siteId() {
-        return method.isEmpty() || unitIndex < 0 ? ""
-                : method + "#u" + unitIndex;
-    }
-
-    public String declaredCallee() { return declaredCallee; }
-
-    public String implementationMethod() { return implementationMethod; }
-
     /** Flat execution-action projection consumed by the custom-JDK bridge. */
     public Map<String, Object> actionFields() {
         Map<String, Object> result = new LinkedHashMap<>();

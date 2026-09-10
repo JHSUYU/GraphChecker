@@ -29,21 +29,25 @@ ordered deletes -> duplicate edit records -> NameNode restart
 
 No communication mapping is configured because the symbolic value and the
 state divergence are local to the NameNode; request epochs and edit-log replay
-remain represented by tracing. `symbolic-inputs.jsonl` explicitly selects the
-target region's `AtomicInteger.value` read, allowing its recorded read-from
-edge to bind the replay-produced counter value into the exception predicate.
+remain represented by tracing. The production hook makes the ordered-deletion
+configuration an explicit Boolean root. The target's `AtomicInteger.value`
+read receives a bounded GuardedRead over the retained counter expressions from
+the custom JDK. Its consumer anchor and write-candidate selectors carry the chosen
+expression and its local path condition directly into the exception predicate.
 `loop-bounds.jsonl` contains every exact loop site retained by the final
 selected closure for this checkout, each with a bound of 16. In the baseline
 trace the first deletion reaches replay iteration 8 and the duplicate deletion
 reaches iteration 9, so the default bound of 8 cannot retain the complete state
 transition.
 
-The checked-in result contains the full causal witness. All five selected path
-worklists are `CLOSED`; the final composition is `FINAL_READY` with zero gaps,
-coverage gaps, telemetry gaps, and free symbols. Runtime exploration added 14
-topology-delta rows with no divergence. Overlapping regions observed the same
-physical configuration event, so the composer canonicalized their projections
-to one Boolean root. Z3 reports `false` as SAT and `true` as UNSAT.
+A successful fresh campaign publishes all observed region paths and
+consumer-anchor families on one immutable global-wave snapshot. A sound SAT
+witness may be `FINAL_READY` while unobserved sibling paths remain coverage
+telemetry; claiming closed UNSAT additionally requires complete propagation,
+GuardedRead, path, and topology coverage. The explicit source observations
+give overlapping views of the physical configuration event one Boolean
+identity. Z3 should report
+`false` as SAT and `true` as UNSAT.
 
 Edit-log operation dispatch is retained as an exact table-switch observation,
 including the concrete case key and successor index. The two duplicate deletion
@@ -52,11 +56,11 @@ of collapsing to the same taken/not-taken bit.
 
 For the SAT valuation, the selected replay case executes both duplicate
 deletions. The two `AtomicInteger.getAndDecrement` versions carry the count
-from 2 to 1 and then from 1 to 0. Exact read-from edges bind version 2 to the
-target `getNumSnapshots()` read, while the snapshot-list enumeration remains
-1. The final predicate is therefore `1 != 0`, which reaches the annotated
-`IllegalStateException`. The explored `true` sibling case is closed, but it
-does not produce the demanded second counter version and is consequently not
+from 2 to 1 and then from 1 to 0. The target `getNumSnapshots()` GuardedRead has
+an arm for version 2 and anchors that expression, while the snapshot-list
+enumeration remains 1. The final predicate is therefore `1 != 0`, which reaches
+the annotated `IllegalStateException`. The explored `true` sibling case is
+closed, but it does not contain the required second counter version and is not
 a valid causal witness for this target.
 
 Hadoop checkout: `/opt/hadoop-hdfs-17960-jdk8`, branch
@@ -66,7 +70,6 @@ and compiled with Java 8. Run `./run.sh build`, `./run.sh validate`, and then
 `CAUSYNTH_OUTPUT_DIR` for each campaign; final SMT and replay evidence are
 written below `schedule/final`.
 
-`artifacts/` preserves the successful campaign's `candidate.smt2`, compressed
-composition manifest, path closures, topology deltas, final result, structured
-Z3 result, and direct Z3 output. A plain `z3 artifacts/candidate.smt2` returns
-`sat`.
+The campaign writes `candidate.smt2`, its composition manifest, path closures,
+topology deltas, final result, and structured Z3 result below its fresh output
+directory. A plain `z3 schedule/final/candidate.smt2` returns `sat`.

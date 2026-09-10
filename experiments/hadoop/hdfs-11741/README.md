@@ -6,9 +6,20 @@ ports that cache predicate to the same current tracing and RPC interfaces used
 by the other experiments.
 
 The Balancer caches a key before two ordinary NameNode key rotations. DataNodes
-refresh through the block-key RPC. GraphChecker explores the key IDs and expiry
-values carried by those replies and the resulting production key-map updates.
-The target is a DataNode lookup that cannot find the Balancer's cached key.
+refresh through the block-key RPC. The manually selected NameNode-side
+`keyId` and `allKeys` values remain explicit symbolic roots. The custom JDK
+propagates their expressions through the fixed sequence of replies into the
+Balancer and DataNode state. Consumer anchors retain each receive boundary,
+and selected shared reads retain bounded GuardedRead snapshots of their writer
+expressions. The target is a DataNode lookup that cannot find the Balancer's
+cached key.
+
+The causal graph selects this closure and its instrumentation sites. Each
+region contributes its own path condition; the composer recursively merges the
+consumer-anchor families and directly lowers their propagated expressions.
+Retained key-update loops use the configured fixed unroll, while every repeated
+RPC and shared-state access keeps its boundary occurrence and candidate writer
+versions.
 
 Hadoop checkout: `/opt/hadoop-hdfs-11741`, branch `gc/hdfs-11741-current`.
 Run `./run.sh build`, then `./run.sh campaign` from this directory. Set

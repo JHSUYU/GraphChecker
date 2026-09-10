@@ -23,6 +23,13 @@ public final class LoopBoundPolicy {
     public static final String LOOP_BODY_BOUND_AUTHORITY =
             "loopBodyBoundAuthority";
     public static final String LOOP_CONTROL_SITE_IDS = "loopControlSiteIds";
+    /** Branch sites assigned by the CFG analysis to this exact innermost
+     * natural loop.  Replay uses this membership instead of treating unit
+     * indices between a header and latch as a lexical loop body. */
+    public static final String LOOP_INNERMOST_BRANCH_SITE_IDS =
+            "loopInnermostBranchSiteIds";
+    /** Exact branch decisions which leave one dynamic invocation. */
+    public static final String LOOP_EXIT_DECISIONS = "loopExitDecisions";
     /** Largest original unit index among the loop's latches: the body's last unit. */
     public static final String LOOP_LATCH_UNIT_INDEX = "loopLatchUnitIndex";
     /** {@link #LOOP_FIXED_COUNT_INDEXED} or {@link #LOOP_CONDITION_BOUNDED};
@@ -49,6 +56,8 @@ public final class LoopBoundPolicy {
     public static final String ROOT_LOOP_METHOD = "rootLoopMethod";
     /** {@link #ROOT_LOOP} member naming the loop header's original unit. */
     public static final String HEADER_UNIT_INDEX = "headerUnitIndex";
+    /** {@link #ROOT_LOOP} member naming the original unit this region needs. */
+    public static final String DEMANDED_UNIT_INDEX = "demandedUnitIndex";
     public static final String PATH_CARDINALITY_AUTHORITY =
             "RUNTIME_ARRAY_CARDINALITY_V1";
     public static final String PATH_LOOP_COUNT_GAPS = "pathLoopCountGaps";
@@ -115,9 +124,6 @@ public final class LoopBoundPolicy {
             "BOUNDED_LOOP_EXECUTOR_LIMIT_MISMATCH";
     /** Maximum failure-relevant cells retained for one symbolic container. */
     public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
-    /** Maximum restartable state transitions in one single-writer history:
-     *  a third ledger, neither the backedge bound nor one replay's work. */
-    public static final int MAX_STATE_TIMELINE_TRANSITIONS = 8;
     /** Body entries one execution-scope loop may run in one activation.
      *  Independent of {@link #MAX_LOOP_BODY_ITERATIONS}: that caps the path
      *  space a solver reasons about, this caps the work one replay may do. */
@@ -321,37 +327,6 @@ public final class LoopBoundPolicy {
                     + ":" + bound);
         }
         return bound;
-    }
-
-    /**
-     * The method signatures one site id names.
-     *
-     * <p>A site id is {@code <method>#uN} and a nest is
-     * {@code L(site+site+...)}.  A Java signature never contains {@code '+'},
-     * so the parts split exactly, which a regular expression over
-     * {@code <...>} cannot do: {@code void <init>(..)} nests angle brackets
-     * and any such scan reads the constructor marker as the whole method.</p>
-     *
-     * <p>Returns empty when the id names no method, which every caller reads
-     * as "unknown", never as "no method is involved".</p>
-     */
-    public static java.util.Set<String> siteMethods(String siteId) {
-        java.util.Set<String> methods =
-                new java.util.LinkedHashSet<String>();
-        String text = siteId == null ? "" : siteId.trim();
-        if (text.startsWith("L(") && text.endsWith(")")) {
-            text = text.substring(2, text.length() - 1);
-        }
-        for (String part : text.split("\\+")) {
-            String site = part.trim();
-            int marker = site.lastIndexOf("#u");
-            if (marker > 0) site = site.substring(0, marker);
-            if (site.length() > 1 && site.charAt(0) == '<'
-                    && site.charAt(site.length() - 1) == '>') {
-                methods.add(site);
-            }
-        }
-        return methods;
     }
 
     /**

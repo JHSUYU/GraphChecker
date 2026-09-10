@@ -59,7 +59,11 @@ public:
   static const size_t MAX_EMITTED_NODES = 1000000;
   // A hard cap on one rendered expression.  Both unique-node and byte bounds
   // are necessary: a small shared DAG can have exponentially large tree text.
-  static const size_t MAX_RENDER_BYTES = 8u * 1024u * 1024u;
+  // A bounded guarded read serializes every candidate in one root; normal
+  // fixed-loop workloads can therefore exceed 8 MiB even though each arm and
+  // the underlying DAG are modest.  Keep enough room for that bounded union
+  // while retaining an explicit fail-closed ceiling for pathological trees.
+  static const size_t MAX_RENDER_BYTES = 32u * 1024u * 1024u;
   // Discovery stores only each distinct node's local JSON and child slots,
   // but that work precedes assembly and therefore needs its own bounds.
   static const size_t MAX_DISCOVERED_NODES = 100000;
@@ -401,7 +405,154 @@ void SerializationScope::render(Expression *root,
   out.RawValue(text.data(), text.size(), rapidjson::kObjectType);
 }
 
+// ---------------------------------------------------------------------------
+// Session-local expression DAG artifacts
+// ---------------------------------------------------------------------------
+
+__thread VmExpressionArtifactScope *VmExpressionArtifactScope::_active = NULL;
+
+VmExpressionArtifactScope::VmExpressionArtifactScope()
+    : _previous(_active),
+      _session_id(GlobalSymbolicSession::session_id()),
+      _next_pending(0), _table_written(false) {
+  _active = this;
+}
+
+VmExpressionArtifactScope::~VmExpressionArtifactScope() {
+  guarantee(_table_written || _expressions.empty(),
+            "a VM expression artifact omitted its expression table");
+  guarantee(_active == this,
+            "VM expression artifact scopes must close in stack order");
+  _active = _previous;
+}
+
+void VmExpressionArtifactScope::record(Expression *expression) {
+  guarantee(expression != NULL,
+            "a VM expression reference requires an expression");
+  guarantee(!_table_written,
+            "an expression cannot be added after its artifact table");
+  guarantee(_session_id != 0 && GlobalSymbolicSession::is_open()
+                && GlobalSymbolicSession::session_id() == _session_id,
+            "a VM expression reference cannot cross symbolic sessions");
+
+  const uint id = expression->get_unique_id();
+  std::pair<expression_map_t::iterator, bool> inserted =
+      _expressions.insert(std::make_pair(id, expression));
+  guarantee(inserted.second || inserted.first->second == expression,
+            "two expressions share one session-local expression id");
+  if (inserted.second) {
+    _pending.push_back(expression);
+  }
+}
+
+void VmExpressionArtifactScope::write_reference(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer,
+    Expression *expression, bool record_definition) {
+  if (record_definition) {
+    record(expression);
+  }
+  writer.StartObject();
+  writer.Key("_type");
+  writer.String("VmExpressionReference");
+  writer.Key("sessionId");
+  writer.Int64(_session_id);
+  writer.Key("expressionId");
+  writer.Uint(expression->get_unique_id());
+  writer.EndObject();
+}
+
+size_t VmExpressionArtifactScope::reference_size(Expression *expression) {
+  guarantee(expression != NULL,
+            "a VM expression reference requires an expression");
+  guarantee(_session_id != 0 && GlobalSymbolicSession::is_open()
+                && GlobalSymbolicSession::session_id() == _session_id,
+            "a VM expression reference cannot cross symbolic sessions");
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  write_reference(writer, expression, false);
+  return buffer.GetSize();
+}
+
+void VmExpressionArtifactScope::render_definition(Expression *expression) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartObject();
+  const std::string &position = expression->getJavaCodePosition();
+  if (!position.empty()) {
+    writer.Key("_code_position");
+    writer.String(position.c_str());
+  }
+  // Child calls to Expression::serialize() observe this explicit artifact
+  // scope, write references and extend `_pending`; no native recursion and no
+  // expanded subtree text is involved.
+  expression->serialize_internal(writer);
+  writer.EndObject();
+
+  std::pair<definition_map_t::iterator, bool> inserted =
+      _definitions.insert(std::make_pair(
+          expression->get_unique_id(),
+          std::string(buffer.GetString(), buffer.GetSize())));
+  guarantee(inserted.second,
+            "a VM expression node was defined more than once");
+}
+
+void VmExpressionArtifactScope::write_table(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer) {
+  guarantee(!_table_written,
+            "a VM expression artifact table may be written only once");
+  guarantee(_active == this,
+            "only the active VM expression artifact may write its table");
+
+  // Rendering one local node shape may discover children.  The vector grows
+  // during this loop, so every transitively reachable node is eventually
+  // rendered once.  Definitions are emitted from the id-keyed map afterwards
+  // to make artifact order independent of root order.
+  while (_next_pending < _pending.size()) {
+    Expression *expression = _pending[_next_pending++];
+    render_definition(expression);
+  }
+  guarantee(_definitions.size() == _expressions.size(),
+            "every VM expression reference requires one definition");
+  _table_written = true;
+
+  writer.Key("vmExpressionTable");
+  writer.StartObject();
+  writer.Key("schemaVersion");
+  writer.Int(1);
+  writer.Key("kind");
+  writer.String("VM_EXPRESSION_TABLE");
+  writer.Key("authority");
+  writer.String("VM_SESSION_EXPRESSION_ID_V1");
+  writer.Key("sessionId");
+  writer.Int64(_session_id);
+  writer.Key("definitionCount");
+  writer.Int64((jlong)_definitions.size());
+  writer.Key("definitions");
+  writer.StartArray();
+  for (definition_map_t::const_iterator it = _definitions.begin();
+       it != _definitions.end(); ++it) {
+    writer.StartObject();
+    writer.Key("_type");
+    writer.String("VmExpressionDefinition");
+    writer.Key("sessionId");
+    writer.Int64(_session_id);
+    writer.Key("expressionId");
+    writer.Uint(it->first);
+    writer.Key("expression");
+    writer.RawValue(it->second.data(), it->second.size(),
+                    rapidjson::kObjectType);
+    writer.EndObject();
+  }
+  writer.EndArray();
+  writer.EndObject();
+}
+
 void Expression::serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer) {
+  VmExpressionArtifactScope *artifact = VmExpressionArtifactScope::active();
+  if (artifact != NULL) {
+    artifact->serialize_reference(writer, this);
+    return;
+  }
   SerializationScope *scope = SerializationScope::active();
   if (scope != NULL && scope->owns(writer)) {
     // A child, reached from its parent's serialize_internal.  Leave a slot and

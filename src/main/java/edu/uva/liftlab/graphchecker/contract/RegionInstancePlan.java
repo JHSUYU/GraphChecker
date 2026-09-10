@@ -30,15 +30,10 @@ public final class RegionInstancePlan extends PlanRow {
                     .PLAN_FIELD
     };
     private final List<Goal> goals;
-    private final String admissionBasis;
     private final Set<String> demandedByRegionIds;
-    private final Set<String> demandedSharedLocations;
 
     private RegionInstancePlan(JsonObject source) {
         super(source, "region plan", true);
-        // Present only when the admission half declared a basis; a region
-        // admitted by target reachability states none.
-        admissionBasis = string(encoded, "admissionBasis");
         Set<String> consumers = new LinkedHashSet<>();
         for (JsonElement element : array(encoded, "demandedByRegionIds")) {
             if (element.isJsonPrimitive()
@@ -47,15 +42,6 @@ public final class RegionInstancePlan extends PlanRow {
             }
         }
         demandedByRegionIds = Collections.unmodifiableSet(consumers);
-        Set<String> locations = new LinkedHashSet<>();
-        for (JsonElement element : array(encoded,
-                "demandedSharedLocations")) {
-            if (element.isJsonPrimitive()
-                    && !element.getAsString().isEmpty()) {
-                locations.add(element.getAsString());
-            }
-        }
-        demandedSharedLocations = Collections.unmodifiableSet(locations);
         List<Goal> decoded = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>();
         for (JsonElement element : array(encoded, "closureGoals")) {
@@ -93,17 +79,8 @@ public final class RegionInstancePlan extends PlanRow {
 
     public List<Goal> goals() { return goals; }
 
-    /** Why this occurrence was admitted, or empty when it was admitted by
-     *  target reachability. */
-    public String admissionBasis() { return admissionBasis; }
-
     /** The consumer regions a shared-location admission serves. */
     public Set<String> demandedByRegionIds() { return demandedByRegionIds; }
-
-    /** The exact heap locations that caused this writer to be admitted. */
-    public Set<String> demandedSharedLocations() {
-        return demandedSharedLocations;
-    }
 
     void writeTaskIdentityTo(JsonObject target) {
         target.addProperty("sourceKey", sourceKey());
@@ -127,7 +104,6 @@ public final class RegionInstancePlan extends PlanRow {
         private final JsonObject encoded;
         private final ClosureGoalKind kind;
         private final Set<String> runtimeDefinitionMethods;
-        private final OutputClosureContract outputClosure;
 
         private Goal(RegionInstancePlan plan, JsonObject source) {
             this.plan = plan;
@@ -141,12 +117,6 @@ public final class RegionInstancePlan extends PlanRow {
                         ClosureGoalKind.values()), invalid);
             }
             runtimeDefinitionMethods = decodeRuntimeDefinitionMethods();
-            outputClosure = encoded.has(OutputClosureContract.FIELD)
-                    ? decodeOutputClosure() : null;
-            if (kind.capturesTargetReach() && outputClosure != null) {
-                throw new IllegalArgumentException(
-                        "target reach goal must not contain outputClosure");
-            }
         }
 
         public RegionInstancePlan plan() { return plan; }
@@ -156,8 +126,7 @@ public final class RegionInstancePlan extends PlanRow {
         public ClosureGoalKind kind() { return kind; }
 
         public boolean replayable() {
-            String state = admissionState();
-            return "READY".equals(state) || "DISCOVERED".equals(state);
+            return "READY".equals(admissionState());
         }
 
         public String admissionState() {
@@ -171,8 +140,6 @@ public final class RegionInstancePlan extends PlanRow {
         public Set<String> runtimeDefinitionMethods() {
             return runtimeDefinitionMethods;
         }
-
-        public OutputClosureContract outputClosure() { return outputClosure; }
 
         public JsonArray symbolize() {
             return array(encoded, "symbolize").deepCopy();
@@ -198,17 +165,6 @@ public final class RegionInstancePlan extends PlanRow {
                 target.add(ExecutionTask.SHARED_CARRIERS,
                         carriers.deepCopy());
             }
-        }
-
-        private OutputClosureContract decodeOutputClosure() {
-            OutputClosureContract contract = OutputClosureCodec.decode(encoded);
-            OutputClosureContract.Producer producer = contract.producer();
-            if (!plan.regionId().equals(producer.regionId())
-                    || !plan.relationKey().equals(producer.relationKey())) {
-                throw new IllegalArgumentException(
-                        "outputClosure producer conflicts with relation");
-            }
-            return contract;
         }
 
         private Set<String> decodeRuntimeDefinitionMethods() {

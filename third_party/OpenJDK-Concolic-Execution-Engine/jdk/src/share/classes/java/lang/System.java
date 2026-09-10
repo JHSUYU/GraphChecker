@@ -416,6 +416,9 @@ public final class System {
     /** Exact VM thread-context identity owning the current concolic region. */
     public static native long getCurrentConcolicContextId();
 
+    /** Session-global identity of the current concolic region entry. */
+    public static native long getCurrentConcolicRegionEnterEventId();
+
     /**
      * End of our concolic execution
      */
@@ -428,8 +431,8 @@ public final class System {
      * Without one, the symbolic session's lifetime is a function of thread
      * arrival and departure: the first thread to start a region opens it and
      * the last one to leave a region closes it, taking the expression arena,
-     * the handoff broker, the shadow heap, the field versions and the event
-     * ledger with it.  A workload that runs several regions, on several
+     * the handoff broker, the shadow heap and the field versions with it.  A
+     * workload that runs several regions, on several
      * threads, cannot then keep one expression universe across them -- an
      * expression a finished region exported would name a freed node.
      *
@@ -552,8 +555,9 @@ public final class System {
      * same vocabulary {@link #attachExpression} returns.
      *
      * <p>{@code eventOut} may be {@code null}.  When it is a {@code long[]}
-     * with room for one element, a successful export writes its own VM ledger
-     * event id into {@code eventOut[0]}.  That is the {@code exportEvent}
+     * with room for one element, a successful export writes its own
+     * session-global endpoint id into {@code eventOut[0]}.  That is the
+     * {@code exportEvent}
      * endpoint of every {@code VALUE_HANDOFF} edge this handle later
      * produces, so the sender can name the exact export its interaction
      * recorded instead of leaving a consumer to infer it.
@@ -586,9 +590,10 @@ public final class System {
      * gap. A rejected attach leaves the target unchanged.
      *
      * <p>{@code eventOut} may be {@code null}.  When it is a {@code long[]}
-     * with room for one element, a successful attach writes its own VM ledger
-     * event id into {@code eventOut[0]}.  Both endpoints therefore leave the
-     * VM together, which is the only way to name <em>this</em> receive: the
+     * with room for one element, a successful attach writes its own
+     * session-global endpoint id into {@code eventOut[0]}.  Both endpoints
+     * therefore leave the VM together, which is the only way to name
+     * <em>this</em> receive: the
      * export id alone does not, because the same export may be attached at
      * several receivers, and picking one of its edges afterwards would name a
      * different receiver's attach.
@@ -616,7 +621,7 @@ public final class System {
     /**
      * Selects one shared location as a symbolic carrier, so that every later
      * write to it publishes a version and every later read of it resolves to
-     * an exact writer or to an explicitly guarded choice.
+     * a guarded choice over the retained writer expressions.
      *
      * Nothing is versioned until it is selected.  The field access hooks fire
      * on every field of every shadowed object, so versioning everything would
@@ -637,33 +642,18 @@ public final class System {
             String descriptor);
 
     /**
-     * Returns the current task's retained version for one selected primitive
-     * or reference field. This is a pure lookup: it creates no symbolic
-     * shadow, event, carrier, INITIAL version or expression.
+     * Replaces only the concrete primitive operand of the next matching
+     * selected instance-field read in the current concolic context.  The
+     * field's symbolic read-from expression is resolved independently.
      *
-     * @return a positive fieldVersionId, or a negative refusal code
+     * @return a positive receipt token, or a negative refusal code
      */
-    public static native long getCurrentSharedFieldVersion(
+    public static native long armSharedPrimitiveFieldRead(
             Object owner, String declaringClass, String fieldName,
-            String descriptor);
+            String descriptor, long valueBits);
 
-    /**
-     * Arms one destination field's next real {@code getfield}/{@code getstatic}
-     * to consume the named producer version and record an exact
-     * {@code FIELD_READ_FROM} with reason {@code PLANNED_PRODUCER_STATE}.
-     * The producer and destination descriptors must match exactly; primitives
-     * must replay the same concrete value, while references preserve exact
-     * nullness without requiring deserialized objects to share identity.
-     *
-     * <p>The destination is not selected as a carrier and receives no local
-     * INITIAL version. A refused call has no symbolic side effects. This is
-     * concrete selected-edge provenance, not a new symbolic discovery root.
-     *
-     * @return the positive admitted fieldVersionId, or a negative refusal code
-     */
-    public static native long admitSharedFieldVersion(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, long fieldVersionId, String selectedEdgeId);
+    /** Returns positive iff the exact read consumed this receipt. */
+    public static native long confirmSharedPrimitiveFieldRead(long token);
 
     /**
      * Selects one element of a fixed-shape array as a symbolic carrier.
@@ -681,7 +671,7 @@ public final class System {
      * Selects one supported {@code Map}'s whole state as a symbolic carrier,
      * so that every later selected mutation of it publishes an immutable state
      * version and every later {@code get}/{@code containsKey} on it resolves
-     * to an exact writer or to an explicitly guarded choice.
+     * to a guarded choice over the retained writer states.
      *
      * A resizable collection has no stable per-member slot -- its members move
      * under insertion and removal -- so {@link #selectSharedElementCarrier}'s
@@ -702,27 +692,6 @@ public final class System {
      *         selected, or a negative refusal code
      */
     public static native long selectSharedMapCarrier(Object map);
-
-    /**
-     * Returns the retained STATE version whose expression is the selected
-     * map's current state and whose writer is the current task. This is a pure
-     * lookup: it creates no shadow, state, INITIAL version, event or read.
-     *
-     * @return a positive fieldVersionId, or a negative refusal code
-     */
-    public static native long getCurrentSharedMapVersion(Object map);
-
-    /**
-     * Installs one retained producer STATE version as a destination map's
-     * current symbolic state and records an exact planned FIELD_READ_FROM.
-     * The producer is named only by its session-local version id; no producer
-     * Java object identity is transferred. A refused call does not create a
-     * destination shadow or INITIAL version.
-     *
-     * @return the positive planned read event id, or a negative refusal code
-     */
-    public static native long admitSharedMapVersion(
-            Object map, long fieldVersionId, String selectedEdgeId);
 
     /**
      * Serializes the versions published for one selected field, together with
@@ -748,51 +717,6 @@ public final class System {
      * {@code locationKind} is {@code MAP_STATE}.
      */
     public static native String getSharedMapVersions(Object map);
-
-    /**
-     * Serializes the session's event-order ledger: every recorded monitor,
-     * volatile, thread-lifecycle and atomic action, in one event-id space.
-     *
-     * The ledger records only once it has been activated - see
-     * {@link #activateConcolicEventLedger}.  Selection is the gate, because
-     * monitorenter is far too hot a bytecode to pay for an answer nobody
-     * asked for; the presence of a shared carrier is not, because a task that
-     * selects only communication or synchronization sites needs exactly the
-     * same order domain and has no carrier to switch it on with.
-     */
-    public static native String getEventLedger();
-
-    /**
-     * Activates the session's event-order ledger for a task that declares at
-     * least one selected event site - a shared carrier, a communication port,
-     * a synchronization site, or the selected region itself.
-     *
-     * <p>Idempotent, and never switched back off inside a session: a later
-     * activation of the same session adds sites, and dropping the recording
-     * mid-session would leave a partial order domain that reads as an absence
-     * of order rather than an absence of recording.  Returns whether the
-     * ledger is recording afterwards.
-     */
-    public static native boolean activateConcolicEventLedger();
-
-    /**
-     * Offers one candidate order edge to the session's event-order domain.
-     *
-     * The domain already holds every observed edge -- program order, field
-     * read-from, synchronization, value handoff and region -- in one relation
-     * over one event-id space.  A candidate is admitted only if the relation
-     * stays acyclic; a cyclic candidate is refused, because a cyclic order
-     * describes no execution at all.
-     *
-     * Accepting a candidate does not order anything else.  The relation stays
-     * a partial order, and there is deliberately no way to ask it for a total
-     * schedule.
-     *
-     * @return {@code 0} when the edge was admitted, or a negative refusal
-     *         code, of which {@code -4} is "this edge would close a cycle"
-     */
-    public static native int proposeEventOrder(long beforeEventId,
-                                               long afterEventId);
 
     /**
      * Returns the active region metadata and path condition without ending

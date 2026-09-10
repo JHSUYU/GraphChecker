@@ -1,7 +1,7 @@
 #include "concolic/expressionBroker.hpp"
-#include "concolic/eventLedger.hpp"
 #include "concolic/concolicMngr.hpp"
 #include "concolic/exp/containerExpression.hpp"
+#include "concolic/exp/consumerBoundaryExpression.hpp"
 #include "concolic/globalSymbolicSession.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
@@ -278,14 +278,9 @@ jlong ConcolicMngr::exportExpression(
   }
   if (shadow == NULL) return ExpressionBroker::HANDOFF_NOT_SYMBOLIC;
 
-  // The export is an event of the one order domain. Communication identity is
-  // application provenance; the VM relation is the VALUE_HANDOFF edge.
-  jlong export_event = local_context
-      ? EventLedger::record(EventLedger::EVENT_HANDOFF_EXPORT, NULL_SYM_RID,
-                            field.offset(), "")
-      : EventLedger::record_session_event(
-            EventLedger::EVENT_HANDOFF_EXPORT, NULL_SYM_RID, field.offset(),
-            "");
+  // A handoff endpoint needs a stable session-local identity for tracing and
+  // boundary matching.  Its numeric order is deliberately not a schedule.
+  jlong export_event = GlobalSymbolicSession::next_event_id();
 
   jlong handle = ExpressionBroker::publish(shadow, std::string(descriptor),
                                            export_event, leaf_kind,
@@ -300,8 +295,8 @@ jlong ConcolicMngr::attachExpression(
     const char *descriptor, jlong handle, jlong *attach_event_out) {
   // README RPC-1: one export may be attached at several explicit receivers,
   // so the export id alone does not name *this* receive.  Both endpoints of
-  // the edge leave the VM together; nothing downstream may re-derive the
-  // attach by scanning the order domain for the first edge out of the export.
+  // the handoff leave the VM together; nothing downstream may guess the
+  // attach from the export id alone.
   if (attach_event_out != NULL) *attach_event_out = 0;
   if (!can_explicitly_symbolize() || !ExpressionBroker::is_open()) {
     return ExpressionBroker::HANDOFF_NO_ACTIVE_REGION;
@@ -363,6 +358,16 @@ jlong ConcolicMngr::attachExpression(
     }
   }
 
+  // The attach id is also the transparent consumer boundary's identity.
+  // Allocate it only after every fallible validation succeeds.
+  jlong attach_event = GlobalSymbolicSession::next_event_id();
+  if (attach_event <= 0) {
+    return ExpressionBroker::HANDOFF_NO_ACTIVE_REGION;
+  }
+  Expression *attached = new ConsumerBoundaryExpression(
+      leaf.expression, leaf.descriptor,
+      ConsumerBoundaryExpression::RPC_ATTACH, attach_event);
+
   // Same contract as the other explicit input APIs: this VM operation is
   // valid inside a paused bookkeeping subtree, so lift the pause only while
   // the symbolic state is mutated and then restore the caller's depth.
@@ -376,20 +381,18 @@ jlong ConcolicMngr::attachExpression(
   // SIZE/READ/mutation bytecodes compose on the sender state.  Never copy the
   // sender oop or symbolic RID.
   if (leaf.kind == ExpressionBroker::CONTAINER_STATE) {
-    ctx->set_container_state(destination, leaf.expression);
+    // ConsumerBoundaryExpression delegates structural container inspection to
+    // its payload.  Later operations still use `attached` as their receiver,
+    // so the provenance marker remains in the container expression chain.
+    ctx->set_container_state(destination, attached);
   } else {
-    instance->set_sym_exp(field.offset(), leaf.expression);
+    instance->set_sym_exp(field.offset(), attached);
     instance->mark_semantic_expression();
   }
   ctx->set_pc_admitted(true);
   for (int index = 0; index < pause_depth; ++index) {
     ctx->pause_path_condition_recording();
   }
-  jlong attach_event = EventLedger::record(
-      EventLedger::EVENT_HANDOFF_ATTACH, instance->get_sym_rid(),
-      field.offset(), "");
-  EventLedger::add_observed_edge(leaf.export_event_id, attach_event,
-                                 EventLedger::EDGE_VALUE_HANDOFF);
   if (attach_event_out != NULL) *attach_event_out = attach_event;
   return leaf.export_event_id;
 }

@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.SharedExpressionTable;
 
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -14,28 +16,30 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/** Scheduled work for one causal-skeleton occurrence and one relation. */
+/** Scheduled work for one causal-skeleton region occurrence. */
 public final class ExecutionTask extends PlanRow {
     /** Planner-selected function entry for one concrete interaction corridor. */
     public static final String REPLAY_ENTRY = "replayEntry";
     /** Member a scheduler declares this task's symbolic carriers in. */
     public static final String SHARED_CARRIERS = "sharedCarriers";
+    /** Solver-selected concrete values for exact guarded primitive reads. */
+    public static final String GUARDED_READ_ASSIGNMENTS =
+            "guardedReadAssignments";
 
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
-    private final OutputClosureContract outputClosure;
-    private final List<OutputCaptureSpec> outputCaptures;
     private final String rootLoopMethod;
     private final int rootLoopHeaderUnitIndex;
+    private final int rootLoopDemandedUnitIndex;
     private final String rootLoopSiteId;
     private final Set<String> rootLoopControlSites;
     private final Set<String> fixedCountLoopSites;
+    private JsonElement expandedReplayContract;
 
-    /** {@code bound}, {@code closure} and {@code phases} are the values
+    /** {@code bound} and {@code phases} are the values
      *  {@link #create} just encoded; a decoder passes null and the wire is
      *  parsed instead. */
     private ExecutionTask(JsonObject source, LoopBoundPolicy bound,
-                          OutputClosureContract closure,
                           List<ConfiguredSourcePhaseContract.Occurrence>
                                   phases) {
         super(source, "execution task", false, phases);
@@ -43,16 +47,6 @@ public final class ExecutionTask extends PlanRow {
         require(goalId(), "goalId");
         inputActions = InputActionCatalog.decode(encoded);
         loopBound = bound == null ? LoopBoundPolicy.decode(encoded) : bound;
-        outputClosure = closure != null ? closure
-                : encoded.has(OutputClosureContract.FIELD)
-                ? OutputClosureCodec.decode(encoded) : null;
-        outputCaptures = outputClosure == null
-                ? Collections.<OutputCaptureSpec>emptyList()
-                : OutputClosureCodec.captureSpecs(outputClosure);
-        if (goalKind().capturesOutputRelation() != (outputClosure != null)) {
-            throw new IllegalArgumentException(
-                    "execution task goalKind and outputClosure disagree");
-        }
         // The once-only-root rule: a region rooted on a service loop is
         // entered once per iteration, at the loop body rather than at the
         // frame above it.
@@ -62,10 +56,17 @@ public final class ExecutionTask extends PlanRow {
         rootLoopMethod = string(rootLoop, LoopBoundPolicy.ROOT_LOOP_METHOD);
         rootLoopHeaderUnitIndex = rootLoopMethod.isEmpty() ? -1
                 : integer(rootLoop, LoopBoundPolicy.HEADER_UNIT_INDEX, -1);
+        rootLoopDemandedUnitIndex = rootLoopMethod.isEmpty() ? -1
+                : integer(rootLoop, LoopBoundPolicy.DEMANDED_UNIT_INDEX, -1);
         if (!rootLoopMethod.isEmpty() && rootLoopHeaderUnitIndex < 0) {
             throw new IllegalArgumentException("execution task " + taskId()
                     + " roots a region at a loop body with no "
                     + LoopBoundPolicy.HEADER_UNIT_INDEX);
+        }
+        if (!rootLoopMethod.isEmpty() && rootLoopDemandedUnitIndex < 0) {
+            throw new IllegalArgumentException("execution task " + taskId()
+                    + " roots a region at a loop body with no "
+                    + LoopBoundPolicy.DEMANDED_UNIT_INDEX);
         }
         rootLoopControlSites = textSet(rootLoop,
                 LoopBoundPolicy.LOOP_CONTROL_SITE_IDS);
@@ -77,7 +78,10 @@ public final class ExecutionTask extends PlanRow {
         if (encoded == null) {
             throw new IllegalArgumentException("execution task is required");
         }
-        return new ExecutionTask(encoded.deepCopy(), null, null, null);
+        JsonObject portable = encoded.has(SharedExpressionTable.FIELD)
+                ? SharedExpressionTable.compact(encoded)
+                : encoded.deepCopy();
+        return new ExecutionTask(portable, null, null);
     }
 
     /** Creates the one task for a scheduler-selected occurrence union. */
@@ -88,8 +92,7 @@ public final class ExecutionTask extends PlanRow {
             JsonArray branches,
             JsonArray edgeBindings,
             LoopBoundPolicy loopBound,
-            boolean ready,
-            OutputClosureContract selectedClosure) {
+            boolean ready) {
         if (goal == null || inputActions == null || branches == null
                 || edgeBindings == null || loopBound == null) {
             throw new IllegalArgumentException(
@@ -98,10 +101,6 @@ public final class ExecutionTask extends PlanRow {
         JsonObject task = new JsonObject();
         goal.plan().writeTaskIdentityTo(task);
         goal.writeTaskPayloadTo(task);
-        if (selectedClosure != null) {
-            // Also the producer-against-task-scope check the decode would run.
-            OutputClosureCodec.writeTo(task, selectedClosure);
-        }
         task.addProperty("taskId", taskId);
         goal.kind().writeToTask(task);
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
@@ -110,136 +109,12 @@ public final class ExecutionTask extends PlanRow {
         if (edgeBindings.size() > 0) {
             task.add("edgeBindings", edgeBindings.deepCopy());
         }
-        retainSelectedCommunicationHandoffs(task, edgeBindings,
-                selectedClosure);
-        demoteNestedLoopRootOutsideSelectedContinuation(task,
-                selectedClosure);
-        promoteSelectedReplayEntry(task, selectedClosure);
+        retainSelectedCommunicationHandoffs(task, edgeBindings);
         JsonObject admission = new JsonObject();
         admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
         task.add("admission", admission);
-        return new ExecutionTask(task, loopBound, selectedClosure,
+        return new ExecutionTask(task, loopBound,
                 goal.plan().configuredSourcePhases());
-    }
-
-    /**
-     * Keeps a selected output that ran beside, rather than inside, a nested
-     * service loop from being replayed after it.
-     *
-     * <p>The region-level once-only-root rule follows the failure anchor.  A
-     * coarse activation can also contain an earlier producer phase: HDFS-11741
-     * registers the DataNode before {@code offerService()}, while its target
-     * heartbeat is inside that service loop.  Once output projection proves
-     * every demanded member shares the earlier {@code register} continuation,
-     * a loop-body root at {@code offerService} can never execute the selected
-     * response cut or heap writes.  In that exact nested-loop shape, remove
-     * the provisional loop root and let the existing continuation promotion
-     * root the task at the selected producer phase.</p>
-     *
-     * <p>A loop in the root method itself is unchanged.  So are closures with
-     * a missing or conflicting continuation: neither provides authority to
-     * move the task.</p>
-     */
-    private static void demoteNestedLoopRootOutsideSelectedContinuation(
-            JsonObject task, OutputClosureContract closure) {
-        if (closure == null || !LoopBoundPolicy.LOOP_BODY_ROOT.equals(
-                string(task, LoopBoundPolicy.ROOT_AUTHORITY))) {
-            return;
-        }
-        JsonObject rootLoop = object(task, LoopBoundPolicy.ROOT_LOOP);
-        String loopMethod = string(rootLoop,
-                LoopBoundPolicy.ROOT_LOOP_METHOD);
-        String coarseRoot = string(object(task, "rootSelector"), "method");
-        if (loopMethod.isEmpty() || coarseRoot.isEmpty()
-                || loopMethod.equals(coarseRoot)) {
-            return;
-        }
-        JsonObject selected = null;
-        for (OutputClosureContract.Member member : closure.members()) {
-            JsonObject entry = object(member.slice(), REPLAY_ENTRY);
-            if (string(entry, "method").isEmpty()
-                    || string(entry, "receiverClass").isEmpty()) {
-                return;
-            }
-            if (selected == null) {
-                selected = entry;
-            } else if (!selected.equals(entry)) {
-                return;
-            }
-        }
-        if (selected == null
-                || loopMethod.equals(string(selected, "method"))) {
-            return;
-        }
-        task.remove(LoopBoundPolicy.ROOT_AUTHORITY);
-        task.remove(LoopBoundPolicy.ROOT_LOOP);
-    }
-
-    /** Promotes the one exact continuation shared by the selected output
-     *  members, and re-addresses the accessor reads it re-bases. */
-    private static void promoteSelectedReplayEntry(
-            JsonObject task, OutputClosureContract closure) {
-        if (closure == null) return;
-        // A loop-body root replays one iteration of the service loop, so
-        // every selected member of that body shares that continuation; the
-        // per-member call continuations are not promoted (they would name
-        // different calls of one body) and nothing is re-based.
-        if (LoopBoundPolicy.LOOP_BODY_ROOT.equals(
-                string(task, LoopBoundPolicy.ROOT_AUTHORITY))) {
-            return;
-        }
-        JsonObject selected = null;
-        boolean missing = false;
-        boolean conflicting = false;
-        for (OutputClosureContract.Member member : closure.members()) {
-            JsonObject entry = object(member.slice(), REPLAY_ENTRY);
-            if (entry.size() == 0) {
-                missing = true;
-                continue;
-            }
-            if (string(entry, "method").isEmpty()
-                    || string(entry, "receiverClass").isEmpty()) {
-                throw new IllegalArgumentException(
-                        "selected output replay entry is incomplete: "
-                                + member.portId());
-            }
-            if (selected == null) {
-                selected = entry.deepCopy();
-            } else if (!selected.equals(entry)) {
-                conflicting = true;
-            }
-        }
-        if (selected == null) return;
-        // One coarse occurrence may publish its selected outputs from several
-        // frames of one activation -- a cached value written in the frame
-        // that minted it and a wire leaf exported further down the same
-        // dispatch. There is then no continuation the members share, so none
-        // is promoted and nothing is re-based: the task replays from its own
-        // root, exactly as a loop-body root already does above. Promoting one
-        // member's frame would enter the occurrence past the others.
-        if (conflicting || missing) return;
-        JsonObject held = object(task, REPLAY_ENTRY);
-        if (held.size() > 0 && !held.equals(selected)) {
-            throw new IllegalArgumentException(
-                    "selected output continuation conflicts with goal "
-                            + "replay entry");
-        }
-        task.add(REPLAY_ENTRY, selected);
-        // Repeated accessor reads are re-addressed from that continuation.
-        for (JsonElement element : array(task, InputActionCatalog.FIELD)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            int localOccurrence = integer(action,
-                    "helperActivationBoundedOccurrence", -1);
-            if (localOccurrence > 0
-                    && "SYMBOLIC".equals(string(action, "mode"))
-                    && "FIELD_ACCESS".equals(string(action, "bindingMode"))
-                    && !string(action, "accessorCallerMethod").isEmpty()
-                    && !string(action,
-                            "accessorImplementationMethod").isEmpty()) {
-                action.addProperty("replayOccurrence", localOccurrence);
-            }
-        }
     }
 
     /**
@@ -250,8 +125,7 @@ public final class ExecutionTask extends PlanRow {
      * task's complete interaction frontier.
      */
     private static void retainSelectedCommunicationHandoffs(
-            JsonObject task, JsonArray edgeBindings,
-            OutputClosureContract selectedClosure) {
+            JsonObject task, JsonArray edgeBindings) {
         JsonArray declared = array(task, CommunicationHandoffSpec.FIELD);
         if (declared.size() == 0) return;
 
@@ -262,13 +136,6 @@ public final class ExecutionTask extends PlanRow {
             addPort(selectedPorts, string(edge, "fromOutputPort"));
             addPort(selectedPorts, string(edge, "toInputPort"));
         }
-        if (selectedClosure != null) {
-            for (OutputClosureContract.Member member
-                    : selectedClosure.members()) {
-                addPort(selectedPorts, member.portId());
-            }
-        }
-
         JsonArray retained = new JsonArray();
         for (JsonElement element : declared) {
             if (!element.isJsonObject()) continue;
@@ -363,14 +230,16 @@ public final class ExecutionTask extends PlanRow {
         return string(encoded, LoopBoundPolicy.ROOT_AUTHORITY);
     }
 
-    /** True when this region's activation is one loop-body iteration. */
-    public boolean loopBodyRoot() { return !rootLoopMethod.isEmpty(); }
-
     /** The method holding the loop body this region is rooted at, else "". */
     public String rootLoopMethod() { return rootLoopMethod; }
 
     /** Original unit index of that loop's dominance-proved header. */
     public int rootLoopHeaderUnitIndex() { return rootLoopHeaderUnitIndex; }
+
+    /** Original unit index the rooted loop body must reach. */
+    public int rootLoopDemandedUnitIndex() {
+        return rootLoopDemandedUnitIndex;
+    }
 
     /** Iteration-control sites the region's exits are installed on. */
     public Set<String> rootLoopControlSites() { return rootLoopControlSites; }
@@ -382,6 +251,29 @@ public final class ExecutionTask extends PlanRow {
 
     /** Retained loops whose concrete cardinality is exact, not a {@code K_L}. */
     public Set<String> fixedCountLoopSites() { return fixedCountLoopSites; }
+
+    /** Exact retained-loop catalog carried unchanged from static analysis. */
+    public JsonArray retainedLoops() {
+        return array(encoded, "retainedLoops").deepCopy();
+    }
+
+    /** Loop-exit sites captured as boundary evidence even without an SMT PC. */
+    public Set<String> loopExitSites() {
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonElement encodedLoop : array(encoded, "retainedLoops")) {
+            if (encodedLoop == null || !encodedLoop.isJsonObject()) continue;
+            for (JsonElement encodedExit : array(
+                    encodedLoop.getAsJsonObject(),
+                    LoopBoundPolicy.LOOP_EXIT_DECISIONS)) {
+                if (encodedExit != null && encodedExit.isJsonObject()) {
+                    String site = string(encodedExit.getAsJsonObject(),
+                            "siteId");
+                    if (!site.isEmpty()) result.add(site);
+                }
+            }
+        }
+        return Collections.unmodifiableSet(result);
+    }
 
     private static Set<String> fixedCountLoopSites(JsonObject task) {
         Set<String> result = new LinkedHashSet<>();
@@ -437,6 +329,10 @@ public final class ExecutionTask extends PlanRow {
         return array(encoded, "modelAssignments").deepCopy();
     }
 
+    public JsonArray guardedReadAssignments() {
+        return array(encoded, GUARDED_READ_ASSIGNMENTS).deepCopy();
+    }
+
     public JsonArray edgeBindings() {
         return array(encoded, "edgeBindings").deepCopy();
     }
@@ -456,12 +352,35 @@ public final class ExecutionTask extends PlanRow {
         return array(encoded, SHARED_CARRIERS).deepCopy();
     }
 
-    public JsonElement replayContract() {
+    /** Full immutable replay contract for offline validation and summaries. */
+    public synchronized JsonElement replayContract() {
         JsonElement contract = encoded.get("replayContract");
-        return contract == null ? null : contract.deepCopy();
+        if (contract == null) return null;
+        if (!encoded.has(SharedExpressionTable.FIELD)) {
+            return contract.deepCopy();
+        }
+        if (expandedReplayContract == null) {
+            JsonObject envelope = new JsonObject();
+            envelope.add("replayContract", contract);
+            envelope.add(SharedExpressionTable.FIELD,
+                    encoded.get(SharedExpressionTable.FIELD));
+            expandedReplayContract = SharedExpressionTable.expand(envelope)
+                    .get("replayContract");
+        }
+        return expandedReplayContract;
     }
 
-    public OutputClosureContract outputClosure() { return outputClosure; }
+    /** Concrete replay decisions, decoded without expanding predicates. */
+    public BranchReplayContract.RuntimeSchedule replaySchedule() {
+        JsonElement contract = encoded.get("replayContract");
+        if (contract == null) return null;
+        if (!contract.isJsonObject()) {
+            throw new IllegalArgumentException(
+                    "replayContract must be an object");
+        }
+        return BranchReplayContract.runtimeScheduleFromJson(
+                contract.getAsJsonObject(), array(encoded,
+                        "retainedLoops"));
+    }
 
-    public List<OutputCaptureSpec> outputCaptures() { return outputCaptures; }
 }

@@ -1,601 +1,383 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+/** Core contracts for the linked region-path worklist. */
 public class RegionPathWorklistTest {
 
-                                @Test
-    public void targetWorklistFlipsOnlyLocalPrefixBeforeExactFatal() {
-        String id = "ACT.TARGET.LOCAL.PREFIX";
-        JsonObject summary = summary(id,
-                ClosureGoalKind.TARGET_REACH_CLOSURE);
-        JsonObject task = executionTask(id,
-                ClosureGoalKind.TARGET_REACH_CLOSURE);
-        String sourceId = "TARGET.LOCAL";
-        String sourceField = "<example.Target: int localValue>";
-        String sourcePhaseId = sourcePhaseId(
-                task.get("occurrenceId").getAsString(), sourceId);
-        String localRaw = "M_I_field_"
-                + SymbolicSourceEvidence.engineLabelForPhase(
-                sourcePhaseId, sourceId)
-                + "_example/Target";
-        String remoteRaw = "M_I_field_REMOTE.RPC.VALUE_example/Reply";
-
-        JsonArray conditions = new JsonArray();
-        conditions.add(binarySymbol(remoteRaw, ">", 0));
-        conditions.add(binarySymbol(localRaw, ">", 0));
-        conditions.add(binarySymbol(remoteRaw, "<", 10));
-        summary.add("pathCondition", conditions);
-        JsonArray mappings = new JsonArray();
-        JsonObject remotePrefix = mapping("SITE.REMOTE", 0);
-        remotePrefix.addProperty("policy", "PATH_ASSUMPTION");
-        mappings.add(remotePrefix);
-        JsonObject localPrefix = mapping("SITE.LOCAL", 1);
-        localPrefix.addProperty("policy", "PATH_ASSUMPTION");
-        mappings.add(localPrefix);
-        JsonObject fatal = mapping("SITE.FATAL", 2);
-        fatal.addProperty("policy", "EXPLORE");
-        mappings.add(fatal);
-        summary.add("branchMappings", mappings);
-        authorizeVmPcMappings(summary);
-        JsonObject reach = new JsonObject();
-        reach.addProperty("kind",
-                PathObservation.TargetReachEvent.KIND);
-        reach.addProperty("siteId", "SITE.FATAL");
-        reach.addProperty("occurrence", 1);
-        reach.addProperty("outcome", true);
-        summary.add(PathObservation.TargetReachEvent.FIELD, reach);
-
-        JsonArray branches = new JsonArray();
-        branches.add(taskBranch("SITE.REMOTE", "PATH_ASSUMPTION"));
-        branches.add(taskBranch("SITE.LOCAL", "PATH_ASSUMPTION"));
-        branches.add(taskBranch("SITE.FATAL", "EXPLORE"));
-        task.add("branches", branches);
-        JsonObject target = new JsonObject();
-        target.addProperty("siteId", "SITE.FATAL");
-        target.addProperty("occurrence", 1);
-        task.add("targetBranch", target);
-        JsonArray actions = new JsonArray();
-        JsonObject localAction = new JsonObject();
-        localAction.addProperty("symbol", "REGION.3.in.local");
-        localAction.addProperty("portId", "REGION.3.in.local");
-        localAction.addProperty("mode", "CONCRETE");
-        localAction.addProperty("location", "HEAP_OBJECT_FIELD");
-        localAction.addProperty("bindingMode", "FIELD_ACCESS");
-        localAction.addProperty("accessFieldSignature", sourceField);
-        localAction.addProperty("javaType", "int");
-        actions.add(localAction);
-        JsonObject remoteAction = new JsonObject();
-        remoteAction.addProperty("symbol", "REGION.3.in.rpc");
-        remoteAction.addProperty("portId", "REGION.3.in.rpc");
-        remoteAction.addProperty("mode", "CONCRETE");
-        remoteAction.addProperty("location", "CALL_RETURN");
-        remoteAction.addProperty("bindingMode", "LOCAL_DEFINITION");
-        remoteAction.addProperty("javaType", "int");
-        remoteAction.addProperty("symbolicDemand",
-                "EXACT_INCOMING_COMPOSITION");
-        remoteAction.addProperty("selectedIncomingEdgeId", "EDGE.remote");
-        actions.add(remoteAction);
-        task.add("inputActions", actions);
-        addMintSite(task, task.get("occurrenceId").getAsString(), sourceId,
-                sourceField, 1);
-        JsonObject handoff = new JsonObject();
-        handoff.addProperty("role", "ATTACH");
-        handoff.addProperty("direction", "RESPONSE");
-        handoff.addProperty("portId", "REGION.3.in.rpc");
-        JsonArray handoffs = new JsonArray();
-        handoffs.add(handoff);
-        task.add("communicationHandoffs", handoffs);
-        JsonObject edge = new JsonObject();
-        edge.addProperty("edgeId", "EDGE.remote");
-        edge.addProperty("toInputPort", "REGION.3.in.rpc");
-        JsonArray bindings = new JsonArray();
-        bindings.add(edge);
-        task.add("edgeBindings", bindings.deepCopy());
-        summary.add("edgeBindings", bindings.deepCopy());
-        VmHandoffEvidence.writeTo(summary, Collections.singletonList(
-                VmHandoffEvidence.event("REGION.3.in.rpc", 41L, 42L,
-                        intSymbol(remoteRaw), "TASK.PRODUCER",
-                        "REGION.PRODUCER/occurrence-1")));
-
-        RegionPathWorklist.Result result = worklist(
-                Collections.singletonList(summary),
-                Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-
-        assertEquals(result.manifest.toString(), 1, result.tasks.size());
-        JsonObject query = result.tasks.get(0);
-        BranchReplayContract replay = replayContract(query);
-        assertEquals("SITE.LOCAL", replay.source().siteId());
-        assertEquals(2, replay.requiredPathPredicates().size());
-        assertTrue(CanonicalJson.render(replay.requiredPathPredicates())
-                .contains(remoteRaw));
-        assertFalse(CanonicalJson.render(replay.requiredPathPredicates())
-                .contains("Y_I_10"));
-        assertEquals(1, VmHandoffEvidence.eventsOf(query).size());
-        assertEquals(1, query.getAsJsonArray("edgeBindings").size());
-
-        JsonObject assignment = new JsonObject();
-        assignment.addProperty("modelAssignmentKey", "MODEL.target.local");
-        assignment.addProperty("engineSymbol", localRaw);
-        assignment.addProperty("inputSymbol", "SOURCE_PHASE:"
-                + sourcePhaseId);
-        assignment.addProperty("configuredSourceId", sourceId);
-        assignment.addProperty("configuredSourcePhaseId", sourcePhaseId);
-        assignment.addProperty("configuredSourceFieldSignature",
-                sourceField);
-        assignment.addProperty("valueType", "INT");
-        assignment.addProperty("value", "1");
-        JsonArray assignments = new JsonArray();
-        assignments.add(assignment);
-        JsonObject replayTask = PathReplayTaskFactory.create(query, task,
-                assignments, replay, null);
-        assertEquals(1, replayTask.getAsJsonArray(
-                "communicationHandoffs").size());
-        assertEquals(1, replayTask.getAsJsonArray("edgeBindings").size());
-        assertEquals(1, replayTask.getAsJsonArray("modelAssignments").size());
-        assertEquals(2, replayContract(replayTask)
-                .requiredPathPredicates().size());
-
-        JsonObject opposite = summary.deepCopy();
-        opposite.addProperty("summaryId",
-                "SUMMARY.ACT.TARGET.LOCAL.PREFIX.OPPOSITE");
-        opposite.getAsJsonArray("pathCondition").set(1,
-                binarySymbol(localRaw, "<=", 0));
-        JsonArray oppositeMappings = new JsonArray();
-        JsonObject oppositeRemote = mapping("SITE.REMOTE", 0);
-        oppositeRemote.addProperty("policy", "PATH_ASSUMPTION");
-        oppositeMappings.add(oppositeRemote);
-        JsonObject oppositeLocal = mapping("SITE.LOCAL", 1);
-        oppositeLocal.addProperty("outcome", false);
-        oppositeLocal.addProperty("policy", "PATH_ASSUMPTION");
-        oppositeMappings.add(oppositeLocal);
-        JsonObject oppositeFatal = mapping("SITE.FATAL", 2);
-        oppositeFatal.addProperty("policy", "EXPLORE");
-        oppositeMappings.add(oppositeFatal);
-        opposite.add("branchMappings", oppositeMappings);
-        authorizeVmPcMappings(opposite);
-
-        RegionPathWorklist.Result bothOutcomes = worklist(
-                Arrays.asList(summary, opposite),
-                Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults());
-        assertTrue(bothOutcomes.tasks.toString(),
-                bothOutcomes.tasks.isEmpty());
-    }
-
-        /**
-     * OCC-1: a task's address may be entered several times, and every
-     * compatible activation is published as its own occurrence instead of one
-     * being answered and the rest reported as an ambiguous address (which is
-     * what HDFS-11741 run 24 did for four of six tasks).
-     *
-     * <p>The activations are cases of ONE relation, closed on the planned
-     * address, and they are not alternatives: each carries its own occurrence
-     * so the composer can give it its own selector, ports and event scope.
-     * They are also one obligation -- a second activation of the same address
-     * ran the same code path again and buys no new exploration.</p>
-     */
     @Test
-    public void severalActivationsAreOneRelationOfSeveralOccurrences() {
-        String planned = "REGION.3/occurrence-1";
-        JsonObject first = activation(planned, 1, true, "Y_I_7");
-        JsonObject second = first.deepCopy();
-        second.addProperty("summaryId", "SUMMARY.ACT.OCC.A2");
-        second.addProperty("occurrenceId", planned + "#a2");
-        second.addProperty("activationOrdinal", 2);
-        JsonObject task = executionTask("ACT.OCC",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
+    public void observedOppositeOutcomesCloseTheSemanticFlip() {
+        JsonObject task = task("B", "REGION.B",
+                "REGION.B/occurrence-1");
+        JsonObject taken = summary(task, 1, true);
+        JsonObject notTaken = summary(task, 1, false);
+        taken.add(LoopBoundPolicy.PATH_LOOP_COUNTS,
+                finalLoopProfile("LOOP.B", 2));
+        notTaken.add(LoopBoundPolicy.PATH_LOOP_COUNTS,
+                finalLoopProfile("LOOP.B", 1));
+        refreshLocalCaseId(taken);
+        refreshLocalCaseId(notTaken);
+        notTaken.addProperty("summaryId", "SUMMARY.B.not-taken");
+        notTaken.addProperty("replayGroupId", "REPLAY.GROUP.SECOND");
 
-        RegionPathWorklist.Result result = worklist(
-                Arrays.asList(first, second), Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(),
-                new RegionPathWorklist.Bounds(64, 32, 256));
-        // The same task with only its first activation: the obligations the
-        // planner proposes must not grow because the address was entered a
-        // second time.
-        RegionPathWorklist.Result alone = worklist(
-                Collections.singletonList(first),
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Arrays.asList(taken, notTaken),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
-                new RegionPathWorklist.Bounds(64, 32, 256));
+                RegionPathWorklist.Bounds.defaults(),
+                Collections.<JsonObject>emptyList(),
+                CanonicalJson.sha256("same-family-snapshot"));
 
-        assertEquals(RegionPathWorklist.State.PENDING.name(),
+        assertTrue(result.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
                 result.manifest.get("state").getAsString());
-        assertEquals("a task with several occurrence cases is still one "
-                        + "obligation",
-                alone.tasks.size(), result.tasks.size());
-        assertEquals("the planned address, not one activation of it",
-                planned, result.manifest.get("occurrenceId").getAsString());
-        assertEquals("two activations are one relation",
-                1, result.relations.size());
-
-        JsonObject relation = result.relations.get(0);
-        assertEquals(planned, relation.get("occurrenceId").getAsString());
-        JsonArray cases = relation.getAsJsonObject("regionRelation")
-                .getAsJsonArray("cases");
-        assertEquals("one case per activation", 2, cases.size());
-        Set<String> occurrences = new LinkedHashSet<>();
-        for (int index = 0; index < cases.size(); index++) {
-            JsonObject item = cases.get(index).getAsJsonObject();
-            occurrences.add(item.get("occurrenceId").getAsString());
-            assertTrue("every case names its activation",
-                    item.has("activationOrdinal"));
-        }
-        assertEquals("each case is its own occurrence",
-                new LinkedHashSet<>(Arrays.asList(planned + "#a1",
-                        planned + "#a2")), occurrences);
     }
 
-    /** Distinct paths of one address each plan once; a duplicate plans none. */
     @Test
-    public void distinctActivationPathsEachOwnTheirFlipObligations() {
-        String planned = "REGION.3/occurrence-1";
-        JsonObject first = activation(planned, 1, true, "Y_I_7");
-        JsonObject second = activation(planned, 2, true, "Y_I_9");
-        second.getAsJsonArray("pathCondition").set(0, binary(">=", 0));
-        JsonArray secondMappings = new JsonArray();
-        secondMappings.add(mapping("SITE.0", 0));
-        secondMappings.add(mapping("SITE.1", 1));
-        second.add("branchMappings", secondMappings);
-        authorizeVmPcMappings(second);
-        JsonObject duplicate = second.deepCopy();
-        duplicate.addProperty("summaryId", "SUMMARY.ACT.OCC.A3");
-        duplicate.addProperty("occurrenceId", planned + "#a3");
-        duplicate.addProperty("activationOrdinal", 3);
-        JsonObject task = executionTask("ACT.OCC",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        RegionPathWorklist.Bounds bounds =
-                new RegionPathWorklist.Bounds(64, 32, 256);
+    public void oneFlipCarriesTheWholeDependencyClosure() {
+        JsonObject c = task("C", "REGION.C", "REGION.C/occurrence-1");
+        JsonObject b = task("B", "REGION.B", "REGION.B/occurrence-1");
+        JsonObject a = task("A", "REGION.A", "REGION.A/occurrence-1");
+        List<JsonObject> summaries = Arrays.asList(
+                summary(c, 1), summary(b, 1), summary(b, 2), summary(a, 1));
+        String familyDigest = CanonicalJson.sha256("family-snapshot");
+        JsonObject bundle = LinkedReplayBundle.create(
+                "TASK.B", Arrays.asList(c, b, a), summaries,
+                "SUMMARY.B.2", familyDigest, "ITERATION.7");
+        JsonObject carrier = new JsonObject();
+        carrier.add(LinkedReplayBundle.FIELD, bundle);
+        JsonObject decoded = LinkedReplayBundle.decode(carrier);
 
-        RegionPathWorklist.Result firstOnly = worklist(
-                Collections.singletonList(first),
-                Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(), bounds);
-        RegionPathWorklist.Result secondOnly = worklist(
-                Collections.singletonList(second),
-                Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(), bounds);
-        RegionPathWorklist.Result combined = worklist(
-                Arrays.asList(first, second, duplicate),
-                Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(), bounds);
-        RegionPathWorklist.Result distinct = worklist(
-                Arrays.asList(first, second),
-                Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(), bounds);
-
-        assertTrue(firstOnly.tasks.size() > 0);
-        assertTrue(secondOnly.tasks.size() > 0);
-        assertTrue("a second semantic path contributes obligations",
-                distinct.tasks.size() > Math.max(firstOnly.tasks.size(),
-                        secondOnly.tasks.size()));
-        assertEquals("a duplicate activation path is deduplicated",
-                distinct.tasks.size(), combined.tasks.size());
-    }
-
-    /**
-     * An activation that satisfied only part of its output boundary becomes a
-     * case of exactly what it captured, marked and named -- never dropped --
-     * as long as another activation of the task did satisfy it.
-     */
-    @Test
-    public void aPartialActivationIsAMarkedCaseNotADiscardedRelation() {
-        String planned = "REGION.3/occurrence-1";
-        JsonObject complete = activation(planned, 1, true, "Y_I_7");
-        JsonObject partial = activation(planned, 2, false, "Y_I_9");
-        partial.add("outputExpressions", new JsonObject());
-        JsonObject task = executionTask("ACT.OCC",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-
-        RegionPathWorklist.Result result = worklist(
-                Arrays.asList(complete, partial),
-                Collections.singletonList(task),
-                Collections.<JsonObject>emptyList(),
-                new RegionPathWorklist.Bounds(64, 32, 256));
-
-        assertEquals("one partial activation does not gap the relation",
-                RegionPathWorklist.State.PENDING.name(),
-                result.manifest.get("state").getAsString());
-        assertTrue("and it is named",
-                result.manifest.getAsJsonArray("coverageGaps").toString()
-                        .contains("ACTIVATION_BOUNDARY_NOT_COMPLETE"));
-        assertEquals(1, result.relations.size());
-        JsonArray cases = result.relations.get(0)
-                .getAsJsonObject("regionRelation").getAsJsonArray("cases");
-        assertEquals("the partial activation is still a case",
-                2, cases.size());
-        boolean marked = false;
-        for (int index = 0; index < cases.size(); index++) {
-            JsonObject item = cases.get(index).getAsJsonObject();
-            if (!item.get("relationallyComplete").getAsBoolean()) {
-                marked = true;
-                assertEquals("it carries only what it captured",
-                        0, item.getAsJsonObject("outputExpressions").size());
+        assertEquals(3, decoded.getAsJsonArray("members").size());
+        assertEquals("REPLAY.GROUP.SEED", decoded.get(
+                LinkedReplayBundle.SOURCE_REPLAY_GROUP_FIELD).getAsString());
+        assertEquals("ITERATION.7", decoded.get(
+                LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD).getAsString());
+        int primaries = 0;
+        int bActivations = 0;
+        for (JsonElement element : decoded.getAsJsonArray("members")) {
+            JsonObject member = element.getAsJsonObject();
+            if (LinkedReplayBundle.PRIMARY.equals(
+                    member.get("role").getAsString())) {
+                primaries++;
+            }
+            assertTrue(member.has(LoopBoundPolicy.FIELD));
+            if ("TASK.B".equals(member.get("sourceTaskId").getAsString())) {
+                bActivations = member.getAsJsonArray(
+                        "sourceActivations").size();
             }
         }
-        assertTrue("the partial case is marked", marked);
+        assertEquals(1, primaries);
+        assertEquals("activation occurrences stay distinct", 2,
+                bActivations);
+
+        BranchReplayContract oldContract = BranchReplayContract.fromSummary(
+                summaries.get(0), "SITE.C", 1);
+        for (JsonObject oldPrimary : Arrays.asList(c, b, a)) {
+            oldPrimary.add("replayContract", oldContract.toJson());
+            oldPrimary.addProperty("pathQueryKey", "old-frontier");
+        }
+        JsonObject currentAction = new JsonObject();
+        currentAction.addProperty("mode", "SYMBOLIC");
+        currentAction.addProperty("symbol", "M_I_CURRENT");
+        currentAction.addProperty("location", "CALL_RETURN");
+        currentAction.addProperty("javaType", "int");
+        b.getAsJsonArray("inputActions").add(currentAction);
+        JsonArray stalePrimaryAssignments = new JsonArray();
+        stalePrimaryAssignments.add(modelAssignment("M_I_STALE_SUFFIX", 7));
+        b.add("modelAssignments", stalePrimaryAssignments);
+        JsonArray companionAssignments = new JsonArray();
+        companionAssignments.add(modelAssignment("M_I_COMPANION", 8));
+        a.add("modelAssignments", companionAssignments);
+        JsonObject query = new JsonObject();
+        query.addProperty("schemaVersion", 3);
+        query.addProperty("kind", "REGION_PATH_FLIP");
+        query.addProperty("queryKey", CanonicalJson.sha256("B-flip"));
+        query.addProperty("goalId", "GOAL.LINKED");
+        ClosureGoalKind.REGION_PATH_CLOSURE.writeToTask(query);
+        query.add(LinkedReplayBundle.FIELD, bundle.deepCopy());
+        Map<String, JsonObject> tasks = new LinkedHashMap<>();
+        for (JsonObject task : Arrays.asList(c, b, a)) {
+            tasks.put(task.get("taskId").getAsString(), task);
+        }
+        JsonArray currentAssignments = new JsonArray();
+        currentAssignments.add(modelAssignment("M_I_CURRENT", 9));
+        JsonArray guardedReads = new JsonArray();
+        JsonObject guardedRead = new JsonObject();
+        // The linked bundle may replace the task row with a replay clone;
+        // the planned activation occurrence remains its stable identity.
+        guardedRead.addProperty("readerTaskId", "TASK.PRIOR.A");
+        guardedRead.addProperty("readerOccurrenceId",
+                "REGION.A/occurrence-1");
+        guardedRead.addProperty("readIdentity", "RFC.fixture");
+        guardedReads.add(guardedRead);
+        List<JsonObject> replay = PathReplayTaskFactory.createLinked(query,
+                tasks, currentAssignments, guardedReads,
+                BranchReplayContract.fromSummary(
+                        summaries.get(2), "SITE.B", 1));
+        for (JsonObject replayTask : replay) {
+            boolean primary = LinkedReplayBundle.PRIMARY.equals(replayTask
+                    .get(LinkedReplayBundle.ROLE_FIELD).getAsString());
+            assertEquals(primary, replayTask.has("replayContract"));
+            assertEquals(primary, replayTask.has("pathQueryKey"));
+            JsonObject expanded = SharedExpressionTable.expand(replayTask);
+            ExecutionTask decodedTask = ExecutionTask.decode(replayTask);
+            assertEquals(string(expanded, "taskId"),
+                    decodedTask.taskId());
+            if (primary) {
+                assertTrue(replayTask.has(SharedExpressionTable.FIELD));
+                assertEquals(string(query, "queryKey"),
+                        string(replayTask, "pathQueryKey"));
+                assertEquals(expanded.get("replayContract"),
+                        decodedTask.replayContract());
+                assertEquals("SITE.B", decodedTask.replaySchedule()
+                        .sourceSiteId());
+                assertEquals(1, expanded.getAsJsonArray(
+                        "modelAssignments").size());
+                assertEquals("M_I_CURRENT", expanded.getAsJsonArray(
+                        "modelAssignments").get(0).getAsJsonObject()
+                        .get("engineSymbol").getAsString());
+            } else if ("REGION.A".equals(string(expanded, "regionId"))) {
+                assertEquals("M_I_COMPANION", expanded.getAsJsonArray(
+                        "modelAssignments").get(0).getAsJsonObject()
+                        .get("engineSymbol").getAsString());
+                assertEquals(1, decodedTask.guardedReadAssignments().size());
+            } else {
+                assertEquals(0, decodedTask.guardedReadAssignments().size());
+            }
+        }
     }
 
-        /** One published activation of a task's planned address. */
-    private static JsonObject activation(String planned, int ordinal,
-                                         boolean complete, String value) {
-        JsonObject summary = summary("ACT.OCC",
-                ClosureGoalKind.OUTPUT_RELATION_CLOSURE);
-        summary.addProperty("summaryId", "SUMMARY.ACT.OCC.A" + ordinal);
-        summary.addProperty("occurrenceId", planned + "#a" + ordinal);
-        summary.addProperty("plannedOccurrenceId", planned);
-        summary.addProperty("activationOrdinal", ordinal);
-        summary.addProperty("relationallyComplete", complete);
-        JsonObject outputs = new JsonObject();
-        JsonObject constant = new JsonObject();
-        constant.addProperty("_type", "ConstExpr");
-        constant.addProperty("_java_type", "I");
-        constant.addProperty("_exp", value);
-        outputs.add("REGION.3.out.0", constant);
-        summary.add("outputExpressions", outputs);
-        return summary;
+    @Test
+    public void sharedInputActionIsAssignedOnlyToTheExactPrimary() {
+        JsonObject first = task("FIRST", "REGION.FIRST",
+                "REGION.FIRST/occurrence-1");
+        JsonObject second = task("SECOND", "REGION.SECOND",
+                "REGION.SECOND/occurrence-1");
+        JsonObject third = task("THIRD", "REGION.THIRD",
+                "REGION.THIRD/occurrence-1");
+        String shared = "XCH.fixture.req.value";
+        for (JsonObject owner : Arrays.asList(first, second)) {
+            JsonObject action = new JsonObject();
+            action.addProperty("mode", "SYMBOLIC");
+            action.addProperty("symbol", shared);
+            action.addProperty("location", "CALL_RETURN");
+            action.addProperty("javaType", "int");
+            owner.getAsJsonArray("inputActions").add(action);
+        }
+        List<JsonObject> tasks = Arrays.asList(first, second, third);
+        List<JsonObject> summaries = Arrays.asList(
+                summary(first, 1), summary(second, 1), summary(third, 1));
+        Map<String, JsonObject> taskById = new LinkedHashMap<>();
+        for (JsonObject task : tasks) {
+            taskById.put(string(task, "taskId"), task);
+        }
+        JsonArray assignments = new JsonArray();
+        assignments.add(modelAssignment(shared, 9));
+
+        for (int primaryIndex = 0; primaryIndex < 2; primaryIndex++) {
+            JsonObject primary = tasks.get(primaryIndex);
+            JsonObject primarySummary = summaries.get(primaryIndex);
+            JsonObject query = linkedQuery(primary, tasks, summaries,
+                    primarySummary);
+            List<JsonObject> replay = PathReplayTaskFactory.createLinked(
+                    query, taskById, assignments, new JsonArray(),
+                    BranchReplayContract.fromSummary(primarySummary,
+                            "SITE." + (primaryIndex == 0
+                                    ? "FIRST" : "SECOND"), 1));
+            for (JsonObject replayTask : replay) {
+                JsonObject expanded = SharedExpressionTable.expand(
+                        replayTask);
+                assertEquals(string(expanded, "regionId").equals(
+                                string(primary, "regionId")) ? 1 : 0,
+                        expanded.getAsJsonArray("modelAssignments").size());
+            }
+        }
+
+        JsonObject query = linkedQuery(third, tasks, summaries,
+                summaries.get(2));
+        try {
+            PathReplayTaskFactory.createLinked(query, taskById, assignments,
+                    new JsonArray(), BranchReplayContract.fromSummary(
+                            summaries.get(2), "SITE.THIRD", 1));
+            throw new AssertionError("multiple companion owners accepted");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("has 2 owners"));
+        }
     }
 
-                    private static JsonObject outputClosure(
-            String port, String cell, String proofTag, String... sites) {
-        JsonObject producer = new JsonObject();
-        producer.addProperty("relationKey", "RELATION.REGION.3");
-        producer.addProperty("regionId", "REGION.3");
+    @Test
+    public void topologyDivergenceQuarantinesTheWholeEpoch() {
+        JsonObject task = task("B", "REGION.B", "REGION.B/occurrence-1");
+        JsonObject summary = summary(task, 1);
+        JsonObject delta = new JsonObject();
+        delta.addProperty("deltaKind", TopologyDelta.TOPOLOGY_DIVERGENCE);
+        delta.addProperty("taskId", "TASK.B");
+        delta.addProperty("sourceKey", "SOURCE.B");
+        delta.addProperty("occurrenceId", "REGION.B/occurrence-1");
 
-        JsonObject output = new JsonObject();
-        output.addProperty("portId", port);
-        output.addProperty("cell", cell);
-        output.addProperty("kind", "REGION_OUTPUT");
-        output.addProperty("javaTypeDescriptor", "I");
-        output.addProperty("selectionAuthority", "TEST_EXACT_DEMAND");
+        RegionPathWorklist.Result result = plan(summary, task,
+                Collections.<JsonObject>emptyList(),
+                CanonicalJson.sha256("epoch-family"),
+                Collections.singletonList(delta));
 
-        JsonArray siteArray = new JsonArray();
-        for (String site : sites) siteArray.add(site);
-        JsonObject slice = new JsonObject();
-        slice.addProperty("outputPort", port);
-        slice.addProperty("outputCell", cell);
-        slice.add("inputPorts", new JsonArray());
-        slice.add("sites", siteArray.deepCopy());
-        slice.add("staticSites", siteArray.deepCopy());
-        slice.add("methods", new JsonArray());
-        slice.add("causalEdgeIds", new JsonArray());
-        slice.add("captureBindings", new JsonArray());
-        slice.add("captureBindingIssues", new JsonArray());
-        slice.addProperty("proofTag", proofTag);
-
-        JsonObject member = new JsonObject();
-        member.add("output", output);
-        member.add("slice", slice);
-        JsonArray members = new JsonArray();
-        members.add(member);
-        JsonObject closure = new JsonObject();
-        closure.addProperty("schemaVersion", 3);
-        closure.addProperty("kind", "OUTPUT_CLOSURE_CONTRACT");
-        closure.add("producer", producer);
-        closure.add("members", members);
-        return closure;
+        assertTrue(result.tasks.isEmpty());
+        assertTrue(result.manifest.getAsJsonArray("coverageGaps")
+                .toString().contains(TopologyDelta.TOPOLOGY_DIVERGENCE));
     }
 
-    private static void attachClosure(JsonObject artifact,
-                                      JsonObject closure) {
-        artifact.remove("requestedOutput");
-        artifact.addProperty("relationKey", closure.getAsJsonObject(
-                "producer").get("relationKey").getAsString());
-        artifact.add("outputClosure", closure.deepCopy());
+    private static RegionPathWorklist.Result plan(
+            JsonObject summary, JsonObject task, List<JsonObject> records,
+            String familyDigest, List<JsonObject> topologyDelta) {
+        refreshLocalCaseId(summary);
+        return RegionPathWorklist.plan(Collections.singletonList(summary),
+                Collections.singletonList(task), records,
+                RegionPathWorklist.Bounds.defaults(), topologyDelta,
+                familyDigest);
     }
 
-    private static JsonObject executionTask(String id,
-                                            ClosureGoalKind goal) {
+    private static JsonObject task(String id, String region,
+                                   String occurrence) {
         JsonObject task = new JsonObject();
-        task.addProperty("goalId", id + ".GOAL");
         task.addProperty("taskId", "TASK." + id);
-        task.addProperty("regionId", "REGION.3");
-        task.addProperty("sourceKey", "NAMENODE/active/epoch-0");
-        task.addProperty("occurrenceId", "REGION.3/occurrence-1");
+        task.addProperty("goalId", "GOAL.LINKED");
+        task.addProperty("regionId", region);
+        task.addProperty("sourceKey", "SOURCE." + id);
+        task.addProperty("occurrenceId", occurrence);
+        task.addProperty("relationKey", "RELATION." + id);
+        ClosureGoalKind.REGION_PATH_CLOSURE.writeToTask(task);
         LoopBoundPolicy.cfgBackedges(8).writeTo(task);
-        goal.writeToTask(task);
-        attachClosure(task, outputClosure("REGION.3.out.0",
-                "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
+        JsonObject branch = new JsonObject();
+        branch.addProperty("siteId", "SITE." + id);
+        branch.addProperty("policy", "EXPLORE");
+        branch.addProperty("selectedOccurrence", 1);
+        JsonArray branches = new JsonArray();
+        branches.add(branch);
+        task.add("branches", branches);
+        task.add("inputActions", new JsonArray());
         return task;
     }
 
-    private static JsonObject summary(String id,
-                                      ClosureGoalKind goal) {
-        String plannedOccurrence = "REGION.3/occurrence-1";
+    private static JsonObject modelAssignment(String symbol, int value) {
+        JsonObject assignment = new JsonObject();
+        assignment.addProperty("engineSymbol", symbol);
+        assignment.addProperty("inputSymbol", symbol);
+        assignment.addProperty("valueType", "INT");
+        assignment.addProperty("value", Integer.toString(value));
+        return assignment;
+    }
+
+    private static JsonObject linkedQuery(JsonObject primary,
+                                          List<JsonObject> tasks,
+                                          List<JsonObject> summaries,
+                                          JsonObject primarySummary) {
+        JsonObject query = new JsonObject();
+        query.addProperty("schemaVersion", 3);
+        query.addProperty("kind", "REGION_PATH_FLIP");
+        query.addProperty("queryKey", CanonicalJson.sha256(
+                "shared-owner-" + string(primary, "taskId")));
+        query.addProperty("goalId", "GOAL.LINKED");
+        query.addProperty("sourceTaskId", string(primary, "taskId"));
+        ClosureGoalKind.REGION_PATH_CLOSURE.writeToTask(query);
+        query.add(LinkedReplayBundle.FIELD, LinkedReplayBundle.create(
+                string(primary, "taskId"), tasks, summaries,
+                string(primarySummary, "summaryId"),
+                CanonicalJson.sha256("shared-owner-family"),
+                "ITERATION.7"));
+        return query;
+    }
+
+    private static JsonObject summary(JsonObject task, int activation) {
+        return summary(task, activation, true);
+    }
+
+    private static JsonObject summary(JsonObject task, int activation,
+                                      boolean outcome) {
+        String taskId = task.get("taskId").getAsString();
+        String planned = task.get("occurrenceId").getAsString();
+        String suffix = taskId.substring("TASK.".length());
         JsonObject summary = new JsonObject();
-        summary.addProperty("summaryId", "SUMMARY." + id);
-        summary.addProperty("goalId", id + ".GOAL");
-        summary.addProperty("taskId", "TASK." + id);
-        summary.addProperty("regionId", "REGION.3");
-        summary.addProperty("sourceKey", "NAMENODE/active/epoch-0");
-        summary.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,
-                plannedOccurrence);
-        summary.addProperty(PathObservation.ACTIVATION_ORDINAL, 1);
-        summary.addProperty("occurrenceId", plannedOccurrence + "#a1");
+        summary.addProperty("summaryId", "SUMMARY." + suffix + "."
+                + activation);
+        summary.addProperty("taskId", taskId);
+        summary.addProperty("goalId", task.get("goalId").getAsString());
+        summary.addProperty("regionId", task.get("regionId").getAsString());
+        summary.addProperty("sourceKey", task.get("sourceKey").getAsString());
+        summary.addProperty(PathObservation.PLANNED_OCCURRENCE_ID, planned);
+        summary.addProperty(PathObservation.ACTIVATION_ORDINAL, activation);
+        summary.addProperty("occurrenceId", planned + "#a" + activation);
+        summary.addProperty("replayGroupId", "REPLAY.GROUP.SEED");
+        summary.addProperty(VmExpressionIr.TOPOLOGY_EPOCH, "ITERATION.7");
+        ClosureGoalKind.REGION_PATH_CLOSURE.writeToTask(summary);
         LoopBoundPolicy.cfgBackedges(8).writeTo(summary);
-        summary.addProperty("valid", true);
-        summary.addProperty("relationallyComplete", true);
-        // C2: the census is required, never optional - a summary that
-        // never stated it is refused, so every fixture states it.
-        summary.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
-                new JsonArray());
-        goal.writeToTask(summary);
-        attachClosure(summary, outputClosure("REGION.3.out.0",
-                "<P: int x>", "PROOF.DEFAULT", "SITE.0", "SITE.1"));
 
-        JsonArray conditions = new JsonArray();
-        conditions.add(binary(">", 0));
-        conditions.add(binary("<", 5));
-        summary.add("pathCondition", conditions);
-
-        JsonArray mappings = new JsonArray();
-        mappings.add(mapping("SITE.0", 0));
-        mappings.add(mapping("SITE.1", 1));
-        summary.add("branchMappings", mappings);
-        JsonObject outputs = new JsonObject();
-        JsonObject value = new JsonObject();
-        value.addProperty("_type", "ConstExpr");
-        value.addProperty("_java_type", "I");
-        value.addProperty("_exp", "Y_I_0");
-        outputs.add("REGION.3.out.0", value);
-        summary.add("outputExpressions", outputs);
-        authorizeVmPcMappings(summary);
-        return summary;
-    }
-
-    private static void authorizeVmPcMappings(JsonObject summary) {
-        JsonArray conditions = summary.getAsJsonArray("pathCondition");
-        JsonArray canonical = new JsonArray();
-        for (com.google.gson.JsonElement element
-                : summary.getAsJsonArray("branchMappings")) {
-            JsonObject mapping = element.getAsJsonObject();
-            int conditionIndex = mapping.get("conditionIndex").getAsInt();
-            SummaryBranchMapping.Policy policy =
-                    SummaryBranchMapping.Policy.fromWire(
-                            mapping.has("policy")
-                                    ? mapping.get("policy").getAsString()
-                                    : "EXPLORE");
-            if (conditionIndex < 0 || conditionIndex >= conditions.size()) {
-                canonical.add(SummaryBranchMapping.concrete(
-                        ExactConcreteBranchObservation.attested(
-                                mapping.get("siteId").getAsString(),
-                                "<test.Region: void run()>", 0,
-                                mapping.get("occurrence").getAsInt(),
-                                mapping.get("outcome").getAsBoolean()),
-                        policy).toJson());
-                continue;
-            }
-            JsonObject event = new JsonObject();
-            event.addProperty("eventId", conditionIndex + 1L);
-            event.addProperty("contextId", 7L);
-            event.addProperty("predicateNormalization", "IDENTITY");
-            BranchWitness witness = BranchWitness.vmPc(
-                    mapping.get("siteId").getAsString(),
-                    "<test.Region: void run()>", conditionIndex,
-                    mapping.get("occurrence").getAsInt(),
-                    mapping.get("outcome").getAsBoolean(),
-                    conditions.get(conditionIndex), conditionIndex, event);
-            canonical.add(SummaryBranchMapping.witnessed(witness,
-                    conditionIndex, policy).toJson());
-        }
-        summary.add("branchMappings", canonical);
-    }
-
-    private static JsonObject taskBranch(String site, String policy) {
-        JsonObject branch = new JsonObject();
-        branch.addProperty("siteId", site);
-        branch.addProperty("policy", policy);
-        branch.addProperty("selectedOccurrence", 1);
-        return branch;
-    }
-
-
-    private static String sourcePhaseId(
-            String occurrence, String sourceId) {
-        return ConfiguredSourcePhaseContract.phaseId(occurrence,
-                "<fixture.Source." + sourceId + ": void publish()>#u0",
-                ConfiguredSourcePhaseContract.Phase.PUBLISH, 1);
-    }
-
-    /** The task's frozen catalog of declared mint SITES -- what a recorded
-     * VM source root is resolved against now that nothing predicts it. */
-    private static void addMintSite(JsonObject task, String occurrence,
-                                    String sourceId, String field,
-                                    int ordinal) {
-        JsonArray declarations = new JsonArray();
-        declarations.add(ConfiguredSourcePhaseContract.declaration(
-                ConfiguredSourcePhaseContract.Phase.PUBLISH,
-                sourceId, field,
-                "<fixture.Source." + sourceId + ": void publish()>", 0));
-        JsonObject row = ConfiguredSourcePhaseContract.occurrence(
-                ConfiguredSourcePhaseContract.declarationsOf(
-                        declarations).get(0),
-                occurrence, 1, ordinal, 10L, 100L + ordinal,
-                "<example.Hook: boolean symbolize(java.lang.String,"
-                        + "java.lang.Object,java.lang.String)>",
-                Collections.singletonList(10L));
-        JsonArray phases = task.has(
-                ConfiguredSourcePhaseContract.PLAN_FIELD)
-                ? task.getAsJsonArray(
-                        ConfiguredSourcePhaseContract.PLAN_FIELD)
-                : new JsonArray();
-        phases.add(row);
-        task.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
-    }
-
-    private static BranchReplayContract replayContract(JsonObject task) {
-        return BranchReplayContract.fromJson(task.getAsJsonObject(
-                "replayContract"));
-    }
-
-    private static JsonObject mapping(String site, int condition) {
-        return mapping(site, condition, 1);
-    }
-
-    private static JsonObject mapping(String site, int condition,
-                                      int occurrence) {
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", site);
-        mapping.addProperty("conditionIndex", condition);
-        mapping.addProperty("occurrence", occurrence);
-        mapping.addProperty("outcome", true);
-        return mapping;
-    }
-
-    private static JsonObject binary(String operator, int constant) {
-        return binarySymbol(
-                "M_I_field_REGION.3.in.0_java/lang/Integer",
-                operator, constant);
-    }
-
-    private static JsonObject binarySymbol(
-            String raw, String operator, int constant) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "BinaryExpression");
-        JsonObject left = intSymbol(raw);
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_java_type", "I");
+        left.addProperty("_exp", "M_I_field_" + suffix + "_in");
         JsonObject right = new JsonObject();
         right.addProperty("_type", "ConstExpr");
         right.addProperty("_java_type", "I");
-        right.addProperty("_exp", "Y_I_" + constant);
-        expression.add("_left", left);
-        expression.addProperty("_op", operator);
-        expression.add("_right", right);
-        return expression;
+        right.addProperty("_exp", "Y_I_0");
+        JsonObject condition = new JsonObject();
+        condition.addProperty("_type", "BinaryExpression");
+        condition.add("_left", left);
+        condition.addProperty("_op", outcome ? ">" : "<=");
+        condition.add("_right", right);
+        JsonArray conditions = new JsonArray();
+        conditions.add(condition);
+        summary.add("pathCondition", conditions);
+
+        JsonObject vmEvent = new JsonObject();
+        vmEvent.addProperty("eventId", 1L);
+        vmEvent.addProperty("contextId", 1L);
+        vmEvent.addProperty("predicateNormalization", "IDENTITY");
+        BranchWitness witness = BranchWitness.vmPcImmutable("SITE." + suffix,
+                "<fixture.Linked: void run()>", 0, 1, outcome,
+                condition, 0, vmEvent);
+        JsonArray mappings = new JsonArray();
+        mappings.add(SummaryBranchMapping.witnessed(witness, 0,
+                SummaryBranchMapping.Policy.EXPLORE).toJson());
+        summary.add("branchMappings", mappings);
+        refreshLocalCaseId(summary);
+        return summary;
     }
 
-    private static JsonObject intSymbol(String raw) {
-        JsonObject symbol = new JsonObject();
-        symbol.addProperty("_type", "SymbolExpression");
-        symbol.addProperty("_java_type", "I");
-        symbol.addProperty("_exp", raw);
-        return symbol;
+    private static void refreshLocalCaseId(JsonObject summary) {
+        summary.remove(LocalCaseIdentity.FIELD);
+        summary.addProperty(LocalCaseIdentity.FIELD,
+                LocalCaseIdentity.compute(summary));
     }
 
-                private static RegionPathWorklist.Result worklist(
-            List<JsonObject> summaries, List<JsonObject> executionTasks,
-            List<JsonObject> explorationRecords,
-            RegionPathWorklist.Bounds bounds) {
-        return RegionPathWorklist.plan(summaries, executionTasks,
-                explorationRecords, bounds,
-                Collections.<JsonObject>emptyList());
+    private static JsonArray finalLoopProfile(String siteId, int bodyCount) {
+        JsonObject loop = new JsonObject();
+        loop.addProperty(LoopBoundPolicy.LOOP_SITE_ID, siteId);
+        loop.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID,
+                "runtime-" + siteId);
+        loop.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION,
+                "CFG_BACKEDGE");
+        loop.addProperty(LoopBoundPolicy.LOOP_BODY_BOUND, 8);
+        loop.addProperty(LoopBoundPolicy.LOOP_BODY_COUNT, bodyCount);
+        loop.addProperty(LoopBoundPolicy.PATH_LOOP_REACHED, true);
+        JsonArray rows = new JsonArray();
+        rows.add(loop);
+        return rows;
     }
 }

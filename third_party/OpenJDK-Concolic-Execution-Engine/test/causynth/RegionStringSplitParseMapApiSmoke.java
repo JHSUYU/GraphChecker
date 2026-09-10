@@ -77,7 +77,8 @@ public final class RegionStringSplitParseMapApiSmoke {
             int start = json.lastIndexOf('{', name);
             if (start >= 0) {
                 String object = jsonObjectAt(json, start);
-                if (object.contains(marker)) return object;
+                String reachable = reachableText(json, object);
+                if (reachable.contains(marker)) return reachable;
             }
             offset = name + needle.length();
         }
@@ -111,6 +112,63 @@ public final class RegionStringSplitParseMapApiSmoke {
         }
         throw new AssertionError("unterminated JSON object: "
                 + json.substring(start));
+    }
+
+    /** Local node definitions reachable from one expression, each once. */
+    private static String reachableText(String artifact, String root) {
+        StringBuilder result = new StringBuilder();
+        collectReachable(artifact, root, result,
+                new java.util.HashSet<String>());
+        return result.toString();
+    }
+
+    private static void collectReachable(
+            String artifact, String value, StringBuilder result,
+            java.util.Set<String> visited) {
+        if (value == null) return;
+        result.append(value);
+        String marker = "\"_type\":\"VmExpressionReference\"";
+        int offset = 0;
+        while ((offset = value.indexOf(marker, offset)) >= 0) {
+            int start = value.lastIndexOf('{', offset);
+            String reference = jsonObjectAt(value, start);
+            String session = scalar(reference, "sessionId");
+            String expression = scalar(reference, "expressionId");
+            String identity = session + "/" + expression;
+            if (visited.add(identity)) {
+                String definition = definitionOf(
+                        artifact, session, expression);
+                require(definition != null,
+                        "missing VM expression definition " + identity);
+                collectReachable(artifact, definition, result, visited);
+            }
+            offset = start + reference.length();
+        }
+    }
+
+    private static String definitionOf(String artifact, String session,
+                                       String expression) {
+        String prefix = "\"_type\":\"VmExpressionDefinition\","
+                + "\"sessionId\":" + session + ","
+                + "\"expressionId\":" + expression + ","
+                + "\"expression\":";
+        int at = artifact.indexOf(prefix);
+        if (at < 0) return null;
+        int value = at + prefix.length();
+        return jsonObjectAt(artifact, value);
+    }
+
+    private static String scalar(String object, String key) {
+        String needle = "\"" + key + "\":";
+        int start = object.indexOf(needle);
+        if (start < 0) return null;
+        start += needle.length();
+        int end = start;
+        while (end < object.length()
+                && ",}".indexOf(object.charAt(end)) < 0) {
+            end++;
+        }
+        return object.substring(start, end);
     }
 
     private static void require(boolean condition, String detail) {

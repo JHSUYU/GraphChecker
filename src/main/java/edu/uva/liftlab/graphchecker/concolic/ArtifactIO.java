@@ -1,14 +1,15 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -28,6 +29,8 @@ import java.util.zip.GZIPInputStream;
  * Schema-free file operations shared by concolic command boundaries.
  */
 final class ArtifactIO {
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
+
     private ArtifactIO() {
     }
 
@@ -126,13 +129,59 @@ final class ArtifactIO {
 
     static void replaceJsonl(Path path, Iterable<JsonObject> rows)
             throws IOException {
-        StringBuilder content = new StringBuilder();
-        if (rows != null) {
-            for (JsonObject row : rows) {
-                content.append(row).append('\n');
+        Path absolute = path.toAbsolutePath().normalize();
+        Path parent = absolute.getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Path temporary = Files.createTempFile(parent,
+                "artifact-" + absolute.getFileName(), ".tmp");
+        try {
+            try (BufferedWriter writer = Files.newBufferedWriter(temporary,
+                    StandardCharsets.UTF_8)) {
+                if (rows != null) {
+                    for (JsonObject row : rows) {
+                        writer.write(row.toString());
+                        writer.newLine();
+                    }
+                }
             }
+            try {
+                Files.move(temporary, path,
+                        StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, path,
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
         }
-        replace(path, content.toString());
+    }
+
+    /** Atomically streams one JSON document without building a second copy. */
+    static void replaceJson(Path path, JsonElement value, Gson writer)
+            throws IOException {
+        Path absolute = path.toAbsolutePath().normalize();
+        Path parent = absolute.getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Path temporary = Files.createTempFile(parent,
+                "artifact-" + absolute.getFileName(), ".tmp");
+        try {
+            try (BufferedWriter output = Files.newBufferedWriter(temporary,
+                    StandardCharsets.UTF_8)) {
+                writer.toJson(value, output);
+                output.newLine();
+            }
+            try {
+                Files.move(temporary, path,
+                        StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, path,
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     static Map<String, JsonObject> uniqueIndex(
@@ -208,8 +257,13 @@ final class ArtifactIO {
     }
 
     private static String hex(byte[] hash) {
-        return String.format(Locale.ROOT, "%064x",
-                new BigInteger(1, hash));
+        char[] encoded = new char[hash.length * 2];
+        for (int index = 0; index < hash.length; index++) {
+            int value = hash[index] & 0xff;
+            encoded[index * 2] = HEX[value >>> 4];
+            encoded[index * 2 + 1] = HEX[value & 0x0f];
+        }
+        return new String(encoded);
     }
 
     private static String format(String pattern, Path path, int line) {

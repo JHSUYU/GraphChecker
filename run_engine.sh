@@ -12,7 +12,6 @@ usage() {
   cat <<'EOF'
 Usage:
   ./run_engine.sh --config FILE campaign
-  ./run_engine.sh --config FILE catalog
   ./run_engine.sh --config FILE config|validate
   ./run_engine.sh help
 
@@ -20,8 +19,6 @@ Commands:
   campaign    Run the complete campaign for one configuration: validate, seed,
               then immutable iterations of plan/instrument/replay/import/
               explore/classify until composition and Z3
-  catalog     Run through the first immutable PLAN only and stop after writing
-              symbolic_root_mechanism_cards.json for external classification
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
@@ -45,7 +42,7 @@ trim() {
 
 known_config_key() {
   case "$1" in
-    workflow_path_base|graphchecker_jar|java_bin|graphchecker_work_dir|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_cache_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_communication_mappings|causynth_loop_bounds|causynth_symbolic_inputs|causynth_symbolic_root_proposal|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_max_jobs|solver_timeout_ms|reach_max_inputs|reach_max_valuations|campaign_setup_command|concolic_replay_command|concolic_worker_count|campaign_max_iterations|producer_max_paths_per_region|producer_max_flips_per_path|producer_max_path_tasks)
+    workflow_path_base|graphchecker_jar|java_bin|graphchecker_work_dir|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_cache_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_communication_mappings|causynth_loop_bounds|causynth_symbolic_inputs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_max_jobs|solver_timeout_ms|reach_max_inputs|reach_max_valuations|campaign_setup_command|concolic_replay_command|concolic_worker_count|campaign_max_iterations|region_path_max_paths_per_region|region_path_max_flips_per_path|region_path_max_tasks)
       return 0
       ;;
     *)
@@ -73,7 +70,6 @@ reset_config() {
   causynth_communication_mappings=""
   causynth_loop_bounds=""
   causynth_symbolic_inputs=""
-  causynth_symbolic_root_proposal=""
   custom_jdk_home=""
   z3_bin=""
   workload_work_dir=""
@@ -86,6 +82,8 @@ reset_config() {
   # Internal campaign paths. They are derived from the immutable iteration and
   # are not workflow/CLI override points.
   schedule_summaries=""
+  schedule_active_observed=false
+  schedule_seed_replay=false
   schedule_max_jobs=""
   solver_timeout_ms=""
   reach_max_inputs=""
@@ -94,9 +92,9 @@ reset_config() {
   concolic_replay_command=""
   concolic_worker_count=""
   campaign_max_iterations=""
-  producer_max_paths_per_region=""
-  producer_max_flips_per_path=""
-  producer_max_path_tasks=""
+  region_path_max_paths_per_region=""
+  region_path_max_flips_per_path=""
+  region_path_max_tasks=""
 }
 
 # Workflow configs deliberately use a small key=value grammar. Unknown
@@ -150,8 +148,6 @@ apply_environment_overrides() {
   apply_env_override causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS
   apply_env_override causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS
   apply_env_override causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS
-  apply_env_override causynth_symbolic_root_proposal \
-    CAUSYNTH_SYMBOLIC_ROOT_PROPOSAL
   apply_env_override custom_jdk_home CAUSYNTH_CUSTOM_JDK_HOME
   apply_env_override z3_bin CAUSYNTH_Z3
   apply_env_override workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR
@@ -169,11 +165,11 @@ apply_environment_overrides() {
   apply_env_override concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND
   apply_env_override concolic_worker_count CAUSYNTH_CONCOLIC_JOBS
   apply_env_override campaign_max_iterations CAUSYNTH_CAMPAIGN_MAX_ITERATIONS
-  apply_env_override producer_max_paths_per_region \
-    CAUSYNTH_PRODUCER_MAX_PATHS_PER_REGION
-  apply_env_override producer_max_flips_per_path \
-    CAUSYNTH_PRODUCER_MAX_FLIPS_PER_PATH
-  apply_env_override producer_max_path_tasks CAUSYNTH_PRODUCER_MAX_PATH_TASKS
+  apply_env_override region_path_max_paths_per_region \
+    CAUSYNTH_REGION_PATH_MAX_PATHS_PER_REGION
+  apply_env_override region_path_max_flips_per_path \
+    CAUSYNTH_REGION_PATH_MAX_FLIPS_PER_PATH
+  apply_env_override region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS
 }
 
 canonical_path() {
@@ -299,10 +295,6 @@ initialize_config() {
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     causynth_symbolic_inputs=$(resolve_path "${causynth_symbolic_inputs}")
   fi
-  if [[ -n "${causynth_symbolic_root_proposal:-}" ]]; then
-    causynth_symbolic_root_proposal=$(resolve_path \
-      "${causynth_symbolic_root_proposal}")
-  fi
   candidate_graph=${candidate_graph:-${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz}
   runtime_region_plan=${runtime_region_plan:-${causynth_output_dir}/runtime/concolic_region_plan.jsonl}
   refined_graph=${refined_graph:-$(dirname "${runtime_region_plan}")/refined_dataflow_edges.jsonl.gz}
@@ -350,7 +342,7 @@ run_java_main() {
 
 print_normalized_config() {
   local key
-  for key in campaign_setup_command concolic_replay_command concolic_worker_count campaign_max_iterations producer_max_paths_per_region producer_max_flips_per_path producer_max_path_tasks config_file workflow_path_base graphchecker_jar java_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_cache_dir causynth_target_spec causynth_process_dirs causynth_communication_mappings causynth_loop_bounds causynth_symbolic_inputs causynth_symbolic_root_proposal custom_jdk_home z3_bin workload_work_dir workload_command trace_test candidate_graph refined_graph runtime_region_plan schedule_output_dir schedule_max_jobs solver_timeout_ms reach_max_inputs reach_max_valuations; do
+  for key in campaign_setup_command concolic_replay_command concolic_worker_count campaign_max_iterations region_path_max_paths_per_region region_path_max_flips_per_path region_path_max_tasks config_file workflow_path_base graphchecker_jar java_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_cache_dir causynth_target_spec causynth_process_dirs causynth_communication_mappings causynth_loop_bounds causynth_symbolic_inputs custom_jdk_home z3_bin workload_work_dir workload_command trace_test candidate_graph refined_graph runtime_region_plan schedule_output_dir schedule_max_jobs solver_timeout_ms reach_max_inputs reach_max_valuations; do
     printf '%s=%s\n' "${key}" "${!key}"
   done
 }
@@ -380,10 +372,6 @@ validate_config() {
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
   fi
-  if [[ -n "${causynth_symbolic_root_proposal:-}" ]]; then
-    require_file "symbolic root proposal" \
-      "${causynth_symbolic_root_proposal}"
-  fi
   case "${solver_timeout_ms}" in
     ''|*[!0-9]*) die "solver_timeout_ms must be a positive integer" ;;
     0) die "solver_timeout_ms must be greater than zero" ;;
@@ -409,11 +397,11 @@ validate_config() {
     0) die "campaign_max_iterations must be greater than zero" ;;
   esac
   local bound
-  for bound in "${producer_max_paths_per_region}" \
-      "${producer_max_flips_per_path}" "${producer_max_path_tasks}"; do
+  for bound in "${region_path_max_paths_per_region}" \
+      "${region_path_max_flips_per_path}" "${region_path_max_tasks}"; do
     [[ -z "${bound}" ]] && continue
     case "${bound}" in
-      *[!0-9]*|0) die "producer path bounds must be positive integers: ${bound}" ;;
+      *[!0-9]*|0) die "region path bounds must be positive integers: ${bound}" ;;
     esac
   done
   echo "Workflow configuration is valid."
@@ -532,15 +520,15 @@ do_schedule() {
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
     args+=(--symbolic-inputs "${causynth_symbolic_inputs}")
   fi
-  if [[ -n "${causynth_symbolic_root_proposal:-}" ]]; then
-    require_file "symbolic root proposal" \
-      "${causynth_symbolic_root_proposal}"
-    args+=(--symbolic-root-proposal \
-      "${causynth_symbolic_root_proposal}")
-  fi
   if [[ -n "${schedule_summaries}" ]]; then
     require_file "scheduler summaries" "${schedule_summaries}"
     args+=(--summaries "${schedule_summaries}")
+  fi
+  if [[ "${schedule_active_observed}" == true ]]; then
+    args+=(--active-observed-closure)
+  fi
+  if [[ "${schedule_seed_replay}" == true ]]; then
+    args+=(--seed-replay-closure)
   fi
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}"
@@ -785,25 +773,6 @@ campaign_digest() {
   sha256sum -- "$1" | awk '{print $1}'
 }
 
-# The proposal is a PLAN-only input.  Keep the complete config digest in
-# frozen provenance, but remove exactly that one property from the reusable
-# static-analysis/trace seed identity.
-campaign_seed_config_digest() {
-  local path=$1
-  [[ -f "${path}" ]] || die "cannot digest a missing seed config: ${path}"
-  {
-    printf '%s\n' CAMPAIGN_SEED_CONFIG_V1
-    awk '
-      {
-        key = $0
-        sub(/^[[:space:]]*/, "", key)
-        if (key ~ /^causynth_symbolic_root_proposal[[:space:]]*=/) next
-        print $0
-      }
-    ' "${path}"
-  } | sha256sum | awk '{print $1}'
-}
-
 # A final-stage JSON artifact is never optional.  Validate it before giving its
 # value to another jq invocation: command/process substitution otherwise hides
 # the producer's parse failure behind the consumer's successful exit status.
@@ -817,9 +786,10 @@ campaign_require_json() {
     "${path}" >/dev/null
 }
 
-# Prints every materializable symbolic root without exposing internal SMT
-# terms.  Configured fields and automatically selected region inputs share
-# this one model contract.
+# Prints every explicit symbolic root without exposing internal SMT terms.
+# Configured source fields and planned manual symbolizations share this model
+# contract; a missing propagation source is reported as a gap, never minted as
+# another input here.
 campaign_print_symbolic_variable_models() {
   local report=$1 model_count
   campaign_require_json "Z3 symbolic variable report" "${report}" \
@@ -835,8 +805,9 @@ campaign_print_symbolic_variable_models() {
         (.inputKind == "CONFIGURED_SOURCE_FIELD"
          and ([.sourceKey, .sourceId, .sourcePhaseId, .fieldSignature]
               | all(type == "string" and length > 0))
-         or .inputKind == "REGION_INPUT_PORT"
-         and ([.occurrenceId, .portId]
+         or .inputKind == "REGION_SYMBOLIC_INPUT"
+         and ([.occurrenceId, .portId, .sourceIdentity,
+               .sourceIdentityAuthority]
               | all(type == "string" and length > 0)))
         and has("value")))
   ' "${report}" >/dev/null || return 1
@@ -1008,10 +979,7 @@ campaign_seed_artifact_rows() {
 
 campaign_seed_cache_key() {
   local identity config_seed_sha
-  config_seed_sha=$(campaign_seed_config_digest "${config_file}")
-  # symbolicRootProposal is intentionally absent: it is a PLAN input and must
-  # reuse the exact static analysis, workload trace, runtime plan and refined
-  # graph that produced its mechanism catalog.
+  config_seed_sha=$(campaign_digest "${config_file}")
   identity=$(jq -S -c \
     --arg analysisScope "${causynth_analysis_scope}" \
     --arg processDirs "${causynth_process_dirs}" \
@@ -1157,11 +1125,9 @@ campaign_stage() {
     >>"${campaign_stage_metrics}"
 }
 
-# One depth-safe JSON helper. jq refuses a document that nests past its fixed
-# parser depth, and a replay result carries one expression tree per recorded
-# read; a read bound to another region's writer exceeds that limit. The modes
-# only list, select, combine and sort rows a production owner already wrote --
-# none of them decides whether a row is admissible.
+# One JSONL helper for byte-preserving membership selection, deduplication and
+# topology-delta ordering. It moves rows that production owners already wrote
+# and never decides whether a row is admissible.
 campaign_json() {
   python3 - "$@" <<'CAMPAIGN_JSON'
 import json, os, sys
@@ -1187,17 +1153,25 @@ def dump(row):
     return json.dumps(row, separators=(",", ":"))
 
 
-if mode == "result-tasks":
-    for row in rows(args[0]):
-        if row.get("event") == "CONCOLIC_REGION_RESULT":
-            print(row.get("taskId", ""))
-
-elif mode == "select-summary":
+if mode == "select-summary":
     # Membership, not admission: whatever the importer wrote for this task.
     # Whether a task ended with a usable summary is the importer's finding and
     # travels as its own diagnostic/delta row, not as a shell verdict here.
     for row in rows(args[0]):
         if row.get("taskId") == args[1]:
+            print(dump(row))
+
+elif mode == "select-tasks":
+    # Post-seed membership is computed by the scheduler from exact VM
+    # propagation evidence.  Keep only rows owned by that active task plan;
+    # this is a byte-preserving membership projection, not readmission.
+    selected = {row.get("taskId") for row in rows(args[1])
+                if isinstance(row.get("taskId"), str)
+                and row.get("taskId")}
+    if not selected:
+        sys.exit("active task plan names no task")
+    for row in rows(args[0]):
+        if row.get("taskId") in selected:
             print(dump(row))
 
 elif mode == "combine":
@@ -1290,8 +1264,8 @@ campaign_record_gap() {
 # The scheduler index is the only campaign membership authority.  Decode the
 # complete schema in one checked jq operation.  The six fields are emitted as
 # TSV only after their types, non-blank identities, and task-set disjointness
-# have been proved.  A target-local-only workflow may legitimately have no
-# producer, so the target row is the sole required member.
+# have been proved. The target and all causal predecessors are peers in one
+# linked region-path bundle.
 campaign_decode_index_members() {
   local index=$1
   [[ -s "${index}" ]] || {
@@ -1312,21 +1286,25 @@ campaign_decode_index_members() {
     if length != 1 then
       error("schedule index must contain exactly one JSON document")
     else .[0] end
-    | if (.schemaVersion == 1
-        and .kind == "RUNTIME_TARGET_FIRST_SCHEDULE_INDEX"
+    | . as $index
+    | if (.schemaVersion == 2
+        and .kind == "RUNTIME_REGION_PATH_SCHEDULE_INDEX"
         and .selectionAuthority
-          == "RANKED_EXACT_RUNTIME_READ_FROM_CLOSURE_V1"
+          == "VM_OBSERVED_LINKED_REPLAY_SCOPE_V1"
         and (.target | member)
-        and (.producers | type == "array")
-        and all(.producers[]; member)
-        and (([.target.taskId] + [.producers[].taskId]) as $ids
+        and (.members | type == "array" and length > 0)
+        and all(.members[];
+          member and ((.role == "TARGET") or (.role == "DEPENDENCY")))
+        and ([.members[] | select(.role == "TARGET")] | length == 1)
+        and ([.members[]
+          | select(.taskId == $index.target.taskId)] | length == 1)
+        and (([.members[].taskId]) as $ids
           | ($ids | length) == ($ids | unique | length)))
     then
-      ((.target + {role: "TARGET"}),
-       (.producers[] + {role: "PRODUCER"}))
+      .members[]
       | [.role, .campaignId, .regionId, .occurrenceId, .goalId, .taskId]
       | @tsv
-    else error("invalid runtime target-first schedule index") end
+    else error("invalid runtime region-path schedule index") end
   ' "${index}"
 }
 
@@ -1393,7 +1371,7 @@ campaign_iteration_manifests_json() {
           and (.iterationId | type == "string" and length > 0)
           and (.members | type == "array" and length > 0)
           and all(.members[];
-            ((.role == "TARGET") or (.role == "PRODUCER"))
+            ((.role == "TARGET") or (.role == "DEPENDENCY"))
             and (.taskId | type == "string" and length > 0)
             and (.obligationDigests | type == "array"))
           and (([.members[].taskId] | length)
@@ -1414,21 +1392,17 @@ campaign_iteration_manifests_json() {
 }
 
 campaign_decode_worklist_keys() {
-  local worklist=$1 limit=$2
+  local worklist=$1
   [[ -f "${worklist}" ]] || {
     echo "path-flip worklist is missing: ${worklist}" >&2
     return 1
   }
-  [[ "${limit}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "path-flip worker limit is invalid: ${limit}" >&2
-    return 1
-  }
-  jq -e -r -s --argjson limit "${limit}" '
+  jq -e -r -s '
     if all(.[]; type == "object"
         and (.queryKey | type == "string" and length > 0))
         and (([.[].queryKey] | length)
           == ([.[].queryKey] | unique | length))
-    then sort_by(.queryKey) | .[0:$limit][] | .queryKey
+    then sort_by(.queryKey)[] | .queryKey
     else error("malformed or duplicate path-flip worklist row") end
   ' "${worklist}"
 }
@@ -1439,6 +1413,23 @@ campaign_wait_workers() {
     wait "${pid}" || status=1
   done
   return "${status}"
+}
+
+# Waits in launch order and preserves every child's exact exit status.  Planner
+# processes use 2 for a semantic GAPPED result, so collapsing the batch to a
+# boolean would lose the distinction between that result and a crashed JVM.
+campaign_exact_wait_statuses=()
+campaign_wait_exact_statuses() {
+  local pid status
+  campaign_exact_wait_statuses=()
+  for pid in "$@"; do
+    if wait "${pid}"; then
+      status=0
+    else
+      status=$?
+    fi
+    campaign_exact_wait_statuses+=("${status}")
+  done
 }
 
 campaign_validate() {
@@ -1522,7 +1513,7 @@ campaign_freeze() {
   local libjava="${custom_jdk_home}/jre/lib/amd64/libjava.so"
   local libjvm="${custom_jdk_home}/jre/lib/amd64/server/libjvm.so"
   local jar_sha vm_sha rt_jar_sha libjava_sha libjvm_sha config_sha
-  local spec_sha mappings_sha bounds_sha symbolic_inputs_sha root_proposal_sha
+  local spec_sha mappings_sha bounds_sha symbolic_inputs_sha
   local classes_sha test_classes_sha classpath_sha tool_source workload_source
   [[ -x "${vm}" ]] || die "the concolic VM is not built: ${vm}"
   require_file "concolic rt.jar" "${rt_jar}"
@@ -1568,11 +1559,6 @@ campaign_freeze() {
     campaign_fail FREEZE CAMPAIGN "${causynth_symbolic_inputs}" \
       "digest failed"
   fi
-  if ! root_proposal_sha=$(campaign_optional_digest \
-      "${causynth_symbolic_root_proposal:-}"); then
-    campaign_fail FREEZE CAMPAIGN "${causynth_symbolic_root_proposal:-}" \
-      "digest failed"
-  fi
   if ! classes_sha=$(campaign_tree_digest "${project_classes_dir}"); then
     campaign_fail FREEZE CAMPAIGN "${project_classes_dir}" \
       "tree digest failed"
@@ -1614,8 +1600,6 @@ campaign_freeze() {
     --arg boundsSha "${bounds_sha}" \
     --arg symbolicInputs "${causynth_symbolic_inputs}" \
     --arg symbolicInputsSha "${symbolic_inputs_sha}" \
-    --arg symbolicRootProposal "${causynth_symbolic_root_proposal:-}" \
-    --arg symbolicRootProposalSha "${root_proposal_sha}" \
     --arg classes "${project_classes_dir}" \
     --arg classesSha "${classes_sha}" \
     --arg testClass "${trace_test}" \
@@ -1636,8 +1620,6 @@ campaign_freeze() {
       loopBounds: {path: $bounds, sha256: $boundsSha},
       symbolicInputs: {path: $symbolicInputs,
                        sha256: $symbolicInputsSha},
-      symbolicRootProposal: {path: $symbolicRootProposal,
-                             sha256: $symbolicRootProposalSha},
       productionClasses: {path: $classes, sha256: $classesSha},
       workload: {testClass: $testClass,
                  testClasses: {path: $testClasses, sha256: $testClassesSha},
@@ -1657,9 +1639,9 @@ campaign_freeze() {
 # to bind them.
 #
 # Scope is the FREEZE stage's inputs and only those: jar, VM and its three
-# libraries, config, target spec, communication mappings, per-loop bounds, symbolic
-# input selection, optional symbolic-root proposal, the production/test class
-# trees, and the workload classpath
+# libraries, config, target spec, communication mappings, per-loop bounds,
+# symbolic input selection, the production/test class trees, and the workload
+# classpath
 # string. The SEED additions (static catalog, region plan, refined graph) are
 # this campaign's own outputs rather than its inputs, and the INSTRUMENT stage
 # legitimately rewrites the analysis root they sit in; re-hashing them here
@@ -1683,8 +1665,6 @@ campaign_verify_frozen_inputs() {
        {kind: "file", label: "communicationMappings", entry: .communicationMappings},
        {kind: "file", label: "loopBounds", entry: .loopBounds},
        {kind: "file", label: "symbolicInputs", entry: .symbolicInputs},
-       {kind: "file", label: "symbolicRootProposal",
-        entry: .symbolicRootProposal},
        {kind: "tree", label: "productionClasses", entry: .productionClasses},
        {kind: "tree", label: "workload.testClasses",
         entry: .workload.testClasses}]
@@ -1837,17 +1817,21 @@ campaign_seed() {
   require_nonempty "campaign seed manifest" "${seed_manifest}"
 }
 
-# Schedule pass one: the immutable target-first plan for this iteration, its
-# digest-committed index, and one singleton subplan per indexed member.
+# Schedule the immutable causal candidate closure used for union
+# instrumentation, then derive the smaller value closure activated by the
+# first linked replay. Producer and consumer regions in that replay still
+# share one workload JVM so VM expressions cross their real RPC/field
+# boundaries.
 campaign_plan() {
   local iteration_dir=$1 carry=$2
   local plan="${iteration_dir}/execution_task_plan.jsonl"
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
-  local root_cards="${iteration_dir}/symbolic_root_mechanism_cards.json"
+  local seed_dir="${iteration_dir}/seed-replay"
+  local seed_plan="${seed_dir}/execution_task_plan.jsonl"
+  local seed_index="${seed_dir}/runtime_workflow_schedule_index.json"
   local frozen="${iteration_dir}/concolic_region_plan.jsonl"
   local role campaign_id region occurrence goal task worker
-  local plan_hash plan_size region_hash region_size cards_hash cards_size
-  local proposal_hash
+  local plan_hash plan_size region_hash region_size
 
   require_nonempty "runtime region plan" "${runtime_region_plan}"
   require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
@@ -1860,71 +1844,76 @@ campaign_plan() {
   runtime_region_plan="${frozen}"
   require_nonempty "campaign task plan" "${plan}"
   require_nonempty "runtime workflow schedule index" "${index}"
-  require_nonempty "symbolic root mechanism cards" "${root_cards}"
 
   plan_hash=$(campaign_digest "${plan}")
   plan_size=$(stat -c '%s' "${plan}")
   region_hash=$(campaign_digest "${frozen}")
   region_size=$(stat -c '%s' "${frozen}")
-  cards_hash=$(campaign_digest "${root_cards}")
-  cards_size=$(stat -c '%s' "${root_cards}")
-  if ! proposal_hash=$(campaign_optional_digest \
-      "${causynth_symbolic_root_proposal:-}"); then
-    campaign_fail PLAN ConcolicScheduler \
-      "${causynth_symbolic_root_proposal:-<none>}" \
-      "failed to digest the symbolic root proposal"
-  fi
   # Immutable paths, digests and task-set membership -- the whole of what the
   # shell owns here. The index must commit exactly the plan bytes this
   # iteration froze, and its members must be exactly that plan's tasks. What a
   # task selects, and by which authority, is the scheduler's own invariant.
   jq -e --arg plan_hash "${plan_hash}" --arg region_hash "${region_hash}" \
-    --arg cards_hash "${cards_hash}" --arg proposal_hash "${proposal_hash}" \
     --argjson plan_size "${plan_size}" --argjson region_size "${region_size}" \
-    --argjson cards_size "${cards_size}" \
     --slurpfile tasks "${plan}" '
-      ([.target.taskId] + [.producers[].taskId]
-        | map(select(. != null))) as $selected
+      ([.members[].taskId] | map(select(. != null))) as $selected
       | .executionTaskPlan.sha256 == $plan_hash
         and .executionTaskPlan.sizeBytes == $plan_size
         and .regionPlan.sha256 == $region_hash
         and .regionPlan.sizeBytes == $region_size
-        and .symbolicRootMechanismCatalog.sha256 == $cards_hash
-        and .symbolicRootMechanismCatalog.sizeBytes == $cards_size
-        and (if $proposal_hash == ""
-             then .symbolicRootProposal == null
-             else .symbolicRootProposal.sha256 == $proposal_hash end)
         and (.target | type == "object")
-        and (.producers | type == "array")
+        and (.members | type == "array" and length > 0)
         and ($selected | length) > 0
         and ($selected | unique | sort) == ([$tasks[].taskId] | unique | sort)
         and ([$tasks[].taskId] | unique | length) == ($tasks | length)
     ' "${index}" >/dev/null \
     || campaign_fail PLAN ConcolicScheduler "${index}" \
-      "the target-first schedule index does not commit the canonical task plan"
+      "the region-path schedule index does not commit the frozen task plan"
+
+  mkdir -p "${seed_dir}"
+  schedule_output_dir="${seed_dir}"
+  schedule_seed_replay=true
+  do_schedule
+  schedule_seed_replay=false
+  require_nonempty "seed replay task plan" "${seed_plan}"
+  require_nonempty "seed replay workflow index" "${seed_index}"
+  # Seed activation may narrow candidate membership, but task identity must
+  # stay byte-for-byte compatible with the union-instrumented candidate plan.
+  jq -e --slurpfile candidate "${index}" --slurpfile candidateTasks "${plan}" \
+    --slurpfile seedTasks "${seed_plan}" '
+      . as $seed
+      | $candidate[0] as $all
+      | [$candidateTasks[].taskId] as $allTasks
+      | [$seedTasks[].taskId] as $activeTasks
+      | $seed.target.taskId == $all.target.taskId
+        and all($seed.members[];
+          .taskId as $task | ($allTasks | index($task)) != null)
+        and (($activeTasks | unique | sort)
+             == ([$seed.members[].taskId] | unique | sort))
+    ' "${seed_index}" >/dev/null || campaign_fail \
+      PLAN ConcolicScheduler "${seed_index}" \
+      "the seed value closure is not a stable subset of instrumentation candidates"
 
   # The one task-set membership decode of this iteration. Every later stage
   # reads these rows; the index is frozen beside them and is never re-decoded.
   if ! campaign_member_rows=$(campaign_decode_index_members "${index}"); then
     campaign_fail PLAN ConcolicScheduler "${index}" \
-      "the target-first schedule index has an invalid membership schema"
+      "the region-path schedule index has an invalid membership schema"
   fi
   [[ -n "${campaign_member_rows}" ]] || campaign_fail PLAN ConcolicScheduler \
-    "${index}" "the target-first schedule index names no target member"
-  # No per-task re-check of the split below: the digest/membership assertion
-  # above already proved that the indexed task ids are exactly the plan's task
-  # ids and that no task id repeats in the plan, so each split holds exactly
-  # one row by construction.
+    "${index}" "the region-path schedule index names no target member"
+  # Member directories own path-closure artifacts, while every member points
+  # at the same immutable linked replay plan.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     worker="${iteration_dir}/workers/${task}"
     mkdir -p "${worker}"
-    jq -c --arg task "${task}" 'select(.taskId == $task)' "${plan}" \
-      >"${worker}/execution_task_plan.jsonl"
+    cp -f "${plan}" "${worker}/execution_task_plan.jsonl"
     campaign_log "member ${role} task=${task} occurrence=${occurrence}"
   done <<<"${campaign_member_rows}"
   campaign_log "planned tasks: $(jq -s 'length' "${plan}") by goal $(jq -r -s '
     group_by(.goalKind) | map("\(.[0].goalKind)=\(length)") | join(" ")' \
     "${plan}")"
+  campaign_log "seed replay tasks: $(jq -s 'length' "${seed_plan}")"
 }
 
 campaign_task_ids() {
@@ -1959,11 +1948,32 @@ campaign_instrument() {
 # alone loads no workload class it did not rewrite.
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
-  local status=0
+  local status=0 replay_group plan_digest replay_group_seed
   require_nonempty "concolic execution task plan" "${plan}"
   [[ ! -e "${results}" ]] || die \
     "replay output already exists; worker directories are written once: ${results}"
   mkdir -p "${worker}" "$(dirname "${results}")"
+  # Every task in one workload JVM shares one propagation ledger. Replayed
+  # bundles already name that group in their tasks; the initial linked plan
+  # does not, so give the whole invocation one identity here.
+  if ! replay_group=$(jq -e -r -s '
+      ([.[] | (.linkedReplayGroupId // "")]) as $all
+      | ($all | map(select(length > 0)) | unique) as $named
+      | if ($named | length) == 0 then ""
+        elif ($named | length) == 1
+             and ($all | all(length > 0)) then $named[0]
+        else error("linked replay plan has mixed or conflicting group ids")
+        end
+    ' "${plan}"); then
+    die "linked replay plan has mixed or conflicting group ids: ${plan}"
+  fi
+  if [[ -z "${replay_group}" ]]; then
+    plan_digest=$(campaign_digest "${plan}") \
+      || die "failed to digest linked replay plan: ${plan}"
+    replay_group_seed=$(printf '%s\0' "${plan_digest}" "${ids}" "${worker}" \
+      | sha256sum | awk '{print $1}')
+    replay_group="REPLAY.GROUP.${replay_group_seed}"
+  fi
   set +e
   campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
     "CAUSYNTH_CONCOLIC_ROLE=${role}" \
@@ -1973,6 +1983,7 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_CLASSES=${classes}" \
     "CAUSYNTH_CONCOLIC_CLASSPATH=${classes}:${project_classpath}" \
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
+    "CAUSYNTH_CONCOLIC_REPLAY_GROUP_ID=${replay_group}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" >"${worker}/replay.log" 2>&1
   status=$?
@@ -1988,48 +1999,14 @@ campaign_replay() {
 campaign_session_replay() {
   local iteration_dir=$1
   local seed="${iteration_dir}/seed-result"
-  local plan="${iteration_dir}/execution_task_plan.jsonl"
+  local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   local results="${seed}/concolic_region_results.jsonl"
-  local ids published selected member worker member_results status=0
-  local -a pids=()
+  local ids worker status=0
   ids=$(campaign_task_ids "${plan}")
-  mkdir -p "${seed}/tasks"
-  : >"${results}"
-  for selected in ${ids//,/ }; do
-    member="${iteration_dir}/workers/${selected}/execution_task_plan.jsonl"
-    worker="${seed}/tasks/${selected}"
-    member_results="${worker}/concolic_region_results.jsonl"
-    (
-      set -euo pipefail
-      campaign_replay worker "${member}" "${selected}" \
-        "${iteration_dir}/instrumented-classes" "${member_results}" "${worker}"
-    ) &
-    pids+=("$!")
-    if [[ ${#pids[@]} -eq ${concolic_worker_count} ]]; then
-      campaign_wait_workers "${pids[@]}" || status=1
-      pids=()
-    fi
-  done
-  if [[ ${#pids[@]} -gt 0 ]]; then
-    campaign_wait_workers "${pids[@]}" || status=1
-  fi
-  [[ "${status}" -eq 0 ]] || campaign_fail REPLAY WORKLOAD "${seed}/tasks" \
-    "one or more parallel seed replays failed"
-  for selected in ${ids//,/ }; do
-    member_results="${seed}/tasks/${selected}/concolic_region_results.jsonl"
-    cat -- "${member_results}" >>"${results}"
-  done
+  worker="${seed}/linked-bundle"
+  campaign_replay worker "${plan}" "${ids}" \
+    "${iteration_dir}/instrumented-classes" "${results}" "${worker}"
   require_nonempty "session replay results" "${results}"
-  # A planned task the replay never reached is a terminal condition, not a
-  # campaign failure: it is named here and classified by the importer, which
-  # is the layer that knows whether the occurrence was skipped, cut short, or
-  # simply not activated on this schedule.
-  published=$(campaign_json result-tasks "${results}" | LC_ALL=C sort -u)
-  for selected in ${ids//,/ }; do
-    grep -qxF "${selected}" <<<"${published}" || campaign_record_gap \
-      "${iteration_dir}" REPLAY_TASK_WITHOUT_RESULT "${selected}" \
-      "the session replay published no result row for this planned task"
-  done
 }
 
 campaign_import_session() {
@@ -2039,7 +2016,7 @@ campaign_import_session() {
   local role campaign_id region occurrence goal task
   local status=0
   raw_concolic_results="${seed}/concolic_region_results.jsonl"
-  import_task_plan="${iteration_dir}/execution_task_plan.jsonl"
+  import_task_plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   imported_summaries="${summaries}"
   import_diagnostics="${seed}/import_diagnostics.jsonl"
   import_topology_delta="${seed}/topology_delta.jsonl"
@@ -2054,26 +2031,21 @@ campaign_import_session() {
       "the campaign raw results could not be strictly imported"
   fi
   require_nonempty "imported region summaries" "${summaries}"
-  # Fan the importer's own rows out to the member directories the workers use.
-  # A member the importer wrote nothing for keeps an empty file and a named
-  # gap; it is not admitted here and it does not stop the iteration.
+  # Fan the importer's own rows out to the candidate directories.  Candidate
+  # occurrences may be dormant on this replay; exact VM evidence selects the
+  # active observed closure in SEED_QUERY before any worklist is built.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     campaign_json select-summary "${summaries}" "${task}" \
       >"${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl"
-    [[ -s "${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl" ]] \
-      || campaign_record_gap "${iteration_dir}" IMPORT_WITHOUT_SUMMARY \
-        "${task}" "the importer published no summary for this member task"
   done <<<"${campaign_member_rows}"
   campaign_log "imported summaries: $(wc -l <"${summaries}")"
 }
 
-# Schedule pass two. The first pass has no summaries and cannot build the
-# target's solver query; this pass hands the scheduler this iteration's own
-# imported summaries and lets it publish that query. The shell no longer picks
-# the target member out of the index and re-runs the scheduler restricted to
-# it, and it does not re-decide what a solver-ready query is: the frozen index
-# already names the target and TargetReachPathQueryBuilder already refuses a
-# seed that is not exactly one ready target query.
+# Schedule pass three. The candidate pass feeds union instrumentation; the
+# value-frontier pass feeds the linked seed replay. This pass hands the
+# scheduler that replay's imported summaries, so VM propagation anchors and
+# GuardedRead candidates select the observed ancestry that owns path worklists
+# and the target query.
 #
 # It writes into its own directory because the scheduler always publishes a
 # task plan and an index beside its queries, and this iteration's frozen plan
@@ -2081,14 +2053,37 @@ campaign_import_session() {
 campaign_seed_query() {
   local iteration_dir=$1
   local query_dir="${iteration_dir}/seed-query"
+  local active_index="${query_dir}/runtime_workflow_schedule_index.json"
+  local seed_index="${iteration_dir}/seed-replay/runtime_workflow_schedule_index.json"
   mkdir -p "${query_dir}"
   schedule_output_dir="${query_dir}"
   schedule_summaries="${iteration_dir}/concolic_region_summaries.jsonl"
-  # Reuse the same canonical target-first closure used by PLAN.  The old
-  # unconstrained schedule rebuilt unrelated candidates until max-jobs and
-  # could truncate the selected target before its imported summary emitted
-  # the one branch query this pass exists to publish.
+  schedule_active_observed=true
   do_schedule
+  schedule_active_observed=false
+  require_nonempty "active observed workflow index" "${active_index}"
+  require_nonempty "active observed task plan" \
+    "${query_dir}/execution_task_plan.jsonl"
+  # Active membership can only narrow this iteration's seed candidates.  A VM
+  # edge to a previously unknown occurrence remains a topology divergence and
+  # is replanned in the next epoch; it is never spliced into this frozen one.
+  jq -e --slurpfile seed "${seed_index}" '
+    . as $active
+    | $seed[0] as $seedIndex
+    | [$seedIndex.members[].taskId] as $seedTasks
+    | $active.target.taskId == $seedIndex.target.taskId
+      and all($active.members[];
+        .taskId as $task | ($seedTasks | index($task)) != null)
+  ' "${active_index}" >/dev/null || campaign_fail \
+    SEED_QUERY ConcolicScheduler "${active_index}" \
+    "the active observed closure is not a subset of the seed candidates"
+  if ! campaign_member_rows=$(campaign_decode_index_members \
+      "${active_index}"); then
+    campaign_fail SEED_QUERY ConcolicScheduler "${active_index}" \
+      "the active observed closure index is invalid"
+  fi
+  campaign_log "active observed tasks: $(jq -r '.members | length' \
+    "${active_index}")"
   [[ -s "${query_dir}/branch_queries.jsonl" ]] || campaign_record_gap \
     "${iteration_dir}" TARGET_QUERY_ABSENT "${iteration_dir}" \
     "the scheduler published no branch query from the imported summaries"
@@ -2127,7 +2122,7 @@ campaign_report_wave() {
 # strictly import the result, and admit it only against its own planned task.
 campaign_worker_task() {
   local query_key=$1 worklist=$2 tasks=$3 classes=$4 worker=$5 iteration_id=$6
-  local outcome replay_task reason status=0
+  local outcome replay_tasks primary_replay_task reason status=0
   local raw="${worker}/concolic_region_results.jsonl"
   local imported="${worker}/concolic_region_summaries.jsonl"
   set +e
@@ -2148,14 +2143,12 @@ campaign_worker_task() {
   # for UNSAT, UNSUPPORTED and MATERIALIZATION_GAP alike, calling all three
   # "recorded terminal exploration outcomes, not process failures", and the
   # planner records them by queryKey so the flip is not proposed again.
-  # Killing the worker on two of them made the shell overrule the semantic
-  # owner: one unmaterializable flip out of twenty-one failed the whole
-  # obligation wave, and the producer relation it was exploring was
-  # discarded rather than published with its gap named.
+  # Killing the worker on two of them would make the shell overrule the
+  # semantic owner and discard the remaining local path cases in the wave.
   case "${outcome}" in
     UNSAT|UNSUPPORTED|MATERIALIZATION_GAP)
-      jq -c '{schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey,
-              regionId, sourcePathKey, sourceSummaryId, status, solverInputHash}' \
+      jq -c '. + {schemaVersion: 1,
+                    kind: "PATH_EXPLORATION_RECORD"}' \
         "${worker}/path_flip_solver_result.json" \
         >"${worker}/exploration_record.jsonl"
       return 0
@@ -2163,12 +2156,12 @@ campaign_worker_task() {
   esac
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the path flip is not solver-backed: ${outcome}"
-  replay_task=$(jq -er -s '
-    if length == 1 then .[0].taskId else error("expected one replay task") end
-  ' "${worker}/execution_task_plan.jsonl")
+  replay_tasks=$(campaign_task_ids "${worker}/execution_task_plan.jsonl")
+  [[ -n "${replay_tasks}" ]] \
+    || die "the linked path solver emitted an empty replay bundle"
 
   campaign_replay worker "${worker}/execution_task_plan.jsonl" \
-    "${replay_task}" "${classes}" "${raw}" "${worker}"
+    "${replay_tasks}" "${classes}" "${raw}" "${worker}"
   raw_concolic_results="${raw}"
   import_task_plan="${worker}/execution_task_plan.jsonl"
   imported_summaries="${imported}"
@@ -2181,6 +2174,22 @@ campaign_worker_task() {
   if [[ "${status}" -ne 0 && ! -s "${import_diagnostics}" ]]; then
     die "the importer failed without a semantic diagnostic for ${query_key} (exit ${status})"
   fi
+  if [[ -s "${worker}/topology_delta.jsonl" ]] \
+      && jq -e 'select(.deltaKind == "TOPOLOGY_DIVERGENCE")' \
+        "${worker}/topology_delta.jsonl" >/dev/null; then
+    [[ ! -s "${imported}" ]] || mv "${imported}" \
+      "${worker}/quarantined_concolic_region_summaries.jsonl"
+    : >"${imported}"
+    jq -c --arg key "${query_key}" --arg tasks "${replay_tasks}" \
+      '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
+        linkedTaskIds: ($tasks | split(",")),
+        status: "BUNDLE_TOPOLOGY_DIVERGENCE",
+        reason: "linked replay left the frozen topology epoch"}' \
+      "${worker}/path_flip_solver_result.json" \
+      >"${worker}/exploration_record.jsonl"
+    : >"${worker}/../../../../.linked-topology-divergence"
+    return 0
+  fi
   if [[ ! -s "${imported}" ]]; then
     [[ -f "${import_diagnostics}" ]] || die \
       "the importer published no diagnostics for ${query_key}; expected ${import_diagnostics}"
@@ -2189,26 +2198,45 @@ campaign_worker_task() {
           | map(select(length > 0)) | join(": "))
       | map(select(length > 0)) | unique | join(" | ")
     ' "${import_diagnostics}")
-    jq -n -c --arg key "${query_key}" --arg task "${replay_task}" \
+    jq -c --arg key "${query_key}" --arg tasks "${replay_tasks}" \
       --arg reason "${reason}" \
-      '{schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-        taskId: $task, status: "REPLAY_NOT_ADMITTED", reason: $reason}' \
+      '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
+        linkedTaskIds: ($tasks | split(",")),
+        status: "REPLAY_NOT_ADMITTED", reason: $reason}' \
+      "${worker}/path_flip_solver_result.json" \
       >"${worker}/exploration_record.jsonl"
     require_nonempty "path exploration record" \
       "${worker}/exploration_record.jsonl"
     campaign_log "flip ${query_key}: replay admitted no case; recorded REPLAY_NOT_ADMITTED"
     return 0
   fi
+  primary_replay_task=$(jq -e -r -s '
+    map(select(.linkedReplayRole == "PRIMARY"))
+    | if length == 1 then .[0].taskId
+      else error("linked replay plan must contain one primary") end
+    ' "${worker}/execution_task_plan.jsonl")
+  if ! jq -e -s --arg task "${primary_replay_task}" \
+      'any(.[]; .taskId == $task)' "${imported}" >/dev/null; then
+    jq -c --arg key "${query_key}" --arg tasks "${replay_tasks}" \
+      '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
+        linkedTaskIds: ($tasks | split(",")), status: "REPLAY_NOT_ADMITTED",
+        reason: "linked replay admitted companion cases but no primary flip case"}' \
+      "${worker}/path_flip_solver_result.json" \
+      >"${worker}/exploration_record.jsonl"
+    campaign_log "flip ${query_key}: primary case was not admitted"
+    return 0
+  fi
   # The record states that this obligation was solved, replayed and imported,
   # and which planned task it belongs to. Whether the imported case is
   # admissible is the importer's decision and is already in its artifacts.
   jq -c -s --arg key "${query_key}" '
-    {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-     regionId: .[0].regionId, taskId: .[0].taskId,
-     occurrenceId: .[0].occurrenceId, goalId: .[0].goalId,
-     status: (if .[0].goalKind == "OUTPUT_RELATION_CLOSURE"
-              then "VALIDATED_FRESH_OUTPUT_PATH_FLIP_REPLAY"
-              else "VALIDATED_FRESH_TARGET_PATH_FLIP_REPLAY" end)}
+    map(select(.linkedReplayRole == "PRIMARY"))
+    | if length == 1 then .[0]
+      else error("linked replay plan must contain one primary") end
+    | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
+     regionId, taskId, occurrenceId, goalId,
+     familySnapshotDigest, topologyEpoch,
+     status: "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"}
     ' "${worker}/execution_task_plan.jsonl" \
     >"${worker}/exploration_record.jsonl"
   require_nonempty "path exploration record" \
@@ -2217,7 +2245,7 @@ campaign_worker_task() {
 
 campaign_publish_wave() {
   local planner_dir=$1 summaries=$2 tasks=$3 records=$4
-  local worker worker_list
+  local worker worker_list record_status
   local -a summary_inputs task_inputs record_inputs
   summary_inputs=("${summaries}")
   task_inputs=("${tasks}")
@@ -2233,10 +2261,36 @@ campaign_publish_wave() {
     require_nonempty "path exploration record" \
       "${worker}/exploration_record.jsonl"
     record_inputs+=("${worker}/exploration_record.jsonl")
+    if ! record_status=$(jq -e -r -s '
+        if length == 1 and (.[0].status | type) == "string"
+        then .[0].status
+        else error("one terminal exploration status is required") end
+      ' "${worker}/exploration_record.jsonl"); then
+      campaign_fail EXPLORE CAMPAIGN \
+        "${worker}/exploration_record.jsonl" \
+        "the obligation published no unique terminal status"
+    fi
+    case "${record_status}" in
+      UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|REPLAY_NOT_ADMITTED|BUNDLE_TOPOLOGY_DIVERGENCE)
+        # Companion summaries from a linked replay whose primary prefix did
+        # not match are not a causal observation. Publishing them used to
+        # leave propagated boundary values without the primary producer case.
+        # Solver-terminal and topology-terminal outcomes likewise contribute
+        # only their exploration record; they did not admit a new path case.
+        continue
+        ;;
+      VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY)
+        ;;
+      *)
+        campaign_fail EXPLORE CAMPAIGN \
+          "${worker}/exploration_record.jsonl" \
+          "the obligation published an unexpected terminal status ${record_status}"
+        ;;
+    esac
     [[ -s "${worker}/execution_task_plan.jsonl" ]] || continue
     require_nonempty "worker raw result" \
       "${worker}/concolic_region_results.jsonl"
-    # A replay can validly remove the producer effect it was exploring.  The
+    # A replay can validly remove the causal effect it was exploring.  The
     # importer then publishes a diagnostic/delta but no relation summary, and
     # campaign_worker_task records REPLAY_NOT_ADMITTED.  That terminal query
     # belongs in the exploration record set, not in the relation-summary set.
@@ -2249,117 +2303,7 @@ campaign_publish_wave() {
   campaign_json combine queryKey "${records}" "${record_inputs[@]}"
 }
 
-# The inner loop for one member: while target-relevant obligations remain in
-# this topology, derive immutable subplans from the canonical plan, run them in
-# parallel fresh workload instances, import strictly, and merge.
-campaign_explore_member() {
-  local iteration_dir=$1 iteration_id=$2 role=$3 region=$4
-  local occurrence=$5 goal=$6 task=$7
-  local member="${iteration_dir}/workers/${task}"
-  local classes="${iteration_dir}/instrumented-classes"
-  local summaries="${member}/observed_path_summaries.jsonl"
-  local tasks="${member}/observed_execution_tasks.jsonl"
-  local records="${member}/path_exploration_records.jsonl"
-  local planner_dir worker_dir wave=0 status=0 key pid key_rows
-  local -a bound_args=() keys=() pids=()
-
-  campaign_json combine summaryId "${summaries}" \
-    "${member}/concolic_region_summaries.jsonl"
-  campaign_json combine taskId "${tasks}" \
-    "${member}/execution_task_plan.jsonl"
-  : >"${records}"
-  [[ -z "${producer_max_paths_per_region}" ]] \
-    || bound_args+=(--max-paths-per-region "${producer_max_paths_per_region}")
-  [[ -z "${producer_max_flips_per_path}" ]] \
-    || bound_args+=(--max-flips-per-path "${producer_max_flips_per_path}")
-  [[ -z "${producer_max_path_tasks}" ]] \
-    || bound_args+=(--max-tasks "${producer_max_path_tasks}")
-
-  while true; do
-    planner_dir=$(printf '%s/obligations-%04d' "${member}" "${wave}")
-    [[ ! -e "${planner_dir}" ]] || die \
-      "obligation wave directory already exists: ${planner_dir}"
-    mkdir -p "${planner_dir}"
-    set +e
-    run_java_main \
-      edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
-      --summaries "${summaries}" \
-      --task-plan "${tasks}" \
-      --records "${records}" \
-      --output-dir "${planner_dir}" \
-      --region-id "${region}" \
-      --goal-id "${goal}" \
-      "${bound_args[@]}"
-    status=$?
-    set -e
-    require_nonempty "${role} path worklist manifest" \
-      "${planner_dir}/region_path_manifest.json"
-    if [[ "${status}" -eq 2 ]]; then
-      campaign_report_worklist "${planner_dir}"
-      campaign_fail EXPLORE RegionPathWorklist \
-        "${planner_dir}/region_path_manifest.json" \
-        "the ${role} path worklist is not executable"
-    fi
-    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ConcolicPathFlipPlanner \
-      "${planner_dir}/region_path_manifest.json" \
-      "the ${role} path planner failed with exit ${status}"
-    if jq -e '.state == "CLOSED"' \
-        "${planner_dir}/region_path_manifest.json" >/dev/null; then
-      cp -f "${planner_dir}/region_path_manifest.json" \
-        "${member}/path_closure.json"
-      cp -f "${planner_dir}/merged_region_summaries.jsonl" \
-        "${member}/merged_summary.jsonl"
-      break
-    fi
-    if ! jq -e '.state == "PENDING"' \
-        "${planner_dir}/region_path_manifest.json" >/dev/null; then
-      campaign_fail EXPLORE RegionPathWorklist \
-        "${planner_dir}/region_path_manifest.json" \
-        "the ${role} path planner published no pending or closed state"
-    fi
-    if ! key_rows=$(campaign_decode_worklist_keys \
-        "${planner_dir}/region_path_worklist.jsonl" \
-        "${concolic_worker_count}"); then
-      campaign_fail EXPLORE RegionPathWorklist \
-        "${planner_dir}/region_path_worklist.jsonl" \
-        "the pending path worklist is missing or malformed"
-    fi
-    keys=()
-    [[ -z "${key_rows}" ]] || mapfile -t keys <<<"${key_rows}"
-    if [[ ${#keys[@]} -eq 0 ]]; then
-      campaign_fail EXPLORE RegionPathWorklist \
-        "${planner_dir}/region_path_worklist.jsonl" \
-        "a pending ${role} worklist named no deterministic obligation"
-    fi
-    campaign_log "${role} wave ${wave}: ${#keys[@]} obligation(s), workers=${concolic_worker_count}"
-    pids=()
-    for key in "${keys[@]}"; do
-      worker_dir="${planner_dir}/${key}"
-      mkdir -p "${worker_dir}"
-      (
-        set -euo pipefail
-        campaign_worker_task "${key}" \
-          "${planner_dir}/region_path_worklist.jsonl" "${tasks}" \
-          "${classes}" "${worker_dir}" "${iteration_id}"
-      ) >"${worker_dir}/stdout.log" 2>"${worker_dir}/stderr.log" &
-      pids+=("$!")
-    done
-    status=0
-    campaign_wait_workers "${pids[@]}" || status=1
-    if [[ "${status}" -ne 0 ]]; then
-      campaign_report_wave "${planner_dir}"
-      campaign_fail EXPLORE CAMPAIGN "${planner_dir}" \
-        "the ${role} obligation wave ${wave} did not finish"
-    fi
-    campaign_publish_wave "${planner_dir}" "${summaries}" "${tasks}" \
-      "${records}"
-    wave=$((wave + 1))
-  done
-  [[ -s "${member}/merged_summary.jsonl" || "${role}" == "TARGET" ]] \
-    || campaign_fail EXPLORE RegionPathWorklist "${member}" \
-      "the ${role} member left no closed relation behind"
-  campaign_log "${role} exploration stopped after ${wave} wave(s)"
-}
+# Region-path obligations are coordinated in closure-wide waves below.
 
 # The builder requires exactly one solver-ready target seed and publishes the
 # exact observed target paths it can justify.
@@ -2393,21 +2337,214 @@ campaign_target_reach_query() {
 
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
-  local role campaign_id region occurrence goal task target_task=""
+  local role campaign_id region occurrence goal task member planner_dir
+  local worklist key_rows key worker_dir target_task=""
+  local status=0 wave=0 pending=0 job planner_index
+  local summaries="${iteration_dir}/linked_observed_path_summaries.jsonl"
+  local tasks="${iteration_dir}/linked_observed_execution_tasks.jsonl"
+  local active_plan="${iteration_dir}/seed-query/execution_task_plan.jsonl"
+  local active_seed="${iteration_dir}/active_seed_summaries.jsonl"
+  local records="${iteration_dir}/linked_path_exploration_records.jsonl"
+  local classes="${iteration_dir}/instrumented-classes"
+  local seed_delta="${iteration_dir}/seed-result/topology_delta.jsonl"
+  local -a bound_args=() jobs=() pids=() planner_dirs=()
+  local -a planner_all_dirs=()
+  local -a planner_roles=() planner_tasks=() planner_statuses=()
+
+  campaign_json select-tasks \
+    "${iteration_dir}/concolic_region_summaries.jsonl" "${active_plan}" \
+    >"${active_seed}"
+  campaign_json combine summaryId "${summaries}" "${active_seed}"
+  campaign_json combine taskId "${tasks}" "${active_plan}"
+  : >"${records}"
+  if [[ -s "${seed_delta}" ]] \
+      && jq -e 'select(.deltaKind == "TOPOLOGY_DIVERGENCE")' \
+        "${seed_delta}" >/dev/null; then
+    campaign_log "seed replay left ${iteration_id}; deferring all flips to the next topology epoch"
+    return 0
+  fi
+  [[ -z "${region_path_max_paths_per_region}" ]] \
+    || bound_args+=(--max-paths-per-region "${region_path_max_paths_per_region}")
+  [[ -z "${region_path_max_flips_per_path}" ]] \
+    || bound_args+=(--max-flips-per-path "${region_path_max_flips_per_path}")
+  [[ -z "${region_path_max_tasks}" ]] \
+    || bound_args+=(--max-tasks "${region_path_max_tasks}")
+
+  # Every planner in a wave reads the same immutable family snapshot. All
+  # returned linked bundles are merged only after the wave settles; the next
+  # wave therefore sees every new upstream arm before declaring a downstream
+  # local path closed.
+  while true; do
+    jobs=()
+    planner_dirs=()
+    planner_all_dirs=()
+    planner_roles=()
+    planner_tasks=()
+    planner_statuses=()
+    pids=()
+    pending=0
+    while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+      member="${iteration_dir}/workers/${task}"
+      if [[ "${role}" == "TARGET" ]]; then
+        target_task=${task}
+      fi
+      planner_dir=$(printf '%s/obligations-%04d' "${member}" "${wave}")
+      [[ ! -e "${planner_dir}" ]] || die \
+        "obligation wave directory already exists: ${planner_dir}"
+      mkdir -p "${planner_dir}"
+      planner_roles+=("${role}")
+      planner_tasks+=("${task}")
+      planner_all_dirs+=("${planner_dir}")
+      (
+        run_java_main \
+          edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
+          --summaries "${summaries}" \
+          --task-plan "${tasks}" \
+          --records "${records}" \
+          --output-dir "${planner_dir}" \
+          --region-id "${region}" \
+          --goal-id "${goal}" \
+          --topology-epoch "${iteration_id}" \
+          "${bound_args[@]}"
+      ) >"${planner_dir}/stdout.log" 2>"${planner_dir}/stderr.log" &
+      pids+=("$!")
+      if [[ ${#pids[@]} -eq ${concolic_worker_count} ]]; then
+        campaign_wait_exact_statuses "${pids[@]}"
+        planner_statuses+=("${campaign_exact_wait_statuses[@]}")
+        pids=()
+      fi
+    done <<<"${campaign_member_rows}"
+    if [[ ${#pids[@]} -gt 0 ]]; then
+      campaign_wait_exact_statuses "${pids[@]}"
+      planner_statuses+=("${campaign_exact_wait_statuses[@]}")
+    fi
+    [[ ${#planner_all_dirs[@]} -eq ${#planner_statuses[@]} ]] \
+      || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}/workers" \
+        "planner batch lost an exact process status"
+
+    # Collect in the schedule index's original order. Completion order therefore
+    # cannot change manifest publication or the obligation launch order.
+    for ((planner_index = 0;
+          planner_index < ${#planner_all_dirs[@]}; planner_index++)); do
+      role="${planner_roles[planner_index]}"
+      task="${planner_tasks[planner_index]}"
+      planner_dir="${planner_all_dirs[planner_index]}"
+      status="${planner_statuses[planner_index]}"
+      member="${iteration_dir}/workers/${task}"
+      require_nonempty "${role} path worklist manifest" \
+        "${planner_dir}/region_path_manifest.json"
+      if [[ "${status}" -eq 2 ]]; then
+        campaign_report_worklist "${planner_dir}"
+        campaign_fail EXPLORE RegionPathWorklist \
+          "${planner_dir}/region_path_manifest.json" \
+          "the ${role} path worklist is not executable"
+      fi
+      [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE \
+        ConcolicPathFlipPlanner "${planner_dir}/region_path_manifest.json" \
+        "the ${role} path planner failed with exit ${status}"
+      if jq -e '.state == "CLOSED"' \
+          "${planner_dir}/region_path_manifest.json" >/dev/null; then
+        cp -f "${planner_dir}/region_path_manifest.json" \
+          "${member}/path_closure.json"
+        continue
+      fi
+      jq -e '.state == "PENDING"' \
+        "${planner_dir}/region_path_manifest.json" >/dev/null \
+        || campaign_fail EXPLORE RegionPathWorklist \
+          "${planner_dir}/region_path_manifest.json" \
+          "the ${role} path planner published no pending or closed state"
+      worklist="${planner_dir}/region_path_worklist.jsonl"
+      if ! key_rows=$(campaign_decode_worklist_keys "${worklist}"); then
+        campaign_fail EXPLORE RegionPathWorklist "${worklist}" \
+          "the pending path worklist is missing or malformed"
+      fi
+      [[ -n "${key_rows}" ]] || campaign_fail EXPLORE RegionPathWorklist \
+        "${worklist}" "a pending ${role} worklist named no obligation"
+      planner_dirs+=("${planner_dir}")
+      while IFS= read -r key; do
+        [[ -n "${key}" ]] || continue
+        worker_dir="${planner_dir}/${key}"
+        jobs+=("${worklist}"$'\t'"${key}"$'\t'"${worker_dir}")
+        pending=$((pending + 1))
+      done <<<"${key_rows}"
+    done
+
+    [[ "${pending}" -gt 0 ]] || break
+    campaign_log "closure wave ${wave}: ${pending} linked obligation(s), workers=${concolic_worker_count}"
+    pids=()
+    status=0
+    for job in "${jobs[@]}"; do
+      IFS=$'\t' read -r worklist key worker_dir <<<"${job}"
+      mkdir -p "${worker_dir}"
+      (
+        set -euo pipefail
+        campaign_worker_task "${key}" "${worklist}" "${tasks}" \
+          "${classes}" "${worker_dir}" "${iteration_id}"
+      ) >"${worker_dir}/stdout.log" 2>"${worker_dir}/stderr.log" &
+      pids+=("$!")
+      if [[ ${#pids[@]} -eq ${concolic_worker_count} ]]; then
+        campaign_wait_workers "${pids[@]}" || status=1
+        pids=()
+      fi
+    done
+    if [[ ${#pids[@]} -gt 0 ]]; then
+      campaign_wait_workers "${pids[@]}" || status=1
+    fi
+    if [[ "${status}" -ne 0 ]]; then
+      for planner_dir in "${planner_dirs[@]}"; do
+        campaign_report_wave "${planner_dir}"
+      done
+      campaign_fail EXPLORE CAMPAIGN "${iteration_dir}/workers" \
+        "closure obligation wave ${wave} did not finish"
+    fi
+    # One diverging linked bundle invalidates this frozen epoch. Keep every
+    # wave result private; CLASSIFY consumes the worker delta and the next
+    # iteration replans instead of mixing sibling results into the old corpus.
+    [[ ! -e "${iteration_dir}/.linked-topology-divergence" ]] || return 0
+    for planner_dir in "${planner_dirs[@]}"; do
+      campaign_publish_wave "${planner_dir}" "${summaries}" "${tasks}" \
+        "${records}"
+    done
+    wave=$((wave + 1))
+  done
+
+  # A worklist can stop because its configured exploration bound was reached.
+  # Its state is then CLOSED, but its coverageState remains PARTIAL. Preserve
+  # that distinction in every summary so the final selected path family cannot
+  # be accepted before its bounded exploration is complete.
+  campaign_path_closures_json "${iteration_dir}/workers" \
+    >"${summaries}.path-closures" \
+    || campaign_fail EXPLORE RegionPathWorklist \
+      "${iteration_dir}/workers" \
+      "failed to read the closure-wide worklist reports"
+  jq -c --slurpfile closures "${summaries}.path-closures" '
+    . as $summary
+    | ([$closures[0][]
+        | select(.regionId == $summary.regionId
+            and .occurrenceId == $summary.plannedOccurrenceId
+            and .sourceKey == $summary.sourceKey)]) as $matches
+    | . + {pathSetClosed:
+        (($matches | length) == 1
+         and $matches[0].state == "CLOSED"
+         and $matches[0].coverageState == "CLOSED"
+         and (($matches[0].coverageGaps // []) | length) == 0)}
+  ' "${summaries}" >"${summaries}.closed" \
+    || campaign_fail EXPLORE RegionPathWorklist "${summaries}" \
+      "failed to publish the closure-wide fixed-point corpus"
+  rm -f "${summaries}.path-closures"
+  mv "${summaries}.closed" "${summaries}"
+
+  # Final consumers all read the identical closure-wide fixed point.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
-    if [[ ! -s "${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl" ]]; then
-      campaign_fail EXPLORE ConcolicSummaryImporter \
-        "${iteration_dir}/workers/${task}" \
-        "this member has no imported summary to explore from"
-    fi
-    campaign_explore_member "${iteration_dir}" "${iteration_id}" \
-      "${role}" "${region}" "${occurrence}" "${goal}" "${task}"
-    if [[ "${role}" == "TARGET" ]]; then
-      target_task=${task}
-    fi
+    member="${iteration_dir}/workers/${task}"
+    cp -f "${summaries}" "${member}/observed_path_summaries.jsonl"
+    cp -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
   done <<<"${campaign_member_rows}"
-  [[ -z "${target_task}" ]] \
-    || campaign_target_reach_query "${iteration_dir}" "${target_task}"
+  [[ -n "${target_task}" ]] || campaign_fail EXPLORE ConcolicScheduler \
+    "${iteration_dir}/seed-query/runtime_workflow_schedule_index.json" \
+    "the active observed schedule index names no target member"
+  campaign_target_reach_query "${iteration_dir}" "${target_task}"
+  campaign_log "closure exploration stopped after ${wave} global wave(s)"
 }
 
 # Classification is the importer's; this collects the rows it wrote, sorts them
@@ -2451,7 +2588,8 @@ campaign_classify() {
 
 campaign_publish_iteration_manifest() {
   local iteration_dir=$1 iteration=$2 parent=$3
-  local index="${iteration_dir}/runtime_workflow_schedule_index.json"
+  local index="${iteration_dir}/seed-query/runtime_workflow_schedule_index.json"
+  local plan="${iteration_dir}/seed-query/execution_task_plan.jsonl"
   local members="${iteration_dir}/.members.jsonl"
   local role campaign_id region occurrence goal task worker
   local obligations plan_sha index_sha summaries_sha
@@ -2474,11 +2612,9 @@ campaign_publish_iteration_manifest() {
         workerDir: $dir, obligationDigests: $obligations}' \
       >>"${members}"
   done <<<"${campaign_member_rows}"
-  if ! plan_sha=$(campaign_digest \
-      "${iteration_dir}/execution_task_plan.jsonl"); then
-    campaign_fail EMIT CAMPAIGN \
-      "${iteration_dir}/execution_task_plan.jsonl" \
-      "failed to digest the frozen execution task plan"
+  if ! plan_sha=$(campaign_digest "${plan}"); then
+    campaign_fail EMIT CAMPAIGN "${plan}" \
+      "failed to digest the active observed execution task plan"
   fi
   if ! index_sha=$(campaign_digest "${index}"); then
     campaign_fail EMIT CAMPAIGN "${index}" \
@@ -2494,7 +2630,7 @@ campaign_publish_iteration_manifest() {
     --argjson provenance "${campaign_provenance}" \
     --arg iteration "${iteration}" \
     --arg parent "${parent}" \
-    --arg plan "${iteration_dir}/execution_task_plan.jsonl" \
+    --arg plan "${plan}" \
     --arg planSha "${plan_sha}" \
     --arg index "${index}" --arg indexSha "${index_sha}" \
     --arg summaries "${iteration_dir}/concolic_region_summaries.jsonl" \
@@ -2523,35 +2659,37 @@ campaign_publish_iteration_manifest() {
   ln -sfn "$(basename "${iteration_dir}")" "${campaign_root}/latest"
 }
 
-# The composition consumes one closed relation for every selected producer.
+# Composition consumes the closure-wide local cases. Consumer anchors inside
+# those path conditions already carry the propagated values into the formula.
 campaign_compose() {
   local iteration_dir=$1
   local role campaign_id region occurrence goal task
   local target_task="" target_region="" target_occurrence=""
-  local status=0
-  local -a merged=()
+  local status=0 observed
+  local -a observed_inputs=()
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+    require_nonempty "linked member observed summaries" \
+      "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl"
+    observed_inputs+=(
+      "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl")
     if [[ "${role}" == "TARGET" ]]; then
       target_task=${task}
       target_region=${region}
       target_occurrence=${occurrence}
-      continue
     fi
-    [[ -s "${iteration_dir}/workers/${task}/merged_summary.jsonl" ]] \
-      || campaign_fail COMPOSE RegionPathWorklist \
-        "${iteration_dir}/workers/${task}" \
-        "selected producer has no closed relation"
-    merged+=("${iteration_dir}/workers/${task}/merged_summary.jsonl")
   done <<<"${campaign_member_rows}"
   [[ -n "${target_task}" ]] || campaign_fail COMPOSE ConcolicScheduler \
-    "${iteration_dir}/runtime_workflow_schedule_index.json" \
-    "the frozen schedule index names no target member"
+    "${iteration_dir}/seed-query/runtime_workflow_schedule_index.json" \
+    "the active observed schedule index names no target member"
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
   mkdir -p "${campaign_final}"
   fatal_queries="${iteration_dir}/workers/${target_task}/reach_query.jsonl"
   require_nonempty "target reach query" "${fatal_queries}"
-  compose_summary_inputs=$(IFS=:; printf '%s' "${merged[*]}")
+  observed="${iteration_dir}/closure_observed_summaries.jsonl"
+  campaign_json combine summaryId "${observed}" "${observed_inputs[@]}"
+  require_nonempty "closure-wide observed summaries" "${observed}"
+  compose_summary_inputs="${observed}"
   composed_smt="${campaign_final}/candidate.smt2"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
   fatal_region="${target_region}"
@@ -2633,6 +2771,24 @@ campaign_write_coverage_gaps() {
        + [$reach.gaps[]?
            | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
               detail: ""}]
+       | unique_by([.stage, .source, .code, .subject, .detail])) as $gaps |
+    ([$composed.gaps[]?
+           | {stage: "COMPOSE", source: "COMPOSER",
+              code: (.reason // .kind // ""),
+              subject: (.subject // ""), detail: (.detail // "")}]
+       + [if ($composed.pathSetComplete // false)
+            then empty else
+            {stage: "COMPOSE", source: "COVERAGE",
+             code: "SELECTED_PATH_SET_INCOMPLETE", subject: "",
+             detail: "required only for a closed UNSAT conclusion"} end]
+       + [$composed.boundedLoopComposition.gaps[]?
+           | {stage: "COMPOSE", source: "BOUNDED_LOOP",
+              code: (.reason // .kind // ""),
+              subject: (.subject // ""), detail: (.detail // "")}]
+       + [$composed.symbolicPropagationGaps[]?
+           | {stage: "COMPOSE", source: "SYMBOLIC_PROPAGATION",
+              code: (.reason // .kind // ""),
+              subject: (.subject // ""), detail: (.detail // "")}]
        + [$pathClosures[]? as $closure
            | $closure.coverageGaps[]?
            | {stage: "EXPLORE", source: "PATH_WORKLIST",
@@ -2641,11 +2797,6 @@ campaign_write_coverage_gaps() {
                         // .evidenceIdentity.taskId // ""),
               detail: ([(.reason // ""), (.detail // "")]
                        | map(select(. != "")) | join(": "))}]
-       | unique_by([.stage, .source, .code, .subject, .detail])) as $gaps |
-    ([$composed.canonicalModel.gaps[]?
-           | {stage: "MODEL", source: (.source // "COMPOSER"),
-              code: (.code // ""), subject: (.subject // ""),
-              detail: (.detail // "")}]
        + [$diagnostics[]?
            | {stage: "IMPORT", source: "IMPORTER", code: (.code // ""),
               subject: (.taskId // ""), detail: (.detail // "")}]
@@ -2719,7 +2870,9 @@ campaign_emit() {
       "a path-closure JSON is malformed or could not be enumerated"
   fi
 
-  # A selected path closure must be complete; its coverage gaps are blockers.
+  # Formula/solver gaps block a candidate. Exploration, loop-bound and
+  # propagation-merge coverage stay as telemetry: they are needed to justify
+  # a closed UNSAT result, while one connected SAT witness is already valid.
   campaign_write_coverage_gaps \
     "${composition_manifest}" \
     "${reach_report}" \
@@ -2741,11 +2894,14 @@ campaign_emit() {
     $composedDocuments[0] as $c | $reachDocuments[0] as $r |
     $gapDocuments[0] as $gaps |
     ($r.reachCondition.reachability // "UNKNOWN") as $reachability |
+    ($r.reachCondition.degeneracyCheck // "UNDECIDED") as $degeneracy |
     ($r.unsatClosureComplete // false) as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
-    ($c.finalStatus == "FINAL_READY") as $accepted |
+    ($c.finalStatus == "FINAL_READY"
+      and $gapCount == 0
+      and $degeneracy != "DEGENERATE_UNCONSTRAINED_ROOT_SPACE") as $accepted |
     {schemaVersion: 1,
      kind: "CAMPAIGN_RESULT",
      provenance: $provenance,
@@ -2759,6 +2915,11 @@ campaign_emit() {
          ("the Composer published finalStatus=" + ($c.finalStatus // "none")
            + " with " + ($blockers | tostring) + " selected blocker(s): "
            + (([$c.finalStatusRefusals[]? | .code] | unique | join(","))))
+       elif $degeneracy == "DEGENERATE_UNCONSTRAINED_ROOT_SPACE" then
+         "the target predicate is unconstrained by every symbolic root"
+       elif $gapCount != 0 then
+         ("the selected causal path set has " + ($gapCount | tostring)
+           + " unresolved gap(s)")
        elif $reachability == "REACHABLE" then
          "a valuation satisfies the target predicate inside the recorded model"
        elif $reachability == "UNREACHABLE" and $unsatClosureComplete then
@@ -2767,18 +2928,27 @@ campaign_emit() {
          "the solver reported no valuation but did not publish closed selected-path authority"
        else "the solver stage reached no exact reachability decision" end),
      reachability: $reachability,
+     degeneracyCheck: $degeneracy,
      solverState: ($r.state // ""),
      finalStatus: ($c.finalStatus // ""),
      finalStatusRefusals: $blockers,
-     freeSymbolCount: (($c.freeSymbols // []) | length),
      evidence: {
-       exactBindings: ($c.canonicalModel.counts.exactBindings // 0),
-       guardedBindings: ($c.canonicalModel.counts.guardedBindings // 0),
-       unknownArmBindings: ($c.canonicalModel.counts.unknownArmBindings // 0),
-       candidateBindings: ($c.canonicalModel.counts.candidateBindings // 0),
+       symbolicPropagationComplete:
+         ($c.symbolicPropagationComplete // false),
+       consumerBoundaryFamilies:
+         (($c.symbolicPropagation // []) | length),
+       consumerBoundaryArms:
+         ([$c.symbolicPropagation[]? | (.armCount // 0)] | add // 0),
+       guardedReadModelComplete:
+         ($c.guardedReadModelComplete // false),
+       guardedReads:
+         (($c.guardedReadModel.reads // []) | length),
+       guardedReadCandidates:
+         ([$c.guardedReadModel.reads[]? | ((.arms // []) | length)]
+          | add // 0),
        unsatClosureComplete: $unsatClosureComplete,
-       fieldVersions: ($c.canonicalModel.counts.fieldVersions // 0),
-       fieldReads: ($c.canonicalModel.counts.fieldReads // 0)},
+       casePathConditionFamilies:
+         (($c.casePathConditionDependencies // []) | length)},
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
      valuations: ($r.valuations // [])}
@@ -2844,15 +3014,8 @@ campaign_emit() {
       exit 2
       ;;
   esac
-  # The claim belongs to the Composer and the solver; the gap count belongs to
-  # every owner that published one, and README "Completion criteria" requires
-  # both -- an accepted witness and no unresolved gap. The two stay apart on
-  # purpose: the gap rows never re-score the claim, so result.json still
-  # reports exactly what the semantic owners decided. But a claim reached with
-  # named gaps still open is not a run anybody may stop on, so the gate refuses
-  # it here, under its own exit code and its own reason. This is the exit half
-  # of the acceptance check README states against result.json; without it a
-  # campaign exits 0 on a run that README's own documented jq refuses.
+  # Formula and solver gaps remain hard failures. Coverage gaps are telemetry
+  # above and only keep an UNSAT result from becoming UNSAT_CLOSED.
   [[ "${gapCount}" -eq 0 ]] || {
     jq -r '"[campaign] candidate withheld: claim=\(.claim), but the run named "
       + (.gapCount | tostring) + " unresolved gap(s)"' \
@@ -2951,39 +3114,6 @@ do_campaign() {
   campaign_publish_bound_gap "${campaign_max_iterations}"
 }
 
-# Produces the semantic compression boundary before any concolic replay.  A
-# later campaign uses a different fresh output root and the same content cache.
-do_catalog() {
-  local iteration_dir
-  [[ -z "${causynth_symbolic_root_proposal:-}" ]] \
-    || die "catalog must run without a symbolic root proposal"
-  campaign_root="${schedule_output_dir}"
-  campaign_final="${campaign_root}/final"
-  campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"
-  [[ ! -e "${campaign_root}/iteration-0000" \
-      && ! -e "${campaign_final}" ]] \
-    || die "this catalog root already holds a published run: ${campaign_root}"
-  ensure_output_directory "${campaign_root}"
-  mkdir -- "${campaign_root}/frozen-inputs" || campaign_fail \
-    FREEZE_TOOL CATALOG "${campaign_root}" \
-    "the catalog root is already reserved by another run"
-  : >"${campaign_stage_metrics}"
-
-  campaign_stage VALIDATE campaign_validate
-  campaign_stage FREEZE_TOOL campaign_freeze_graphchecker_jar
-  if [[ -n "${campaign_setup_command}" ]]; then
-    campaign_stage SETUP campaign_setup
-  fi
-  campaign_stage FREEZE campaign_freeze
-  campaign_stage SEED campaign_seed
-  iteration_dir="${campaign_root}/iteration-0000"
-  mkdir -p "${iteration_dir}"
-  campaign_member_rows=""
-  campaign_stage "PLAN[0]" campaign_plan "${iteration_dir}" ""
-  campaign_verify_frozen_inputs CATALOG CATALOG "${campaign_root}"
-  campaign_log "symbolic-root catalog ready: ${iteration_dir}/symbolic_root_mechanism_cards.json"
-}
-
 # Shell-level contract tests source the helpers without dispatching a workflow.
 # Production execution still reaches the argument parser below.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -3012,17 +3142,13 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|catalog|config|validate)
+  campaign|config|validate)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
       campaign)
         [[ $# -eq 0 ]] || die "campaign takes no extra arguments"
         do_campaign
-        ;;
-      catalog)
-        [[ $# -eq 0 ]] || die "catalog takes no extra arguments"
-        do_catalog
         ;;
       config) print_normalized_config ;;
       validate) validate_config ;;

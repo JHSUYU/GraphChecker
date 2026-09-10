@@ -4,6 +4,13 @@ The three cases share one target: a stale data-encryption key reaches
 `BlockTokenSecretManager.retrieveDataEncryptionKey` after a modeled key-refresh
 RPC failure.
 
+For every case, the graph chooses the relevant region and communication
+closure. The custom JDK carries the exact symbolic key expression through the
+listed RPC chain and anchors it at each consumer. Each region records only its
+local path condition. Closure-wide symbolic merging combines those cases, and
+each selected shared read retains a complete bounded GuardedRead snapshot of
+the writer expressions available to the SMT choice.
+
 | Case | Request flow | Hadoop worktree |
 | --- | --- | --- |
 | `bug1` | NameNode -> Balancer -> DataNode | `/opt/hadoop-hdfs-17899-bug1` |
@@ -19,6 +26,5 @@ Set `CAUSYNTH_OUTPUT_DIR` to a fresh directory for each campaign. The result and
 its SMT, path closures and provenance are written under `schedule/final` there.
 The trace pass starts paused; each workload opens the recording boundary only
 after its stable node/application sources and aliases have been registered.
-The checked-in artifacts preserve the previously successful campaign baseline.
-They are compared with fresh runs when the Hadoop bytecode or mappings change;
-a previous SAT result alone does not validate a changed run.
+A fresh run must close every selected consumer-anchor family and reproduce the
+complete root-to-target causal chain before its SAT result is accepted.

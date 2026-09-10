@@ -26,6 +26,7 @@
 #include "precompiled.hpp"
 #include "asm/assembler.hpp"
 #include "concolic/concolicMngr.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 #include "concolic/threadContext.hpp"
 #include "interpreter/bytecodeHistogram.hpp"
 #include "interpreter/cppInterpreter.hpp"
@@ -595,6 +596,32 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
   if (!entry->is_resolved(Bytecodes::_getfield)) {
     return normal_entry(method, 0, THREAD);
   }
+
+#ifdef ENABLE_CONCOLIC
+  if (ConcolicMngr::can_do_concolic()) {
+    // The fast accessor copies an existing field shadow to its caller, but it
+    // cannot perform the read protocol owned by the ordinary GETFIELD hook:
+    // resolving a selected writer, emitting FIELD_READ evidence, or
+    // materializing a demand-backed field. Run these
+    // getters normally.  Nothing above has changed the argument stack, so the
+    // normal entry sees precisely the invocation it would have seen without
+    // this optimization.
+    const int field_offset = entry->f2_as_index();
+    SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(object);
+    if (sym_inst != NULL) {
+      SharedFieldVersions::Location location(
+          sym_inst->get_sym_rid(), field_offset,
+          SharedFieldVersions::LOC_INSTANCE_FIELD);
+      const bool versioned_read = SharedFieldVersions::has_carriers()
+          && SharedFieldVersions::is_carrier(location);
+      const bool demand_read = sym_inst->demand_symbolic_fields_enabled()
+          && sym_inst->get(field_offset) == NULL;
+      if (versioned_read || demand_read) {
+        return normal_entry(method, 0, THREAD);
+      }
+    }
+  }
+#endif
 
   // Get the result and push it onto the stack
   switch (entry->flag_state()) {

@@ -1,7 +1,6 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/globalSymbolicSession.hpp"
-#include "concolic/eventLedger.hpp"
 #include "concolic/exp/expression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/sessionSymbolicHeap.hpp"
@@ -73,7 +72,6 @@ void GlobalSymbolicSession::open() {
   _session_id = (jlong) Atomic::add_ptr((intptr_t) 1, &_next_session_id);
   _heap = new SessionSymbolicHeap();
   SharedFieldVersions::open_session();
-  EventLedger::open_session();
   _open = true;
   // The built-in symbols are session state, not per-thread state.  They used
   // to be rebuilt by every ThreadContext constructor, which left every earlier
@@ -89,7 +87,6 @@ void GlobalSymbolicSession::close() {
   // detached objects' GC roots), then retire the object ids those shadows
   // interpreted, then drop the expressions, and only then declare the session
   // closed.
-  EventLedger::close_session();
   SharedFieldVersions::close_session();
   delete _heap;
   _heap = NULL;

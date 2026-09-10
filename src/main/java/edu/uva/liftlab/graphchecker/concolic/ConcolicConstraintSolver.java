@@ -6,20 +6,23 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingK
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -29,6 +32,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
@@ -57,73 +61,62 @@ public final class ConcolicConstraintSolver {
     private ConcolicConstraintSolver() {
     }
 
-    public static Result solve(JsonObject task, JsonObject activation,
-                               Path z3, long timeoutMillis)
+    /** Solves one primary flip against all materialization roots in its
+     * linked causal replay bundle. */
+    static Result solve(JsonObject task, List<JsonObject> linkedActivations,
+                        JsonObject primaryActivation, Path z3,
+                        long timeoutMillis)
             throws IOException, InterruptedException {
+        LinkedActivation linked = linkedActivation(linkedActivations,
+                primaryActivation);
+        JsonObject activation = linked.inputs;
         PathQuery query = PathQuery.decode(task);
         BranchReplayContract replayContract = query.replayContract;
         JsonArray branchConstraints = replayContract
                 .requiredPathPredicates();
         JsonArray contextConstraints = query.pathContext.expressions();
         List<JsonObject> actions = materializationActions(activation);
-        boolean targetReachQuery = targetReachQuery(task);
-        TargetReplaySupportPlan targetReplayPlan = targetReachQuery
-                ? TargetReplaySupportPlan.build(task, activation,
-                branchConstraints, contextConstraints, actions)
-                : TargetReplaySupportPlan.notTarget();
-        SparseContainerBoundaries containerBoundaries =
-                SparseContainerBoundaries.discover(
-                        branchConstraints, contextConstraints, actions);
-        Encoder encoder = new Encoder(containerBoundaries);
-        encoder.useRecordedReadCut(query.recordedReadCut);
+        List<JsonObject> targetActions = materializationActions(
+                primaryActivation);
+        Encoder encoder = new Encoder();
         for (int index = 0; index < contextConstraints.size(); index++) {
             JsonElement constraint = contextConstraints.get(index);
-            if (!containerBoundaries.isConcreteObservation(constraint)) {
-                encoder.addConstraint(constraint, "q_context_" + index);
-            }
+            encoder.addConstraint(constraint, "q_context_" + index);
         }
         // The replay-control frontier is the union of the branch
         // predicates, not of every semantic support expression they rest on.
         Set<String> replayFrontier = new LinkedHashSet<>();
         Set<String> targetSymbols = new LinkedHashSet<>();
         for (int index = 0; index < branchConstraints.size(); index++) {
-            if (targetReachQuery
-                    && targetReplayPlan.externalCompanionPredicates
-                    .contains(index)) {
-                // This witnessed predecessor is fixed by the full-session
-                // replay's exact RPC/shared-state companion, so it
-                // contributes no symbol this query has to control.
-                continue;
+            boolean target = index + 1 == branchConstraints.size();
+            encoder.captureTargetContainerReads = target;
+            Set<String> symbols;
+            try {
+                symbols = encoder.addConstraint(branchConstraints.get(index),
+                        "q_branch_" + index);
+            } finally {
+                encoder.captureTargetContainerReads = false;
             }
-            Set<String> symbols = encoder.addConstraint(
-                    branchConstraints.get(index),
-                    "q_branch_" + index);
             replayFrontier.addAll(symbols);
-            if (index + 1 == branchConstraints.size()) {
+            if (target) {
                 targetSymbols.addAll(symbols);
             }
         }
+        replayFrontier.addAll(encoder.bindConsumerFamilyDependencies(
+                query.consumerAnchorCaseDependencies,
+                query.sourceActivationOccurrenceId));
         ReplaySupport targetSupport = classifyReplaySupport(
-                encoder, targetSymbols, actions, activation);
+                encoder, targetSymbols, actions,
+                linked.configuredSourcePhaseCatalogs);
         ReplaySupport replaySupport = classifyReplaySupport(
-                encoder, replayFrontier, actions, activation);
+                encoder, replayFrontier, actions,
+                linked.configuredSourcePhaseCatalogs);
         Set<String> writableReplayControlSymbols =
                 replaySupport.writableSymbols;
-        Set<String> nullableReplaySymbols = referencesComparedWithNull(
-                branchConstraints);
-        for (String alias : new ArrayList<>(nullableReplaySymbols)) {
-            String representative = encoder
-                    .materializableFieldRepresentative(
-                            alias, actions, activation);
-            if (representative != null) {
-                nullableReplaySymbols.add(representative);
-            }
-        }
-        ReferenceDomains referenceDomains = encoder.bindReferenceDomains(
-                writableReplayControlSymbols, actions,
-                nullableReplaySymbols);
-        encoder.bindSparseContainerBoundaries();
-        encoder.bindRecordedReadCut(query.recordedReadCut);
+        preferObservedReplayControls(encoder,
+                writableReplayControlSymbols, actions);
+        encoder.finishGuardedReadSelections();
+        encoder.bindTargetContainerReads(targetActions);
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
         record.add("unsupported", strings(encoder.unsupported));
@@ -134,21 +127,12 @@ public final class ConcolicConstraintSolver {
                     replayContract);
         }
 
-        if (!containerBoundaries.gaps.isEmpty()) {
+        if (!encoder.targetContainerGaps.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
-                    "SPARSE_CONTAINER_BOUNDARY_IS_NOT_MATERIALIZABLE");
-            record.add("unresolvedContainerBoundaries",
-                    strings(containerBoundaries.gaps));
-            return new Result(record, smt, new JsonArray(),
-                    replayContract);
-        }
-
-        if (targetReachQuery && !targetReplayPlan.gapReason.isEmpty()) {
-            record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason", targetReplayPlan.gapReason);
-            record.add("unresolvedCompanionSupportSymbols",
-                    strings(targetReplayPlan.gapSymbols));
+                    "TARGET_CONTAINER_READ_IS_NOT_MATERIALIZABLE");
+            record.add("unresolvedTargetContainerReads",
+                    strings(encoder.targetContainerGaps));
             return new Result(record, smt, new JsonArray(),
                     replayContract);
         }
@@ -197,36 +181,22 @@ public final class ConcolicConstraintSolver {
         }
 
         Map<String, String> values = parseGetValues(output.stdout);
-        // Which writer the model chose is part of the model, not a footnote
-        // to it: without reading the selectors back, a replay could not know
-        SelectedReadCut readCut = SelectedReadCut.of(query.recordedReadCut,
-                values);
-        if (!readCut.isEmpty()) {
-            record.add("selectedReadCut", readCut.toJson());
-        }
-        // The SMT model satisfies the complete required prefix plus target.
+        Set<String> projectedSymbols = new LinkedHashSet<>(
+                writableReplayControlSymbols);
         ModelProjection projection = modelAssignments(encoder, values,
-                actions, activation, writableReplayControlSymbols,
-                referenceDomains);
-        ModelProjection containerProjection =
-                sparseContainerAssignments(values, containerBoundaries,
-                        referenceDomains,
-                        replayContract.source().occurrence());
+                actions, linked.configuredSourcePhaseCatalogs,
+                projectedSymbols);
+        ModelProjection containerProjection = targetContainerAssignments(
+                encoder, values, replayContract.source().occurrence());
         for (JsonElement assignment : containerProjection.assignments) {
             projection.assignments.add(assignment);
         }
         projection.unresolved.addAll(containerProjection.unresolved);
         JsonArray assignments = projection.assignments;
-        if (writableReplayControlSymbols.isEmpty()
-                && containerBoundaries.models.isEmpty()) {
+        if (projectedSymbols.isEmpty()
+                && encoder.targetContainerModels.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason", readCut.isEmpty()
-                    ? "NO_REGION_INPUT_SYMBOL_IN_QUERY"
-                    : "REPLAY_CONTROL_FRONTIER_MODEL_IS_NOT_MATERIALIZABLE");
-            if (!readCut.isEmpty()) {
-                record.add("unresolvedReplayControlSymbols",
-                        strings(replayFrontier));
-            }
+            record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
         } else if (!projection.unresolved.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason",
@@ -236,7 +206,86 @@ public final class ConcolicConstraintSolver {
         } else {
             record.addProperty("status", "SAT_MODEL_READY");
         }
-        return new Result(record, smt, assignments, replayContract, readCut);
+        return new Result(record, smt, assignments, replayContract);
+    }
+
+    /** One solver view over the input authorities of a linked replay plan. */
+    private static LinkedActivation linkedActivation(
+            List<JsonObject> activations, JsonObject primary)
+            throws IOException {
+        if (primary == null) {
+            throw new IOException("linked replay has no primary activation");
+        }
+        JsonObject result = primary.deepCopy();
+        Map<String, JsonObject> actions = new LinkedHashMap<>();
+        List<List<ConfiguredSourcePhaseContract.Occurrence>> phaseCatalogs =
+                new ArrayList<>();
+        for (JsonObject activation : activations == null
+                ? Collections.<JsonObject>emptyList() : activations) {
+            final InputActionCatalog catalog;
+            try {
+                catalog = InputActionCatalog.decode(activation);
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException("invalid linked input actions: "
+                        + malformed.getMessage(), malformed);
+            }
+            for (JsonElement element : catalog.all()) {
+                JsonObject action = element.getAsJsonObject().deepCopy();
+                String key = string(action, "symbol") + "\n"
+                        + CanonicalJson.render(action);
+                actions.putIfAbsent(key, action);
+            }
+            try {
+                List<ConfiguredSourcePhaseContract.Occurrence> phases =
+                        ConfiguredSourcePhaseContract.occurrencesOf(
+                                activation.get(ConfiguredSourcePhaseContract
+                                        .PLAN_FIELD));
+                if (!phases.isEmpty()) phaseCatalogs.add(phases);
+            } catch (IllegalArgumentException malformed) {
+                throw new IOException("invalid linked configured source "
+                        + "phases: " + malformed.getMessage(), malformed);
+            }
+        }
+        JsonArray encodedActions = new JsonArray();
+        for (JsonObject action : actions.values()) encodedActions.add(action);
+        result.add(InputActionCatalog.FIELD, encodedActions);
+        result.remove(ConfiguredSourcePhaseContract.PLAN_FIELD);
+        return new LinkedActivation(result, phaseCatalogs);
+    }
+
+    /** Input actions may be unioned, but ordered source-phase catalogs may
+     * only be validated inside the activation that owns their ordinals. */
+    private static final class LinkedActivation {
+        private final JsonObject inputs;
+        private final List<List<ConfiguredSourcePhaseContract.Occurrence>>
+                configuredSourcePhaseCatalogs;
+        private LinkedActivation(JsonObject inputs,
+                List<List<ConfiguredSourcePhaseContract.Occurrence>> catalogs) {
+            this.inputs = inputs;
+            this.configuredSourcePhaseCatalogs = catalogs;
+        }
+    }
+
+    private static final class ReplaySupport {
+        private final Set<String> writableSymbols;
+        private final Set<String> unresolvedSymbols;
+
+        private ReplaySupport(Set<String> writableSymbols,
+                              Set<String> unresolvedSymbols) {
+            this.writableSymbols = writableSymbols;
+            this.unresolvedSymbols = unresolvedSymbols;
+        }
+    }
+
+    private static final class ModelProjection {
+        private final JsonArray assignments;
+        private final Set<String> unresolved;
+
+        private ModelProjection(JsonArray assignments,
+                                Set<String> unresolved) {
+            this.assignments = assignments;
+            this.unresolved = unresolved;
+        }
     }
 
     public static final class Result {
@@ -244,30 +293,19 @@ public final class ConcolicConstraintSolver {
         public final String smtLib;
         public final JsonArray modelAssignments;
         final BranchReplayContract replayContract;
-        /** The read-from arms this model selected, if it selected any. */
-        final SelectedReadCut readCut;
 
         private Result(JsonObject record, String smtLib,
                        JsonArray modelAssignments,
                        BranchReplayContract replayContract) {
-            this(record, smtLib, modelAssignments, replayContract,
-                    SelectedReadCut.none());
-        }
-
-        private Result(JsonObject record, String smtLib,
-                       JsonArray modelAssignments,
-                       BranchReplayContract replayContract,
-                       SelectedReadCut readCut) {
             this.record = record;
             this.smtLib = smtLib;
             this.modelAssignments = modelAssignments;
             this.replayContract = replayContract;
-            this.readCut = readCut;
         }
     }
 
     private static final class Encoder {
-        private final SparseContainerBoundaries containerBoundaries;
+        private static final String SHARED_TERM_PREFIX = "container_dag__";
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
         private final Map<String, String> functionDeclarations =
                 new LinkedHashMap<>();
@@ -275,22 +313,70 @@ public final class ConcolicConstraintSolver {
                 new LinkedHashMap<>();
         private final Map<String, String> containerStates =
                 new LinkedHashMap<>();
-        private final Map<String, Set<String>> fieldSymbols =
+        /** Bottom-up pure aliases for repeated propagated subterms. */
+        private final Map<String, SharedTermDefinition> sharedTerms =
                 new LinkedHashMap<>();
-        private final List<String> assertions = new ArrayList<>();
+        /** Exact duplicate predicates add no semantics and burden Z3's
+         * command-by-command simplifier, so retain only their first order. */
+        private final Set<String> assertions = new LinkedHashSet<>();
+        /** Model-only preferences: they choose a stable replay without
+         * changing whether the hard path query is reachable. */
+        private final Set<String> softAssertions = new LinkedHashSet<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
         private final Set<String> additionalModelNames =
                 new LinkedHashSet<>();
         private final Set<String> javaIntRangeAssertions =
                 new LinkedHashSet<>();
-        /** Exact selector names and executable arms of this path's read cut. */
-        private JsonObject recordedReadCut = new JsonObject();
+        private final Set<String> usedConsumerFamilies =
+                new LinkedHashSet<>();
+        private final Set<String> boundConsumerFamilies =
+                new LinkedHashSet<>();
+        private final Set<String> activeConsumerMerges =
+                new LinkedHashSet<>();
+        /** A family chooses a case only where its propagated value is used. */
+        private final Map<String, Set<String>> consumerFamilyActivations =
+                new LinkedHashMap<>();
+        private final Map<String, Set<String>> consumerFamilySelectors =
+                new LinkedHashMap<>();
+        /** RF selector -> exact producer case, grouped by PC dependency. */
+        private final Map<String, Map<String, GuardedReadCaseBinding>>
+                readFromWriterCases = new LinkedHashMap<>();
+        /** Writer-case partition admitted for each RF dependency family. */
+        private final Map<String, Set<String>> readFromCaseSelectors =
+                new LinkedHashMap<>();
+        /** Replay observations which refine one stable local case. */
+        private final Map<String, Set<String>> caseObservationSelectors =
+                new LinkedHashMap<>();
+        /** One observation selector must never refine two base cases. */
+        private final Map<String, String> observationBaseCases =
+                new LinkedHashMap<>();
+        /** RF bindings are discovered while nested case PCs are lowered. */
+        private final Set<String> boundReadFromWriterBindings =
+                new LinkedHashSet<>();
+        private final Map<String, Set<String>> guardedReadSelectors =
+                new LinkedHashMap<>();
+        private final Map<String, Map<String, GuardedReadUse>> guardedReadUses =
+                new LinkedHashMap<>();
+        private final Map<String, Map<String, Set<String>>>
+                guardedSelectorActivationGuards = new LinkedHashMap<>();
+        /** Exact target reads whose propagated value can be replayed at the
+         * same live container access. */
+        private final Map<String, TargetContainerRead> targetContainerReads =
+                new LinkedHashMap<>();
+        private final List<TargetContainerRead> targetContainerModels =
+                new ArrayList<>();
+        private final Set<String> targetContainerGaps =
+                new LinkedHashSet<>();
+        private final SharedExpressionTable.Anchors targetReadAnchors =
+                new SharedExpressionTable.Anchors();
+        private String currentReadActivationGuard = "true";
+        private boolean captureTargetContainerReads;
+        private int guardedReadDepth;
         private boolean usesJavaIntString;
         private Set<String> currentConstraintSymbols;
 
-        private Encoder(SparseContainerBoundaries containerBoundaries) {
-            this.containerBoundaries = containerBoundaries;
+        private Encoder() {
         }
 
         private Set<String> addConstraint(
@@ -363,6 +449,15 @@ public final class ConcolicConstraintSolver {
             if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
                 return guardedReadTerm(object, expected, origin);
             }
+            if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
+                return consumerCaseMergeTerm(object, expected, origin);
+            }
+            if (VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
+                    || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
+                    .equals(type)) {
+                return term(object.get(VmExpressionIr.EXPRESSION), expected,
+                        origin + ":consumer-boundary");
+            }
             if (ContainerSmtCodec.handles(object)) {
                 return containerTerm(object, origin);
             }
@@ -374,19 +469,493 @@ public final class ConcolicConstraintSolver {
             return null;
         }
 
-        private void useRecordedReadCut(JsonObject payload) {
-            recordedReadCut = RecordedSessionModel.isQueryPayload(payload)
-                    ? payload.deepCopy() : new JsonObject();
+        /** Lowers one receiver-owned value family without enumerating a
+         * product with the primary region's local paths. */
+        private Term consumerCaseMergeTerm(JsonObject merge, Sort expected,
+                                           String origin) {
+            String mergeId = string(merge, "mergeId");
+            String family = string(merge, VmExpressionIr.FAMILY_KEY);
+            JsonArray encoded = array(merge, "arms");
+            if (mergeId.isEmpty() || family.isEmpty()
+                    || encoded.size() == 0
+                    || !activeConsumerMerges.add(mergeId)) {
+                unsupported.add(origin + ":MALFORMED_OR_CYCLIC_"
+                        + SymbolicPropagationClosure.ITE_TYPE + ":"
+                        + firstNonBlank(mergeId, family));
+                return null;
+            }
+            usedConsumerFamilies.add(family);
+            consumerFamilyActivations.computeIfAbsent(family,
+                    ignored -> new LinkedHashSet<>()).add(firstNonBlank(
+                    currentReadActivationGuard, "true"));
+            try {
+                List<String> selectors = new ArrayList<>();
+                List<Term> values = new ArrayList<>();
+                Sort sort = expected;
+                List<JsonElement> orderedArms = new ArrayList<>();
+                for (JsonElement element : encoded) {
+                    orderedArms.add(element);
+                }
+                // Case selectors are stable content-addressed identities and
+                // already define the canonical arm order.  Re-rendering each
+                // arm recursively here expands the propagated DAG into a tree.
+                orderedArms.sort(Comparator.comparing(element ->
+                        element.isJsonObject()
+                                ? string(element.getAsJsonObject(), "selector")
+                                : ""));
+                for (JsonElement element : orderedArms) {
+                    if (!element.isJsonObject()) {
+                        unsupported.add(origin
+                                + ":CONSUMER_MERGE_ARM_NOT_OBJECT");
+                        return null;
+                    }
+                    JsonObject arm = element.getAsJsonObject();
+                    String selector = string(arm, "selector");
+                    JsonElement expression = arm.get("expression");
+                    if (selector.isEmpty() || expression == null) {
+                        unsupported.add(origin
+                                + ":CONSUMER_MERGE_ARM_INCOMPLETE");
+                        return null;
+                    }
+                    declarations.put(selector, Sort.BOOL);
+                    additionalModelNames.add(selector);
+                    String previousGuard = currentReadActivationGuard;
+                    currentReadActivationGuard = andGuard(previousGuard,
+                            selector);
+                    Term value;
+                    try {
+                        value = term(expression, sort,
+                                origin + ":consumer-arm:" + selector);
+                    } finally {
+                        currentReadActivationGuard = previousGuard;
+                    }
+                    if (value == null) return null;
+                    if (sort == null) sort = value.sort;
+                    if (value.sort != sort) {
+                        unsupported.add(origin
+                                + ":CONSUMER_MERGE_ARM_SORT_CONFLICT");
+                        return null;
+                    }
+                    selectors.add(selector);
+                    values.add(value);
+                }
+                String value = values.get(values.size() - 1).text;
+                IntegralWidth width = values.get(0).integralWidth;
+                String nullness = sort == Sort.STRING
+                        ? values.get(values.size() - 1).stringNullnessText : "";
+                for (Term arm : values) {
+                    if (arm.integralWidth != width) {
+                        width = IntegralWidth.NONE;
+                    }
+                    if (sort == Sort.STRING
+                            && arm.stringNullnessText.isEmpty()) {
+                        unsupported.add(origin
+                                + ":CONSUMER_MERGE_STRING_NULLNESS_MISSING");
+                        return null;
+                    }
+                }
+                for (int index = values.size() - 2; index >= 0; index--) {
+                    Term arm = values.get(index);
+                    boolean sameValue = arm.text.equals(value);
+                    boolean sameNullness = sort != Sort.STRING
+                            || arm.stringNullnessText.equals(nullness);
+                    if (sameValue && sameNullness) continue;
+                    value = "(ite " + selectors.get(index) + " "
+                            + arm.text + " " + value + ")";
+                    if (sort == Sort.STRING) {
+                        nullness = "(ite " + selectors.get(index) + " "
+                                + arm.stringNullnessText + " " + nullness
+                                + ")";
+                    }
+                }
+                Term merged = new Term(value, sort, width, nullness, "");
+                return shareConsumerMergeTerm(merged);
+            } finally {
+                activeConsumerMerges.remove(mergeId);
+            }
         }
 
-        /** Lowers the VM's complete writer choice under the recorded cut. */
+        /**
+         * Shares the value term of equivalent propagated families while the
+         * family keys themselves remain independent dependency authorities.
+         * Every occurrence is still lowered above, so nested families and
+         * read activation guards are discovered for each audited family.
+         */
+        private Term shareConsumerMergeTerm(Term value) {
+            String sharedValue = shareSemanticTerm(value.text, value.sort);
+            String nullness = value.stringNullnessText;
+            if (value.sort == Sort.STRING && !nullness.isEmpty()) {
+                nullness = shareSemanticTerm(nullness, Sort.BOOL);
+            }
+            return new Term(sharedValue, value.sort, value.integralWidth,
+                    nullness, value.stringReferenceKey);
+        }
+
+        private String shareSemanticTerm(String text, Sort sort) {
+            if (text == null || text.isEmpty() || text.charAt(0) != '(') {
+                return text;
+            }
+            String digest = sha256("CONSUMER_MERGE_TERM_V1\u0000"
+                    + sort.name() + "\u0000" + text);
+            SharedTermDefinition definition = sharedTerms.get(digest);
+            if (definition == null) {
+                definition = new SharedTermDefinition(
+                        SHARED_TERM_PREFIX + digest.substring(0, 24),
+                        sort, text);
+                sharedTerms.put(digest, definition);
+            }
+            return definition.name;
+        }
+
+        /** Defines only families reached from this flip's local expression.
+         * A partial family is an admissible under-approximation; its digest
+         * makes an UNSAT answer expire when another arm is observed. */
+        private Set<String> bindConsumerFamilyDependencies(
+                JsonArray encodedDependencies,
+                String sourceActivationOccurrenceId) {
+            Map<String, JsonObject> dependencies = new LinkedHashMap<>();
+            for (JsonElement element : encodedDependencies) {
+                if (!element.isJsonObject()) continue;
+                JsonObject dependency = element.getAsJsonObject();
+                String family = string(dependency, VmExpressionIr.FAMILY_KEY);
+                if (!family.isEmpty()) dependencies.put(family, dependency);
+            }
+            Set<String> symbols = new LinkedHashSet<>();
+            while (true) {
+                List<String> pending = new ArrayList<>();
+                for (String family : usedConsumerFamilies) {
+                    if (!boundConsumerFamilies.contains(family)) {
+                        pending.add(family);
+                    }
+                }
+                Collections.sort(pending);
+                for (String family : pending) {
+                    JsonObject dependency = dependencies.get(family);
+                    if (dependency == null) {
+                        unsupported.add("CONSUMER_FAMILY_DEPENDENCY_MISSING:"
+                                + family);
+                        boundConsumerFamilies.add(family);
+                        continue;
+                    }
+                    bindConsumerFamilyDependency(dependency, symbols,
+                            sourceActivationOccurrenceId);
+                    boundConsumerFamilies.add(family);
+                }
+                // Lowering a dependency PC or writer path guard can expose a
+                // second read from a family whose case partition was already
+                // emitted.  Drain those per-read implications independently
+                // of the family work set so a nested multi-hop PC cannot leave
+                // its RF selector unconstrained.
+                List<String> readFamilies = new ArrayList<>(
+                        readFromCaseSelectors.keySet());
+                Collections.sort(readFamilies);
+                for (String family : readFamilies) {
+                    bindReadFromWriterCases(family,
+                            readFromCaseSelectors.get(family), symbols);
+                }
+                if (boundConsumerFamilies.containsAll(usedConsumerFamilies)
+                        && !hasUnboundReadFromWriterBindings()) {
+                    break;
+                }
+            }
+            for (String family : readFromCaseSelectors.keySet()) {
+                Map<String, GuardedReadCaseBinding> bindings =
+                        readFromWriterCases.get(family);
+                if (bindings == null || bindings.isEmpty()) {
+                    unsupported.add("READ_FROM_WRITER_CASE_BINDING_MISSING:"
+                            + family);
+                }
+            }
+            for (String family : readFromWriterCases.keySet()) {
+                if (boundConsumerFamilies.contains(family)
+                        && !readFromCaseSelectors.containsKey(family)) {
+                    unsupported.add("READ_FROM_WRITER_CASE_DEPENDENCY_MISSING:"
+                            + family);
+                }
+            }
+            finishConsumerFamilySelections();
+            bindCaseObservationPartitions();
+            return symbols;
+        }
+
+        private boolean hasUnboundReadFromWriterBindings() {
+            for (Map.Entry<String, Set<String>> dependency
+                    : readFromCaseSelectors.entrySet()) {
+                for (GuardedReadCaseBinding binding
+                        : readFromWriterCases.getOrDefault(
+                        dependency.getKey(), Collections.emptyMap()).values()) {
+                    if (!boundReadFromWriterBindings.contains(
+                            readBindingIdentity(dependency.getKey(), binding))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private void bindConsumerFamilyDependency(JsonObject dependency,
+                                                  Set<String> symbols,
+                                                  String sourceActivationOccurrenceId) {
+            String family = string(dependency, VmExpressionIr.FAMILY_KEY);
+            JsonArray arms = array(dependency, "arms");
+            List<String> selectors = new ArrayList<>();
+            Set<String> baseCaseSelectors = new LinkedHashSet<>();
+            for (JsonElement element : arms) {
+                if (!element.isJsonObject()) continue;
+                JsonObject arm = element.getAsJsonObject();
+                String selector = string(arm, "selector");
+                String caseSelector = firstNonBlank(
+                        string(arm, "caseSelector"), selector);
+                if (selector.isEmpty()) {
+                    unsupported.add("CONSUMER_FAMILY_ARM_UNNAMED:" + family);
+                    continue;
+                }
+                declarations.put(selector, Sort.BOOL);
+                additionalModelNames.add(selector);
+                selectors.add(selector);
+                declarations.put(caseSelector, Sort.BOOL);
+                additionalModelNames.add(caseSelector);
+                baseCaseSelectors.add(caseSelector);
+
+                String observationSelector = string(arm,
+                        SymbolicPropagationClosure.OBSERVATION_SELECTOR);
+                if (!observationSelector.isEmpty()) {
+                    if (!selector.equals(observationSelector)) {
+                        unsupported.add("CONSUMER_FAMILY_OBSERVATION_SELECTOR_"
+                                + "MISMATCH:" + family);
+                    }
+                    noteCaseObservation(caseSelector, observationSelector,
+                            family);
+                }
+
+                bindConsumerPathCondition(family, selector,
+                        array(arm, "pathCondition"), symbols,
+                        sourceActivationOccurrenceId,
+                        string(arm, "occurrenceId"), -1);
+            }
+            if (selectors.isEmpty()) {
+                unsupported.add("CONSUMER_FAMILY_HAS_NO_ARMS:" + family);
+                return;
+            }
+            Set<String> stableSelectors = new LinkedHashSet<>(selectors);
+            if (stableSelectors.size() != selectors.size()) {
+                unsupported.add("CONSUMER_FAMILY_DUPLICATE_SELECTOR:"
+                        + family);
+            }
+            Set<String> priorSelectors = consumerFamilySelectors.putIfAbsent(
+                    family, stableSelectors);
+            if (priorSelectors != null
+                    && !priorSelectors.equals(stableSelectors)) {
+                unsupported.add("CONSUMER_FAMILY_SELECTOR_SET_AMBIGUOUS:"
+                        + family);
+            }
+            for (int left = 0; left < selectors.size(); left++) {
+                for (int right = left + 1; right < selectors.size(); right++) {
+                    assertions.add("(not (and " + selectors.get(left) + " "
+                            + selectors.get(right) + "))");
+                }
+            }
+            if (SymbolicPropagationClosure.READ_FROM_DEPENDENCY_POLICY.equals(
+                    string(dependency, "selectionPolicy"))) {
+                readFromCaseSelectors.put(family,
+                        new LinkedHashSet<>(baseCaseSelectors));
+            }
+        }
+
+        /** Enables each case family only while one of its values is used. */
+        private void finishConsumerFamilySelections() {
+            List<String> families = new ArrayList<>(
+                    consumerFamilySelectors.keySet());
+            Collections.sort(families);
+            for (String family : families) {
+                Set<String> activations = consumerFamilyActivations.get(
+                        family);
+                Set<String> selectors = consumerFamilySelectors.get(family);
+                if (activations == null || activations.isEmpty()
+                        || selectors == null || selectors.isEmpty()) {
+                    unsupported.add("CONSUMER_FAMILY_ACTIVATION_MISSING:"
+                            + family);
+                    continue;
+                }
+                List<String> orderedActivations = new ArrayList<>(activations);
+                List<String> orderedSelectors = new ArrayList<>(selectors);
+                Collections.sort(orderedActivations);
+                Collections.sort(orderedSelectors);
+                assertions.add("(=> " + orTerms(orderedActivations) + " "
+                        + orTerms(orderedSelectors) + ")");
+            }
+        }
+
+        /** Lowers one exact PC under the selector which owns its payload. */
+        private void bindConsumerPathCondition(
+                String family, String selector, JsonArray path,
+                Set<String> symbols, String sourceActivationOccurrenceId,
+                String occurrenceId, int observationIndex) {
+            // This query replaces the selected activation's observed path
+            // with replayContract(prefix + flipped predicate). Keep its value
+            // arm, but do not pin the old whole-case PC.
+            if (!sourceActivationOccurrenceId.isEmpty()
+                    && sourceActivationOccurrenceId.equals(occurrenceId)) {
+                return;
+            }
+            List<String> conditions = new ArrayList<>();
+            for (int index = 0; index < path.size(); index++) {
+                Set<String> previousFrontier = currentConstraintSymbols;
+                currentConstraintSymbols = new LinkedHashSet<>();
+                Term condition;
+                String previousReadGuard = currentReadActivationGuard;
+                currentReadActivationGuard = andGuard(previousReadGuard,
+                        selector);
+                try {
+                    condition = term(path.get(index), Sort.BOOL,
+                            "consumer_family_" + family + "_"
+                                    + (observationIndex < 0 ? "arm"
+                                    : "observation_" + observationIndex)
+                                    + "_" + index);
+                    symbols.addAll(currentConstraintSymbols);
+                } finally {
+                    currentReadActivationGuard = previousReadGuard;
+                    currentConstraintSymbols = previousFrontier;
+                }
+                if (condition == null || condition.sort != Sort.BOOL) {
+                    unsupported.add("CONSUMER_FAMILY_PC_MALFORMED:"
+                            + family);
+                    continue;
+                }
+                conditions.add(condition.text);
+            }
+            assertions.add("(=> " + selector + " "
+                    + andTerms(conditions) + ")");
+        }
+
+        private void noteCaseObservation(String caseSelector,
+                                         String observationSelector,
+                                         String family) {
+            if (caseSelector.isEmpty() || observationSelector.isEmpty()
+                    || caseSelector.equals(observationSelector)) {
+                return;
+            }
+            String prior = observationBaseCases.putIfAbsent(
+                    observationSelector, caseSelector);
+            if (prior != null && !prior.equals(caseSelector)) {
+                unsupported.add("CONSUMER_OBSERVATION_BASE_CASE_AMBIGUOUS:"
+                        + family + ":" + observationSelector);
+                return;
+            }
+            caseObservationSelectors.computeIfAbsent(caseSelector,
+                    ignored -> new LinkedHashSet<>()).add(
+                    observationSelector);
+        }
+
+        /** A selected base case chooses exactly one of its replay variants. */
+        private void bindCaseObservationPartitions() {
+            List<String> cases = new ArrayList<>(
+                    caseObservationSelectors.keySet());
+            Collections.sort(cases);
+            for (String caseSelector : cases) {
+                List<String> observations = new ArrayList<>(
+                        caseObservationSelectors.get(caseSelector));
+                Collections.sort(observations);
+                if (observations.isEmpty()) continue;
+                declarations.put(caseSelector, Sort.BOOL);
+                StringBuilder count = new StringBuilder("(+");
+                for (String observation : observations) {
+                    declarations.put(observation, Sort.BOOL);
+                    count.append(" (ite ").append(observation)
+                            .append(" 1 0)");
+                }
+                count.append(')');
+                assertions.add("(= " + count + " (ite " + caseSelector
+                        + " 1 0))");
+            }
+        }
+
+        /** Couples a VM read-from choice to the case that created its value. */
+        private void bindReadFromWriterCases(String family,
+                                             Set<String> caseSelectors,
+                                             Set<String> symbols) {
+            Map<String, GuardedReadCaseBinding> bindings =
+                    readFromWriterCases.get(family);
+            if (bindings == null || bindings.isEmpty()) return;
+            for (GuardedReadCaseBinding binding : bindings.values()) {
+                String identity = readBindingIdentity(family, binding);
+                if (!boundReadFromWriterBindings.add(identity)) continue;
+                if (!caseSelectors.contains(binding.caseSelector)) {
+                    unsupported.add("READ_FROM_WRITER_CASE_NOT_IN_PARTITION:"
+                            + family + ":" + binding.owner);
+                    continue;
+                }
+                assertions.add("(=> " + binding.readSelector + " "
+                        + binding.caseSelector + ")");
+                if (binding.pathGuard == null) {
+                    unsupported.add("READ_FROM_WRITER_GUARD_MISSING:"
+                            + family + ":" + binding.owner);
+                    continue;
+                }
+                if (SharedStateEvidence.unguarded(binding.pathGuard)) {
+                    continue;
+                }
+                Set<String> previousFrontier = currentConstraintSymbols;
+                currentConstraintSymbols = new LinkedHashSet<>();
+                Term guard;
+                String previousReadGuard = currentReadActivationGuard;
+                currentReadActivationGuard = andGuard(previousReadGuard,
+                        binding.readSelector);
+                try {
+                    guard = term(binding.pathGuard, Sort.BOOL,
+                            "read_from_writer_guard:" + family);
+                    symbols.addAll(currentConstraintSymbols);
+                } finally {
+                    currentReadActivationGuard = previousReadGuard;
+                    currentConstraintSymbols = previousFrontier;
+                }
+                if (guard == null || guard.sort != Sort.BOOL) {
+                    unsupported.add("READ_FROM_WRITER_GUARD_MALFORMED:"
+                            + family + ":" + binding.owner);
+                    continue;
+                }
+                assertions.add("(=> " + binding.readSelector + " "
+                        + guard.text + ")");
+            }
+        }
+
+        private static String readBindingIdentity(
+                String family, GuardedReadCaseBinding binding) {
+            return family + "\n" + binding.identity();
+        }
+
+        private static String andTerms(List<String> terms) {
+            if (terms.isEmpty()) return "true";
+            if (terms.size() == 1) return terms.get(0);
+            return "(and " + String.join(" ", terms) + ")";
+        }
+
+        private static String orTerms(List<String> terms) {
+            if (terms.size() == 1) return terms.get(0);
+            return "(or " + String.join(" ", terms) + ")";
+        }
+
+        /** Lowers the VM's read-time candidate snapshot directly. */
         private Term guardedReadTerm(JsonObject read, Sort expected,
                                      String origin) {
-            // A map iterator over a read-from choice carries VALUE_VIEW /
-            // KEY_VIEW on each known writer arm.  Move that common view
-            // outside the choice before lowering it, exactly as the composer
-            // does: the selected value is an AssocState here, not the Java
-            // reference type recorded on the transport wrapper.
+            boolean targetMapRead = captureTargetContainerReads
+                    && guardedReadDepth == 0
+                    && SharedStateEvidence.LOCATION_KIND_MAP_STATE.equals(
+                    string(object(read, "location"), "locationKind"));
+            guardedReadDepth++;
+            try {
+                Term value = lowerGuardedReadTerm(read, expected, origin);
+                if (targetMapRead && value != null) {
+                    captureTargetGuardedRead(read, value, origin);
+                }
+                return value;
+            } finally {
+                guardedReadDepth--;
+            }
+        }
+
+        private Term lowerGuardedReadTerm(JsonObject read, Sort expected,
+                                          String origin) {
             JsonObject selectedViewState = ContainerSmtCodec
                     .selectedReadViewState(read);
             if (selectedViewState != null) {
@@ -394,19 +963,29 @@ public final class ConcolicConstraintSolver {
                 expected = Sort.ASSOCIATIVE;
             }
             String fault = SharedStateEvidence.guardedReadFault(read);
-            long readEventId = longInteger(read, "readEventId", 0L);
+            String readIdentity = string(read,
+                    SymbolicPropagationClosure.READ_CHOICE_IDENTITY);
             JsonArray candidates = array(read, "candidates");
             Sort declared = sortOfJava(string(read, "_java_type"));
             Sort sort = expected != null && expected.containerState()
                     ? expected : declared;
-            if (!fault.isEmpty() || readEventId <= 0L
-                    || candidates.size() == 0
-                    || sort == Sort.UNKNOWN
+            if (!fault.isEmpty() || readIdentity.isEmpty()
+                    || candidates.size() == 0 || sort == Sort.UNKNOWN
                     || expected != null && expected != sort) {
                 unsupported.add(origin + ":UNADMITTED_GUARDED_READ:"
-                        + firstNonBlank(fault, "MALFORMED"));
+                        + firstNonBlank(fault, readIdentity.isEmpty()
+                        ? "STABLE_READ_IDENTITY_MISSING" : "MALFORMED"));
                 return null;
             }
+
+            String activation = firstNonBlank(
+                    currentReadActivationGuard, "true");
+            Set<String> selectorsForRead = guardedReadSelectors
+                    .computeIfAbsent(readIdentity,
+                            ignored -> new LinkedHashSet<>());
+            Map<String, Set<String>> selectorGuards =
+                    guardedSelectorActivationGuards.computeIfAbsent(
+                            readIdentity, ignored -> new LinkedHashMap<>());
             List<String> selectors = new ArrayList<>();
             List<Term> arms = new ArrayList<>();
             for (JsonElement element : candidates) {
@@ -416,113 +995,319 @@ public final class ConcolicConstraintSolver {
                     return null;
                 }
                 JsonObject candidate = element.getAsJsonObject();
-                String arm = string(candidate, "selector");
-                String selector = recordedSelectorName(readEventId, arm);
-                if (arm.isEmpty() || selector.isEmpty()) {
+                String candidateIdentity = string(candidate,
+                        SymbolicPropagationClosure.READ_CANDIDATE_IDENTITY);
+                String selector = string(candidate, "selector");
+                String expectedSelector = stableReadSelector(readIdentity,
+                        candidateIdentity);
+                if (candidateIdentity.isEmpty()
+                        || !selector.equals(expectedSelector)) {
                     unsupported.add(origin
-                            + ":GUARDED_READ_CANDIDATE_UNNAMED");
+                            + ":GUARDED_READ_CANDIDATE_IDENTITY:" + selector);
                     return null;
                 }
                 declarations.put(selector, Sort.BOOL);
                 additionalModelNames.add(selector);
                 selectors.add(selector);
-                if (bool(candidate, "unknown", false)) {
-                    // An unknown writer has no replay gate.  It remains in
-                    // the VM's closed writer universe, but cannot be the arm
-                    // an executable concolic task asks replay to confirm.
-                    assertions.add("(not " + selector + ")");
-                    arms.add(defaultGuardedReadTerm(sort));
-                    continue;
-                }
-                // The arm is an observed writer value, not another local
-                // input the target task must materialize.  It participates
-                // in the SMT relation while its internal lineage stays out
-                // of this replay-control frontier.
+                selectorsForRead.add(selector);
+                selectorGuards.computeIfAbsent(selector,
+                        ignored -> new LinkedHashSet<>()).add(activation);
+                noteReadFromWriterCase(candidate, selector, origin);
+
                 Set<String> frontier = currentConstraintSymbols;
-                currentConstraintSymbols = null;
+                currentConstraintSymbols = new LinkedHashSet<>();
                 Term value;
+                String previousReadGuard = currentReadActivationGuard;
+                currentReadActivationGuard = andGuard(previousReadGuard,
+                        selector);
                 try {
                     value = term(candidate.get("expression"), sort,
-                            origin + ":arm:" + arm);
+                            origin + ":arm:" + candidateIdentity);
                 } finally {
+                    frontier.addAll(currentConstraintSymbols);
+                    currentReadActivationGuard = previousReadGuard;
                     currentConstraintSymbols = frontier;
                 }
                 if (value == null || value.sort != sort) {
                     unsupported.add(origin
-                            + ":GUARDED_READ_ARM_SORT:" + arm);
+                            + ":GUARDED_READ_ARM_SORT:" + candidateIdentity);
                     return null;
                 }
                 arms.add(value);
             }
-            String value = arms.get(arms.size() - 1).text;
-            for (int index = arms.size() - 2; index >= 0; index--) {
-                value = "(ite " + selectors.get(index) + " "
-                        + arms.get(index).text + " " + value + ")";
-            }
-            return new Term(value, sort,
-                    JavaPrimitiveSmtSemantics.widthOfJavaType(
-                            string(read, "_java_type")));
-        }
 
-        private String recordedSelectorName(long readEventId, String arm) {
-            for (JsonElement readElement : array(recordedReadCut,
-                    "readChoices")) {
-                if (!readElement.isJsonObject()) continue;
-                JsonObject choice = readElement.getAsJsonObject();
-                if (longInteger(choice, "readEventId", 0L) != readEventId) {
-                    continue;
-                }
-                for (JsonElement candidateElement
-                        : array(choice, "candidates")) {
-                    if (!candidateElement.isJsonObject()) continue;
-                    JsonObject candidate = candidateElement.getAsJsonObject();
-                    if (arm.equals(string(candidate, "arm"))) {
-                        return string(candidate, "selector");
+            String value = arms.get(arms.size() - 1).text;
+            String nullness = sort == Sort.STRING
+                    ? arms.get(arms.size() - 1).stringNullnessText : "";
+            if (sort == Sort.STRING) {
+                for (Term arm : arms) {
+                    if (arm.stringNullnessText.isEmpty()) {
+                        unsupported.add(origin
+                                + ":GUARDED_READ_STRING_NULLNESS_MISSING");
+                        return null;
                     }
                 }
             }
-            return RecordedSessionModel.selectorNameToken(
-                    String.valueOf(readEventId), arm);
+            for (int index = arms.size() - 2; index >= 0; index--) {
+                Term arm = arms.get(index);
+                boolean sameValue = arm.text.equals(value);
+                boolean sameNullness = sort != Sort.STRING
+                        || arm.stringNullnessText.equals(nullness);
+                if (sameValue && sameNullness) continue;
+                value = "(ite " + selectors.get(index) + " "
+                        + arm.text + " " + value + ")";
+                if (sort == Sort.STRING) {
+                    nullness = "(ite " + selectors.get(index) + " "
+                            + arm.stringNullnessText + " " + nullness + ")";
+                }
+            }
+            recordGuardedReadUse(readIdentity, activation, selectors);
+            return new Term(value, sort,
+                    JavaPrimitiveSmtSemantics.widthOfJavaType(
+                            string(read, "_java_type")), nullness, "");
         }
 
-        private static Term defaultGuardedReadTerm(Sort sort) {
-            if (sort == Sort.BOOL) return new Term("false", sort);
-            if (sort == Sort.INT) return new Term("0", sort);
-            if (sort == Sort.REF) return new Term("nullRef", sort);
-            if (sort == Sort.ASSOCIATIVE) {
-                return new Term("(assoc_state_of nullRef)", sort);
+        /**
+         * Retains the value already propagated to the target read. The graph
+         * has no role in rebuilding this value; it only has to be mapped back
+         * to the one exact live container which replay can update.
+         */
+        private void captureTargetGuardedRead(JsonObject read, Term value,
+                                              String origin) {
+            InitialContainerObservation.Read selected = null;
+            String selectorIdentity = "";
+            for (JsonElement element : array(read, "candidates")) {
+                if (!element.isJsonObject()) {
+                    targetContainerGaps.add(origin
+                            + ":TARGET_MAP_CANDIDATE_NOT_OBJECT");
+                    return;
+                }
+                JsonElement expression = element.getAsJsonObject()
+                        .get("expression");
+                InitialContainerObservation.Read candidate = expression != null
+                        && expression.isJsonObject()
+                        ? InitialContainerObservation.initialRead(
+                        expression.getAsJsonObject()) : null;
+                if (candidate == null
+                        || !"ASSOCIATIVE".equals(candidate.shape)) {
+                    targetContainerGaps.add(origin
+                            + ":TARGET_MAP_INITIAL_READ_MISSING");
+                    return;
+                }
+                String identity = targetSelectorIdentity(candidate);
+                if (identity.isEmpty()) {
+                    targetContainerGaps.add(origin
+                            + ":TARGET_MAP_SELECTOR_UNREPLAYABLE");
+                    return;
+                }
+                if (selected == null) {
+                    selected = candidate;
+                    selectorIdentity = identity;
+                } else if (!selected.stateSymbol.equals(
+                        candidate.stateSymbol)
+                        || !selectorIdentity.equals(identity)
+                        || !JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                        selected.javaType).equals(
+                        JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                                candidate.javaType))) {
+                    targetContainerGaps.add(origin
+                            + ":TARGET_MAP_CANDIDATES_DISAGREE");
+                    return;
+                }
             }
-            if (sort == Sort.INDEXED) {
-                return new Term("(indexed_state_of nullRef)", sort);
+            if (selected == null) {
+                targetContainerGaps.add(origin
+                        + ":TARGET_MAP_CANDIDATES_EMPTY");
+                return;
             }
-            return new Term("0", sort);
+            recordTargetContainerRead(selected, selectorIdentity, value,
+                    origin);
+        }
+
+        private String targetSelectorIdentity(
+                InitialContainerObservation.Read read) {
+            try {
+                if (read.dynamicAssociativeSelector()) {
+                    return "ACCESS:" + targetReadAnchors.contentAnchor(
+                            read.selectorExpression);
+                }
+                if (read.selectorExpression != null) {
+                    return "KEY:" + targetReadAnchors.contentAnchor(
+                            read.selectorExpression);
+                }
+            } catch (IllegalArgumentException malformed) {
+                return "";
+            }
+            if (!read.iterationProjection.isEmpty() && read.index != null) {
+                return "ITERATION:" + read.iterationProjection + ':'
+                        + read.index;
+            }
+            return read.index == null ? "" : "INDEX:" + read.index;
+        }
+
+        private void recordTargetContainerRead(
+                InitialContainerObservation.Read read,
+                String selectorIdentity, Term value, String origin) {
+            if (!"ASSOCIATIVE".equals(read.shape)) {
+                targetContainerGaps.add(origin
+                        + ":TARGET_CONTAINER_SHAPE:" + read.shape);
+                return;
+            }
+            if (value.sort != Sort.REF && value.sort != Sort.INT
+                    && value.sort != Sort.BOOL) {
+                targetContainerGaps.add(origin
+                        + ":TARGET_CONTAINER_VALUE_SORT:" + value.sort);
+                return;
+            }
+            String identity = read.shape + '\u0000' + read.stateSymbol
+                    + '\u0000' + selectorIdentity;
+            TargetContainerRead candidate = new TargetContainerRead(
+                    identity, read, value);
+            TargetContainerRead held = targetContainerReads.putIfAbsent(
+                    identity, candidate);
+            if (held != null && !held.sameValue(candidate)) {
+                targetContainerGaps.add(origin
+                        + ":TARGET_CONTAINER_VALUE_AMBIGUOUS");
+            }
+        }
+
+        private void recordGuardedReadUse(String readIdentity,
+                                          String activation,
+                                          Collection<String> selectors) {
+            List<String> ordered = new ArrayList<>(selectors);
+            Collections.sort(ordered);
+            String identity = "RF_USE." + sha256(readIdentity + "\n"
+                    + activation + "\n" + String.join("\n", ordered));
+            GuardedReadUse use = new GuardedReadUse(activation, ordered);
+            guardedReadUses.computeIfAbsent(readIdentity,
+                    ignored -> new LinkedHashMap<>()).putIfAbsent(identity,
+                    use);
+        }
+
+        private static String stableReadSelector(String readIdentity,
+                                                 String candidateIdentity) {
+            if (readIdentity.isEmpty() || candidateIdentity.isEmpty()) {
+                return "";
+            }
+            return "read_selector__" + CanonicalJson.sha256(
+                    readIdentity + "\n" + candidateIdentity);
+        }
+
+        private void noteReadFromWriterCase(JsonObject candidate,
+                                            String readSelector,
+                                            String origin) {
+            String writerOwner = string(candidate,
+                    SymbolicPropagationClosure.WRITER_CASE_OWNER);
+            String writerSelector = string(candidate,
+                    SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
+            JsonArray closure = array(candidate,
+                    SymbolicPropagationClosure.WRITER_CASE_CLOSURE);
+            boolean containsWriter = false;
+            Set<String> identities = new LinkedHashSet<>();
+            if (closure.size() == 0) {
+                unsupported.add(origin
+                        + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
+                        + string(candidate, "selector"));
+                return;
+            }
+            for (JsonElement encoded : closure) {
+                if (!encoded.isJsonObject()) {
+                    unsupported.add(origin
+                            + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
+                            + string(candidate, "selector"));
+                    return;
+                }
+                JsonObject localCase = encoded.getAsJsonObject();
+                String family = string(localCase,
+                        SymbolicPropagationClosure.WRITER_CASE_FAMILY);
+                String owner = string(localCase,
+                        SymbolicPropagationClosure.WRITER_CASE_OWNER);
+                String caseSelector = string(localCase,
+                        SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
+                String identity = family + "\n" + owner;
+                if (family.isEmpty() || owner.isEmpty()
+                        || !caseSelector.equals(
+                        LocalCaseIdentity.selector(owner))
+                        || !identities.add(identity)) {
+                    unsupported.add(origin
+                            + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
+                            + string(candidate, "selector"));
+                    return;
+                }
+                containsWriter |= owner.equals(writerOwner)
+                        && caseSelector.equals(writerSelector);
+                JsonElement pathGuard = owner.equals(writerOwner)
+                        ? candidate.get("pathGuard")
+                        : SharedStateEvidence.emptyConjunction();
+                registerReadFromWriterCase(family, owner, caseSelector,
+                        readSelector, pathGuard, origin, candidate);
+            }
+            if (!containsWriter) {
+                unsupported.add(origin
+                        + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
+                        + string(candidate, "selector"));
+            }
+        }
+
+        private void registerReadFromWriterCase(
+                String family, String owner, String caseSelector,
+                String readSelector, JsonElement pathGuard, String origin,
+                JsonObject candidate) {
+            usedConsumerFamilies.add(family);
+            consumerFamilyActivations.computeIfAbsent(family,
+                    ignored -> new LinkedHashSet<>()).add(readSelector);
+            GuardedReadCaseBinding binding =
+                    new GuardedReadCaseBinding(readSelector,
+                            caseSelector, owner, pathGuard);
+            Map<String, GuardedReadCaseBinding> bindings =
+                    readFromWriterCases.computeIfAbsent(family,
+                            ignored -> new LinkedHashMap<>());
+            GuardedReadCaseBinding held = bindings.putIfAbsent(
+                    binding.identity(), binding);
+            if (held != null && !held.same(binding)) {
+                unsupported.add(origin
+                        + ":READ_FROM_WRITER_CASE_AMBIGUOUS:"
+                        + string(candidate, "selector"));
+            }
+        }
+
+        private static String andGuard(String left, String right) {
+            if (left == null || left.isEmpty() || "true".equals(left)) {
+                return right == null || right.isEmpty() ? "true" : right;
+            }
+            if (right == null || right.isEmpty() || "true".equals(right)) {
+                return left;
+            }
+            if (left.equals(right)) return left;
+            return "(and " + left + " " + right + ")";
+        }
+
+        private void requireUnderCurrentGuard(String predicate) {
+            assertions.add("true".equals(currentReadActivationGuard)
+                    ? predicate : "(=> " + currentReadActivationGuard + " "
+                    + predicate + ")");
         }
 
         private Term containerTerm(JsonObject expression, String origin) {
-            SparseContainerBoundary dynamic = containerBoundaries
-                    .dynamicAssociativeBoundary(expression);
-            if (dynamic != null) {
-                Sort sort = sortOfJava(dynamic.javaType);
-                if (sort != Sort.INT && sort != Sort.BOOL
-                        && sort != Sort.REF) {
-                    unsupported.add(origin
-                            + ":UNSUPPORTED_DYNAMIC_CONTAINER_READ_SORT:"
-                            + sort);
-                    return null;
-                }
-                String name = "container_access__"
-                        + sha256(dynamic.identity()).substring(0, 16);
-                declarations.put(name, sort);
-                Term term = new Term(name, sort,
-                        JavaPrimitiveSmtSemantics.widthOfJavaType(
-                                dynamic.javaType));
-                containerBoundaries.record(dynamic, term);
-                return term;
-            }
             ContainerSmtCodec.Term result = ContainerSmtCodec.term(
                     expression, containerHost(origin));
-            containerBoundaries.record(expression, result);
-            return fromContainerTerm(result, origin);
+            Term value = fromContainerTerm(result, origin);
+            if (captureTargetContainerReads && guardedReadDepth == 0
+                    && value != null) {
+                InitialContainerObservation.Read read =
+                        InitialContainerObservation.initialRead(expression);
+                if (read != null) {
+                    String selector = targetSelectorIdentity(read);
+                    if (selector.isEmpty()) {
+                        targetContainerGaps.add(origin
+                                + ":TARGET_CONTAINER_SELECTOR_UNREPLAYABLE");
+                    } else {
+                        recordTargetContainerRead(read, selector, value,
+                                origin);
+                    }
+                }
+            }
+            return value;
         }
 
         private Term containerFieldTerm(
@@ -576,14 +1361,11 @@ public final class ConcolicConstraintSolver {
                         ContainerSmtCodec.Sort expected) {
                     if (ContainerSmtCodec.handles(expression)) {
                         JsonObject relation = expression.getAsJsonObject();
-                        ContainerSmtCodec.Term result =
-                                ContainerSmtCodec.term(relation, this);
-                        containerBoundaries.record(relation, result);
-                        return result;
+                        return ContainerSmtCodec.term(relation, this);
                     }
                     if (ContainerSmtCodec.handlesField(expression)) {
-                        return ContainerSmtCodec.field(
-                                expression.getAsJsonObject(), this);
+                        return shareTerm(ContainerSmtCodec.field(
+                                expression.getAsJsonObject(), this));
                     }
                     Sort nativeExpected = expected == ContainerSmtCodec.Sort.INT
                             ? Sort.INT
@@ -595,8 +1377,15 @@ public final class ConcolicConstraintSolver {
                             ? Sort.INDEXED
                             : expected == ContainerSmtCodec.Sort.ASSOCIATIVE
                             ? Sort.ASSOCIATIVE : null;
-                    return toContainerTerm(term(expression, nativeExpected,
-                            origin + ":container-operand"));
+                    return shareTerm(toContainerTerm(term(expression,
+                            nativeExpected,
+                            origin + ":container-operand")));
+                }
+
+                @Override
+                public ContainerSmtCodec.Term share(
+                        ContainerSmtCodec.Term value) {
+                    return shareTerm(value);
                 }
 
                 @Override
@@ -604,8 +1393,14 @@ public final class ConcolicConstraintSolver {
                     Term value = term(expression, null,
                             origin + ":container-value");
                     if (value == null) return null;
+                    String valueText = value.text;
+                    if (value.sort != Sort.STRING) {
+                        ContainerSmtCodec.Term shared = shareTerm(
+                                toContainerTerm(value));
+                        if (shared != null) valueText = shared.text;
+                    }
                     String integralValue = value.sort == Sort.INT
-                            ? ContainerSmtCodec.boxIntegral(value.text,
+                            ? ContainerSmtCodec.boxIntegral(valueText,
                             expressionJavaType(expression)) : "";
                     String stringValue = "";
                     if (value.sort == Sort.STRING) {
@@ -622,23 +1417,23 @@ public final class ConcolicConstraintSolver {
                     }
                     String boxed = value.sort == Sort.INT
                             ? firstNonBlank(integralValue,
-                            "(VInt " + value.text + ")")
+                            "(VInt " + valueText + ")")
                             : value.sort == Sort.BOOL
-                            ? "(VBool " + value.text + ")"
+                            ? "(VBool " + valueText + ")"
                             : value.sort == Sort.REF
-                            ? "(VRef " + value.text + ")"
+                            ? "(VRef " + valueText + ")"
                             : value.sort == Sort.STRING
                             ? stringValue
                             : value.sort == Sort.FLOAT32
-                            ? "(VFloat " + value.text + ")"
+                            ? "(VFloat " + valueText + ")"
                             : value.sort == Sort.FLOAT64
-                            ? "(VDouble " + value.text + ")" : "";
+                            ? "(VDouble " + valueText + ")" : "";
                     if (boxed.isEmpty()) {
                         unsupported("ContainerBox:" + value.sort);
                         return null;
                     }
-                    return new ContainerSmtCodec.Term(boxed,
-                            ContainerSmtCodec.Sort.VALUE);
+                    return shareTerm(new ContainerSmtCodec.Term(boxed,
+                            ContainerSmtCodec.Sort.VALUE));
                 }
 
                 @Override
@@ -652,7 +1447,7 @@ public final class ConcolicConstraintSolver {
 
                 @Override
                 public void require(String predicate) {
-                    assertions.add(predicate);
+                    requireUnderCurrentGuard(predicate);
                 }
 
                 @Override
@@ -702,6 +1497,33 @@ public final class ConcolicConstraintSolver {
                 case INDEXED: return Sort.INDEXED;
                 default: return Sort.ASSOCIATIVE;
             }
+        }
+
+        /**
+         * Interns a compound codec term as a fully constrained constant.  A
+         * zero-argument define-fun is a macro in Z3 and gets expanded again;
+         * the equality keeps one shared AST while adding no semantic choice.
+         * Exact text and sort form the alias identity.
+         */
+        private ContainerSmtCodec.Term shareTerm(
+                ContainerSmtCodec.Term value) {
+            if (value == null || value.text.isEmpty()
+                    || value.text.charAt(0) != '(') {
+                return value;
+            }
+            Sort sort = containerSort(value.sort);
+            if (sort == Sort.UNKNOWN) return value;
+            String digest = sha256(sort.name() + "\u0000" + value.text);
+            SharedTermDefinition definition = sharedTerms.get(
+                    digest);
+            if (definition == null) {
+                definition = new SharedTermDefinition(
+                        SHARED_TERM_PREFIX + digest.substring(0, 24),
+                        sort, value.text);
+                sharedTerms.put(digest, definition);
+            }
+            return new ContainerSmtCodec.Term(definition.name, value.sort,
+                    value.integralWidth);
         }
 
         private ContainerSmtCodec.Term toContainerTerm(Term value) {
@@ -795,45 +1617,103 @@ public final class ConcolicConstraintSolver {
             return names.get(raw);
         }
 
-        /** Declares the recorded read cut this query carries. */
-        private void bindRecordedReadCut(JsonObject payload) {
-            if (!RecordedSessionModel.isQueryPayload(payload)) return;
-            useRecordedReadCut(payload);
-            for (JsonElement element : array(payload, "positions")) {
-                JsonObject position = element.getAsJsonObject();
-                String name = string(position, "name");
-                int bound = integer(position, "bound", 0);
-                if (name.isEmpty() || bound <= 0) continue;
-                declarations.put(name, Sort.INT);
-                assertions.add("(and (<= 0 " + name + ") (< " + name + " "
-                        + bound + "))");
+        /** Binds read choice only while a consumer expression is active. */
+        private void finishGuardedReadSelections() {
+            List<String> reads = new ArrayList<>(
+                    guardedReadUses.keySet());
+            Collections.sort(reads);
+            for (String read : reads) {
+                List<String> selectors = new ArrayList<>(
+                        guardedReadSelectors.getOrDefault(read,
+                                Collections.emptySet()));
+                Collections.sort(selectors);
+                if (selectors.isEmpty()) {
+                    unsupported.add("GUARDED_READ_CHOICE_MISSING:" + read);
+                    continue;
+                }
+                Map<String, GuardedReadUse> uses = guardedReadUses.get(read);
+                if (uses == null || uses.isEmpty()) {
+                    unsupported.add("GUARDED_READ_USE_MISSING:" + read);
+                    continue;
+                }
+                List<String> useIds = new ArrayList<>(uses.keySet());
+                Collections.sort(useIds);
+                for (String useId : useIds) {
+                    GuardedReadUse use = uses.get(useId);
+                    assertions.add(ConcolicSmtComposer
+                            .conditionalExactlyOne(use.activation,
+                                    use.selectors));
+                }
+                Map<String, Set<String>> selectorGuards =
+                        guardedSelectorActivationGuards.get(read);
+                for (String selector : selectors) {
+                    Set<String> guards = selectorGuards.get(selector);
+                    if (guards == null || guards.isEmpty()) {
+                        unsupported.add("GUARDED_READ_ARM_ACTIVATION_MISSING:"
+                                + read + ":" + selector);
+                        continue;
+                    }
+                    assertions.add("(=> " + selector + " "
+                            + orTerms(new ArrayList<>(guards)) + ")");
+                }
             }
-            for (JsonElement element : array(payload, "selectors")) {
-                String selector = element.getAsString();
-                if (selector.isEmpty()) continue;
-                declarations.put(selector, Sort.BOOL);
-                // Without the selector in the model, the solve reports a
-                // choice nobody can read back.
-                additionalModelNames.add(selector);
+        }
+
+        /** Binds each captured value to its content-addressed live map. */
+        private void bindTargetContainerReads(List<JsonObject> actions) {
+            Map<String, Integer> dynamicByInput = new LinkedHashMap<>();
+            for (TargetContainerRead read : targetContainerReads.values()) {
+                JsonObject match = null;
+                int matches = 0;
+                for (JsonObject action : actions) {
+                    if (!executable(action)
+                            || !"BOUNDED_CONTAINER_STATE".equals(
+                            string(action, "symbolicDemand"))
+                            || !read.stateSymbol.equals(
+                            SharedStateEvidence.mapStateSymbolForAction(
+                                    action))) {
+                        continue;
+                    }
+                    matches++;
+                    match = action;
+                }
+                if (matches != 1) {
+                    targetContainerGaps.add(read.identity
+                            + ":EXACT_MAP_ACTION_NOT_UNIQUE");
+                    continue;
+                }
+                read.action = match;
+                if (read.dynamic()) {
+                    String input = string(match, "symbol");
+                    int count = dynamicByInput.getOrDefault(input, 0) + 1;
+                    dynamicByInput.put(input, count);
+                }
+                String digest = sha256(read.identity + "\u0000"
+                        + read.value.sort + "\u0000" + read.value.text);
+                read.modelName = "container_target__"
+                        + digest.substring(0, 16);
+                if (read.value.sort == Sort.REF) {
+                    read.nullModelName = read.modelName + "__is_null";
+                    functionDeclarations.put(read.nullModelName,
+                            "(define-fun " + read.nullModelName
+                                    + " () Bool (= " + read.value.text
+                                    + " nullRef))");
+                    additionalModelNames.add(read.nullModelName);
+                } else {
+                    functionDeclarations.put(read.modelName,
+                            "(define-fun " + read.modelName + " () "
+                                    + read.value.sort.smt + " "
+                                    + read.value.text + ")");
+                    additionalModelNames.add(read.modelName);
+                }
+                targetContainerModels.add(read);
             }
-            // README section 6's event-existence Booleans.  Declared, and
-            // deliberately not added to the model read-back: they are facts
-            for (JsonElement element : array(payload, "existenceSymbols")) {
-                String symbol = element.getAsString();
-                if (!symbol.isEmpty()) declarations.put(symbol, Sort.BOOL);
-            }
-            // README READ-1's other half.  The recorded model gates each
-            for (JsonElement element : array(payload, "readChoices")) {
-                if (!element.isJsonObject()) continue;
-                String symbol = string(element.getAsJsonObject(),
-                        "existenceSymbol");
-                if (symbol.isEmpty()) continue;
-                declarations.put(symbol, Sort.BOOL);
-                assertions.add(symbol);
-            }
-            for (JsonElement element : array(payload, "assertions")) {
-                String term = string(element.getAsJsonObject(), "term");
-                if (!term.isEmpty()) assertions.add(term);
+            for (Map.Entry<String, Integer> entry
+                    : dynamicByInput.entrySet()) {
+                if (entry.getValue() > 1) {
+                    targetContainerGaps.add(entry.getKey()
+                            + ":MULTIPLE_TARGET_MAP_ACCESSES");
+                }
             }
         }
 
@@ -964,7 +1844,6 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term binary(JsonObject expression, String origin) {
-            recordFieldAlias(expression);
             String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
                     string(expression, "_op"));
             JsonElement leftExpression = expression.get("_left");
@@ -1162,10 +2041,26 @@ public final class ConcolicConstraintSolver {
                 }
                 Sort result = left.sort;
                 if ("%".equals(operator)) {
-                    unsupported.add(origin + (result.floating()
-                            ? ":JAVA_FLOATING_REMAINDER_UNMODELED"
-                            : ":JAVA_INTEGRAL_REMAINDER_UNMODELED"));
-                    return null;
+                    if (result.floating()) {
+                        unsupported.add(origin
+                                + ":JAVA_FLOATING_REMAINDER_UNMODELED");
+                        return null;
+                    }
+                    IntegralWidth resultWidth = JavaPrimitiveSmtSemantics
+                            .promote(left.integralWidth,
+                                    right.integralWidth);
+                    if (resultWidth == IntegralWidth.NONE) {
+                        unsupported.add(origin
+                                + ":AMBIGUOUS_JAVA_INTEGRAL_BINARY_WIDTH:"
+                                + operator + ":" + left.integralWidth + ":"
+                                + right.integralWidth);
+                        return null;
+                    }
+                    assertions.add(JavaPrimitiveSmtSemantics
+                            .integralDivisorDefined(right.text));
+                    return new Term(JavaPrimitiveSmtSemantics
+                            .integralRemainder(left.text, right.text,
+                                    resultWidth), Sort.INT, resultWidth);
                 }
                 if (result.floating()) {
                     String arithmetic = JavaPrimitiveSmtSemantics
@@ -1202,181 +2097,6 @@ public final class ConcolicConstraintSolver {
             }
             unsupported.add(origin + ":BINARY_OPERATOR:" + operator);
             return null;
-        }
-
-        private void recordFieldAlias(JsonObject expression) {
-            if (!ContainerSmtCodec.handlesFieldBinding(expression)) return;
-            JsonElement left = expression.get("_left");
-            JsonObject field = ContainerSmtCodec.handlesField(left)
-                    ? left.getAsJsonObject()
-                    : expression.getAsJsonObject("_right");
-            JsonObject symbol = ContainerSmtCodec.handlesField(left)
-                    ? expression.getAsJsonObject("_right")
-                    : left.getAsJsonObject();
-            String raw = string(symbol, "_exp");
-            if (raw.isEmpty() || "N".equals(raw) || "V".equals(raw)) {
-                return;
-            }
-            fieldSymbols.computeIfAbsent(CanonicalJson.render(field),
-                    ignored -> new LinkedHashSet<>()).add(raw);
-        }
-
-        private String materializableFieldRepresentative(
-                String raw, List<JsonObject> actions,
-                JsonObject activation) {
-            String selected = null;
-            for (Set<String> aliases : fieldSymbols.values()) {
-                if (!aliases.contains(raw)) continue;
-                for (String alias : aliases) {
-                    if (!exactlyOneWritableBinding(this, alias, actions,
-                            activation)) {
-                        continue;
-                    }
-                    // Two distinct writable roots bound to the same field
-                    // would need coordinated replay writes, which this
-                    // query cannot express, so neither is a representative.
-                    if (selected != null && !selected.equals(alias)) {
-                        return null;
-                    }
-                    selected = alias;
-                }
-            }
-            return selected;
-        }
-
-        private void bindSparseContainerBoundaries() {
-            for (SparseContainerBoundary boundary
-                    : containerBoundaries.boundaries.values()) {
-                if (boundary.term == null) {
-                    containerBoundaries.gaps.add(boundary.identity()
-                            + ":MISSING_ENCODED_READ");
-                    continue;
-                }
-                String identity = boundary.identity() + "\u0000"
-                        + boundary.term.text;
-                boundary.modelName = "container_boundary__"
-                        + sha256(identity).substring(0, 16);
-                functionDeclarations.put(boundary.modelName,
-                        "(define-fun " + boundary.modelName + " () "
-                                + boundary.term.sort.smt + " "
-                                + boundary.term.text + ")");
-                additionalModelNames.add(boundary.modelName);
-                if (boundary.term.sort == Sort.REF
-                        && boundary.nullCompared) {
-                    boundary.nullModelName = boundary.modelName
-                            + "__is_null";
-                    functionDeclarations.put(boundary.nullModelName,
-                            "(define-fun " + boundary.nullModelName
-                                    + " () Bool (= " + boundary.term.text
-                                    + " nullRef))");
-                    additionalModelNames.add(boundary.nullModelName);
-                }
-                JavaPrimitiveSmtSemantics.IntegralDomain domain =
-                        JavaPrimitiveSmtSemantics.domainOfJavaType(
-                                boundary.javaType);
-                if (boundary.term.sort == Sort.INT && domain != null) {
-                    assertions.add("(and (<= " + domain.lower + " "
-                            + boundary.term.text + ") (<= "
-                            + boundary.term.text + " " + domain.upper
-                            + "))");
-                }
-                containerBoundaries.models.add(boundary);
-            }
-        }
-
-        private ReferenceDomains bindReferenceDomains(
-                Set<String> frontier, List<JsonObject> actions,
-                Set<String> nullableSymbols) {
-            ReferenceDomains domains = new ReferenceDomains();
-            Map<String, List<JsonObject>> actionsByDomain =
-                    referenceActionsByDomain(actions);
-            Map<Long, JsonObject> observedSources = new java.util.TreeMap<>();
-            for (List<JsonObject> candidates : actionsByDomain.values()) {
-                for (JsonObject candidate : candidates) {
-                    long identity = longInteger(candidate,
-                            "valueObjectId", 0L);
-                    JsonObject previous = observedSources.get(identity);
-                    if (identity > 0L && (previous == null
-                            || string(candidate, "symbol").compareTo(
-                            string(previous, "symbol")) < 0)) {
-                        observedSources.put(identity, candidate);
-                    }
-                }
-            }
-            List<String> observedTerms = new ArrayList<>();
-            for (Map.Entry<Long, JsonObject> entry
-                    : observedSources.entrySet()) {
-                Long identity = entry.getKey();
-                String identityName = observedReferenceName(identity);
-                declarations.put(identityName, Sort.REF);
-                assertions.add("(not (= " + identityName
-                        + " nullRef))");
-                additionalModelNames.add(identityName);
-                domains.addObserved(identityName,
-                        string(entry.getValue(), "symbol"));
-                observedTerms.add(identityName);
-            }
-            if (observedTerms.size() > 1) {
-                assertions.add("(distinct "
-                        + String.join(" ", observedTerms) + ")");
-            }
-            for (String raw : frontier) {
-                SymbolNames symbol = names(raw);
-                if (symbol == null || symbol.sort != Sort.REF) continue;
-                ActionMatch target = bestAction(raw, actions,
-                        Sort.REF);
-                if (target == null) continue;
-                String domainKey = referenceDomainKey(target.action);
-                List<JsonObject> candidates = actionsByDomain.get(domainKey);
-                if (candidates == null || candidates.isEmpty()) continue;
-
-                Map<Long, JsonObject> sourceByIdentity =
-                        new LinkedHashMap<>();
-                for (JsonObject candidate : candidates) {
-                    long identity = longInteger(candidate,
-                            "valueObjectId", 0L);
-                    JsonObject previous = sourceByIdentity.get(identity);
-                    if (identity > 0L && (previous == null
-                            || string(candidate, "symbol").compareTo(
-                            string(previous, "symbol")) < 0)) {
-                        sourceByIdentity.put(identity, candidate);
-                    }
-                }
-                if (sourceByIdentity.isEmpty()) continue;
-
-                List<String> domainTerms = new ArrayList<>();
-                for (Map.Entry<Long, JsonObject> entry
-                        : sourceByIdentity.entrySet()) {
-                    String identityName = observedReferenceName(
-                            entry.getKey());
-                    String selector = "select_ref__"
-                            + sha256(raw + "\u0000" + identityName)
-                            .substring(0, 16);
-                    functionDeclarations.put(selector,
-                            "(define-fun " + selector + " () Bool (= "
-                                    + symbol.solver + " " + identityName
-                                    + "))");
-                    additionalModelNames.add(selector);
-                    domains.add(raw, entry.getKey(),
-                            string(entry.getValue(), "symbol"), selector,
-                            longInteger(target.action,
-                                    "valueObjectId", 0L));
-                    domainTerms.add("(= " + symbol.solver + " "
-                            + identityName + ")");
-                }
-                if (nullableSymbols.contains(raw)) {
-                    domainTerms.add("(= " + symbol.solver + " nullRef)");
-                }
-                assertions.add(domainTerms.size() == 1
-                        ? domainTerms.get(0)
-                        : "(or " + String.join(" ", domainTerms) + ")");
-            }
-            return domains;
-        }
-
-        private static String observedReferenceName(long objectId) {
-            return "observed_ref__"
-                    + sha256(Long.toString(objectId)).substring(0, 16);
         }
 
         /**
@@ -1482,6 +2202,25 @@ public final class ConcolicConstraintSolver {
                     result.append(' ').append(value.text);
                 }
                 return Term.nonNullString(result.append(')').toString());
+            }
+            if ("toString".equals(operation)) {
+                if (negated) {
+                    return codecGap("OpStrExpression.toString",
+                            "NEGATED_VALUE_OPERATION", origin);
+                }
+                if (parameters.size() != 1
+                        || !isPrimitiveIntExpression(parameters.get(0))) {
+                    return codecGap("OpStrExpression.toString",
+                            "REQUIRES_ONE_PRIMITIVE_INT", origin);
+                }
+                Term integer = term(parameters.get(0), Sort.INT,
+                        origin + ":toString");
+                if (integer == null || integer.sort != Sort.INT) {
+                    return codecGap("OpStrExpression.toString",
+                            "NON_INT_TERM", origin);
+                }
+                assertJavaIntRange(integer);
+                return javaIntString(integer);
             }
             if ("equals".equals(operation)) {
                 return stringEquals(parameters, origin, negated);
@@ -1612,7 +2351,8 @@ public final class ConcolicConstraintSolver {
                 return false;
             }
             if (!"false".equals(value.stringNullnessText)) {
-                assertions.add("(not " + value.stringNullnessText + ")");
+                requireUnderCurrentGuard(
+                        "(not " + value.stringNullnessText + ")");
             }
             return true;
         }
@@ -1807,12 +2547,198 @@ public final class ConcolicConstraintSolver {
                     + ") (<= " + integer.text + " 2147483647))");
         }
 
+        /** Emits only reachable shared terms and inlines one-use aliases. */
+        private SharedTermEmission sharedTermEmission() {
+            Map<String, SharedTermDefinition> definitions =
+                    new LinkedHashMap<>();
+            Map<String, Integer> order = new LinkedHashMap<>();
+            int ordinal = 0;
+            for (SharedTermDefinition definition : sharedTerms.values()) {
+                definitions.put(definition.name, definition);
+                order.put(definition.name, ordinal++);
+            }
+            Map<String, List<String>> dependencies = new LinkedHashMap<>();
+            boolean topological = true;
+            for (SharedTermDefinition definition : sharedTerms.values()) {
+                List<String> names = new ArrayList<>();
+                for (SharedAliasToken token
+                        : sharedAliasTokens(definition.body)) {
+                    names.add(token.name);
+                }
+                dependencies.put(definition.name, names);
+                for (String name : names) {
+                    Integer dependency = order.get(name);
+                    if (dependency != null
+                            && dependency >= order.get(definition.name)) {
+                        topological = false;
+                    }
+                }
+            }
+
+            Set<String> reachable = new LinkedHashSet<>();
+            List<String> pending = new ArrayList<>();
+            for (String assertion : assertions) {
+                for (SharedAliasToken token
+                        : sharedAliasTokens(assertion)) {
+                    String name = token.name;
+                    if (definitions.containsKey(name)
+                            && reachable.add(name)) pending.add(name);
+                }
+            }
+            for (String declaration : functionDeclarations.values()) {
+                for (SharedAliasToken token
+                        : sharedAliasTokens(declaration)) {
+                    String name = token.name;
+                    if (definitions.containsKey(name)
+                            && reachable.add(name)) pending.add(name);
+                }
+            }
+            for (int index = 0; index < pending.size(); index++) {
+                for (String name : dependencies.get(pending.get(index))) {
+                    if (definitions.containsKey(name)
+                            && reachable.add(name)) pending.add(name);
+                }
+            }
+
+            Map<String, Integer> references = new LinkedHashMap<>();
+            for (String assertion : assertions) {
+                countSharedAliases(assertion, reachable, references);
+            }
+            for (String declaration : functionDeclarations.values()) {
+                countSharedAliases(declaration, reachable, references);
+            }
+            for (SharedTermDefinition definition : sharedTerms.values()) {
+                if (reachable.contains(definition.name)) {
+                    countSharedAliases(definition.body, reachable,
+                            references);
+                }
+            }
+            Map<String, String> inline = new LinkedHashMap<>();
+            List<SharedTermDefinition> emitted = new ArrayList<>();
+            for (SharedTermDefinition definition : sharedTerms.values()) {
+                if (!reachable.contains(definition.name)) continue;
+                String body = replaceSharedAliases(definition.body, inline);
+                if (topological
+                        && Integer.valueOf(1).equals(
+                        references.get(definition.name))) {
+                    inline.put(definition.name, body);
+                } else {
+                    emitted.add(new SharedTermDefinition(definition.name,
+                            definition.sort, body));
+                }
+            }
+            List<String> roots = new ArrayList<>();
+            for (String assertion : assertions) {
+                roots.add(replaceSharedAliases(assertion, inline));
+            }
+            List<String> functions = new ArrayList<>();
+            for (String declaration : functionDeclarations.values()) {
+                functions.add(replaceSharedAliases(declaration, inline));
+            }
+            return new SharedTermEmission(emitted, functions, roots);
+        }
+
+        private static void countSharedAliases(String text,
+                Set<String> reachable, Map<String, Integer> counts) {
+            for (SharedAliasToken token : sharedAliasTokens(text)) {
+                String name = token.name;
+                if (reachable.contains(name)) {
+                    counts.put(name, counts.getOrDefault(name, 0) + 1);
+                }
+            }
+        }
+
+        /** Finds exact, unquoted SMT symbols rather than substrings. */
+        private static List<SharedAliasToken> sharedAliasTokens(String text) {
+            List<SharedAliasToken> result = new ArrayList<>();
+            int length = text.length();
+            for (int index = 0; index < length;) {
+                char current = text.charAt(index);
+                if (Character.isWhitespace(current)
+                        || current == '(' || current == ')') {
+                    index++;
+                    continue;
+                }
+                if (current == ';') {
+                    int newline = text.indexOf('\n', index + 1);
+                    index = newline < 0 ? length : newline + 1;
+                    continue;
+                }
+                if (current == '"' || current == '|') {
+                    index = quotedTokenEnd(text, index, current);
+                    continue;
+                }
+                int start = index;
+                while (index < length
+                        && !Character.isWhitespace(text.charAt(index))
+                        && text.charAt(index) != '('
+                        && text.charAt(index) != ')'
+                        && text.charAt(index) != ';') {
+                    index++;
+                }
+                String token = text.substring(start, index);
+                if (sharedAliasName(token)) {
+                    result.add(new SharedAliasToken(token, start, index));
+                }
+            }
+            return result;
+        }
+
+        private static int quotedTokenEnd(String text, int start,
+                                           char quote) {
+            int index = start + 1;
+            while (index < text.length()) {
+                char current = text.charAt(index++);
+                if (current == '\\' && index < text.length()) {
+                    index++;
+                } else if (current == quote) {
+                    if (quote == '"' && index < text.length()
+                            && text.charAt(index) == '"') {
+                        index++;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            return index;
+        }
+
+        private static boolean sharedAliasName(String token) {
+            if (token.length() != SHARED_TERM_PREFIX.length() + 24
+                    || !token.startsWith(SHARED_TERM_PREFIX)) return false;
+            for (int index = SHARED_TERM_PREFIX.length();
+                 index < token.length(); index++) {
+                char value = token.charAt(index);
+                if (value < '0' || value > '9'
+                        && (value < 'a' || value > 'f')) return false;
+            }
+            return true;
+        }
+
+        private static String replaceSharedAliases(
+                String text, Map<String, String> replacements) {
+            if (replacements.isEmpty()) return text;
+            StringBuilder result = null;
+            int copied = 0;
+            for (SharedAliasToken token : sharedAliasTokens(text)) {
+                String replacement = replacements.get(token.name);
+                if (replacement != null) {
+                    if (result == null) {
+                        result = new StringBuilder(text.length());
+                    }
+                    result.append(text, copied, token.start)
+                            .append(replacement);
+                    copied = token.end;
+                }
+            }
+            return result == null ? text
+                    : result.append(text, copied, text.length()).toString();
+        }
+
         private String finish() {
+            SharedTermEmission shared = sharedTermEmission();
             StringBuilder result = new StringBuilder();
             result.append("(set-option :produce-models true)\n");
-            // Z3's default arithmetic engine can spend minutes branching on
-            // exact Java mod/div identities introduced by constant masks.
-            result.append("(set-option :smt.arith.solver 2)\n");
             result.append("(set-logic ALL)\n");
             result.append("(declare-sort Ref 0)\n");
             result.append("(declare-const nullRef Ref)\n");
@@ -1827,7 +2753,8 @@ public final class ConcolicConstraintSolver {
                     .append('\n');
             if (usesJavaIntString) {
                 // SMT-LIB's str.from_int is defined only for non-negative
-                // a leading '-'.  Mirrors ConcolicSmtComposer's preamble so the
+                // integers, so negative values need a leading '-'.  This
+                // mirrors ConcolicSmtComposer's preamble.
                 result.append("(define-fun java_int_to_string ((i Int)) "
                         + "String (ite (< i 0) (str.++ \"-\" "
                         + "(str.from_int (- i))) (str.from_int i)))\n");
@@ -1838,7 +2765,13 @@ public final class ConcolicConstraintSolver {
                         .append(' ').append(declaration.getValue().smt)
                         .append(")\n");
             }
-            for (String declaration : functionDeclarations.values()) {
+            for (SharedTermDefinition definition
+                    : shared.definitions) {
+                result.append("(declare-const ").append(definition.name)
+                        .append(' ').append(definition.sort.smt)
+                        .append(")\n");
+            }
+            for (String declaration : shared.functionDeclarations) {
                 result.append(declaration).append('\n');
             }
             for (SymbolNames symbol : names.values()) {
@@ -1866,9 +2799,17 @@ public final class ConcolicConstraintSolver {
                         .append(" () Bool (fp.isNaN ").append(name)
                         .append("))\n");
             }
-            for (int index = 0; index < assertions.size(); index++) {
-                result.append("(assert (! ").append(assertions.get(index))
-                        .append(" :named pc_").append(index).append("))\n");
+            for (SharedTermDefinition definition
+                    : shared.definitions) {
+                result.append("(assert (= ").append(definition.name)
+                        .append(' ').append(definition.body).append("))\n");
+            }
+            for (String assertion : shared.assertions) {
+                result.append("(assert ").append(assertion).append(")\n");
+            }
+            for (String assertion : softAssertions) {
+                result.append("(assert-soft ").append(assertion)
+                        .append(" :weight 1)\n");
             }
             result.append("(check-sat)\n");
             List<String> modelNames = new ArrayList<>();
@@ -1903,6 +2844,71 @@ public final class ConcolicConstraintSolver {
         }
     }
 
+    private static final class SharedTermEmission {
+        private final List<SharedTermDefinition> definitions;
+        private final List<String> functionDeclarations;
+        private final List<String> assertions;
+
+        private SharedTermEmission(List<SharedTermDefinition> definitions,
+                                   List<String> functionDeclarations,
+                                   List<String> assertions) {
+            this.definitions = definitions;
+            this.functionDeclarations = functionDeclarations;
+            this.assertions = assertions;
+        }
+    }
+
+    private static final class SharedAliasToken {
+        private final String name;
+        private final int start;
+        private final int end;
+
+        private SharedAliasToken(String name, int start, int end) {
+            this.name = name;
+            this.start = start;
+            this.end = end;
+        }
+    }
+
+    private static final class GuardedReadCaseBinding {
+        private final String readSelector;
+        private final String caseSelector;
+        private final String owner;
+        private final JsonElement pathGuard;
+
+        private GuardedReadCaseBinding(String readSelector,
+                                          String caseSelector,
+                                          String owner,
+                                          JsonElement pathGuard) {
+            this.readSelector = readSelector;
+            this.caseSelector = caseSelector;
+            this.owner = owner;
+            this.pathGuard = pathGuard;
+        }
+
+        private String identity() {
+            return readSelector + "\n" + caseSelector;
+        }
+
+        private boolean same(GuardedReadCaseBinding other) {
+            return other != null && readSelector.equals(other.readSelector)
+                    && caseSelector.equals(other.caseSelector)
+                    && owner.equals(other.owner);
+        }
+    }
+
+    private static final class GuardedReadUse {
+        private final String activation;
+        private final List<String> selectors;
+
+        private GuardedReadUse(String activation,
+                               Collection<String> selectors) {
+            this.activation = activation;
+            this.selectors = new ArrayList<>(selectors);
+            Collections.sort(this.selectors);
+        }
+    }
+
     private enum Sort {
         BOOL("Bool"), INT("Int"),
         FLOAT32("(_ FloatingPoint 8 24)"),
@@ -1923,6 +2929,19 @@ public final class ConcolicConstraintSolver {
 
         private boolean floating() {
             return this == FLOAT32 || this == FLOAT64;
+        }
+    }
+
+    /** One topologically inserted, fully constrained SMT alias. */
+    private static final class SharedTermDefinition {
+        private final String name;
+        private final Sort sort;
+        private final String body;
+
+        private SharedTermDefinition(String name, Sort sort, String body) {
+            this.name = name;
+            this.sort = sort;
+            this.body = body;
         }
     }
 
@@ -1970,60 +2989,147 @@ public final class ConcolicConstraintSolver {
         }
     }
 
+    /** One exact target-side container value already computed by propagation. */
+    private static final class TargetContainerRead {
+        private final String identity;
+        private final String stateSymbol;
+        private final Integer index;
+        private final JsonObject selector;
+        private final String iterationProjection;
+        private final String javaType;
+        private final boolean dynamic;
+        private final Term value;
+        private JsonObject action;
+        private String modelName = "";
+        private String nullModelName = "";
+
+        private TargetContainerRead(String identity,
+                                    InitialContainerObservation.Read read,
+                                    Term value) {
+            this.identity = identity;
+            this.stateSymbol = read.stateSymbol;
+            this.index = read.index;
+            this.selector = read.selector;
+            this.iterationProjection = read.iterationProjection;
+            this.javaType = read.javaType;
+            this.dynamic = read.dynamicAssociativeSelector();
+            this.value = value;
+        }
+
+        private boolean dynamic() {
+            return dynamic;
+        }
+
+        private boolean sameValue(TargetContainerRead other) {
+            return other != null && value.sort == other.value.sort
+                    && value.text.equals(other.value.text);
+        }
+
+        private boolean addTarget(JsonObject target, int occurrence) {
+            target.addProperty("shape", "ASSOCIATIVE");
+            if (dynamic) {
+                if (occurrence < 1) return false;
+                target.addProperty("selectorKind", "ACCESS_ORDINAL");
+                target.addProperty("accessOrdinal", occurrence);
+                return true;
+            }
+            if (!iterationProjection.isEmpty()) {
+                if (index == null || index < 0) return false;
+                target.addProperty("selectorKind", "ITERATION_INDEX");
+                target.addProperty("index", index);
+                target.addProperty("projection", iterationProjection);
+                return true;
+            }
+            if (selector == null) return false;
+            String keyType = string(selector, "_java_type");
+            String keyValue = constantPayload(string(selector, "_exp"));
+            if (keyType.isEmpty() || keyValue.isEmpty()) return false;
+            target.addProperty("keyJavaType", keyType);
+            target.addProperty("keyValue", keyValue);
+            return true;
+        }
+    }
+
+    /**
+     * Prefer the concrete values from the observed execution while leaving
+     * every path predicate hard.  MaxSMT therefore changes only the smallest
+     * number of replay controls needed for the requested flip.
+     */
+    private static void preferObservedReplayControls(
+            Encoder encoder, Set<String> replayControls,
+            List<JsonObject> actions) {
+        List<String> ordered = new ArrayList<>(replayControls);
+        Collections.sort(ordered);
+        for (String raw : ordered) {
+            SymbolNames names = encoder.names(raw);
+            if (names == null) continue;
+            ActionMatch match = bestAction(raw, actions, names.sort);
+            String observed = observedPrimitiveLiteral(
+                    match == null ? null : match.action, names.sort);
+            if (!observed.isEmpty()) {
+                encoder.softAssertions.add("(= " + names.solver + " "
+                        + observed + ")");
+            }
+        }
+    }
+
+    /** SMT literal for a runtime-recorded Java primitive, or no preference
+     * when the action does not carry an exact observation. */
+    private static String observedPrimitiveLiteral(JsonObject action,
+                                                    Sort sort) {
+        if (action == null || !bool(action, "observed", false)
+                || !action.has("primitiveValue")
+                || action.get("primitiveValue").isJsonNull()) {
+            return "";
+        }
+        String value = string(action, "primitiveValue").trim();
+        if (sort == Sort.BOOL) {
+            return "true".equals(value) || "false".equals(value)
+                    ? value : "";
+        }
+        if (sort != Sort.INT || value.isEmpty()) return "";
+        try {
+            BigInteger parsed = new BigInteger(value);
+            return parsed.signum() < 0
+                    ? "(- " + parsed.negate() + ")" : parsed.toString();
+        } catch (NumberFormatException malformed) {
+            return "";
+        }
+    }
+
     private static ModelProjection modelAssignments(
             Encoder encoder, Map<String, String> values,
-            List<JsonObject> actions, JsonObject activation,
-            Set<String> projectedSymbols,
-            ReferenceDomains referenceDomains) {
+            List<JsonObject> actions,
+            List<List<ConfiguredSourcePhaseContract.Occurrence>>
+                    configuredSourcePhaseCatalogs,
+            Set<String> projectedSymbols) {
         JsonArray result = new JsonArray();
         Set<String> unresolved = new LinkedHashSet<>(projectedSymbols);
         for (String raw : encoder.controlledSymbols) {
             if (!projectedSymbols.contains(raw)) continue;
             SymbolNames names = encoder.names(raw);
-            String solverName = names.solver;
-            Sort sort = names.sort;
-            String modelName = sort.floating()
-                    ? names.floatingBits : solverName;
-            String value = values.get(modelName);
-            String nanValue = sort.floating()
-                    ? values.get(names.floatingNaN) : "";
-            String nullValue = sort == Sort.STRING || sort == Sort.REF
-                    ? values.get(names.nullness) : "";
-            boolean reference = sort == Sort.REF;
-            if ((!reference && value == null) || sort.containerState()
-                    || sort.floating() && !("true".equals(nanValue)
-                    || "false".equals(nanValue))
-                    || sort == Sort.STRING
-                    && !("true".equals(nullValue)
-                    || "false".equals(nullValue))
-                    || reference
-                    && !("true".equals(nullValue)
-                    || "false".equals(nullValue))) continue;
-            ActionMatch match = bestAction(raw, actions, sort);
-            ConfiguredSourceMatch source = configuredSourceResolution(
-                    raw, activation, sort);
-            if ((match == null) == (source == null)) continue;
-            ReferenceChoice referenceChoice = reference
-                    && "false".equals(nullValue)
-                    ? referenceDomains.selected(raw, values) : null;
-            if (reference && "false".equals(nullValue)
-                    && referenceChoice == null) {
+            if (names == null || names.sort == Sort.REF
+                    || names.sort == Sort.STRING
+                    || names.sort.containerState()) {
                 continue;
             }
-            if (reference && referenceChoice != null
-                    && referenceChoice.sourceIdentity
-                    == referenceChoice.targetIdentity) {
-                unresolved.remove(raw);
+            ConfiguredSourceMatch source = configuredSourceResolution(
+                    raw, configuredSourcePhaseCatalogs, names.sort);
+            ActionMatch symbolicAction = registeredSymbolicAction(
+                    raw, actions, names.sort);
+            if ((source == null) == (symbolicAction == null)) continue;
+            String modelName = names.sort.floating()
+                    ? names.floatingBits : names.solver;
+            String value = values.get(modelName);
+            String nanValue = names.sort.floating()
+                    ? values.get(names.floatingNaN) : "";
+            if (value == null || names.sort.floating()
+                    && !("true".equals(nanValue)
+                    || "false".equals(nanValue))) {
                 continue;
             }
             JsonObject assignment = new JsonObject();
             assignment.addProperty("engineSymbol", raw);
-            if (sort == Sort.STRING) {
-                assignment.addProperty("modelIsNull",
-                        "true".equals(nullValue));
-            } else if (reference) {
-                assignment.addProperty("modelIsNull", true);
-            }
             if (source != null) {
                 assignment.addProperty("inputSymbol",
                         "SOURCE_PHASE:" + source.sourcePhaseId);
@@ -2034,44 +3140,21 @@ public final class ConcolicConstraintSolver {
                 assignment.addProperty("configuredSourceFieldSignature",
                         source.fieldSignature);
             } else {
-                assignment.addProperty("inputSymbol", string(match.action,
-                        "symbol"));
+                assignment.addProperty("inputSymbol",
+                        string(symbolicAction.action, "symbol"));
             }
-            if (reference) {
-                if ("true".equals(nullValue)) {
-                    assignment.addProperty("valueType", "NULL");
-                    assignment.addProperty("value", "null");
-                } else {
-                    assignment.addProperty("valueType", "REFERENCE_ALIAS");
-                    assignment.addProperty("referenceSourceInputSymbol",
-                            referenceChoice.sourceInputSymbol);
-                }
-            } else if (sort.floating()) {
-                String descriptor = sort == Sort.FLOAT32 ? "F" : "D";
-                boolean isNaN = "true".equals(nanValue);
-                String decoded = isNaN ? "NaN" : SmtModelValueCodec
-                        .floatingPointBitsToJavaLiteral(value, descriptor);
+            if (names.sort.floating()) {
+                String descriptor = names.sort == Sort.FLOAT32 ? "F" : "D";
+                String decoded = "true".equals(nanValue) ? "NaN"
+                        : SmtModelValueCodec.floatingPointBitsToJavaLiteral(
+                        value, descriptor);
                 if (decoded == null) continue;
                 assignment.addProperty("valueType", "REAL");
                 assignment.addProperty("value", decoded);
-            } else if (sort == Sort.STRING
-                    && "true".equals(nullValue)) {
-                assignment.addProperty("valueType", "NULL");
-                assignment.addProperty("value", "null");
             } else {
-                assignment.addProperty("valueType", sort.name());
+                assignment.addProperty("valueType", names.sort.name());
                 assignment.addProperty("value",
                         SmtModelValueCodec.normalizeScalar(value));
-            }
-            if (match != null) {
-                List<String> actionPath = stringList(array(match.action,
-                        "fieldPath"));
-                List<String> replayPath = !match.path.isEmpty()
-                        ? match.path : actionPath;
-                if (!replayPath.isEmpty()) {
-                    assignment.add("materializationPath",
-                            strings(replayPath));
-                }
             }
             result.add(assignment);
             unresolved.remove(raw);
@@ -2079,673 +3162,62 @@ public final class ConcolicConstraintSolver {
         return new ModelProjection(result, unresolved);
     }
 
-    private static ModelProjection sparseContainerAssignments(
-            Map<String, String> values,
-            SparseContainerBoundaries boundaries,
-            ReferenceDomains referenceDomains,
+    /** Projects only the final target value; its SMT term already contains
+     * the complete propagated map history and guarded case selection. */
+    private static ModelProjection targetContainerAssignments(
+            Encoder encoder, Map<String, String> values,
             int targetOccurrence) {
-        JsonArray assignments = new JsonArray();
+        JsonArray result = new JsonArray();
         Set<String> unresolved = new LinkedHashSet<>();
-        Map<String, List<SparseContainerBoundary>> referenceGroups =
-                new LinkedHashMap<>();
-        for (SparseContainerBoundary boundary : boundaries.models) {
-            String value = values.get(boundary.modelName);
-            if (value == null || boundary.action == null) {
-                unresolved.add(boundary.modelName);
+        for (TargetContainerRead read : encoder.targetContainerModels) {
+            String modelName = read.value.sort == Sort.REF
+                    ? read.nullModelName : read.modelName;
+            String modeled = values.get(modelName);
+            if (modeled == null || read.action == null) {
+                unresolved.add(modelName);
                 continue;
             }
-            if (boundary.term.sort == Sort.REF) {
-                if (!boundary.nullModelName.isEmpty()) {
-                    String nullness = values.get(boundary.nullModelName);
-                    if ("true".equals(nullness)) {
-                        assignments.add(containerAssignment(
-                                boundary, "NULL", "null",
-                                targetOccurrence));
-                        continue;
-                    }
-                    if (!"false".equals(nullness)) {
-                        unresolved.add(boundary.modelName);
-                        continue;
-                    }
+            String valueType;
+            String value = "";
+            boolean modelIsNull = false;
+            if (read.value.sort == Sort.REF) {
+                if ("true".equals(modeled)) {
+                    valueType = "NULL";
+                    value = "null";
+                    modelIsNull = true;
+                } else if ("false".equals(modeled)) {
+                    // The branch only constrains non-nullness. Keep the live
+                    // reference rather than inventing an object identity.
+                    valueType = "UNCHANGED";
+                } else {
+                    unresolved.add(modelName);
+                    continue;
                 }
-                referenceGroups.computeIfAbsent(value,
-                        ignored -> new ArrayList<>()).add(boundary);
+            } else if (read.value.sort == Sort.INT
+                    || read.value.sort == Sort.BOOL) {
+                valueType = read.value.sort.name();
+                value = SmtModelValueCodec.normalizeScalar(modeled);
+            } else {
+                unresolved.add(modelName);
                 continue;
             }
-            assignments.add(containerAssignment(boundary,
-                    boundary.term.sort.name(),
-                    SmtModelValueCodec.normalizeScalar(value),
-                    targetOccurrence));
-        }
-        for (Map.Entry<String, List<SparseContainerBoundary>> entry
-                : referenceGroups.entrySet()) {
-            List<SparseContainerBoundary> group = entry.getValue();
-            group.sort(Comparator.comparing(
-                    SparseContainerBoundary::identity));
-            String modelValue = entry.getKey();
-            String ordinarySource =
-                    referenceDomains.sourceForModelValue(modelValue, values);
-            if (!ordinarySource.isEmpty()) {
-                for (SparseContainerBoundary target : group) {
-                    JsonObject assignment = containerAssignment(target,
-                            "CONTAINER_REFERENCE_ALIAS", "",
-                            targetOccurrence);
-                    assignment.addProperty("referenceSourceInputSymbol",
-                            ordinarySource);
-                    assignments.add(assignment);
-                }
+            JsonObject target = new JsonObject();
+            if (!read.addTarget(target, targetOccurrence)) {
+                unresolved.add(modelName);
                 continue;
             }
-            if (group.size() < 2) {
-                SparseContainerBoundary only = group.get(0);
-                if (!only.preferredReferenceSource) {
-                    unresolved.add(only.modelName);
-                }
-                continue;
-            }
-            SparseContainerBoundary source = group.get(0);
-            for (SparseContainerBoundary candidate : group) {
-                if (candidate.preferredReferenceSource) {
-                    source = candidate;
-                    break;
-                }
-            }
-            for (SparseContainerBoundary target : group) {
-                if (target == source) continue;
-                JsonObject assignment = containerAssignment(target,
-                        "CONTAINER_REFERENCE_ALIAS", "",
-                        targetOccurrence);
-                assignment.addProperty("referenceSourceInputSymbol",
-                        string(source.action, "symbol"));
-                target.addSourceSelector(
-                        assignment.getAsJsonObject("containerTarget"),
-                        source);
-                assignments.add(assignment);
-            }
-        }
-        return new ModelProjection(assignments, unresolved);
-    }
-
-    private static JsonObject containerAssignment(
-            SparseContainerBoundary boundary, String valueType,
-            String value, int targetOccurrence) {
             JsonObject assignment = new JsonObject();
-            assignment.addProperty("modelAssignmentKey",
-                    boundary.modelName);
-            assignment.addProperty("engineSymbol", boundary.modelName);
+            assignment.addProperty("modelAssignmentKey", modelName);
+            assignment.addProperty("engineSymbol", modelName);
             assignment.addProperty("inputSymbol",
-                    string(boundary.action, "symbol"));
+                    string(read.action, "symbol"));
             assignment.addProperty("valueType", valueType);
             if (!value.isEmpty()) assignment.addProperty("value", value);
-            JsonObject target = new JsonObject();
-            boundary.addSelector(target, targetOccurrence);
+            if (modelIsNull) assignment.addProperty("modelIsNull", true);
             assignment.add("containerTarget", target);
-            return assignment;
-    }
-
-    private static final class ModelProjection {
-        private final JsonArray assignments;
-        private final Set<String> unresolved;
-
-        private ModelProjection(JsonArray assignments,
-                                Set<String> unresolved) {
-            this.assignments = assignments;
-            this.unresolved = unresolved;
+            result.add(assignment);
         }
-    }
-
-    private static final class ReplaySupport {
-        private final Set<String> writableSymbols;
-        private final Set<String> unresolvedSymbols;
-
-        private ReplaySupport(Set<String> writableSymbols,
-                              Set<String> unresolvedSymbols) {
-            this.writableSymbols = writableSymbols;
-            this.unresolvedSymbols = unresolvedSymbols;
-        }
-    }
-
-    /** Classifies target-prefix support before the real encoder is built. */
-    private static final class TargetReplaySupportPlan {
-        private final Set<Integer> externalCompanionPredicates;
-        private final String gapReason;
-        private final Set<String> gapSymbols;
-
-        private TargetReplaySupportPlan(
-                Set<Integer> externalCompanionPredicates,
-                String gapReason, Set<String> gapSymbols) {
-            this.externalCompanionPredicates =
-                    externalCompanionPredicates;
-            this.gapReason = gapReason;
-            this.gapSymbols = gapSymbols;
-        }
-
-        private static TargetReplaySupportPlan notTarget() {
-            return new TargetReplaySupportPlan(
-                    Collections.<Integer>emptySet(), "",
-                    Collections.<String>emptySet());
-        }
-
-        private static TargetReplaySupportPlan build(
-                JsonObject task, JsonObject activation,
-                JsonArray predicates, JsonArray context,
-                List<JsonObject> actions) {
-            SparseContainerBoundaries boundaries =
-                    SparseContainerBoundaries.discover(
-                            predicates, context, actions);
-            Encoder probe = new Encoder(boundaries);
-            for (int index = 0; index < context.size(); index++) {
-                JsonElement constraint = context.get(index);
-                if (!boundaries.isConcreteObservation(constraint)) {
-                    probe.addConstraint(constraint,
-                            "q_target_support_context_" + index);
-                }
-            }
-            List<Set<String>> symbolsByPredicate = new ArrayList<>();
-            for (int index = 0; index < predicates.size(); index++) {
-                symbolsByPredicate.add(probe.addConstraint(
-                        predicates.get(index),
-                        "q_target_support_branch_" + index));
-            }
-
-            CompanionSupport companions = CompanionSupport.from(
-                    task, actions);
-            Set<Integer> external = new LinkedHashSet<>();
-            Set<String> ambiguous = new LinkedHashSet<>();
-            Set<String> missing = new LinkedHashSet<>();
-            Set<String> mixed = new LinkedHashSet<>();
-            int selected = predicates.size() - 1;
-            boolean selectedHasWritableRoot = selected >= 0
-                    && containsAdmittedGuardedRead(
-                    predicates.get(selected));
-
-            for (int index = 0; index < symbolsByPredicate.size(); index++) {
-                ReplaySupport local = classifyReplaySupport(
-                        probe, symbolsByPredicate.get(index), actions,
-                        activation);
-                Set<String> exactCompanion = new LinkedHashSet<>();
-                Set<String> predicateMissing = new LinkedHashSet<>();
-                Set<String> predicateAmbiguous = new LinkedHashSet<>();
-                for (String unresolved : local.unresolvedSymbols) {
-                    SymbolNames names = probe.names(unresolved);
-                    CompanionResolution resolution = companions.resolve(
-                            unresolved, names == null
-                                    ? Sort.UNKNOWN : names.sort);
-                    if (resolution == CompanionResolution.EXACT) {
-                        exactCompanion.add(unresolved);
-                    } else if (resolution
-                            == CompanionResolution.AMBIGUOUS) {
-                        predicateAmbiguous.add(unresolved);
-                    } else {
-                        predicateMissing.add(unresolved);
-                    }
-                }
-                ambiguous.addAll(predicateAmbiguous);
-                missing.addAll(predicateMissing);
-                if (!local.writableSymbols.isEmpty()
-                        && !exactCompanion.isEmpty()) {
-                    mixed.addAll(local.writableSymbols);
-                    mixed.addAll(exactCompanion);
-                }
-                if (index == selected) {
-                    selectedHasWritableRoot |=
-                            !local.writableSymbols.isEmpty();
-                }
-                if (local.writableSymbols.isEmpty()
-                        && !exactCompanion.isEmpty()
-                        && predicateMissing.isEmpty()
-                        && predicateAmbiguous.isEmpty()) {
-                    external.add(index);
-                }
-            }
-
-            if (!ambiguous.isEmpty()) {
-                return new TargetReplaySupportPlan(external,
-                        "TARGET_PREFIX_COMPANION_SUPPORT_AMBIGUOUS",
-                        ambiguous);
-            }
-            if (!missing.isEmpty()) {
-                return new TargetReplaySupportPlan(external,
-                        "TARGET_PREFIX_COMPANION_SUPPORT_MISSING", missing);
-            }
-            if (!mixed.isEmpty()) {
-                return new TargetReplaySupportPlan(external,
-                        "TARGET_PREFIX_MIXES_LOCAL_AND_COMPANION_SUPPORT",
-                        mixed);
-            }
-            if (!selectedHasWritableRoot) {
-                Set<String> selectedSymbols = new LinkedHashSet<>();
-                if (selected >= 0) {
-                    selectedSymbols.addAll(symbolsByPredicate.get(selected));
-                }
-                return new TargetReplaySupportPlan(external,
-                        "TARGET_PREFIX_FLIP_HAS_NO_LOCAL_WRITABLE_ROOT",
-                        selectedSymbols);
-            }
-            return new TargetReplaySupportPlan(external, "",
-                    Collections.<String>emptySet());
-        }
-
-    }
-
-    private enum CompanionResolution {
-        NONE,
-        EXACT,
-        AMBIGUOUS
-    }
-
-    /** Exact non-local authorities available to one target replay query. */
-    private static final class CompanionSupport {
-        private final Map<String, Set<String>> rpcAuthorities =
-                new LinkedHashMap<>();
-        private final List<SharedCompanion> shared = new ArrayList<>();
-
-        private static CompanionSupport from(
-                JsonObject task, List<JsonObject> actions) {
-            CompanionSupport result = new CompanionSupport();
-            for (JsonObject event : VmHandoffEvidence.eventsOf(task)) {
-                Set<String> symbols = new LinkedHashSet<>();
-                collectEngineSymbols(event.get(
-                        VmHandoffEvidence.EXPRESSION), symbols);
-                String authority = "RPC\u0000"
-                        + string(event, VmHandoffEvidence.PRODUCER_TASK_ID)
-                        + "\u0000" + string(event,
-                        VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
-                for (String symbol : symbols) {
-                    result.rpcAuthorities.computeIfAbsent(symbol,
-                            ignored -> new LinkedHashSet<>()).add(authority);
-                }
-            }
-            for (JsonElement element : array(task, "edgeBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                boolean exact = RecordedReadFrom.PROVENANCE_EXACT.equals(
-                        string(binding, RecordedReadFrom.EDGE_PROVENANCE));
-                if (!exact || !(AutomaticRegionEdge
-                        .trustedRuntimeReadFromBinding(binding)
-                        || AutomaticRegionEdge
-                        .trustedVmRecordedReadFromEvidence(binding))) {
-                    continue;
-                }
-                String port = string(binding, "toInputPort");
-                List<JsonObject> matches = new ArrayList<>();
-                for (JsonObject action : actions) {
-                    if ("CONCRETE".equals(string(action, "mode"))
-                            && port.equals(string(action, "symbol"))) {
-                        matches.add(action);
-                    }
-                }
-                if (matches.size() != 1) continue;
-                String authority = "SHARED\u0000"
-                        + string(binding, "fromOccurrenceId") + "\u0000"
-                        + string(binding, "fromOutputPort");
-                result.shared.add(new SharedCompanion(port,
-                        materializationSort(matches.get(0)), authority));
-            }
-            return result;
-        }
-
-        private CompanionResolution resolve(String raw, Sort sort) {
-            Set<String> authorities = new LinkedHashSet<>();
-            authorities.addAll(rpcAuthorities.getOrDefault(raw,
-                    Collections.<String>emptySet()));
-            for (SharedCompanion candidate : shared) {
-                if ((sort == Sort.UNKNOWN || candidate.sort == sort)
-                        && matchesEngineSymbol(raw, candidate.inputPort)) {
-                    authorities.add(candidate.authority);
-                }
-            }
-            if (authorities.isEmpty()) return CompanionResolution.NONE;
-            return authorities.size() == 1
-                    ? CompanionResolution.EXACT
-                    : CompanionResolution.AMBIGUOUS;
-        }
-    }
-
-    private static final class SharedCompanion {
-        private final String inputPort;
-        private final Sort sort;
-        private final String authority;
-
-        private SharedCompanion(String inputPort, Sort sort,
-                                String authority) {
-            this.inputPort = inputPort;
-            this.sort = sort;
-            this.authority = authority;
-        }
-    }
-
-    private static final class SparseContainerBoundaries {
-        private final Map<String, SparseContainerBoundary> boundaries =
-                new LinkedHashMap<>();
-        private final Set<String> gaps = new LinkedHashSet<>();
-        private final List<SparseContainerBoundary> models =
-                new ArrayList<>();
-        private final Map<String, Set<String>> retainedCellsByPort =
-                new LinkedHashMap<>();
-
-        private static SparseContainerBoundaries discover(
-                JsonArray predicates, JsonArray context,
-                List<JsonObject> actions) {
-            SparseContainerBoundaries result =
-                    new SparseContainerBoundaries();
-            String capacityIssue = InitialContainerObservation
-                    .failureRelevantCapacityIssue(predicates);
-            if (!capacityIssue.isEmpty()) {
-                result.gaps.add(capacityIssue);
-            }
-            result.scan(predicates, true, false);
-            result.scan(context, false, false);
-            for (SparseContainerBoundary boundary
-                    : result.boundaries.values()) {
-                List<JsonObject> matches = containerBoundaryActions(
-                        boundary.stateSymbol, actions);
-                if (matches.size() == 1) {
-                    boundary.action = matches.get(0).deepCopy();
-                } else {
-                    result.gaps.add(boundary.identity()
-                            + ":REF_ACTION_MATCHES=" + matches.size());
-                }
-            }
-            return result;
-        }
-
-        private void scan(JsonElement element, boolean discover,
-                          boolean preferredReferenceSource) {
-            if (element == null || element.isJsonNull()) return;
-            if (element.isJsonArray()) {
-                for (JsonElement child : element.getAsJsonArray()) {
-                    scan(child, discover, preferredReferenceSource);
-                }
-                return;
-            }
-            if (!element.isJsonObject()) return;
-            JsonObject object = element.getAsJsonObject();
-            InitialContainerObservation.Read read =
-                    InitialContainerObservation.initialRead(object);
-            if (read != null) {
-                if (!read.concreteSelector()) {
-                    if (discover && !read.dynamicAssociativeSelector()) {
-                        gaps.add(read.shape + ":"
-                            + read.stateSymbol
-                            + ":NON_CONCRETE_SELECTOR");
-                    }
-                } else {
-                    String identity = boundaryIdentity(read);
-                    SparseContainerBoundary existing =
-                            boundaries.get(identity);
-                    if (existing == null && discover) {
-                        if (retainFailureRelevantCell(read)) {
-                            boundaries.put(identity,
-                                    new SparseContainerBoundary(read));
-                        }
-                    } else if (existing != null
-                            && !JavaPrimitiveSmtSemantics
-                            .javaTypeDescriptor(existing.javaType)
-                            .equals(JavaPrimitiveSmtSemantics
-                                    .javaTypeDescriptor(read.javaType))) {
-                        gaps.add(existing.identity()
-                                + ":CONFLICTING_JAVA_TYPES");
-                    }
-                    existing = boundaries.get(identity);
-                    if (existing != null && preferredReferenceSource) {
-                        existing.preferredReferenceSource = true;
-                    }
-                }
-            }
-            boolean fieldAccess = "FieldAccessExpression".equals(
-                    string(object, "_type"));
-            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-                scan(entry.getValue(), discover,
-                        fieldAccess && "owner".equals(entry.getKey())
-                                || preferredReferenceSource);
-            }
-            if (discover) markNullComparison(object);
-        }
-
-        private boolean retainFailureRelevantCell(
-                InitialContainerObservation.Read read) {
-            Set<String> retained = retainedCellsByPort.computeIfAbsent(
-                    read.inputPort, ignored -> new LinkedHashSet<>());
-            String cell = read.shape + "\u0000"
-                    + read.selectorIdentity();
-            if (retained.contains(cell)) return true;
-            if (retained.size() >= LoopBoundPolicy
-                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-                return false;
-            }
-            retained.add(cell);
-            return true;
-        }
-
-        private void markNullComparison(JsonObject expression) {
-            if (!"BinaryExpression".equals(string(expression, "_type"))) {
-                return;
-            }
-            markNullComparison(expression.get("_left"),
-                    expression.get("_right"));
-            markNullComparison(expression.get("_right"),
-                    expression.get("_left"));
-        }
-
-        private void markNullComparison(JsonElement readElement,
-                                        JsonElement otherElement) {
-            if (readElement == null || !readElement.isJsonObject()
-                    || otherElement == null || !otherElement.isJsonObject()
-                    || !"SymbolExpression".equals(string(
-                    otherElement.getAsJsonObject(), "_type"))
-                    || !"N".equals(string(otherElement.getAsJsonObject(),
-                    "_exp"))) {
-                return;
-            }
-            InitialContainerObservation.Read read =
-                    InitialContainerObservation.initialRead(
-                            readElement.getAsJsonObject());
-            if (read == null || !read.concreteSelector()
-                    && !read.dynamicAssociativeSelector()) return;
-            String identity = boundaryIdentity(read);
-            SparseContainerBoundary boundary = boundaries.get(identity);
-            if (boundary == null && read.dynamicAssociativeSelector()
-                    && retainFailureRelevantCell(read)) {
-                boundary = new SparseContainerBoundary(read);
-                boundaries.put(identity, boundary);
-            }
-            if (boundary != null) boundary.nullCompared = true;
-        }
-
-        private boolean isConcreteObservation(JsonElement expression) {
-            return InitialContainerObservation.isConcreteEquality(
-                    expression);
-        }
-
-        private void record(JsonObject expression,
-                            ContainerSmtCodec.Term encoded) {
-            InitialContainerObservation.Read read =
-                    InitialContainerObservation.initialRead(expression);
-            if (read == null || !read.concreteSelector()
-                    && !read.dynamicAssociativeSelector()
-                    || encoded == null) {
-                return;
-            }
-            SparseContainerBoundary boundary = boundaries.get(
-                    boundaryIdentity(read));
-            if (boundary == null) return;
-            Sort sort = Encoder.containerSort(encoded.sort);
-            if (sort != Sort.INT && sort != Sort.BOOL
-                    && sort != Sort.REF) {
-                gaps.add(boundary.identity()
-                        + ":UNSUPPORTED_READ_SORT=" + sort);
-                return;
-            }
-            Term term = new Term(encoded.text, sort,
-                    encoded.integralWidth);
-            record(boundary, term);
-        }
-
-        private void record(SparseContainerBoundary boundary, Term term) {
-            if (boundary.term == null) {
-                boundary.term = term;
-            } else if (boundary.term.sort != term.sort
-                    || !boundary.term.text.equals(term.text)) {
-                gaps.add(boundary.identity()
-                        + ":INCONSISTENT_ENCODED_READ");
-            }
-        }
-
-        private SparseContainerBoundary dynamicAssociativeBoundary(
-                JsonObject expression) {
-            InitialContainerObservation.Read read =
-                    InitialContainerObservation.initialRead(expression);
-            if (read == null || !read.dynamicAssociativeSelector()) {
-                return null;
-            }
-            SparseContainerBoundary boundary = boundaries.get(
-                    boundaryIdentity(read));
-            return boundary != null && boundary.nullCompared
-                    ? boundary : null;
-        }
-
-        private static String boundaryIdentity(
-                InitialContainerObservation.Read read) {
-            return read.shape + "\u0000" + read.stateSymbol + "\u0000"
-                    + read.selectorIdentity();
-        }
-    }
-
-    private static final class SparseContainerBoundary {
-        private final String shape;
-        private final String stateSymbol;
-        private final int index;
-        private final String keyJavaType;
-        private final String keyValue;
-        private final String selectorIdentity;
-        private final String iterationProjection;
-        private final String javaType;
-        private JsonObject action;
-        private Term term;
-        private String modelName = "";
-        private String nullModelName = "";
-        private boolean nullCompared;
-        private boolean preferredReferenceSource;
-
-        private SparseContainerBoundary(
-                InitialContainerObservation.Read read) {
-            this.shape = read.shape;
-            this.stateSymbol = read.stateSymbol;
-            this.index = read.index == null ? -1 : read.index;
-            this.keyJavaType = read.keyJavaType();
-            this.keyValue = read.keyValue();
-            this.selectorIdentity = read.selectorIdentity();
-            this.iterationProjection = read.iterationProjection;
-            this.javaType = read.javaType;
-        }
-
-        private String identity() {
-            return shape + ":" + stateSymbol + "["
-                    + selectorIdentity + "]";
-        }
-
-        private String selectorIdentity() {
-            return selectorIdentity;
-        }
-
-        private void addSelector(JsonObject target, int targetOccurrence) {
-            target.addProperty("shape", shape);
-            if ("ASSOCIATIVE".equals(shape) && nullCompared
-                    && targetOccurrence > 0) {
-                target.addProperty("selectorKind", "ACCESS_ORDINAL");
-                target.addProperty("accessOrdinal", targetOccurrence);
-                return;
-            }
-            if ("INDEXED".equals(shape)) {
-                target.addProperty("index", index);
-            } else if (!iterationProjection.isEmpty()) {
-                target.addProperty("selectorKind", "ITERATION_INDEX");
-                target.addProperty("index", index);
-                target.addProperty("projection", iterationProjection);
-            } else {
-                target.addProperty("keyJavaType", keyJavaType);
-                target.addProperty("keyValue", keyValue);
-            }
-        }
-
-        private void addSourceSelector(JsonObject target,
-                                       SparseContainerBoundary source) {
-            target.addProperty("sourceShape", source.shape);
-            if ("INDEXED".equals(source.shape)) {
-                target.addProperty("sourceIndex", source.index);
-            } else {
-                target.addProperty("sourceKeyJavaType",
-                        source.keyJavaType);
-                target.addProperty("sourceKeyValue", source.keyValue);
-            }
-        }
-    }
-
-    private static final class ReferenceDomains {
-        private final Map<String, List<ReferenceChoice>> choices =
-                new LinkedHashMap<>();
-        private final Map<String, String> observedSources =
-                new LinkedHashMap<>();
-
-        private void addObserved(String modelName, String inputSymbol) {
-            if (!modelName.isEmpty() && !inputSymbol.isEmpty()) {
-                observedSources.put(modelName, inputSymbol);
-            }
-        }
-
-        private void add(String raw, long sourceIdentity,
-                         String sourceInputSymbol, String selector,
-                         long targetIdentity) {
-            choices.computeIfAbsent(raw,
-                    ignored -> new ArrayList<>()).add(
-                    new ReferenceChoice(sourceIdentity, sourceInputSymbol,
-                            selector, targetIdentity));
-        }
-
-        private ReferenceChoice selected(String raw,
-                                         Map<String, String> values) {
-            for (ReferenceChoice choice : choices.getOrDefault(raw,
-                    Collections.<ReferenceChoice>emptyList())) {
-                if ("true".equals(values.get(choice.selector))) {
-                    return choice;
-                }
-            }
-            return null;
-        }
-
-        private String sourceForModelValue(
-                String modelValue, Map<String, String> values) {
-            String selected = "";
-            for (Map.Entry<String, String> source
-                    : observedSources.entrySet()) {
-                if (!modelValue.equals(values.get(source.getKey()))) {
-                    continue;
-                }
-                if (selected.isEmpty()
-                        || source.getValue().compareTo(selected) < 0) {
-                    selected = source.getValue();
-                }
-            }
-            return selected;
-        }
-    }
-
-    private static final class ReferenceChoice {
-        private final long sourceIdentity;
-        private final String sourceInputSymbol;
-        private final String selector;
-        private final long targetIdentity;
-
-        private ReferenceChoice(long sourceIdentity,
-                                String sourceInputSymbol,
-                                String selector,
-                                long targetIdentity) {
-            this.sourceIdentity = sourceIdentity;
-            this.sourceInputSymbol = sourceInputSymbol;
-            this.selector = selector;
-            this.targetIdentity = targetIdentity;
-        }
+        return new ModelProjection(result, unresolved);
     }
 
     private static List<JsonObject> materializationActions(
@@ -2770,16 +3242,25 @@ public final class ConcolicConstraintSolver {
         private final String queryKey;
         private final BranchReplayContract replayContract;
         private final SolverPathContext pathContext;
-        private final JsonObject recordedReadCut;
+        private final JsonArray consumerAnchorCaseDependencies;
+        private final String sourceActivationOccurrenceId;
 
         private PathQuery(String queryKey,
                           BranchReplayContract replayContract,
                           SolverPathContext pathContext,
-                          JsonObject recordedReadCut) {
+                          JsonArray consumerAnchorCaseDependencies,
+                          String sourceActivationOccurrenceId) {
             this.queryKey = queryKey;
             this.replayContract = replayContract;
             this.pathContext = pathContext;
-            this.recordedReadCut = recordedReadCut;
+            // SharedExpressionTable.expand() has already reconstructed one
+            // immutable expression DAG for this worker.  This array is only
+            // read during solving; a defensive deep copy would recursively
+            // expand the DAG once more before Z3 is even started.
+            this.consumerAnchorCaseDependencies =
+                    consumerAnchorCaseDependencies;
+            this.sourceActivationOccurrenceId =
+                    sourceActivationOccurrenceId;
         }
 
         private static PathQuery decode(JsonObject task) throws IOException {
@@ -2794,25 +3275,30 @@ public final class ConcolicConstraintSolver {
                 throw new IOException(
                         "canonical path task requires SHA-256 queryKey");
             }
-            JsonObject readCut = object(task,
-                    RecordedSessionModel.QUERY_FIELD);
-            if (readCut.size() > 0
-                    && !RecordedSessionModel.isQueryPayload(readCut)) {
-                throw new IOException(
-                        "canonical path task carries an unadmitted recorded "
-                                + "read cut");
-            }
             try {
                 return new PathQuery(queryKey,
-                        BranchReplayContract.fromJson(
+                        BranchReplayContract.fromImmutableJson(
                         requiredObject(task, "replayContract")),
                         SolverPathContext.fromJson(requiredObject(task,
-                                "solverPathContext")), readCut);
+                                "solverPathContext")),
+                        array(task,
+                                LinkedReplayBundle.CASE_DEPENDENCIES_FIELD),
+                        string(task, "sourceActivationOccurrenceId"));
             } catch (IllegalArgumentException malformed) {
                 throw new IOException("invalid canonical path task: "
                         + malformed.getMessage(), malformed);
             }
         }
+    }
+
+    /** Exact executable scalar input action that the replay runtime can set. */
+    private static ActionMatch registeredSymbolicAction(
+            String raw, List<JsonObject> actions, Sort expectedSort) {
+        if (expectedSort != Sort.BOOL && expectedSort != Sort.INT
+                && (expectedSort == null || !expectedSort.floating())) {
+            return null;
+        }
+        return bestAction(raw, actions, expectedSort);
     }
 
     private static ActionMatch bestAction(
@@ -2857,76 +3343,43 @@ public final class ConcolicConstraintSolver {
      * the engine label already names one exact site execution.
      */
     private static ConfiguredSourceMatch configuredSourceResolution(
-            String raw, JsonObject activation, Sort expectedSort) {
+            String raw,
+            List<List<ConfiguredSourcePhaseContract.Occurrence>> phaseCatalogs,
+            Sort expectedSort) {
         if (raw == null || raw.isEmpty()
                 || expectedSort == null || expectedSort == Sort.UNKNOWN
                 || expectedSort == Sort.REF || expectedSort == Sort.STRING
                 || expectedSort.containerState()) {
             return null;
         }
-        final List<ConfiguredSourcePhaseContract.Occurrence> mintSites;
-        try {
-            mintSites = ConfiguredSourcePhaseContract.occurrencesOf(
-                    activation == null ? null : activation.get(
-                            ConfiguredSourcePhaseContract.PLAN_FIELD));
-        } catch (IllegalArgumentException malformed) {
-            return null;
-        }
         ConfiguredSourceMatch selected = null;
-        for (ConfiguredSourcePhaseContract.Occurrence phase : mintSites) {
-            FieldPathSpec.DeclaredField field =
-                    FieldPathSpec.declaredField(phase.fieldSignature());
-            if (field == null
-                    || sortOfJava(field.type()) != expectedSort
-                    || !matchesEngineSymbol(raw,
-                    SymbolicSourceEvidence.engineLabelForPhase(
-                            phase.phaseId(), phase.sourceId()))) {
-                continue;
+        for (List<ConfiguredSourcePhaseContract.Occurrence> mintSites
+                : phaseCatalogs == null
+                ? Collections.<List<ConfiguredSourcePhaseContract.Occurrence>>
+                emptyList() : phaseCatalogs) {
+            for (ConfiguredSourcePhaseContract.Occurrence phase : mintSites) {
+                FieldPathSpec.DeclaredField field =
+                        FieldPathSpec.declaredField(phase.fieldSignature());
+                if (field == null
+                        || sortOfJava(field.type()) != expectedSort
+                        || !matchesEngineSymbol(raw,
+                        SymbolicSourceEvidence.engineLabelForPhase(
+                                phase.phaseId(), phase.sourceId()))) {
+                    continue;
+                }
+                if (selected != null) return null;
+                selected = new ConfiguredSourceMatch(phase.phaseId(),
+                        phase.sourceId(), field.signature(),
+                        phase.sourceOccurrenceId(), phase.runtimeEventSeq());
             }
-            if (selected != null) return null;
-            selected = new ConfiguredSourceMatch(phase.phaseId(),
-                    phase.sourceId(), field.signature());
         }
         return selected;
     }
 
-    private static List<JsonObject> containerBoundaryActions(
-            String raw, List<JsonObject> actions) {
-        List<JsonObject> result = new ArrayList<>();
-        for (JsonObject action : actions) {
-            if (!executable(action)
-                    || materializationSort(action) != Sort.REF) {
-                continue;
-            }
-            String symbol = string(action, "symbol");
-            List<JsonArray> paths = new ArrayList<>();
-            paths.add(new JsonArray());
-            if (array(action, "fieldPath").size() > 0) {
-                paths.add(array(action, "fieldPath"));
-            }
-            for (JsonElement path : array(action, "fieldPaths")) {
-                if (path.isJsonArray()) paths.add(path.getAsJsonArray());
-            }
-            boolean matched = false;
-            for (JsonArray path : paths) {
-                List<String> segments = stringList(path);
-                if (segments.size() != path.size()) continue;
-                String label = symbol + (segments.isEmpty() ? ""
-                        : "." + String.join(".", segments));
-                if (matchesEngineSymbol(raw, label)) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (matched) result.add(action);
-        }
-        result.sort(Comparator.comparing(value -> string(value, "symbol")));
-        return result;
-    }
-
     private static ReplaySupport classifyReplaySupport(
             Encoder encoder, Set<String> symbols, List<JsonObject> actions,
-            JsonObject activation) {
+            List<List<ConfiguredSourcePhaseContract.Occurrence>>
+                    configuredSourcePhaseCatalogs) {
         Set<String> writable = new LinkedHashSet<>();
         Set<String> unresolved = new LinkedHashSet<>();
         for (String symbol : symbols) {
@@ -2936,223 +3389,19 @@ public final class ConcolicConstraintSolver {
                     && fixedNonNullReference(symbol, names.sort)) {
                 continue;
             }
-            if (exactlyOneWritableBinding(encoder, symbol, actions,
-                    activation)) {
+            boolean registered = names != null
+                    && (configuredSourceResolution(symbol,
+                    configuredSourcePhaseCatalogs, names.sort) != null
+                    || registeredSymbolicAction(symbol, actions, names.sort)
+                    != null);
+            if (registered) {
                 writable.add(symbol);
                 encoder.controlledSymbols.add(symbol);
-                continue;
+            } else {
+                unresolved.add(symbol);
             }
-            String representative = encoder
-                    .materializableFieldRepresentative(
-                            symbol, actions, activation);
-            if (exactlyOneWritableBinding(encoder, representative, actions,
-                    activation)) {
-                writable.add(representative);
-                encoder.controlledSymbols.add(representative);
-                continue;
-            }
-            // NON_BRANCH_SOLVER_PATH_CONTEXT proves dependency and aliasing
-            // but carries no exact concrete snapshot provenance, so a symbol
-            // that reaches here is not one this query can materialize.
-            unresolved.add(symbol);
         }
         return new ReplaySupport(writable, unresolved);
-    }
-
-    /**
-     * Whether one raw symbol is writable through exactly one authority: a
-     * materialization action or a configured source mint, never both.
-     */
-    private static boolean exactlyOneWritableBinding(
-            Encoder encoder, String raw, List<JsonObject> actions,
-            JsonObject activation) {
-        SymbolNames names = encoder.names(raw);
-        return names != null
-                && (bestAction(raw, actions, names.sort) == null)
-                != (configuredSourceResolution(raw, activation,
-                names.sort) == null);
-    }
-
-    static boolean hasLocallyWritableReplayRoot(
-            JsonElement predicate, JsonObject activation) {
-        if (predicate == null || activation == null) return false;
-        // A complete VM read-from choice is a replay control even when the
-        // selected value arrived from another task: the model chooses one
-        // recorded writer and replay observes/confirms that exact cut.
-        if (containsAdmittedGuardedRead(predicate)) return true;
-        try {
-            List<JsonObject> actions = materializationActions(activation);
-            JsonArray predicates = new JsonArray();
-            predicates.add(predicate.deepCopy());
-            JsonArray context = new JsonArray();
-            SparseContainerBoundaries boundaries =
-                    SparseContainerBoundaries.discover(
-                            predicates, context, actions);
-            Encoder probe = new Encoder(boundaries);
-            Set<String> symbols = probe.addConstraint(predicate,
-                    "q_local_writable_probe");
-            ReplaySupport support = classifyReplaySupport(
-                    probe, symbols, actions, activation);
-            return !support.writableSymbols.isEmpty()
-                    || !boundaries.models.isEmpty();
-        } catch (IOException malformedActions) {
-            return false;
-        }
-    }
-
-    private static boolean containsAdmittedGuardedRead(JsonElement node) {
-        if (node == null || node.isJsonNull()) return false;
-        if (node.isJsonArray()) {
-            for (JsonElement child : node.getAsJsonArray()) {
-                if (containsAdmittedGuardedRead(child)) return true;
-            }
-            return false;
-        }
-        if (!node.isJsonObject()) return false;
-        JsonObject object = node.getAsJsonObject();
-        if (SharedStateEvidence.isGuardedRead(object)) return true;
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            if (containsAdmittedGuardedRead(entry.getValue())) return true;
-        }
-        return false;
-    }
-
-    private static boolean targetReachQuery(JsonObject task) {
-        return ClosureGoalKind.TARGET_REACH_CLOSURE.name().equals(
-                string(task, ClosureGoalKind.TASK_FIELD));
-    }
-
-    private static void collectEngineSymbols(
-            JsonElement expression, Set<String> result) {
-        if (expression == null || expression.isJsonNull()) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement element : expression.getAsJsonArray()) {
-                collectEngineSymbols(element, result);
-            }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject object = expression.getAsJsonObject();
-        if ("SymbolExpression".equals(string(object, "_type"))) {
-            String raw = string(object, "_exp");
-            if (!raw.isEmpty() && !"N".equals(raw) && !"V".equals(raw)) {
-                result.add(raw);
-            }
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            collectEngineSymbols(entry.getValue(), result);
-        }
-    }
-
-    private static boolean containsNullReference(JsonElement expression) {
-        if (expression == null || expression.isJsonNull()) return false;
-        if (expression.isJsonArray()) {
-            for (JsonElement element : expression.getAsJsonArray()) {
-                if (containsNullReference(element)) return true;
-            }
-            return false;
-        }
-        if (!expression.isJsonObject()) return false;
-        JsonObject object = expression.getAsJsonObject();
-        if ("SymbolExpression".equals(string(object, "_type"))
-                && "N".equals(string(object, "_exp"))) {
-            return true;
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            if (containsNullReference(entry.getValue())) return true;
-        }
-        return false;
-    }
-
-    private static Set<String> referencesComparedWithNull(
-            JsonArray constraints) {
-        Set<String> result = new LinkedHashSet<>();
-        if (constraints != null) {
-            for (JsonElement constraint : constraints) {
-                collectReferencesComparedWithNull(constraint, result);
-            }
-        }
-        return result;
-    }
-
-    private static void collectReferencesComparedWithNull(
-            JsonElement expression, Set<String> result) {
-        if (expression == null || expression.isJsonNull()) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement element : expression.getAsJsonArray()) {
-                collectReferencesComparedWithNull(element, result);
-            }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject object = expression.getAsJsonObject();
-        if ("BinaryExpression".equals(string(object, "_type"))
-                && ("==".equals(string(object, "_op"))
-                || "!=".equals(string(object, "_op")))) {
-            JsonElement left = object.get("_left");
-            JsonElement right = object.get("_right");
-            boolean leftNull = containsNullReference(left);
-            boolean rightNull = containsNullReference(right);
-            if (leftNull != rightNull) {
-                collectReferenceSymbols(leftNull ? right : left, result);
-            }
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            collectReferencesComparedWithNull(entry.getValue(), result);
-        }
-    }
-
-    private static void collectReferenceSymbols(
-            JsonElement expression, Set<String> result) {
-        if (expression == null || expression.isJsonNull()) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement element : expression.getAsJsonArray()) {
-                collectReferenceSymbols(element, result);
-            }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject object = expression.getAsJsonObject();
-        if ("SymbolExpression".equals(string(object, "_type"))) {
-            String raw = string(object, "_exp");
-            if (!raw.isEmpty() && !"N".equals(raw)) result.add(raw);
-            return;
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            collectReferenceSymbols(entry.getValue(), result);
-        }
-    }
-
-    private static Map<String, List<JsonObject>> referenceActionsByDomain(
-            List<JsonObject> actions) {
-        Map<String, List<JsonObject>> result = new LinkedHashMap<>();
-        for (JsonObject action : actions) {
-            String key = referenceDomainKey(action);
-            if (!key.isEmpty()) {
-                result.computeIfAbsent(key,
-                        ignored -> new ArrayList<>()).add(action);
-            }
-        }
-        for (List<JsonObject> group : result.values()) {
-            group.sort(Comparator.comparing(
-                    value -> string(value, "symbol")));
-        }
-        return result;
-    }
-
-    private static String referenceDomainKey(JsonObject action) {
-        if (!executable(action)
-                || materializationSort(action) != Sort.REF
-                || !"FIELD_ACCESS".equals(string(action, "bindingMode"))
-                || !"HEAP_OBJECT_FIELD".equals(string(action, "location"))
-                || longInteger(action, "fieldReceiverObjectId", 0L) <= 0L
-                || longInteger(action, "valueObjectId", 0L) <= 0L
-                || array(action, "fieldPath").size() != 1) {
-            return "";
-        }
-        return longInteger(action, "fieldReceiverObjectId", 0L) + "\u0000"
-                + JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                string(action, "javaType"));
     }
 
     private static Sort materializationSort(JsonObject action) {
@@ -3189,6 +3438,7 @@ public final class ConcolicConstraintSolver {
             }
         }
         return payload.equals(semantic)
+                || payload.startsWith(semantic + ".occ.")
                 || payload.startsWith(semantic + "_");
     }
 
@@ -3211,37 +3461,100 @@ public final class ConcolicConstraintSolver {
         private final String sourcePhaseId;
         private final String sourceId;
         private final String fieldSignature;
+        private final String sourceOccurrenceId;
+        private final long runtimeEventSeq;
 
         private ConfiguredSourceMatch(String sourcePhaseId, String sourceId,
-                                      String fieldSignature) {
+                                      String fieldSignature,
+                                      String sourceOccurrenceId,
+                                      long runtimeEventSeq) {
             this.sourcePhaseId = sourcePhaseId;
             this.sourceId = sourceId;
             this.fieldSignature = fieldSignature;
+            this.sourceOccurrenceId = sourceOccurrenceId;
+            this.runtimeEventSeq = runtimeEventSeq;
         }
     }
 
     static SolverOutput run(Path executable, String input,
                             long timeoutMillis)
             throws IOException, InterruptedException {
+        long startedNanos = System.nanoTime();
+        long budgetNanos = TimeUnit.MILLISECONDS.toNanos(
+                Math.max(0L, timeoutMillis));
+        byte[] encoded = input.getBytes(StandardCharsets.UTF_8);
+        if (remainingNanos(startedNanos, budgetNanos) <= 0L) {
+            return new SolverOutput(true, "");
+        }
         ProcessBuilder builder = new ProcessBuilder(executable.toString(),
                 "-in", "-smt2");
         builder.redirectErrorStream(true);
         Process process = builder.start();
-        try (OutputStream stream = process.getOutputStream()) {
-            stream.write(input.getBytes(StandardCharsets.UTF_8));
-        }
-        try {
-            if (process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)) {
-                return new SolverOutput(false,
-                        readAll(process.getInputStream()));
+        AtomicReference<IOException> writeFailure = new AtomicReference<>();
+        AtomicReference<IOException> readFailure = new AtomicReference<>();
+        AtomicReference<String> stdout = new AtomicReference<>("");
+        Thread writer = new Thread(() -> {
+            try (OutputStream stream = process.getOutputStream()) {
+                stream.write(encoded);
+            } catch (IOException failure) {
+                writeFailure.set(failure);
             }
-            process.destroyForcibly();
-            process.waitFor();
-            return new SolverOutput(true, "");
+        }, "graphchecker-z3-writer");
+        Thread reader = new Thread(() -> {
+            try {
+                stdout.set(readAll(process.getInputStream()));
+            } catch (IOException failure) {
+                readFailure.set(failure);
+            }
+        }, "graphchecker-z3-reader");
+        writer.setDaemon(true);
+        reader.setDaemon(true);
+        writer.start();
+        reader.start();
+        try {
+            long remaining = remainingNanos(startedNanos, budgetNanos);
+            if (remaining <= 0L
+                    || !process.waitFor(remaining, TimeUnit.NANOSECONDS)) {
+                terminate(process, writer, reader);
+                return new SolverOutput(true, "");
+            }
+            if (!joinWithin(writer, startedNanos, budgetNanos)
+                    || !joinWithin(reader, startedNanos, budgetNanos)) {
+                terminate(process, writer, reader);
+                return new SolverOutput(true, "");
+            }
+            if (writeFailure.get() != null) throw writeFailure.get();
+            if (readFailure.get() != null) throw readFailure.get();
+            return new SolverOutput(false, stdout.get());
         } catch (InterruptedException interrupted) {
             process.destroyForcibly();
+            writer.interrupt();
+            reader.interrupt();
             throw interrupted;
         }
+    }
+
+    private static long remainingNanos(long startedNanos,
+                                       long budgetNanos) {
+        return budgetNanos - (System.nanoTime() - startedNanos);
+    }
+
+    private static boolean joinWithin(Thread thread, long startedNanos,
+                                      long budgetNanos)
+            throws InterruptedException {
+        long remaining = remainingNanos(startedNanos, budgetNanos);
+        if (remaining <= 0L) return !thread.isAlive();
+        long millis = Math.max(1L,
+                TimeUnit.NANOSECONDS.toMillis(remaining));
+        thread.join(millis);
+        return !thread.isAlive();
+    }
+
+    private static void terminate(Process process, Thread writer,
+                                  Thread reader) {
+        process.destroyForcibly();
+        writer.interrupt();
+        reader.interrupt();
     }
 
     private static String readAll(InputStream stream) throws IOException {
@@ -3331,14 +3644,11 @@ public final class ConcolicConstraintSolver {
                         + "[A-Za-z0-9-]+.*");
     }
 
-    /**
-     * A VM {@code PlaceHolderSymbolExp} is created from an already allocated
-     * object, so its reference is known non-null.
-     */
+    /** VM placeholders and allocation witnesses already denote concrete oops. */
     private static boolean fixedNonNullReference(String raw, Sort sort) {
         return sort == Sort.REF && raw != null
                 && (raw.startsWith("P_L")
-                || VmExpressionIr.isAllocatedInstanceReference(raw));
+                || VmExpressionIr.isExecutionLocalStructuralWitness(raw));
     }
 
     /** This encoder's own answer to "is this Java type a String?". */

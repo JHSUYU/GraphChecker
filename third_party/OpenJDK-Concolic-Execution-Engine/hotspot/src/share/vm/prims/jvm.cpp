@@ -78,7 +78,6 @@
 
 #include "concolic/concolicMngr.hpp"
 #include "concolic/expressionBroker.hpp"
-#include "concolic/eventLedger.hpp"
 #ifdef TARGET_OS_FAMILY_linux
 # include "jvm_linux.h"
 #endif
@@ -354,6 +353,16 @@ JVM_ENTRY(jlong, JVM_GetCurrentConcolicContextId(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_GetCurrentConcolicContextId");
 #ifdef ENABLE_CONCOLIC
   return ConcolicMngr::currentContextId();
+#else
+  return 0;
+#endif
+JVM_END
+
+JVM_ENTRY(jlong, JVM_GetCurrentConcolicRegionEnterEventId(
+        JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_GetCurrentConcolicRegionEnterEventId");
+#ifdef ENABLE_CONCOLIC
+  return ConcolicMngr::currentRegionEnterEventId();
 #else
   return 0;
 #endif
@@ -736,11 +745,9 @@ JVM_ENTRY(jboolean, JVM_SnapshotContainerExpression(
 JVM_END
 
 #ifdef ENABLE_CONCOLIC
-// Publishes the ledger event one handoff call recorded into the caller's
-// optional out-array.  README RPC-1: both endpoints of the VALUE_HANDOFF edge
-// are the VM's answer, so the exporter learns its export event and the
-// receiver learns its attach event rather than either being re-derived from
-// the order domain later.
+// Publishes one handoff endpoint identity into the caller's optional
+// out-array. Both endpoint identities are explicit because the same export
+// may be attached at several receivers.
 //
 // The array is resolved after the symbolic work has finished, so no oop is
 // held across a call that may safepoint.  A caller that passes anything other
@@ -869,10 +876,10 @@ JVM_ENTRY(jlong, JVM_SelectSharedFieldCarrier(
 #endif
 JVM_END
 
-JVM_ENTRY(jlong, JVM_GetCurrentSharedFieldVersion(
+JVM_ENTRY(jlong, JVM_ArmSharedPrimitiveFieldRead(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
-    jstring field_name, jstring descriptor))
-  JVMWrapper("JVM_GetCurrentSharedFieldVersion");
+    jstring field_name, jstring descriptor, jlong value_bits))
+  JVMWrapper("JVM_ArmSharedPrimitiveFieldRead");
 #ifdef ENABLE_CONCOLIC
   HandleMark hm;
   ResourceMark rm(THREAD);
@@ -886,36 +893,18 @@ JVM_ENTRY(jlong, JVM_GetCurrentSharedFieldVersion(
   const char *type = descriptor == NULL ? NULL
       : java_lang_String::as_utf8_string(
           JNIHandles::resolve_non_null(descriptor));
-  return ConcolicMngr::getCurrentSharedFieldVersion(
-      field_owner, holder, name, type);
+  return ConcolicMngr::armSharedPrimitiveFieldRead(
+      field_owner, holder, name, type, value_bits);
 #else
   return -1;
 #endif
 JVM_END
 
-JVM_ENTRY(jlong, JVM_AdmitSharedFieldVersion(
-    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
-    jstring field_name, jstring descriptor, jlong version_id,
-    jstring selected_edge_id))
-  JVMWrapper("JVM_AdmitSharedFieldVersion");
+JVM_ENTRY(jlong, JVM_ConfirmSharedPrimitiveFieldRead(
+    JNIEnv *env, jclass ignored, jlong token))
+  JVMWrapper("JVM_ConfirmSharedPrimitiveFieldRead");
 #ifdef ENABLE_CONCOLIC
-  HandleMark hm;
-  ResourceMark rm(THREAD);
-  Handle field_owner(THREAD, JNIHandles::resolve(owner));
-  const char *holder = declaring_class == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(declaring_class));
-  const char *name = field_name == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(field_name));
-  const char *type = descriptor == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(descriptor));
-  const char *edge = selected_edge_id == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(selected_edge_id));
-  return ConcolicMngr::admitSharedFieldVersion(
-      field_owner, holder, name, type, version_id, edge);
+  return ConcolicMngr::confirmSharedPrimitiveFieldRead(token);
 #else
   return -1;
 #endif
@@ -940,35 +929,6 @@ JVM_ENTRY(jlong, JVM_SelectSharedMapCarrier(
   HandleMark hm;
   Handle target(THREAD, JNIHandles::resolve(map));
   return ConcolicMngr::selectSharedMapCarrier(target);
-#else
-  return -1;
-#endif
-JVM_END
-
-JVM_ENTRY(jlong, JVM_GetCurrentSharedMapVersion(
-    JNIEnv *env, jclass ignored, jobject map))
-  JVMWrapper("JVM_GetCurrentSharedMapVersion");
-#ifdef ENABLE_CONCOLIC
-  HandleMark hm;
-  Handle target(THREAD, JNIHandles::resolve(map));
-  return ConcolicMngr::getCurrentSharedMapVersion(target);
-#else
-  return -1;
-#endif
-JVM_END
-
-JVM_ENTRY(jlong, JVM_AdmitSharedMapVersion(
-    JNIEnv *env, jclass ignored, jobject map, jlong version_id,
-    jstring selected_edge_id))
-  JVMWrapper("JVM_AdmitSharedMapVersion");
-#ifdef ENABLE_CONCOLIC
-  HandleMark hm;
-  ResourceMark rm(THREAD);
-  Handle target(THREAD, JNIHandles::resolve(map));
-  const char *edge = selected_edge_id == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(selected_edge_id));
-  return ConcolicMngr::admitSharedMapVersion(target, version_id, edge);
 #else
   return -1;
 #endif
@@ -1043,47 +1003,6 @@ JVM_ENTRY(jstring, JVM_GetSharedMapVersions(
 #endif
 JVM_END
 
-JVM_ENTRY(jint, JVM_ProposeEventOrder(JNIEnv *env, jclass ignored,
-                                      jlong before_event_id,
-                                      jlong after_event_id))
-  JVMWrapper("JVM_ProposeEventOrder");
-#ifdef ENABLE_CONCOLIC
-  return ConcolicMngr::proposeEventOrder(before_event_id, after_event_id);
-#else
-  return -1;
-#endif
-JVM_END
-
-JVM_ENTRY(jboolean, JVM_ActivateConcolicEventLedger(JNIEnv *env,
-                                                    jclass ignored))
-  JVMWrapper("JVM_ActivateConcolicEventLedger");
-#ifdef ENABLE_CONCOLIC
-  // README EVENT-1: the order domain records because a task selected event
-  // sites, not because some location happens to be a shared carrier.  The
-  // caller has already decided that its activation declares one; this only
-  // tells the ledger.
-  EventLedger::activate();
-  return EventLedger::is_recording() ? JNI_TRUE : JNI_FALSE;
-#else
-  return JNI_FALSE;
-#endif
-JVM_END
-
-JVM_ENTRY(jstring, JVM_GetEventLedger(JNIEnv *env, jclass ignored))
-  JVMWrapper("JVM_GetEventLedger");
-#ifdef ENABLE_CONCOLIC
-  std::string serialized = ConcolicMngr::getEventLedger();
-  Handle str = java_lang_String::create_from_platform_dependent_str(
-      serialized.c_str(), THREAD);
-  return (jstring) JNIHandles::make_local(env, str());
-#else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
-      "{\"schemaVersion\":1,\"kind\":\"SESSION_EVENT_LEDGER\","
-      "\"open\":false,\"events\":[]}", THREAD);
-  return (jstring) JNIHandles::make_local(env, str());
-#endif
-JVM_END
-
 JVM_ENTRY(jstring, JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_GetConcolicRegionSummary");
 #ifdef ENABLE_CONCOLIC
@@ -1103,10 +1022,16 @@ JVM_ENTRY(jstring, JVM_FinishConcolicRegion(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_FinishConcolicRegion");
 #ifdef ENABLE_CONCOLIC
   std::string serialized = ConcolicMngr::getRegionSummary();
-  ConcolicMngr::endConcolic();
   Handle str = java_lang_String::create_from_platform_dependent_str(
       serialized.c_str(), THREAD);
-  return (jstring) JNIHandles::make_local(env, str());
+  jstring result = (jstring) JNIHandles::make_local(env, str());
+  // Finish is transactional from Java's point of view.  Allocate every
+  // object needed by the return value before popping the region: if an OOM
+  // escapes here, ConcolicRegionRuntime still owns this exact activation and
+  // can clean it up once.  Popping first made that cleanup remove the
+  // enclosing region as well.
+  ConcolicMngr::endConcolic();
+  return result;
 #else
   Handle str = java_lang_String::create_from_platform_dependent_str(
       "{\"schemaVersion\":1,\"engine\":\"disabled\",\"active\":false,\"regionId\":\"\",\"taskId\":\"\",\"pathCondition\":[]}",
@@ -3963,13 +3888,6 @@ JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
               "unable to create new native thread");
   }
 
-#ifdef ENABLE_CONCOLIC
-  // Everything this thread has done happens-before everything the started
-  // thread will do.  Released before the child can run, so the child's attach
-  // cannot miss it.
-  ConcolicMngr::publishThreadStartOrder(JNIHandles::resolve_non_null(jthread));
-#endif
-
   Thread::start(native_thread);
 
 JVM_END
@@ -4019,15 +3937,6 @@ JVM_ENTRY(jboolean, JVM_IsThreadAlive(JNIEnv* env, jobject jthread))
 
   oop thread_oop = JNIHandles::resolve_non_null(jthread);
   jboolean alive = java_lang_Thread::is_alive(thread_oop);
-#ifdef ENABLE_CONCOLIC
-  if (!alive) {
-    // Observing that a thread has terminated is the acquire half of the join
-    // edge, and it is where Thread.join() ends -- join loops on isAlive().
-    // Hooking the observation rather than join() itself also covers a caller
-    // that waits on isAlive() directly.
-    ConcolicMngr::acquireThreadTerminationOrder(thread_oop);
-  }
-#endif
   return alive;
 JVM_END
 

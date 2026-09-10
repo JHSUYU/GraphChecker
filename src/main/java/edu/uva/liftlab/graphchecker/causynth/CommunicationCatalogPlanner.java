@@ -2,13 +2,17 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import soot.Body;
 import soot.Unit;
+import soot.jimple.IfStmt;
+import soot.jimple.SwitchStmt;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -86,6 +90,8 @@ final class CommunicationCatalogPlanner {
         for (Unit unit : body.getUnits()) {
             unitIndices.put(unit, Integer.valueOf(++index));
         }
+        Map<Unit, CfgLoopControl.RetainedLoop> innermostByBranch =
+                innermostLoopsByBranch(body, retained);
         for (CfgLoopControl.RetainedLoop loop : retained) {
             Integer headerPosition = unitIndices.get(loop.header);
             if (headerPosition == null) continue;
@@ -121,6 +127,41 @@ final class CommunicationCatalogPlanner {
             row.put(LoopBoundPolicy.RUNTIME_LOOP_ID,
                     method + "#loop:u" + headerPosition.intValue());
             row.put(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS, controlSites);
+            List<String> memberBranches = new ArrayList<>();
+            for (Unit unit : body.getUnits()) {
+                if (innermostByBranch.get(unit) != loop) continue;
+                Integer position = unitIndices.get(unit);
+                if (position != null) {
+                    memberBranches.add(CommunicationCatalogContract.siteId(
+                            method, position.intValue()));
+                }
+            }
+            row.put(LoopBoundPolicy.LOOP_INNERMOST_BRANCH_SITE_IDS,
+                    memberBranches);
+            List<Map<String, Object>> exitDecisions = new ArrayList<>();
+            for (Unit guard : loop.guards) {
+                Integer position = unitIndices.get(guard);
+                CausynthBranchShape shape = CausynthBranchShape.from(
+                        body, guard);
+                if (position == null || shape == null) continue;
+                String site = CommunicationCatalogContract.siteId(method,
+                        position.intValue());
+                for (int successor = 0;
+                     successor < shape.successors.size(); successor++) {
+                    if (loop.members.contains(
+                            shape.successors.get(successor))) continue;
+                    Map<String, Object> exit = newRow("LOOP_EXIT_DECISION");
+                    exit.put("siteId", site);
+                    exit.put("decisionToken", shape.isSwitch()
+                            ? ExactConcreteBranchObservation
+                            .switchDecisionToken(shape.kind, shape.caseKeys,
+                                    successor)
+                            : ExactConcreteBranchObservation
+                            .binaryDecisionToken(successor == 1));
+                    exitDecisions.add(exit);
+                }
+            }
+            row.put(LoopBoundPolicy.LOOP_EXIT_DECISIONS, exitDecisions);
             int latchIndex = headerPosition.intValue();
             for (Unit latch : loop.latches) {
                 Integer position = unitIndices.get(latch);
@@ -138,6 +179,46 @@ final class CommunicationCatalogPlanner {
             }
             result.loops.add(row);
         }
+    }
+
+    /** Exact, unambiguous innermost natural-loop owner of every branch. */
+    private static Map<Unit, CfgLoopControl.RetainedLoop>
+            innermostLoopsByBranch(
+            Body body, List<CfgLoopControl.RetainedLoop> loops) {
+        Map<Unit, CfgLoopControl.RetainedLoop> result =
+                new IdentityHashMap<>();
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof IfStmt) && !(unit instanceof SwitchStmt)) {
+                continue;
+            }
+            List<CfgLoopControl.RetainedLoop> owners = new ArrayList<>();
+            for (CfgLoopControl.RetainedLoop candidate : loops) {
+                if (candidate.members.contains(unit)) owners.add(candidate);
+            }
+            CfgLoopControl.RetainedLoop selected = null;
+            for (CfgLoopControl.RetainedLoop candidate : owners) {
+                boolean insideEveryOther = true;
+                for (CfgLoopControl.RetainedLoop other : owners) {
+                    if (other == candidate) continue;
+                    if (!other.members.containsAll(candidate.members)
+                            || candidate.members.containsAll(other.members)) {
+                        insideEveryOther = false;
+                        break;
+                    }
+                }
+                if (insideEveryOther) {
+                    if (selected != null) {
+                        selected = null;
+                        break;
+                    }
+                    selected = candidate;
+                }
+            }
+            // Equal or overlapping loop bodies have no unique innermost
+            // owner. Their branches retain exact ordinals.
+            if (selected != null) result.put(unit, selected);
+        }
+        return result;
     }
 
     /** {@code kind} of one retained-loop catalog row. */

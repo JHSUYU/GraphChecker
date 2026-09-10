@@ -291,11 +291,6 @@ public final class CausynthStaticFacts {
         return signatureGroup(methodSignature, 1);
     }
 
-    /** Simple name of a method signature, or {@code ""}. */
-    static String methodName(String methodSignature) {
-        return signatureGroup(methodSignature, 3);
-    }
-
     private static String signatureGroup(String signature, int group) {
         Matcher matcher = METHOD_SIGNATURE.matcher(
                 signature == null ? "" : signature);

@@ -3,15 +3,19 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -42,15 +46,11 @@ public final class SharedStateEvidence {
      */
     public static final String VERSIONS_ENVELOPE_KIND =
             "SHARED_FIELD_VERSIONS";
-    /** Envelope kind of the session-wide event ledger. */
-    public static final String LEDGER_ENVELOPE_KIND = "SESSION_EVENT_LEDGER";
     /** Expression node type of one guarded read-from choice. */
     public static final String GUARDED_READ_TYPE = "ReadFromExpression";
     /** Authority the VM stamps on a guarded read-from node. */
     public static final String GUARDED_READ_AUTHORITY =
             "VM_GUARDED_READ_FROM_V1";
-    /** Selector of the unknown-writer arm, which is always present. */
-    public static final String UNKNOWN_WRITER_SELECTOR = "rf_unknown";
     /**
      * Explicit form of the empty conjunction.
      */
@@ -68,10 +68,7 @@ public final class SharedStateEvidence {
     /** Kind of one admitted version-store record. */
     public static final String VERSIONS_RECORD_KIND =
             "VM_SHARED_FIELD_VERSIONS_V1";
-    /** Kind of one admitted ledger record. */
-    public static final String LEDGER_RECORD_KIND =
-            "VM_SESSION_EVENT_LEDGER_V1";
-    /** Authority stamped on both admitted records. */
+    /** Authority stamped on admitted version records. */
     public static final String RECORD_AUTHORITY =
             "VM_SHARED_STATE_EVIDENCE_V1";
     /** Summary member carrying one execution's recorded shared state. */
@@ -87,42 +84,31 @@ public final class SharedStateEvidence {
 
     public static final String STAGE_SELECT = "SELECT";
     public static final String STAGE_VERSIONS = "VERSIONS";
-    public static final String STAGE_LEDGER = "LEDGER";
+    public static final String STAGE_IDENTITY = "IDENTITY";
 
 
     public static final int OK = 0;
 
     // Declared VM carrier-selection refusals (sharedFieldVersions.hpp).
-    // Their numeric values are the VM's; they are mirrored so a Java caller
+    // Their numeric values are mirrored here so Java reports the same reason.
     public static final int SELECT_NO_ACTIVE_CONTEXT = -1;
     public static final int SELECT_MISSING_METADATA = -2;
     public static final int SELECT_FIELD_NOT_FOUND = -3;
     public static final int SELECT_UNSUPPORTED_TARGET = -4;
-    /** The requested producer-state version is not retained in this session. */
-    public static final int SELECT_VERSION_NOT_FOUND = -5;
-    /** More than one retained location claims the requested version id. */
-    public static final int SELECT_VERSION_AMBIGUOUS = -6;
-    /** The frozen producer edge id is absent or malformed. */
-    public static final int SELECT_INVALID_EDGE = -7;
-
     public static final int INVOCATION_FAILED = -1001;
     public static final int MALFORMED_ENVELOPE = -1002;
     /** The location was never selected, so it has no recorded evidence. */
     public static final int NOT_SELECTED = -1003;
     /** Addressing that names no single location. */
     public static final int MISSING_METADATA = -1004;
-    public static final int UNKNOWN_WRITER = -1005;
-    /**
-     * drowned the log.  README's claim boundary makes a gap-bearing result
-     */
+    /** The VM retained only a bounded suffix of the recorded reads. */
     public static final int READ_LOG_TRUNCATED = -1006;
     /** One expression root was serialized only up to the VM's safety bound. */
     public static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
-    /**
-     * set (README {@code EVENT-1}): both fail closed, but a malformed
-     */
-    public static final int LEDGER_LOG_TRUNCATED = -1008;
-    public static final int LEDGER_DOMAIN_SATURATED = -1009;
+    /** A map-state receiver has no complete runtime carrier identity. */
+    public static final int MAP_STATE_IDENTITY_MISSING = -1010;
+    /** One session-local map owner claims conflicting carrier identities. */
+    public static final int MAP_STATE_IDENTITY_AMBIGUOUS = -1011;
 
     /** Exact coverage reason for a VM-bounded expression tree. */
     public static final String VM_EXPRESSION_SERIALIZATION_TRUNCATED =
@@ -134,14 +120,11 @@ public final class SharedStateEvidence {
             REASON_PREFIX + "UNDECLARED_STATUS";
 
 
-    public static final String RESOLUTION_EXACT = "EXACT";
-    public static final String RESOLUTION_GUARDED = "GUARDED";
-    public static final String RESOLUTION_NONE = "NONE";
-    private static final Set<String> RESOLUTIONS = names(
-            RESOLUTION_EXACT, RESOLUTION_GUARDED, RESOLUTION_NONE);
-    private static final Set<String> READ_REASONS = names("UNIQUE_VERSION",
-            "VALUE_DISTINGUISHED", "SYNC_ORDERED", "AMBIGUOUS_WRITERS",
-            "UNTRACKED_WRITER", "INCOMPLETE_WRITER_SET", "NOT_SELECTED");
+    /** Stable bytecode site attached to one runtime-owned field read. */
+    public static final String CONSUMER_SITE_ID = "consumerSiteId";
+    /** Activation-local execution number of {@link #CONSUMER_SITE_ID}. */
+    public static final String CONSUMER_SITE_OCCURRENCE =
+            "consumerSiteOccurrence";
     /** Location kind of one selected map's whole immutable state. */
     public static final String LOCATION_KIND_MAP_STATE = "MAP_STATE";
     /**
@@ -163,9 +146,8 @@ public final class SharedStateEvidence {
      * is not a tolerated unknown: one unadmitted version fails the whole
      * envelope, so the location loses every version it published and each
      * read of it reaches the formula with no read-from arm.
-     * {@code REMOVE_IF} is the conditional removal an iterator's
-     * {@code remove()} installs, i.e. exactly what HDFS-11741's
-     * {@code removeExpiredKeys()} does to the DataNode's key map.</p>
+     * {@code REMOVE_IF} represents an iterator removal controlled by a
+     * recorded branch predicate.</p>
      */
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
             "RMW", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
@@ -173,20 +155,6 @@ public final class SharedStateEvidence {
             "STATE_ADD");
     /** The version kind every location may publish, whatever its shape. */
     private static final String INITIAL_VERSION_KIND = "INITIAL";
-    private static final Set<String> FINGERPRINT_KINDS = names("NONE",
-            "PRIMITIVE", "NULL", "IDENTITY");
-    private static final Set<String> EVENT_KINDS = names("VOLATILE_READ",
-            "VOLATILE_WRITE", "THREAD_START",
-            "THREAD_JOIN", "ATOMIC_RMW", "ATOMIC_CAS", "FIELD_WRITE",
-            "FIELD_READ", "REGION_ENTER", "REGION_EXIT", "HANDOFF_EXPORT",
-            "HANDOFF_ATTACH");
-    private static final Set<String> EDGE_KINDS = names("PROGRAM_ORDER",
-            "SYNCHRONIZATION", "FIELD_READ_FROM", "VALUE_HANDOFF", "REGION",
-            "CANDIDATE");
-    private static final Set<String> ORDER_CONSTRAINT_KINDS = names(
-            "WRITE_BEFORE_READ", "OTHER_WRITE_OUTSIDE_CUT",
-            "UNKNOWN_WRITE_BEFORE_READ");
-
     private SharedStateEvidence() {
     }
 
@@ -204,12 +172,6 @@ public final class SharedStateEvidence {
                 return REASON_PREFIX + "FIELD_NOT_FOUND";
             case SELECT_UNSUPPORTED_TARGET:
                 return REASON_PREFIX + "UNSUPPORTED_TARGET";
-            case SELECT_VERSION_NOT_FOUND:
-                return REASON_PREFIX + "VERSION_NOT_FOUND";
-            case SELECT_VERSION_AMBIGUOUS:
-                return REASON_PREFIX + "VERSION_AMBIGUOUS";
-            case SELECT_INVALID_EDGE:
-                return REASON_PREFIX + "INVALID_EDGE";
             case INVOCATION_FAILED:
                 return REASON_PREFIX + "INVOCATION_FAILED";
             case MALFORMED_ENVELOPE:
@@ -218,16 +180,14 @@ public final class SharedStateEvidence {
                 return REASON_PREFIX + "NOT_SELECTED";
             case MISSING_METADATA:
                 return REASON_PREFIX + "MISSING_METADATA";
-            case UNKNOWN_WRITER:
-                return REASON_PREFIX + "UNKNOWN_WRITER";
             case READ_LOG_TRUNCATED:
                 return REASON_PREFIX + "READ_LOG_TRUNCATED";
             case EXPRESSION_SERIALIZATION_TRUNCATED:
                 return VM_EXPRESSION_SERIALIZATION_TRUNCATED;
-            case LEDGER_LOG_TRUNCATED:
-                return REASON_PREFIX + "LEDGER_LOG_TRUNCATED";
-            case LEDGER_DOMAIN_SATURATED:
-                return REASON_PREFIX + "LEDGER_DOMAIN_SATURATED";
+            case MAP_STATE_IDENTITY_MISSING:
+                return REASON_PREFIX + "MAP_STATE_IDENTITY_MISSING";
+            case MAP_STATE_IDENTITY_AMBIGUOUS:
+                return REASON_PREFIX + "MAP_STATE_IDENTITY_AMBIGUOUS";
             default:
                 return UNDECLARED_REASON;
         }
@@ -252,46 +212,20 @@ public final class SharedStateEvidence {
     }
 
     /**
-     * Replaces every JSON-null path guard in one envelope or expression term
-     */
-    public static JsonElement normalizeGuards(JsonElement node) {
-        if (node == null) return null;
-        Deque<JsonElement> pending = new ArrayDeque<>();
-        pending.push(node);
-        while (!pending.isEmpty()) {
-            JsonElement current = pending.pop();
-            if (current.isJsonArray()) {
-                for (JsonElement element : current.getAsJsonArray()) {
-                    if (element != null) pending.push(element);
-                }
-                continue;
-            }
-            if (!current.isJsonObject()) continue;
-            JsonObject term = current.getAsJsonObject();
-            JsonElement guard = term.get("pathGuard");
-            if (guard != null && guard.isJsonNull()) {
-                term.add("pathGuard", emptyConjunction());
-            }
-            for (String field : new LinkedHashSet<>(term.keySet())) {
-                JsonElement child = term.get(field);
-                if (!"pathGuard".equals(field) && child != null) {
-                    pending.push(child);
-                }
-            }
-        }
-        return node;
-    }
-
-    /**
      * Whether an expression tree recursively contains the VM's explicit
      */
     public static boolean containsVmSerializationTruncation(
             JsonElement expression) {
         if (expression == null) return false;
         Deque<JsonElement> pending = new ArrayDeque<>();
+        Set<JsonElement> visited = Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
         pending.push(expression);
         while (!pending.isEmpty()) {
             JsonElement current = pending.pop();
+            if (current != null && !current.isJsonNull()
+                    && !current.isJsonPrimitive()
+                    && !visited.add(current)) continue;
             if (current.isJsonArray()) {
                 for (JsonElement child : current.getAsJsonArray()) {
                     if (child != null) pending.push(child);
@@ -421,38 +355,6 @@ public final class SharedStateEvidence {
                 + locationKey.substring(slot);
     }
 
-    /** Binding identity after removing replay-local location spelling. */
-    static JsonObject comparableBinding(JsonObject binding) {
-        String location = string(binding, "locationKey");
-        String comparable = location;
-        if (!location.isEmpty() && !location.contains("@receiver:")) {
-            String canonical = canonicalLocationKey(location,
-                    string(binding, RecordedReadFrom.EDGE_FIELD),
-                    PathObservation.plannedOccurrenceOf(
-                            string(binding, "toOccurrenceId")),
-                    longInteger(binding, "receiverObjectId", 0L));
-            if (!canonical.isEmpty()) comparable = canonical;
-        }
-        comparable = plannedLocationKey(comparable);
-        JsonObject copy = binding.deepCopy();
-        copy.remove(SESSION_LOCATION_FIELD);
-        if (!comparable.equals(location)) {
-            copy.addProperty("locationKey", comparable);
-        }
-        return copy;
-    }
-
-    private static String plannedLocationKey(String locationKey) {
-        int kind = locationKey.indexOf('/');
-        if (kind <= 0) return locationKey;
-        int receiver = locationKey.indexOf('@', kind + 1);
-        if (receiver <= kind + 1) return locationKey;
-        String occurrence = PathObservation.plannedOccurrenceOf(
-                locationKey.substring(kind + 1, receiver));
-        return locationKey.substring(0, kind + 1) + occurrence
-                + locationKey.substring(receiver);
-    }
-
     public static String sessionLocationKey(JsonObject row) {
         String session = string(row, SESSION_LOCATION_FIELD);
         return session.isEmpty() ? string(row, "locationKey") : session;
@@ -464,52 +366,15 @@ public final class SharedStateEvidence {
     public static Collection<String> canonicalizeLocations(
             JsonObject summary) {
         Set<String> unresolved = new LinkedHashSet<>();
-        Map<String, Set<String>> candidates = new LinkedHashMap<>();
         String occurrenceId = string(summary, "occurrenceId");
-        for (JsonElement element : array(summary, "edgeBindings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            String key = string(binding, "locationKey");
-            if (key.isEmpty()) continue;
-            String named = canonicalLocationKey(key,
-                    string(binding, RecordedReadFrom.EDGE_FIELD),
-                    occurrenceId,
-                    longInteger(binding, "receiverObjectId", 0L));
-            if (named.isEmpty()) {
-                unresolved.add(key);
-                continue;
-            }
-            candidates.computeIfAbsent(key,
-                    ignored -> new LinkedHashSet<>()).add(named);
-        }
-        Map<String, String> canonical = new LinkedHashMap<>();
-        for (Map.Entry<String, Set<String>> entry : candidates.entrySet()) {
-            if (entry.getValue().size() != 1) {
-                unresolved.add(entry.getKey());
-                continue;
-            }
-            canonical.put(entry.getKey(), entry.getValue().iterator().next());
-        }
-        for (JsonElement element : array(summary, "edgeBindings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            String key = string(binding, "locationKey");
-            String named = canonical.getOrDefault(key, "");
-            if (!named.isEmpty()) rename(binding, key, named);
-        }
-        for (JsonObject recorded : recordedMembers(summary)) {
+        JsonObject recorded = object(summary, RECORDED_FIELD);
+        if (recorded.size() > 0) {
             for (JsonElement element : array(recorded, "versions")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject row = element.getAsJsonObject();
                 String key = string(row, "locationKey");
-                String carried = carrierLocationKey(row, occurrenceId);
-                String borrowed = canonical.getOrDefault(key, "");
-                if (!carried.isEmpty() && !borrowed.isEmpty()
-                        && !carried.equals(borrowed)) {
-                    if (!key.isEmpty()) unresolved.add(key);
-                    continue;
-                }
-                String named = carried.isEmpty() ? borrowed : carried;
+                if (isMapState(sessionLocationKey(row))) continue;
+                String named = carrierLocationKey(row, occurrenceId);
                 if (named.isEmpty()) {
                     if (!key.isEmpty()) unresolved.add(key);
                     continue;
@@ -520,65 +385,373 @@ public final class SharedStateEvidence {
         return unresolved;
     }
 
+    /** Prefix of a content-addressed runtime map-state witness. */
+    static final String MAP_STATE_SYMBOL_PREFIX = "MAP_STATE.v1.";
+
     /**
-     * Replaces a VM session-local associative-state symbol with the exact
+     * Rebuilds the content address used by a runtime MAP_STATE carrier from
+     * its replay action.  This is the inverse lookup needed by sparse map
+     * projection: the expression keeps only the stable hash, while the
+     * action keeps the exact field and receiver which can be updated.
      */
-    public static Collection<String> canonicalizeContainerStateSymbols(
-            JsonObject summary) {
-        Map<Long, Set<String>> portsByOwner = new LinkedHashMap<>();
-        String occurrenceId = string(summary, "occurrenceId");
-        for (JsonElement element : array(summary, "edgeBindings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            String session = sessionLocationKey(binding);
-            long owner = isMapState(session)
-                    ? locationOwnerOf(session) : 0L;
-            String port = string(binding, "toInputPort");
-            if (owner <= 0L || port.isEmpty()
-                    || !occurrenceId.equals(string(binding,
-                    "toOccurrenceId"))) {
-                continue;
-            }
-            portsByOwner.computeIfAbsent(owner,
-                    ignored -> new LinkedHashSet<>()).add(port);
+    static String mapStateSymbolForAction(JsonObject action) {
+        if (action == null) return "";
+        String sourceKey = string(action, "sourceKey");
+        long receiverObjectId = longInteger(action,
+                "fieldReceiverObjectId", 0L);
+        JsonArray declarations = array(action, "fieldPathDeclarations");
+        String declaration = declarations.size() == 0
+                ? string(action, "leafFieldSignature")
+                : declarations.get(declarations.size() - 1).isJsonPrimitive()
+                ? declarations.get(declarations.size() - 1).getAsString()
+                : "";
+        FieldPathSpec.DeclaredField field =
+                FieldPathSpec.declaredField(declaration);
+        if (sourceKey.isEmpty() || receiverObjectId <= 0L || field == null) {
+            return "";
         }
-        Set<String> ambiguous = new LinkedHashSet<>();
-        canonicalizeContainerStateSymbols(summary, portsByOwner, ambiguous);
-        return ambiguous;
+        String descriptor = JavaPrimitiveSmtSemantics
+                .javaTypeDescriptor(field.type());
+        return descriptor.isEmpty() ? "" : mapStateSymbol(sourceKey,
+                field.owner(), field.name(), descriptor, receiverObjectId);
     }
 
-    private static void canonicalizeContainerStateSymbols(
-            JsonElement element, Map<Long, Set<String>> portsByOwner,
-            Set<String> ambiguous) {
-        if (element == null || element.isJsonNull()) return;
-        if (element.isJsonArray()) {
-            for (JsonElement child : element.getAsJsonArray()) {
-                canonicalizeContainerStateSymbols(child, portsByOwner,
-                        ambiguous);
-            }
-            return;
+    private static String mapStateSymbol(
+            String sourceKey, String declaringClass, String fieldName,
+            String descriptor, long receiverObjectId) {
+        JsonObject material = new JsonObject();
+        material.addProperty("schemaVersion", 1);
+        material.addProperty("kind", "RUNTIME_MAP_STATE_IDENTITY");
+        material.addProperty("sourceKey", sourceKey);
+        material.addProperty("carrierKind", LOCATION_KIND_MAP_STATE);
+        material.addProperty("declaringClass", declaringClass);
+        material.addProperty("fieldName", fieldName);
+        material.addProperty("descriptor", descriptor);
+        material.addProperty("plannedReceiverObjectId", receiverObjectId);
+        return MAP_STATE_SYMBOL_PREFIX + CanonicalJson.sha256(material);
+    }
+
+    /** One fail-closed result of scope-wide map-state canonicalization. */
+    static final class ContainerStateIssue {
+        final JsonObject summary;
+        final JsonObject gap;
+
+        private ContainerStateIssue(JsonObject summary, JsonObject gap) {
+            this.summary = summary;
+            this.gap = gap;
         }
-        if (!element.isJsonObject()) return;
-        JsonObject object = element.getAsJsonObject();
-        if ("ContainerRelation".equals(string(object, "_type"))
-                && "ASSOCIATIVE".equals(string(object, "shape"))
-                && "STATE".equals(string(object, "operation"))) {
-            JsonObject receiver = object(object, "receiver");
-            if ("SymbolExpression".equals(string(receiver, "_type"))) {
-                long owner = associativeStateOwner(
-                        string(receiver, "_exp"));
-                Set<String> ports = portsByOwner.get(owner);
-                if (ports != null && ports.size() == 1) {
-                    receiver.addProperty("_exp", ports.iterator().next());
-                } else if (ports != null && ports.size() > 1) {
-                    ambiguous.add(LOCATION_KIND_MAP_STATE + "/" + owner
-                            + "#" + MAP_STATE_SLOT);
+    }
+
+    /**
+     * Gives every occurrence of one runtime map owner the same stable value
+     * identity within a linked replay/session scope.
+     *
+     * <p>The VM propagates an associative state as a session-local
+     * {@code M_L..._<owner>} expression. A downstream summary can mention an
+     * upstream owner without carrying that owner's carrier. This pass first
+     * indexes all recorded MAP_STATE carriers in the scope, then rewrites all
+     * summaries. It never reads an edge port: graph edges select and schedule
+     * occurrences, while runtime carrier evidence proves value identity.</p>
+     *
+     * <p>Each returned issue is also attached to its summary's
+     * {@code alignmentGaps}; downstream worklists consequently stay open
+     * instead of solving with a guessed map.</p>
+     */
+    static List<ContainerStateIssue> canonicalizeContainerStateSymbols(
+            Collection<JsonObject> summaries) {
+        List<JsonObject> rows = new ArrayList<>();
+        if (summaries != null) {
+            for (JsonObject summary : summaries) {
+                if (summary != null) rows.add(summary);
+            }
+        }
+
+        Map<RuntimeMapOwner, RuntimeMapIdentitySet> identities =
+                new LinkedHashMap<>();
+        IdentityHashMap<JsonObject, Set<RuntimeMapOwner>> subjects =
+                new IdentityHashMap<>();
+        List<MapRecordBinding> records = new ArrayList<>();
+        List<MapReceiverBinding> receivers = new ArrayList<>();
+        List<ContainerStateIssue> issues = new ArrayList<>();
+
+        for (JsonObject summary : rows) {
+            String scope = string(summary, "boundarySessionScope");
+            String sourceKey = string(summary, "sourceKey");
+            JsonObject recorded = object(summary, RECORDED_FIELD);
+            for (JsonElement element : array(recorded, "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject record = element.getAsJsonObject();
+                String session = sessionLocationKey(record);
+                if (!isMapState(session)) continue;
+                long owner = locationOwnerOf(session);
+                if (scope.isEmpty() || owner <= 0L) {
+                    addContainerStateIssue(issues, summary,
+                            MAP_STATE_IDENTITY_MISSING, session,
+                            "MAP_STATE record has no replay scope or "
+                                    + "positive runtime owner");
+                    continue;
+                }
+                RuntimeMapOwner key = new RuntimeMapOwner(scope, session,
+                        owner);
+                subjects.computeIfAbsent(summary,
+                        ignored -> new LinkedHashSet<>()).add(key);
+                RuntimeMapIdentitySet set = identities.computeIfAbsent(key,
+                        ignored -> new RuntimeMapIdentitySet());
+                RuntimeMapIdentity identity = RuntimeMapIdentity.of(record,
+                        sourceKey);
+                if (identity.fault.isEmpty()) {
+                    set.admit(identity);
+                } else {
+                    set.faults.add(identity.fault);
+                }
+                records.add(new MapRecordBinding(record, key));
+            }
+            collectMapStateReceivers(summary, scope, subjects, receivers,
+                    issues);
+        }
+
+        for (MapRecordBinding binding : records) {
+            RuntimeMapIdentity identity = uniqueIdentity(
+                    identities.get(binding.owner));
+            if (identity != null) {
+                String held = sessionLocationKey(binding.record);
+                if (string(binding.record, SESSION_LOCATION_FIELD).isEmpty()) {
+                    binding.record.addProperty(SESSION_LOCATION_FIELD, held);
+                }
+                binding.record.addProperty("locationKey",
+                        identity.locationKey);
+            }
+        }
+        for (MapReceiverBinding binding : receivers) {
+            RuntimeMapIdentity identity = uniqueIdentity(
+                    identities.get(binding.owner));
+            if (identity != null) {
+                binding.receiver.addProperty("_exp", identity.symbol);
+            }
+        }
+
+        for (JsonObject summary : rows) {
+            Set<RuntimeMapOwner> referenced = subjects.get(summary);
+            if (referenced == null) continue;
+            for (RuntimeMapOwner owner : referenced) {
+                RuntimeMapIdentitySet set = identities.get(owner);
+                if (uniqueIdentity(set) != null) continue;
+                boolean ambiguous = set != null
+                        && (set.identities.size() > 1
+                        || !set.identities.isEmpty()
+                        && !set.faults.isEmpty());
+                String detail = "scope=" + owner.scope + ", runtimeOwner="
+                        + owner.owner;
+                if (set != null && !set.faults.isEmpty()) {
+                    detail += ", evidence="
+                            + String.join(" | ", set.faults);
+                }
+                addContainerStateIssue(issues, summary, ambiguous
+                                ? MAP_STATE_IDENTITY_AMBIGUOUS
+                                : MAP_STATE_IDENTITY_MISSING,
+                        owner.sessionLocationKey, detail);
+            }
+        }
+        return issues;
+    }
+
+    private static RuntimeMapIdentity uniqueIdentity(
+            RuntimeMapIdentitySet set) {
+        return set != null && set.faults.isEmpty()
+                && set.identities.size() == 1
+                ? set.identities.values().iterator().next() : null;
+    }
+
+    private static void collectMapStateReceivers(
+            JsonObject summary, String scope,
+            IdentityHashMap<JsonObject, Set<RuntimeMapOwner>> subjects,
+            List<MapReceiverBinding> receivers,
+            List<ContainerStateIssue> issues) {
+        Deque<JsonElement> pending = new ArrayDeque<>();
+        Set<JsonElement> visited = Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
+        pending.push(summary);
+        while (!pending.isEmpty()) {
+            JsonElement current = pending.pop();
+            if (current == null || current.isJsonNull()
+                    || current.isJsonPrimitive() || !visited.add(current)) {
+                continue;
+            }
+            if (current.isJsonArray()) {
+                for (JsonElement child : current.getAsJsonArray()) {
+                    pending.push(child);
+                }
+                continue;
+            }
+            JsonObject node = current.getAsJsonObject();
+            if ("ContainerRelation".equals(string(node, "_type"))
+                    && "ASSOCIATIVE".equals(string(node, "shape"))
+                    && "STATE".equals(string(node, "operation"))) {
+                JsonObject receiver = object(node, "receiver");
+                if ("SymbolExpression".equals(
+                        string(receiver, "_type"))) {
+                    String raw = string(receiver, "_exp");
+                    long owner = associativeStateOwner(raw);
+                    if (owner > 0L && !scope.isEmpty()) {
+                        RuntimeMapOwner key = new RuntimeMapOwner(scope,
+                                LOCATION_KIND_MAP_STATE + "/" + owner + "#"
+                                        + MAP_STATE_SLOT, owner);
+                        subjects.computeIfAbsent(summary,
+                                ignored -> new LinkedHashSet<>()).add(key);
+                        receivers.add(new MapReceiverBinding(receiver, key));
+                    } else if (raw.startsWith("M_L")) {
+                        addContainerStateIssue(issues, summary,
+                                MAP_STATE_IDENTITY_MISSING, "",
+                                "associative STATE receiver has no "
+                                        + "resolvable runtime owner in scope "
+                                        + scope + ": " + raw);
+                    }
                 }
             }
+            for (Map.Entry<String, JsonElement> field : node.entrySet()) {
+                pending.push(field.getValue());
+            }
         }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            canonicalizeContainerStateSymbols(entry.getValue(),
-                    portsByOwner, ambiguous);
+    }
+
+    private static void addContainerStateIssue(
+            List<ContainerStateIssue> issues, JsonObject summary, int status,
+            String locationKey, String detail) {
+        JsonObject failure = gap(STAGE_IDENTITY, status, locationKey, detail);
+        JsonArray gaps;
+        JsonElement existing = summary.get("alignmentGaps");
+        if (existing != null && existing.isJsonArray()) {
+            gaps = existing.getAsJsonArray();
+        } else {
+            gaps = new JsonArray();
+            summary.add("alignmentGaps", gaps);
+        }
+        String rendered = CanonicalJson.render(failure);
+        for (JsonElement element : gaps) {
+            if (element.isJsonObject()
+                    && rendered.equals(CanonicalJson.render(element))) {
+                return;
+            }
+        }
+        gaps.add(failure);
+        issues.add(new ContainerStateIssue(summary, failure));
+    }
+
+    private static final class RuntimeMapOwner {
+        private final String scope;
+        private final String sessionLocationKey;
+        private final long owner;
+
+        private RuntimeMapOwner(String scope, String sessionLocationKey,
+                                long owner) {
+            this.scope = scope;
+            this.sessionLocationKey = sessionLocationKey;
+            this.owner = owner;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof RuntimeMapOwner)) return false;
+            RuntimeMapOwner that = (RuntimeMapOwner) other;
+            return owner == that.owner && scope.equals(that.scope)
+                    && sessionLocationKey.equals(that.sessionLocationKey);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = scope.hashCode();
+            result = 31 * result + sessionLocationKey.hashCode();
+            return 31 * result + (int) (owner ^ owner >>> 32);
+        }
+    }
+
+    private static final class RuntimeMapIdentitySet {
+        private final Map<String, RuntimeMapIdentity> identities =
+                new LinkedHashMap<>();
+        private final Set<String> faults = new LinkedHashSet<>();
+
+        private void admit(RuntimeMapIdentity identity) {
+            identities.putIfAbsent(identity.symbol, identity);
+        }
+    }
+
+    private static final class RuntimeMapIdentity {
+        private final String symbol;
+        private final String locationKey;
+        private final String fault;
+
+        private RuntimeMapIdentity(String symbol, String locationKey,
+                                   String fault) {
+            this.symbol = symbol;
+            this.locationKey = locationKey;
+            this.fault = fault;
+        }
+
+        private static RuntimeMapIdentity of(
+                JsonObject record, String sourceKey) {
+            JsonObject carrier = object(record, "carrier");
+            String kind = string(carrier, "kind");
+            String declaringClass = string(carrier, "declaringClass");
+            String fieldName = string(carrier, "fieldName");
+            String descriptor = string(carrier, "descriptor");
+            long receiverObjectId = longInteger(carrier,
+                    "receiverObjectId", 0L);
+            String evidenceSource = string(object(record,
+                    RecordedEvidenceIdentity.FIELD), "sourceKey");
+            String expectedField = declaringClass + "#" + fieldName + ":"
+                    + descriptor;
+            String statedField = string(carrier, "fieldKey");
+            List<String> missing = new ArrayList<>();
+            if (sourceKey.isEmpty()) missing.add("sourceKey");
+            if (!sourceKey.equals(evidenceSource)) {
+                missing.add("evidence sourceKey agreement");
+            }
+            if (!LOCATION_KIND_MAP_STATE.equals(kind)) {
+                missing.add("MAP_STATE carrier kind");
+            }
+            if (declaringClass.isEmpty()) missing.add("declaringClass");
+            if (fieldName.isEmpty()) missing.add("fieldName");
+            if (descriptor.isEmpty()) missing.add("descriptor");
+            if (receiverObjectId <= 0L) {
+                missing.add("planned receiverObjectId");
+            }
+            if (!statedField.isEmpty() && !expectedField.equals(statedField)) {
+                missing.add("fieldKey agreement");
+            }
+            if (!missing.isEmpty()) {
+                return new RuntimeMapIdentity("", "",
+                        "missing or conflicting " + String.join(", ", missing));
+            }
+            // Scope and VM owner locate this evidence inside one imported
+            // execution only. They restart across replays and therefore must
+            // never enter the stable value identity.
+            String symbol = mapStateSymbol(sourceKey, declaringClass,
+                    fieldName, descriptor, receiverObjectId);
+            String digest = symbol.substring(MAP_STATE_SYMBOL_PREFIX.length());
+            return new RuntimeMapIdentity(symbol,
+                    LOCATION_KIND_MAP_STATE + "/" + digest + "#"
+                            + MAP_STATE_SLOT, "");
+        }
+    }
+
+    private static final class MapRecordBinding {
+        private final JsonObject record;
+        private final RuntimeMapOwner owner;
+
+        private MapRecordBinding(JsonObject record, RuntimeMapOwner owner) {
+            this.record = record;
+            this.owner = owner;
+        }
+    }
+
+    private static final class MapReceiverBinding {
+        private final JsonObject receiver;
+        private final RuntimeMapOwner owner;
+
+        private MapReceiverBinding(JsonObject receiver,
+                                   RuntimeMapOwner owner) {
+            this.receiver = receiver;
+            this.owner = owner;
         }
     }
 
@@ -621,22 +794,6 @@ public final class SharedStateEvidence {
         row.addProperty("locationKey", canonical);
     }
 
-    /** One summary's own recorded state and that of each of its cases. */
-    private static Collection<JsonObject> recordedMembers(
-            JsonObject summary) {
-        Collection<JsonObject> members = new java.util.ArrayList<>();
-        JsonObject own = object(summary, RECORDED_FIELD);
-        if (own.size() > 0) members.add(own);
-        for (JsonElement element
-                : array(object(summary, "regionRelation"), "cases")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject recorded = object(element.getAsJsonObject(),
-                    RECORDED_FIELD);
-            if (recorded.size() > 0) members.add(recorded);
-        }
-        return members;
-    }
-
     /** Whether {@code versionKind} publishes one immutable whole state. */
     public static boolean stateVersionKind(String versionKind) {
         return versionKind != null && (versionKind.equals("STATE")
@@ -654,20 +811,32 @@ public final class SharedStateEvidence {
                 || integer(envelope, "schemaVersion", -1) != SCHEMA_VERSION) {
             return "envelope is not an authoritative version store";
         }
-        if (!envelope.has("selected") || !bool(envelope, "selected", false)) {
+        if (!booleanMember(envelope, "selected")
+                || !bool(envelope, "selected", false)) {
             return "location was never selected as a carrier";
         }
         if (locationKey(envelope).isEmpty()) {
             return "envelope names no addressable location";
         }
-        if (!envelope.has("writerSetComplete")) {
+        if (!booleanMember(envelope, "writerSetComplete")) {
             return "envelope omits writer-set completeness";
+        }
+        JsonElement versionsMember = envelope.get("versions");
+        if (versionsMember == null || !versionsMember.isJsonArray()) {
+            return "envelope carries no version array";
         }
         JsonArray versions = array(envelope, "versions");
         if (versions.size() == 0) {
             // Selecting publishes an INITIAL version, so an empty list means
             // the envelope was not produced by a real selection.
             return "selected location published no version";
+        }
+        if (!booleanMember(envelope, "serializationTruncated")) {
+            return "envelope omits version serialization completeness";
+        }
+        if (bool(envelope, "serializationTruncated", false)) {
+            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
+                    + ": version envelope";
         }
         boolean mapState = isMapState(locationKey(envelope));
         Set<Long> versionIds = new LinkedHashSet<>();
@@ -681,9 +850,17 @@ public final class SharedStateEvidence {
                 return "duplicate fieldVersionId " + id;
             }
         }
-        for (JsonElement element : array(envelope, "reads")) {
+        JsonElement readsMember = envelope.get("reads");
+        if (readsMember == null || !readsMember.isJsonArray()) {
+            return "envelope carries no read array";
+        }
+        JsonArray reads = readsMember.getAsJsonArray();
+        if (!booleanMember(envelope, "readLogTruncated")) {
+            return "envelope omits read-log completeness";
+        }
+        for (JsonElement element : reads) {
             if (!element.isJsonObject()) return "read is not an object";
-            String fault = readFault(element.getAsJsonObject(), versionIds);
+            String fault = readFault(element.getAsJsonObject());
             if (!fault.isEmpty()) return fault;
         }
         return "";
@@ -704,12 +881,10 @@ public final class SharedStateEvidence {
             return "version " + id + " has kind " + versionKind
                     + " that its location kind does not publish";
         }
-        if (longInteger(version, "writerContextId", 0L) == 0L) {
-            return "version " + id + " names no writer context";
-        }
-        if (!FINGERPRINT_KINDS.contains(
-                string(version, "fingerprintKind"))) {
-            return "version " + id + " has no declared fingerprint kind";
+        if (longInteger(version, "regionEnterEventId", 0L) <= 0L
+                || string(version, "regionId").isEmpty()
+                || string(version, "taskId").isEmpty()) {
+            return "version " + id + " names no writer case";
         }
         if (!version.has("pathGuard")) {
             // Explicitly null means the empty conjunction.  An absent key
@@ -731,36 +906,13 @@ public final class SharedStateEvidence {
         return "";
     }
 
-    private static String readFault(JsonObject read, Set<Long> versionIds) {
+    private static String readFault(JsonObject read) {
         long readEvent = longInteger(read, "readEventId", 0L);
         if (readEvent <= 0L) return "read has no readEventId";
-        String resolution = string(read, "resolution");
-        if (!RESOLUTIONS.contains(resolution)) {
-            return "read " + readEvent + " has no declared resolution";
-        }
-        if (!READ_REASONS.contains(string(read, "reason"))) {
-            return "read " + readEvent + " has no declared reason";
-        }
-        long chosen = longInteger(read, "chosenFieldVersionId", 0L);
-        if (RESOLUTION_EXACT.equals(resolution)) {
-            if (chosen <= 0L) {
-                return "exact read " + readEvent + " names no writer";
-            }
-            if (!versionIds.contains(chosen)) {
-                return "exact read " + readEvent + " names version " + chosen
-                        + " that this store does not hold";
-            }
-        } else if (chosen != 0L) {
-            return "unresolved read " + readEvent + " still names a writer";
-        }
-        if (integer(read, "candidateCount", -1) < 0) {
-            return "read " + readEvent + " reports no candidate count";
-        }
-        // Wave 3 B: a read chooses among every recorded version of its
-        // location.  Nothing preselects an edge for it, so a read that still
-        // names one is stating a narrowing this model no longer has.
-        if (!string(read, "selectedEdgeId").isEmpty()) {
-            return "read " + readEvent + " names a preselected writer edge";
+        if (longInteger(read, "regionEnterEventId", 0L) <= 0L
+                || string(read, "regionId").isEmpty()
+                || string(read, "taskId").isEmpty()) {
+            return "read " + readEvent + " names no reader case";
         }
         return "";
     }
@@ -786,18 +938,6 @@ public final class SharedStateEvidence {
     public static final String READER_SOURCE_KEY = "readerSourceKey";
     public static final String READER_OCCURRENCE_ID = "readerOccurrenceId";
 
-    /** The activation that published one version, or "". */
-    public static String writerSite(JsonObject version) {
-        return RecordedEvidenceIdentity.siteKey(
-                string(version, WRITER_OCCURRENCE_ID));
-    }
-
-    /** The activation that performed one read, or "". */
-    public static String readerSite(JsonObject read) {
-        return RecordedEvidenceIdentity.siteKey(
-                string(read, READER_OCCURRENCE_ID));
-    }
-
     public static JsonObject versionsRecord(String locationKey,
                                             JsonObject envelope,
                                             RecordedEvidenceIdentity identity) {
@@ -806,7 +946,7 @@ public final class SharedStateEvidence {
         record.addProperty("schemaVersion", RECORD_SCHEMA_VERSION);
         record.addProperty("authority", RECORD_AUTHORITY);
         record.addProperty("locationKey", text(locationKey));
-        record.add("envelope", envelope.deepCopy());
+        record.add("envelope", envelope);
         if (identity != null) identity.stamp(record);
         return record;
     }
@@ -823,141 +963,21 @@ public final class SharedStateEvidence {
     }
 
 
-    /**
-     * Admits one event-ledger envelope.
-     */
-    public static String ledgerFault(JsonObject envelope) {
-        if (envelope == null || envelope.size() == 0) {
-            return "no ledger envelope";
-        }
-        if (!LEDGER_ENVELOPE_KIND.equals(string(envelope, "kind"))
-                || integer(envelope, "schemaVersion", -1) != SCHEMA_VERSION) {
-            return "envelope is not an authoritative event ledger";
-        }
-        if (!bool(envelope, "open", false)) {
-            return "ledger belongs to no open session";
-        }
-        if (!bool(envelope, "partialOrder", false)) {
-            return "ledger does not declare a partial order";
-        }
-        if (!bool(envelope, "acyclic", false)) {
-            return "ledger order domain is cyclic";
-        }
-        if (bool(envelope, "domainSaturated", false)) {
-            // A saturated domain refused edges it could not cycle-check, so
-            // the relation it reports is not the relation the run had.
-            return "ledger order domain is saturated";
-        }
-        Set<Long> eventIds = new LinkedHashSet<>();
-        for (JsonElement element : array(envelope, "events")) {
-            if (!element.isJsonObject()) return "event is not an object";
-            JsonObject event = element.getAsJsonObject();
-            long id = longInteger(event, "eventId", 0L);
-            if (id <= 0L) return "event has no eventId";
-            if (!EVENT_KINDS.contains(string(event, "eventKind"))) {
-                return "event " + id + " has no declared kind";
-            }
-            if (!eventIds.add(id)) return "duplicate eventId " + id;
-        }
-        for (JsonElement element : array(envelope, "order")) {
-            if (!element.isJsonObject()) return "order edge is not an object";
-            JsonObject edge = element.getAsJsonObject();
-            long before = longInteger(edge, "beforeEventId", 0L);
-            long after = longInteger(edge, "afterEventId", 0L);
-            if (!EDGE_KINDS.contains(string(edge, "edgeKind"))) {
-                return "order edge " + before + "->" + after
-                        + " has no declared kind";
-            }
-            if (before <= 0L || after <= 0L || before == after) {
-                return "order edge " + before + "->" + after
-                        + " is not between two distinct events";
-            }
-            if (!eventIds.contains(before) || !eventIds.contains(after)) {
-                return "order edge " + before + "->" + after
-                        + " names an event the ledger does not hold";
-            }
-        }
-        if (bool(envelope, "truncated", false)) {
-            // The event log dropped its oldest entries, so an edge endpoint
-            // may be missing and the relation is not the run's whole one.
-            return "ledger event log is truncated";
-        }
-        return "";
-    }
-
-    /**
-     * <p>README {@code EVENT-1}: selected ledger truncation and saturation
-     */
-    public static int ledgerFaultStatus(JsonObject envelope, String fault) {
-        if (fault == null || fault.isEmpty()) return OK;
-        if (envelope != null) {
-            if (bool(envelope, "domainSaturated", false)) {
-                return LEDGER_DOMAIN_SATURATED;
-            }
-            if (bool(envelope, "truncated", false)) {
-                return LEDGER_LOG_TRUNCATED;
-            }
-        }
-        return MALFORMED_ENVELOPE;
-    }
-
-    /** Wraps one admitted ledger envelope as a recorded evidence row. */
-    public static JsonObject ledgerRecord(JsonObject envelope,
-                                          RecordedEvidenceIdentity identity) {
-        JsonObject record = new JsonObject();
-        record.addProperty("kind", LEDGER_RECORD_KIND);
-        record.addProperty("schemaVersion", RECORD_SCHEMA_VERSION);
-        record.addProperty("authority", RECORD_AUTHORITY);
-        record.addProperty("eventCount", array(envelope, "events").size());
-        record.addProperty("edgeCount", array(envelope, "order").size());
-        record.add("envelope", envelope.deepCopy());
-        if (identity != null) identity.stamp(record);
-        return record;
-    }
-
-    /** Whether {@code row} is an admitted ledger record. */
-    public static boolean isLedgerRecord(JsonObject row) {
-        return row != null
-                && LEDGER_RECORD_KIND.equals(string(row, "kind"))
-                && RECORD_AUTHORITY.equals(string(row, "authority"))
-                && integer(row, "schemaVersion", -1) == RECORD_SCHEMA_VERSION
-                && RecordedEvidenceIdentity.stamped(row)
-                && ledgerFault(object(row, "envelope")).isEmpty();
-    }
-
-
-    public static JsonObject recorded(Collection<JsonObject> versionRecords,
-                                      JsonObject ledgerRecord) {
+    public static JsonObject recorded(Collection<JsonObject> versionRecords) {
         JsonArray versions = new JsonArray();
         if (versionRecords != null) {
             for (JsonObject record : versionRecords) {
-                if (isVersionsRecord(record)) versions.add(record.deepCopy());
+                if (isVersionsRecord(record)) versions.add(record);
             }
         }
-        boolean admittedLedger = isLedgerRecord(ledgerRecord);
-        if (versions.size() == 0 && !admittedLedger) {
-            return new JsonObject();
-        }
+        if (versions.size() == 0) return new JsonObject();
         JsonObject recorded = new JsonObject();
         recorded.addProperty("schemaVersion", SCHEMA_VERSION);
         recorded.addProperty("kind", RECORDED_KIND);
         recorded.addProperty("authority", RECORD_AUTHORITY);
         recorded.add("versions", versions);
-        if (admittedLedger) {
-            recorded.add("eventLedger", ledgerRecord.deepCopy());
-        }
         return recorded;
     }
-
-    // README EVENT-1 forbids a cross-session event-id or snapshot merge, and
-
-    /** Whether {@code candidate} is the later snapshot of the two. */
-    public static boolean later(JsonObject candidate, JsonObject held) {
-        return held == null
-                || RecordedEvidenceIdentity.snapshotOrdinalOf(candidate)
-                > RecordedEvidenceIdentity.snapshotOrdinalOf(held);
-    }
-
 
     /** Whether {@code node} claims to be a guarded read-from choice. */
     public static boolean claimsGuardedRead(JsonObject node) {
@@ -976,18 +996,15 @@ public final class SharedStateEvidence {
                 string(node, "expressionAuthority"))) {
             return "guarded read carries no VM authority";
         }
-        if (!RESOLUTION_GUARDED.equals(string(node, "resolution"))) {
-            return "guarded read does not declare a guarded resolution";
-        }
-        if (!READ_REASONS.contains(string(node, "reason"))) {
-            return "guarded read has no declared reason";
+        if (string(node, "_java_type").isEmpty()) {
+            return "guarded read names no Java value sort";
         }
         long readEvent = longInteger(node, "readEventId", 0L);
         if (readEvent <= 0L) return "guarded read has no readEventId";
         if (locationKey(node).isEmpty()) {
             return "guarded read names no addressable location";
         }
-        if (!node.has("writerSetComplete")) {
+        if (!booleanMember(node, "writerSetComplete")) {
             return "guarded read omits writer-set completeness";
         }
         JsonArray candidates = array(node, "candidates");
@@ -999,7 +1016,6 @@ public final class SharedStateEvidence {
             return "exactlyOne does not cover the candidate set";
         }
         Set<String> seen = new LinkedHashSet<>();
-        int unknownArms = 0;
         for (int index = 0; index < candidates.size(); index++) {
             JsonElement element = candidates.get(index);
             if (!element.isJsonObject()) return "candidate is not an object";
@@ -1013,24 +1029,9 @@ public final class SharedStateEvidence {
                 return "exactlyOne selector " + index
                         + " does not name its candidate";
             }
-            String fault = candidateFault(candidate, readEvent, index,
-                    candidates.size());
+            String fault = candidateFault(candidate,
+                    isMapState(locationKey(node)));
             if (!fault.isEmpty()) return fault;
-            if (bool(candidate, "unknown", false)) unknownArms++;
-        }
-        if (unknownArms != 1) {
-            return "guarded read must carry exactly one unknown-writer arm";
-        }
-        if (!bool(candidates.get(candidates.size() - 1).getAsJsonObject(),
-                "unknown", false)) {
-            return "unknown-writer arm is not the final ite arm";
-        }
-        if (node.get("ite") == null || node.get("ite").isJsonNull()) {
-            return "guarded read carries no selection term";
-        }
-        if (containsVmSerializationTruncation(node.get("ite"))) {
-            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
-                    + ": guarded read selection term";
         }
         return "";
     }
@@ -1043,23 +1044,17 @@ public final class SharedStateEvidence {
     }
 
     private static String candidateFault(JsonObject candidate,
-                                         long readEvent, int index,
-                                         int total) {
+                                         boolean mapState) {
         String selector = string(candidate, "selector");
-        boolean unknown = bool(candidate, "unknown", false);
         long version = longInteger(candidate, "fieldVersionId", 0L);
-        if (unknown) {
-            if (!UNKNOWN_WRITER_SELECTOR.equals(selector)) {
-                return "unknown arm is not named " + UNKNOWN_WRITER_SELECTOR;
-            }
-            if (version != 0L) {
-                return "unknown arm names a recorded write";
-            }
-            if (index + 1 != total) {
-                return "unknown arm is not the last candidate";
-            }
-        } else if (version <= 0L) {
+        if (version <= 0L) {
             return "candidate " + selector + " names no recorded write";
+        }
+        String versionKind = string(candidate, "versionKind");
+        if (!VERSION_KINDS.contains(versionKind)
+                || !INITIAL_VERSION_KIND.equals(versionKind)
+                && stateVersionKind(versionKind) != mapState) {
+            return "candidate " + selector + " has incompatible version kind";
         }
         JsonElement value = candidate.get("expression");
         if (value == null || value.isJsonNull()) {
@@ -1069,55 +1064,20 @@ public final class SharedStateEvidence {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": candidate " + selector + " value expression";
         }
+        if (!candidate.has("pathGuard")) {
+            return "candidate " + selector + " omits its writer path guard";
+        }
         if (containsVmSerializationTruncation(candidate.get("pathGuard"))) {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": candidate " + selector + " path guard";
         }
-        JsonArray constraints = array(candidate, "orderConstraints");
-        if (constraints.size() == 0) {
-            return "candidate " + selector + " carries no read cut";
-        }
-        boolean sawCut = false;
-        for (JsonElement element : constraints) {
-            if (!element.isJsonObject()) {
-                return "order constraint is not an object";
-            }
-            JsonObject constraint = element.getAsJsonObject();
-            String kind = string(constraint, "kind");
-            if (!ORDER_CONSTRAINT_KINDS.contains(kind)) {
-                return "candidate " + selector
-                        + " carries an undeclared order constraint " + kind;
-            }
-            if ("WRITE_BEFORE_READ".equals(kind)) {
-                if (longInteger(constraint, "beforeEventId", 0L) != version
-                        || longInteger(constraint, "afterEventId", 0L)
-                        != readEvent) {
-                    return "candidate " + selector
-                            + " does not place its own write before the read";
-                }
-                sawCut = true;
-            } else if ("UNKNOWN_WRITE_BEFORE_READ".equals(kind)) {
-                if (!unknown || longInteger(constraint, "readEventId", 0L)
-                        != readEvent) {
-                    return "unknown cut does not name this read";
-                }
-                sawCut = true;
-            } else if (longInteger(constraint, "selectedEventId", 0L)
-                    != version
-                    || longInteger(constraint, "readEventId", 0L)
-                    != readEvent
-                    || longInteger(constraint, "otherEventId", 0L) <= 0L) {
-                return "candidate " + selector
-                        + " carries a competitor cut for another read";
-            }
-        }
-        return sawCut ? ""
-                : "candidate " + selector + " never orders its own write";
+        return "";
     }
 
-    /** Whether {@code node} is a guarded read-from node this layer admits. */
-    public static boolean isGuardedRead(JsonObject node) {
-        return guardedReadFault(node).isEmpty();
+    private static boolean booleanMember(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isBoolean();
     }
 
     private static Set<String> names(String... values) {

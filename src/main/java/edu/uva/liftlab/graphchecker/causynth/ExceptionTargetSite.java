@@ -28,23 +28,4 @@ public final class ExceptionTargetSite {
                 + exceptionClass + "#" + exceptionConstructionOrdinal;
     }
 
-    public String id() {
-        return id;
-    }
-
-    public String className() {
-        return className;
-    }
-
-    public String methodName() {
-        return methodName;
-    }
-
-    public String methodDescriptor() {
-        return methodDescriptor;
-    }
-
-    public String exceptionClass() {
-        return exceptionClass;
-    }
 }

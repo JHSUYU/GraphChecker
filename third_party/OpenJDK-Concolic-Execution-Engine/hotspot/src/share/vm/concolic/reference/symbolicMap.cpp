@@ -27,10 +27,8 @@ static bool is_key_map_iterator(oop receiver) {
       || name->equals("java/util/LinkedHashMap$LinkedKeyIterator");
 }
 
-// An iterator whose next() yields a Map.Entry.  This is the shape Hadoop's
-// removeExpiredKeys uses -- entrySet().iterator(), reading e.getValue() but
-// never e.getKey() -- so the removed key is not surfaced by any call and must
-// be read out of the returned entry node.
+// An iterator whose next() yields a Map.Entry. A loop may read the value but
+// never the key, so recover the removed key from the returned entry node.
 static bool is_entry_map_iterator(oop receiver) {
   if (receiver == NULL || receiver->klass() == NULL
       || receiver->klass()->name() == NULL) return false;
@@ -39,25 +37,28 @@ static bool is_entry_map_iterator(oop receiver) {
       || name->equals("java/util/LinkedHashMap$LinkedEntryIterator");
 }
 
-// Preserve the key as a projection of the iterator's symbolic input state.
-// A concrete replay may populate the same map with different keys, so folding
-// the returned object here would break composition across executions.
+// Prefer the expression carried by the actual key object.  In particular, an
+// Integer produced from a symbolic int already carries that int expression;
+// wrapping NEXT in KEY would repeat the iterator's whole input map in every
+// REMOVE_IF and make successive passes grow the state exponentially.
+//
+// A key with no semantic expression cannot contribute symbolic lineage.  Its
+// concrete/identity leaf is therefore the bounded fallback: it records which
+// entry this replay visited without copying the map state into its own update.
 static Expression *iterated_entry_key(oop cursor, oop result_object,
                                       Expression *next) {
-  if (result_object == NULL || next == NULL) return NULL;
+  if (next == NULL) return NULL;
+  oop key_object = NULL;
   if (is_key_map_iterator(cursor)) {
-    return next;
+    key_object = result_object;
+  } else if (is_entry_map_iterator(cursor) && result_object != NULL) {
+    key_object = OopUtils::key_of_map_node(result_object);
+  } else {
+    return NULL;
   }
-  if (is_entry_map_iterator(cursor)) {
-    oop key_object = OopUtils::key_of_map_node(result_object);
-    if (key_object == NULL) return NULL;
-    exp_list_t no_arguments;
-    return new ContainerExpression(
-        "ASSOCIATIVE", "KEY", next, no_arguments,
-        ContainerSupport::result_type(key_object, T_OBJECT),
-        ContainerSupport::java_type(key_object, T_OBJECT));
-  }
-  return NULL;
+  Expression *carried = ContainerSupport::semantic_value(key_object);
+  return carried != NULL ? carried
+                         : ContainerSupport::concrete_value(key_object);
 }
 
 // Records `REMOVE_IF(prev_state, key) under guard` as a new version of the map
@@ -173,9 +174,8 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
       && !ContainerSupport::follows_callee_body(callee_name)) {
     // A selected map is shared, so this thread's abort is not the whole cost:
     // an operation nobody modeled may have changed a state that other threads
-    // still read.  Mark the location before failing closed, so their reads
-    // keep an honest unknown arm instead of resolving against a writer set
-    // that is quietly missing one.
+    // still read.  Mark the location before failing closed, so later queries
+    // cannot treat the retained writer set as complete.
     ContainerSupport::mark_state_gap(
         handle.get_param<oop>(0), "ASSOCIATIVE_OPERATION_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
@@ -391,9 +391,10 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
   // Every observation of a selected root map binds to the state it may have
   // observed rather than to whichever state happens to be installed when the
   // helper finishes.  Views are observations too: values().iterator().next()
-  // and values().toArray() must inherit the exact/guarded writer selected here
+  // and values().toArray() inherit the guarded writer choice made here
   // instead of silently walking an unversioned last-state receiver.
   bool observation_admitted = true;
+  bool selected_without_value = false;
   bool root_observation = root_map
       && (method == "get" || method == "containsKey"
           || method == "size" || method == "isEmpty"
@@ -405,18 +406,19 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
         expression_type, result_java_type);
     if (bound.expression != NULL) {
       result = bound.expression;
-      // A proven writer leaves the observation meaningful; an undecided one
-      // does not.  Asserting `choice == the value this run returned` would let
-      // concrete equality select the writer, which is the read-from guess the
-      // design forbids, so a guarded query records no value observation.
-      observation_admitted = bound.exact;
+      // A guarded writer choice must not be constrained to the concrete value
+      // this replay happened to return; that would pin the read to one writer.
+      observation_admitted = false;
+    } else if (bound.selected) {
+      selected_without_value = true;
     }
   }
-  if (result == NULL) {
+  if (result == NULL && !selected_without_value) {
     result = new ContainerExpression(
         "ASSOCIATIVE", operation, receiver, arguments,
         expression_type, result_java_type);
   }
+  if (result == NULL) return NULL;
   if (method == "next") {
     Expression *key = iterated_entry_key(
         receiver_object, result_object, result);

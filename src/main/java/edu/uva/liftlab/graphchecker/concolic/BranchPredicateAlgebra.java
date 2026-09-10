@@ -5,72 +5,251 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** The single polarity algebra for binary concolic branch predicates. */
 public final class BranchPredicateAlgebra {
+    private static final String SUPPORT_PREFIX = "BRANCH_SUPPORT.v1.";
+    private static final String SUPPORT_DOMAIN =
+            "GraphChecker/branch-symbolic-support/v1\n";
     private static final Map<String, String> COMPLEMENTS = complements();
     private BranchPredicateAlgebra() {
     }
 
     public static JsonElement canonical(JsonElement predicate) {
-        return CanonicalJson.copy(withoutNullMembers(predicate));
+        return canonicalCopy(predicate,
+                new IdentityHashMap<JsonElement, JsonElement>());
     }
 
-    /** Drops object members whose value is JSON null. */
-    private static JsonElement withoutNullMembers(JsonElement value) {
+    /** Defensive canonical copy which retains sharing inside an expression DAG. */
+    private static JsonElement canonicalCopy(
+            JsonElement value,
+            IdentityHashMap<JsonElement, JsonElement> memo) {
         if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
-            return value == null ? JsonNull.INSTANCE : value;
+            return value == null ? JsonNull.INSTANCE : value.deepCopy();
         }
+        JsonElement held = memo.get(value);
+        if (held != null) return held;
         if (value.isJsonArray()) {
             JsonArray result = new JsonArray();
+            memo.put(value, result);
             for (JsonElement item : value.getAsJsonArray()) {
-                result.add(withoutNullMembers(item));
+                result.add(canonicalCopy(item, memo));
             }
             return result;
         }
         JsonObject result = new JsonObject();
+        memo.put(value, result);
+        List<String> names = new ArrayList<>();
         for (Map.Entry<String, JsonElement> entry
                 : value.getAsJsonObject().entrySet()) {
-            JsonElement member = entry.getValue();
+            if (entry.getValue() != null && !entry.getValue().isJsonNull()) {
+                names.add(entry.getKey());
+            }
+        }
+        Collections.sort(names);
+        for (String name : names) {
+            JsonElement member = value.getAsJsonObject().get(name);
             if (member == null || member.isJsonNull()) continue;
-            result.add(entry.getKey(), withoutNullMembers(member));
+            result.add(name, canonicalCopy(member, memo));
         }
         return result;
     }
 
+    /**
+     * Immutable capture path for VM-owned predicates.  Canonical rendering
+     * already sorts object members, so capture only needs to remove null
+     * members.  Copy-on-write keeps every untouched expression identity tied
+     * to its decoder anchor.
+     */
+    static JsonElement canonicalView(JsonElement predicate) {
+        return canonicalView(predicate,
+                new IdentityHashMap<JsonElement, JsonElement>());
+    }
+
+    private static JsonElement canonicalView(
+            JsonElement value,
+            IdentityHashMap<JsonElement, JsonElement> memo) {
+        if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
+            return value == null ? JsonNull.INSTANCE : value;
+        }
+        JsonElement held = memo.get(value);
+        if (held != null) return held;
+        if (value.isJsonArray()) {
+            JsonArray source = value.getAsJsonArray();
+            JsonArray copy = null;
+            for (int index = 0; index < source.size(); index++) {
+                JsonElement child = source.get(index);
+                JsonElement canonical = canonicalView(child, memo);
+                if (copy == null && canonical != child) {
+                    copy = new JsonArray();
+                    for (int prior = 0; prior < index; prior++) {
+                        copy.add(source.get(prior));
+                    }
+                }
+                if (copy != null) copy.add(canonical);
+            }
+            JsonElement result = copy == null ? source : copy;
+            memo.put(value, result);
+            return result;
+        }
+        JsonObject source = value.getAsJsonObject();
+        JsonObject copy = null;
+        int index = 0;
+        for (Map.Entry<String, JsonElement> field : source.entrySet()) {
+            JsonElement child = field.getValue();
+            JsonElement canonical = child == null || child.isJsonNull()
+                    ? null : canonicalView(child, memo);
+            if (copy == null && canonical != child) {
+                copy = new JsonObject();
+                int prior = 0;
+                for (Map.Entry<String, JsonElement> existing
+                        : source.entrySet()) {
+                    if (prior++ == index) break;
+                    copy.add(existing.getKey(), existing.getValue());
+                }
+            }
+            if (copy != null && canonical != null) {
+                copy.add(field.getKey(), canonical);
+            }
+            index++;
+        }
+        JsonElement result = copy == null ? source : copy;
+        memo.put(value, result);
+        return result;
+    }
+
     public static JsonElement complement(JsonElement predicate) {
-        JsonElement canonical = canonical(predicate);
+        return CanonicalJson.copy(complementView(predicate));
+    }
+
+    /** Immutable-DAG complement used while assembling a solver task. */
+    static JsonElement complementView(JsonElement predicate) {
+        JsonElement canonical = canonicalView(predicate);
         if (canonical.isJsonObject()) {
             JsonObject object = canonical.getAsJsonObject();
             String type = string(object, "_type");
             if ("BinaryExpression".equals(type)) {
                 String opposite = COMPLEMENTS.get(string(object, "_op"));
                 if (opposite != null) {
-                    object.addProperty("_op", opposite);
-                    return CanonicalJson.copy(object);
+                    JsonObject result = new JsonObject();
+                    for (Map.Entry<String, JsonElement> field
+                            : object.entrySet()) {
+                        if (!"_op".equals(field.getKey())) {
+                            result.add(field.getKey(), field.getValue());
+                        }
+                    }
+                    result.addProperty("_op", opposite);
+                    return result;
                 }
             }
             if ("NotExpression".equals(type)
                     || "LogicalNotExpression".equals(type)) {
                 JsonElement operand = object.get("_operand");
                 return operand == null ? JsonNull.INSTANCE
-                        : CanonicalJson.copy(operand);
+                        : operand;
             }
         }
         JsonObject result = new JsonObject();
         result.addProperty("_type", "NotExpression");
         result.add("_operand", canonical);
-        return CanonicalJson.copy(result);
+        return result;
     }
 
     public static boolean equivalent(JsonElement left, JsonElement right) {
-        return CanonicalJson.render(canonical(left))
-                .equals(CanonicalJson.render(canonical(right)));
+        if (left == right) return true;
+        JsonElement canonicalLeft = canonicalView(left);
+        JsonElement canonicalRight = canonicalView(right);
+        if (canonicalLeft == canonicalRight) return true;
+        if (expression(canonicalLeft) && expression(canonicalRight)) {
+            SharedExpressionTable.Anchors anchors =
+                    new SharedExpressionTable.Anchors();
+            return anchors.contentAnchor(canonicalLeft).equals(
+                    anchors.contentAnchor(canonicalRight));
+        }
+        return CanonicalJson.render(canonicalLeft)
+                .equals(CanonicalJson.render(canonicalRight));
+    }
+
+    /**
+     * Stable identity of the symbolic leaves that select one branch case.
+     *
+     * <p>The full predicate is deliberately not hashed here. Runtime values
+     * such as a clock reading may legitimately change between the seed and
+     * replay while the propagated element being tested stays the same. The
+     * VM-assigned symbolic leaves name that element across the replay. An
+     * empty result means the predicate has no such identity and callers must
+     * retain their exact occurrence address.</p>
+     */
+    public static String symbolicSupportDigest(JsonElement predicate) {
+        Set<String> support = new TreeSet<>();
+        collectSymbolicSupport(predicate, support,
+                Collections.newSetFromMap(
+                        new IdentityHashMap<JsonElement, Boolean>()));
+        if (support.isEmpty()) return "";
+        StringBuilder encoded = new StringBuilder(SUPPORT_DOMAIN);
+        for (String leaf : support) {
+            encoded.append(leaf.length()).append(':').append(leaf)
+                    .append('\n');
+        }
+        return SUPPORT_PREFIX + ArtifactIO.sha256(encoded.toString());
+    }
+
+    static boolean validSymbolicSupportDigest(String digest) {
+        if (digest == null || !digest.startsWith(SUPPORT_PREFIX)
+                || digest.length() != SUPPORT_PREFIX.length() + 64) {
+            return false;
+        }
+        for (int index = SUPPORT_PREFIX.length(); index < digest.length();
+             index++) {
+            char value = digest.charAt(index);
+            if (!(value >= '0' && value <= '9'
+                    || value >= 'a' && value <= 'f')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void collectSymbolicSupport(
+            JsonElement value, Set<String> support, Set<JsonElement> seen) {
+        if (value == null || value.isJsonNull() || value.isJsonPrimitive()
+                || !seen.add(value)) {
+            return;
+        }
+        if (value.isJsonArray()) {
+            for (JsonElement child : value.getAsJsonArray()) {
+                collectSymbolicSupport(child, support, seen);
+            }
+            return;
+        }
+        JsonObject object = value.getAsJsonObject();
+        if ("SymbolExpression".equals(string(object, "_type"))) {
+            String symbol = string(object, "_exp");
+            if (!symbol.isEmpty() && !"N".equals(symbol)
+                    && !"V".equals(symbol)) {
+                support.add(string(object, "_java_type") + '\u0000'
+                        + symbol);
+            }
+            return;
+        }
+        for (Map.Entry<String, JsonElement> field : object.entrySet()) {
+            collectSymbolicSupport(field.getValue(), support, seen);
+        }
+    }
+
+    private static boolean expression(JsonElement value) {
+        return value != null && value.isJsonObject()
+                && !string(value.getAsJsonObject(), "_type").isEmpty();
     }
 
     public static String complementOperator(String operator) {

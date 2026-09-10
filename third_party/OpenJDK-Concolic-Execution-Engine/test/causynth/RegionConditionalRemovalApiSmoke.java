@@ -28,12 +28,15 @@ import java.util.Map;
  *
  * What it checks:
  *   1. the branch is NOT taken concretely -- the key remains in the map;
- *   2. the map's recorded state carries a REMOVE_IF whose key remains a
- *      projection of the symbolic input map (not a replay-local constant);
+ *   2. a REMOVE_IF reuses the actual key object's semantic expression, while
+ *      a key with no lineage uses a bounded concrete leaf rather than copying
+ *      the iterator's whole map state;
  *   3. its guard is a real predicate naming the key's own symbolic expiry --
  *      the flippable branch -- and is the removal condition ("&lt;"), not the
  *      concrete branch's kept-arm;
- *   4. an unconditional iterator remove (no marked controlling branch) still
+ *   4. repeated entry-set passes grow the serialized expression linearly and
+ *      retain every boxed primitive key symbol;
+ *   5. an unconditional iterator remove (no marked controlling branch) still
  *      records the position-keyed REMOVE_AT, unchanged.
  */
 public final class RegionConditionalRemovalApiSmoke {
@@ -49,6 +52,11 @@ public final class RegionConditionalRemovalApiSmoke {
         private long getExpiryDate() { return expiry; }
     }
 
+    private static final class KeySource {
+        private int keyId;
+        private KeySource(int keyId) { this.keyId = keyId; }
+    }
+
     private static final class State {
         private final LinkedHashMap<Integer, Value> allKeys =
                 new LinkedHashMap<Integer, Value>();
@@ -57,6 +65,7 @@ public final class RegionConditionalRemovalApiSmoke {
     public static void main(String[] args) {
         conditionalRemovalIsRecordedOnTheNotTakenBranch(args);
         conditionalRemovalViaEntrySetIterator(args);
+        symbolicEntryKeysStayLeafAndScaleLinearly();
         unconditionalRemoveStaysRemoveAt();
         System.out.println("CAUSYNTH_REGION_CONDITIONAL_REMOVAL_API_SMOKE_OK");
     }
@@ -106,20 +115,24 @@ public final class RegionConditionalRemovalApiSmoke {
         String removeIf = removeIfGuardedBy(relation, EXPIRY_SYMBOL);
         require(removeIf != null,
                 "no REMOVE_IF for key " + KEY_ID + ": " + head(relation));
-        require(removeIf.contains("\"operation\":\"NEXT\"")
-                        && removeIf.contains("\"operation\":\"KEY_VIEW\""),
-                "the REMOVE_IF key is not projected from the input map: "
-                        + head(removeIf));
+        String arguments = valueOf(shallow(removeIf), "arguments");
+        require(arguments != null
+                        && reachableContains(relation, arguments,
+                                "\"_exp\":\"Y_I_" + KEY_ID + "\"")
+                        && !reachableContains(relation, arguments,
+                                "\"operation\":\"NEXT\""),
+                "the concrete fallback copied the iterator state: "
+                        + head(String.valueOf(arguments)));
         String guard = valueOf(removeIf, "guard");
         require(guard != null,
                 "the REMOVE_IF carries no guard: " + head(removeIf));
-        require(guard.contains(EXPIRY_SYMBOL),
+        require(reachableContains(relation, guard, EXPIRY_SYMBOL),
                 "the guard does not name the key's expiry symbol "
                         + EXPIRY_SYMBOL + ": " + head(guard));
         // The guard is the removal condition (expiry < now).  Its top operator
         // is "<": recorded from the kept branch and negated back to the arm
         // under which the key would be gone.
-        require(topOperatorIs(guard, "<"),
+        require(topOperatorIs(relation, guard, "<"),
                 "the guard is not oriented as the removal condition (<): "
                         + head(guard));
     }
@@ -163,17 +176,103 @@ public final class RegionConditionalRemovalApiSmoke {
         require(removeIf != null,
                 "entrySet loop recorded no REMOVE_IF for key " + KEY_ID + ": "
                         + head(relation));
-        require(removeIf.contains("\"operation\":\"KEY\"")
-                        && removeIf.contains("\"operation\":\"NEXT\""),
-                "the REMOVE_IF key is not projected from the entry: "
-                        + head(removeIf));
+        String arguments = valueOf(shallow(removeIf), "arguments");
+        require(arguments != null
+                        && reachableContains(relation, arguments,
+                                "\"_exp\":\"Y_I_" + KEY_ID + "\"")
+                        && !reachableContains(relation, arguments,
+                                "\"operation\":\"KEY\"")
+                        && !reachableContains(relation, arguments,
+                                "\"operation\":\"NEXT\""),
+                "the entry-key fallback copied the iterator state: "
+                        + head(String.valueOf(arguments)));
         String guard = valueOf(removeIf, "guard");
-        require(guard != null && guard.contains("es_expiry_0"),
+        require(guard != null
+                        && reachableContains(relation, guard, "es_expiry_0"),
                 "the entrySet REMOVE_IF guard does not name the entry's "
                         + "symbolic expiry: " + head(String.valueOf(guard)));
-        require(topOperatorIs(guard, "<"),
+        require(topOperatorIs(relation, guard, "<"),
                 "the entrySet guard is not the removal condition (<): "
                         + head(guard));
+    }
+
+    // A symbolic boxed key is the common map-index shape in HDFS.  Every pass
+    // revisits the same entries, so embedding the current map state below KEY
+    // makes the serialized tree multiply on each pass.  Reusing the key
+    // object's own expression leaves exactly one REMOVE_IF node per visit.
+    private static void symbolicEntryKeysStayLeafAndScaleLinearly() {
+        String small = recordSymbolicKeyPasses(3, "growth_a");
+        String large = recordSymbolicKeyPasses(6, "growth_b");
+
+        require(count(small, "\"operation\":\"REMOVE_IF\"") == 6,
+                "three two-entry passes did not produce six state updates: "
+                        + small.length());
+        require(count(large, "\"operation\":\"REMOVE_IF\"") == 12,
+                "a prior map state was duplicated below a key expression: "
+                        + large.length());
+        require(large.length() <= small.length() * 5 / 2 + 2048,
+                "doubling iterator passes grew faster than linearly: small="
+                        + small.length() + " large=" + large.length());
+
+        for (int key = 0; key < 2; key++) {
+            String removeIf = removeIfGuardedBy(
+                    large, "growth_b_expiry_" + key);
+            require(removeIf != null,
+                    "no conditional removal for symbolic key " + key);
+            String arguments = valueOf(shallow(removeIf), "arguments");
+            require(arguments != null
+                            && reachableContains(large, arguments,
+                                    "growth_b_key_" + key),
+                    "REMOVE_IF lost boxed key lineage growth_b_key_" + key
+                            + ": " + head(String.valueOf(arguments)));
+            require(!reachableContains(large, arguments,
+                                    "\"operation\":\"KEY\"")
+                            && !reachableContains(large, arguments,
+                                    "\"operation\":\"NEXT\""),
+                    "symbolic key still embeds iterator state: "
+                            + head(arguments));
+        }
+    }
+
+    private static String recordSymbolicKeyPasses(
+            int passes, String prefix) {
+        State state = new State();
+        Value[] values = {new Value(100L), new Value(200L)};
+
+        System.startConcolicRegion("REGION." + prefix, "TASK." + prefix);
+        System.symbolizeField(state, "allKeys", prefix + "_map");
+        for (int key = 0; key < values.length; key++) {
+            KeySource source = new KeySource(9000 + key);
+            System.symbolizeExactField(source, KeySource.class.getName(),
+                    "keyId", "I", prefix + "_key_" + key);
+            // Match the production shape: a symbolic primitive is read from
+            // an upstream object and boxed before it becomes a map key.  The
+            // VM's Integer.valueOf model must attach that primitive
+            // expression to the returned Integer object; iterator removal
+            // then recovers the same expression from the entry's real key.
+            Integer boxed = Integer.valueOf(source.keyId);
+            System.symbolizeExactField(values[key], Value.class.getName(),
+                    "expiry", "J", prefix + "_expiry_" + key);
+            state.allKeys.put(boxed, values[key]);
+        }
+
+        int occurrence = 0;
+        for (int pass = 0; pass < passes; pass++) {
+            for (Iterator<Map.Entry<Integer, Value>> it =
+                    state.allKeys.entrySet().iterator(); it.hasNext();) {
+                Map.Entry<Integer, Value> entry = it.next();
+                System.markConcolicBranch(
+                        "REMOVE.GROWTH." + prefix, ++occurrence);
+                if (entry.getValue().getExpiryDate() < NOW) {
+                    it.remove();
+                }
+            }
+        }
+        String relation = System.getSymbolicExpression(state.allKeys);
+        System.finishConcolicRegion();
+        require(state.allKeys.size() == values.length,
+                "growth baseline removed an unexpired key");
+        return relation;
     }
 
     // (4) with no marked branch, an iterator remove is still REMOVE_AT.
@@ -219,7 +318,8 @@ public final class RegionConditionalRemovalApiSmoke {
             int objectEnd = balancedEnd(json, objectStart);
             String object = json.substring(objectStart, objectEnd);
             String guard = valueOf(shallow(object), "guard");
-            if (guard != null && guard.contains(guardSymbol)) {
+            if (guard != null
+                    && reachableContains(json, guard, guardSymbol)) {
                 return object;
             }
             at = op + 1;
@@ -250,9 +350,71 @@ public final class RegionConditionalRemovalApiSmoke {
         return 0;
     }
 
-    private static boolean topOperatorIs(String binary, String op) {
-        String shallow = shallow2(binary);
+    private static boolean topOperatorIs(String artifact, String binary,
+                                         String op) {
+        String definition = definitionOf(artifact, binary);
+        String shallow = shallow2(definition == null ? binary : definition);
         return op.equals(valueOf(shallow, "_op"));
+    }
+
+    /** Whether an expression-reference DAG reachable from {@code value}
+     *  contains a local definition fragment, without expanding the DAG. */
+    private static boolean reachableContains(String artifact, String value,
+                                             String needle) {
+        return reachableContains(artifact, value, needle,
+                new java.util.HashSet<String>());
+    }
+
+    private static boolean reachableContains(
+            String artifact, String value, String needle,
+            java.util.Set<String> visited) {
+        if (value == null) return false;
+        if (value.contains(needle)) return true;
+        int at = 0;
+        String marker = "\"_type\":\"VmExpressionReference\"";
+        while ((at = value.indexOf(marker, at)) >= 0) {
+            int start = objectStartBefore(value, at);
+            int end = balancedEnd(value, start);
+            String reference = value.substring(start, end);
+            String identity = referenceIdentity(reference);
+            if (visited.add(identity)) {
+                String definition = definitionOf(artifact, reference);
+                if (definition != null && reachableContains(
+                        artifact, definition, needle, visited)) {
+                    return true;
+                }
+            }
+            at = end;
+        }
+        return false;
+    }
+
+    /** The local expression object named by one VM reference. */
+    private static String definitionOf(String artifact, String reference) {
+        if (reference == null || !reference.contains(
+                "\"_type\":\"VmExpressionReference\"")) {
+            return null;
+        }
+        String identity = referenceIdentity(reference);
+        int slash = identity.indexOf('/');
+        String session = identity.substring(0, slash);
+        String expression = identity.substring(slash + 1);
+        String prefix = "\"_type\":\"VmExpressionDefinition\","
+                + "\"sessionId\":" + session + ","
+                + "\"expressionId\":" + expression + ",";
+        int at = artifact.indexOf(prefix);
+        if (at < 0) return null;
+        int start = objectStartBefore(artifact, at);
+        String row = artifact.substring(start, balancedEnd(artifact, start));
+        return valueOf(row, "expression");
+    }
+
+    private static String referenceIdentity(String reference) {
+        String session = valueOf(reference, "sessionId");
+        String expression = valueOf(reference, "expressionId");
+        require(session != null && expression != null,
+                "malformed VM expression reference: " + head(reference));
+        return session + "/" + expression;
     }
 
     /** Blank out _left and _right so _op binds to the top node's operator. */
@@ -331,6 +493,16 @@ public final class RegionConditionalRemovalApiSmoke {
             at++;
         }
         throw new IllegalStateException("unterminated string at " + start);
+    }
+
+    private static int count(String value, String needle) {
+        int result = 0;
+        int at = 0;
+        while ((at = value.indexOf(needle, at)) >= 0) {
+            result++;
+            at += needle.length();
+        }
+        return result;
     }
 
     private static void require(boolean condition, String message) {

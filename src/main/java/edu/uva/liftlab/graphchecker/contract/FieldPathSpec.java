@@ -8,7 +8,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.trimmed;
 
 /**
@@ -37,12 +36,6 @@ public final class FieldPathSpec {
         DeclaredField declared = declaredField(cell);
         if (declared != null) result.add(declared.name());
         return Collections.unmodifiableList(result);
-    }
-
-    public static String leafOwner(String cell) {
-        DeclaredField declared = declaredField(cell);
-        if (declared == null) return "";
-        return declared.owner();
     }
 
     public static List<String> stringArray(JsonObject object,
@@ -86,40 +79,6 @@ public final class FieldPathSpec {
                 && value.getAsJsonArray().size() > 0
                 && paths(object, member).size()
                 == value.getAsJsonArray().size();
-    }
-
-    /** The unique complete declaration for an exact direct path, returned as
-     *  the original immutable-by-convention wire value. */
-    public static JsonObject exactLeafDeclaration(
-            JsonObject action, List<String> expectedPath,
-            String requiredAuthority) {
-        if (action == null || expectedPath == null
-                || expectedPath.size() < 2
-                || !trimmed(requiredAuthority).equals(text(action,
-                "fieldPathAuthority"))) {
-            return null;
-        }
-        JsonElement encoded = action.get("fieldPathLeafDeclarations");
-        if (encoded == null || !encoded.isJsonArray()) return null;
-        JsonObject selected = null;
-        for (JsonElement element : encoded.getAsJsonArray()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject declaration = element.getAsJsonObject();
-            if (!expectedPath.equals(stringArray(declaration,
-                    "fieldPath"))) {
-                continue;
-            }
-            DeclaredField leaf = declaredField(text(declaration,
-                    "fieldSignature"));
-            if (leaf == null
-                    || !leaf.name().equals(expectedPath.get(
-                    expectedPath.size() - 1))) {
-                continue;
-            }
-            if (selected != null) return null;
-            selected = declaration;
-        }
-        return selected;
     }
 
     public static final class DeclaredField {

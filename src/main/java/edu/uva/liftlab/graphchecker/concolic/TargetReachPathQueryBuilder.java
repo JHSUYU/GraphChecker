@@ -63,6 +63,8 @@ public final class TargetReachPathQueryBuilder {
     }
 
     static JsonObject build(Arguments arguments) throws IOException {
+        SharedExpressionTable.Decoder expressions =
+                new SharedExpressionTable.Decoder();
         JsonObject manifest = ArtifactIO.readObject(arguments.pathManifest);
         validatePathManifest(manifest);
         if (!ClosureGoalKind.TARGET_REACH_CLOSURE.name().equals(
@@ -111,20 +113,22 @@ public final class TargetReachPathQueryBuilder {
                             + worklistGapReasons(worklistGaps)));
         }
 
-        List<JsonObject> seeds = ArtifactIO.readJsonl(arguments.seedQuery,
-                "Malformed target seed query %1$s:%2$d",
-                "Non-object target seed query %1$s:%2$d");
-        List<JsonObject> ready = new ArrayList<>();
-        for (JsonObject row : seeds) {
-            if ("TARGET_BRANCH_SOLVER_QUERY".equals(string(row, "kind"))
-                    && bool(row, "readyForSolver", false)) {
-                ready.add(row);
-            }
+        List<JsonObject> seeds;
+        try {
+            seeds = expressions.expandAll(ArtifactIO.readJsonl(
+                    arguments.seedQuery,
+                    "Malformed target seed query %1$s:%2$d",
+                    "Non-object target seed query %1$s:%2$d"));
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Malformed target seed expression table",
+                    malformed);
         }
+        List<JsonObject> ready = solverReadySeedsForScope(seeds, manifest);
         JsonObject seed = decidingSeed(ready);
         if (seed == null) {
-            throw new IOException("one solver-ready target seed query must"
-                    + " decide the target; found " + ready.size()
+            throw new IOException("one solver-ready target seed query in the"
+                    + " exact path scope must decide the target; found "
+                    + ready.size()
                     + " and none of them waits on all the others");
         }
         String queryKey = string(seed, "queryKey");
@@ -224,9 +228,16 @@ public final class TargetReachPathQueryBuilder {
             }
         }
 
-        List<JsonObject> summaries = ArtifactIO.readJsonl(arguments.summaries,
-                "Malformed target summary %1$s:%2$d",
-                "Non-object target summary %1$s:%2$d");
+        List<JsonObject> summaries;
+        try {
+            summaries = expressions.expandAll(
+                    ArtifactIO.readJsonl(arguments.summaries,
+                            "Malformed target summary %1$s:%2$d",
+                            "Non-object target summary %1$s:%2$d"));
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Malformed target expression table",
+                    malformed);
+        }
         // One decode per summary for the whole build: each one runs
         // Scope.decode, the loop-bound authority and the relation-path
         // fixpoint, and the three passes below read the same rows.  Filled
@@ -247,13 +258,7 @@ public final class TargetReachPathQueryBuilder {
         }
 
         Map<String, JsonObject> pathsByKey = new LinkedHashMap<>();
-        Map<String, JsonObject> runtimeBindings = new LinkedHashMap<>();
-        // Edges whose runtime evidence two target paths state differently.
-        Map<String, String> contestedBindings = new LinkedHashMap<>();
         Map<String, JsonObject> symbolicSources = new LinkedHashMap<>();
-        // C2 coverage, unioned by symbol: the composer reads this ledger off
-        // the fatal query and off every fatal path it kept.
-        Map<String, JsonObject> freeSymbols = new LinkedHashMap<>();
         // One exact required-outcome execution is already an existential
         JsonObject directWitness = directRequiredWitness(summaries,
                 observations, region, occurrenceId, goalId, targetSite,
@@ -261,7 +266,6 @@ public final class TargetReachPathQueryBuilder {
         for (JsonObject summary : summaries) {
             if (directWitness != null && summary != directWitness) continue;
             if (!inScope(summary, region, occurrenceId, goalId)) continue;
-            selected.requireExactDemandLedger(summary);
             // Parsing is the schema/admission boundary for branch-owned
             // predicates. The importer already normalized the PC; this check
             PathObservation observation = observed(observations, summary);
@@ -314,16 +318,14 @@ public final class TargetReachPathQueryBuilder {
                     == targetMapping.sourceTakenOutcome();
             if (!sourceAttested && !requiredAttested) continue;
             // No side evidence from an unattested target path enters the
-            // query either.  Bindings, shared state and handoff references
-            collectRuntimeBindings(summary, runtimeBindings,
-                    contestedBindings);
+            // query either. Shared state and consumer-boundary references
             JsonObject shared = object(summary,
                     SharedStateEvidence.RECORDED_FIELD);
             for (JsonObject source
                     : SymbolicSourceEvidence.eventsOf(summary)) {
                 String identity = SymbolicSourceEvidence.identity(source);
                 JsonObject prior = symbolicSources.putIfAbsent(identity,
-                        source.deepCopy());
+                        source);
                 if (prior != null && !prior.equals(source)) {
                     throw new IOException("target paths disagree on exact "
                             + "configured source phase " + identity);
@@ -331,12 +333,32 @@ public final class TargetReachPathQueryBuilder {
             }
 
             JsonObject path = new JsonObject();
+            for (String metadata : new String[]{"taskId", "sourceTaskId",
+                    "boundarySessionScope", "replayGroupId",
+                    "topologyEpoch", "familySnapshotDigest"}) {
+                if (summary.has(metadata)) {
+                    path.add(metadata, summary.get(metadata).deepCopy());
+                }
+            }
+            path.addProperty(LocalCaseIdentity.FIELD,
+                    observation.pathKey());
+            path.addProperty("caseId", observation.pathKey());
+            path.addProperty("occurrenceId",
+                    observation.occurrenceId());
+            // The worklist is keyed by the planned occurrence while this
+            // path is keyed by one physical activation of it.  Carry the
+            // closure verdict across that boundary with the same OCC-1
+            // canonicalization used for scope admission; otherwise a closed
+            // target occurrence such as "...#2" becomes an unclosed case
+            // merely because its attested path is named "...#2#a1".
+            path.addProperty("pathSetClosed",
+                    closedPathSetApplies(manifest, summary));
             if (shared.size() > 0) {
                 path.add(SharedStateEvidence.RECORDED_FIELD,
-                        shared.deepCopy());
+                        shared);
             }
             JsonArray constraints = targetMapping.isConcreteObservation()
-                    ? observation.relationPathCondition()
+                    ? observation.pathCondition()
                     : requiredAttested
                     ? witnessedTargetConstraints(summary, observation,
                     targetMapping)
@@ -359,24 +381,16 @@ public final class TargetReachPathQueryBuilder {
                         targetMapping.concreteObservation().toJson());
             } else {
                 path.add(TARGET_BRANCH_WITNESS,
-                        targetMapping.witness().toJson());
+                        targetMapping.witness().toImmutableJsonView());
             }
             path.addProperty("desiredTakenOutcome",
                     fatalRequiredOutcome);
             // The attached expression belongs to this exact target replay.
             // Hoisting it to the query root lets another target-prefix case
-            if (!selected.writeExactHandoffEndpoints(path, summary,
+            if (!selected.writeConsumerBoundaryEvidence(path, summary,
                     coverageGaps)) {
                 continue;
             }
-            JsonArray pathFreeSymbols = new JsonArray();
-            for (JsonObject row
-                    : SymbolicSourceEvidence.freeSymbolsOf(summary)) {
-                freeSymbols.putIfAbsent(string(row, "symbol"), row);
-                pathFreeSymbols.add(row);
-            }
-            path.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
-                    pathFreeSymbols);
             JsonArray loopCounts = observation.pathLoopCounts();
             if (loopCounts.size() > 0) {
                 path.add(LoopBoundPolicy.PATH_LOOP_COUNTS, loopCounts);
@@ -387,11 +401,11 @@ public final class TargetReachPathQueryBuilder {
                         loopCountGaps);
             }
             String pathKey = observation.pathKey();
-            path.add("constraints", constraints.deepCopy());
-            // PathObservation's key intentionally describes only the local
-            String caseKey = pathKey + "\u0000"
-                    + CanonicalJson.sha256(path);
-            pathsByKey.putIfAbsent(caseKey, path);
+            path.add("constraints", constraints);
+            // Closure already rejects two observations of one local case
+            // when their rewritten consumer payloads disagree.  Runtime
+            // metadata must therefore not duplicate the same target case.
+            pathsByKey.putIfAbsent(pathKey, path);
         }
 
         List<String> pathKeys = new ArrayList<>(pathsByKey.keySet());
@@ -423,32 +437,16 @@ public final class TargetReachPathQueryBuilder {
             result.add(TARGET_CONCRETE_OBSERVATION,
                     targetConcrete.toJson());
         } else {
-            result.add("seedReplayContract", targetReplay.toJson());
+            result.add("seedReplayContract",
+                    targetReplay.toImmutableJsonView());
         }
         seedLoopBound.writeTo(result);
         JsonObject symbolicContext =
                 object(seed, "symbolicContext").deepCopy();
         selected.requireExactContext(symbolicContext);
         result.add("symbolicContext", symbolicContext);
-        result.add("selectedTargetBindings",
-                selected.exactBindings(runtimeBindings));
         SymbolicSourceEvidence.writeTo(result,
                 new ArrayList<>(symbolicSources.values()));
-        JsonArray queryFreeSymbols = new JsonArray();
-        for (JsonObject row : freeSymbols.values()) queryFreeSymbols.add(row);
-        result.add(SymbolicSourceEvidence.FREE_SYMBOLS_FIELD,
-                queryFreeSymbols);
-        // Named, never silent: an edge dropped from refinement is coverage
-        // the query does not carry, and the composer folds these rows into
-        for (Map.Entry<String, String> entry
-                : contestedBindings.entrySet()) {
-            coverageGaps.add(CoverageDivergence.of(
-                    CoverageDivergence.Kind.FLOW,
-                    "TARGET_PATH_BINDING_NOT_USABLE", entry.getKey(),
-                    "target paths describe this edge differently, so it"
-                            + " does not refine its seed binding: "
-                            + entry.getValue()));
-        }
         if (!coverageGaps.isEmpty()) {
             JsonArray gaps = new JsonArray();
             for (JsonObject row : coverageGaps) gaps.add(row);
@@ -457,7 +455,7 @@ public final class TargetReachPathQueryBuilder {
         result.add("selectedTargetOccurrence", selected.encoded.deepCopy());
         result.addProperty("constraintAuthority",
                 "RECORDED_TARGET_PREFIX_V1");
-        return result;
+        return expressions.compact(result);
     }
 
     private static boolean isTargetPathCoverageGap(String kind) {
@@ -691,9 +689,27 @@ public final class TargetReachPathQueryBuilder {
         return selected;
     }
 
-    /**
-     * The one seed query that decides the target, or null when none does.
-     */
+    /** Solver-ready candidates for this exact target worklist. Multiplicity is
+     * preserved so decidingSeed still rejects a true in-scope ambiguity. */
+    static List<JsonObject> solverReadySeedsForScope(
+            List<JsonObject> seeds, JsonObject manifest) {
+        List<JsonObject> ready = new ArrayList<>();
+        String region = string(manifest, "regionId");
+        String occurrence = string(manifest, "occurrenceId");
+        String goal = string(manifest, "goalId");
+        for (JsonObject row : seeds) {
+            if ("TARGET_BRANCH_SOLVER_QUERY".equals(string(row, "kind"))
+                    && bool(row, "readyForSolver", false)
+                    && region.equals(string(row, "regionId"))
+                    && occurrence.equals(string(row, "occurrenceId"))
+                    && goal.equals(string(row, "goalId"))) {
+                ready.add(row);
+            }
+        }
+        return ready;
+    }
+
+    /** The one seed query that decides the target, or null when none does. */
     private static JsonObject decidingSeed(List<JsonObject> ready) {
         if (ready.size() == 1) return ready.get(0);
         JsonObject direct = null;
@@ -734,27 +750,6 @@ public final class TargetReachPathQueryBuilder {
         }
     }
 
-    private static void collectRuntimeBindings(
-            JsonObject summary, Map<String, JsonObject> bindings,
-            Map<String, String> contested) {
-        for (JsonElement element : array(summary, "edgeBindings")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            String id = string(binding, "edgeId");
-            if (id.isEmpty() || contested.containsKey(id)) continue;
-            JsonObject previous = bindings.putIfAbsent(id,
-                    binding.deepCopy());
-            if (previous != null
-                    && !SharedStateEvidence.comparableBinding(previous)
-                    .equals(SharedStateEvidence.comparableBinding(binding))) {
-                bindings.remove(id);
-                contested.put(id, disagreementDetail(
-                        SharedStateEvidence.comparableBinding(previous),
-                        SharedStateEvidence.comparableBinding(binding)));
-            }
-        }
-    }
-
     /** The worklist's own gap reasons, so the partial region names itself. */
     private static String worklistGapReasons(JsonArray gaps) {
         List<String> reasons = new ArrayList<>();
@@ -771,22 +766,6 @@ public final class TargetReachPathQueryBuilder {
         return reasons.isEmpty() ? "none" : String.join(";", reasons);
     }
 
-    private static String disagreementDetail(JsonObject left,
-                                             JsonObject right) {
-        java.util.List<String> fields = new ArrayList<>();
-        java.util.Set<String> names = new java.util.TreeSet<>(left.keySet());
-        names.addAll(right.keySet());
-        for (String name : names) {
-            JsonElement a = left.get(name);
-            JsonElement b = right.get(name);
-            if (a == null ? b != null : !a.equals(b)) {
-                fields.add(name + "=" + string(left, name) + "|"
-                        + string(right, name));
-            }
-        }
-        return String.join(",", fields);
-    }
-
     /** A complete recorded case of the closed scope this query is stated
      *  over; every pass below asks the same question of the same rows. */
     private static boolean inScope(JsonObject summary, String region,
@@ -801,8 +780,38 @@ public final class TargetReachPathQueryBuilder {
                 && occurrenceId.equals(PathObservation.plannedOccurrenceOf(
                         string(summary, "occurrenceId")))
                 && goalId.equals(string(summary, "goalId"))
-                && ClosureGoalKind.fromTask(summary).capturesTargetReach()
-                && bool(summary, "relationallyComplete", false);
+                && ClosureGoalKind.fromTask(summary).capturesTargetReach();
+    }
+
+    /**
+     * Whether the planned-occurrence worklist is the complete closure
+     * authority for one physical activation summary.
+     *
+     * <p>Both sides are reduced to their planned occurrence before matching.
+     * This is the one identity boundary between a worklist row and the
+     * activation-local paths copied into the target query.</p>
+     */
+    static boolean closedPathSetApplies(JsonObject manifest,
+                                        JsonObject summary) {
+        if (manifest == null || summary == null
+                || !"CLOSED".equals(string(manifest, "state"))
+                || !"CLOSED".equals(string(manifest, "coverageState"))
+                || array(manifest, "gaps").size() != 0
+                || array(manifest, "coverageGaps").size() != 0) {
+            return false;
+        }
+        String manifestSource = string(manifest, "sourceKey");
+        String summarySource = string(summary, "sourceKey");
+        return string(manifest, "regionId").equals(
+                string(summary, "regionId"))
+                && string(manifest, "goalId").equals(
+                string(summary, "goalId"))
+                && (manifestSource.isEmpty()
+                || manifestSource.equals(summarySource))
+                && PathObservation.plannedOccurrenceOf(string(manifest,
+                "occurrenceId")).equals(
+                PathObservation.plannedOccurrenceOf(string(summary,
+                        "occurrenceId")));
     }
 
     /** This build's one decode of {@code summary}. */
@@ -848,7 +857,7 @@ public final class TargetReachPathQueryBuilder {
             SummaryBranchMapping target) {
         JsonArray result = slicedTargetPrefix(summary, observation, target);
         result.add(array(summary, "pathCondition")
-                .get(target.summaryPcIndex()).deepCopy());
+                .get(target.summaryPcIndex()));
         return result;
     }
 
@@ -865,9 +874,9 @@ public final class TargetReachPathQueryBuilder {
             throw new IllegalArgumentException(
                     "target witness is outside the recorded path");
         }
-        JsonArray projected = observation.relationPathCondition();
+        JsonArray projected = observation.pathCondition();
         List<Integer> positions =
-                observation.relationPathConditionPositions();
+                observation.pathConditionPositions();
         JsonArray prefix = new JsonArray();
         for (int index = 0; index < positions.size(); index++) {
             if (positions.get(index) < targetPosition) {
@@ -884,15 +893,12 @@ public final class TargetReachPathQueryBuilder {
         private final JsonObject encoded;
         private final String instance;
         private final Set<String> exactInputPorts;
-        private final Set<String> bindingIds;
 
         private SelectedOccurrence(JsonObject encoded, String instance,
-                                   Set<String> inputPorts,
-                                   Set<String> bindingIds) {
+                                   Set<String> inputPorts) {
             this.encoded = encoded.deepCopy();
             this.instance = instance;
             this.exactInputPorts = inputPorts;
-            this.bindingIds = bindingIds;
         }
 
         private static SelectedOccurrence decode(
@@ -925,65 +931,7 @@ public final class TargetReachPathQueryBuilder {
                             + " has ambiguous target inputPorts");
                 }
             }
-            Set<String> bindingIds = new LinkedHashSet<>();
-            for (JsonElement element : array(encoded, "bindingIds")) {
-                if (!element.isJsonPrimitive()
-                        || !element.getAsJsonPrimitive().isString()) {
-                    throw new IOException(source
-                            + " has malformed binding ledger");
-                }
-                String id = element.getAsString().trim();
-                if (id.isEmpty() || !bindingIds.add(id)) {
-                    throw new IOException(source
-                            + " has ambiguous binding ledger");
-                }
-            }
-            return new SelectedOccurrence(encoded, instance,
-                    inputPorts, bindingIds);
-        }
-
-        /**
-         * Whether one binding row feeds a mapped input port of this exact
-         * selected occurrence.  The two passes below read demand the same
-         * way, so a row can never be ledger demand for one and not for the
-         * other.
-         */
-        private boolean demandsMappedInput(JsonObject binding) {
-            return instance.equals(string(binding, "toOccurrenceId"))
-                    && exactInputPorts.contains(
-                            string(binding, "toInputPort"));
-        }
-
-        private void requireExactDemandLedger(JsonObject summary)
-                throws IOException {
-            Set<String> demanded = new LinkedHashSet<>();
-            for (JsonElement element : array(summary, "edgeBindings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject binding = element.getAsJsonObject();
-                if (!demandsMappedInput(binding)) continue;
-                String id = string(binding, "edgeId");
-                if (id.isEmpty()) {
-                    throw new IOException("selected target demand binding "
-                            + "has no edgeId");
-                }
-                // An exchange pairing a replay recorded and the scheduler
-                // absorbed is, by construction, one this ledger does not
-                // hold: the ledger is the demand the baseline discovery
-                // saw, and the absorbed pairing is what it did not.  Its
-                // authority is the VM's own send and receive events, named
-                // on the row, so it is no ledger demand here -- and nothing
-                // else is: a row without that stamp still has to be in the
-                // ledger, so a plan that grew a binding on its own is still
-                // caught.  Exempt is not dropped: exactBindings below
-                // publishes the same row, so the pairing still reaches
-                // composition.
-                if (VmHandoffEvidence.absorbed(binding)) continue;
-                demanded.add(id);
-            }
-            if (!bindingIds.equals(demanded)) {
-                throw new IOException("selected target demand ledger does "
-                        + "not exactly cover mapped input ports");
-            }
+            return new SelectedOccurrence(encoded, instance, inputPorts);
         }
 
         private void requireExactContext(JsonObject context)
@@ -994,13 +942,9 @@ public final class TargetReachPathQueryBuilder {
             }
         }
 
-        /**
-         * Binds every actual VM receive on this target path to the one
-         * selected protocol edge with the same planned producer, target and
-         * port.  Equal payload expressions are deliberately irrelevant here:
-         * they do not prove that this producer sent this receive.
-         */
-        private boolean writeExactHandoffEndpoints(
+        /** Retains the VM's exact consumer receive; graph ports are topology
+         * labels only and never rebuild the carried value. */
+        private boolean writeConsumerBoundaryEvidence(
                 JsonObject path, JsonObject summary,
                 List<JsonObject> coverageGaps) {
             List<JsonObject> bound = new ArrayList<>();
@@ -1015,101 +959,10 @@ public final class TargetReachPathQueryBuilder {
                                     + " selected occurrence"));
                     return false;
                 }
-                String producer = PathObservation.plannedOccurrenceOf(
-                        string(event,
-                                VmHandoffEvidence.PRODUCER_OCCURRENCE_ID));
-                String producerTask = string(event,
-                        VmHandoffEvidence.PRODUCER_TASK_ID);
-                List<JsonObject> matches = new ArrayList<>();
-                for (JsonElement element : array(summary, "edgeBindings")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!demandsMappedInput(binding)
-                            || !"RUNTIME_PROTOCOL_FLOW".equals(
-                            string(binding, "kind"))
-                            || !producer.equals(PathObservation
-                            .plannedOccurrenceOf(string(binding,
-                                    "fromOccurrenceId")))
-                            || !port.equals(string(binding,
-                            "fromOutputPort"))
-                            || VmHandoffEvidence.absorbed(binding)
-                            && !producerTask.equals(string(binding,
-                            VmHandoffEvidence.ABSORBED_FROM_TASK_ID))) {
-                        continue;
-                    }
-                    matches.add(binding);
-                }
-                if (matches.size() != 1) {
-                    coverageGaps.add(CoverageDivergence.of(
-                            CoverageDivergence.Kind.FLOW,
-                            "TARGET_PATH_HANDOFF_ENDPOINT_NOT_SELECTED",
-                            producer + " -> " + instance + ":" + port,
-                            "actual target VM handoff has " + matches.size()
-                                    + " selected endpoint bindings; expected"
-                                    + " one"));
-                    return false;
-                }
-                JsonObject binding = matches.get(0);
-                JsonObject encoded = event.deepCopy();
-                encoded.addProperty(
-                        VmHandoffEvidence.SELECTED_ENDPOINT_AUTHORITY_FIELD,
-                        VmHandoffEvidence.SELECTED_ENDPOINT_AUTHORITY);
-                encoded.addProperty(
-                        VmHandoffEvidence.SELECTED_ENDPOINT_EDGE_ID,
-                        string(binding, "edgeId"));
-                encoded.addProperty(VmHandoffEvidence
-                                .SELECTED_ENDPOINT_FROM_OCCURRENCE_ID,
-                        string(binding, "fromOccurrenceId"));
-                encoded.addProperty(VmHandoffEvidence
-                                .SELECTED_ENDPOINT_TO_OCCURRENCE_ID,
-                        string(binding, "toOccurrenceId"));
-                encoded.addProperty(VmHandoffEvidence
-                                .SELECTED_ENDPOINT_FROM_OUTPUT_PORT,
-                        string(binding, "fromOutputPort"));
-                encoded.addProperty(VmHandoffEvidence
-                                .SELECTED_ENDPOINT_TO_INPUT_PORT,
-                        string(binding, "toInputPort"));
-                if (VmHandoffEvidence.absorbed(binding)) {
-                    encoded.addProperty(VmHandoffEvidence
-                                    .SELECTED_ENDPOINT_ABSORBED_FROM_TASK_ID,
-                            string(binding,
-                                    VmHandoffEvidence.ABSORBED_FROM_TASK_ID));
-                }
-                bound.add(encoded);
+                bound.add(event);
             }
             VmHandoffEvidence.writeTo(path, bound);
             return true;
-        }
-
-        private JsonArray exactBindings(
-                Map<String, JsonObject> runtimeBindings) throws IOException {
-            Set<String> demanded = new LinkedHashSet<>(bindingIds);
-            // The pairings the ledger could not name are demand on these
-            // same mapped input ports.  Dropping them would hand
-            // composition the producer the frozen plan guessed while the
-            // recorded handoff names another, so the fully stamped rows an
-            // attested target path carried are published beside the ledger's
-            // own -- and only those: an unstamped row is never here, because
-            // the ledger check above would already have refused it.
-            for (Map.Entry<String, JsonObject> entry
-                    : runtimeBindings.entrySet()) {
-                if (VmHandoffEvidence.absorbed(entry.getValue())
-                        && demandsMappedInput(entry.getValue())) {
-                    demanded.add(entry.getKey());
-                }
-            }
-            List<String> ids = new ArrayList<>(demanded);
-            Collections.sort(ids);
-            JsonArray result = new JsonArray();
-            for (String id : ids) {
-                JsonObject binding = runtimeBindings.get(id);
-                if (binding == null) {
-                    throw new IOException("selected target demand binding "
-                            + id + " has no runtime evidence");
-                }
-                result.add(binding.deepCopy());
-            }
-            return result;
         }
 
     }

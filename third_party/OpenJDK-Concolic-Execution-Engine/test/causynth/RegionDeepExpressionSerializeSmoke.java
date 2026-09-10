@@ -26,15 +26,16 @@ import java.util.concurrent.CountDownLatch;
  *      guard, which is the conjunction of every branch it took, reached
  *      through getSharedFieldVersions;
  *   3. a guarded read serializes its candidates without the output exploding.
- *      A ReadFromExpression names each candidate's value twice, once in
- *      `candidates` and once in the `ite` chain, so a shared subtree reached
- *      that way must be emitted per reference and not per path to it;
+ *      A ReadFromExpression names candidate values in both its evidence rows
+ *      and selection term, so a shared subtree reached that way must be emitted
+ *      per reference and not per path to it;
  *   4. none of this truncates.  The serializer may refuse a cycle or a
  *      pathological size, and says so with a named TruncatedExpression, but
  *      ordinary evidence of this depth must come back whole -- a silent
  *      partial answer would be worse than the crash it replaced.
- *   5. a small DAG whose expanded tree is exponential is stopped by the byte
- *      bound with valid, explicitly truncated JSON rather than native OOM.
+ *   5. a small DAG whose expanded tree is exponential stays linear in the
+ *      artifact: every node is defined once and both parent edges point to
+ *      the same session-local expression id.
  */
 public final class RegionDeepExpressionSerializeSmoke {
 
@@ -48,7 +49,7 @@ public final class RegionDeepExpressionSerializeSmoke {
     /** Recorded branches, hence conjuncts in the writer's path guard. */
     private static final int GUARD_BRANCHES = 4500;
     private static final int SHARED_DAG_DEPTH = 40;
-    private static final int MAX_RENDER_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_DAG_ARTIFACT_BYTES = 128 * 1024;
 
     /**
      * What the serializer emits in place of a subtree it will not expand.  It
@@ -82,7 +83,7 @@ public final class RegionDeepExpressionSerializeSmoke {
         checkDeepOperatorChain(chain);
         checkDeepPathGuard(guard);
         checkGuardedRead(read);
-        checkBoundedSharedDag(sharedDag);
+        checkSharedDagTable(sharedDag);
 
         System.out.println("RegionDeepExpressionSerializeSmoke OK");
     }
@@ -165,9 +166,7 @@ public final class RegionDeepExpressionSerializeSmoke {
      *
      * Two equal-valued writers leave a read the run cannot attribute, so the
      * reader gets a ReadFromExpression.  It serializes every candidate once
-     * under `candidates` and again in the `ite` chain; the point here is that
-     * this stays proportional to the node count rather than to the number of
-     * paths through it.
+     * under `candidates`; the Java composer builds the guarded selected value.
      */
     private static String guardedRead() throws Exception {
         final Holder holder = new Holder();
@@ -175,10 +174,8 @@ public final class RegionDeepExpressionSerializeSmoke {
                         holder, Holder.class.getName(), "shared", "I") > 0L,
                 "carrier selection rejected");
 
-        // Deliberately not joined before the read.  Joining is a synchronised
-        // edge the engine records, which would make the later writer dominant
-        // and the read exact -- and an exact read is precisely the case that
-        // builds no ReadFromExpression at all.
+        // Wait until both writes are retained. Read-from selection deliberately
+        // does not use join or other schedule evidence to discard candidates.
         Thread first = writeFrom(holder, "REGION.rf1", 9, 1);
         Thread second = writeFrom(holder, "REGION.rf2", 5, 2);
 
@@ -247,6 +244,7 @@ public final class RegionDeepExpressionSerializeSmoke {
     private static void checkDeepOperatorChain(String json) {
         require(json.contains("\"symbolic\":true"),
                 "the accumulated value should still be symbolic: " + head(json));
+        requireDagArtifact(json);
         // One binary node per addition, so one "_left" per addition.  This is
         // the assertion a partial answer cannot pass: a walk that stopped
         // early would leave fewer.
@@ -267,6 +265,7 @@ public final class RegionDeepExpressionSerializeSmoke {
     private static void checkDeepPathGuard(String json) {
         require(json.contains("\"regionId\":\"REGION.deep-guard\""),
                 "the write should be attributed to its writer: " + head(json));
+        requireDagArtifact(json);
         require(json.contains("GUARD_SEED"), head(json));
         // The guard is a left-deep conjunction: one op_land per recorded
         // branch after the first.  Anything materially short of that is a walk
@@ -280,42 +279,117 @@ public final class RegionDeepExpressionSerializeSmoke {
         requireNoTruncation(json);
     }
 
-    /** (3) (4): a guarded read, candidates named twice, output still linear. */
+    /** (3) (4): a guarded read, with each candidate serialized once. */
     private static void checkGuardedRead(String json) {
+        requireDagArtifact(json);
         require(json.contains("\"_type\":\"ReadFromExpression\""), head(json));
-        require(json.contains("\"resolution\":\"GUARDED\""), head(json));
-        // rf_unknown is always the last arm, and every recorded writer gets one
-        // ite arm ahead of it.
-        require(json.contains("rf_unknown"), head(json));
+        require(json.contains(
+                "\"exactlyOne\":[\"rf1\",\"rf2\",\"rf3\"]"), head(json));
+        // The VM no longer duplicates candidate values in a nested ite tree.
         int arms = count(json, "\"_type\":\"IteExpression\"");
-        require(arms == 2,
-                "expected one ite arm per recorded writer, got " + arms + ": "
+        require(arms == 0,
+                "expected no serialized ite for recorded writers, got " + arms + ": "
                         + head(json));
         require(json.contains("REGION.rf1") && json.contains("REGION.rf2"),
                 head(json));
-        // Each candidate is named exactly twice -- once in `candidates`, once
-        // in its ite arm -- and no more.  More would mean the walk re-expands
-        // a shared subtree once per path that reaches it rather than once per
-        // reference to it, which is how a modest DAG turns into an
-        // exponentially large document.
-        require(count(json, "\"selector\":\"rf1\"") == 2,
-                "candidate rf1 should be named exactly twice, was "
+        require(count(json, "\"selector\":\"rf1\"") == 1,
+                "candidate rf1 should be named exactly once, was "
                         + count(json, "\"selector\":\"rf1\""));
-        require(count(json, "\"selector\":\"rf2\"") == 2,
-                "candidate rf2 should be named exactly twice, was "
+        require(count(json, "\"selector\":\"rf2\"") == 1,
+                "candidate rf2 should be named once, was "
                         + count(json, "\"selector\":\"rf2\""));
+        require(count(json, "\"selector\":\"rf3\"") == 1,
+                "candidate rf3 should be named once, was "
+                        + count(json, "\"selector\":\"rf3\""));
         requireWellFormed(json);
         requireNoTruncation(json);
     }
 
-    /** (5): expanded sharing is byte-bounded and remains valid evidence. */
-    private static void checkBoundedSharedDag(String json) {
-        require(json.length() <= MAX_RENDER_BYTES,
-                "shared DAG exceeded byte cap: " + json.length());
-        require(json.contains(TRUNCATION),
-                "exponential shared DAG should be explicitly truncated");
-        require(json.contains("EXPRESSION_BYTE_LIMIT"), head(json));
+    /** (5): shared children remain shared in the artifact DAG. */
+    private static void checkSharedDagTable(String json) {
+        requireDagArtifact(json);
+        require(json.length() <= MAX_DAG_ARTIFACT_BYTES,
+                "linear shared DAG artifact is unexpectedly large: "
+                        + json.length());
+        require(count(json, "\"_type\":\"VmExpressionDefinition\"")
+                        == SHARED_DAG_DEPTH + 1,
+                "expected one definition per operator plus the seed: "
+                        + head(json));
+        require(count(json, "\"_left\"") == SHARED_DAG_DEPTH,
+                "shared DAG lost operator definitions: " + head(json));
+        require(count(json, "SHARED_DAG_SEED") == 1,
+                "the shared seed must be defined once: " + head(json));
+        requireNoTruncation(json);
         requireWellFormed(json);
+    }
+
+    private static void requireDagArtifact(String json) {
+        require(json.contains("\"expressionEncoding\":\"VM_SESSION_DAG_V1\""),
+                "missing DAG encoding marker: " + head(json));
+        require(json.contains("\"_type\":\"VmExpressionReference\""),
+                "expression root was not encoded as a reference: "
+                        + head(json));
+        require(json.contains("\"vmExpressionTable\":"),
+                "missing expression table: " + head(json));
+        require(json.contains("\"kind\":\"VM_EXPRESSION_TABLE\""),
+                "wrong expression table schema: " + head(json));
+        requireClosedDagArtifact(json);
+    }
+
+    /** Every emitted reference resolves in the envelope's one session. */
+    private static void requireClosedDagArtifact(String json) {
+        int table = json.indexOf("\"kind\":\"VM_EXPRESSION_TABLE\"");
+        long tableSession = longMemberAfter(json, "sessionId", table);
+        long declared = longMemberAfter(json, "definitionCount", table);
+        java.util.Set<Long> definitions = new java.util.HashSet<Long>();
+        String definitionMarker =
+                "\"_type\":\"VmExpressionDefinition\"";
+        int at = json.indexOf(definitionMarker, table);
+        int definitionRows = 0;
+        while (at >= 0) {
+            long session = longMemberAfter(json, "sessionId", at);
+            long expression = longMemberAfter(json, "expressionId", at);
+            require(session == tableSession,
+                    "definition crossed VM session: " + session
+                            + " != " + tableSession);
+            require(definitions.add(Long.valueOf(expression)),
+                    "duplicate VM expression definition: " + expression);
+            definitionRows++;
+            at = json.indexOf(definitionMarker, at + definitionMarker.length());
+        }
+        require(declared == definitionRows,
+                "definitionCount " + declared + " != rows " + definitionRows);
+
+        String referenceMarker =
+                "\"_type\":\"VmExpressionReference\"";
+        at = json.indexOf(referenceMarker);
+        int references = 0;
+        while (at >= 0) {
+            long session = longMemberAfter(json, "sessionId", at);
+            long expression = longMemberAfter(json, "expressionId", at);
+            require(session == tableSession,
+                    "reference crossed VM session: " + session
+                            + " != " + tableSession);
+            require(definitions.contains(Long.valueOf(expression)),
+                    "dangling VM expression reference: " + expression);
+            references++;
+            at = json.indexOf(referenceMarker, at + referenceMarker.length());
+        }
+        require(references > 0, "DAG artifact contains no references");
+    }
+
+    private static long longMemberAfter(String json, String key, int from) {
+        String marker = "\"" + key + "\":";
+        int start = json.indexOf(marker, from);
+        require(start >= 0, "missing " + key + " after " + from);
+        start += marker.length();
+        int end = start;
+        while (end < json.length()
+                && Character.isDigit(json.charAt(end))) {
+            end++;
+        }
+        require(end > start, "non-numeric " + key + " after " + from);
+        return Long.parseLong(json.substring(start, end));
     }
 
     /**

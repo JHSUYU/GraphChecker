@@ -1,5 +1,4 @@
 #include "concolic/concolicMngr.hpp"
-#include "concolic/eventLedger.hpp"
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/stringExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
@@ -51,6 +50,7 @@ std::string serialize_field_expression(const char *kind, bool symbolic,
   using namespace rapidjson;
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
+  VmExpressionArtifactScope expression_artifact;
   writer.StartObject();
   writer.Key("schemaVersion");
   writer.Int(1);
@@ -74,6 +74,9 @@ std::string serialize_field_expression(const char *kind, bool symbolic,
   } else {
     expression->serialize(writer);
   }
+  writer.Key("expressionEncoding");
+  writer.String("VM_SESSION_DAG_V1");
+  expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
 }
@@ -331,27 +334,12 @@ jlong ConcolicMngr::attach(JavaThread *thread) {
   }
 
   ctx = new ThreadContext(thread, context_id);
-  // The other half of the thread-start edge: whatever the starting thread had
-  // done before Thread.start() is visible here, so a carrier it wrote before
-  // starting this thread resolves exactly rather than as a race.
-  if (thread->threadObj() != NULL) {
-    acquireThreadStartOrder(thread->threadObj());
-  }
   tty->print_cr("Starting concolic execution");
   return 0;
 }
 
 void ConcolicMngr::detach() {
   if (ctx == NULL) return;
-
-  // Release into this thread's own Thread object before the state goes away.
-  // Everything this thread did is necessarily before its death, so a joiner
-  // that later observes the thread as dead may soundly learn all of it; the
-  // acquire side is gated on the thread actually having terminated, so
-  // publishing at detach cannot hand the edge over too early.
-  if (ctx->get_thread() != NULL && ctx->get_thread()->threadObj() != NULL) {
-    publishThreadTerminationOrder(ctx->get_thread()->threadObj());
-  }
 
   // Only this thread's execution state.  Object shadows, container states and
   // published expressions belong to the session and survive for the other
@@ -368,7 +356,7 @@ void ConcolicMngr::detach() {
     // The last *owner*, which is not the same as the last member: an open
     // workload session is an owner too, and while it holds its reference a
     // departing thread -- even the one that started the workload -- never
-    // tears down the arena, broker, shadow heap, versions or ledger.
+    // tears down the arena, broker, shadow heap or versions.
     if (_session_members == 0 && !_workload_session_open) {
       _session_state = SESSION_CLOSING;
       last_owner = true;
@@ -395,20 +383,9 @@ jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
   jlong status = attach(thread);
   if (status != 0) return status;
   ctx->push_region(region_id, task_id);
-  // README EVENT-1: starting a selected region *is* the declaration of a
-  // selected event site, so it is what activates the order domain.  The gate
-  // used to be "some location is a shared carrier", which left a case whose
-  // only selected sites are RPC/SASL handoffs recording its VALUE_HANDOFF
-  // edge and nothing else -- no thread start/join, no volatile or atomic
-  // order.  Untraced execution still never enters here, so a workload that
-  // selects nothing keeps its old cost.
-  EventLedger::activate();
-  // A region occurrence is an event of the same domain as everything else, so
-  // that a read-from or handoff edge can be related to the region it happened
-  // in without a second, parallel notion of time.
-  ctx->set_region_enter_event(
-      EventLedger::record(EventLedger::EVENT_REGION_ENTER, NULL_SYM_RID,
-                          ctx->region_depth(), "ENTER"));
+  // This token correlates publications with the local region occurrence.  It
+  // is an identity only; its numeric order is never interpreted as a schedule.
+  ctx->set_region_enter_event(GlobalSymbolicSession::next_event_id());
   if (outermost) {
     // A selected region can begin long before its first materialized input.
     // Keep shadow frames tracking across that concrete prefix, but do not
@@ -427,6 +404,10 @@ jlong ConcolicMngr::startConcolicRegion(JavaThread *thread,
 
 jlong ConcolicMngr::currentContextId() {
   return ctx == NULL ? 0 : ctx->get_context_id();
+}
+
+jlong ConcolicMngr::currentRegionEnterEventId() {
+  return ctx == NULL ? 0 : ctx->region_enter_event();
 }
 
 void ConcolicMngr::abandonPendingBranchForException(Thread *thread) {
@@ -464,6 +445,7 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   using namespace rapidjson;
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
+  VmExpressionArtifactScope expression_artifact;
   writer.StartObject();
   writer.Key("schemaVersion");
   writer.Int(1);
@@ -481,6 +463,9 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
             ? "CONCOLIC_ABORTED" : "CONCOLIC_DISABLED"));
     writer.Key("symbolic");
     writer.Bool(false);
+    writer.Key("expressionEncoding");
+    writer.String("VM_SESSION_DAG_V1");
+    expression_artifact.write_table(writer);
     writer.EndObject();
     return std::string(buffer.GetString(), buffer.GetLength());
   }
@@ -557,6 +542,9 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   } else {
     expression->serialize(writer);
   }
+  writer.Key("expressionEncoding");
+  writer.String("VM_SESSION_DAG_V1");
+  expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
 }
@@ -907,15 +895,9 @@ jlong ConcolicMngr::endConcolic() {
     return 1;
   }
 
-  jlong entered = ctx->region_enter_event();
-  jlong exited = EventLedger::record(
-      EventLedger::EVENT_REGION_EXIT, NULL_SYM_RID, ctx->region_depth(),
-      "EXIT");
-  EventLedger::add_observed_edge(entered, exited, EventLedger::EDGE_REGION);
-
-  // Closing an inner region only changes which identity labels this thread's
-  // subsequent branches.  Its shadow stack, path condition and branch history
-  // belong to the thread and keep running in the enclosing region.
+  // Closing an inner region restores the enclosing frame.  The full indexed
+  // path remains thread-owned, while the inner frame's local branch/auxiliary
+  // wrappers and event list are released by pop_region().
   if (ctx->pop_region() > 0) return 0;
 
   // Outermost exit: this thread leaves the session.  Whether the session

@@ -16,13 +16,14 @@ import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.required;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
  * Exact VM roots minted at an explicitly configured program source.
  *
- * <p>Wave 3 C1/C3: <em>every entry of a declared mint site mints its own
- * symbol</em>.  A row's identity is therefore
+ * <p>An entry mints a root only when its value does not already carry a
+ * propagated expression. A minted row's identity is
  * {@code (sourceId, sourceOccurrenceId, ordinal)} - the field, the activation
  * that read it, and which entry of that activation - and never the selected
  * source phase, which repeats once per occurrence.  {@code sourcePhaseId}
@@ -31,10 +32,11 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  */
 public final class SymbolicSourceEvidence {
     public static final String FIELD = "symbolicSourceEvidence";
-    /** Member the C2 free roots travel in on a result or summary. */
-    public static final String FREE_SYMBOLS_FIELD = "freeSymbols";
     public static final String KIND = "CONFIGURED_SYMBOLIC_SOURCE_FIELD";
     public static final String AUTHORITY = "VM_EXACT_SOURCE_PHASE_FIELD_V2";
+    public static final String MANUAL_KIND = "MANUAL_SYMBOLIC_INPUT";
+    public static final String MANUAL_AUTHORITY =
+            "PLANNED_MANUAL_SYMBOLIZATION_V1";
     public static final int SCHEMA_VERSION = 2;
     /** Per-(activation, site) entry number of this mint; 1-based, required. */
     public static final String ORDINAL = "ordinal";
@@ -59,33 +61,6 @@ public final class SymbolicSourceEvidence {
         return "SRC." + CanonicalJson.sha256(
                 requiredPhaseId(sourcePhaseId) + "\n"
                         + required(sourceId, "sourceId"));
-    }
-
-    /**
-     * Whether one already-propagated expression can honestly be NAMED as
-     * the read of one declared source field.
-     *
-     * <p>A propagated COMPOUND is not nameable: it is a computation over
-     * roots that live elsewhere, so binding a writable program source to it
-     * would name a root that does not exist.  A bare VM root symbol is: the
-     * field carries exactly that symbol and nothing else, so the declared
-     * source is one honest name for it.  The test is the one a fresh mint
-     * must already pass - {@link #event} raises the same two - so a named
-     * read and a minted read publish the same shape, and a read that fails
-     * either check files nothing.</p>
-     */
-    public static boolean namesOneBareVmRoot(String fieldSignature,
-                                             JsonElement expression) {
-        try {
-            JsonObject symbolic = exactSymbol(expression);
-            requireDeclaredFieldType(fieldSignature,
-                    string(symbolic, "_java_type"));
-            // Only the VM's own mint prefix is a root; every other leaf is
-            // a fold or a literal this ledger never names.
-            return string(symbolic, "_exp").startsWith("M_");
-        } catch (RuntimeException notOneRoot) {
-            return false;
-        }
     }
 
     /**
@@ -117,7 +92,7 @@ public final class SymbolicSourceEvidence {
                 string(symbolic, "_java_type"));
         row.addProperty("rawSymbol", string(symbolic, "_exp"));
         row.addProperty("javaType", string(symbolic, "_java_type"));
-        row.add("expression", symbolic.deepCopy());
+        row.add("expression", symbolic);
         if (ordinal < 1) {
             throw new IllegalArgumentException(
                     FIELD + " requires a 1-based mint ordinal");
@@ -128,6 +103,39 @@ public final class SymbolicSourceEvidence {
             row.addProperty(SYMBOL, symbol.trim());
         }
         return row;
+    }
+
+    /** One root minted by an explicit task {@code SYMBOLIC} input action. */
+    public static JsonObject manualEvent(String portId, String occurrenceId,
+                                         String fieldSignature,
+                                         String javaType, String rawSymbol,
+                                         String sourceIdentity) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", required(javaType,
+                "javaType"));
+        expression.addProperty("_exp", required(rawSymbol, "rawSymbol"));
+        exactSymbol(expression);
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", SCHEMA_VERSION);
+        row.addProperty("kind", MANUAL_KIND);
+        row.addProperty("authority", MANUAL_AUTHORITY);
+        row.addProperty("portId", required(portId, "portId"));
+        row.addProperty("sourceOccurrenceId", required(occurrenceId,
+                "sourceOccurrenceId"));
+        if (fieldSignature != null && !fieldSignature.trim().isEmpty()) {
+            row.addProperty("fieldSignature", fieldSignature.trim());
+        }
+        row.addProperty("rawSymbol", rawSymbol);
+        row.addProperty("javaType", javaType);
+        row.add("expression", expression);
+        row.addProperty("sourceIdentity", required(sourceIdentity,
+                "sourceIdentity"));
+        return validate(row);
+    }
+
+    public static boolean isManual(JsonObject event) {
+        return event != null && MANUAL_KIND.equals(string(event, "kind"));
     }
 
     /** The 1-based entry number one row states. */
@@ -142,6 +150,7 @@ public final class SymbolicSourceEvidence {
 
     /** Whether this row reuses an already-propagated expression. */
     public static boolean isReused(JsonObject event) {
+        if (isManual(event)) return false;
         if (!event.has(REUSED)) {
             throw new IllegalArgumentException(
                     FIELD + " states no reuse");
@@ -185,6 +194,7 @@ public final class SymbolicSourceEvidence {
      */
     public static String identity(JsonObject event) {
         JsonObject valid = validate(event);
+        if (isManual(valid)) return string(valid, "sourceIdentity");
         return string(valid, "sourceId") + "\n"
                 + string(valid, "sourceOccurrenceId") + "\n#"
                 + ordinalOf(valid);
@@ -196,11 +206,19 @@ public final class SymbolicSourceEvidence {
      */
     public static Map<String, String> rawSymbolIdentities(
             Iterable<JsonObject> owners) {
+        return rawSymbolIdentities(owners, null);
+    }
+
+    /** Raw-root registry restricted to configured ({@code false}) or manual
+     * ({@code true}) events. A null restriction admits both. */
+    public static Map<String, String> rawSymbolIdentities(
+            Iterable<JsonObject> owners, Boolean manual) {
         Map<String, String> result = new LinkedHashMap<>();
         Map<String, JsonObject> authorityByRaw = new LinkedHashMap<>();
         if (owners == null) return result;
         for (JsonObject owner : owners) {
             for (JsonObject event : eventsOf(owner)) {
+                if (manual != null && manual != isManual(event)) continue;
                 // A reused read is not a root: its expression already names
                 // the roots it was propagated from (wave 3 C2).
                 if (isReused(event)) continue;
@@ -210,6 +228,8 @@ public final class SymbolicSourceEvidence {
                 String priorIdentity = result.putIfAbsent(raw, identity);
                 if (priorIdentity != null
                         && !priorIdentity.equals(identity)
+                        && !(isManual(prior) && isManual(event)
+                        && identity(prior).equals(identity(event)))
                         && !sameConfiguredSource(prior, event)) {
                     throw new IllegalArgumentException(
                             "one VM symbol names two configured sources: "
@@ -226,6 +246,7 @@ public final class SymbolicSourceEvidence {
     private static boolean sameConfiguredSource(JsonObject left,
                                                 JsonObject right) {
         return left != null && right != null
+                && !isManual(left) && !isManual(right)
                 && string(left, "sourceId").equals(string(right,
                 "sourceId"))
                 && string(left, "sourcePhaseId").equals(string(right,
@@ -236,34 +257,8 @@ public final class SymbolicSourceEvidence {
                 "javaType"));
     }
 
-    /**
-     * The C2 free roots one raw result or imported summary published.
-     *
-     * <p>A free root is a coverage <em>report</em>, and a composition that
-     * carries some is still a composition (the owner's explicit fail-open) -
-     * but the census itself is not optional: a producer that found none says
-     * so with an empty array, so silence stays distinguishable from "this
-     * producer does not report".</p>
-     */
-    public static List<JsonObject> freeSymbolsOf(JsonObject owner) {
-        List<JsonObject> rows = new ArrayList<>();
-        if (owner == null) return rows;
-        if (!owner.has(FREE_SYMBOLS_FIELD)) {
-            throw new IllegalArgumentException(
-                    FREE_SYMBOLS_FIELD + " is not stated");
-        }
-        for (JsonElement element : array(owner, FREE_SYMBOLS_FIELD)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject row = element.getAsJsonObject();
-            if (string(row, "symbol").isEmpty()) continue;
-            rows.add(row.deepCopy());
-        }
-        return rows;
-    }
-
     private static JsonObject validate(JsonObject event) {
-        if (event == null || !hasOnlyKnownMembers(event)
-                || !event.keySet().containsAll(REQUIRED_MEMBERS)) {
+        if (event == null || !hasOnlyKnownMembers(event)) {
             throw new IllegalArgumentException(
                     FIELD + " has an incomplete schema");
         }
@@ -272,7 +267,11 @@ public final class SymbolicSourceEvidence {
             throw new IllegalArgumentException(
                     FIELD + " has unsupported schemaVersion");
         }
-        if (!KIND.equals(string(event, "kind"))
+        if (MANUAL_KIND.equals(string(event, "kind"))) {
+            return validateManual(event);
+        }
+        if (!event.keySet().containsAll(REQUIRED_MEMBERS)
+                || !KIND.equals(string(event, "kind"))
                 || !AUTHORITY.equals(string(event, "authority"))) {
             throw new IllegalArgumentException(
                     FIELD + " has unsupported authority");
@@ -303,7 +302,27 @@ public final class SymbolicSourceEvidence {
             throw new IllegalArgumentException(
                     FIELD + " symbol metadata differs from expression");
         }
-        return event.deepCopy();
+        return shallowCopy(event);
+    }
+
+    private static JsonObject validateManual(JsonObject event) {
+        if (!event.keySet().containsAll(MANUAL_REQUIRED_MEMBERS)
+                || !MANUAL_AUTHORITY.equals(string(event, "authority"))) {
+            throw new IllegalArgumentException(
+                    FIELD + " has unsupported manual root authority");
+        }
+        required(string(event, "portId"), "portId");
+        required(string(event, "sourceOccurrenceId"),
+                "sourceOccurrenceId");
+        required(string(event, "sourceIdentity"), "sourceIdentity");
+        JsonObject expression = exactSymbol(event.get("expression"));
+        if (!string(event, "rawSymbol").equals(string(expression, "_exp"))
+                || !string(event, "javaType").equals(
+                string(expression, "_java_type"))) {
+            throw new IllegalArgumentException(
+                    FIELD + " manual root metadata differs from expression");
+        }
+        return shallowCopy(event);
     }
 
     private static final Set<String> REQUIRED_MEMBERS =
@@ -312,7 +331,13 @@ public final class SymbolicSourceEvidence {
                     "sourceOccurrenceId", "fieldSignature", "rawSymbol",
                     "javaType", "expression", ORDINAL, REUSED));
     private static final Set<String> OPTIONAL_MEMBERS =
-            new LinkedHashSet<>(java.util.Arrays.asList(SYMBOL));
+            new LinkedHashSet<>(java.util.Arrays.asList(SYMBOL, "portId",
+                    "sourceIdentity"));
+    private static final Set<String> MANUAL_REQUIRED_MEMBERS =
+            new LinkedHashSet<>(java.util.Arrays.asList("schemaVersion",
+                    "kind", "authority", "portId", "sourceOccurrenceId",
+                    "rawSymbol", "javaType", "expression",
+                    "sourceIdentity"));
 
     private static boolean hasOnlyKnownMembers(JsonObject event) {
         for (Map.Entry<String, JsonElement> member : event.entrySet()) {

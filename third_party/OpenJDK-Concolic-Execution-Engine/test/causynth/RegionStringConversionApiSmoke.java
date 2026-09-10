@@ -120,6 +120,11 @@ public final class RegionStringConversionApiSmoke {
                 builderValueExpression);
         require(builderValueExpression.contains("\"_name\":\"toString\""),
                 builderValueExpression);
+        require(builderValueExpression.contains("Y_L'String'_key="),
+                builderValueExpression);
+        require(!builderValueExpression.contains(
+                "_java_type\":\"java/lang/StringBuilder\""),
+                builderValueExpression);
         require(oneCondition(branchEvents,
                 "STRING.CONVERSION.BOOLEAN.STATIC"), branchEvents);
         require(oneCondition(branchEvents,

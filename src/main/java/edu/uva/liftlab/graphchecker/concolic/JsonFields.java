@@ -119,6 +119,17 @@ public final class JsonFields {
         return value.getAsJsonObject();
     }
 
+    /** Copies one record shell while retaining its immutable nested values. */
+    public static JsonObject shallowCopy(JsonObject source) {
+        JsonObject result = new JsonObject();
+        if (source != null) {
+            for (Map.Entry<String, JsonElement> field : source.entrySet()) {
+                result.add(field.getKey(), field.getValue());
+            }
+        }
+        return result;
+    }
+
     public static JsonArray requiredArray(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         if (value == null || !value.isJsonArray()) {

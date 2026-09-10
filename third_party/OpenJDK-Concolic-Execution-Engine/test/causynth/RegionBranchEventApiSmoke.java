@@ -39,6 +39,16 @@ public final class RegionBranchEventApiSmoke {
         return count == expectedCount;
     }
 
+    private static String auxiliaryOf(String summary) {
+        String startMarker = "\"auxiliaryPathCondition\":";
+        String endMarker = ",\"branchEvents\":";
+        int start = summary.indexOf(startMarker);
+        int end = summary.indexOf(endMarker, start);
+        check(start >= 0 && end > start,
+                "summary has no auxiliary envelope: " + summary);
+        return summary.substring(start + startMarker.length(), end);
+    }
+
     public static void main(String[] args) throws Exception {
         Input input = new Input();
         long status = System.startConcolicRegion(
@@ -255,6 +265,73 @@ public final class RegionBranchEventApiSmoke {
                 "every symbolic if must own one PC index: " + events);
         check(increasingConditionIndices(events, 5),
                 "PC indices are not exact/monotonic: " + events);
+
+        // A nested region shares the thread's globally indexed path, but its
+        // summary owns only its own branch/auxiliary evidence.  In particular,
+        // finishing it must neither copy the outer evidence nor leave its
+        // evidence behind when the outer frame becomes current again.
+        Input outerAuxInput = new Input();
+        System.symbolizeField(outerAuxInput, "value", "OUTER_AUX_ONLY");
+        int[] outerTable = new int[2];
+        int outerRead = outerTable[outerAuxInput.value & 1];
+        String outerBeforeInner = System.getConcolicRegionSummary();
+        check(outerRead == 0
+                        && auxiliaryOf(outerBeforeInner).contains(
+                        "OUTER_AUX_ONLY"),
+                "outer auxiliary constraint was not recorded locally: "
+                        + outerBeforeInner);
+
+        check(System.startConcolicRegion(
+                        "REGION.BRANCH.INNER", "ACT.BRANCH.INNER") == 0L,
+                "nested region start rejected");
+        Input innerInput = new Input();
+        System.symbolizeField(innerInput, "value", "INNER_AUX_ONLY");
+        long innerEvent = System.markConcolicBranch("INNER.ONLY", 1);
+        boolean innerOutcome;
+        if (innerInput.value > 0) {
+            innerOutcome = true;
+        } else {
+            innerOutcome = false;
+        }
+        int[] innerTable = new int[2];
+        int innerRead = innerTable[innerInput.value & 1];
+        String innerSummary = System.finishConcolicRegion();
+        String innerAuxiliary = auxiliaryOf(innerSummary);
+        check(innerEvent > second && innerOutcome && innerRead == 0,
+                "nested symbolic work changed concrete execution");
+        check(innerSummary.contains("\"regionId\":\"REGION.BRANCH.INNER\"")
+                        && innerSummary.contains("\"siteId\":\"INNER.ONLY\"")
+                        && innerSummary.contains("\"eventId\":" + innerEvent)
+                        && !innerSummary.contains("SAME_SHAPE.1"),
+                "nested summary contains the wrong branch frame: "
+                        + innerSummary);
+        check(innerAuxiliary.contains("INNER_AUX_ONLY")
+                        && !innerAuxiliary.contains("OUTER_AUX_ONLY"),
+                "nested summary contains the wrong auxiliary frame: "
+                        + innerAuxiliary);
+
+        long outerAfterInnerEvent = System.markConcolicBranch(
+                "OUTER.AFTER.INNER", 1);
+        boolean outerAfterInnerOutcome;
+        if (input.value > 0) {
+            outerAfterInnerOutcome = true;
+        } else {
+            outerAfterInnerOutcome = false;
+        }
+        String outerAfterInner = System.getConcolicRegionSummary();
+        String outerAfterInnerAuxiliary = auxiliaryOf(outerAfterInner);
+        check(outerAfterInnerEvent > innerEvent && outerAfterInnerOutcome,
+                "outer frame did not resume after nested finish");
+        check(outerAfterInner.contains("\"siteId\":\"SAME_SHAPE.1\"")
+                        && outerAfterInner.contains(
+                        "\"siteId\":\"OUTER.AFTER.INNER\"")
+                        && !outerAfterInner.contains("INNER.ONLY"),
+                "outer summary contains the wrong branch frame: "
+                        + outerAfterInner);
+        check(outerAfterInnerAuxiliary.contains("OUTER_AUX_ONLY")
+                        && !outerAfterInnerAuxiliary.contains("INNER_AUX_ONLY"),
+                "outer summary retained nested auxiliary constraints: "
+                        + outerAfterInnerAuxiliary);
 
         String summary = System.finishConcolicRegion();
         check(summary.contains("\"threadContextId\":")

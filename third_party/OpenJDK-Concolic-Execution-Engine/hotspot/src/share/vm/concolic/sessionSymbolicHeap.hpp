@@ -75,10 +75,8 @@
  * Field-shadow write policy
  * ---------------------------------------------------------------------------
  *
- * The lock above makes concurrent access to this heap memory-safe.  It does
- * not by itself decide which writer a concurrent read observes.  Two different
- * mechanisms answer that question, and which one applies depends on whether
- * the location was selected as a symbolic carrier.
+ * The lock above makes concurrent access to this heap memory-safe.  Symbolic
+ * read-from choice is enabled only for locations selected as carriers.
  *
  *   Unselected locations.  A field shadow holds exactly one expression, the
  *   most recently completed write.  Last writer wins.  A read returns some
@@ -96,20 +94,15 @@
  * completed write is the state, and a lost ++_version only makes an array
  * identity label coarser, never unsafe.
  *
- *   Selected carriers.  SharedFieldVersions makes the shadow stop being the
- *   answer.  Every completed write to a selected instance field, static field
- *   or fixed-shape array element appends an immutable version carrying its
- *   fieldVersionId, its writer's context/region/task evidence, its writer's
- *   happens-before stamp, its path guard and the concrete fingerprint of the
- *   value it stored.  Every read of such a location captures the value it
- *   actually returned in the same VM hook and resolves against those versions:
- *   exact when a unique version, the observed value over a complete writer set,
- *   or a synchronization order proves the provenance -- and otherwise a bounded
- *   exactlyOne(rf1, ..., rf_unknown) with ite over the candidates, each
- *   carrying its writer's path guard and read cut.  The last-writer-wins shadow
- *   is still maintained for such a field, but nothing consults it for
- *   provenance; it is the ordinary single-threaded answer, not the read-from
- *   record.
+ *   Selected carriers.  Every completed write to a selected instance field,
+ *   static field or fixed-shape array element appends an immutable version
+ *   carrying its expression, case identity and path guard.  Every read becomes
+ *   a bounded exactlyOne(rf1, ..., rfk) over all retained versions, including
+ *   the singleton case.  Replay does not pin a writer and synchronization does
+ *   not prune this symbolic choice.  Incomplete writer coverage is metadata
+ *   that prevents a closed conclusion, never a fresh solver value.  The
+ *   last-writer-wins shadow remains the JVM's concrete value, while the version
+ *   set supplies the symbolic alternatives.
  *
  * This replaces the CONCURRENT_FIELD_SHADOW_WRITE gap for selected locations.
  * The gap still describes every location nobody selected, and that is a
@@ -163,10 +156,6 @@ private:
   // cursor removed and translate the stable ordinal to a live index there.
   ContainerPositionStore _container_removals;
   ContainerOwnerStore _container_owners;
-  // A scheduled map input keeps its own local state, but reports versions and
-  // reads from the producer location it was admitted from.  This is an id-to-
-  // id session alias: no producer oop or Java object identity crosses the API.
-  ContainerOwnerStore _container_evidence_owners;
 
   // Guards the containers above.  See the concurrency contract at the top
   // of this file before adding a call under it.
@@ -224,15 +213,6 @@ public:
   sym_rid_t canonical_container_id(oop container) const;
   Expression *find_container_state(oop container) const;
   void set_container_state(oop container, Expression *state);
-  /**
-   * Installs a producer state and its evidence owner after exact admission.
-   * The caller must validate the version before calling: this is the only
-   * operation here that may allocate the destination shadow.
-   */
-  bool admit_container_state(oop container, sym_rid_t evidence_owner,
-                             Expression *state);
-  /** Current local state of an admitted container, or NULL. Pure lookup. */
-  Expression *find_admitted_container_state(oop container) const;
   void alias_container(oop derived, oop owner);
   int next_container_position(oop cursor);
   int current_container_position(oop cursor);

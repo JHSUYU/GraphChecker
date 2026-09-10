@@ -119,7 +119,10 @@ public final class RegionStringContainsApiSmoke {
         require(summary.contains("\"regionId\":\"REGION.string-contains\""),
                 summary);
         require(path.contains("string_contains_text"), path);
-        require(count(path, "\"_name\":\"contains\"") == 8, path);
+        // Five immutable contains nodes feed the six recorded predicates: the
+        // saved result is compared twice.  The DAG artifact defines that node
+        // once instead of expanding it once per downstream use.
+        require(count(path, "\"_name\":\"contains\"") == 5, path);
         require(path.contains("\"_is_not\":false"), path);
         require(!path.contains("\"_is_not\":true"), path);
         require(path.contains("\"_op\":\"&&\""), path);

@@ -77,7 +77,6 @@ public final class StaticProgram {
     // ------------------------------------------------------------------
 
     private Map<String, List<Map<String, Object>>> refinedEdgesByRegion;
-    private Map<String, Set<String>> callersByCallee;
     private Map<String, List<Map<String, Object>>> cellIncoming;
     private Map<String, List<Map<String, Object>>> cellOutgoing;
     private String incomingRegion;
@@ -156,23 +155,6 @@ public final class StaticProgram {
             outgoingRegion = regionId;
         }
         return cellOutgoing;
-    }
-
-    /** Reverse selected invocation index, built once for all client cuts. */
-    Map<String, Set<String>> invocationCallers() {
-        if (callersByCallee == null) {
-            callersByCallee = new LinkedHashMap<>();
-            for (Map<String, Object> edge : edges) {
-                String caller = text(edge.get("method"));
-                String callee = invocationTarget(edge);
-                if (!caller.isEmpty() && !callee.isEmpty()
-                        && !caller.equals(callee)) {
-                    callersByCallee.computeIfAbsent(callee,
-                            ignored -> new TreeSet<String>()).add(caller);
-                }
-            }
-        }
-        return callersByCallee;
     }
 
     /** The callee one dataflow edge names, dynamic dispatch included. */
@@ -415,7 +397,7 @@ public final class StaticProgram {
                 loop.get(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS));
         row.put(LoopBoundPolicy.HEADER_UNIT_INDEX, unitIndex(text(loop.get(
                 LoopBoundPolicy.RUNTIME_LOOP_ID)), "#loop:u"));
-        row.put("demandedUnitIndex", unitIndex);
+        row.put(LoopBoundPolicy.DEMANDED_UNIT_INDEX, unitIndex);
         return row;
     }
 

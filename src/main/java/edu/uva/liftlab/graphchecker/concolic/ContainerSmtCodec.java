@@ -3,22 +3,30 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {
     public static final String EXPRESSION_TYPE = "ContainerRelation";
+    /** Process-local projection nodes; never emitted by the VM or persisted. */
+    private static final String SCALAR_ASSOC_MEMBER =
+            "__SCALAR_ASSOC_MEMBER";
+    private static final String SCALAR_ASSOC_NEXT = "__SCALAR_ASSOC_NEXT";
+    private static final String SCALAR_ASSOC_HAS = "__SCALAR_ASSOC_HAS";
+    private static final String SCALAR_ASSOC_READ = "__SCALAR_ASSOC_READ";
+    private static final String SCALAR_ASSOC_SIZE = "__SCALAR_ASSOC_SIZE";
 
     private ContainerSmtCodec() {
     }
@@ -164,26 +172,6 @@ public final class ContainerSmtCodec {
     }
 
     private static String associativeRemoveDefinition() {
-        int bound = LoopBoundPolicy.SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
-        StringBuilder order = new StringBuilder("(assoc_order s)");
-        StringBuilder position =
-                new StringBuilder("(store (assoc_position s) k (- 1))");
-        for (int slot = 0; slot < bound; slot++) {
-            String key = "(select (assoc_order s) " + slot + ")";
-            String oldPosition = "(select (assoc_position s) " + key + ")";
-            order.insert(0, "(store ").append(' ').append(slot)
-                    .append(" (ite (and (<= p ").append(slot)
-                    .append(") (< ").append(slot)
-                    .append(" (- (assoc_size s) 1))) ")
-                    .append("(select (assoc_order s) ").append(slot + 1)
-                    .append(") ").append(key).append("))");
-            position.insert(0, "(store ").append(' ').append(key)
-                    .append(" (ite (and (not (= ").append(key).append(" k))")
-                    .append(" (assoc_has s ").append(key).append(") (> ")
-                    .append(oldPosition).append(" p)) (- ")
-                    .append(oldPosition).append(" 1) ")
-                    .append(oldPosition).append("))");
-        }
         return "(define-fun assoc_remove ((s AssocState) (k Value))"
                 + " AssocState"
                 + " (ite (assoc_has s k)"
@@ -191,7 +179,18 @@ public final class ContainerSmtCodec {
                 + " (mkAssocState"
                 + " (- (assoc_size s) 1)"
                 + " (store (assoc_present s) k false)"
-                + " (assoc_values s) " + order + " " + position + "))"
+                + " (assoc_values s)"
+                + " (lambda ((q Int))"
+                + " (ite (and (<= p q)"
+                + " (< q (- (assoc_size s) 1)))"
+                + " (select (assoc_order s) (+ q 1))"
+                + " (select (assoc_order s) q)))"
+                + " (lambda ((q Value))"
+                + " (ite (= q k) (- 1)"
+                + " (ite (and (assoc_has s q)"
+                + " (> (select (assoc_position s) q) p))"
+                + " (- (select (assoc_position s) q) 1)"
+                + " (select (assoc_position s) q))))))"
                 + " s))";
     }
 
@@ -310,33 +309,100 @@ public final class ContainerSmtCodec {
             return expression;
         }
         JsonElement stored = storedIndexedWrite(object.get("receiver"),
-                arguments.get(0));
+                arguments.get(0), string(object, "_java_type"));
         return stored == null ? expression : selectedIndexedElement(stored);
     }
 
     /** Resolves {@code READ(WRITE(s, j, v), i)} to the stored {@code v}. */
     private static JsonElement storedIndexedWrite(JsonElement receiver,
-                                                  JsonElement index) {
+                                                  JsonElement index,
+                                                  String selectedJavaType) {
         Integer wanted = exactIndexLiteral(index);
         if (wanted == null) return null;
+        return storedIndexedWrite(receiver, wanted, selectedJavaType);
+    }
+
+    /**
+     * Projects one literal indexed read through value-propagation wrappers.
+     * The wrapper is retained because its selector and dynamic event remain
+     * the authority for the value even when select-over-store is exact.
+     */
+    private static JsonElement storedIndexedWrite(JsonElement receiver,
+                                                  int wanted,
+                                                  String selectedJavaType) {
+        if (receiver == null || !receiver.isJsonObject()) return null;
+        JsonObject root = receiver.getAsJsonObject();
+        if (VmExpressionIr.isConsumerBoundary(root)
+                || VmExpressionIr.isConsumerBoundaryReference(root)) {
+            JsonElement selected = storedIndexedWrite(
+                    root.get(VmExpressionIr.EXPRESSION), wanted,
+                    selectedJavaType);
+            if (selected == null) return null;
+            JsonObject projected = copyWithout(root,
+                    VmExpressionIr.EXPRESSION);
+            projected.addProperty("_java_type", selectedJavaType);
+            projected.add(VmExpressionIr.EXPRESSION, selected);
+            return projected;
+        }
+        String type = string(root, "_type");
+        String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
+                ? "arms" : SharedStateEvidence.GUARDED_READ_TYPE.equals(type)
+                ? "candidates" : "";
+        if (!armsField.isEmpty()) {
+            JsonArray arms = array(root, armsField);
+            if (arms.size() == 0) return null;
+            JsonObject projected = copyWithout(root, armsField);
+            projected.addProperty("_java_type", selectedJavaType);
+            JsonArray projectedArms = new JsonArray();
+            for (JsonElement element : arms) {
+                if (!element.isJsonObject()) return null;
+                JsonObject arm = element.getAsJsonObject();
+                if (string(arm, "selector").isEmpty()
+                        || arm.get("expression") == null) {
+                    return null;
+                }
+                JsonElement selected = storedIndexedWrite(
+                        arm.get("expression"), wanted, selectedJavaType);
+                if (selected == null) return null;
+                JsonObject projectedArm = copyWithout(arm, "expression");
+                projectedArm.add("expression", selected);
+                projectedArms.add(projectedArm);
+            }
+            projected.add(armsField, projectedArms);
+            return projected;
+        }
         JsonElement cursor = receiver;
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject node = cursor.getAsJsonObject();
             JsonArray arguments = array(node, "arguments");
             if (!EXPRESSION_TYPE.equals(string(node, "_type"))
                     || !"INDEXED".equals(string(node, "shape"))
-                    || !"WRITE".equals(string(node, "operation"))
-                    || arguments.size() != 2) {
-                return null;
+                    || !"WRITE".equals(string(node, "operation"))) {
+                break;
             }
+            if (arguments.size() != 2) return null;
             Integer written = exactIndexLiteral(arguments.get(0));
             if (written == null) return null;
-            if (written.intValue() == wanted.intValue()) {
-                return arguments.get(1);
+            if (written.intValue() == wanted) {
+                return arguments.get(1).deepCopy();
             }
             cursor = node.get("receiver");
         }
-        return null;
+        // A local WRITE prefix may itself rest on a propagated array family.
+        return cursor == receiver ? null
+                : storedIndexedWrite(cursor, wanted, selectedJavaType);
+    }
+
+    /** Copies wrapper metadata without first cloning its large payload. */
+    private static JsonObject copyWithout(JsonObject source, String omitted) {
+        JsonObject result = new JsonObject();
+        for (java.util.Map.Entry<String, JsonElement> entry
+                : source.entrySet()) {
+            if (!omitted.equals(entry.getKey())) {
+                result.add(entry.getKey(), entry.getValue().deepCopy());
+            }
+        }
+        return result;
     }
 
     /** Skips the writes a size query cannot observe. */
@@ -380,9 +446,46 @@ public final class ContainerSmtCodec {
     }
 
     public static Term term(JsonObject expression, Host host) {
+        ProjectionMemo memo = new ProjectionMemo();
         String shape = string(expression, "shape");
         String operation = string(expression, "operation");
         String javaType = string(expression, "_java_type");
+        if ("ASSOCIATIVE".equals(shape)
+                && (SCALAR_ASSOC_MEMBER.equals(operation)
+                || SCALAR_ASSOC_NEXT.equals(operation)
+                || SCALAR_ASSOC_HAS.equals(operation)
+                || SCALAR_ASSOC_READ.equals(operation)
+                || SCALAR_ASSOC_SIZE.equals(operation))) {
+            JsonArray positions = array(expression, "arguments");
+            JsonElement state = expression.get("receiver");
+            int arity = SCALAR_ASSOC_SIZE.equals(operation) ? 0 : 1;
+            if (positions.size() != arity || !scalarAssociativeLeaf(state)) {
+                host.unsupported("ContainerRelation:ASSOCIATIVE:"
+                        + operation);
+                return null;
+            }
+            if (SCALAR_ASSOC_SIZE.equals(operation)) {
+                return associativeSize(state, host, memo);
+            }
+            if (SCALAR_ASSOC_HAS.equals(operation)
+                    || SCALAR_ASSOC_READ.equals(operation)) {
+                Term key = host.box(positions.get(0));
+                if (key == null) return null;
+                return SCALAR_ASSOC_HAS.equals(operation)
+                        ? associativeHas(state, key, host, memo)
+                        : host.unbox(associativeRead(state, key, host, memo),
+                        javaType);
+            }
+            Term index = host.operand(positions.get(0), Sort.INT);
+            if (index == null) return null;
+            if (SCALAR_ASSOC_MEMBER.equals(operation)) {
+                return associativeMemberAt(state, index, host, memo);
+            }
+            String viewKind = string(expression, "viewKind");
+            Term value = associativeElementAt(state, index, viewKind, host,
+                    memo);
+            return value == null ? null : host.unbox(value, javaType);
+        }
         if ("STATE".equals(operation)) {
             Sort stateSort = "INDEXED".equals(shape)
                     ? Sort.INDEXED : Sort.ASSOCIATIVE;
@@ -404,19 +507,16 @@ public final class ContainerSmtCodec {
                     Sort.INDEXED);
         }
         if ("KEY".equals(operation) || "VALUE".equals(operation)) {
-            Entry entry = entry(expression.get("receiver"), host);
+            Entry entry = entry(expression.get("receiver"));
             if (entry == null) {
                 host.unsupported("ContainerRelation:malformed-entry:"
                         + operation);
                 return null;
             }
-            requireAssociativeMember(entry.state, entry.index, host);
-            String value = "KEY".equals(operation)
-                    ? "(assoc_key_at " + entry.state.text + " "
-                    + entry.index.text + ")"
-                    : "(assoc_value_at " + entry.state.text + " "
-                    + entry.index.text + ")";
-            return host.unbox(new Term(value, Sort.VALUE), javaType);
+            Term value = associativeEntryValue(entry,
+                    "KEY".equals(operation) ? "KEY_VIEW" : "VALUE_VIEW",
+                    javaType, host, memo);
+            return value == null ? null : host.unbox(value, javaType);
         }
         if ("INDEXED".equals(shape) && "NEXT".equals(operation)) {
             JsonArray positions = array(expression, "arguments");
@@ -436,7 +536,7 @@ public final class ContainerSmtCodec {
                     + " " + index.text + ")", Sort.VALUE), javaType);
         }
         if ("ASSOCIATIVE".equals(shape) && "NEXT".equals(operation)) {
-            View view = view(expression.get("receiver"), host);
+            View view = view(expression.get("receiver"));
             JsonArray positions = array(expression, "arguments");
             if (view == null || positions.size() != 1
                     || "ENTRY_VIEW".equals(view.kind)) {
@@ -444,19 +544,14 @@ public final class ContainerSmtCodec {
                         "ContainerRelation:ASSOCIATIVE:NEXT:view");
                 return null;
             }
-            Term index = host.operand(positions.get(0), Sort.INT);
-            if (index == null) return null;
-            requireAssociativeMember(view.state, index, host);
-            String value = "KEY_VIEW".equals(view.kind)
-                    ? "(assoc_key_at " + view.state.text + " "
-                    + index.text + ")"
-                    : "(assoc_value_at " + view.state.text + " "
-                    + index.text + ")";
-            return host.unbox(new Term(value, Sort.VALUE), javaType);
+            Term value = associativeEntryValue(new Entry(
+                    view.stateExpression, positions.get(0)), view.kind,
+                    javaType, host, memo);
+            return value == null ? null : host.unbox(value, javaType);
         }
         if ("OBSERVE_KEY".equals(operation)
                 || "OBSERVE_VALUE".equals(operation)) {
-            Entry entry = entry(expression.get("receiver"), host);
+            Entry entry = entry(expression.get("receiver"));
             JsonArray observed = array(expression, "arguments");
             if (entry == null || observed.size() != 1) {
                 host.unsupported("ContainerRelation:malformed-observation:"
@@ -465,34 +560,43 @@ public final class ContainerSmtCodec {
             }
             Term value = host.box(observed.get(0));
             if (value == null) return null;
-            requireAssociativeMember(entry.state, entry.index, host);
-            String selected = "OBSERVE_KEY".equals(operation)
-                    ? "(assoc_key_at " + entry.state.text + " "
-                    + entry.index.text + ")"
-                    : "(assoc_value_at " + entry.state.text + " "
-                    + entry.index.text + ")";
-            return new Term("(= " + selected + " " + value.text + ")",
+            String observedJavaType = expressionJavaType(observed.get(0));
+            Term selected = associativeEntryValue(entry,
+                    "OBSERVE_KEY".equals(operation)
+                            ? "KEY_VIEW" : "VALUE_VIEW",
+                    observedJavaType, host, memo);
+            if (selected == null) return null;
+            return new Term("(= " + selected.text + " " + value.text + ")",
                     Sort.BOOL);
         }
         if ("HAS_NEXT".equals(operation)) {
             Sort stateSort = "INDEXED".equals(shape)
                     ? Sort.INDEXED : Sort.ASSOCIATIVE;
-            Term state = stateSort == Sort.ASSOCIATIVE
-                    ? associativeState(expression.get("receiver"), host)
-                    : host.operand(expression.get("receiver"), stateSort);
             JsonArray positions = array(expression, "arguments");
             Term position = positions.size() == 1
                     ? host.operand(positions.get(0), Sort.INT) : null;
-            if (state == null || position == null) {
+            JsonElement stateExpression = stateSort == Sort.ASSOCIATIVE
+                    ? associativeStateExpression(expression.get("receiver"))
+                    : expression.get("receiver");
+            Term state = stateSort == Sort.INDEXED
+                    ? host.operand(stateExpression, stateSort) : null;
+            Term size = stateSort == Sort.ASSOCIATIVE
+                    ? projectedAssociativeObservation(stateExpression, null,
+                    "I", SCALAR_ASSOC_SIZE, Sort.INT, host) : null;
+            if (size == null && stateSort == Sort.ASSOCIATIVE) {
+                size = associativeSize(stateExpression, host, memo);
+            }
+            if (position == null || stateSort == Sort.INDEXED && state == null
+                    || stateSort == Sort.ASSOCIATIVE && size == null) {
                 host.unsupported("ContainerRelation:" + shape
                         + ":HAS_NEXT");
                 return null;
             }
-            String size = stateSort == Sort.INDEXED
+            String sizeText = stateSort == Sort.INDEXED
                     ? "(indexed_size " + state.text + ")"
-                    : "(assoc_size " + state.text + ")";
+                    : size.text;
             return new Term("(and (<= 0 " + position.text + ") (< "
-                    + position.text + " " + size + "))", Sort.BOOL);
+                    + position.text + " " + sizeText + "))", Sort.BOOL);
         }
         JsonArray arguments = array(expression, "arguments");
         if (emptiesState(operation)) {
@@ -524,7 +628,7 @@ public final class ContainerSmtCodec {
             if ("READ".equals(operation) && arguments.size() == 1
                     && !preserveReceiver) {
                 JsonElement stored = storedIndexedWrite(receiverIr,
-                        arguments.get(0));
+                        arguments.get(0), javaType);
                 if (stored != null) {
                     return host.unbox(host.box(stored), javaType);
                 }
@@ -533,6 +637,8 @@ public final class ContainerSmtCodec {
                 receiverIr = sizePreservingIndexedReceiver(receiverIr);
             }
             Term receiver = host.operand(receiverIr, Sort.INDEXED);
+            if (receiver == null) return null;
+            receiver = shared(receiver, host);
             if (receiver == null) return null;
             if ("ITERATOR".equals(operation)) return receiver;
             if ("SIZE".equals(operation)) {
@@ -588,24 +694,44 @@ public final class ContainerSmtCodec {
                         Sort.BOOL);
             }
         } else if ("ASSOCIATIVE".equals(shape)) {
+            JsonElement receiverIr = associativeStateExpression(
+                    expression.get("receiver"));
             if ("SIZE".equals(operation)) {
-                return associativeSize(expression.get("receiver"), host);
+                Term projected = projectedAssociativeObservation(receiverIr,
+                        null, "I", SCALAR_ASSOC_SIZE, Sort.INT, host);
+                return projected == null
+                        ? associativeSize(receiverIr, host, memo) : projected;
             }
             if ("CONTAINS".equals(operation) && arguments.size() == 1) {
+                Term projected = projectedAssociativeObservation(receiverIr,
+                        arguments.get(0), "Z", SCALAR_ASSOC_HAS, Sort.BOOL,
+                        host);
+                if (projected != null) return projected;
                 Term key = host.box(arguments.get(0));
                 return key == null ? null
-                        : associativeHas(expression.get("receiver"),
-                        key, host);
+                        : associativeHas(receiverIr, key, host, memo);
             }
             if ("READ".equals(operation) && arguments.size() == 1) {
+                JsonElement projected = projectedAssociativeExpression(
+                        receiverIr, arguments.get(0), javaType,
+                        SCALAR_ASSOC_READ);
+                if (projected != null) {
+                    Term value = host.box(projected);
+                    return value == null ? null
+                            : host.unbox(value, javaType);
+                }
                 Term key = host.box(arguments.get(0));
                 return key == null ? null
                         : host.unbox(associativeRead(
-                        expression.get("receiver"), key, host), javaType);
+                        receiverIr, key, host, memo),
+                        javaType);
             }
             if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
-                Term size = associativeSize(
-                        expression.get("receiver"), host);
+                Term size = projectedAssociativeObservation(receiverIr, null,
+                        "I", SCALAR_ASSOC_SIZE, Sort.INT, host);
+                if (size == null) {
+                    size = associativeSize(receiverIr, host, memo);
+                }
                 return size == null ? null
                         : new Term("(= " + size.text + " 0)", Sort.BOOL);
             }
@@ -629,9 +755,9 @@ public final class ContainerSmtCodec {
                 Term index = host.operand(arguments.get(0), Sort.INT);
                 if (index == null) return null;
                 requireAssociativeMember(receiver, index, host);
-                return new Term("(assoc_remove " + receiver.text
-                        + " (assoc_key_at " + receiver.text + " "
-                        + index.text + "))", Sort.ASSOCIATIVE);
+                return new Term("(let ((s " + receiver.text
+                        + ")) (assoc_remove s (assoc_key_at s "
+                        + index.text + ")))", Sort.ASSOCIATIVE);
             }
             if ("REMOVE".equals(operation) && arguments.size() == 1) {
                 Term key = host.box(arguments.get(0));
@@ -640,18 +766,15 @@ public final class ContainerSmtCodec {
                         + key.text + ")", Sort.ASSOCIATIVE);
             }
             if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
-                // The map after a conditional remove is the map with the key
-                // gone when the guard holds, and unchanged otherwise: the
-                // symbolic branch the removeExpiredKeys it.remove() fired
-                // under, carried as the op's guard.  Read/has short-circuit
-                // this via the mutation walk; this state form is for a
-                // REMOVE_IF nested as another op's receiver.
+                // A conditional remove drops the key when its guard holds and
+                // otherwise preserves the map. Read/has short-circuit this via
+                // the mutation walk; this form handles a nested receiver.
                 Term key = host.box(arguments.get(0));
                 Term guard = host.operand(expression.get("guard"), Sort.BOOL);
                 return key == null || guard == null ? null
-                        : new Term("(ite " + guard.text + " (assoc_remove "
-                        + receiver.text + " " + key.text + ") "
-                        + receiver.text + ")", Sort.ASSOCIATIVE);
+                        : new Term("(let ((s " + receiver.text + ")) (ite "
+                        + guard.text + " (assoc_remove s " + key.text
+                        + ") s))", Sort.ASSOCIATIVE);
             }
         }
         host.unsupported("ContainerRelation:" + shape + ":"
@@ -659,76 +782,319 @@ public final class ContainerSmtCodec {
         return null;
     }
 
+    /** Lowers one scalar observation through a complete propagation choice. */
+    private static Term projectedAssociativeObservation(
+            JsonElement state, JsonElement argument, String javaType,
+            String projection, Sort expected, Host host) {
+        JsonElement projected = projectedAssociativeExpression(state,
+                argument, javaType, projection);
+        return projected == null ? null : host.operand(projected, expected);
+    }
+
+    private static JsonElement projectedAssociativeExpression(
+            JsonElement state, JsonElement argument, String javaType,
+            String projection) {
+        return propagationWrapper(state)
+                ? projectAssociativeChoice(state, argument, "", javaType,
+                projection) : null;
+    }
+
+    /** One positional key/value observation, retaining every choice guard. */
+    private static Term associativeEntryValue(Entry entry, String viewKind,
+                                              String javaType, Host host,
+                                              ProjectionMemo memo) {
+        if (propagationWrapper(entry.stateExpression)
+                && javaType != null && !javaType.isEmpty()) {
+            JsonElement member = projectAssociativeChoice(
+                    entry.stateExpression, entry.indexExpression, viewKind,
+                    javaType, SCALAR_ASSOC_MEMBER);
+            JsonElement selected = projectAssociativeChoice(
+                    entry.stateExpression, entry.indexExpression, viewKind,
+                    javaType, SCALAR_ASSOC_NEXT);
+            if (member != null && selected != null) {
+                Term admitted = host.operand(member, Sort.BOOL);
+                Term value = host.box(selected);
+                if (admitted != null) host.require(admitted.text);
+                return admitted == null ? null : value;
+            }
+        } else if (scalarAssociativeLeaf(entry.stateExpression)) {
+            Term index = host.operand(entry.indexExpression, Sort.INT);
+            Term admitted = index == null ? null : associativeMemberAt(
+                    entry.stateExpression, index, host, memo);
+            Term value = index == null ? null : associativeElementAt(
+                    entry.stateExpression, index, viewKind, host, memo);
+            if (admitted != null) host.require(admitted.text);
+            return admitted == null ? null : value;
+        }
+        // An unfamiliar choice remains exact through the whole-state model.
+        Term state = associativeState(entry.stateExpression, host);
+        Term index = host.operand(entry.indexExpression, Sort.INT);
+        if (state == null || index == null) return null;
+        requireAssociativeMember(state, index, host);
+        return new Term(("KEY_VIEW".equals(viewKind)
+                ? "(assoc_key_at " : "(assoc_value_at ") + state.text + " "
+                + index.text + ")", Sort.VALUE);
+    }
+
+    private static String expressionJavaType(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                ? string(expression.getAsJsonObject(), "_java_type") : "";
+    }
+
     private static Term associativeHas(
-            JsonElement expression, Term key, Host host) {
+            JsonElement expression, Term key, Host host,
+            ProjectionMemo memo) {
+        Term cached = memo.get(memo.has, expression, key.text);
+        if (cached != null) return cached;
         Mutation mutation = associativeMutation(expression);
         if (mutation == null) {
             Term state = host.operand(expression, Sort.ASSOCIATIVE);
-            return state == null ? null
-                    : new Term("(assoc_has " + state.text + " "
-                    + key.text + ")", Sort.BOOL);
+            if (state == null || state.sort != Sort.ASSOCIATIVE) {
+                host.unsupported("ContainerRelation:ASSOCIATIVE:key-state");
+                return null;
+            }
+            state = shared(state, host);
+            Term result = state == null ? null : shared(new Term(
+                    "(assoc_has " + state.text + " " + key.text + ")",
+                    Sort.BOOL), host);
+            return memo.put(memo.has, expression, key.text, result);
         }
         if (emptiesState(mutation.operation)) {
-            return new Term("false", Sort.BOOL);
+            return memo.put(memo.has, expression, key.text,
+                    new Term("false", Sort.BOOL));
         }
-        Term mutatedKey = host.box(mutation.arguments.get(0));
-        Term previous = associativeHas(mutation.receiver, key, host);
+        Term mutatedKey = memo.box(mutation.arguments.get(0), host);
+        Term previous = associativeHas(mutation.receiver, key, host, memo);
         if (mutatedKey == null || previous == null) return null;
         String sameKey = "(= " + key.text + " " + mutatedKey.text + ")";
+        Term result;
         if ("PUT".equals(mutation.operation)) {
-            return new Term("(or " + sameKey + " " + previous.text + ")",
-                    Sort.BOOL);
-        }
-        if ("REMOVE_IF".equals(mutation.operation)) {
+            result = shared(new Term("(or " + sameKey + " "
+                    + previous.text + ")", Sort.BOOL), host);
+        } else if ("REMOVE_IF".equals(mutation.operation)) {
             // The key is present unless the guard fired for exactly this key.
-            String guard = conditionalGuard(mutation, sameKey, host);
+            String guard = conditionalGuard(mutation, sameKey, host, memo);
             if (guard == null) return null;
-            return new Term("(and (not " + guard + ") " + previous.text
-                    + ")", Sort.BOOL);
+            result = shared(new Term("(and (not " + guard + ") "
+                    + previous.text + ")", Sort.BOOL), host);
+        } else {
+            result = shared(new Term("(and (not " + sameKey + ") "
+                    + previous.text + ")", Sort.BOOL), host);
         }
-        return new Term("(and (not " + sameKey + ") " + previous.text + ")",
-                Sort.BOOL);
+        return memo.put(memo.has, expression, key.text, result);
+    }
+
+    /** Membership of one positional associative access without building the
+     * intermediate map states. */
+    private static Term associativeMemberAt(JsonElement expression,
+                                            Term index, Host host,
+                                            ProjectionMemo memo) {
+        Term key = associativeKeyAt(expression, index, host, memo);
+        Term size = associativeSize(expression, host, memo);
+        Term present = key == null ? null
+                : associativeHas(expression, key, host, memo);
+        if (key == null || size == null || present == null) return null;
+        return shared(new Term("(and (<= 0 " + index.text + ") (< "
+                + index.text + " " + size.text + ") " + present.text
+                + ")", Sort.BOOL), host);
+    }
+
+    /** One key/value view element after the exact mutation sequence. */
+    private static Term associativeElementAt(JsonElement expression,
+                                             Term index, String viewKind,
+                                             Host host,
+                                             ProjectionMemo memo) {
+        Term key = associativeKeyAt(expression, index, host, memo);
+        if (key == null) return null;
+        if ("KEY_VIEW".equals(viewKind)) return key;
+        return "VALUE_VIEW".equals(viewKind)
+                ? associativeRead(expression, key, host, memo) : null;
+    }
+
+    /**
+     * Resolves the key at an index through PUT/REMOVE/REMOVE_IF.  Removal
+     * shifts a later key left by one; PUT appends only when the key was not
+     * already present.  Arrays remain only at the recorded base state.
+     */
+    private static Term associativeKeyAt(JsonElement expression, Term index,
+                                         Host host, ProjectionMemo memo) {
+        Term cached = memo.get(memo.keys, expression, index.text);
+        if (cached != null) return cached;
+        Mutation mutation = associativeMutation(expression);
+        if (mutation == null) {
+            Term state = host.operand(expression, Sort.ASSOCIATIVE);
+            if (state == null || state.sort != Sort.ASSOCIATIVE) {
+                host.unsupported(
+                        "ContainerRelation:ASSOCIATIVE:position-state");
+                return null;
+            }
+            state = shared(state, host);
+            Term result = state == null ? null : shared(new Term(
+                    "(assoc_key_at " + state.text + " " + index.text + ")",
+                    Sort.VALUE), host);
+            return memo.put(memo.keys, expression, index.text, result);
+        }
+        if (emptiesState(mutation.operation)) {
+            return memo.put(memo.keys, expression, index.text,
+                    new Term("(VRef nullRef)", Sort.VALUE));
+        }
+        Term mutatedKey = memo.box(mutation.arguments.get(0), host);
+        Term previous = associativeKeyAt(mutation.receiver, index, host,
+                memo);
+        if (mutatedKey == null || previous == null) return null;
+        Term result;
+        if ("PUT".equals(mutation.operation)) {
+            Term present = associativeHas(mutation.receiver, mutatedKey, host,
+                    memo);
+            Term size = associativeSize(mutation.receiver, host, memo);
+            if (present == null || size == null) return null;
+            String appended = "(and (not " + present.text + ") (= "
+                    + index.text + " " + size.text + "))";
+            result = shared(new Term("(ite " + appended + " "
+                    + mutatedKey.text + " " + previous.text + ")",
+                    Sort.VALUE), host);
+            return memo.put(memo.keys, expression, index.text, result);
+        }
+        Term removedPosition = associativePosition(mutation.receiver,
+                mutatedKey, host, memo);
+        Term happens = associativeRemovalHappens(mutation, mutatedKey, host,
+                memo);
+        Term shifted = associativeKeyAt(mutation.receiver,
+                new Term("(+ " + index.text + " 1)", Sort.INT), host,
+                memo);
+        if (removedPosition == null || happens == null || shifted == null) {
+            return null;
+        }
+        String shifts = "(and " + happens.text + " (<= "
+                + removedPosition.text + " " + index.text + "))";
+        result = shared(new Term("(ite " + shifts + " " + shifted.text
+                + " " + previous.text + ")", Sort.VALUE), host);
+        return memo.put(memo.keys, expression, index.text, result);
+    }
+
+    /** Exact position of one key after the recorded mutation sequence. */
+    private static Term associativePosition(JsonElement expression, Term key,
+                                            Host host,
+                                            ProjectionMemo memo) {
+        Term cached = memo.get(memo.positions, expression, key.text);
+        if (cached != null) return cached;
+        Mutation mutation = associativeMutation(expression);
+        if (mutation == null) {
+            Term state = host.operand(expression, Sort.ASSOCIATIVE);
+            if (state == null) return null;
+            state = shared(state, host);
+            Term result = state == null ? null : shared(new Term(
+                    "(select (assoc_position " + state.text + ") "
+                            + key.text + ")", Sort.INT), host);
+            return memo.put(memo.positions, expression, key.text, result);
+        }
+        if (emptiesState(mutation.operation)) {
+            return memo.put(memo.positions, expression, key.text,
+                    new Term("(- 1)", Sort.INT));
+        }
+        Term mutatedKey = memo.box(mutation.arguments.get(0), host);
+        Term previous = associativePosition(mutation.receiver, key, host,
+                memo);
+        if (mutatedKey == null || previous == null) return null;
+        String same = "(= " + key.text + " " + mutatedKey.text + ")";
+        Term result;
+        if ("PUT".equals(mutation.operation)) {
+            Term present = associativeHas(mutation.receiver, mutatedKey, host,
+                    memo);
+            Term size = associativeSize(mutation.receiver, host, memo);
+            if (present == null || size == null) return null;
+            result = shared(new Term("(ite " + same + " (ite "
+                    + present.text + " " + previous.text + " "
+                    + size.text + ") " + previous.text + ")", Sort.INT),
+                    host);
+            return memo.put(memo.positions, expression, key.text, result);
+        }
+        Term removedPosition = associativePosition(mutation.receiver,
+                mutatedKey, host, memo);
+        Term happens = associativeRemovalHappens(mutation, mutatedKey, host,
+                memo);
+        Term keyPresent = associativeHas(mutation.receiver, key, host, memo);
+        if (removedPosition == null || happens == null
+                || keyPresent == null) return null;
+        String moves = "(and " + keyPresent.text + " (> "
+                + previous.text + " " + removedPosition.text + "))";
+        String after = "(ite " + same + " (- 1) (ite " + moves
+                + " (- " + previous.text + " 1) " + previous.text + "))";
+        result = shared(new Term("(ite " + happens.text + " " + after
+                + " " + previous.text + ")", Sort.INT), host);
+        return memo.put(memo.positions, expression, key.text, result);
+    }
+
+    /** Whether this REMOVE/REMOVE_IF changes its receiver state. */
+    private static Term associativeRemovalHappens(Mutation mutation,
+                                                  Term mutatedKey,
+                                                  Host host,
+                                                  ProjectionMemo memo) {
+        Term cached = memo.get(memo.removals, mutation.source,
+                mutatedKey.text);
+        if (cached != null) return cached;
+        Term present = associativeHas(mutation.receiver, mutatedKey, host,
+                memo);
+        if (present == null) return null;
+        Term result = present;
+        if ("REMOVE_IF".equals(mutation.operation)) {
+            Term guard = memo.operand(mutation.guard, Sort.BOOL, host);
+            result = guard == null ? null : shared(new Term("(and "
+                    + guard.text + " " + present.text + ")", Sort.BOOL),
+                    host);
+        }
+        return memo.put(memo.removals, mutation.source, mutatedKey.text,
+                result);
     }
 
     /** {@code guard AND key==removedKey}: the condition under which a
      *  {@code REMOVE_IF} deletes the key being read.  The guard is the
      *  recorded symbolic branch predicate, lowered as a boolean. */
     private static String conditionalGuard(Mutation mutation, String sameKey,
-                                           Host host) {
-        Term guard = host.operand(mutation.guard, Sort.BOOL);
+                                           Host host,
+                                           ProjectionMemo memo) {
+        Term guard = memo.operand(mutation.guard, Sort.BOOL, host);
         if (guard == null) return null;
         return "(and " + guard.text + " " + sameKey + ")";
     }
 
     private static Term associativeRead(
-            JsonElement expression, Term key, Host host) {
+            JsonElement expression, Term key, Host host,
+            ProjectionMemo memo) {
+        Term cached = memo.get(memo.reads, expression, key.text);
+        if (cached != null) return cached;
         Mutation mutation = associativeMutation(expression);
         if (mutation == null) {
             Term state = host.operand(expression, Sort.ASSOCIATIVE);
-            return state == null ? null
-                    : new Term("(ite (assoc_has " + state.text + " "
-                    + key.text + ") (assoc_read " + state.text + " "
-                    + key.text + ") (VRef nullRef))", Sort.VALUE);
+            if (state == null) return null;
+            state = shared(state, host);
+            Term result = state == null ? null : shared(new Term(
+                    "(let ((s " + state.text + ")) (ite (assoc_has s "
+                            + key.text + ") (assoc_read s " + key.text
+                            + ") (VRef nullRef)))", Sort.VALUE), host);
+            return memo.put(memo.reads, expression, key.text, result);
         }
         if (emptiesState(mutation.operation)) {
-            return new Term("(VRef nullRef)", Sort.VALUE);
+            return memo.put(memo.reads, expression, key.text,
+                    new Term("(VRef nullRef)", Sort.VALUE));
         }
-        Term mutatedKey = host.box(mutation.arguments.get(0));
-        Term previous = associativeRead(mutation.receiver, key, host);
+        Term mutatedKey = memo.box(mutation.arguments.get(0), host);
+        Term previous = associativeRead(mutation.receiver, key, host, memo);
         if (mutatedKey == null || previous == null) return null;
         String sameKey = "(= " + key.text + " " + mutatedKey.text + ")";
         Term mutatedValue = "PUT".equals(mutation.operation)
-                ? host.box(mutation.arguments.get(1))
+                ? memo.box(mutation.arguments.get(1), host)
                 : new Term("(VRef nullRef)", Sort.VALUE);
         if (mutatedValue == null) return null;
         // A conditional remove deletes the read key only when its recorded
-        // guard holds; flipping the guard (z3's choice) turns a present key
-        // into null -- the removeExpiredKeys removal story.
+        // guard holds; flipping that guard can restore or remove the key.
         String condition = "REMOVE_IF".equals(mutation.operation)
-                ? conditionalGuard(mutation, sameKey, host) : sameKey;
+                ? conditionalGuard(mutation, sameKey, host, memo) : sameKey;
         if (condition == null) return null;
-        return new Term("(ite " + condition + " " + mutatedValue.text + " "
-                + previous.text + ")", Sort.VALUE);
+        Term result = shared(new Term("(ite " + condition + " "
+                + mutatedValue.text + " " + previous.text + ")",
+                Sort.VALUE), host);
+        return memo.put(memo.reads, expression, key.text, result);
     }
 
     /**
@@ -753,60 +1119,6 @@ public final class ContainerSmtCodec {
                 + " (assoc_has s (assoc_key_at s i))))";
     }
 
-    static List<AssociativeRemovalEffect> associativeRemovalEffects(
-            JsonElement expression, Host host) {
-        List<AssociativeRemovalEffect> result = new java.util.ArrayList<>();
-        JsonElement cursor = expression;
-        while (cursor != null && cursor.isJsonObject()) {
-            JsonObject relation = cursor.getAsJsonObject();
-            if (!EXPRESSION_TYPE.equals(string(relation, "_type"))
-                    || !"ASSOCIATIVE".equals(string(relation, "shape"))) {
-                break;
-            }
-            String operation = string(relation, "operation");
-            JsonArray arguments = array(relation, "arguments");
-            JsonElement receiverIr = relation.get("receiver");
-            if ("REMOVE".equals(operation) && arguments.size() == 1) {
-                Term key = host.box(arguments.get(0));
-                Term present = key == null ? null
-                        : associativeHas(receiverIr, key, host);
-                if (present != null) {
-                    result.add(new AssociativeRemovalEffect(
-                            key, present.text));
-                }
-            } else if ("REMOVE_IF".equals(operation)
-                    && arguments.size() == 1) {
-                Term key = host.box(arguments.get(0));
-                Term guard = host.operand(relation.get("guard"), Sort.BOOL);
-                Term present = key == null ? null
-                        : associativeHas(receiverIr, key, host);
-                if (present != null && guard != null) {
-                    result.add(new AssociativeRemovalEffect(key,
-                            "(and " + guard.text + " "
-                                    + present.text + ")"));
-                }
-            } else if ("REMOVE_AT".equals(operation)
-                    && arguments.size() == 1) {
-                Term state = host.operand(receiverIr, Sort.ASSOCIATIVE);
-                Term index = host.operand(arguments.get(0), Sort.INT);
-                if (state != null && index != null) {
-                    result.add(new AssociativeRemovalEffect(new Term(
-                            "(assoc_key_at " + state.text + " "
-                                    + index.text + ")", Sort.VALUE),
-                            associativeMemberRequirement(state, index)));
-                }
-            }
-            if (!("PUT".equals(operation)
-                    || "REMOVE".equals(operation)
-                    || "REMOVE_IF".equals(operation)
-                    || "REMOVE_AT".equals(operation))) {
-                break;
-            }
-            cursor = receiverIr;
-        }
-        return result;
-    }
-
     /**
      * One Java container size.  {@code array.length} and
      * {@code Collection.size()} are both {@code int} (JLS 10.7, 15.14), so
@@ -817,36 +1129,52 @@ public final class ContainerSmtCodec {
     private static Term javaContainerSize(String text, Host host) {
         JavaPrimitiveSmtSemantics.IntegralDomain domain =
                 JavaPrimitiveSmtSemantics.domainOfJavaType("I");
-        host.require("(and (<= 0 " + text + ") (<= " + text + " "
+        Term size = shared(new Term(text, Sort.INT,
+                IntegralWidth.JAVA_INT), host);
+        if (size == null) return null;
+        host.require("(and (<= 0 " + size.text + ") (<= " + size.text + " "
                 + domain.upper + "))");
-        return new Term(text, Sort.INT, IntegralWidth.JAVA_INT);
+        return size;
     }
 
-    private static Term associativeSize(JsonElement expression, Host host) {
+    private static Term associativeSize(JsonElement expression, Host host,
+                                        ProjectionMemo memo) {
+        Term cached = memo.sizes.get(expression);
+        if (cached != null) return cached;
         Mutation mutation = associativeMutation(expression);
         if (mutation == null) {
             Term state = host.operand(expression, Sort.ASSOCIATIVE);
-            return state == null ? null
+            Term result = state == null ? null
                     : javaContainerSize("(assoc_size " + state.text + ")",
                     host);
+            return memo.putSize(expression, result);
         }
         if (emptiesState(mutation.operation)) {
-            return new Term("0", Sort.INT, IntegralWidth.JAVA_INT);
+            return memo.putSize(expression,
+                    new Term("0", Sort.INT, IntegralWidth.JAVA_INT));
         }
-        Term key = host.box(mutation.arguments.get(0));
-        Term previousSize = associativeSize(mutation.receiver, host);
+        Term key = memo.box(mutation.arguments.get(0), host);
+        Term previousSize = associativeSize(mutation.receiver, host, memo);
         Term previouslyPresent = key == null ? null
-                : associativeHas(mutation.receiver, key, host);
+                : associativeHas(mutation.receiver, key, host, memo);
         if (previousSize == null || previouslyPresent == null) return null;
+        Term changes = "REMOVE_IF".equals(mutation.operation)
+                ? associativeRemovalHappens(mutation, key, host, memo)
+                : previouslyPresent;
+        if (changes == null) return null;
+        previousSize = shared(previousSize, host);
+        changes = shared(changes, host);
+        if (previousSize == null || changes == null) return null;
         String changedSize = "PUT".equals(mutation.operation)
-                ? "(+ " + previousSize.text + " 1)"
-                : "(- " + previousSize.text + " 1)";
-        return new Term("(ite " + previouslyPresent.text + " "
+                ? "(+ previous_size 1)" : "(- previous_size 1)";
+        String value = "(let ((previous_size " + previousSize.text
+                + ")) (ite " + changes.text + " "
                 + ("PUT".equals(mutation.operation)
-                ? previousSize.text : changedSize) + " "
+                ? "previous_size" : changedSize) + " "
                 + ("PUT".equals(mutation.operation)
-                ? changedSize : previousSize.text) + ")", Sort.INT,
-                IntegralWidth.JAVA_INT);
+                ? changedSize : "previous_size") + "))";
+        return memo.putSize(expression,
+                new Term(value, Sort.INT, IntegralWidth.JAVA_INT));
     }
 
     private static Mutation associativeMutation(JsonElement expression) {
@@ -871,18 +1199,17 @@ public final class ContainerSmtCodec {
                 && (guard == null || guard.isJsonNull())) {
             return null;
         }
-        return new Mutation(operation, relation.get("receiver"), arguments,
-                guard);
+        return new Mutation(expression, operation, relation.get("receiver"),
+                arguments, guard);
     }
 
-    private static Entry entry(JsonElement expression, Host host) {
+    private static Entry entry(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject next = expression.getAsJsonObject();
         if (!EXPRESSION_TYPE.equals(string(next, "_type"))
                 || !"NEXT".equals(string(next, "operation"))) return null;
         JsonArray positions = array(next, "arguments");
         if (positions.size() != 1) return null;
-        Term index = host.operand(positions.get(0), Sort.INT);
         JsonElement cursor = next.get("receiver");
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject view = cursor.getAsJsonObject();
@@ -895,12 +1222,11 @@ public final class ContainerSmtCodec {
             }
             break;
         }
-        Term state = associativeState(cursor, host);
-        return state == null || index == null ? null
-                : new Entry(state, index);
+        cursor = associativeStateExpression(cursor);
+        return cursor == null ? null : new Entry(cursor, positions.get(0));
     }
 
-    private static View view(JsonElement expression, Host host) {
+    private static View view(JsonElement expression) {
         JsonElement cursor = expression;
         String kind = "";
         while (cursor != null && cursor.isJsonObject()) {
@@ -916,13 +1242,142 @@ public final class ContainerSmtCodec {
             if (!"ITERATOR".equals(name)) break;
             cursor = operation.get("receiver");
         }
-        if (kind.isEmpty()) kind = selectedReadViewKind(cursor);
-        Term state = associativeState(cursor, host);
-        return kind.isEmpty() || state == null ? null : new View(kind, state);
+        if (kind.isEmpty()) {
+            kind = selectedReadViewKind(cursor);
+            if (kind.isEmpty()) return null;
+            cursor = selectedViewState(cursor, kind);
+            if (cursor == null) return null;
+        }
+        return new View(kind, cursor);
+    }
+
+    /** True only for propagation choices whose metadata must survive a
+     * scalar projection. */
+    private static boolean propagationWrapper(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        JsonObject object = expression.getAsJsonObject();
+        String type = string(object, "_type");
+        return VmExpressionIr.isConsumerBoundary(object)
+                || VmExpressionIr.isConsumerBoundaryReference(object)
+                || SymbolicPropagationClosure.ITE_TYPE.equals(type)
+                || SharedStateEvidence.GUARDED_READ_TYPE.equals(type);
+    }
+
+    /**
+     * Rebuilds a propagation choice with a scalar map projection at every
+     * leaf.  Success is all-or-nothing so no writer arm or selector can be
+     * silently discarded.
+     */
+    private static JsonElement projectAssociativeChoice(
+            JsonElement expression, JsonElement index, String viewKind,
+            String selectedJavaType, String projection) {
+        // A scalar String Term cannot carry the separate Java nullness bit
+        // used by both hosts.  Keep String reads in the existing boxed
+        // whole-state path until the codec Term can preserve that pair.
+        if ((SCALAR_ASSOC_READ.equals(projection)
+                || SCALAR_ASSOC_NEXT.equals(projection))
+                && "VString".equals(valueKind(selectedJavaType))) {
+            return null;
+        }
+        if (expression == null || !expression.isJsonObject()) return null;
+        JsonObject root = expression.getAsJsonObject();
+        String projectedJavaType = SCALAR_ASSOC_MEMBER.equals(projection)
+                || SCALAR_ASSOC_HAS.equals(projection) ? "Z"
+                : SCALAR_ASSOC_SIZE.equals(projection) ? "I"
+                : selectedJavaType;
+        if (VmExpressionIr.isConsumerBoundary(root)
+                || VmExpressionIr.isConsumerBoundaryReference(root)) {
+            JsonElement payload = projectAssociativeChoice(
+                    root.get(VmExpressionIr.EXPRESSION), index, viewKind,
+                    selectedJavaType, projection);
+            if (payload == null) return null;
+            JsonObject projected = copyWithout(root,
+                    VmExpressionIr.EXPRESSION);
+            projected.addProperty("_java_type", projectedJavaType);
+            projected.add(VmExpressionIr.EXPRESSION, payload);
+            return projected;
+        }
+        String type = string(root, "_type");
+        String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
+                ? "arms" : SharedStateEvidence.GUARDED_READ_TYPE.equals(type)
+                ? "candidates" : "";
+        if (!armsField.isEmpty()) {
+            JsonArray arms = array(root, armsField);
+            if (arms.size() == 0) return null;
+            JsonObject projected = copyWithout(root, armsField);
+            projected.addProperty("_java_type", projectedJavaType);
+            JsonArray projectedArms = new JsonArray();
+            for (JsonElement element : arms) {
+                if (!element.isJsonObject()) return null;
+                JsonObject arm = element.getAsJsonObject();
+                if (string(arm, "selector").isEmpty()
+                        || arm.get("expression") == null) return null;
+                JsonElement payload = projectAssociativeChoice(
+                        arm.get("expression"), index, viewKind,
+                        selectedJavaType, projection);
+                if (payload == null) return null;
+                JsonObject projectedArm = copyWithout(arm, "expression");
+                projectedArm.add("expression", payload);
+                projectedArms.add(projectedArm);
+            }
+            projected.add(armsField, projectedArms);
+            return projected;
+        }
+        if (!scalarAssociativeLeaf(root)) return null;
+        JsonObject projected = new JsonObject();
+        projected.addProperty("_type", EXPRESSION_TYPE);
+        projected.addProperty("_java_type", projectedJavaType);
+        projected.addProperty("shape", "ASSOCIATIVE");
+        projected.addProperty("operation", projection);
+        projected.addProperty("viewKind", viewKind);
+        projected.add("receiver", root);
+        JsonArray positions = new JsonArray();
+        if (index != null) positions.add(index.deepCopy());
+        projected.add("arguments", positions);
+        return projected;
+    }
+
+    /** The exact mutation subset supported by scalar positional lowering. */
+    private static boolean scalarAssociativeLeaf(JsonElement expression) {
+        JsonElement cursor = expression;
+        while (cursor != null && cursor.isJsonObject()) {
+            if (propagationWrapper(cursor)) return false;
+            Mutation mutation = associativeMutation(cursor);
+            if (mutation != null) {
+                if (emptiesState(mutation.operation)) return true;
+                cursor = mutation.receiver;
+                continue;
+            }
+            JsonObject object = cursor.getAsJsonObject();
+            if (EXPRESSION_TYPE.equals(string(object, "_type"))
+                    && "ASSOCIATIVE".equals(string(object, "shape"))) {
+                return "STATE".equals(string(object, "operation"))
+                        && object.get("receiver") != null
+                        && !propagationWrapper(object.get("receiver"));
+            }
+            // An arbitrary Java expression might lower as an Int/Ref.  Let
+            // the exact whole-state path validate it instead of assuming it
+            // is a map state for the scalar fast path.
+            return false;
+        }
+        return false;
     }
 
     /** Lowers the selected map state beneath iterator/view wrappers. */
     private static Term associativeState(JsonElement expression, Host host) {
+        JsonElement cursor = associativeStateExpression(expression);
+        Term state = host.operand(cursor, Sort.ASSOCIATIVE);
+        if (state != null && state.sort != Sort.ASSOCIATIVE) {
+            host.unsupported("ContainerRelation:ASSOCIATIVE:state-sort="
+                    + state.sort);
+            return null;
+        }
+        return shared(state, host);
+    }
+
+    /** Retains the JSON state so scalar observations can cross its choices. */
+    private static JsonElement associativeStateExpression(
+            JsonElement expression) {
         JsonElement cursor = expression;
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject relation = cursor.getAsJsonObject();
@@ -936,37 +1391,43 @@ public final class ContainerSmtCodec {
             }
             cursor = relation.get("receiver");
         }
-        if (cursor != null && cursor.isJsonObject()
-                && "ReadFromExpression".equals(string(
-                cursor.getAsJsonObject(), "_type"))) {
-            String kind = selectedReadViewKind(cursor);
-            if (!kind.isEmpty()) {
-                cursor = selectedReadViewState(
-                        cursor.getAsJsonObject(), kind);
-            }
+        String kind = selectedReadViewKind(cursor);
+        if (!kind.isEmpty()) {
+            cursor = selectedViewState(cursor, kind);
+            if (cursor == null) return null;
         }
-        Term state = host.operand(cursor, Sort.ASSOCIATIVE);
-        if (state != null && state.sort != Sort.ASSOCIATIVE) {
-            host.unsupported("ContainerRelation:ASSOCIATIVE:state-sort="
-                    + state.sort);
+        return cursor;
+    }
+
+    /** Names a pure subterm when the host supports DAG sharing. */
+    private static Term shared(Term value, Host host) {
+        if (value == null) return null;
+        Term result = host.share(value);
+        if (result == null || result.sort != value.sort) {
+            host.unsupported("ContainerRelation:shared-term-sort");
             return null;
         }
-        return state;
+        return result;
     }
 
     /**
-     * Recovers the view operation at a version-selected map read.
+     * Recovers one common map view through propagation wrappers.
      *
      * <p>The VM keeps the exact {@code VALUE_VIEW}/{@code KEY_VIEW} operation
-     * in every known writer arm of a {@code ReadFromExpression}.  The wrapper
-     * itself is the selector over those arms, so an iterator sees the wrapper
-     * rather than the view node directly.  The projection remains exact when
-     * every known arm agrees; an unknown-writer arm still belongs to this same
-     * call-site view and is lowered through the wrapper's selected state.</p>
+     * in every writer arm of a {@code ReadFromExpression}.  Consumer
+     * boundaries and case merges preserve that choice structure, so an
+     * iterator may see several wrappers rather than the view node directly.
+     * The projection remains exact only when every recorded arm agrees.</p>
      */
     private static String selectedReadViewKind(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
+        if (VmExpressionIr.isConsumerBoundary(object)
+                || VmExpressionIr.isConsumerBoundaryReference(object)) {
+            JsonElement payload = object.get(VmExpressionIr.EXPRESSION);
+            return payload == null || !payload.isJsonObject() ? ""
+                    : selectedReadViewKind(payload);
+        }
         if (EXPRESSION_TYPE.equals(string(object, "_type"))) {
             String operation = string(object, "operation");
             if ("ENTRY_VIEW".equals(operation)
@@ -977,15 +1438,26 @@ public final class ContainerSmtCodec {
             return "ITERATOR".equals(operation)
                     ? selectedReadViewKind(object.get("receiver")) : "";
         }
-        if (!"ReadFromExpression".equals(string(object, "_type"))) {
+        String type = string(object, "_type");
+        JsonArray arms;
+        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
+            arms = array(object, "arms");
+        } else if ("ReadFromExpression".equals(type)) {
+            arms = array(object, "candidates");
+        } else {
             return "";
         }
+        if (arms.size() == 0) return "";
         String selected = "";
-        for (JsonElement element : array(object, "candidates")) {
-            if (!element.isJsonObject()) continue;
+        for (JsonElement element : arms) {
+            if (!element.isJsonObject()) return "";
             JsonObject arm = element.getAsJsonObject();
-            if (bool(arm, "unknown", false)) continue;
-            String candidate = selectedReadViewKind(arm.get("expression"));
+            if (string(arm, "selector").isEmpty()) return "";
+            JsonElement armExpression = arm.get("expression");
+            if (armExpression == null || !armExpression.isJsonObject()) {
+                return "";
+            }
+            String candidate = selectedReadViewKind(armExpression);
             if (candidate.isEmpty()) return "";
             if (!selected.isEmpty() && !selected.equals(candidate)) {
                 return "";
@@ -996,57 +1468,81 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * Moves a common view outside a read-from choice so every selector arm
-     * denotes an {@code AssocState}, including the unknown-writer arm.
+     * Projects one common view through the wrappers that preserve a selected
+     * value.  Each returned arm or boundary payload denotes the underlying
+     * {@code AssocState}; selectors and provenance stay on their original
+     * wrappers.
      */
-    private static JsonObject selectedReadViewState(
-            JsonObject read, String kind) {
-        JsonObject normalized = read.deepCopy();
+    private static JsonElement selectedViewState(
+            JsonElement expression, String kind) {
+        return selectedViewState(expression, kind,
+                new IdentityHashMap<JsonElement, JsonElement>());
+    }
+
+    /** Copy-on-write projection over one decoder-owned expression DAG. */
+    private static JsonElement selectedViewState(
+            JsonElement expression, String kind,
+            IdentityHashMap<JsonElement, JsonElement> memo) {
+        if (expression == null || !expression.isJsonObject()
+                || kind == null || kind.isEmpty()) {
+            return null;
+        }
+        if (memo.containsKey(expression)) {
+            return memo.get(expression);
+        }
+        JsonObject object = expression.getAsJsonObject();
+        if (VmExpressionIr.isConsumerBoundary(object)
+                || VmExpressionIr.isConsumerBoundaryReference(object)) {
+            JsonElement payload = selectedViewState(
+                    object.get(VmExpressionIr.EXPRESSION), kind, memo);
+            if (payload == null) return null;
+            JsonObject normalized = JsonFields.shallowCopy(object);
+            normalized.addProperty("_java_type", "java/util/Map");
+            normalized.add(VmExpressionIr.EXPRESSION, payload);
+            memo.put(expression, normalized);
+            return normalized;
+        }
+        if (EXPRESSION_TYPE.equals(string(object, "_type"))) {
+            String operation = string(object, "operation");
+            if (kind.equals(operation)) {
+                JsonElement receiver = object.get("receiver");
+                if (receiver == null || !receiver.isJsonObject()) return null;
+                memo.put(expression, receiver);
+                return receiver;
+            }
+            if (!"ITERATOR".equals(operation)) return null;
+            JsonElement result = selectedViewState(object.get("receiver"),
+                    kind, memo);
+            if (result != null) memo.put(expression, result);
+            return result;
+        }
+        String type = string(object, "_type");
+        String armsField;
+        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
+            armsField = "arms";
+        } else if ("ReadFromExpression".equals(type)) {
+            armsField = "candidates";
+        } else {
+            return null;
+        }
+        JsonArray arms = array(object, armsField);
+        if (arms.size() == 0) return null;
+        JsonObject normalized = JsonFields.shallowCopy(object);
         normalized.addProperty("_java_type", "java/util/Map");
-        for (JsonElement element : array(normalized, "candidates")) {
+        JsonArray normalizedArms = new JsonArray();
+        for (JsonElement element : arms) {
             if (!element.isJsonObject()) return null;
             JsonObject arm = element.getAsJsonObject();
-            JsonElement expression = arm.get("expression");
-            if (bool(arm, "unknown", false)) {
-                JsonObject state = new JsonObject();
-                state.addProperty("_type", EXPRESSION_TYPE);
-                state.addProperty("shape", "ASSOCIATIVE");
-                state.addProperty("operation", "STATE");
-                state.addProperty("_java_type", "java/util/Map");
-                state.add("receiver", expression == null
-                        ? null : expression.deepCopy());
-                state.add("arguments", new JsonArray());
-                arm.add("expression", state);
-                continue;
-            }
-            if (expression == null || !expression.isJsonObject()) return null;
-            JsonObject view = expression.getAsJsonObject();
-            if (!EXPRESSION_TYPE.equals(string(view, "_type"))
-                    || !kind.equals(string(view, "operation"))
-                    || view.get("receiver") == null) {
-                return null;
-            }
-            arm.add("expression", view.get("receiver").deepCopy());
+            if (string(arm, "selector").isEmpty()) return null;
+            JsonElement projectedArm = selectedViewState(
+                    arm.get("expression"), kind, memo);
+            if (projectedArm == null) return null;
+            JsonObject normalizedArm = JsonFields.shallowCopy(arm);
+            normalizedArm.add("expression", projectedArm);
+            normalizedArms.add(normalizedArm);
         }
-        JsonArray normalizedCandidates = array(normalized, "candidates");
-        if (normalizedCandidates.size() == 0) return null;
-        JsonElement selection = normalizedCandidates
-                .get(normalizedCandidates.size() - 1)
-                .getAsJsonObject().get("expression").deepCopy();
-        for (int index = normalizedCandidates.size() - 2;
-             index >= 0; index--) {
-            JsonObject arm = normalizedCandidates.get(index)
-                    .getAsJsonObject();
-            String selector = string(arm, "selector");
-            if (selector.isEmpty()) return null;
-            JsonObject ite = new JsonObject();
-            ite.addProperty("_type", "IteExpression");
-            ite.addProperty("selector", selector);
-            ite.add("then", arm.get("expression").deepCopy());
-            ite.add("else", selection);
-            selection = ite;
-        }
-        normalized.add("ite", selection);
+        normalized.add(armsField, normalizedArms);
+        memo.put(expression, normalized);
         return normalized;
     }
 
@@ -1060,7 +1556,10 @@ public final class ContainerSmtCodec {
      */
     static JsonObject selectedReadViewState(JsonObject read) {
         String kind = selectedReadViewKind(read);
-        return kind.isEmpty() ? null : selectedReadViewState(read, kind);
+        JsonElement normalized = kind.isEmpty()
+                ? null : selectedViewState(read, kind);
+        return normalized == null || !normalized.isJsonObject()
+                ? null : normalized.getAsJsonObject();
     }
 
     /**
@@ -1113,6 +1612,15 @@ public final class ContainerSmtCodec {
             return false;
         }
 
+        /**
+         * Returns an equivalent name for a pure term when the encoder keeps
+         * a definitional DAG.  The identity default preserves hosts that
+         * already bound large container terms at their operand boundary.
+         */
+        default Term share(Term value) {
+            return value;
+        }
+
         Term box(JsonElement expression);
 
         Term unbox(Term value, String javaType);
@@ -1149,37 +1657,113 @@ public final class ContainerSmtCodec {
     }
 
     private static final class Entry {
-        private final Term state;
-        private final Term index;
+        private final JsonElement stateExpression;
+        private final JsonElement indexExpression;
 
-        private Entry(Term state, Term index) {
-            this.state = state;
-            this.index = index;
+        private Entry(JsonElement stateExpression, JsonElement indexExpression) {
+            this.stateExpression = stateExpression;
+            this.indexExpression = indexExpression;
         }
     }
 
     private static final class View {
         private final String kind;
-        private final Term state;
+        private final JsonElement stateExpression;
 
-        private View(String kind, Term state) {
+        private View(String kind, JsonElement stateExpression) {
             this.kind = kind;
-            this.state = state;
+            this.stateExpression = stateExpression;
+        }
+    }
+
+    /**
+     * Dynamic programming table for one scalar projection.
+     *
+     * <p>A removal asks for both {@code keyAt(s, i)} and
+     * {@code keyAt(s, i + 1)}, while computing either one asks for positions,
+     * membership and size over the same state prefixes.  Without memoizing
+     * those pure subproblems, a chain of removals revisits the same prefix
+     * exponentially.  The table is deliberately scoped to one call to
+     * {@link #term}: host side effects such as required assertions and symbol
+     * collection therefore happen in their original constraint context.</p>
+     */
+    private static final class ProjectionMemo {
+        private final IdentityHashMap<JsonElement, Map<String, Term>> has =
+                new IdentityHashMap<>();
+        private final IdentityHashMap<JsonElement, Map<String, Term>> keys =
+                new IdentityHashMap<>();
+        private final IdentityHashMap<JsonElement, Map<String, Term>> positions =
+                new IdentityHashMap<>();
+        private final IdentityHashMap<JsonElement, Map<String, Term>> removals =
+                new IdentityHashMap<>();
+        private final IdentityHashMap<JsonElement, Map<String, Term>> reads =
+                new IdentityHashMap<>();
+        private final IdentityHashMap<JsonElement, Term> sizes =
+                new IdentityHashMap<>();
+        private final IdentityHashMap<JsonElement, Term> boxed =
+                new IdentityHashMap<>();
+        private final IdentityHashMap<JsonElement, Term> booleanOperands =
+                new IdentityHashMap<>();
+
+        private Term get(
+                IdentityHashMap<JsonElement, Map<String, Term>> table,
+                JsonElement expression, String argument) {
+            Map<String, Term> row = table.get(expression);
+            return row == null ? null : row.get(argument);
+        }
+
+        private Term put(
+                IdentityHashMap<JsonElement, Map<String, Term>> table,
+                JsonElement expression, String argument, Term result) {
+            if (result == null) return null;
+            Map<String, Term> row = table.get(expression);
+            if (row == null) {
+                row = new LinkedHashMap<>();
+                table.put(expression, row);
+            }
+            Term held = row.putIfAbsent(argument, result);
+            return held == null ? result : held;
+        }
+
+        private Term putSize(JsonElement expression, Term result) {
+            if (result == null) return null;
+            Term held = sizes.put(expression, result);
+            return held == null ? result : held;
+        }
+
+        private Term box(JsonElement expression, Host host) {
+            Term held = boxed.get(expression);
+            if (held != null) return held;
+            Term result = host.box(expression);
+            if (result != null) boxed.put(expression, result);
+            return result;
+        }
+
+        private Term operand(JsonElement expression, Sort expected,
+                             Host host) {
+            if (expected != Sort.BOOL) return host.operand(expression,
+                    expected);
+            Term held = booleanOperands.get(expression);
+            if (held != null) return held;
+            Term result = host.operand(expression, expected);
+            if (result != null) booleanOperands.put(expression, result);
+            return result;
         }
     }
 
     private static final class Mutation {
+        private final JsonElement source;
         private final String operation;
         private final JsonElement receiver;
         private final JsonArray arguments;
-        /** The symbolic branch predicate a conditional remove fired under,
-         *  or {@code null} for an unconditional PUT/REMOVE.  Only
-         *  {@code REMOVE_IF} carries one: the recorded {@code expiry < now}
-         *  guard of a {@code removeExpiredKeys} {@code it.remove()}. */
+        /** The branch predicate controlling a conditional removal, or
+         *  {@code null} for an unconditional PUT/REMOVE. */
         private final JsonElement guard;
 
-        private Mutation(String operation, JsonElement receiver,
+        private Mutation(JsonElement source, String operation,
+                         JsonElement receiver,
                          JsonArray arguments, JsonElement guard) {
+            this.source = source;
             this.operation = operation;
             this.receiver = receiver;
             this.arguments = arguments;
@@ -1187,14 +1771,4 @@ public final class ContainerSmtCodec {
         }
     }
 
-    static final class AssociativeRemovalEffect {
-        final Term removedKey;
-        final String precondition;
-
-        private AssociativeRemovalEffect(Term removedKey,
-                                         String precondition) {
-            this.removedKey = removedKey;
-            this.precondition = precondition;
-        }
-    }
 }

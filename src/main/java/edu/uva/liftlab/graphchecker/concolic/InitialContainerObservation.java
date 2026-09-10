@@ -3,12 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -80,68 +75,31 @@ public final class InitialContainerObservation {
                 string(expression, "_java_type"));
     }
 
-    /**
-     * Validates a relevance-selected expression slice against the fixed
-     * sparse-container capacity. Repeated reads of the same logical cell are
-     * counted once, and capacity is enforced independently for each canonical
-     * region input port. The caller chooses the failure-relevant roots; this
-     * method never fills spare slots with unrelated physical members.
-     *
-     * @return an empty string when every logical container fits, otherwise a
-     * deterministic fail-closed diagnostic
-     */
-    public static String failureRelevantCapacityIssue(
-            JsonElement... relevantRoots) {
-        Map<String, Set<String>> cellsByPort = new LinkedHashMap<>();
-        if (relevantRoots != null) {
-            for (JsonElement root : relevantRoots) {
-                collectFailureRelevantCells(root, cellsByPort);
-            }
-        }
-        for (Map.Entry<String, Set<String>> entry
-                : cellsByPort.entrySet()) {
-            int size = entry.getValue().size();
-            if (size > LoopBoundPolicy
-                    .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-                return "SYMBOLIC_CONTAINER_RELEVANT_CELL_CAPACITY_EXCEEDED:"
-                        + entry.getKey() + ':' + size + '>'
-                        + LoopBoundPolicy
-                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY;
-            }
-        }
-        return "";
-    }
-
-    private static void collectFailureRelevantCells(
-            JsonElement expression,
-            Map<String, Set<String>> cellsByPort) {
-        if (expression == null || expression.isJsonNull()) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement child : expression.getAsJsonArray()) {
-                collectFailureRelevantCells(child, cellsByPort);
-            }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject object = expression.getAsJsonObject();
-        Read read = initialRead(object);
-        if (read != null && read.concreteSelector()) {
-            cellsByPort.computeIfAbsent(read.inputPort,
-                    ignored -> new LinkedHashSet<>())
-                    .add(read.shape + '\u0000'
-                            + read.selectorIdentity());
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            collectFailureRelevantCells(entry.getValue(), cellsByPort);
-        }
-    }
-
     private static JsonObject initialState(JsonElement expression,
                                            String shape,
                                            boolean allowView) {
         JsonElement cursor = expression;
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject relation = cursor.getAsJsonObject();
+            JsonArray alternatives = propagatedContainerAlternatives(
+                    relation);
+            if (alternatives != null) {
+                JsonObject selected = null;
+                String selectedIdentity = "";
+                for (JsonElement alternative : alternatives) {
+                    JsonObject candidate = initialState(alternative, shape,
+                            allowView);
+                    if (candidate.size() == 0) return new JsonObject();
+                    String identity = CanonicalJson.render(candidate);
+                    if (selected == null) {
+                        selected = candidate;
+                        selectedIdentity = identity;
+                    } else if (!selectedIdentity.equals(identity)) {
+                        return new JsonObject();
+                    }
+                }
+                return selected == null ? new JsonObject() : selected;
+            }
             if (!"ContainerRelation".equals(string(relation, "_type"))
                     || !shape.equals(string(relation, "shape"))) {
                 return new JsonObject();
@@ -151,6 +109,8 @@ public final class InitialContainerObservation {
             boolean associativeMutation = "ASSOCIATIVE".equals(shape)
                     && ("PUT".equals(operation)
                     || "REMOVE".equals(operation)
+                    || "REMOVE_IF".equals(operation)
+                    || "CLEAR".equals(operation)
                     || "REMOVE_AT".equals(operation));
             if (!"ITERATOR".equals(operation)
                     && !associativeMutation
@@ -168,6 +128,21 @@ public final class InitialContainerObservation {
         String projection = "";
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject relation = cursor.getAsJsonObject();
+            JsonArray alternatives = propagatedContainerAlternatives(
+                    relation);
+            if (alternatives != null) {
+                String selected = "";
+                for (JsonElement alternative : alternatives) {
+                    String candidate = iterationProjection(alternative);
+                    if (candidate.isEmpty()) return "";
+                    if (selected.isEmpty()) {
+                        selected = candidate;
+                    } else if (!selected.equals(candidate)) {
+                        return "";
+                    }
+                }
+                return selected;
+            }
             if (!"ContainerRelation".equals(string(relation, "_type"))
                     || !"ASSOCIATIVE".equals(string(relation, "shape"))) {
                 return "";
@@ -192,12 +167,46 @@ public final class InitialContainerObservation {
         return projection;
     }
 
+    /** Values hidden only by provenance/choice wrappers. Every arm must
+     * resolve to the same container state before it is treated as one replay
+     * boundary. */
+    private static JsonArray propagatedContainerAlternatives(
+            JsonObject expression) {
+        if (VmExpressionIr.isConsumerBoundary(expression)
+                || VmExpressionIr.isConsumerBoundaryReference(expression)) {
+            JsonArray result = new JsonArray();
+            JsonElement value = expression.get(VmExpressionIr.EXPRESSION);
+            if (value != null) result.add(value);
+            return result;
+        }
+        String type = string(expression, "_type");
+        String armsField;
+        if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
+            armsField = "candidates";
+        } else if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
+            armsField = "arms";
+        } else {
+            return null;
+        }
+        JsonArray result = new JsonArray();
+        for (JsonElement encoded : JsonFields.array(expression, armsField)) {
+            if (!encoded.isJsonObject()) return new JsonArray();
+            JsonElement value = encoded.getAsJsonObject().get("expression");
+            if (value == null) return new JsonArray();
+            result.add(value);
+        }
+        return result;
+    }
+
     /**
      * Extracts the exact region input carried by either a semantic port name
      * or the VM's canonical reference-field materialization symbol.
      */
     private static String inputPort(String symbol) {
         String value = symbol == null ? "" : symbol;
+        if (VmExpressionIr.isCanonicalMapStateReference(value)) {
+            return value;
+        }
         String referenceFieldPrefix = "M_L_field_";
         String arrayFieldPrefix = "M_[_field_";
         int start;
@@ -379,9 +388,11 @@ public final class InitialContainerObservation {
             this.stateSymbol = stateSymbol;
             this.inputPort = inputPort;
             this.index = index;
-            this.selector = selector == null ? null : selector.deepCopy();
-            this.selectorExpression = selectorExpression == null ? null
-                    : selectorExpression.deepCopy();
+            // Import has already made this expression DAG immutable. Keeping
+            // the shared nodes preserves content-address identity and avoids
+            // re-expanding the propagated key once per writer candidate.
+            this.selector = selector;
+            this.selectorExpression = selectorExpression;
             this.iterationProjection = iterationProjection;
             this.javaType = javaType;
         }

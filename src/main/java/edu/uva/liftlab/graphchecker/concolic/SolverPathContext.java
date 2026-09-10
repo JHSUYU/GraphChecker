@@ -47,18 +47,16 @@ public final class SolverPathContext {
                     throw new IllegalArgumentException(
                             "non-branch solver constraint must be an object");
                 }
+                // Expressions belong to the decoder/importer's immutable
+                // expression DAG.  Retain that node identity: recursively
+                // copying it here expands a shared DAG back into a tree for
+                // every flip query.
                 copy.add(new PositionedConstraint(
-                        constraint.summaryPcIndex,
-                        CanonicalJson.copy(constraint.expression)));
+                        constraint.summaryPcIndex, constraint.expression));
                 previous = constraint.summaryPcIndex;
             }
         }
         this.constraints = Collections.unmodifiableList(copy);
-    }
-
-    public static SolverPathContext empty() {
-        return new SolverPathContext(Collections
-                .<PositionedConstraint>emptyList());
     }
 
     /** Partitions the retained source prefix by canonical decision position. */
@@ -157,14 +155,10 @@ public final class SolverPathContext {
         return coreJson();
     }
 
-    public int size() {
-        return constraints.size();
-    }
-
     public JsonArray expressions() {
         JsonArray result = new JsonArray();
         for (PositionedConstraint constraint : constraints) {
-            result.add(CanonicalJson.copy(constraint.expression));
+            result.add(constraint.expression);
         }
         return result;
     }
@@ -178,13 +172,12 @@ public final class SolverPathContext {
             JsonObject row = new JsonObject();
             row.addProperty("summaryPcIndex",
                     constraint.summaryPcIndex);
-            row.add("expression", CanonicalJson.copy(
-                    constraint.expression));
+            row.add("expression", constraint.expression);
             rows.add(row);
         }
         result.add("constraints", rows);
         result.addProperty("authority", AUTHORITY);
-        return (JsonObject) CanonicalJson.copy(result);
+        return result;
     }
 
     private static boolean overlaps(Set<String> left, Set<String> right) {

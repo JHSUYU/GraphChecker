@@ -168,6 +168,17 @@ final class CfgLoopControl {
                     Collections.singletonList(backedge.source));
         }
 
+        /** True when every structural CFG path to {@code unit} passes
+         *  {@code dominator}; this is the same proof used to form the loop. */
+        boolean isDominatedBy(Unit unit, Unit dominator) {
+            return cfg.isDominatedBy(unit, dominator);
+        }
+
+        /** The normal successors recorded in this immutable CFG proof. */
+        List<Unit> stableSuccessors(Unit unit) {
+            return cfg.succsOf(unit);
+        }
+
         /** Normal transfers ending one dynamic invocation of this loop. */
         List<Edge> exitEdges() {
             Set<Unit> members = members();
@@ -289,16 +300,20 @@ final class CfgLoopControl {
         final boolean guardsClassifyDifferently;
         /** The latches (backedge sources) that close this loop. */
         final List<Unit> latches;
+        /** Exact CFG members, used to assign a branch to its innermost loop. */
+        final Set<Unit> members;
 
         private RetainedLoop(Unit header, List<Unit> guards,
                              String classification,
                              boolean guardsClassifyDifferently,
-                             List<Unit> latches) {
+                             List<Unit> latches, Set<Unit> members) {
             this.header = header;
             this.guards = Collections.unmodifiableList(guards);
             this.classification = classification;
             this.guardsClassifyDifferently = guardsClassifyDifferently;
             this.latches = Collections.unmodifiableList(latches);
+            this.members = Collections.unmodifiableSet(
+                    new LinkedHashSet<Unit>(members));
         }
     }
 
@@ -329,7 +344,7 @@ final class CfgLoopControl {
             }
             result.add(new RetainedLoop(header, guards,
                     classification(fixedCount), fixed > 0 && !fixedCount,
-                    latches));
+                    latches, loop));
         }
         return result;
     }

@@ -129,7 +129,7 @@ final class SymbolicRegionPlanner {
         for (String entry : stateEntries) {
             if (!selected.contains(entry)
                     || CausynthStaticFacts.constructor(entry)
-                    || !program.regionsHolding(entry).isEmpty()) {
+                    || hasSkeletonRoot(program, entry)) {
                 continue;
             }
             addSkeleton(program, entry, STATE_WRITER_ENTRY,
@@ -140,6 +140,17 @@ final class SymbolicRegionPlanner {
 
         declareCommunicationPorts(program);
         declareRetainedLoops(program);
+    }
+
+    /** A method held by another context still needs its own state occurrence. */
+    private static boolean hasSkeletonRoot(StaticProgram program,
+                                           String method) {
+        for (Map<String, Object> region : program.regions) {
+            if (method.equals(text(region.get("rootMethod")))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -177,22 +188,20 @@ final class SymbolicRegionPlanner {
      * Declares every port of every discovered cut on the regions that own the
      * two sides of that cut.
      *
-     * <p>README section 3 fixes the composition shape:</p>
+     * <p>README section 3 fixes the distributed value-flow shape:</p>
      *
      * <pre>
-     * T_C0(Input, Live_out, Req_out)
-     * AND Req_in = Req_out AND T_S(Req_in, Resp_out)
-     * AND Resp_in = Resp_out AND Live_in = Live_out
-     * AND T_C1(Live_in, Resp_in, Target)
+     * Req = T_C0(Input, Live)
+     * Resp = T_S(Req)
+     * Target = T_C1(Live, Resp)
      * </pre>
      *
-     * <p>Every one of those equalities is between a port of one region and a
-     * port of another, so both endpoints have to appear in a region's port
-     * catalog before the composer can state one.  Minting the id at the cut
-     * and binding it at runtime is not enough: an equality over a name no
-     * catalog declares is an equality between two things the formula knows
-     * nothing about, which is why the composer refuses it by name rather than
-     * emitting a free variable.  This is where the declaration happens.</p>
+     * <p>The ports identify the producer output and consumer input at each
+     * cut.  The VM propagates the producer expression and runtime evidence
+     * records the exact endpoints; composition substitutes that expression
+     * directly instead of creating a second pair of port values and an
+     * equality between them.  Both endpoints must still be declared here so
+     * an absent or ambiguous runtime handoff fails closed.</p>
      *
      * <ul>
      *   <li>a REQUEST port is an <b>output</b> of the region holding the
@@ -305,7 +314,11 @@ final class SymbolicRegionPlanner {
         List<String> communication = intersections(methods,
                 communicationAnchors);
         List<String> state = intersections(methods, stateAnchors);
-        List<String> anchors = union(failure, communication, state);
+        boolean explicitFault = EXPLICIT_FAULT_ENTRY.equals(authority);
+        List<String> fault = explicitFault
+                ? Collections.singletonList(root)
+                : Collections.<String>emptyList();
+        List<String> anchors = union(fault, failure, communication, state);
         if (anchors.isEmpty()) {
             return false;
         }
@@ -313,7 +326,8 @@ final class SymbolicRegionPlanner {
         // have to be entered for the demanded behaviour; the root only names
         // the execution context they ran in.
         List<String> demandScope = anchorRootedScope(root,
-                !failure.isEmpty() ? failure
+                explicitFault ? fault
+                        : !failure.isEmpty() ? failure
                         : !communication.isEmpty() ? communication : state,
                 methods, outgoing, regionAuthorities,
                 transportBoundaries);
@@ -323,7 +337,9 @@ final class SymbolicRegionPlanner {
         row.put("methods", methods);
         row.put(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE,
                 demandScope);
-        row.put("selection", !failure.isEmpty()
+        row.put("selection", explicitFault
+                ? "EXPLICIT_FAULT_CONTEXT"
+                : !failure.isEmpty()
                 ? "EXCEPTION_CONTEXT"
                 : !communication.isEmpty()
                 ? "COMMUNICATION_CONTEXT" : "STATE_CONTEXT");

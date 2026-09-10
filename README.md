@@ -15,7 +15,7 @@ whole-program unreachability proof.
 workload + target + wire flows + loop bounds
   -> static discovery
   -> seed trace and causal graph
-  -> immutable target-first plan
+  -> immutable linked region-path plan
   -> concolic replay and import
   -> causal composition
   -> SMT and Z3
@@ -87,18 +87,11 @@ Inspect and validate before running:
 ./run_engine.sh --config /absolute/path/workflow.properties validate
 ```
 
-Run either the symbolic-root catalog phase or the complete campaign:
+Run the complete campaign:
 
 ```bash
-./run_engine.sh --config /absolute/path/workflow.properties catalog
 ./run_engine.sh --config /absolute/path/workflow.properties campaign
 ```
-
-The catalog command stops after writing
-`schedule/iteration-0000/symbolic_root_mechanism_cards.json`. An optional
-external proposal can narrow independent roots; its strict contract is in
-[docs/SYMBOLIC_ROOT_LLM.md](docs/SYMBOLIC_ROOT_LLM.md). Use a different fresh
-output root for the subsequent campaign.
 
 ## HDFS experiments
 
@@ -112,6 +105,7 @@ checkouts so that their source changes and compiled classes remain independent.
 | HDFS-17899 Balancer | `/opt/hadoop-hdfs-17899-bug1` | `experiments/hadoop/hdfs-17899/run.sh bug1` |
 | HDFS-17899 SPS | `/opt/hadoop-hdfs-17899-bug2` | `experiments/hadoop/hdfs-17899/run.sh bug2` |
 | HDFS-17899 DataNode | `/opt/hadoop-hdfs-17899-bug3` | `experiments/hadoop/hdfs-17899/run.sh bug3` |
+| HDFS-17960 | `/opt/hadoop-hdfs-17960-jdk8` | `experiments/hadoop/hdfs-17960/run.sh` |
 
 Append `build` to compile a workload and run its concrete test. Append `campaign`
 to execute the full GraphChecker pipeline. For example:

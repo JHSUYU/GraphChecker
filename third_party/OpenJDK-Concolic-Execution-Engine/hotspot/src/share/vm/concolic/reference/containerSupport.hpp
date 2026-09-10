@@ -17,6 +17,11 @@ bool associative(oop value);
 BasicType result_type(oop result, BasicType declared);
 std::string java_type(oop result, BasicType declared);
 Expression *concrete_value(oop value);
+// Returns the semantic expression already carried by this object, without
+// allocating an identity shadow or replacing a missing expression with a
+// concrete value.  Container iterators use this to preserve a key's upstream
+// lineage while keeping the no-lineage fallback explicit and bounded.
+Expression *semantic_value(oop value);
 Expression *concrete_result(MethodSymbolizerHandle &handle);
 void constrain_result(MethodSymbolizerHandle &handle,
                       Expression *expression);
@@ -80,8 +85,7 @@ std::string unsupported(const char *category,
 SharedFieldVersions::Location state_location(oop container);
 
 // Publishes `new_state` as the immutable state this mutation produced.
-// `operation` names the mutation (PUT, REMOVE, CLEAR, ...) and is what the
-// ledger event and the evidence report call this write.  Returns the new
+// `operation` names the mutation (PUT, REMOVE, CLEAR, ...) in evidence. Returns the new
 // version id, or 0 when the container is not a selected carrier.
 //
 // The caller must already have installed `new_state` as the container's
@@ -91,34 +95,30 @@ jlong publish_state(oop container, Expression *new_state,
                     const char *operation);
 
 // Records that a mutation this engine does not model has run on a selected
-// container, so every later read of it keeps an honest rf_unknown arm.
-// `reason` names the gap in the ledger.  Returns true when a selected
-// location was marked, i.e. when there was a claim to keep honest.
+// container.  Later queries keep the recorded candidates available for
+// exploration but cannot close coverage.  `reason` names the gap in the
+// evidence report. Returns true when a selected location was marked.
 bool mark_state_gap(oop container, const char *reason);
 
 /** One query bound to the state it may have observed. */
 struct StateQuery {
-  // NULL when the container is not a selected carrier, in which case the
-  // caller keeps whatever answer it already had.
+  // NULL when the container is not selected or when the selected location
+  // has no recorded writer candidate.
   Expression *expression;
-  // True when one writer was proven, so the observation may still be tied to
-  // the concrete value the run returned.  False for a guarded choice: tying an
-  // undecided disjunction to one concrete value would let concrete equality
-  // pick the writer, which is the guess this whole mechanism exists to avoid.
-  bool exact;
-  StateQuery() : expression(NULL), exact(false) {}
+  // True once this query addressed a selected location, including the gap
+  // case where no recorded candidate can provide an expression.
+  bool selected;
+  StateQuery() : expression(NULL), selected(false) {}
 };
 
 /**
  * Resolves one query of a selected container against its state versions.
  *
- * The decision -- program order, happens-before, retention, and the
- * Resolution/ReadReason vocabulary -- is the generic store's, unchanged.  What
- * is built here is only the value: the arm of candidate W is
+ * The arm of candidate W is
  * `operation(W.state, arguments)`, never W's state itself, because selecting a
  * writer has to change what the reader observes and not merely which state is
- * named.  A guarded answer keeps the unconditional rf_unknown arm, typed with
- * the query's own result type.
+ * named.  A guarded answer contains only recorded writer states; incomplete
+ * coverage is reported separately and never lowered as a free state.
  */
 StateQuery query_state(oop container, const char *shape,
                        const char *operation, const exp_list_t &arguments,

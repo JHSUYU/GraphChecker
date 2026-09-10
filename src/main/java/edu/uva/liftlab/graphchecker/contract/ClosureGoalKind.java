@@ -4,20 +4,11 @@ import com.google.gson.JsonObject;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
-/**
- * The semantic relation a concolic campaign must close for one region
- * occurrence: {@link #OUTPUT_RELATION_CLOSURE} for an occurrence another
- * demands a value from, {@link #TARGET_REACH_CLOSURE} for the one carrying
- * the target predicate.  A branch flip is an exploration task within a
- * closure goal, not a separate goal.
- *
- * <p>There is no third kind.  A synchronous call does not split its caller,
- * so the frame that issues a request and reads its response is one coarse
- * occurrence; the remote handler is separate because it runs in another
- * thread/source context.</p>
- */
+/** What one replay explores for a selected region occurrence. */
 public enum ClosureGoalKind {
-    OUTPUT_RELATION_CLOSURE,
+    /** Explore the complete region-local path condition. */
+    REGION_PATH_CLOSURE,
+    /** Explore the region-local path ending at the selected failure. */
     TARGET_REACH_CLOSURE;
 
     public static final String TASK_FIELD = "goalKind";
@@ -34,8 +25,8 @@ public enum ClosureGoalKind {
         task.addProperty(TASK_FIELD, name());
     }
 
-    public boolean capturesOutputRelation() {
-        return this == OUTPUT_RELATION_CLOSURE;
+    public boolean capturesRegionPath() {
+        return this == REGION_PATH_CLOSURE;
     }
 
     public boolean capturesTargetReach() {

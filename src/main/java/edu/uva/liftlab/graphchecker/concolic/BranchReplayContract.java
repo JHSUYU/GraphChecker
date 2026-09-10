@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -18,14 +19,17 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 
 /** Immutable natural replay request derived from one source branch witness. */
 public final class BranchReplayContract {
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
     public static final String KIND = "BINARY_BRANCH_REPLAY_CONTRACT";
 
     private final List<BranchWitness> orderedPrefix;
+    private final List<ExactConcreteBranchObservation> runtimePrefix;
     private final BranchWitness source;
     private final SolverPathContext solverPathContext;
 
     private BranchReplayContract(List<BranchWitness> orderedPrefix,
+                                 List<ExactConcreteBranchObservation>
+                                         runtimePrefix,
                                  BranchWitness source,
                                  SolverPathContext solverPathContext) {
         if (source == null) {
@@ -33,6 +37,13 @@ public final class BranchReplayContract {
         }
         if (orderedPrefix == null) {
             throw new IllegalArgumentException("ordered prefix is required");
+        }
+        if (runtimePrefix == null) {
+            throw new IllegalArgumentException("runtime prefix is required");
+        }
+        if (source.isPcPredicateDecision()) {
+            throw new IllegalArgumentException(
+                    "replay source must be a source-level branch event");
         }
         List<BranchWitness> prefixCopy = new ArrayList<>(orderedPrefix);
         Set<String> events = new LinkedHashSet<>();
@@ -46,7 +57,42 @@ public final class BranchReplayContract {
             throw new IllegalArgumentException(
                     "source branch event must not appear in ordered prefix");
         }
+        List<ExactConcreteBranchObservation> runtimeCopy =
+                new ArrayList<>(runtimePrefix);
+        Set<String> runtimeEvents = new LinkedHashSet<>();
+        for (ExactConcreteBranchObservation observation : runtimeCopy) {
+            if (observation == null
+                    || !runtimeEvents.add(runtimeIdentity(observation))) {
+                throw new IllegalArgumentException(
+                        "runtime prefix contains a missing or duplicate event");
+            }
+        }
+        if (runtimeEvents.contains(sourceIdentity(source))) {
+            throw new IllegalArgumentException(
+                    "source branch event must not appear in runtime prefix");
+        }
+        for (BranchWitness witness : prefixCopy) {
+            if (witness.isPcPredicateDecision()) continue;
+            boolean matched = false;
+            for (ExactConcreteBranchObservation observation : runtimeCopy) {
+                if (runtimeIdentity(observation).equals(
+                        sourceIdentity(witness))
+                        && !observation.isSwitchObservation()
+                        && observation.sourceTakenOutcome()
+                        == witness.sourceTakenOutcome()) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                throw new IllegalArgumentException(
+                        "runtime prefix omits witnessed event "
+                                + witness.siteId() + '#'
+                                + witness.occurrence());
+            }
+        }
         this.orderedPrefix = Collections.unmodifiableList(prefixCopy);
+        this.runtimePrefix = Collections.unmodifiableList(runtimeCopy);
         this.source = source;
         this.solverPathContext = solverPathContext;
     }
@@ -54,7 +100,18 @@ public final class BranchReplayContract {
     /** The only operation in the protocol that derives opposite polarity. */
     public static BranchReplayContract flip(List<BranchWitness> orderedPrefix,
                                             BranchWitness source) {
-        return new BranchReplayContract(orderedPrefix, source, null);
+        List<ExactConcreteBranchObservation> runtimePrefix =
+                new ArrayList<>();
+        if (orderedPrefix != null) {
+            for (BranchWitness witness : orderedPrefix) {
+                if (witness != null && !witness.isPcPredicateDecision()) {
+                    runtimePrefix.add(binaryObservation(witness,
+                            witness.sourceTakenOutcome()));
+                }
+            }
+        }
+        return new BranchReplayContract(orderedPrefix, runtimePrefix, source,
+                null);
     }
 
     public static BranchReplayContract fromSummary(
@@ -90,12 +147,362 @@ public final class BranchReplayContract {
                 summary.getAsJsonArray("pathCondition"),
                 prefixByPosition.keySet(),
                 targetPosition);
+        List<ExactConcreteBranchObservation> runtimePrefix =
+                new ArrayList<>();
+        for (SummaryBranchMapping mapping : mappings) {
+            if (mapping.decisionIdentity().equals(
+                    selected.decisionIdentity())) {
+                break;
+            }
+            if (mapping.isConcreteObservation()) {
+                runtimePrefix.add(mapping.concreteObservation());
+            } else if (!mapping.witness().isPcPredicateDecision()) {
+                runtimePrefix.add(binaryObservation(mapping.witness(),
+                        mapping.sourceTakenOutcome()));
+            }
+        }
         return new BranchReplayContract(
-                new ArrayList<>(prefixByPosition.values()),
+                new ArrayList<>(prefixByPosition.values()), runtimePrefix,
                 selected.witness(), context);
     }
 
     public static BranchReplayContract fromJson(JsonObject json) {
+        return fromJson(json, false);
+    }
+
+    /**
+     * Decodes only the concrete branch schedule needed inside the replay JVM.
+     * The source predicate can be a large propagated expression DAG; replay
+     * matching needs its branch address and opposite outcome, not that value.
+     */
+    public static RuntimeSchedule runtimeScheduleFromJson(JsonObject json) {
+        return runtimeScheduleFromJson(json, new JsonArray());
+    }
+
+    /**
+     * Decodes the replay schedule and its statically proved bounded-loop
+     * ranges. A loop predicate with symbolic support can then follow the
+     * equivalent propagated value when iteration order changes; every other
+     * event keeps its exact occurrence address.
+     */
+    public static RuntimeSchedule runtimeScheduleFromJson(
+            JsonObject json, JsonArray retainedLoops) {
+        if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
+                || !KIND.equals(primitiveString(json, "kind"))) {
+            throw new IllegalArgumentException(
+                    "unsupported binary branch replay contract schema");
+        }
+        JsonElement prefixElement = json.get("orderedPrefix");
+        if (prefixElement == null || !prefixElement.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "orderedPrefix must be an array");
+        }
+        List<RuntimeWitness> prefix = new ArrayList<>();
+        Set<String> events = new LinkedHashSet<>();
+        for (JsonElement element : prefixElement.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                throw new IllegalArgumentException(
+                        "orderedPrefix entries must be witnesses");
+            }
+            RuntimeWitness witness = RuntimeWitness.from(
+                    element.getAsJsonObject());
+            if (!events.add(witness.decisionIdentity())) {
+                throw new IllegalArgumentException(
+                        "ordered prefix contains a missing or duplicate event");
+            }
+            prefix.add(witness);
+        }
+        JsonElement runtimeElement = json.get("runtimePrefix");
+        if (runtimeElement == null || !runtimeElement.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "runtimePrefix must be an array");
+        }
+        List<ExactConcreteBranchObservation> runtimePrefix =
+                new ArrayList<>();
+        Set<String> runtimeEvents = new LinkedHashSet<>();
+        for (JsonElement element : runtimeElement.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                throw new IllegalArgumentException(
+                        "runtimePrefix entries must be observations");
+            }
+            ExactConcreteBranchObservation observation =
+                    ExactConcreteBranchObservation.fromJson(
+                            element.getAsJsonObject());
+            if (!runtimeEvents.add(runtimeIdentity(observation))) {
+                throw new IllegalArgumentException(
+                        "runtime prefix contains a missing or duplicate event");
+            }
+            runtimePrefix.add(observation);
+        }
+        RuntimeWitness source = RuntimeWitness.from(
+                requiredObject(json, "source"));
+        if (source.decisionOrdinal != 0) {
+            throw new IllegalArgumentException(
+                    "replay source must be a source-level branch witness");
+        }
+        if (!events.add(source.decisionIdentity())) {
+            throw new IllegalArgumentException(
+                    "source branch event must not appear in ordered prefix");
+        }
+        if (runtimeEvents.contains(source.runtimeIdentity())) {
+            throw new IllegalArgumentException(
+                    "source branch event must not appear in runtime prefix");
+        }
+        for (RuntimeWitness witness : prefix) {
+            if (witness.decisionOrdinal > 0) continue;
+            boolean matched = false;
+            for (ExactConcreteBranchObservation observation : runtimePrefix) {
+                if (witness.runtimeIdentity().equals(
+                        runtimeIdentity(observation))
+                        && !observation.isSwitchObservation()
+                        && observation.sourceTakenOutcome()
+                        == witness.sourceTakenOutcome) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                throw new IllegalArgumentException(
+                        "runtime prefix omits witnessed event "
+                                + witness.siteId + '#'
+                                + witness.occurrence);
+            }
+        }
+        Map<String, RuntimeWitness> witnessed = new TreeMap<>();
+        for (RuntimeWitness witness : prefix) {
+            if (witness.decisionOrdinal == 0) {
+                witnessed.put(witness.runtimeIdentity(), witness);
+            }
+        }
+        LoopMembership loopCatalog = LoopMembership.decode(retainedLoops);
+        LoopMembership loops = loopCatalog.fresh();
+        List<RuntimeDecision> decisions = new ArrayList<>();
+        for (ExactConcreteBranchObservation observation : runtimePrefix) {
+            RuntimeWitness witness = witnessed.get(
+                    runtimeIdentity(observation));
+            String loopIdentity = loops.currentIdentity(
+                    observation.siteId());
+            decisions.add(RuntimeDecision.prefix(observation,
+                    witness == null ? "" : witness.symbolicSupportDigest,
+                    loopIdentity,
+                    loops.isExitSite(observation.siteId())));
+            loops.advance(observation.siteId(),
+                    observation.exactDecisionToken());
+        }
+        String sourceToken = ExactConcreteBranchObservation
+                .binaryDecisionToken(!source.sourceTakenOutcome);
+        decisions.add(RuntimeDecision.source(source.siteId,
+                source.occurrence, !source.sourceTakenOutcome,
+                source.symbolicSupportDigest,
+                loops.currentIdentity(source.siteId),
+                loops.isExitSite(source.siteId)));
+        loops.advance(source.siteId, sourceToken);
+        enableBoundedLoopSupport(decisions);
+        return new RuntimeSchedule(runtimePrefix, decisions, source.siteId,
+                source.occurrence, !source.sourceTakenOutcome, loopCatalog);
+    }
+
+    /**
+     * Inside one proved bounded-loop invocation, propagated symbolic support
+     * is the value address. Physical iteration ordinals are not stable for
+     * unordered containers, and several elements may legitimately carry the
+     * same propagated expression.
+     */
+    private static void enableBoundedLoopSupport(
+            List<RuntimeDecision> decisions) {
+        for (RuntimeDecision decision : decisions) {
+            decision.supportAddressed = !decision.loopIdentity.isEmpty()
+                    && !decision.loopBoundary
+                    && !decision.symbolicSupportDigest.isEmpty();
+        }
+    }
+
+    /** Exact static membership plus seed-observed dynamic invocation groups. */
+    private static final class LoopMembership {
+        private final Map<String, String> loopByBranch = new TreeMap<>();
+        private final Map<String, Set<String>> exitedLoopsByDecision =
+                new TreeMap<>();
+        private final Set<String> exitSites = new LinkedHashSet<>();
+        private final Map<String, Integer> invocation = new TreeMap<>();
+
+        private LoopMembership fresh() {
+            LoopMembership copy = new LoopMembership();
+            copy.loopByBranch.putAll(loopByBranch);
+            copy.exitSites.addAll(exitSites);
+            for (Map.Entry<String, Set<String>> entry
+                    : exitedLoopsByDecision.entrySet()) {
+                copy.exitedLoopsByDecision.put(entry.getKey(),
+                        new LinkedHashSet<>(entry.getValue()));
+            }
+            return copy;
+        }
+
+        private String currentIdentity(String siteId) {
+            String loop = loopByBranch.get(siteId);
+            return loop == null || loop.isEmpty() ? ""
+                    : loop + "\u0000" + invocation.getOrDefault(loop, 1);
+        }
+
+        private void advance(String siteId, String decisionToken) {
+            Set<String> exited = exitedLoopsByDecision.get(
+                    siteId + "\u0000" + decisionToken);
+            if (exited != null) {
+                for (String exitedLoop : exited) {
+                    invocation.put(exitedLoop,
+                            invocation.getOrDefault(exitedLoop, 1) + 1);
+                }
+            }
+        }
+
+        private boolean isExitSite(String siteId) {
+            return exitSites.contains(siteId);
+        }
+
+        private static LoopMembership decode(JsonArray retainedLoops) {
+            LoopMembership result = new LoopMembership();
+            if (retainedLoops == null) return result;
+            for (JsonElement element : retainedLoops) {
+                if (element == null || !element.isJsonObject()) continue;
+                JsonObject loop = element.getAsJsonObject();
+                String identity = primitiveString(loop,
+                        LoopBoundPolicy.RUNTIME_LOOP_ID);
+                JsonElement members = loop.get(
+                        LoopBoundPolicy.LOOP_INNERMOST_BRANCH_SITE_IDS);
+                if (identity.isEmpty() || members == null
+                        || !members.isJsonArray()) {
+                    continue;
+                }
+                for (JsonElement member : members.getAsJsonArray()) {
+                    if (member == null || !member.isJsonPrimitive()
+                            || !member.getAsJsonPrimitive().isString()
+                            || member.getAsString().trim().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "retained loop has malformed branch "
+                                        + "membership");
+                    }
+                    String site = member.getAsString().trim();
+                    String held = result.loopByBranch.put(site, identity);
+                    if (held != null && !held.equals(identity)) {
+                        throw new IllegalArgumentException(
+                                "branch belongs to multiple innermost loops: "
+                                        + site);
+                    }
+                }
+                JsonElement encodedExits = loop.get(
+                        LoopBoundPolicy.LOOP_EXIT_DECISIONS);
+                if (encodedExits == null || !encodedExits.isJsonArray()) {
+                    continue;
+                }
+                for (JsonElement encodedExit
+                        : encodedExits.getAsJsonArray()) {
+                    if (encodedExit == null
+                            || !encodedExit.isJsonObject()) {
+                        throw new IllegalArgumentException(
+                                "retained loop has malformed exit decision");
+                    }
+                    JsonObject exit = encodedExit.getAsJsonObject();
+                    String site = primitiveString(exit, "siteId");
+                    String token = primitiveString(exit, "decisionToken");
+                    if (site.isEmpty() || token.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "retained loop has incomplete exit decision");
+                    }
+                    result.exitSites.add(site);
+                    result.exitedLoopsByDecision.computeIfAbsent(
+                            site + "\u0000" + token,
+                            ignored -> new LinkedHashSet<>()).add(identity);
+                }
+            }
+            return result;
+        }
+    }
+
+    /** Branch metadata needed to validate replay order without its SMT DAG. */
+    private static final class RuntimeWitness {
+        private final String siteId;
+        private final String method;
+        private final int unitIndex;
+        private final int occurrence;
+        private final boolean sourceTakenOutcome;
+        private final int decisionOrdinal;
+        private final String symbolicSupportDigest;
+
+        private RuntimeWitness(String siteId, String method, int unitIndex,
+                               int occurrence,
+                               boolean sourceTakenOutcome,
+                               int decisionOrdinal,
+                               String symbolicSupportDigest) {
+            this.siteId = siteId;
+            this.method = method;
+            this.unitIndex = unitIndex;
+            this.occurrence = occurrence;
+            this.sourceTakenOutcome = sourceTakenOutcome;
+            this.decisionOrdinal = decisionOrdinal;
+            this.symbolicSupportDigest = symbolicSupportDigest;
+        }
+
+        private static RuntimeWitness from(JsonObject json) {
+            if (primitiveInteger(json, "schemaVersion", -1)
+                    != BranchWitness.SCHEMA_VERSION
+                    || !BranchWitness.KIND.equals(primitiveString(json,
+                    "kind"))) {
+                throw new IllegalArgumentException(
+                        "unsupported binary branch witness schema");
+            }
+            JsonObject site = requiredObject(json, "site");
+            String siteId = primitiveString(site, "siteId");
+            String method = primitiveString(site, "method");
+            int unitIndex = primitiveInteger(site, "unitIndex", -1);
+            int occurrence = primitiveInteger(site, "occurrence", -1);
+            int vmPcIndex = primitiveInteger(json, "vmPcIndex", -1);
+            int decisionOrdinal = primitiveInteger(json,
+                    "decisionOrdinal", 0);
+            String normalization = primitiveString(json,
+                    "predicateNormalization");
+            JsonElement outcome = json.get("sourceTakenOutcome");
+            JsonElement predicate = json.get("sourceSatisfiedPredicate");
+            boolean pcPredicate = BranchWitness.PC_PREDICATE_NORMALIZATION
+                    .equals(normalization);
+            String support = primitiveString(json,
+                    "symbolicSupportDigest");
+            if (siteId.isEmpty() || method.isEmpty() || unitIndex < 0
+                    || occurrence <= 0 || vmPcIndex < 0
+                    || outcome == null || !outcome.isJsonPrimitive()
+                    || !outcome.getAsJsonPrimitive().isBoolean()
+                    || predicate == null || predicate.isJsonNull()
+                    || !BranchWitness.IDENTITY_NORMALIZATION.equals(
+                    normalization)
+                    && !BranchWitness.CMP_NORMALIZATION.equals(normalization)
+                    && !pcPredicate
+                    || decisionOrdinal < 0
+                    || decisionOrdinal == 0 && pcPredicate
+                    || decisionOrdinal > 0 && !pcPredicate
+                    || !support.isEmpty()
+                    && !BranchPredicateAlgebra.validSymbolicSupportDigest(
+                    support)) {
+                throw new IllegalArgumentException(
+                        "replay branch witness schedule is incomplete");
+            }
+            return new RuntimeWitness(siteId, method, unitIndex, occurrence,
+                    outcome.getAsBoolean(), decisionOrdinal,
+                    support);
+        }
+
+        private String decisionIdentity() {
+            return runtimeIdentity() + "\u0000" + decisionOrdinal;
+        }
+
+        private String runtimeIdentity() {
+            return siteId + "\u0000" + occurrence;
+        }
+    }
+
+    static BranchReplayContract fromImmutableJson(JsonObject json) {
+        return fromJson(json, true);
+    }
+
+    private static BranchReplayContract fromJson(JsonObject json,
+                                                 boolean immutablePredicates) {
         if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(primitiveString(json, "kind"))) {
             throw new IllegalArgumentException(
@@ -112,24 +519,61 @@ public final class BranchReplayContract {
                 throw new IllegalArgumentException(
                         "orderedPrefix entries must be witnesses");
             }
-            prefix.add(BranchWitness.fromJson(element.getAsJsonObject()));
+            prefix.add(immutablePredicates
+                    ? BranchWitness.fromImmutableJson(
+                    element.getAsJsonObject())
+                    : BranchWitness.fromJson(element.getAsJsonObject()));
         }
-        BranchWitness source = BranchWitness.fromJson(requiredObject(json,
-                "source"));
-        return flip(prefix, source);
+        JsonElement runtimeElement = json.get("runtimePrefix");
+        if (runtimeElement == null || !runtimeElement.isJsonArray()) {
+            throw new IllegalArgumentException(
+                    "runtimePrefix must be an array");
+        }
+        List<ExactConcreteBranchObservation> runtimePrefix =
+                new ArrayList<>();
+        for (JsonElement element : runtimeElement.getAsJsonArray()) {
+            if (!element.isJsonObject()) {
+                throw new IllegalArgumentException(
+                        "runtimePrefix entries must be observations");
+            }
+            runtimePrefix.add(ExactConcreteBranchObservation.fromJson(
+                    element.getAsJsonObject()));
+        }
+        JsonObject encodedSource = requiredObject(json, "source");
+        BranchWitness source = immutablePredicates
+                ? BranchWitness.fromImmutableJson(encodedSource)
+                : BranchWitness.fromJson(encodedSource);
+        return new BranchReplayContract(prefix, runtimePrefix, source, null);
     }
 
     public JsonObject toJson() {
+        return toJson(true);
+    }
+
+    /** Artifact-builder view which preserves decoder-owned expression DAGs. */
+    JsonObject toImmutableJsonView() {
+        return toJson(false);
+    }
+
+    private JsonObject toJson(boolean defensivePredicates) {
         JsonObject result = new JsonObject();
         result.addProperty("schemaVersion", SCHEMA_VERSION);
         result.addProperty("kind", KIND);
         JsonArray prefix = new JsonArray();
         for (BranchWitness witness : orderedPrefix) {
-            prefix.add(witness.toJson());
+            prefix.add(defensivePredicates ? witness.toJson()
+                    : witness.toImmutableJsonView());
         }
         result.add("orderedPrefix", prefix);
-        result.add("source", source.toJson());
-        return (JsonObject) CanonicalJson.copy(result);
+        JsonArray runtime = new JsonArray();
+        for (ExactConcreteBranchObservation observation : runtimePrefix) {
+            runtime.add(observation.toJson());
+        }
+        result.add("runtimePrefix", runtime);
+        result.add("source", defensivePredicates ? source.toJson()
+                : source.toImmutableJsonView());
+        return defensivePredicates
+                ? (JsonObject) CanonicalJson.copy(result) : result;
     }
 
     public void addTo(JsonObject target) {
@@ -137,12 +581,319 @@ public final class BranchReplayContract {
             throw new IllegalStateException(
                     "solver context is unavailable for parsed contract");
         }
-        target.add("replayContract", toJson());
+        target.add("replayContract", toJson(false));
         target.add("solverPathContext", solverPathContext.toJson());
     }
 
     public List<BranchWitness> orderedPrefix() {
         return orderedPrefix;
+    }
+
+    /** Exact source-level decisions that must precede the flipped branch. */
+    public List<ExactConcreteBranchObservation> runtimePrefix() {
+        return runtimePrefix;
+    }
+
+    /** Predicate-free projection consumed by the runtime replay matcher. */
+    public static final class RuntimeSchedule {
+        private final List<ExactConcreteBranchObservation> runtimePrefix;
+        private final List<RuntimeDecision> decisions;
+        private final String sourceSiteId;
+        private final int sourceOccurrence;
+        private final boolean requiredTakenOutcome;
+        private final LoopMembership loopMembership;
+
+        private RuntimeSchedule(
+                List<ExactConcreteBranchObservation> runtimePrefix,
+                List<RuntimeDecision> decisions,
+                String sourceSiteId, int sourceOccurrence,
+                boolean requiredTakenOutcome,
+                LoopMembership loopMembership) {
+            this.runtimePrefix = Collections.unmodifiableList(
+                    new ArrayList<>(runtimePrefix));
+            this.decisions = Collections.unmodifiableList(
+                    new ArrayList<>(decisions));
+            this.sourceSiteId = sourceSiteId;
+            this.sourceOccurrence = sourceOccurrence;
+            this.requiredTakenOutcome = requiredTakenOutcome;
+            this.loopMembership = loopMembership == null
+                    ? new LoopMembership() : loopMembership.fresh();
+        }
+
+        public List<ExactConcreteBranchObservation> runtimePrefix() {
+            return runtimePrefix;
+        }
+
+        /** Compact events consumed by the runtime replay matcher. */
+        public List<RuntimeDecision> decisions() { return decisions; }
+
+        public String sourceSiteId() { return sourceSiteId; }
+
+        public int sourceOccurrence() { return sourceOccurrence; }
+
+        public boolean requiredTakenOutcome() {
+            return requiredTakenOutcome;
+        }
+
+    }
+
+    /** Predicate-free replay event plus its small, capture-time support id. */
+    public static final class RuntimeDecision {
+        private final String siteId;
+        private final int occurrence;
+        private final String decisionToken;
+        private final String symbolicSupportDigest;
+        private final String loopIdentity;
+        private final boolean loopBoundary;
+        private final boolean source;
+        private boolean supportAddressed;
+
+        private RuntimeDecision(String siteId, int occurrence,
+                                String decisionToken,
+                                String symbolicSupportDigest,
+                                String loopIdentity, boolean loopBoundary,
+                                boolean source) {
+            this.siteId = siteId;
+            this.occurrence = occurrence;
+            this.decisionToken = decisionToken;
+            this.symbolicSupportDigest = symbolicSupportDigest == null
+                    ? "" : symbolicSupportDigest;
+            this.loopIdentity = loopIdentity == null ? "" : loopIdentity;
+            this.loopBoundary = loopBoundary;
+            this.source = source;
+        }
+
+        private static RuntimeDecision prefix(
+                ExactConcreteBranchObservation observation,
+                String support, String loopIdentity, boolean loopBoundary) {
+            return new RuntimeDecision(observation.siteId(),
+                    observation.occurrence(), observation.exactDecisionToken(),
+                    support, loopIdentity, loopBoundary, false);
+        }
+
+        private static RuntimeDecision source(
+                String siteId, int occurrence, boolean outcome,
+                String support, String loopIdentity, boolean loopBoundary) {
+            return new RuntimeDecision(siteId, occurrence,
+                    ExactConcreteBranchObservation.binaryDecisionToken(
+                            outcome), support, loopIdentity, loopBoundary,
+                    true);
+        }
+
+        public String siteId() { return siteId; }
+        public int occurrence() { return occurrence; }
+        public String decisionToken() { return decisionToken; }
+        public String symbolicSupportDigest() {
+            return symbolicSupportDigest;
+        }
+        public String loopIdentity() { return loopIdentity; }
+        public boolean supportAddressed() { return supportAddressed; }
+        public boolean source() { return source; }
+    }
+
+    /**
+     * One replay matcher shared by the runtime and importer. A supported
+     * branch inside a statically retained loop follows the propagated value
+     * and required decision when iteration order changes. Every other branch
+     * keeps the exact source-level occurrence address.
+     */
+    public static final class ReplayProgress {
+        private final List<ReplayEvent> expected = new ArrayList<>();
+        private final LoopMembership actualLoops;
+        private String failure = "prefix not yet observed";
+        private boolean contradiction;
+
+        public ReplayProgress(RuntimeSchedule contract) {
+            actualLoops = contract == null ? new LoopMembership()
+                    : contract.loopMembership.fresh();
+            if (contract == null) return;
+            for (RuntimeDecision decision : contract.decisions()) {
+                add(decision);
+            }
+        }
+
+        private void add(RuntimeDecision decision) {
+            ReplayEvent event = new ReplayEvent(decision.siteId(),
+                    decision.occurrence(), decision.decisionToken(),
+                    decision.symbolicSupportDigest(),
+                    decision.loopIdentity(), decision.supportAddressed(),
+                    decision.source());
+            if (!expected.isEmpty()
+                    && expected.get(expected.size() - 1)
+                    .sameOccurrence(event)) {
+                ReplayEvent prior = expected.get(expected.size() - 1);
+                if (!prior.decisionToken.equals(event.decisionToken)
+                        || prior.source != event.source) {
+                    throw new IllegalArgumentException(
+                            "conflicting replay events at " + event.siteId
+                                    + '#' + event.occurrence);
+                }
+                return;
+            }
+            expected.add(event);
+        }
+
+        public boolean observeBinary(
+                String siteId, int occurrence, boolean outcome) {
+            return observeBinary(siteId, occurrence, outcome, "");
+        }
+
+        public boolean observeBinary(
+                String siteId, int occurrence, boolean outcome,
+                String symbolicSupportDigest) {
+            return observeDecision(siteId, occurrence,
+                    ExactConcreteBranchObservation.binaryDecisionToken(
+                            outcome), symbolicSupportDigest);
+        }
+
+        public boolean observeSwitch(
+                String siteId, int occurrence, String branchKind,
+                List<Integer> caseKeys, int observedSuccessorIndex) {
+            return observeDecision(siteId, occurrence,
+                    ExactConcreteBranchObservation.switchDecisionToken(
+                            branchKind, caseKeys, observedSuccessorIndex), "");
+        }
+
+        /** True exactly when this observation consumed the planned source. */
+        public boolean observeDecision(
+                String siteId, int occurrence, String decisionToken,
+                String symbolicSupportDigest) {
+            if (expected.isEmpty()) return true;
+            String actualLoopIdentity = actualLoops.currentIdentity(
+                    empty(siteId));
+            ReplayEvent actual = new ReplayEvent(siteId, occurrence,
+                    decisionToken, empty(symbolicSupportDigest),
+                    actualLoopIdentity, false, false);
+            // The task's exact CFG catalog proves this (site, decision) is a
+            // physical loop exit even when replay divergence makes it absent
+            // from the expected prefix. Advance after naming this event's
+            // current invocation and before observing the next one.
+            actualLoops.advance(empty(siteId), empty(decisionToken));
+            if (failed() || complete()) return false;
+            int selected = matchingEvent(actual);
+            if (selected < 0) return false;
+            ReplayEvent wanted = expected.get(selected);
+            int blocked = precedingBarrier(selected, wanted);
+            if (blocked >= 0) {
+                ReplayEvent barrier = expected.get(blocked);
+                failure = "reached " + empty(siteId) + '#' + occurrence
+                        + " before replay prefix event " + barrier.siteId
+                        + '#' + barrier.occurrence;
+                return false;
+            }
+            if (!wanted.decisionToken.equals(empty(decisionToken))) {
+                failure = "wrong decision at " + empty(siteId) + '#'
+                        + occurrence;
+                return false;
+            }
+            wanted.consumed = true;
+            if (wanted.source && wanted.supportAddressed) {
+                // The source terminates the required prefix.  Earlier seed
+                // iterations of this same dynamic loop invocation have
+                // become replay suffix once their element moves after it;
+                // the flipped branch may prevent them from executing at all.
+                for (ReplayEvent event : expected) {
+                    if (!event.consumed && wanted.loopIdentity.equals(
+                            event.loopIdentity)) {
+                        event.consumed = true;
+                    }
+                }
+            }
+            failure = complete() ? "" : "prefix not yet complete";
+            return wanted.source;
+        }
+
+        private int matchingEvent(ReplayEvent actual) {
+            for (int index = 0; index < expected.size(); index++) {
+                ReplayEvent candidate = expected.get(index);
+                if (!candidate.consumed && candidate.matches(actual)) {
+                    return index;
+                }
+            }
+            return -1;
+        }
+
+        /** A loop case may move only across cases of that same exact loop. */
+        private int precedingBarrier(int selected, ReplayEvent wanted) {
+            for (int index = 0; index < selected; index++) {
+                ReplayEvent prior = expected.get(index);
+                if (prior.consumed) continue;
+                if (!wanted.loopIdentity.isEmpty()
+                        && wanted.loopIdentity.equals(prior.loopIdentity)) {
+                    continue;
+                }
+                return index;
+            }
+            return -1;
+        }
+
+        public boolean complete() {
+            if (contradiction) return false;
+            for (ReplayEvent event : expected) {
+                if (!event.consumed) return false;
+            }
+            return true;
+        }
+
+        public boolean failed() {
+            return contradiction || !complete()
+                    && !"prefix not yet observed".equals(failure)
+                    && !"prefix not yet complete".equals(failure);
+        }
+
+        public String failure() { return failure; }
+    }
+
+    private static final class ReplayEvent {
+        private final String siteId;
+        private final int occurrence;
+        private final String decisionToken;
+        private final String symbolicSupportDigest;
+        private final String loopIdentity;
+        private final boolean supportAddressed;
+        private final boolean source;
+        private boolean consumed;
+
+        private ReplayEvent(String siteId, int occurrence,
+                            String decisionToken,
+                            String symbolicSupportDigest,
+                            String loopIdentity, boolean supportAddressed,
+                            boolean source) {
+            this.siteId = empty(siteId);
+            this.occurrence = occurrence;
+            this.decisionToken = empty(decisionToken);
+            this.symbolicSupportDigest = empty(symbolicSupportDigest);
+            this.loopIdentity = empty(loopIdentity);
+            this.supportAddressed = supportAddressed;
+            this.source = source;
+        }
+
+        private boolean sameOccurrence(ReplayEvent other) {
+            return other != null && occurrence == other.occurrence
+                    && siteId.equals(other.siteId);
+        }
+
+        private boolean matches(ReplayEvent actual) {
+            if (actual == null || !siteId.equals(actual.siteId)) {
+                return false;
+            }
+            if (!loopIdentity.isEmpty()
+                    && !loopIdentity.equals(actual.loopIdentity)) {
+                return false;
+            }
+            return supportAddressed
+                    ? !actual.symbolicSupportDigest.isEmpty()
+                    && loopIdentity.equals(actual.loopIdentity)
+                    && symbolicSupportDigest.equals(
+                    actual.symbolicSupportDigest)
+                    && decisionToken.equals(actual.decisionToken)
+                    : occurrence == actual.occurrence;
+        }
+
+    }
+
+    private static String empty(String value) {
+        return value == null ? "" : value;
     }
 
     public BranchWitness source() {
@@ -154,14 +905,14 @@ public final class BranchReplayContract {
     }
 
     public JsonElement requiredSatisfiedPredicate() {
-        return BranchPredicateAlgebra.complement(
-                source.sourceSatisfiedPredicate());
+        return BranchPredicateAlgebra.complementView(
+                source.sourceSatisfiedPredicateView());
     }
 
     public JsonArray requiredPathPredicates() {
         JsonArray result = new JsonArray();
         for (BranchWitness witness : orderedPrefix) {
-            result.add(witness.sourceSatisfiedPredicate());
+            result.add(witness.sourceSatisfiedPredicateView());
         }
         result.add(requiredSatisfiedPredicate());
         return result;
@@ -169,6 +920,22 @@ public final class BranchReplayContract {
 
     private static String eventIdentity(BranchWitness witness) {
         return witness.decisionIdentity();
+    }
+
+    private static ExactConcreteBranchObservation binaryObservation(
+            BranchWitness witness, boolean outcome) {
+        return ExactConcreteBranchObservation.attested(witness.siteId(),
+                witness.method(), witness.unitIndex(), witness.occurrence(),
+                outcome);
+    }
+
+    private static String sourceIdentity(BranchWitness witness) {
+        return witness.siteId() + "\u0000" + witness.occurrence();
+    }
+
+    private static String runtimeIdentity(
+            ExactConcreteBranchObservation observation) {
+        return observation.siteId() + "\u0000" + observation.occurrence();
     }
 
 }

@@ -95,6 +95,16 @@ public final class SummaryBranchMapping {
     }
 
     public static SummaryBranchMapping fromJson(JsonObject json) {
+        return fromJson(json, false);
+    }
+
+    /** Decoder-owned view used while importing a shared expression DAG. */
+    static SummaryBranchMapping fromImmutableJson(JsonObject json) {
+        return fromJson(json, true);
+    }
+
+    private static SummaryBranchMapping fromJson(JsonObject json,
+                                                 boolean immutablePredicate) {
         if (json == null) {
             throw new IllegalArgumentException(
                     "summary branch mapping is required");
@@ -112,8 +122,11 @@ public final class SummaryBranchMapping {
                 throw new IllegalArgumentException(
                         "witness must be an object");
             }
-            return witnessed(BranchWitness.fromJson(
-                    encoded.getAsJsonObject()),
+            BranchWitness witness = immutablePredicate
+                    ? BranchWitness.fromImmutableJson(
+                    encoded.getAsJsonObject())
+                    : BranchWitness.fromJson(encoded.getAsJsonObject());
+            return witnessed(witness,
                     integer(json, "summaryPcIndex"), policy);
         }
         JsonElement encoded = json.get("concreteObservation");
@@ -146,7 +159,7 @@ public final class SummaryBranchMapping {
             }
             SummaryBranchMapping mapping;
             try {
-                mapping = fromJson(element.getAsJsonObject());
+                mapping = fromJson(element.getAsJsonObject(), true);
             } catch (IllegalArgumentException malformed) {
                 throw new IllegalArgumentException(
                         "branchMappings[" + ordinal + "]: "
@@ -163,7 +176,7 @@ public final class SummaryBranchMapping {
                 if (position >= path.size()
                         || !positions.add(position)
                         || !BranchPredicateAlgebra.equivalent(
-                        mapping.witness().sourceSatisfiedPredicate(),
+                        mapping.witness().sourceSatisfiedPredicateView(),
                         path.get(position))) {
                     throw new IllegalArgumentException(
                             "branch witness does not own summary PC "
@@ -177,16 +190,27 @@ public final class SummaryBranchMapping {
     }
 
     public JsonObject toJson() {
+        return toJson(true);
+    }
+
+    /** Artifact-builder view which preserves decoder-owned expression DAGs. */
+    JsonObject toImmutableJsonView() {
+        return toJson(false);
+    }
+
+    private JsonObject toJson(boolean defensivePredicate) {
         JsonObject result = new JsonObject();
         if (isWitnessed()) {
-            result.add("witness", witness.toJson());
+            result.add("witness", defensivePredicate
+                    ? witness.toJson() : witness.toImmutableJsonView());
             result.addProperty("summaryPcIndex", summaryPcIndex);
         } else {
             result.add("concreteObservation",
                     concreteObservation.toJson());
         }
         result.addProperty("policy", policy.name());
-        return (JsonObject) CanonicalJson.copy(result);
+        return defensivePredicate
+                ? (JsonObject) CanonicalJson.copy(result) : result;
     }
 
     public boolean isWitnessed() { return witness != null; }

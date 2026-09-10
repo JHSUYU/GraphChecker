@@ -50,16 +50,22 @@ const char *OopUtils::java_string_to_c(oop str_obj) {
   typeArrayOop char_array_obj = java_string_to_char_array(str_obj);
   if (char_array_obj != NULL) {
     int length = char_array_obj->length();
-    char *char_array = NEW_RESOURCE_ARRAY(char, length + 1);
-    for (int i = 0; i < length; i++) {
-      jchar jc = char_array_obj->char_at(i);
-      assert(0 <= jc && jc <= 0xff, "only deal with single-byte char now");
-      char c = *(char *)&jc;
-      char_array[i] = c;
+    if (str_obj->klass()->name()->equals(SymStrBuilder::TYPE_NAME)) {
+      InstanceKlass *builder =
+          InstanceKlass::cast(str_obj->klass()->super());
+      const int count_field_index = 1;
+      assert(builder->field_name(count_field_index)->equals("count"),
+             "AbstractStringBuilder field 1 should be count");
+      length = str_obj->int_field(
+          builder->field_offset(count_field_index));
+      if (length < 0 || length > char_array_obj->length()) return "";
     }
-    char_array[length] = 0;
-
-    return char_array;
+    jchar *chars = (jchar *)char_array_obj->base(T_CHAR);
+    int utf8_length = UNICODE::utf8_length(chars, length);
+    char *utf8 = NEW_RESOURCE_ARRAY(char, utf8_length + 1);
+    UNICODE::convert_to_utf8(chars, length, utf8);
+    utf8[utf8_length] = 0;
+    return utf8;
   } else {
     return "";
   }

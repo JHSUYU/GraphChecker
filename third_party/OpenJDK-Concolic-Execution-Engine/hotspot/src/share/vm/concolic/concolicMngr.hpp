@@ -24,7 +24,7 @@ class Thread;
  * session.  Attach/detach alone makes the session's lifetime a function of
  * thread arrival and departure, so a workload whose selected threads happen to
  * be momentarily all gone -- between two regions, or after a producer thread
- * exits -- loses its arena, broker, shadow heap, versions and ledger, and the
+ * exits -- loses its arena, broker, shadow heap and versions, and the
  * next region starts a different expression universe.  openWorkloadSession()
  * takes one owning reference on the session so the "last one out closes it"
  * rule still holds while no longer being a statement about threads alone;
@@ -142,8 +142,8 @@ public:
    *
    * Returns the positive session id it now owns, or a negative
    * WorkloadSessionStatus.  While it is held, no region exit and no thread
-   * detach closes the session: the arena, broker, shadow heap, field versions
-   * and event ledger stay live, so an expression exported by a region that has
+   * detach closes the session: the arena, broker, shadow heap and field
+   * versions stay live, so an expression exported by a region that has
    * finished -- on a thread that has since exited -- is still resolvable.
    *
    * The caller does not become a member and gets no execution state; it may
@@ -180,6 +180,8 @@ public:
                                    const char *task_id);
   /** Exact VM thread-context identity owning the current region. */
   static jlong currentContextId();
+  /** Session-global identity of the current region-frame entry. */
+  static jlong currentRegionEnterEventId();
   static jlong endConcolic();
   static void abandonPendingBranchForException(Thread *thread);
   static void abortCurrentContext(const char *reason);
@@ -195,17 +197,14 @@ public:
   // Same-JVM symbolic value handoff.  Defined in expressionBroker.cpp next to
   // the broker that owns the exported expressions.  exportExpression returns
   // a positive opaque token, or a negative ExpressionBroker::HandoffStatus;
-  // attachExpression returns the positive export ledger event it attached,
-  // or a negative status. Session close reclaims every handle; no VM pointer
-  // ever reaches Java.
+  // attachExpression returns the positive export endpoint identity it
+  // attached, or a negative status. Session close reclaims every handle; no
+  // VM pointer ever reaches Java.
   //
-  // Each call also reports the ledger event it recorded through its optional
-  // out-parameter: the export event for exportExpression, the attach event
-  // for attachExpression.  README RPC-1: both endpoints of the
-  // VALUE_HANDOFF edge are the VM's answer, because one export may be
-  // attached at several explicit receivers and no consumer may recover the
-  // matching attach by searching the order domain.  The out-parameter is
-  // written only on success and may be NULL.
+  // Each call also reports its session-global boundary identity through its
+  // optional out-parameter. Both endpoint identities are explicit because one
+  // export may be attached at several receivers. The out-parameter is written
+  // only on success and may be NULL.
   static jlong exportExpression(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, jlong *export_event_out);
@@ -234,18 +233,10 @@ public:
   static jlong selectSharedFieldCarrier(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
-  /** Pure lookup of the current task's retained scalar/reference version. */
-  static jlong getCurrentSharedFieldVersion(
+  static jlong armSharedPrimitiveFieldRead(
       Handle owner, const char *declaring_class, const char *field_name,
-      const char *descriptor);
-  /**
-   * Arms an exact scheduled producer version for the destination's next real
-   * field read.  The destination is not selected and receives no INITIAL.
-   */
-  static jlong admitSharedFieldVersion(
-      Handle owner, const char *declaring_class, const char *field_name,
-      const char *descriptor, jlong version_id,
-      const char *selected_edge_id);
+      const char *descriptor, jlong value_bits);
+  static jlong confirmSharedPrimitiveFieldRead(jlong token);
   static jlong selectSharedElementCarrier(Handle array, jint index);
   /**
    * Selects one supported associative container's *whole state* as a carrier.
@@ -266,46 +257,12 @@ public:
    *         negative SharedFieldVersions::SelectStatus refusal
    */
   static jlong selectSharedMapCarrier(Handle map);
-  /** Pure lookup of this task's retained version for the map's current state. */
-  static jlong getCurrentSharedMapVersion(Handle map);
-  /**
-   * Installs one exact producer state into a destination map and records the
-   * selected causal edge.  Returns the positive FIELD_READ event id.
-   */
-  static jlong admitSharedMapVersion(Handle map, jlong version_id,
-                                     const char *selected_edge_id);
   static std::string getSharedFieldVersions(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
   static std::string getSharedElementVersions(Handle array, jint index);
   /** getSharedFieldVersions for one selected container's whole state. */
   static std::string getSharedMapVersions(Handle map);
-
-  // Thread lifecycle.  The starting thread releases into the child's Thread
-  // object; the child acquires it when it attaches.  A terminating thread
-  // releases into the same slot, and Thread.isAlive() returning false -- which
-  // is how Thread.join() ends -- is the acquire.
-  static void publishThreadStartOrder(oop thread_object);
-  static void acquireThreadStartOrder(oop thread_object);
-  static void publishThreadTerminationOrder(oop thread_object);
-  static void acquireThreadTerminationOrder(oop thread_object);
-  // Volatile provenance.  A volatile read happens-after the write it read and
-  // after no other, so the clock it joins comes from the resolved version
-  // rather than from a per-location release slot; an ambiguous volatile read
-  // creates no order at all.
-  static void recordVolatileWrite(sym_rid_t owner, int slot);
-  static void recordVolatileRead(sym_rid_t owner, int slot,
-                                 const VectorClock &writer_clock, bool exact);
-  static std::string getEventLedger();
-  /**
-   * Offers one candidate order edge to the session's order domain.  Returns
-   * EventLedger::ORDER_OK when the relation stays acyclic, and a negative
-   * EventLedger::OrderStatus otherwise -- in particular ORDER_CYCLIC, which
-   * rejects the candidate outright rather than admitting an order no
-   * execution could have had.  The domain remains a partial order; nothing
-   * here builds or enumerates a schedule.
-   */
-  static jint proposeEventOrder(jlong before_event_id, jlong after_event_id);
 
   static bool trackContainerExpression(Handle container,
                                        const char *prefix);

@@ -15,9 +15,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
+import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.io.File;
 import java.io.IOException;
@@ -59,15 +58,13 @@ public final class BooleanReachConditionExtractor {
         Arguments arguments = Arguments.parse(argv);
         JsonObject manifest = ArtifactIO.readObject(arguments.manifest);
         String smt = ArtifactIO.readText(arguments.smt);
-        List<JsonObject> regions = RuntimePlanArtifact.read(
-                arguments.runtimePlan).regions();
         validateArtifactBindings(arguments.smt, arguments.runtimePlan,
                 manifest);
         Z3Solver solver = new Z3Solver(arguments.z3,
                 arguments.timeoutMillis,
                 array(manifest, "caseSelectorPartitions"),
                 arguments.workers);
-        JsonObject report = extract(smt, manifest, regions, solver,
+        JsonObject report = extract(smt, manifest, solver,
                 arguments.maxInputs, arguments.maxValuations);
         report.add("solverAttempts", solver.attempts());
         report.add("compositionManifestArtifact",
@@ -82,15 +79,16 @@ public final class BooleanReachConditionExtractor {
     }
 
     static JsonObject extract(String composedSmt, JsonObject manifest,
-                              List<JsonObject> regions, Z3Solver solver,
+                              Z3Solver solver,
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         JsonObject report = new JsonObject();
         report.addProperty("schemaVersion", 3);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
-        boolean recordedModelComplete =
-                bool(manifest, "recordedModelComplete", false);
-        report.addProperty("recordedModelComplete", recordedModelComplete);
+        boolean guardedReadModelComplete =
+                bool(manifest, "guardedReadModelComplete", false);
+        report.addProperty("guardedReadModelComplete",
+                guardedReadModelComplete);
         boolean unsatClosureComplete = unsatClosureComplete(manifest);
         report.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
@@ -102,17 +100,17 @@ public final class BooleanReachConditionExtractor {
         }
 
         List<String> gaps = new ArrayList<>();
-        validateCompositionAuthority(manifest, gaps);
+        validateCompositionAuthority(composedSmt, manifest, gaps);
         if (firstNonBlank(composedSmt).isEmpty()) {
             gaps.add("COMPOSED_SMT_EMPTY");
         }
 
-        PortCatalog ports = PortCatalog.from(regions);
         ConfiguredSourceCatalog configuredSources =
                 ConfiguredSourceCatalog.from(manifest, gaps);
-        Discovery discovery = discover(composedSmt, ports,
-                PortOccurrenceCatalog.from(manifest), configuredSources,
-                gaps);
+        ManualSymbolicRootCatalog manualRoots =
+                ManualSymbolicRootCatalog.from(manifest, gaps);
+        Discovery discovery = discover(composedSmt, configuredSources,
+                manualRoots, gaps);
         List<RootInput> inputs = discovery.rootInputs;
         JsonObject roots = new JsonObject();
         roots.add("booleanInputs", inputCatalog(inputs));
@@ -225,23 +223,32 @@ public final class BooleanReachConditionExtractor {
         if (observedUnderapproximation
                 && satisfyingValuations.isEmpty() && complete) {
             reachCondition.addProperty("coverageConclusion",
-                    recordedModelComplete
+                    guardedReadModelComplete
                             ? "INCONCLUSIVE_OPEN_PATH_CLOSURE"
                             : "INCONCLUSIVE_UNDERAPPROXIMATION");
         }
-        reachCondition.addProperty("degeneracyCheck", degeneracyCheck(
-                formula, reachability, inputs.size(),
+        String degeneracy = degeneracyCheck(formula, reachability,
+                inputs.size(),
                 discovery.existentialNonBooleanRootInputs.size(),
-                discovery.undecodedFreeInputCount,
-                rejectedExistentialPerturbation));
+                rejectedExistentialPerturbation);
+        reachCondition.addProperty("degeneracyCheck", degeneracy);
         report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
         if (solverErrors > 0) {
             resultGaps.add("UNDECIDED_SOLVER_VALUATIONS:"
                     + solverErrors);
         }
+        // A free symbolic root that never changes target reachability is not
+        // a causal witness.  Preserve the solver's exact valuation table and
+        // reachability finding, but refuse candidate authority so callers
+        // cannot turn a disconnected root/target formula into SAT evidence.
+        boolean unconstrainedRootSpace =
+                "DEGENERATE_UNCONSTRAINED_ROOT_SPACE".equals(degeneracy);
+        if (unconstrainedRootSpace) {
+            resultGaps.add(degeneracy);
+        }
         report.add("gaps", resultGaps);
-        report.addProperty("state", complete
+        report.addProperty("state", complete && !unconstrainedRootSpace
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         return report;
     }
@@ -251,7 +258,6 @@ public final class BooleanReachConditionExtractor {
                                           String reachability,
                                           int booleanRootCount,
                                           int existentialRootCount,
-                                          int undecodedFreeInputCount,
                                           boolean rejectedExistentialProbe) {
         if (!"REACHABLE".equals(reachability)) {
             return "NOT_APPLICABLE_NO_MODEL";
@@ -266,16 +272,12 @@ public final class BooleanReachConditionExtractor {
             return "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:"
                     + existentialRootCount;
         }
-        if (undecodedFreeInputCount > 0) {
-            return "UNDECIDED_UNMODELLED_INPUT_FREEDOMS:"
-                    + undecodedFreeInputCount;
-        }
         return booleanRootCount == 0 ? "NOT_APPLICABLE_NO_FREE_ROOTS"
                 : "DEGENERATE_UNCONSTRAINED_ROOT_SPACE";
     }
 
     private static void validateCompositionAuthority(
-            JsonObject manifest, List<String> gaps) {
+            String composedSmt, JsonObject manifest, List<String> gaps) {
         // This stage needs a composition that already declared itself
         // candidate-ready; re-deriving that verdict from its members would
         // be the second gate README forbids.
@@ -286,11 +288,292 @@ public final class BooleanReachConditionExtractor {
                 || !"CANDIDATE_READY".equals(string(manifest, "state"))) {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
-        JsonElement occurrences = manifest == null ? null
-                : manifest.get("portOccurrences");
-        if (occurrences == null || !occurrences.isJsonArray()) {
-            gaps.add("PORT_OCCURRENCES_MISSING");
+        validatePropagationContract(composedSmt, manifest, gaps);
+    }
+
+    /** Checks the selector-to-PC definitions used by the emitted formula. */
+    private static void validatePropagationContract(
+            String composedSmt, JsonObject manifest, List<String> gaps) {
+        JsonElement caseDependencies = manifest == null ? null
+                : manifest.get("casePathConditionDependencies");
+        if (caseDependencies == null || !caseDependencies.isJsonArray()) {
+            gaps.add("CASE_PATH_CONDITION_DEPENDENCIES_MISSING");
+        } else {
+            validateCasePathConditionDependencies(composedSmt, manifest,
+                    caseDependencies.getAsJsonArray(), gaps);
         }
+    }
+
+    /**
+     * Proves that every propagated output arm still carries its own PC.
+     *
+     * <p>The propagation ledger may name an expression arm only when its
+     * base selector belongs to one occurrence-local exactly-one partition,
+     * the arm's owner deterministically names that base selector, and the
+     * emitted SMT contains the Composer's named {@code selector => PC}
+     * definition. Replay-specific arms may share the same owner only when
+     * they carry distinct observation selectors linked back to that base
+     * case. A selector with no definition would turn a guarded value into a
+     * free solver choice, so it remains a hard composition gap.</p>
+     */
+    private static void validateCasePathConditionDependencies(
+            String smt, JsonObject manifest, JsonArray dependencies,
+            List<String> gaps) {
+        JsonElement encodedPartitions = manifest == null ? null
+                : manifest.get("caseSelectorPartitions");
+        if (encodedPartitions == null
+                || !encodedPartitions.isJsonArray()) {
+            gaps.add("CASE_SELECTOR_PARTITIONS_MISSING");
+            return;
+        }
+
+        Map<String, List<Integer>> partitionsBySelector =
+                new LinkedHashMap<>();
+        JsonArray partitions = encodedPartitions.getAsJsonArray();
+        for (int partitionIndex = 0;
+             partitionIndex < partitions.size(); partitionIndex++) {
+            JsonElement encodedPartition = partitions.get(partitionIndex);
+            if (!encodedPartition.isJsonArray()) {
+                gaps.add("CASE_SELECTOR_PARTITION_MALFORMED:"
+                        + partitionIndex);
+                continue;
+            }
+            Set<String> local = new LinkedHashSet<>();
+            JsonArray partition = encodedPartition.getAsJsonArray();
+            for (JsonElement encodedSelector : partition) {
+                if (!encodedSelector.isJsonPrimitive()
+                        || !encodedSelector.getAsJsonPrimitive().isString()
+                        || firstNonBlank(encodedSelector.getAsString())
+                        .isEmpty()) {
+                    gaps.add("CASE_SELECTOR_PARTITION_MALFORMED:"
+                            + partitionIndex);
+                    continue;
+                }
+                String selector = encodedSelector.getAsString();
+                if (!local.add(selector)) {
+                    gaps.add("CASE_SELECTOR_PARTITION_DUPLICATE:"
+                            + selector);
+                    continue;
+                }
+                partitionsBySelector.computeIfAbsent(selector,
+                        ignored -> new ArrayList<>()).add(partitionIndex);
+            }
+        }
+
+        Map<String, Integer> targetReachGuards = new LinkedHashMap<>();
+        for (JsonElement encodedTarget : array(manifest,
+                "targetReachLedger")) {
+            if (!encodedTarget.isJsonObject()) continue;
+            String guard = string(encodedTarget.getAsJsonObject(),
+                    "caseGuard");
+            if (!guard.isEmpty()) {
+                targetReachGuards.merge(guard, 1, Integer::sum);
+            }
+        }
+
+        Set<String> dependencyIdentities = new LinkedHashSet<>();
+        for (int dependencyIndex = 0;
+             dependencyIndex < dependencies.size(); dependencyIndex++) {
+            JsonElement encodedDependency = dependencies.get(dependencyIndex);
+            if (!encodedDependency.isJsonObject()) {
+                gaps.add("CASE_PATH_CONDITION_DEPENDENCY_MALFORMED:"
+                        + dependencyIndex);
+                continue;
+            }
+            JsonObject dependency = encodedDependency.getAsJsonObject();
+            String family = string(dependency, VmExpressionIr.FAMILY_KEY);
+            String boundaryKind = string(dependency, "boundaryKind");
+            String epoch = string(dependency, VmExpressionIr.TOPOLOGY_EPOCH);
+            JsonElement encodedArms = dependency.get("arms");
+            if (integer(dependency, "schemaVersion", -1)
+                    != SymbolicPropagationClosure.SCHEMA_VERSION
+                    || !SymbolicPropagationClosure.DEPENDENCY_KIND.equals(
+                    string(dependency, "kind"))
+                    || !"REGION_CASE_PC_V1".equals(
+                    string(dependency, "authority"))
+                    || family.isEmpty() || epoch.isEmpty()
+                    || !(VmExpressionIr.RPC_ATTACH.equals(boundaryKind)
+                    || VmExpressionIr.FIELD_READ.equals(boundaryKind))
+                    || encodedArms == null || !encodedArms.isJsonArray()
+                    || encodedArms.getAsJsonArray().size() == 0
+                    || !dependencyIdentities.add(family)) {
+                gaps.add("CASE_PATH_CONDITION_DEPENDENCY_MALFORMED:"
+                        + dependencyIndex);
+                continue;
+            }
+
+            Set<String> armIdentities = new LinkedHashSet<>();
+            JsonArray arms = encodedArms.getAsJsonArray();
+            for (int armIndex = 0; armIndex < arms.size(); armIndex++) {
+                JsonElement encodedArm = arms.get(armIndex);
+                if (!encodedArm.isJsonObject()) {
+                    gaps.add("CASE_PATH_CONDITION_ARM_MALFORMED:"
+                            + dependencyIndex + ":" + armIndex);
+                    continue;
+                }
+                JsonObject arm = encodedArm.getAsJsonObject();
+                String owner = string(arm, "caseOwner");
+                String baseSelector = string(arm, "caseSelector");
+                String encodedSelector = string(arm, "selector");
+                String observationSelector = string(arm,
+                        SymbolicPropagationClosure.OBSERVATION_SELECTOR);
+                String selector = firstNonBlank(observationSelector,
+                        encodedSelector);
+                String region = string(arm, "regionId");
+                String occurrence = string(arm, "occurrenceId");
+                String armIdentity = owner + "\u0000" + selector;
+                boolean selectorShapeMatches = observationSelector.isEmpty()
+                        ? encodedSelector.equals(baseSelector)
+                        : encodedSelector.equals(observationSelector);
+                if (owner.isEmpty() || baseSelector.isEmpty()
+                        || selector.isEmpty()
+                        || region.isEmpty() || occurrence.isEmpty()
+                        || !armIdentities.add(armIdentity)
+                        || !selectorShapeMatches
+                        || !caseOwnerMatchesOccurrence(owner, region,
+                        occurrence)
+                        || !baseSelector.equals(
+                        LocalCaseIdentity.selector(owner))) {
+                    gaps.add("CASE_PATH_CONDITION_ARM_MALFORMED:"
+                            + dependencyIndex + ":" + armIndex);
+                    continue;
+                }
+
+                boolean initialSource =
+                        SymbolicPropagationClosure.isInitialSourceCase(
+                                owner, region, occurrence);
+                if (initialSource
+                        && !(VmExpressionIr.FIELD_READ.equals(boundaryKind)
+                        && SymbolicPropagationClosure
+                        .READ_FROM_DEPENDENCY_POLICY.equals(
+                                string(dependency, "selectionPolicy"))
+                        && observationSelector.isEmpty()
+                        && selector.equals(baseSelector)
+                        && arm.has("pathCondition")
+                        && arm.get("pathCondition").isJsonArray()
+                        && arm.getAsJsonArray("pathCondition").size() == 0)) {
+                    gaps.add("INITIAL_SOURCE_DEPENDENCY_MALFORMED:"
+                            + selector);
+                    continue;
+                }
+
+                int targetReachGuardCount = targetReachGuards.getOrDefault(
+                        baseSelector, 0);
+                boolean targetOwned = targetReachGuardCount > 0;
+                if (initialSource) {
+                    // INITIAL is the value present when a location first
+                    // becomes symbolic.  Its empty PC is true; it has no
+                    // producer region, case partition, or case-PC assertion.
+                } else if (targetOwned) {
+                    if (targetReachGuardCount != 1) {
+                        gaps.add("CASE_DEPENDENCY_TARGET_GUARD_NOT_UNIQUE:"
+                                + baseSelector);
+                    }
+                } else {
+                    List<Integer> memberships = partitionsBySelector.get(
+                            baseSelector);
+                    if (memberships == null || memberships.size() != 1) {
+                        gaps.add(
+                                "CASE_DEPENDENCY_SELECTOR_PARTITION_NOT_UNIQUE:"
+                                        + baseSelector);
+                    }
+                }
+                // INITIAL_SOURCE is a provenance record for the value that
+                // existed when a location first became symbolic.  Its empty
+                // PC contributes true, so the synthetic case selector is not
+                // emitted unless the SMT actually uses it as a guard.  An
+                // absent selector is therefore no solver freedom to validate.
+                boolean selectorDeclared = smt.contains(
+                        "(declare-const " + selector + " Bool)");
+                if (initialSource && !selectorDeclared) {
+                    continue;
+                }
+                if (!selectorDeclared) {
+                    gaps.add("CASE_DEPENDENCY_SELECTOR_DECLARATION_MISSING:"
+                            + selector);
+                }
+                if (!selector.equals(baseSelector)
+                        && !smt.contains("(declare-const " + baseSelector
+                        + " Bool)")) {
+                    gaps.add(
+                            "CASE_DEPENDENCY_BASE_SELECTOR_DECLARATION_MISSING:"
+                                    + baseSelector);
+                }
+                if (initialSource) {
+                    // The guarded-read selector activates this source.  There
+                    // is no independent producer path to define.
+                } else if (targetOwned
+                        && !targetPathDefinitionDeclared(smt,
+                        baseSelector)) {
+                    gaps.add(
+                            "CASE_DEPENDENCY_TARGET_DEFINITION_MISSING:"
+                                    + baseSelector);
+                } else if (!targetOwned
+                        && !casePcDefinitionDeclared(smt, selector)) {
+                    gaps.add("CASE_DEPENDENCY_PC_DEFINITION_MISSING:"
+                            + selector);
+                }
+                if (!observationSelector.isEmpty()
+                        && !caseObservationPartitionDeclared(smt,
+                        baseSelector, observationSelector)) {
+                    gaps.add("CASE_DEPENDENCY_BASE_DEFINITION_MISSING:"
+                            + baseSelector + ":" + observationSelector);
+                }
+            }
+        }
+    }
+
+    /** Matches either an activation owner or its stable planned address. */
+    static boolean caseOwnerMatchesOccurrence(String owner, String region,
+                                               String occurrence) {
+        if (SymbolicPropagationClosure.isInitialSourceCase(owner, region,
+                occurrence)) return true;
+        String prefix = "region:" + region + "/instance:";
+        if (owner.startsWith(prefix + occurrence + "/case:")) return true;
+        String planned = PathObservation.plannedOccurrenceOf(occurrence);
+        return owner.startsWith(prefix + planned + "/case:");
+    }
+
+    /** Exact assertion shape emitted by the Composer's case-PC authority. */
+    private static boolean casePcDefinitionDeclared(String smt,
+                                                     String selector) {
+        String implication = "(=> " + selector + " ";
+        for (String line : firstNonBlank(smt).split("\\R")) {
+            if (line.contains(implication)
+                    && line.contains(":named case_selector_definition_")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Observation PCs refine, rather than replace, their base case. */
+    private static boolean caseObservationPartitionDeclared(
+            String smt, String baseSelector, String observationSelector) {
+        String baseTerm = "(ite " + baseSelector + " 1 0)";
+        String observationTerm = "(ite " + observationSelector + " 1 0)";
+        for (String line : firstNonBlank(smt).split("\\R")) {
+            if (line.contains(baseTerm) && line.contains(observationTerm)
+                    && line.contains(
+                    ":named region_case_observation_partition_")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Target cases are owned by the target ledger, not producer partitions. */
+    private static boolean targetPathDefinitionDeclared(String smt,
+                                                        String selector) {
+        String implication = "(=> " + selector + " ";
+        for (String line : firstNonBlank(smt).split("\\R")) {
+            if (line.contains(implication)
+                    && line.contains(
+                    ":named target_path_selector_definition_")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The Composer's single, internally consistent UNSAT closure claim. */
@@ -310,9 +593,9 @@ public final class BooleanReachConditionExtractor {
                 string(evidence, "kind"))
                 && ConcolicSmtComposer.UNSAT_CLOSURE_AUTHORITY.equals(
                 string(evidence, "authority"))
-                && bool(evidence, "recordedModelComplete", false)
-                == bool(manifest, "recordedModelComplete", false)
-                && bool(evidence, "recordedModelComplete", false)
+                && bool(evidence, "guardedReadModelComplete", false)
+                == bool(manifest, "guardedReadModelComplete", false)
+                && bool(evidence, "guardedReadModelComplete", false)
                 && bool(evidence, "producerPathsClosed", false)
                 && bool(evidence, "targetPathsClosed", false)
                 && bool(evidence, "compositionCoverageClosed", false)
@@ -326,49 +609,13 @@ public final class BooleanReachConditionExtractor {
                 ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false);
     }
 
-    private static Discovery discover(String smt, PortCatalog ports,
-                                      PortOccurrenceCatalog occurrences,
+    private static Discovery discover(String smt,
                                       ConfiguredSourceCatalog sources,
+                                      ManualSymbolicRootCatalog manualRoots,
                                       List<String> gaps) {
         List<RootInput> roots = new ArrayList<>();
         List<RootInput> scalarRoots = new ArrayList<>();
-        // An unsupplied input this extractor cannot decode is still a freedom
-        // of the model, only one this report cannot name, so it is counted
-        // and surfaced through degeneracyCheck rather than dropped.
-        Set<String> undecoded = new LinkedHashSet<>();
-        for (PortOccurrenceInfo occurrence : occurrences.sorted()) {
-            PortInfo port = ports.input(occurrence.portId);
-            if (port == null) continue;
-            ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
-            if (encoding == null
-                    || !encoding.occurrenceSort.equals(occurrence.sort)) {
-                if (!occurrence.supplied) {
-                    undecoded.add(port.id);
-                }
-                continue;
-            }
-            boolean declared = canonicalScalarBindingDeclared(smt,
-                    occurrence.portTerm, occurrence.solverTerm,
-                    occurrence.nullnessSolverTerm, encoding);
-            if (!declared) {
-                if (!occurrence.supplied) {
-                    undecoded.add(port.id);
-                }
-                continue;
-            }
-            if (port.javaBoolean) {
-                if (!occurrence.supplied) {
-                    roots.add(new RootInput(port, occurrence.occurrenceId,
-                            occurrence.solverTerm, ""));
-                }
-            } else if (occurrence.supplied) {
-                continue;
-            } else {
-                scalarRoots.add(new RootInput(port,
-                        occurrence.occurrenceId, occurrence.solverTerm,
-                        occurrence.nullnessSolverTerm));
-            }
-        }
+        Map<String, String> claimedTerms = new LinkedHashMap<>();
         for (ConfiguredSourceInfo source : sources.sorted()) {
             ScalarEncoding encoding = ScalarEncoding.of(source.descriptor);
             if (encoding == null
@@ -378,16 +625,42 @@ public final class BooleanReachConditionExtractor {
                     encoding)) {
                 String subject = "configured-source:" + source.sourceId
                         + "@" + source.sourcePhaseId;
-                undecoded.add(subject);
                 gaps.add("CONFIGURED_SOURCE_TERM_NOT_DECLARED_OR_SORT_MISMATCH:"
                         + subject);
                 continue;
             }
-            RootInput input = new RootInput(source.asPortInfo(),
-                    source.sourceOccurrenceId, source.solverTerm,
-                    source.nullnessSolverTerm, source.sourcePhaseId,
-                    source.sourceKey);
-            if (input.port.javaBoolean) {
+            claimedTerms.put(source.solverTerm, "CONFIGURED_SOURCE_FIELD");
+            RootInput input = new RootInput(source);
+            if (input.javaBoolean) {
+                roots.add(input);
+            } else {
+                scalarRoots.add(input);
+            }
+        }
+        for (ManualSymbolicRootGroup manualRoot : manualRoots.sorted()) {
+            ManualSymbolicRootInfo local = manualRoot.canonical();
+            ScalarEncoding encoding = ScalarEncoding.of(local.descriptor);
+            String subject = "region-input:" + local.portId + "@"
+                    + local.occurrenceId;
+            if (encoding == null
+                    || !encoding.occurrenceSort.equals(local.sort)
+                    || !encoding.solverSort.equals(local.smtSort)
+                    || !scalarBindingDeclared(smt, local.solverTerm,
+                    local.nullnessSolverTerm, encoding)) {
+                gaps.add("MANUAL_SYMBOLIC_ROOT_TERM_NOT_DECLARED_OR_SORT_MISMATCH:"
+                        + subject);
+                continue;
+            }
+            String held = claimedTerms.putIfAbsent(local.solverTerm,
+                    "REGION_SYMBOLIC_INPUT");
+            if (held != null) {
+                gaps.add("SYMBOLIC_ROOT_TERM_AUTHORITY_CONFLICT:"
+                        + local.solverTerm + ":" + held
+                        + ":REGION_SYMBOLIC_INPUT");
+                continue;
+            }
+            RootInput input = new RootInput(manualRoot);
+            if (input.javaBoolean) {
                 roots.add(input);
             } else {
                 scalarRoots.add(input);
@@ -397,53 +670,36 @@ public final class BooleanReachConditionExtractor {
         // entries of one site share id, occurrence and phase and differ only
         // in the root they minted.
         Comparator<RootInput> byOccurrence = Comparator
-                .comparing((RootInput value) -> value.port.id)
+                .comparing((RootInput value) -> value.inputKind)
+                .thenComparing(value -> value.inputId())
                 .thenComparing(value -> value.occurrenceId)
                 .thenComparing(value -> value.sourcePhaseId)
                 .thenComparing(value -> value.solverTerm);
         Collections.sort(roots, byOccurrence);
         Collections.sort(scalarRoots, byOccurrence);
-        return new Discovery(roots, scalarRoots, undecoded.size());
+        return new Discovery(roots, scalarRoots);
     }
 
     /** Whether the formula really declares the source term claimed. */
     private static boolean configuredSourceBindingDeclared(
             String smt, ConfiguredSourceInfo source,
             ScalarEncoding encoding) {
-        if (!smt.contains("(declare-const " + source.solverTerm + " "
+        return scalarBindingDeclared(smt, source.solverTerm,
+                source.nullnessSolverTerm, encoding);
+    }
+
+    /** Whether the formula declares the exact scalar term in one root row. */
+    private static boolean scalarBindingDeclared(
+            String smt, String solverTerm, String nullnessSolverTerm,
+            ScalarEncoding encoding) {
+        if (!smt.contains("(declare-const " + solverTerm + " "
                 + encoding.solverSort + ")")) {
             return false;
         }
         return encoding != ScalarEncoding.STRING
-                || !source.nullnessSolverTerm.isEmpty()
+                || !nullnessSolverTerm.isEmpty()
                 && smt.contains("(declare-const "
-                + source.nullnessSolverTerm + " Bool)");
-    }
-
-    private static boolean canonicalScalarBindingDeclared(
-            String smt, String portTerm, String solverTerm,
-            String nullnessSolverTerm, ScalarEncoding encoding) {
-        if (!smt.contains("(declare-const " + solverTerm + " "
-                + encoding.solverSort + ")")
-                || !smt.contains("(declare-const " + portTerm + " Value)")) {
-            return false;
-        }
-        if (encoding == ScalarEncoding.STRING) {
-            if (!smt.contains("(declare-const " + nullnessSolverTerm
-                    + " Bool)")) {
-                return false;
-            }
-            String boxed = "(ite " + nullnessSolverTerm
-                    + " (VRef nullRef) (VString " + solverTerm + "))";
-            return smt.contains("(= " + portTerm + " " + boxed + ")")
-                    || smt.contains("(= " + boxed + " " + portTerm + ")");
-        }
-        String valueConstructor = ContainerSmtCodec.valueKind(
-                encoding.javaDescriptor);
-        return smt.contains("(= " + portTerm + " ("
-                + valueConstructor + " " + solverTerm + "))")
-                || smt.contains("(= (" + valueConstructor + " "
-                + solverTerm + ") " + portTerm + ")");
+                + nullnessSolverTerm + " Bool)");
     }
 
     private static String valuationQuery(String base,
@@ -544,7 +800,7 @@ public final class BooleanReachConditionExtractor {
                 throws IOException,
                 InterruptedException {
             int currentQuery = queryOrdinal++;
-            PartitionPlan plan = splitPartitions(smt);
+            PartitionPlan plan = splitPartitions();
             if (plan.primary.isEmpty()) {
                 return attempt(currentQuery, 0, "Z3", smt,
                         timeoutMillis, Collections.emptyList());
@@ -627,28 +883,16 @@ public final class BooleanReachConditionExtractor {
             return result;
         }
 
-        private PartitionPlan splitPartitions(String smt) {
-            Map<List<String>, Long> scores = new LinkedHashMap<>();
+        private PartitionPlan splitPartitions() {
             List<List<String>> selected = new ArrayList<>();
-            List<List<String>> ranked = new ArrayList<>();
+            long combinations = 1L;
+            long limit = (long) workers * workers;
+            List<String> refinement = Collections.emptyList();
             for (List<String> partition : casePartitions) {
                 if (partition.size() == 1) {
                     selected.add(partition);
                     continue;
                 }
-                long score = 0;
-                for (int chosen = 0; chosen < partition.size(); chosen++) {
-                    score += smt.length()
-                            - condition(smt, partition, chosen).length();
-                }
-                scores.put(partition, score / partition.size());
-                ranked.add(partition);
-            }
-            ranked.sort(Comparator.comparingLong(scores::get).reversed());
-            long combinations = 1L;
-            long limit = (long) workers * workers;
-            List<String> refinement = Collections.emptyList();
-            for (List<String> partition : ranked) {
                 if (combinations > limit / partition.size()) {
                     if (refinement.isEmpty()) refinement = partition;
                     continue;
@@ -661,27 +905,37 @@ public final class BooleanReachConditionExtractor {
 
         private static String condition(String smt, List<String> partition,
                                         int chosen) {
-            return simplify(replaceSelectors(smt, partition, chosen));
+            return constrainSelectors(smt,
+                    Collections.singletonList(partition),
+                    Collections.singletonList(chosen));
         }
 
-        private static String replaceSelectors(String smt,
-                                               List<String> partition,
-                                               int chosen) {
-            String result = smt;
-            for (int index = 0; index < partition.size(); index++) {
-                String selector = partition.get(index);
-                result = result.replace("(declare-const " + selector
-                        + " Bool)", "");
-                result = result.replace(selector,
-                        index == chosen ? "true" : "false");
+        /** Fixes case selectors without rewriting the composed SMT. */
+        private static String constrainSelectors(
+                String smt, List<List<String>> partitions,
+                List<Integer> chosen) {
+            StringBuilder constraints = new StringBuilder();
+            for (int partitionIndex = 0;
+                 partitionIndex < partitions.size(); partitionIndex++) {
+                List<String> partition = partitions.get(partitionIndex);
+                int selected = chosen.get(partitionIndex);
+                for (int selectorIndex = 0;
+                     selectorIndex < partition.size(); selectorIndex++) {
+                    String selector = partition.get(selectorIndex);
+                    constraints.append("(assert ");
+                    if (selectorIndex != selected) constraints.append("(not ");
+                    constraints.append(selector);
+                    if (selectorIndex != selected) constraints.append(')');
+                    constraints.append(")").append(System.lineSeparator());
+                }
             }
-            return result;
-        }
-
-        private static String simplify(String smt) {
-            return SmtLibQueries.dropUnusedDefinitions(
-                    SmtLibQueries.propagateAssertedComparisons(
-                            SmtLibQueries.foldConstants(smt)));
+            int solverCommand = smt.indexOf("(check-sat");
+            if (solverCommand < 0) solverCommand = smt.length();
+            return new StringBuilder(smt.length() + constraints.length())
+                    .append(smt, 0, solverCommand)
+                    .append(constraints)
+                    .append(smt, solverCommand, smt.length())
+                    .toString();
         }
 
         private static List<PartitionQuery> conditionedQueries(
@@ -701,15 +955,14 @@ public final class BooleanReachConditionExtractor {
             }
             List<PartitionQuery> result = new ArrayList<>();
             for (List<Integer> assignment : assignments) {
-                String query = smt;
                 List<String> selectors = new ArrayList<>();
                 for (int index = 0; index < partitions.size(); index++) {
                     List<String> partition = partitions.get(index);
                     int chosen = assignment.get(index);
                     selectors.add(partition.get(chosen));
-                    query = replaceSelectors(query, partition, chosen);
                 }
-                result.add(new PartitionQuery(simplify(query), selectors));
+                result.add(new PartitionQuery(constrainSelectors(
+                        smt, partitions, assignment), selectors));
             }
             result.sort(Comparator.comparingInt(query -> query.smt.length()));
             return result;
@@ -793,43 +1046,71 @@ public final class BooleanReachConditionExtractor {
     private static final class Discovery {
         private final List<RootInput> rootInputs;
         private final List<RootInput> existentialNonBooleanRootInputs;
-        private final int undecodedFreeInputCount;
 
         private Discovery(List<RootInput> rootInputs,
-                          List<RootInput> existentialNonBooleanRootInputs,
-                          int undecodedFreeInputCount) {
+                          List<RootInput> existentialNonBooleanRootInputs) {
             this.rootInputs = rootInputs;
             this.existentialNonBooleanRootInputs =
                     existentialNonBooleanRootInputs;
-            this.undecodedFreeInputCount = undecodedFreeInputCount;
         }
     }
 
     private static final class RootInput {
-        private final PortInfo port;
+        private final String inputKind;
+        private final String sourceId;
+        private final String portId;
+        private final String descriptor;
+        private final boolean javaBoolean;
+        private final String fieldSignature;
         private final String occurrenceId;
         private final String solverTerm;
         private final String nullnessSolverTerm;
         private final String sourcePhaseId;
         private final String sourceKey;
+        private final String sourceIdentity;
+        private final String sourceIdentityAuthority;
+        private final List<ManualSymbolicRootInfo> manualAliases;
 
-        private RootInput(PortInfo port, String occurrenceId,
-                          String solverTerm,
-                          String nullnessSolverTerm) {
-            this(port, occurrenceId, solverTerm, nullnessSolverTerm,
-                    "", "");
+        private RootInput(ConfiguredSourceInfo source) {
+            this.inputKind = "CONFIGURED_SOURCE_FIELD";
+            this.sourceId = source.sourceId;
+            this.portId = "";
+            this.descriptor = source.descriptor;
+            this.javaBoolean = ScalarEncoding.of(descriptor)
+                    == ScalarEncoding.BOOL;
+            this.fieldSignature = source.fieldSignature;
+            this.occurrenceId = source.sourceOccurrenceId;
+            this.solverTerm = source.solverTerm;
+            this.nullnessSolverTerm = source.nullnessSolverTerm;
+            this.sourcePhaseId = source.sourcePhaseId;
+            this.sourceKey = source.sourceKey;
+            this.sourceIdentity = "";
+            this.sourceIdentityAuthority = "";
+            this.manualAliases = Collections.emptyList();
         }
 
-        private RootInput(PortInfo port, String occurrenceId,
-                          String solverTerm,
-                          String nullnessSolverTerm,
-                          String sourcePhaseId, String sourceKey) {
-            this.port = port;
-            this.occurrenceId = firstNonBlank(occurrenceId);
-            this.solverTerm = solverTerm;
-            this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
-            this.sourcePhaseId = firstNonBlank(sourcePhaseId);
-            this.sourceKey = firstNonBlank(sourceKey);
+        private RootInput(ManualSymbolicRootGroup root) {
+            ManualSymbolicRootInfo local = root.canonical();
+            this.inputKind = "REGION_SYMBOLIC_INPUT";
+            this.sourceId = "";
+            this.portId = local.portId;
+            this.descriptor = local.descriptor;
+            this.javaBoolean = ScalarEncoding.of(descriptor)
+                    == ScalarEncoding.BOOL;
+            this.fieldSignature = local.fieldSignature;
+            this.occurrenceId = local.occurrenceId;
+            this.solverTerm = local.solverTerm;
+            this.nullnessSolverTerm = local.nullnessSolverTerm;
+            this.sourcePhaseId = "";
+            this.sourceKey = "";
+            this.sourceIdentity = local.sourceIdentity;
+            this.sourceIdentityAuthority = local.sourceIdentityAuthority;
+            this.manualAliases = root.sortedAliases();
+        }
+
+        private String inputId() {
+            return "REGION_SYMBOLIC_INPUT".equals(inputKind)
+                    ? portId : sourceId;
         }
 
         private String literal(boolean value) {
@@ -838,36 +1119,50 @@ public final class BooleanReachConditionExtractor {
         }
 
         private List<String> neighboringLiterals(String value) {
-            ScalarEncoding encoding = ScalarEncoding.of(port.descriptor);
+            ScalarEncoding encoding = ScalarEncoding.of(descriptor);
             return encoding == null ? Collections.<String>emptyList()
                     : encoding.neighboringLiterals(value);
         }
 
         private JsonObject toJson() {
             JsonObject result = new JsonObject();
-            if (port.configuredSource) {
-                result.addProperty("inputKind", "CONFIGURED_SOURCE_FIELD");
+            result.addProperty("inputKind", inputKind);
+            if ("REGION_SYMBOLIC_INPUT".equals(inputKind)) {
+                result.addProperty("portId", portId);
+                result.addProperty("occurrenceId", occurrenceId);
+                if (!fieldSignature.isEmpty()) {
+                    result.addProperty("fieldSignature", fieldSignature);
+                }
+                result.addProperty("displayName", occurrenceId + "::"
+                        + portId);
+                result.addProperty("sourceIdentity", sourceIdentity);
+                result.addProperty("sourceIdentityAuthority",
+                        sourceIdentityAuthority);
+                JsonArray aliases = new JsonArray();
+                for (ManualSymbolicRootInfo alias : manualAliases) {
+                    JsonObject row = new JsonObject();
+                    row.addProperty("portId", alias.portId);
+                    row.addProperty("occurrenceId", alias.occurrenceId);
+                    if (!alias.fieldSignature.isEmpty()) {
+                        row.addProperty("fieldSignature",
+                                alias.fieldSignature);
+                    }
+                    aliases.add(row);
+                }
+                result.add("aliases", aliases);
+            } else {
                 result.addProperty("sourceKey", sourceKey);
-                result.addProperty("sourceId", port.id);
+                result.addProperty("sourceId", sourceId);
                 result.addProperty("sourceOccurrenceId", occurrenceId);
                 result.addProperty("sourcePhaseId", sourcePhaseId);
-                result.addProperty("fieldSignature", port.fieldSignature);
-                // Named by the entry, not by the site: two entries of one
-                // site (the NameNode's key expiry and the DataNode's) share
-                // every other component of this name.
+                result.addProperty("fieldSignature", fieldSignature);
+                // Name each entry independently because one site may
+                // materialize multiple roots with otherwise equal metadata.
                 result.addProperty("displayName", sourceKey + "::"
-                        + port.id + "::" + occurrenceId + "::"
+                        + sourceId + "::" + occurrenceId + "::"
                         + sourcePhaseId);
-            } else {
-                result.addProperty("inputKind", "REGION_INPUT_PORT");
-                result.addProperty("portId", port.id);
-                result.addProperty("occurrenceId", occurrenceId);
-                if (!port.fieldSignature.isEmpty()) {
-                    result.addProperty("fieldSignature",
-                            port.fieldSignature);
-                }
             }
-            result.addProperty("javaTypeDescriptor", port.descriptor);
+            result.addProperty("javaTypeDescriptor", descriptor);
             result.addProperty("solverTerm", solverTerm);
             if (!nullnessSolverTerm.isEmpty()) {
                 result.addProperty("nullnessSolverTerm",
@@ -1124,32 +1419,209 @@ public final class BooleanReachConditionExtractor {
         return result.append(')').toString();
     }
 
-    private static final class PortCatalog {
-        private final Map<String, PortInfo> inputs = new LinkedHashMap<>();
+    /** Exact region-local root terms published by the Composer. */
+    private static final class ManualSymbolicRootCatalog {
+        private final List<ManualSymbolicRootGroup> roots = new ArrayList<>();
 
-        private static PortCatalog from(List<JsonObject> regions) {
-            PortCatalog result = new PortCatalog();
-            for (JsonObject region : regions) {
-                for (JsonElement element : array(region,
-                        "symbolicInputs")) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject row = element.getAsJsonObject();
-                    String id = string(row, "portId");
-                    if (!id.isEmpty()) {
-                        result.inputs.put(id, new PortInfo(id,
-                                MaterializationSpec.logicalJavaType(row),
-                                false, firstNonBlank(
-                                string(row, "leafFieldSignature"),
-                                string(row, "declaredFieldSignature"),
-                                string(row, "cell"))));
+        private static ManualSymbolicRootCatalog from(
+                JsonObject manifest, List<String> gaps) {
+            ManualSymbolicRootCatalog result = new ManualSymbolicRootCatalog();
+            JsonElement encoded = manifest == null ? null : manifest.get(
+                    ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_FIELD);
+            if (encoded == null || !encoded.isJsonArray()) {
+                gaps.add("MANUAL_SYMBOLIC_ROOT_LEDGER_MISSING");
+                return result;
+            }
+            Map<String, ManualSymbolicRootGroup> byTerm =
+                    new LinkedHashMap<>();
+            Map<String, ManualSymbolicRootInfo> byInput = new LinkedHashMap<>();
+            Map<String, ManualSymbolicRootInfo> bySource =
+                    new LinkedHashMap<>();
+            int ordinal = 0;
+            for (JsonElement element : encoded.getAsJsonArray()) {
+                if (!element.isJsonObject()) {
+                    gaps.add("MANUAL_SYMBOLIC_ROOT_MALFORMED:" + ordinal++);
+                    continue;
+                }
+                ManualSymbolicRootInfo root = ManualSymbolicRootInfo.decode(
+                        element.getAsJsonObject());
+                if (root == null) {
+                    gaps.add("MANUAL_SYMBOLIC_ROOT_MALFORMED:" + ordinal++);
+                    continue;
+                }
+                String input = root.occurrenceId + "\n" + root.portId;
+                String source = root.sourceIdentityAuthority + "\n"
+                        + root.sourceIdentity;
+                ManualSymbolicRootInfo heldInput = byInput.get(input);
+                ManualSymbolicRootInfo heldSource = bySource.get(source);
+                ManualSymbolicRootGroup heldTerm = byTerm.get(
+                        root.solverTerm);
+                if ((heldInput != null && !heldInput.sameBinding(root))
+                        || (heldSource != null
+                        && (!heldSource.solverTerm.equals(root.solverTerm)
+                        || !heldSource.sameEncoding(root)))
+                        || (heldTerm != null
+                        && (!heldTerm.canonical().sameEncoding(root)
+                        || heldTerm.canonical().distinctMint(root)))) {
+                    gaps.add("MANUAL_SYMBOLIC_ROOT_CONFLICT:" + ordinal);
+                } else if (heldInput != null) {
+                    // An identical duplicate row adds no second logical alias.
+                } else {
+                    byInput.put(input, root);
+                    bySource.putIfAbsent(source, root);
+                    if (heldTerm == null) {
+                        heldTerm = new ManualSymbolicRootGroup(root);
+                        byTerm.put(root.solverTerm, heldTerm);
+                        result.roots.add(heldTerm);
+                    } else {
+                        heldTerm.addAlias(root);
                     }
                 }
+                ordinal++;
             }
             return result;
         }
 
-        private PortInfo input(String id) {
-            return inputs.get(firstNonBlank(id));
+        private List<ManualSymbolicRootGroup> sorted() {
+            List<ManualSymbolicRootGroup> result = new ArrayList<>(roots);
+            result.sort(Comparator
+                    .comparing((ManualSymbolicRootGroup value) ->
+                            value.canonical().portId)
+                    .thenComparing(value ->
+                            value.canonical().occurrenceId)
+                    .thenComparing(value ->
+                            value.canonical().solverTerm));
+            return result;
+        }
+    }
+
+    /** All declared occurrence/port aliases of one physical solver root. */
+    private static final class ManualSymbolicRootGroup {
+        private final List<ManualSymbolicRootInfo> aliases =
+                new ArrayList<>();
+
+        private ManualSymbolicRootGroup(ManualSymbolicRootInfo first) {
+            aliases.add(first);
+        }
+
+        private void addAlias(ManualSymbolicRootInfo alias) {
+            aliases.add(alias);
+        }
+
+        private ManualSymbolicRootInfo canonical() {
+            return sortedAliases().get(0);
+        }
+
+        private List<ManualSymbolicRootInfo> sortedAliases() {
+            List<ManualSymbolicRootInfo> result = new ArrayList<>(aliases);
+            result.sort(Comparator
+                    // Prefer a mint when the selected closure contains one;
+                    // exact reused-action rows are aliases of the same term.
+                    .comparing((ManualSymbolicRootInfo value) -> value.reused)
+                    .thenComparing(value -> value.portId)
+                    .thenComparing(value -> value.occurrenceId));
+            return result;
+        }
+    }
+
+    /** One declared region input and the exact SMT scalar it materialized. */
+    private static final class ManualSymbolicRootInfo {
+        private final String portId;
+        private final String occurrenceId;
+        private final String fieldSignature;
+        private final String descriptor;
+        private final String sort;
+        private final String smtSort;
+        private final String solverTerm;
+        private final String nullnessSolverTerm;
+        private final String sourceIdentity;
+        private final String sourceIdentityAuthority;
+        private final boolean reused;
+
+        private ManualSymbolicRootInfo(String portId, String occurrenceId,
+                                      String fieldSignature,
+                                      String descriptor, String sort,
+                                      String smtSort, String solverTerm,
+                                      String nullnessSolverTerm,
+                                      String sourceIdentity,
+                                      String sourceIdentityAuthority,
+                                      boolean reused) {
+            this.portId = firstNonBlank(portId);
+            this.occurrenceId = firstNonBlank(occurrenceId);
+            this.fieldSignature = firstNonBlank(fieldSignature);
+            this.descriptor = firstNonBlank(descriptor);
+            this.sort = firstNonBlank(sort);
+            this.smtSort = firstNonBlank(smtSort);
+            this.solverTerm = firstNonBlank(solverTerm);
+            this.nullnessSolverTerm = firstNonBlank(nullnessSolverTerm);
+            this.sourceIdentity = firstNonBlank(sourceIdentity);
+            this.sourceIdentityAuthority = firstNonBlank(
+                    sourceIdentityAuthority);
+            this.reused = reused;
+        }
+
+        private static ManualSymbolicRootInfo decode(JsonObject row) {
+            if (row == null || integer(row, "schemaVersion", -1) != 1
+                    || !ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_KIND.equals(
+                    string(row, "kind"))
+                    || !ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_AUTHORITY
+                    .equals(string(row, "authority"))) {
+                return null;
+            }
+            ManualSymbolicRootInfo result = new ManualSymbolicRootInfo(
+                    string(row, "portId"), string(row, "occurrenceId"),
+                    string(row, "fieldSignature"),
+                    string(row, "javaTypeDescriptor"),
+                    string(row, "sort"), string(row, "smtSort"),
+                    string(row, "solverTerm"),
+                    string(row, "nullnessSolverTerm"),
+                    string(row, "sourceIdentity"),
+                    string(row, "sourceIdentityAuthority"),
+                    bool(row, SymbolicSourceEvidence.REUSED, false));
+            return result.portId.isEmpty() || result.occurrenceId.isEmpty()
+                    || result.descriptor.isEmpty() || result.sort.isEmpty()
+                    || result.smtSort.isEmpty() || result.solverTerm.isEmpty()
+                    || result.sourceIdentity.isEmpty()
+                    || !validSourceIdentityAuthority(
+                    result.sourceIdentityAuthority, result.reused)
+                    ? null : result;
+        }
+
+        /** Two independently minted roots may never share one SMT term. */
+        private boolean distinctMint(ManualSymbolicRootInfo other) {
+            return !reused && !other.reused && !sameSource(other);
+        }
+
+        private boolean sameSource(ManualSymbolicRootInfo other) {
+            return sourceIdentity.equals(other.sourceIdentity)
+                    && sourceIdentityAuthority.equals(
+                    other.sourceIdentityAuthority);
+        }
+
+        private boolean sameEncoding(ManualSymbolicRootInfo other) {
+            return descriptor.equals(other.descriptor)
+                    && sort.equals(other.sort)
+                    && smtSort.equals(other.smtSort)
+                    && nullnessSolverTerm.equals(
+                    other.nullnessSolverTerm);
+        }
+
+        private boolean sameBinding(ManualSymbolicRootInfo other) {
+            return solverTerm.equals(other.solverTerm)
+                    && sameSource(other) && sameEncoding(other);
+        }
+
+        private static boolean validSourceIdentityAuthority(
+                String authority, boolean reused) {
+            return "EXACT_SEED_FIELD_VERSION_V1".equals(authority)
+                    || "SOURCE_EPOCH_HEAP_FIELD_VERSION_V1".equals(
+                    authority)
+                    || "EXACT_RUNTIME_LOCAL_SOURCE_EVENT_V1".equals(
+                    authority)
+                    || SymbolicSourceEvidence.MANUAL_AUTHORITY.equals(
+                    authority)
+                    || reused && ConcolicSummaryImporter
+                    .MANUAL_INPUT_OBSERVATION_AUTHORITY.equals(authority);
         }
     }
 
@@ -1167,12 +1639,9 @@ public final class BooleanReachConditionExtractor {
                 gaps.add("CONFIGURED_SOURCE_MATERIALIZATIONS_MISSING");
                 return result;
             }
-            // Wave 3 C1: one mint site mints once per entry, so the same
-            // (sourceKey, sourcePhaseId, sourceId) legitimately materialises
-            // several roots - the NameNode's key expiry and the DataNode's
-            // are two of them.  The root itself is the identity: the Composer
-            // keeps the map from VM symbol to root name injective, so one
-            // solver term names exactly one mint.
+            // One mint site may materialize several roots for the same source
+            // metadata. The root is the identity: the Composer keeps VM
+            // symbols and root names injective.
             Map<String, ConfiguredSourceInfo> byIdentity =
                     new LinkedHashMap<>();
             int ordinal = 0;
@@ -1279,99 +1748,6 @@ public final class BooleanReachConditionExtractor {
                     || result.solverTerm.isEmpty() ? null : result;
         }
 
-        private PortInfo asPortInfo() {
-            return new PortInfo(sourceId, descriptor, true,
-                    fieldSignature);
-        }
-    }
-
-    private static final class PortOccurrenceCatalog {
-        private final List<PortOccurrenceInfo> occurrences =
-                new ArrayList<>();
-
-        private static PortOccurrenceCatalog from(JsonObject manifest) {
-            PortOccurrenceCatalog result = new PortOccurrenceCatalog();
-            for (JsonElement element : array(manifest,
-                    "portOccurrences")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject row = element.getAsJsonObject();
-                PortOccurrenceInfo occurrence = new PortOccurrenceInfo(
-                        string(row, "portId"),
-                        string(row, "occurrenceId"),
-                        string(row, "sort"),
-                        string(row, "portTerm"),
-                        string(row, "solverTerm"),
-                        string(row, "nullnessSolverTerm"),
-                        bool(row, "supplied", false));
-                if (occurrence.complete()) {
-                    result.occurrences.add(occurrence);
-                }
-            }
-            return result;
-        }
-
-        private List<PortOccurrenceInfo> sorted() {
-            List<PortOccurrenceInfo> result = new ArrayList<>(occurrences);
-            result.sort(Comparator
-                    .comparing((PortOccurrenceInfo value) -> value.portId)
-                    .thenComparing(value -> value.occurrenceId)
-                    .thenComparing(value -> value.sort));
-            return result;
-        }
-    }
-
-    private static final class PortOccurrenceInfo {
-        private final String portId;
-        private final String occurrenceId;
-        private final String sort;
-        private final String portTerm;
-        private final String solverTerm;
-        private final String nullnessSolverTerm;
-        private final boolean supplied;
-
-        private PortOccurrenceInfo(String portId, String occurrenceId,
-                                   String sort, String portTerm,
-                                   String solverTerm,
-                                   String nullnessSolverTerm,
-                                   boolean supplied) {
-            this.portId = firstNonBlank(portId);
-            this.occurrenceId = firstNonBlank(occurrenceId);
-            this.sort = firstNonBlank(sort);
-            this.portTerm = firstNonBlank(portTerm);
-            this.solverTerm = firstNonBlank(solverTerm);
-            this.nullnessSolverTerm =
-                    firstNonBlank(nullnessSolverTerm);
-            this.supplied = supplied;
-        }
-
-        private boolean complete() {
-            return !portId.isEmpty() && !occurrenceId.isEmpty()
-                    && !sort.isEmpty() && !portTerm.isEmpty()
-                    && !solverTerm.isEmpty();
-        }
-    }
-
-    private static final class PortInfo {
-        private final String id;
-        private final String descriptor;
-        private final boolean javaBoolean;
-        private final boolean configuredSource;
-        private final String fieldSignature;
-
-        private PortInfo(String id, String javaType) {
-            this(id, javaTypeDescriptor(javaType), false, "");
-        }
-
-        private PortInfo(String id, String descriptor,
-                         boolean configuredSource,
-                         String fieldSignature) {
-            this.id = firstNonBlank(id);
-            this.descriptor = javaTypeDescriptor(descriptor);
-            this.javaBoolean = "Z".equals(descriptor)
-                    || "Ljava/lang/Boolean;".equals(descriptor);
-            this.configuredSource = configuredSource;
-            this.fieldSignature = firstNonBlank(fieldSignature);
-        }
     }
 
     private static final class Arguments {

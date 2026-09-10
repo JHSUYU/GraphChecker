@@ -13,6 +13,7 @@ import java.util.Map;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
@@ -54,7 +55,7 @@ public final class VmHandoffEvidence {
      * anything they carry, and inferring it is the exact defect the version
      * bump exists to refuse.
      */
-    public static final int SCHEMA_VERSION = 4;
+    public static final int SCHEMA_VERSION = 5;
     /** Kind of one case-local handoff reference. */
     public static final String KIND = "VM_HANDOFF_EVENT";
     /** Authority of one VM-propagated expression. */
@@ -73,84 +74,16 @@ public final class VmHandoffEvidence {
      * other receive of the same export.
      */
     public static final String ATTACH_EVENT_ID = "attachEventId";
+    /** Replay-independent identity assigned by the Java evidence join. */
+    public static final String BOUNDARY_FAMILY_KEY = "boundaryFamilyKey";
+    /** Frozen topology epoch in which the family was observed. */
+    public static final String TOPOLOGY_EPOCH = "topologyEpoch";
+    /** Occurrence-local ordinal of this receive site. */
+    public static final String BOUNDARY_ORDINAL = "boundaryOrdinal";
     /** Exact producer execution that exported the live handle. */
     public static final String PRODUCER_TASK_ID = "producerTaskId";
     public static final String PRODUCER_OCCURRENCE_ID =
             "producerOccurrenceId";
-    /** Kind of the composed value binding one reference is lowered into. */
-    public static final String BINDING_KIND = "VM_HANDOFF_VALUE_BINDING";
-    /**
-     * Authority of an edge binding the frozen plan did not declare and a
-     * replay recorded.
-     *
-     * <p>The scheduler declares such a member out of the sender task's own
-     * frozen binding for that port, re-addressed to the receiver occurrence
-     * the handoff attached at, so nothing is minted -- the edge id still
-     * names the one traced exchange it was decoded from.  These four fields
-     * are the whole of what re-derives the member from the carry file, and
-     * they are what lets a consumer tell an evidence-backed pairing from a
-     * pairing the region plan declared.</p>
-     */
-    public static final String ABSORBED_AUTHORITY_FIELD =
-            "absorbedAuthority";
-    public static final String ABSORBED_AUTHORITY = "OBSERVED_VM_HANDOFF_V1";
-    public static final String ABSORBED_FROM_TASK_ID = "absorbedFromTaskId";
-    public static final String ABSORBED_EXPORT_EVENT_ID =
-            "absorbedExportEventId";
-    public static final String ABSORBED_ATTACH_EVENT_ID =
-            "absorbedAttachEventId";
-
-    /**
-     * A target path may use a VM handoff only after the reach-query builder
-     * has matched its actual producer to one selected protocol edge.  These
-     * fields keep that path-local endpoint proof beside the exact VM value
-     * edge all the way into composition.
-     */
-    public static final String SELECTED_ENDPOINT_AUTHORITY_FIELD =
-            "selectedEndpointAuthority";
-    public static final String SELECTED_ENDPOINT_AUTHORITY =
-            "TARGET_PATH_SELECTED_ENDPOINT_V1";
-    public static final String SELECTED_ENDPOINT_EDGE_ID =
-            "selectedEndpointEdgeId";
-    public static final String SELECTED_ENDPOINT_FROM_OCCURRENCE_ID =
-            "selectedEndpointFromOccurrenceId";
-    public static final String SELECTED_ENDPOINT_TO_OCCURRENCE_ID =
-            "selectedEndpointToOccurrenceId";
-    public static final String SELECTED_ENDPOINT_FROM_OUTPUT_PORT =
-            "selectedEndpointFromOutputPort";
-    public static final String SELECTED_ENDPOINT_TO_INPUT_PORT =
-            "selectedEndpointToInputPort";
-    public static final String SELECTED_ENDPOINT_ABSORBED_FROM_TASK_ID =
-            "selectedEndpointAbsorbedFromTaskId";
-
-    /**
-     * Whether this edge binding is one a replay recorded and the scheduler
-     * absorbed.
-     *
-     * <p>Fully stamped or not absorbed: the exemptions this answers exist
-     * because the two VM ledger events below name the exact send and receive,
-     * so a row that does not carry them is judged as any other binding.</p>
-     */
-    public static boolean absorbed(JsonObject binding) {
-        if (binding == null || !ABSORBED_AUTHORITY.equals(
-                string(binding, ABSORBED_AUTHORITY_FIELD))) {
-            return false;
-        }
-        return !string(binding, ABSORBED_FROM_TASK_ID).isEmpty()
-                && longInteger(binding, ABSORBED_EXPORT_EVENT_ID, -1L) >= 0
-                && longInteger(binding, ABSORBED_ATTACH_EVENT_ID, -1L) >= 0;
-    }
-    /**
-     * A handoff whose receiving destination no region port declares.
-     *
-     * <p>One name for one fact, published by the runtime when it files the
-     * reference and by the Composer when it refuses to bind an SMT term to
-     * it.  The edge is real either way; what is missing is a declaration to
-     * carry it into the query.</p>
-     */
-    public static final String PORT_UNDECLARED =
-            "HANDOFF_RECEIVING_PORT_UNDECLARED";
-
     private VmHandoffEvidence() {
     }
 
@@ -184,8 +117,7 @@ public final class VmHandoffEvidence {
         row.addProperty(PRODUCER_TASK_ID, nonNull(producerTaskId));
         row.addProperty(PRODUCER_OCCURRENCE_ID,
                 nonNull(producerOccurrenceId));
-        row.add(EXPRESSION, exactExpression == null ? null
-                : exactExpression.deepCopy());
+        row.add(EXPRESSION, exactExpression);
         return row;
     }
 
@@ -201,19 +133,77 @@ public final class VmHandoffEvidence {
      * receivers of one export.</p>
      */
     public static boolean isEvent(JsonObject row) {
-        return row != null
-                && KIND.equals(string(row, "kind"))
-                && AUTHORITY.equals(string(row, "authority"))
-                && integer(row, "schemaVersion", -1) == SCHEMA_VERSION
-                && !string(row, "portId").isEmpty()
-                && longInteger(row, EXPORT_EVENT_ID, 0L) > 0L
-                && longInteger(row, ATTACH_EVENT_ID, 0L) > 0L
-                && !string(row, PRODUCER_TASK_ID).isEmpty()
-                && !string(row, PRODUCER_OCCURRENCE_ID).isEmpty()
-                && row.has(EXPRESSION)
-                && row.get(EXPRESSION).isJsonObject()
-                && !SharedStateEvidence.containsVmSerializationTruncation(
-                row.get(EXPRESSION));
+        return eventFault(row).isEmpty();
+    }
+
+    /**
+     * Names the first reason one claimed handoff reference is inadmissible.
+     *
+     * <p>{@link #eventsOf(JsonObject)} is intentionally a filtered view for
+     * callers that only consume admitted rows.  A completeness gate must
+     * also distinguish "no handoff" from "a handoff was stated but was
+     * malformed"; this method provides that fail-closed half without adding
+     * a second decoder.</p>
+     */
+    public static String eventFault(JsonObject row) {
+        if (row == null) return "handoff reference is not an object";
+        if (!KIND.equals(string(row, "kind"))) {
+            return "handoff reference has no declared kind";
+        }
+        if (!AUTHORITY.equals(string(row, "authority"))) {
+            return "handoff reference has no VM propagation authority";
+        }
+        if (integer(row, "schemaVersion", -1) != SCHEMA_VERSION) {
+            return "handoff reference has an unsupported schema";
+        }
+        if (string(row, "portId").isEmpty()) {
+            return "handoff reference names no receiving port";
+        }
+        if (longInteger(row, EXPORT_EVENT_ID, 0L) <= 0L) {
+            return "handoff reference names no export event";
+        }
+        if (longInteger(row, ATTACH_EVENT_ID, 0L) <= 0L) {
+            return "handoff reference names no attach event";
+        }
+        if (string(row, PRODUCER_TASK_ID).isEmpty()) {
+            return "handoff reference names no producer task";
+        }
+        if (string(row, PRODUCER_OCCURRENCE_ID).isEmpty()) {
+            return "handoff reference names no producer occurrence";
+        }
+        if (!row.has(EXPRESSION) || !row.get(EXPRESSION).isJsonObject()) {
+            return "handoff reference carries no exact expression";
+        }
+        JsonElement expression = row.get(EXPRESSION);
+        if (VmExpressionIr.isConsumerBoundaryReference(expression)) {
+            JsonObject raw = shallowCopy(expression.getAsJsonObject());
+            raw.addProperty("_type", VmExpressionIr.CONSUMER_BOUNDARY_TYPE);
+            expression = raw;
+        }
+        return VmExpressionIr.consumerBoundaryFault(expression,
+                VmExpressionIr.RPC_ATTACH,
+                longInteger(row, ATTACH_EVENT_ID, -1L));
+    }
+
+    /**
+     * Adds the stable family identity after the session-local event has been
+     * joined with its exact consumer occurrence and port.
+     */
+    public static JsonObject withBoundaryFamily(JsonObject event,
+                                                String familyKey,
+                                                String topologyEpoch,
+                                                int ordinal) {
+        JsonObject result = event == null ? new JsonObject()
+                : shallowCopy(event);
+        result.addProperty(BOUNDARY_FAMILY_KEY, nonNull(familyKey));
+        result.addProperty(TOPOLOGY_EPOCH, nonNull(topologyEpoch));
+        result.addProperty(BOUNDARY_ORDINAL, ordinal);
+        JsonElement raw = result.get(EXPRESSION);
+        if (raw != null && raw.isJsonObject()) {
+            result.add(EXPRESSION, VmExpressionIr.boundaryReference(
+                    raw.getAsJsonObject(), familyKey, topologyEpoch));
+        }
+        return result;
     }
 
     /** The admissible references carried by one case or result row. */
@@ -238,9 +228,15 @@ public final class VmHandoffEvidence {
                                Collection<JsonObject> events) {
         if (owner == null || events == null || events.isEmpty()) return;
         Map<String, JsonObject> byPayload = new LinkedHashMap<>();
+        SharedExpressionTable.Anchors anchors =
+                new SharedExpressionTable.Anchors();
         for (JsonObject event : events) {
             if (!isEvent(event)) continue;
-            byPayload.put(CanonicalJson.render(event), event.deepCopy());
+            JsonObject identity = shallowCopy(event);
+            JsonElement expression = identity.remove(EXPRESSION);
+            identity.addProperty(SharedExpressionTable.ANCHOR,
+                    anchors.contentAnchor(expression));
+            byPayload.put(CanonicalJson.render(identity), event);
         }
         if (byPayload.isEmpty()) return;
         List<String> keys = new ArrayList<>(byPayload.keySet());
@@ -250,8 +246,4 @@ public final class VmHandoffEvidence {
         owner.add(FIELD, rows);
     }
 
-    /** The exact attach endpoint one admitted reference names. */
-    public static long attachEventOf(JsonObject event) {
-        return isEvent(event) ? longInteger(event, ATTACH_EVENT_ID, 0L) : 0L;
-    }
 }

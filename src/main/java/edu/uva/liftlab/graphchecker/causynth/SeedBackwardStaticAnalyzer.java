@@ -4,7 +4,6 @@ import edu.uva.liftlab.graphchecker.annotation.Debug;
 
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
-import soot.RefLikeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.Body;
@@ -16,19 +15,14 @@ import soot.SootMethod;
 import soot.Unit;
 import soot.Value;
 import soot.jimple.AssignStmt;
-import soot.jimple.CastExpr;
 import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
-import soot.jimple.EqExpr;
 import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
-import soot.jimple.InstanceFieldRef;
 import soot.jimple.InstanceInvokeExpr;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
-import soot.jimple.NeExpr;
 import soot.jimple.NewExpr;
-import soot.jimple.NullConstant;
 import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
 import soot.jimple.Stmt;
@@ -122,9 +116,6 @@ final class SeedBackwardStaticAnalyzer {
             "getAndIncrement", "getAndDecrement", "getAndAdd",
             "incrementAndGet", "decrementAndGet", "addAndGet", "getAndSet",
             "compareAndSet", "weakCompareAndSet", "lazySet");
-    /** Container reads whose result is an element of the receiver. */
-    private static final Set<String> REFERENCE_LOOKUPS = names(
-            "get", "element", "peek", "next", "getKey", "getValue");
     private static final Set<String> MAP_CONTRACT_OWNERS = names(
             "java.util.Map", "java.util.SortedMap", "java.util.NavigableMap",
             "java.util.concurrent.ConcurrentMap",
@@ -147,6 +138,9 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, List<Callsite>> constructorCallersByCallee =
             new LinkedHashMap<>();
     private final Map<String, List<Callsite>> methodCallersByCallee =
+            new LinkedHashMap<>();
+    /** Every application call site of the explicit boolean fault hook. */
+    private final Map<String, List<Integer>> explicitFaultUnitsByMethod =
             new LinkedHashMap<>();
     /** Methods whose Jimple mentions one declared field. */
     private final Map<String, Set<String>> methodsReferencingField =
@@ -272,8 +266,15 @@ final class SeedBackwardStaticAnalyzer {
                     "Could not load annotated target method: "
                             + targetMethod);
         }
+        // Explicit fault hooks are program inputs in their own right.  They
+        // must enter the candidate union even when their return value is not
+        // already in the annotated exception's value slice; runtime
+        // occurrence evidence later decides which of them belongs to the
+        // selected target closure.
+        buildGlobalStaticIndex();
         initializeExceptionSeedAnchors();
         seedDeclaredWireFlows();
+        seedExplicitFaultEntries();
         runWorklist();
         if (discoveredExceptionSeedCount != 1) {
             throw new IllegalStateException("Annotated exception target did "
@@ -485,6 +486,73 @@ final class SeedBackwardStaticAnalyzer {
             addEdge("wire_handoff", producer, consumer,
                     flow.consumer.method,
                     consumerFact == null ? producerFact : consumerFact);
+        }
+    }
+
+    /**
+     * Makes every explicit fault marker an independent static control root.
+     * The destination local is demanded before the ordinary backward
+     * worklist runs, so a branch that consumes the marker and any guard that
+     * controls whether the marker executes are retained by the same generic
+     * control-dependence logic as all other symbolic values.
+     */
+    private void seedExplicitFaultEntries() {
+        List<String> methods = new ArrayList<>(
+                explicitFaultUnitsByMethod.keySet());
+        Collections.sort(methods);
+        for (String method : methods) {
+            List<Integer> units = new ArrayList<>(
+                    explicitFaultUnitsByMethod.get(method));
+            Collections.sort(units);
+            for (Integer unitIndex : units) {
+                Fact fact = indexedFact(method, unitIndex);
+                if (fact == null || !Debug.isBooleanMarkerSignature(
+                        fact.invoke)) {
+                    continue;
+                }
+                List<String> destinations = new ArrayList<>(
+                        canonicalDefs(method, fact));
+                // Java bytecode normally assigns a non-void invocation to a
+                // local.  Keep an intentionally ignored marker visible as a
+                // candidate site as well; it will simply have no flippable
+                // dependent branch at runtime.
+                if (destinations.isEmpty()) {
+                    destinations.add(factNode(fact));
+                }
+                String source = fact.invoke + ".return";
+                String name = explicitFaultName(fact);
+                for (String destination : destinations) {
+                    relevant(method).add(destination);
+                    Map<String, Object> edge = addEdge(
+                            "explicit_symbolic_fault", source,
+                            destination, method, fact);
+                    annotateExplicitSymbolicFaultEdge(edge, method, fact,
+                            name);
+
+                    forEachGuardOperand(method,
+                            controllingGuards(method, fact),
+                            (guard, guardNode) -> {
+                                Map<String, Object> guardEdge = addEdge(
+                                        ControlDependenceEdgeSupport
+                                                .PATH_GUARD_KIND,
+                                        guardNode, destination, method,
+                                        guard.fact);
+                                if (guardEdge != null) {
+                                    ControlDependenceEdgeSupport
+                                            .annotatePathGuard(guardEdge,
+                                                    method,
+                                                    guard.fact.unitIndex,
+                                                    fact.unitIndex,
+                                                    fact.unitText,
+                                                    guard.requiredOutcome,
+                                                    guard.reachingSuccessorIndices,
+                                                    guardNode, destination);
+                                }
+                                relevant(method).add(guardNode);
+                            });
+                }
+                selectedMethods.add(method);
+            }
         }
     }
 
@@ -1314,15 +1382,8 @@ final class SeedBackwardStaticAnalyzer {
         return new ConstructorParam(constructor, index, formalParam(sig, index));
     }
 
-    /**
-     * One pass over the application tree, the first time a writer or caller
-     * demand arrives. README {@code PERF-1} asks whether a demanded-
-     * field/callee reverse lookup should replace its five demand triggers, if
-     * this pass is still the measured static bottleneck. Measured on the
-     * HDFS-11741 seed (hdfs + hdfs-client + common, 6121 application classes)
-     * it is not: the pass costs 14.1-14.8 s of a ~300 s analysis, while the
-     * seed walk it feeds costs 129-152 s.
-     */
+    /** Builds the reverse application index once, on the first writer or
+     * caller demand. */
     private void buildGlobalStaticIndex() {
         if (globalStaticIndexBuilt) {
             return;
@@ -1386,6 +1447,13 @@ final class SeedBackwardStaticAnalyzer {
                 String invoked = ((Stmt) unit).getInvokeExpr()
                         .getMethodRef().getSignature();
                 MethodSig sig = parseMethodSig(invoked);
+                boolean indexedInvoke = false;
+                if (Debug.isBooleanMarkerSignature(invoked)) {
+                    explicitFaultUnitsByMethod.computeIfAbsent(
+                            methodSignature,
+                            ignored -> new ArrayList<>()).add(index);
+                    indexedInvoke = true;
+                }
                 if (sig != null && isApplicationClassName(sig.owner)) {
                     String unitText = unit.toString();
                     String receiver = canonical(methodSignature,
@@ -1402,9 +1470,10 @@ final class SeedBackwardStaticAnalyzer {
                                 new Callsite(methodSignature, index,
                                         receiver, actuals));
                     }
-                    if (fieldDefs.isEmpty()) {
-                        relevantUnits++;
-                    }
+                    indexedInvoke = true;
+                }
+                if (indexedInvoke && fieldDefs.isEmpty()) {
+                    relevantUnits++;
                 }
             }
             index++;
@@ -1710,18 +1779,24 @@ final class SeedBackwardStaticAnalyzer {
     private void annotateExplicitSymbolicFault(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> defs, Set<String> callerRelevant) {
-        String source = callee.raw + ".return";
         String name = explicitFaultName(fact);
         for (String def : defs) {
             if (!callerRelevant.contains(def)) continue;
             Map<String, Object> edge = emittedEdgeRows.get(edgeKey(
-                    "explicit_symbolic_fault", source, def,
+                    "explicit_symbolic_fault", callee.raw + ".return", def,
                     callerMethod, fact));
-            if (edge == null) continue;
-            edge.put("explicitSymbolicFault", true);
-            edge.put("symbolicName", name.isEmpty()
-                    ? callerMethod + "#u" + fact.unitIndex : name);
+            annotateExplicitSymbolicFaultEdge(edge, callerMethod, fact,
+                    name);
         }
+    }
+
+    private static void annotateExplicitSymbolicFaultEdge(
+            Map<String, Object> edge, String callerMethod, Fact fact,
+            String name) {
+        if (edge == null) return;
+        edge.put("explicitSymbolicFault", true);
+        edge.put("symbolicName", name.isEmpty()
+                ? callerMethod + "#u" + fact.unitIndex : name);
     }
 
     private static String explicitFaultName(Fact fact) {
@@ -1812,8 +1887,12 @@ final class SeedBackwardStaticAnalyzer {
         if (receiver == null) return;
         String receiverNode = canonical(callerMethod, receiver);
         if (ignoreNode(receiverNode)) return;
-        String dependencyRole = containerLookupDependencyRole(
-                callerMethod, fact, callee);
+        // Reaching this point proves that the operation's result is already
+        // in the failure-directed backward slice.  Its receiver state is
+        // therefore semantic input even when the selected member is later
+        // used as an object receiver: the concrete receiver still identifies
+        // the Map object, while the VM models that object's bounded contents.
+        String dependencyRole = DependencyRole.VALUE_FRONTIER;
         for (String def : relevantDefs) {
             Map<String, Object> edge = addEdge("container_receiver",
                     receiverNode, def, callerMethod, fact);
@@ -1832,131 +1911,6 @@ final class SeedBackwardStaticAnalyzer {
             }
             callerRelevant.add(argument);
         }
-    }
-
-    /**
-     * Proves the narrow case where a lookup result selects an already concrete
-     * owner but does not itself carry failure-relevant data.
-     */
-    private String containerLookupDependencyRole(
-            String method, Fact lookup, MethodSig callee) {
-        if (!referenceLookup(lookup, callee)) {
-            return DependencyRole.VALUE_FRONTIER;
-        }
-        Set<String> aliases = new LinkedHashSet<>(localNames(lookup.defs));
-        if (aliases.isEmpty()) return DependencyRole.VALUE_FRONTIER;
-
-        boolean receiverOrFieldBaseUse = false;
-        List<Fact> facts = factsByMethod.getOrDefault(method,
-                Collections.<Fact>emptyList());
-        for (int index = lookup.unitIndex + 1; index < facts.size(); index++) {
-            Fact use = facts.get(index);
-            Set<String> usedAliases = localNames(use.uses);
-            usedAliases.retainAll(aliases);
-            if (usedAliases.isEmpty()) {
-                removeRedefinedAliases(use, aliases);
-                continue;
-            }
-
-            String copied = copiedAlias(use, aliases);
-            if (copied != null) {
-                removeRedefinedAliases(use, aliases);
-                aliases.add(copied);
-                continue;
-            }
-            if (nullIdentityGuard(use, aliases)) {
-                continue;
-            }
-            if (receiverOrFieldBaseUse(use, aliases)) {
-                receiverOrFieldBaseUse = true;
-                removeRedefinedAliases(use, aliases);
-                continue;
-            }
-            return DependencyRole.VALUE_FRONTIER;
-        }
-        return receiverOrFieldBaseUse
-                ? DependencyRole.CONCRETE_STRUCTURE_CARRIER
-                : DependencyRole.VALUE_FRONTIER;
-    }
-
-    private boolean referenceLookup(Fact fact, MethodSig callee) {
-        if (!(fact.unit instanceof Stmt)
-                || !((Stmt) fact.unit).containsInvokeExpr()
-                || !REFERENCE_LOOKUPS.contains(callee.name)) {
-            return false;
-        }
-        return ((Stmt) fact.unit).getInvokeExpr().getType()
-                instanceof RefLikeType;
-    }
-
-    private String copiedAlias(Fact fact, Set<String> aliases) {
-        if (!(fact.unit instanceof AssignStmt)) return null;
-        AssignStmt assignment = (AssignStmt) fact.unit;
-        if (!(assignment.getLeftOp() instanceof Local)) return null;
-        Value right = assignment.getRightOp();
-        if (right instanceof CastExpr) right = ((CastExpr) right).getOp();
-        return right instanceof Local && aliases.contains(right.toString())
-                ? assignment.getLeftOp().toString() : null;
-    }
-
-    private boolean nullIdentityGuard(Fact fact, Set<String> aliases) {
-        if (!(fact.unit instanceof IfStmt)) return false;
-        Value condition = ((IfStmt) fact.unit).getCondition();
-        if (!(condition instanceof EqExpr || condition instanceof NeExpr)) {
-            return false;
-        }
-        soot.jimple.BinopExpr comparison =
-                (soot.jimple.BinopExpr) condition;
-        return aliasAndNull(comparison.getOp1(), comparison.getOp2(), aliases)
-                || aliasAndNull(comparison.getOp2(), comparison.getOp1(),
-                aliases);
-    }
-
-    private boolean aliasAndNull(Value alias, Value nullValue,
-                                 Set<String> aliases) {
-        return alias instanceof Local && aliases.contains(alias.toString())
-                && nullValue instanceof NullConstant;
-    }
-
-    private boolean receiverOrFieldBaseUse(Fact fact,
-                                           Set<String> aliases) {
-        Stmt statement = fact.unit instanceof Stmt ? (Stmt) fact.unit : null;
-        if (statement != null && statement.containsInvokeExpr()) {
-            InvokeExpr invoke = statement.getInvokeExpr();
-            if (!(invoke instanceof InstanceInvokeExpr)
-                    || !aliases.contains(((InstanceInvokeExpr) invoke)
-                    .getBase().toString())) {
-                return false;
-            }
-            for (Value argument : invoke.getArgs()) {
-                if (argument instanceof Local
-                        && aliases.contains(argument.toString())) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (!(fact.unit instanceof AssignStmt)) return false;
-        AssignStmt assignment = (AssignStmt) fact.unit;
-        Value left = assignment.getLeftOp();
-        Value right = assignment.getRightOp();
-        if (right instanceof InstanceFieldRef
-                && aliases.contains(((InstanceFieldRef) right)
-                .getBase().toString())) {
-            return !(left instanceof Local
-                    && aliases.contains(left.toString()));
-        }
-        return left instanceof InstanceFieldRef
-                && aliases.contains(((InstanceFieldRef) left)
-                .getBase().toString())
-                && !(right instanceof Local
-                && aliases.contains(right.toString()));
-    }
-
-    private void removeRedefinedAliases(Fact fact, Set<String> aliases) {
-        if (!(fact.unit instanceof DefinitionStmt)) return;
-        Value left = ((DefinitionStmt) fact.unit).getLeftOp();
-        if (left instanceof Local) aliases.remove(left.toString());
     }
 
     /**

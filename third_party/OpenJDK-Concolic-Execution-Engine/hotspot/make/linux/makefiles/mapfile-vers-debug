@@ -256,6 +256,7 @@ SUNWprivate_1.1 {
                 JVM_PrintObjInfo;
                 JVM_StartConcolicRegion;
                 JVM_GetCurrentConcolicContextId;
+                JVM_GetCurrentConcolicRegionEnterEventId;
                 JVM_EndConcolic;
                 JVM_OpenWorkloadSession;
                 JVM_CloseWorkloadSession;
@@ -280,18 +281,13 @@ SUNWprivate_1.1 {
                 JVM_AttachExpression;
                 JVM_GetConcolicPathConditionRange;
                 JVM_SelectSharedFieldCarrier;
-                JVM_GetCurrentSharedFieldVersion;
-                JVM_AdmitSharedFieldVersion;
+                JVM_ArmSharedPrimitiveFieldRead;
+                JVM_ConfirmSharedPrimitiveFieldRead;
                 JVM_SelectSharedElementCarrier;
                 JVM_SelectSharedMapCarrier;
-                JVM_GetCurrentSharedMapVersion;
-                JVM_AdmitSharedMapVersion;
                 JVM_GetSharedFieldVersions;
                 JVM_GetSharedElementVersions;
                 JVM_GetSharedMapVersions;
-                JVM_ProposeEventOrder;
-                JVM_GetEventLedger;
-                JVM_ActivateConcolicEventLedger;
                 JVM_GetConcolicRegionSummary;
                 JVM_FinishConcolicRegion;
 

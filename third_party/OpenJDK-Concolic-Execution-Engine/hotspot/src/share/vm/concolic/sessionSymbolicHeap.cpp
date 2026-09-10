@@ -26,7 +26,6 @@ SessionSymbolicHeap::~SessionSymbolicHeap() {
   // JNIHandles::destroy_global below takes a HotSpot Mutex, which rule 2 of
   // the concurrency contract forbids inside a critical section.
   _container_states.clear();
-  _container_evidence_owners.clear();
 
   // DetachedObjectStore does not own its SymInstance values.  Release its GC
   // roots before deleting the instances from SymStore so no stale oop can be
@@ -156,11 +155,7 @@ sym_rid_t SessionSymbolicHeap::canonical_container_id(oop container) const {
     if (instance == NULL) return NULL_SYM_RID;
     id = instance->get_sym_rid();
   }
-  id = canonical_container_id_locked(id);
-  ContainerOwnerStore::const_iterator evidence =
-      _container_evidence_owners.find(id);
-  return evidence == _container_evidence_owners.end()
-      ? id : evidence->second;
+  return canonical_container_id_locked(id);
 }
 
 Expression *SessionSymbolicHeap::find_container_state(oop container) const {
@@ -197,48 +192,6 @@ void SessionSymbolicHeap::set_container_state(oop container, Expression *state) 
   // Last completed write is the state; see the field-shadow write policy.
   HeapLock guard(this);
   _container_states[canonical_container_id_locked(id)] = state;
-}
-
-bool SessionSymbolicHeap::admit_container_state(
-    oop container, sym_rid_t evidence_owner, Expression *state) {
-  if (container == NULL || container->is_array() || state == NULL
-      || evidence_owner == NULL_SYM_RID) {
-    return false;
-  }
-
-  // Allocation is intentionally here, after the caller has proved the exact
-  // producer version and selected edge.  A refused admission therefore cannot
-  // mint a destination shadow or a local INITIAL state.
-  SymInstance *instance = get_or_alloc_sym_inst(container);
-  if (instance == NULL) return false;
-  HeapLock guard(this);
-  sym_rid_t destination =
-      canonical_container_id_locked(instance->get_sym_rid());
-  _container_states[destination] = state;
-  _container_evidence_owners[destination] = evidence_owner;
-  return true;
-}
-
-Expression *SessionSymbolicHeap::find_admitted_container_state(
-    oop container) const {
-  if (container == NULL) return NULL;
-  HeapLock guard(this);
-  sym_rid_t id = NULL_SYM_RID;
-  if (container->is_array()) {
-    if (!container->is_symbolic()) return NULL;
-    id = container->get_sym_rid();
-  } else {
-    SymInstance *instance = find_sym_inst_locked(container);
-    if (instance == NULL) return NULL;
-    id = instance->get_sym_rid();
-  }
-  id = canonical_container_id_locked(id);
-  if (_container_evidence_owners.find(id)
-      == _container_evidence_owners.end()) {
-    return NULL;
-  }
-  ContainerStateStore::const_iterator state = _container_states.find(id);
-  return state == _container_states.end() ? NULL : state->second;
 }
 
 void SessionSymbolicHeap::write_array_element(arrayOop array, int index,

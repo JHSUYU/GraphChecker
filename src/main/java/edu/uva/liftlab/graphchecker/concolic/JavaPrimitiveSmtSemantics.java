@@ -86,41 +86,6 @@ public final class JavaPrimitiveSmtSemantics {
         return result.append(descriptor).toString();
     }
 
-    public static boolean validFieldDescriptor(String value) {
-        if (value == null || value.isEmpty() || value.length() > 1024) {
-            return false;
-        }
-        int cursor = 0;
-        int dimensions = 0;
-        while (cursor < value.length() && value.charAt(cursor) == '[') {
-            if (++dimensions > 255) return false;
-            cursor++;
-        }
-        if (cursor >= value.length()) return false;
-        char type = value.charAt(cursor++);
-        if ("ZBCSIJFD".indexOf(type) >= 0) {
-            return cursor == value.length();
-        }
-        if (type != 'L') return false;
-        boolean component = false;
-        for (; cursor < value.length(); cursor++) {
-            char valueChar = value.charAt(cursor);
-            if (valueChar == ';') {
-                return component && cursor + 1 == value.length();
-            }
-            if (valueChar == '/') {
-                if (!component) return false;
-                component = false;
-            } else if (valueChar <= ' ' || valueChar == '.'
-                    || valueChar == '[') {
-                return false;
-            } else {
-                component = true;
-            }
-        }
-        return false;
-    }
-
     static IntegralWidth widthOfJavaType(String javaType) {
         IntegralDomain domain = domainOfJavaType(javaType);
         return domain == null ? IntegralWidth.NONE : domain.width;

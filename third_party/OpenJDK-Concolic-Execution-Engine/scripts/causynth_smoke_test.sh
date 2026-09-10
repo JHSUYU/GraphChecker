@@ -9,7 +9,8 @@ OUT=${OUT:-"$JDK_ROOT/build/causynth-smoke"}
 
 mkdir -p "$OUT"
 cd "$JDK_ROOT"
-"$JDK_HOME/bin/javac" -d "$OUT" \
+"$JDK_HOME/bin/javac" -XDignore.symbol.file=true \
+  -bootclasspath "$JDK_HOME/jre/lib/rt.jar" -d "$OUT" \
   test/causynth/RegionApiSmoke.java \
   test/causynth/RegionAtomicApiSmoke.java \
   test/causynth/RegionBoxedPrimitiveApiSmoke.java \
@@ -20,7 +21,6 @@ cd "$JDK_ROOT"
   test/causynth/RegionPropagatedFieldGuardSmoke.java \
   test/causynth/RegionExpressionHandoffApiSmoke.java \
   test/causynth/RegionContainerLiveInApiSmoke.java \
-  test/causynth/RegionCompetingWritersSmoke.java \
   test/causynth/RegionDeepExpressionSerializeSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
@@ -36,14 +36,8 @@ cd "$JDK_ROOT"
   test/causynth/RegionReferenceBranchApiSmoke.java \
   test/causynth/RegionRepeatedFieldOwnerMapApiSmoke.java \
   test/causynth/RegionShadowStackLifecycleSmoke.java \
-  test/causynth/RegionSharedFieldVersionSmoke.java \
-  test/causynth/RegionSharedFieldProducerStateSmoke.java \
-  test/causynth/RegionCrossActivationPrimitiveFieldSmoke.java \
-  test/causynth/RegionSharedMapProducerStateSmoke.java \
   test/causynth/RegionSymbolicKeySourceSmoke.java \
   test/causynth/RegionSharedReadFromSmoke.java \
-  test/causynth/RegionSharedSyncOrderSmoke.java \
-  test/causynth/RegionEventOrderLedgerSmoke.java \
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
   test/causynth/RegionStringSplitParseMapApiSmoke.java \
@@ -62,7 +56,6 @@ for smoke in \
   RegionPropagatedFieldGuardSmoke \
   RegionExpressionHandoffApiSmoke \
   RegionContainerLiveInApiSmoke \
-  RegionCompetingWritersSmoke \
   RegionDeepExpressionSerializeSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \
@@ -78,14 +71,8 @@ for smoke in \
   RegionReferenceBranchApiSmoke \
   RegionRepeatedFieldOwnerMapApiSmoke \
   RegionShadowStackLifecycleSmoke \
-  RegionSharedFieldVersionSmoke \
-  RegionSharedFieldProducerStateSmoke \
-  RegionCrossActivationPrimitiveFieldSmoke \
-  RegionSharedMapProducerStateSmoke \
   RegionSymbolicKeySourceSmoke \
   RegionSharedReadFromSmoke \
-  RegionSharedSyncOrderSmoke \
-  RegionEventOrderLedgerSmoke \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \
   RegionStringSplitParseMapApiSmoke \
@@ -100,9 +87,9 @@ done
 # `conditionCount` beside it, which is what the bound used to break.
 #   (unset) nothing truncates and the 240 conditions come back whole
 #   0       nothing fits, so every index is a named marker
-#   16384   a prefix of expressions, then a marker for every remaining index
+#   8192    a prefix of references, then a marker for every remaining index
 "$JDK_HOME/bin/java" -Xint -cp "$OUT" RegionPathConditionTruncationSmoke
 "$JDK_HOME/bin/java" -Xint -Dcausynth.vm.pathcondition.bytes=0 \
   -cp "$OUT" RegionPathConditionTruncationSmoke
-"$JDK_HOME/bin/java" -Xint -Dcausynth.vm.pathcondition.bytes=16384 \
+"$JDK_HOME/bin/java" -Xint -Dcausynth.vm.pathcondition.bytes=8192 \
   -cp "$OUT" RegionPathConditionTruncationSmoke

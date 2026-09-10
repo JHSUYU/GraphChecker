@@ -111,16 +111,9 @@ public:
   static sym_rid_t next_sym_rid();
 
   /**
-   * The session's single event-id space.
-   *
-   * Every runtime fact that can be ordered draws its identity from here: a
-   * field version, a synchronization action, a read, a region event.  They
-   * share one counter rather than one per channel because the order domain
-   * that relates them is also one domain -- a `fieldVersionId` and an
-   * `eventId` have to be comparable for a read-from edge to mean anything
-   * against a lifecycle or value-handoff edge. Ids are session-scoped and strictly increasing,
-   * so they are allocation evidence, never a schedule: a smaller id does not
-   * assert that its event happened first.
+   * The session's monotonic identity space for region occurrences, shared
+   * versions, reads and handoff endpoints.  These ids correlate runtime facts;
+   * their numeric order has no execution-order meaning.
    */
   static jlong next_event_id();
 

@@ -8,7 +8,6 @@
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
 #include "concolic/shadow/shadowStack.hpp"
-#include "concolic/vectorClock.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/handles.hpp"
 #include "runtime/jniHandles.hpp"
@@ -34,25 +33,14 @@ class SessionSymbolicHeap;
  * that labels branch events and summaries is the innermost one.  Only the
  * outermost exit ends this thread's participation in the session.
  *
- * The path condition stays singular and thread-scoped underneath that stack.
- * A nested region does not get a private path condition and does not reset the
- * enclosing one: the thread executed one sequence of branches, and every
- * region it was inside at the time is a label on that sequence, not a separate
- * execution.  A nested region's summary therefore reports the thread's path
- * condition, with its branch events carrying the region that was innermost
- * when each of them was recorded.
+ * The complete path condition stays singular and thread-scoped so its indices
+ * remain stable across nested regions.  Each region frame separately owns the
+ * Condition wrappers for its selected branch guard, auxiliary constraints and
+ * branch events.  A nested summary therefore serializes only the nested work;
+ * after it is popped, the enclosing summary contains only enclosing work.
  */
 class ThreadContext {
 private:
-  struct RegionFrame {
-    std::string region_id;
-    std::string task_id;
-    // The ledger event this occurrence opened with, so that its exit can be
-    // related to it by an edge rather than by matching identifiers.
-    jlong enter_event_id;
-    RegionFrame() : enter_event_id(0) {}
-  };
-
   struct BranchEvent {
     jlong event_id;
     jlong context_id;
@@ -68,23 +56,32 @@ private:
     std::vector<int> condition_indices;
   };
 
+  struct RegionFrame {
+    std::string region_id;
+    std::string task_id;
+    // Stable session-local identity of this region occurrence.  It is used to
+    // associate a published writer with its local case; it carries no order.
+    jlong enter_event_id;
+    // Region-local wrappers around session-owned expressions.  The complete
+    // thread path below remains the authority for their stable global indices.
+    PathCondition branch_path_condition;
+    PathCondition auxiliary_path_condition;
+    std::vector<int> auxiliary_path_condition_indices;
+    std::vector<BranchEvent> branch_events;
+
+    RegionFrame() : enter_event_id(0) {}
+    ~RegionFrame() {
+      branch_path_condition.gc();
+      auxiliary_path_condition.gc();
+    }
+  };
+
 private:
   JavaThread *_thread;
   ShadowStack _s_stack;
+  // Complete, monotonically indexed history for range queries.  RegionFrame
+  // stores the selected local views used by summaries and shared-write guards.
   PathCondition _path_condition;
-  // Only the taken predicates of instrumented branch sites.  Auxiliary
-  // symbolic constraints (container observations, method-result relations,
-  // and similar solver facts) remain in _path_condition, but copying them
-  // into every shared-field version turns a small writer guard into the
-  // whole execution DAG.  A recorded version is guarded by control flow;
-  // the enclosing region case carries the auxiliary constraints once.
-  PathCondition _branch_path_condition;
-  // Non-branch semantic constraints, stored once per thread path rather than
-  // copied into every shared-version guard.  The companion indices are their
-  // positions in _path_condition, so a consumer can merge them with exact
-  // branch witnesses without guessing execution order.
-  PathCondition _auxiliary_path_condition;
-  std::vector<int> _auxiliary_path_condition_indices;
   MethodSymbolizer _method_symbolizer;
 
   // The session's shadow heap.  Fails closed if the session that owns this
@@ -105,30 +102,22 @@ private:
   // symbolic operation fail closed.
   bool _aborted;
   std::string _abort_reason;
-  std::vector<RegionFrame> _region_stack;
+  std::vector<RegionFrame *> _region_stack;
   jlong _context_id;
   jlong _owner_java_thread_id;
   jlong _owner_os_thread_id;
   jlong _branch_sequence;
-  // This thread's own step counter and its happens-before knowledge.  Both are
-  // thread-owned execution state, mutated only by the owning thread and copied
-  // by value whenever a snapshot is published into shared session state.
-  jlong _clock_step;
-  jlong _last_event_id;
-  VectorClock _clock;
   bool _pending_branch_active;
   jlong _pending_branch_event_id;
   const ZeroFrame *_pending_branch_owner_frame;
   std::string _pending_branch_site_id;
   int _pending_branch_occurrence;
-  std::vector<BranchEvent> _branch_events;
 //  std::set<oop> _allocated_objs;
 
-  // One in-flight conditional container removal, assembled across the calls
-  // that make up one iteration of a removeExpiredKeys-shaped loop:
-  //   it.next()  names the element being visited (its map key);
-  //   a *marked* symbolic branch -- the `if (expiry < now)` guard the workload
-  //     marks with markConcolicBranch -- records the predicate;
+  // One in-flight conditional container removal, assembled across one
+  // iterator step:
+  //   it.next() names the element being visited (its map key);
+  //   a marked symbolic branch records the controlling predicate;
   //   the element is disposed either by it.remove() (the removal fired: the
   //     guard is recorded as-is, concretely true) or by the following
   //     it.hasNext()/it.next() (it did not: the guard is recorded negated,
@@ -195,10 +184,10 @@ public:
   std::string get_path_condition_range(int start, int end);
 
   /**
-   * Every admitted non-branch solver constraint, paired with its position in
-   * the thread's full path condition.  This is the case-level counterpart of
-   * path_guard(): versions carry only control guards, while a region result
-   * carries these semantic relations once.
+   * Every admitted non-branch solver constraint of the current region frame,
+   * paired with its position in the thread's full path condition.  This is the
+   * case-level counterpart of path_guard(): versions carry only the current
+   * region's control guard, while its result carries these relations once.
    */
   std::string get_auxiliary_path_conditions();
 
@@ -207,28 +196,10 @@ public:
     return _owner_java_thread_id;
   }
 
-  // ---- happens-before, from this thread's point of view -------------------
-  // Advances this thread's own step and returns it.  Every ordered action this
-  // thread performs takes one step, so a later action of the same thread is
-  // always hb-after an earlier one without any extra edge.
-  jlong tick_clock();
-  inline const VectorClock &clock() const { return _clock; }
-  // Joins knowledge acquired from a release this thread has just observed.
-  inline void acquire_clock(const VectorClock &released) {
-    _clock.join(released);
-  }
-  inline jlong clock_step() const { return _clock_step; }
-  // This thread's most recent ledger event, which the next one is linked to
-  // by a program-order edge.  Thread-owned, so no lock is involved.
-  inline jlong last_event_id() const { return _last_event_id; }
-  inline void set_last_event_id(jlong event_id) {
-    _last_event_id = event_id;
-  }
-
-  // The conjunction of this thread's instrumented, taken branch predicates,
-  // or NULL for `true`.  This deliberately excludes auxiliary solver
-  // constraints retained in get_path_condition(); the region case carries
-  // those once, while a shared version needs only its control guard.
+  // The conjunction of the current region frame's instrumented, taken branch
+  // predicates, or NULL for `true`.  This deliberately excludes auxiliary
+  // solver constraints retained in get_path_condition(); the region case
+  // carries those once, while a shared version needs only its control guard.
   // Folded here so that a caller can obtain it before taking any engine lock.
   Expression *path_guard();
 
@@ -316,13 +287,14 @@ public:
 
   inline void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
     if (_aborted || !_path_condition_enabled || !_path_condition_admitted
-        || _path_condition_pause_depth > 0) {
+        || _path_condition_pause_depth > 0 || _region_stack.empty()) {
       return;
     }
 
     const int full_index = _path_condition.add(sym_exp);
-    _auxiliary_path_condition.add(sym_exp);
-    _auxiliary_path_condition_indices.push_back(full_index);
+    RegionFrame *frame = _region_stack.back();
+    frame->auxiliary_path_condition.add(sym_exp);
+    frame->auxiliary_path_condition_indices.push_back(full_index);
   }
 
   void write_array_element(arrayOop array, int index,
@@ -335,9 +307,6 @@ public:
   sym_rid_t canonical_container_id(oop container) const;
   Expression *find_container_state(oop container) const;
   void set_container_state(oop container, Expression *state);
-  bool admit_container_state(oop container, sym_rid_t evidence_owner,
-                             Expression *state);
-  Expression *find_admitted_container_state(oop container) const;
   void alias_container(oop derived, oop owner);
   int next_container_position(oop cursor);
   int current_container_position(oop cursor);

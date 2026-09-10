@@ -28,7 +28,7 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
           ? 0 : java_lang_Thread::thread_id(jt->threadObj())),
       _owner_os_thread_id(jt == NULL || jt->osthread() == NULL
           ? 0 : (jlong) jt->osthread()->thread_id()),
-      _branch_sequence(0), _clock_step(0), _last_event_id(0),
+      _branch_sequence(0),
       _pending_branch_active(false),
       _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
       _pending_branch_occurrence(0) {
@@ -36,47 +36,46 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
             "a thread context requires an open symbolic session");
 }
 
-jlong ThreadContext::tick_clock() {
-  ++_clock_step;
-  _clock.observe(_context_id, _clock_step);
-  return _clock_step;
-}
-
 Expression *ThreadContext::path_guard() {
-  return _branch_path_condition.conjunction();
+  return _region_stack.empty()
+      ? NULL : _region_stack.back()->branch_path_condition.conjunction();
 }
 
 void ThreadContext::push_region(const char *region_id, const char *task_id) {
-  RegionFrame frame;
-  frame.region_id = region_id == NULL ? "" : region_id;
-  frame.task_id = task_id == NULL ? "" : task_id;
+  RegionFrame *frame = new RegionFrame();
+  frame->region_id = region_id == NULL ? "" : region_id;
+  frame->task_id = task_id == NULL ? "" : task_id;
   _region_stack.push_back(frame);
 }
 
 int ThreadContext::pop_region() {
   if (!_region_stack.empty()) {
+    RegionFrame *frame = _region_stack.back();
     _region_stack.pop_back();
+    // RegionFrame destroys only its Condition wrappers and serialization
+    // caches.  Their Expression nodes remain owned by the symbolic session.
+    delete frame;
   }
   return (int) _region_stack.size();
 }
 
 const std::string &ThreadContext::get_region_id() const {
   static const std::string NO_REGION;
-  return _region_stack.empty() ? NO_REGION : _region_stack.back().region_id;
+  return _region_stack.empty() ? NO_REGION : _region_stack.back()->region_id;
 }
 
 const std::string &ThreadContext::get_task_id() const {
   static const std::string NO_TASK;
-  return _region_stack.empty() ? NO_TASK : _region_stack.back().task_id;
+  return _region_stack.empty() ? NO_TASK : _region_stack.back()->task_id;
 }
 
 void ThreadContext::set_region_enter_event(jlong event_id) {
   if (_region_stack.empty()) return;
-  _region_stack.back().enter_event_id = event_id;
+  _region_stack.back()->enter_event_id = event_id;
 }
 
 jlong ThreadContext::region_enter_event() const {
-  return _region_stack.empty() ? 0 : _region_stack.back().enter_event_id;
+  return _region_stack.empty() ? 0 : _region_stack.back()->enter_event_id;
 }
 
 std::string ThreadContext::get_path_condition_range(int start, int end) {
@@ -88,6 +87,7 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
 
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
+  VmExpressionArtifactScope expression_artifact;
   writer.StartObject();
   writer.Key("schemaVersion");
   writer.Int(1);
@@ -146,14 +146,19 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
   writer.String("VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1");
   writer.Key("authority");
   writer.String("VM_THREAD_PATH_CONDITION_RANGE_V1");
+  writer.Key("expressionEncoding");
+  writer.String("VM_SESSION_DAG_V1");
+  expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
 }
 
 std::string ThreadContext::get_auxiliary_path_conditions() {
   using namespace rapidjson;
+  RegionFrame *frame = _region_stack.empty() ? NULL : _region_stack.back();
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
+  VmExpressionArtifactScope expression_artifact;
   writer.StartObject();
   writer.Key("schemaVersion");
   writer.Int(1);
@@ -168,17 +173,26 @@ std::string ThreadContext::get_auxiliary_path_conditions() {
   writer.Key("pathConditionWatermark");
   writer.Int(_path_condition.size());
   writer.Key("conditionCount");
-  writer.Int((int)_auxiliary_path_condition_indices.size());
+  writer.Int(frame == NULL
+      ? 0 : (int)frame->auxiliary_path_condition_indices.size());
   writer.Key("pathConditionIndices");
   writer.StartArray();
-  for (size_t index = 0;
-       index < _auxiliary_path_condition_indices.size(); ++index) {
-    writer.Int(_auxiliary_path_condition_indices[index]);
+  if (frame != NULL) {
+    for (size_t index = 0;
+         index < frame->auxiliary_path_condition_indices.size(); ++index) {
+      writer.Int(frame->auxiliary_path_condition_indices[index]);
+    }
   }
   writer.EndArray();
   writer.Key("conditions");
-  const int emitted_auxiliary_conditions =
-      _auxiliary_path_condition.serialize(writer);
+  int emitted_auxiliary_conditions = 0;
+  if (frame == NULL) {
+    writer.StartArray();
+    writer.EndArray();
+  } else {
+    emitted_auxiliary_conditions =
+        frame->auxiliary_path_condition.serialize(writer);
+  }
   // conditionCount above is the length of pathConditionIndices; this is the
   // length of `conditions`.  They are recorded in lockstep by
   // record_path_condition(), and serialize() emits one entry per recorded
@@ -190,6 +204,9 @@ std::string ThreadContext::get_auxiliary_path_conditions() {
   writer.Int(emitted_auxiliary_conditions);
   writer.Key("authority");
   writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
+  writer.Key("expressionEncoding");
+  writer.String("VM_SESSION_DAG_V1");
+  expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
 }
@@ -250,12 +267,14 @@ void ThreadContext::record_branch_condition(Expression *expression,
 void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
                                               bool outcome, int opcode) {
   if (_aborted || !_path_condition_enabled || !_path_condition_admitted
-      || _path_condition_pause_depth > 0) {
+      || _path_condition_pause_depth > 0 || _region_stack.empty()) {
     // A marker identifies one concrete branch execution, not the next branch
     // after recording happens to resume.
     cancel_pending_branch();
     return;
   }
+
+  RegionFrame *frame = _region_stack.back();
 
   std::vector<int> direct_indices;
   for (size_t index = 0; index < expressions.size(); ++index) {
@@ -276,7 +295,7 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     Expression *guard = NULL;
     for (size_t index = 0; index < expressions.size(); ++index) {
       if (expressions[index] != NULL) {
-        _branch_path_condition.add(expressions[index]);
+        frame->branch_path_condition.add(expressions[index]);
         // The guard of a control-dependent container removal is this marked
         // branch's predicate.  A site with several conjuncts folds to their
         // conjunction; the common case is a single comparison.
@@ -294,17 +313,17 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     event.context_id = _context_id;
     event.owner_java_thread_id = _owner_java_thread_id;
     event.owner_os_thread_id = _owner_os_thread_id;
-    // The innermost region at the moment the branch executed.  A region that
-    // has since been popped keeps the events it labelled.
-    event.region_id = get_region_id();
-    event.task_id = get_task_id();
+    // The current frame owns both this identity and this event.  Popping the
+    // frame releases the event after its summary has been serialized.
+    event.region_id = frame->region_id;
+    event.task_id = frame->task_id;
     event.site_id = _pending_branch_site_id;
     event.occurrence = _pending_branch_occurrence;
     event.outcome = outcome;
     event.opcode = opcode;
     event.code_position = get_current_code_pos();
     event.condition_indices = direct_indices;
-    _branch_events.push_back(event);
+    frame->branch_events.push_back(event);
     cancel_pending_branch();
   }
 
@@ -312,6 +331,8 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
 
 std::string ThreadContext::get_branch_events() const {
   using namespace rapidjson;
+  const RegionFrame *frame =
+      _region_stack.empty() ? NULL : _region_stack.back();
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
   writer.StartObject();
@@ -339,8 +360,9 @@ std::string ThreadContext::get_branch_events() const {
   writer.Int(region_depth());
   writer.Key("events");
   writer.StartArray();
-  for (size_t index = 0; index < _branch_events.size(); ++index) {
-    const BranchEvent &event = _branch_events[index];
+  const size_t event_count = frame == NULL ? 0 : frame->branch_events.size();
+  for (size_t index = 0; index < event_count; ++index) {
+    const BranchEvent &event = frame->branch_events[index];
     writer.StartObject();
     writer.Key("eventId");
     writer.Int64(event.event_id);
@@ -386,9 +408,12 @@ ThreadContext::~ThreadContext() {
   // Only this thread's own execution state is released here.  Object shadows,
   // detached identities and container states belong to the session and must
   // survive one thread finishing its region.
+  while (!_region_stack.empty()) {
+    RegionFrame *frame = _region_stack.back();
+    _region_stack.pop_back();
+    delete frame;
+  }
   _path_condition.gc();
-  _branch_path_condition.gc();
-  _auxiliary_path_condition.gc();
 }
 
 // ---------------------------------------------------------------------------
@@ -426,16 +451,6 @@ Expression *ThreadContext::find_container_state(oop container) const {
 
 void ThreadContext::set_container_state(oop container, Expression *state) {
   heap().set_container_state(container, state);
-}
-
-bool ThreadContext::admit_container_state(
-    oop container, sym_rid_t evidence_owner, Expression *state) {
-  return heap().admit_container_state(container, evidence_owner, state);
-}
-
-Expression *ThreadContext::find_admitted_container_state(
-    oop container) const {
-  return heap().find_admitted_container_state(container);
 }
 
 void ThreadContext::write_array_element(arrayOop array, int index,

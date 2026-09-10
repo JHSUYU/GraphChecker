@@ -220,10 +220,20 @@ SymStrBuilder::finish_method_helper(MethodSymbolizerHandle &handle) {
 Expression *SymStrBuilder::get_exp_of(oop obj) {
   if (obj == NULL) return SymbolExpression::get(Sym_NULL);
   SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
-  if (sym_inst != NULL && sym_inst->get_ref_exp() != NULL) {
+  if (sym_inst != NULL && sym_inst->has_semantic_expression()
+      && sym_inst->get_ref_exp() != NULL) {
     return sym_inst->get_ref_exp();
   }
-  return ContainerSupport::concrete_value(obj);
+
+  // The first symbolic append can follow any number of concrete appends.  At
+  // that point the receiver is a concrete string prefix, not a symbolic Java
+  // object identity.  Snapshot the prefix so the resulting concat is a
+  // string-valued expression (and so a later equals/contains keeps the exact
+  // Java value).  Once an append has installed semantic state, the branch
+  // above reuses it and no later snapshot can overwrite symbolic history.
+  ResourceMark rm;
+  return new ConStringSymbolExp(
+      std::string(OopUtils::java_string_to_c(obj)));
 }
 
 #endif

@@ -47,7 +47,7 @@ public final class RegionExpressionHandoffApiSmoke {
         require(System.startConcolicRegion("REGION.handoff",
                 "TASK.handoff") == 0L, "region start rejected");
 
-        symbolicPrimitiveKeepsItsExpression();
+        symbolicPrimitiveKeepsNestedConsumerBoundaries();
         oneExportReachesSeveralReceivers();
         concretePrimitiveKeepsItsHandoffLineage();
         indexedContainerKeepsItsState();
@@ -55,9 +55,11 @@ public final class RegionExpressionHandoffApiSmoke {
 
         require(System.finishConcolicRegion().contains("\"complete\":true"),
                 "region finish failed");
+        System.out.println("RegionExpressionHandoffApiSmoke OK");
     }
 
-    private static void symbolicPrimitiveKeepsItsExpression() {
+    /** A forwarded value keeps both consumer boundaries around one payload. */
+    private static void symbolicPrimitiveKeepsNestedConsumerBoundaries() {
         Sender sender = new Sender();
         System.symbolizeExactField(sender, Sender.class.getName(), "keyId",
                 "I", "RPC.keyId");
@@ -65,7 +67,7 @@ public final class RegionExpressionHandoffApiSmoke {
         long handle = System.exportExpression(sender,
                 Sender.class.getName(), "keyId", "I", exported);
         require(handle > 0L, "export rejected: " + handle);
-        require(exported[0] > 0L, "export named no ledger event");
+        require(exported[0] > 0L, "export named no endpoint event");
 
         Receiver receiver = new Receiver();
         receiver.keyId = sender.keyId;
@@ -73,24 +75,53 @@ public final class RegionExpressionHandoffApiSmoke {
         long exportEvent = System.attachExpression(receiver,
                 Receiver.class.getName(), "keyId", "I", handle, attached);
         require(exportEvent == exported[0], "attach rejected: " + exportEvent);
-        require(attached[0] > 0L, "attach named no ledger event");
+        require(attached[0] > 0L, "attach named no endpoint event");
 
-        String expression = System.getSymbolicFieldExpression(receiver,
+        long[] forwarded = new long[1];
+        long forwardedHandle = System.exportExpression(receiver,
+                Receiver.class.getName(), "keyId", "I", forwarded);
+        require(forwardedHandle > 0L,
+                "forwarded export rejected: " + forwardedHandle);
+
+        Receiver downstream = new Receiver();
+        downstream.keyId = receiver.keyId;
+        long[] downstreamAttach = new long[1];
+        long forwardedEvent = System.attachExpression(downstream,
+                Receiver.class.getName(), "keyId", "I", forwardedHandle,
+                downstreamAttach);
+        require(forwardedEvent == forwarded[0],
+                "forwarded attach rejected: " + forwardedEvent);
+        require(downstreamAttach[0] > 0L,
+                "forwarded attach named no endpoint event");
+
+        // The wrapper is an identity in the VM expression algebra: ordinary
+        // receiver computation must build on the nested payload rather than
+        // replacing it with a fresh input or treating the boundary as an op.
+        downstream.keyId = downstream.keyId + 1;
+        require(downstream.keyId == sender.keyId + 1,
+                "consumer boundary changed the concrete value");
+
+        String expression = System.getSymbolicFieldExpression(downstream,
                 Receiver.class.getName(), "keyId", "I",
-                Integer.valueOf(receiver.keyId));
+                Integer.valueOf(downstream.keyId));
         require(expression.contains("RPC.keyId"), expression);
-        String ledger = System.getEventLedger();
-        require(ledger.contains(edge(exportEvent, attached[0])), ledger);
+        require(count(expression, "\"_type\":\"ConsumerBoundaryExpression\"")
+                        == 2,
+                "two-hop expression did not retain two boundaries: "
+                        + expression);
+        require(expression.contains("\"boundaryKind\":\"RPC_ATTACH\""),
+                expression);
+        require(expression.contains("\"eventId\":" + attached[0]),
+                "first consumer event is absent: " + expression);
+        require(expression.contains("\"eventId\":" + downstreamAttach[0]),
+                "second consumer event is absent: " + expression);
     }
 
     /**
      * One exported expression, several explicit receivers.
      *
-     * <p>Each attach records its own {@code VALUE_HANDOFF} edge and reports
-     * its own attach event, and nothing is tallied.  This is why the export
-     * id alone cannot name a receive: both edges leave the same export, so a
-     * consumer that picked one of them would be naming a receiver it did not
-     * mean.  README {@code RPC-1}.</p>
+     * <p>Each attach reports its own endpoint event. The export id alone cannot
+     * name a receive because several receivers may attach the same payload.</p>
      */
     private static void oneExportReachesSeveralReceivers() {
         Sender sender = new Sender();
@@ -115,16 +146,6 @@ public final class RegionExpressionHandoffApiSmoke {
 
         require(firstAttach[0] != secondAttach[0],
                 "two receivers reported one attach event");
-        String ledger = System.getEventLedger();
-        require(ledger.contains(edge(exported[0], firstAttach[0])), ledger);
-        require(ledger.contains(edge(exported[0], secondAttach[0])), ledger);
-    }
-
-    /** The exact serialized VALUE_HANDOFF edge joining one endpoint pair. */
-    private static String edge(long exportEvent, long attachEvent) {
-        return "{\"beforeEventId\":" + exportEvent
-                + ",\"afterEventId\":" + attachEvent
-                + ",\"edgeKind\":\"VALUE_HANDOFF\"}";
     }
 
     private static void concretePrimitiveKeepsItsHandoffLineage() {
@@ -141,15 +162,13 @@ public final class RegionExpressionHandoffApiSmoke {
                 Receiver.class.getName(), "keyId", "I", handle, attached);
         require(exportEvent == exported[0],
                 "concrete attach rejected: " + exportEvent);
-        require(attached[0] > 0L, "concrete attach named no ledger event");
+        require(attached[0] > 0L, "concrete attach named no endpoint event");
 
         String expression = System.getSymbolicFieldExpression(receiver,
                 Receiver.class.getName(), "keyId", "I",
                 Integer.valueOf(receiver.keyId));
         require(expression.contains("ConstExpr"), expression);
         require(expression.contains("Y_I_7"), expression);
-        String ledger = System.getEventLedger();
-        require(ledger.contains(edge(exportEvent, attached[0])), ledger);
     }
 
     private static void indexedContainerKeepsItsState() {
@@ -171,8 +190,6 @@ public final class RegionExpressionHandoffApiSmoke {
                 + exportEvent);
         String expression = System.getSymbolicExpression(receiver.values);
         require(expression.contains("RPC.values"), expression);
-        require(System.getEventLedger().contains(
-                edge(exportEvent, attached[0])), System.getEventLedger());
 
         ContainerReceiver wrongLength = new ContainerReceiver();
         wrongLength.values = new Object[]{"a"};
@@ -181,8 +198,7 @@ public final class RegionExpressionHandoffApiSmoke {
                 ContainerReceiver.class.getName(), "values",
                 "[Ljava/lang/Object;", handle, refused) < 0L,
                 "mismatched fixed array length was accepted");
-        // A refused attach records no event, so it reports none either.
-        require(refused[0] == 0L, "a refused attach named a ledger event");
+        require(refused[0] == 0L, "a refused attach named an endpoint event");
     }
 
     private static void indexedContainerCarriesElementFieldsIntoMap() {
@@ -211,7 +227,7 @@ public final class RegionExpressionHandoffApiSmoke {
         require(exportEvent == exported[0],
                 "element array attach rejected: " + exportEvent);
         require(attached[0] > 0L,
-                "element array attach named no ledger event");
+                "element array attach named no endpoint event");
 
         Map<Integer, Element> rebuilt =
                 new LinkedHashMap<Integer, Element>();
@@ -231,5 +247,15 @@ public final class RegionExpressionHandoffApiSmoke {
 
     private static void require(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+    }
+
+    private static int count(String value, String needle) {
+        int found = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(needle, offset)) >= 0) {
+            found++;
+            offset += needle.length();
+        }
+        return found;
     }
 }

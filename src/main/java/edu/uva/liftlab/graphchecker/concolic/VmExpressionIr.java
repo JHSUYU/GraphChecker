@@ -24,6 +24,20 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  */
 final class VmExpressionIr {
 
+    /** Transparent VM marker installed at a consumer-side value boundary. */
+    static final String CONSUMER_BOUNDARY_TYPE =
+            "ConsumerBoundaryExpression";
+    /** Persisted reference to one replay-independent boundary family. */
+    static final String CONSUMER_BOUNDARY_REFERENCE_TYPE =
+            "ConsumerBoundaryReference";
+    static final String RPC_ATTACH = "RPC_ATTACH";
+    static final String FIELD_READ = "FIELD_READ";
+    static final String BOUNDARY_KIND = "boundaryKind";
+    static final String EVENT_ID = "eventId";
+    static final String FAMILY_KEY = "familyKey";
+    static final String TOPOLOGY_EPOCH = "topologyEpoch";
+    static final String EXPRESSION = "expression";
+
     /**
      * Exact serialization of {@code InstanceSymbolExp}: the VM can only
      * construct it from an allocated oop and appends that object's positive
@@ -31,14 +45,164 @@ final class VmExpressionIr {
      * writer placeholders deliberately do not match.
      */
     private static final Pattern ALLOCATED_INSTANCE_REFERENCE =
-            Pattern.compile("^M_L'[^']+'_[1-9][0-9]*$");
+            Pattern.compile("^M_L'[^']+'_([1-9][0-9]*)$");
+
+    /**
+     * Exact serialization of {@code ArraySymbolExp}.  Like an
+     * {@link #ALLOCATED_INSTANCE_REFERENCE}, this is minted from a concrete
+     * array shadow.  The final number is the array-state version, not another
+     * object identity.
+     */
+    private static final Pattern ALLOCATED_ARRAY_REFERENCE =
+            Pattern.compile("^A(?:[ZBCSIJFDL]|\\[)_([1-9][0-9]*)-([0-9]+)$");
+    /** Runtime-evidence identity assigned to one propagated map state. */
+    private static final Pattern CANONICAL_MAP_STATE_REFERENCE =
+            Pattern.compile("^MAP_STATE\\.v1\\.[0-9a-f]{64}$");
 
     private VmExpressionIr() {
+    }
+
+    static boolean isConsumerBoundary(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                && CONSUMER_BOUNDARY_TYPE.equals(string(
+                expression.getAsJsonObject(), "_type"));
+    }
+
+    static boolean isConsumerBoundaryReference(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                && CONSUMER_BOUNDARY_REFERENCE_TYPE.equals(string(
+                expression.getAsJsonObject(), "_type"));
+    }
+
+    /**
+     * Validates the raw, session-local wrapper emitted by the VM.  The
+     * replay-independent family key is deliberately not required here: only
+     * the Java evidence join is allowed to add it.
+     */
+    static String consumerBoundaryFault(JsonElement expression,
+                                        String expectedKind,
+                                        long expectedEventId) {
+        if (!isConsumerBoundary(expression)) {
+            return "expression is not a ConsumerBoundaryExpression";
+        }
+        JsonObject row = expression.getAsJsonObject();
+        String kind = string(row, BOUNDARY_KIND);
+        if (!(RPC_ATTACH.equals(kind) || FIELD_READ.equals(kind))) {
+            return "consumer boundary has an unsupported kind";
+        }
+        if (expectedKind != null && !expectedKind.isEmpty()
+                && !expectedKind.equals(kind)) {
+            return "consumer boundary kind disagrees with its evidence";
+        }
+        long eventId = longValue(row, EVENT_ID);
+        if (eventId <= 0L) {
+            return "consumer boundary names no dynamic event";
+        }
+        if (expectedEventId > 0L && eventId != expectedEventId) {
+            return "consumer boundary event disagrees with its evidence";
+        }
+        if (string(row, "_java_type").isEmpty()) {
+            return "consumer boundary names no Java type";
+        }
+        JsonElement payload = row.get(EXPRESSION);
+        if (payload == null || payload.isJsonNull()
+                || !payload.isJsonObject()) {
+            return "consumer boundary carries no expression payload";
+        }
+        if (SharedStateEvidence.containsVmSerializationTruncation(payload)) {
+            return "consumer boundary payload was truncated";
+        }
+        return "";
+    }
+
+    static JsonObject boundaryReference(JsonObject boundary,
+                                        String familyKey,
+                                        String topologyEpoch) {
+        JsonObject reference = JsonFields.shallowCopy(boundary);
+        reference.addProperty("_type", CONSUMER_BOUNDARY_REFERENCE_TYPE);
+        reference.addProperty(FAMILY_KEY, familyKey == null ? "" : familyKey);
+        reference.addProperty(TOPOLOGY_EPOCH,
+                topologyEpoch == null ? "" : topologyEpoch);
+        return reference;
+    }
+
+    private static long longValue(JsonObject row, String field) {
+        JsonElement value = row == null ? null : row.get(field);
+        if (value == null || !value.isJsonPrimitive()
+                || !value.getAsJsonPrimitive().isNumber()) return -1L;
+        try {
+            return value.getAsLong();
+        } catch (RuntimeException ignored) {
+            return -1L;
+        }
     }
 
     static boolean isAllocatedInstanceReference(String raw) {
         return raw != null
                 && ALLOCATED_INSTANCE_REFERENCE.matcher(raw).matches();
+    }
+
+    static boolean isAllocatedArrayReference(String raw) {
+        return raw != null
+                && ALLOCATED_ARRAY_REFERENCE.matcher(raw).matches();
+    }
+
+    /** Whether runtime carrier evidence gave this state a replay-stable id. */
+    static boolean isCanonicalMapStateReference(String raw) {
+        return raw != null
+                && CANONICAL_MAP_STATE_REFERENCE.matcher(raw).matches();
+    }
+
+    /**
+     * A VM-local identity created only after a concrete oop already exists.
+     * It is an existential witness for the recorded execution, never a
+     * writable symbolic input.
+     */
+    static boolean isExecutionLocalStructuralWitness(String raw) {
+        return isAllocatedInstanceReference(raw)
+                || isAllocatedArrayReference(raw)
+                || isCanonicalMapStateReference(raw);
+    }
+
+    /**
+     * Identity shared by all serialized views of the same allocated oop.
+     * Array versions deliberately collapse here because mutating an array
+     * changes its state while retaining its Java reference identity.
+     */
+    static String allocatedReferenceIdentity(String raw) {
+        if (raw == null) return "";
+        java.util.regex.Matcher instance =
+                ALLOCATED_INSTANCE_REFERENCE.matcher(raw);
+        if (instance.matches()) return "oop:" + instance.group(1);
+        java.util.regex.Matcher array =
+                ALLOCATED_ARRAY_REFERENCE.matcher(raw);
+        if (array.matches()) return "oop:" + array.group(1);
+        return isCanonicalMapStateReference(raw)
+                ? "map-state:" + raw.substring(
+                SharedStateEvidence.MAP_STATE_SYMBOL_PREFIX.length()) : "";
+    }
+
+    /**
+     * Rewrites only the VM-local oop component of an allocated-reference
+     * symbol.  The caller supplies an alpha name; the Java class and an
+     * array's state version remain exact.  Stable map-state anchors are not
+     * allocated-reference symbols and therefore pass through unchanged.
+     */
+    static String alphaAllocatedReference(String raw, String alphaName) {
+        if (raw == null || alphaName == null || alphaName.isEmpty()) {
+            return raw;
+        }
+        java.util.regex.Matcher instance =
+                ALLOCATED_INSTANCE_REFERENCE.matcher(raw);
+        if (instance.matches()) {
+            return raw.substring(0, instance.start(1)) + alphaName;
+        }
+        java.util.regex.Matcher array = ALLOCATED_ARRAY_REFERENCE.matcher(raw);
+        if (array.matches()) {
+            return raw.substring(0, array.start(1)) + alphaName + "-"
+                    + array.group(2);
+        }
+        return raw;
     }
 
     static boolean isJavaParseInt(String name) {

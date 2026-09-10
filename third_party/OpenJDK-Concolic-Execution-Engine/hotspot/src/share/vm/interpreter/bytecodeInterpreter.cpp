@@ -2351,19 +2351,20 @@ run:
     }                                                                          \
   }
 
-#define CONCOLIC_ALOAD_RESOLVE(T, bits)                                        \
+#define CONCOLIC_ALOAD_RESOLVE(T)                                              \
   if (aload_selected) {                                                        \
     BasicType element_type =                                                   \
         arrObj->klass() == Universe::boolArrayKlassObj() ? T_BOOLEAN : (T);    \
     SharedFieldVersions::ReadResult resolved;                                  \
     if (SharedFieldVersions::resolve_read(                                     \
-            aload_location,                                                    \
-            SharedFieldVersions::primitive_fingerprint(element_type, (bits)),  \
-            element_type, &resolved)                                           \
-        && resolved.expression != NULL) {                                      \
-      ConcolicMngr::ctx->set_stack_value(                                      \
-          aload_anchor, aload_slots, resolved.expression,                      \
-          aload_location.owner, aload_index);                                  \
+            aload_location, element_type, &resolved)) {                        \
+      if (resolved.expression != NULL) {                                       \
+        ConcolicMngr::ctx->set_stack_value(                                    \
+            aload_anchor, aload_slots, resolved.expression,                    \
+            aload_location.owner, aload_index);                                \
+      } else {                                                                 \
+        ConcolicMngr::ctx->clear_stack_value(aload_anchor, aload_slots);        \
+      }                                                                        \
     }                                                                          \
   }
 
@@ -2416,7 +2417,7 @@ run:
   }
 #else
 #define CONCOLIC_ALOAD_CARRIER
-#define CONCOLIC_ALOAD_RESOLVE(T, bits)
+#define CONCOLIC_ALOAD_RESOLVE(T)
 #define CONCOLIC_ALOAD(T, T2, arrayOff, res_off, res_slots)
 #endif
 
@@ -2429,8 +2430,7 @@ run:
           (void)extra;                                                                \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), \
                            -2);                                                       \
-          CONCOLIC_ALOAD_RESOLVE(                                                     \
-              T, SharedFieldVersions::raw_bits((T2) stackRes(-2)));                   \
+          CONCOLIC_ALOAD_RESOLVE(T);                                                  \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);                                      \
       }
 
@@ -2441,8 +2441,7 @@ run:
           CONCOLIC_ALOAD_CARRIER                                                           \
           CONCOLIC_ALOAD(T, T2, -2, -1, 2);                                                \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), -1); \
-          CONCOLIC_ALOAD_RESOLVE(                                                          \
-              T, SharedFieldVersions::raw_bits((T2) stackRes(-1)));                        \
+          CONCOLIC_ALOAD_RESOLVE(T);                                                       \
           (void)extra;                                                                     \
           UPDATE_PC_AND_CONTINUE(1);                                                       \
       }
@@ -2518,14 +2517,15 @@ run:
           if (aload_selected) {
             SharedFieldVersions::ReadResult resolved;
             if (SharedFieldVersions::resolve_read(
-                    aload_location,
-                    SharedFieldVersions::reference_fingerprint(
-                        STACK_OBJECT(-2)),
-                    T_OBJECT, &resolved)
-                && resolved.expression != NULL) {
-              ConcolicMngr::ctx->set_stack_value(
-                  aload_anchor, aload_slots, resolved.expression,
-                  aload_location.owner, aload_index);
+                    aload_location, T_OBJECT, &resolved)) {
+              if (resolved.expression != NULL) {
+                ConcolicMngr::ctx->set_stack_value(
+                    aload_anchor, aload_slots, resolved.expression,
+                    aload_location.owner, aload_index);
+              } else {
+                ConcolicMngr::ctx->clear_stack_value(
+                    aload_anchor, aload_slots);
+              }
             }
           }
 #endif
@@ -2573,7 +2573,6 @@ run:
     }                                                                          \
     SharedFieldVersions::publish(                                              \
         astore_location, published, astore_guard,                              \
-        SharedFieldVersions::primitive_fingerprint(T, (bits)), false,          \
         SharedFieldVersions::VERSION_WRITE);                                   \
   }
 
@@ -2731,8 +2730,6 @@ run:
           ((objArrayOop) arrObj)->obj_at_put(index, rhsObject);
 #ifdef ENABLE_CONCOLIC
           if (astore_selected) {
-            // Build before fingerprinting, and re-read the operand afterwards:
-            // naming a referent can allocate and therefore reach a safepoint.
             Expression *published = astore_value;
             if (published == NULL) {
               published =
@@ -2740,8 +2737,7 @@ run:
             }
             SharedFieldVersions::publish(
                 astore_location, published, astore_guard,
-                SharedFieldVersions::reference_fingerprint(STACK_OBJECT(-1)),
-                false, SharedFieldVersions::VERSION_WRITE);
+                SharedFieldVersions::VERSION_WRITE);
           }
 #endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -3);
@@ -3025,17 +3021,15 @@ run:
           int field_offset = cache->f2_as_index();
 
 #ifdef ENABLE_CONCOLIC
-          // A selected carrier's read is decided in two halves for the same
-          // reason its write is: the shadow slot has to be addressed with the
-          // pre-load stack shape, and the value the read actually returned is
-          // only known once the concrete load has run.
+          // Capture the selected location before the concrete load so its
+          // guarded expression can replace the ordinary field shadow below.
           SharedFieldVersions::Location carrier_location;
           sym_rid_t carrier_owner_rid = NULL_SYM_RID;
           int carrier_anchor = 0;
           int carrier_slots = 0;
           bool carrier_read = false;
-          bool planned_field_read = false;
-          Expression *planned_current_shadow = NULL;
+          bool replay_primitive_read = false;
+          jlong replay_primitive_bits = 0;
 
           if (ConcolicMngr::can_do_concolic()) {
             int stack_offset = GET_STACK_OFFSET;
@@ -3050,17 +3044,7 @@ run:
                   (Bytecodes::Code)opcode == Bytecodes::_getstatic
                       ? SharedFieldVersions::LOC_STATIC_FIELD
                       : SharedFieldVersions::LOC_INSTANCE_FIELD);
-              if (SharedFieldVersions::has_planned_field_reads()
-                  && SharedFieldVersions::is_planned_field_read(location)) {
-                planned_field_read = true;
-                carrier_location = location;
-                carrier_owner_rid = sym_inst->get_sym_rid();
-                carrier_anchor = result_anchor;
-                carrier_slots = result_slots;
-                planned_current_shadow = sym_inst->get(field_offset);
-              }
-              if (!planned_field_read
-                  && SharedFieldVersions::is_carrier(location)) {
+              if (SharedFieldVersions::is_carrier(location)) {
                 carrier_read = true;
                 carrier_location = location;
                 carrier_owner_rid = sym_inst->get_sym_rid();
@@ -3093,6 +3077,12 @@ run:
             } else {
               ConcolicMngr::ctx->set_stack_value(
                   result_anchor, result_slots, NULL);
+            }
+            if (carrier_read) {
+              replay_primitive_read =
+                  SharedFieldVersions::consume_primitive_read(
+                      ConcolicMngr::ctx->get_context_id(), carrier_location,
+                      as_BasicType(tos_type), &replay_primitive_bits);
             }
           }
 #endif
@@ -3145,59 +3135,41 @@ run:
           }
 
 #ifdef ENABLE_CONCOLIC
-          // The concrete load has run, so the value this read returned is on
-          // the stack.  Resolving here is what makes the observation and the
-          // provenance question the same event.
-          if (carrier_read || planned_field_read) {
-            SharedFieldVersions::Fingerprint observed;
+          // Change only the concrete operand consumed by this execution.
+          // resolve_read below still installs the complete guarded
+          // ReadFromExpression as the shadow value.
+          if (replay_primitive_read) {
+            switch (tos_type) {
+              case ztos:
+              case btos:
+              case ctos:
+              case stos:
+              case itos:
+                SET_STACK_INT((jint) replay_primitive_bits, -1);
+                break;
+              case ltos:
+                SET_STACK_LONG((jlong) replay_primitive_bits, -1);
+                break;
+              default:
+                ShouldNotReachHere();
+            }
+          }
+          if (carrier_read) {
             BasicType read_type = as_BasicType(tos_type);
-            if (tos_type == atos) {
-              observed =
-                  SharedFieldVersions::reference_fingerprint(STACK_OBJECT(-1));
-            } else {
-              jlong bits;
-              switch (tos_type) {
-                case ltos: bits = SharedFieldVersions::raw_bits(
-                               (jlong) STACK_LONG(-1)); break;
-                case ftos: bits = SharedFieldVersions::raw_bits(
-                               (jfloat) STACK_FLOAT(-1)); break;
-                case dtos: bits = SharedFieldVersions::raw_bits(
-                               (jdouble) STACK_DOUBLE(-1)); break;
-                case ztos: bits = SharedFieldVersions::raw_bits(
-                               (jboolean)(STACK_INT(-1) & 1)); break;
-                default:   bits = SharedFieldVersions::raw_bits(
-                               (jint) STACK_INT(-1)); break;
-              }
-              observed = SharedFieldVersions::primitive_fingerprint(
-                  read_type, bits);
-            }
             SharedFieldVersions::ReadResult resolved;
-            bool did_resolve = planned_field_read
-                ? SharedFieldVersions::consume_planned_field_read(
-                      carrier_location, planned_current_shadow, observed,
-                      read_type, &resolved)
-                : SharedFieldVersions::resolve_read(
-                      carrier_location, observed, read_type, &resolved);
-            if (did_resolve && resolved.expression != NULL) {
-              // An exact read takes the writer's own expression, so the
-              // reader's arithmetic composes straight onto it.  A guarded read
-              // takes the bounded choice instead -- never a guess.
-              if (planned_field_read) {
-                SymInstance *destination =
-                    ConcolicMngr::ctx->get_sym_inst(carrier_owner_rid);
-                if (destination != NULL) {
-                  destination->set_sym_exp(field_offset,
-                                            resolved.expression);
-                }
+            if (SharedFieldVersions::resolve_read(
+                    carrier_location, read_type, &resolved)) {
+              if (resolved.expression != NULL) {
+                ConcolicMngr::ctx->set_stack_value(
+                    carrier_anchor, carrier_slots, resolved.expression,
+                    carrier_owner_rid, field_offset);
+              } else {
+                // The concrete read came from no recorded candidate.  Its VM
+                // evidence is an open coverage gap; retaining the location's
+                // previous shadow here would silently invent provenance.
+                ConcolicMngr::ctx->clear_stack_value(
+                    carrier_anchor, carrier_slots);
               }
-              ConcolicMngr::ctx->set_stack_value(
-                  carrier_anchor, carrier_slots, resolved.expression,
-                  carrier_owner_rid, field_offset);
-            }
-            if (cache->is_volatile()) {
-              ConcolicMngr::recordVolatileRead(
-                  carrier_owner_rid, field_offset, resolved.writer_clock,
-                  resolved.resolution == SharedFieldVersions::RESOLVE_EXACT);
             }
           }
 #endif
@@ -3321,21 +3293,6 @@ run:
                 owner_instance = sym_inst;
               }
             }
-            // A concrete or symbolic store before the scheduled load changes
-            // what that load can observe.  Cancel every pending exact read of
-            // this destination slot instead of later attributing the new
-            // value to the old producer.
-            if ((SharedFieldVersions::has_planned_field_reads()
-                 || SharedFieldVersions::has_field_evidence_aliases())
-                && owner_instance != NULL) {
-              SharedFieldVersions::Location pending_location(
-                  owner_instance->get_sym_rid(), field_offset,
-                  (Bytecodes::Code)opcode == Bytecodes::_putstatic
-                      ? SharedFieldVersions::LOC_STATIC_FIELD
-                      : SharedFieldVersions::LOC_INSTANCE_FIELD);
-              SharedFieldVersions::cancel_planned_field_reads(
-                  pending_location);
-            }
             // One relaxed counter read when nothing is selected, which is what
             // keeps this bytecode at its old cost for every workload that
             // never asks a read-from question.
@@ -3422,19 +3379,12 @@ run:
           // heap: re-reading would report whatever a concurrent writer left
           // there and attribute it to this thread.
           if (carrier_write) {
-            SharedFieldVersions::Fingerprint fingerprint;
             Expression *published = carrier_value;
             if (tos_type == atos) {
-              // Build first, fingerprint second.  Naming a referent can
-              // allocate a shadow and therefore reach a safepoint, so the oop
-              // is re-read from the operand stack afterwards rather than held
-              // across it.
               if (published == NULL) {
                 published =
                     SharedFieldVersions::reference_expression(STACK_OBJECT(-1));
               }
-              fingerprint =
-                  SharedFieldVersions::reference_fingerprint(STACK_OBJECT(-1));
             } else {
               BasicType stored_type = as_BasicType(tos_type);
               jlong bits;
@@ -3450,20 +3400,14 @@ run:
                 default:   bits = SharedFieldVersions::raw_bits(
                                (jint) STACK_INT(-1)); break;
               }
-              fingerprint = SharedFieldVersions::primitive_fingerprint(
-                  stored_type, bits);
               if (published == NULL) {
                 published = SharedFieldVersions::primitive_expression(
                     stored_type, bits);
               }
             }
             SharedFieldVersions::publish(
-                carrier_location, published, carrier_guard, fingerprint,
-                cache->is_volatile(), SharedFieldVersions::VERSION_WRITE);
-            if (cache->is_volatile()) {
-              ConcolicMngr::recordVolatileWrite(
-                  carrier_location.owner, field_offset);
-            }
+                carrier_location, published, carrier_guard,
+                SharedFieldVersions::VERSION_WRITE);
           }
 #endif
 

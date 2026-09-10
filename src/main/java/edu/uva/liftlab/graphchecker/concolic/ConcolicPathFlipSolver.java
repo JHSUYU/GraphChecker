@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner.number;
@@ -16,6 +17,7 @@ import static edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner.opti
 import static edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner.requiredPath;
 import static edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner.requiredValue;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /**
@@ -42,33 +44,80 @@ public final class ConcolicPathFlipSolver {
         if (task == null) {
             throw new IOException("Path task not found: " + queryKey);
         }
-        String sourceId = string(task, "sourceTaskId");
-        JsonObject source = ArtifactIO.uniqueIndex(ArtifactIO.readJsonl(
-                requiredPath(options, "task-plan")), "taskId").get(sourceId);
+        try {
+            task = SharedExpressionTable.expand(task);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Path task has an invalid shared expression "
+                    + "table", malformed);
+        }
+        List<JsonObject> taskRows = ArtifactIO.readJsonl(
+                requiredPath(options, "task-plan"));
+        Map<String, JsonObject> taskById = ArtifactIO.uniqueIndex(
+                taskRows, "taskId");
+        JsonObject bundle;
+        try {
+            bundle = LinkedReplayBundle.decode(task);
+        } catch (IllegalArgumentException malformed) {
+            throw new IOException("Path task has an invalid linked bundle", malformed);
+        }
+        String sourceId = LinkedReplayBundle.primarySourceTaskId(bundle);
+        if (!sourceId.equals(string(task, "sourceTaskId"))) {
+            throw new IOException("Path task and linked primary differ");
+        }
+        JsonObject source = taskById.get(sourceId);
         if (source == null) {
             throw new IOException("Source execution task not found: "
                     + sourceId);
         }
+        List<JsonObject> linkedSources;
         try {
             // Solver workers receive the task plan as an external artifact.
             // Decode the full task contract here instead of trusting the
             // worklist's sourceTaskId alone; this includes exact configured
             // source-phase sequencing and occurrence ownership.
             ExecutionTask.decode(source);
+            linkedSources = LinkedReplayBundle.sourceTasks(bundle, taskById);
+            for (JsonObject linked : linkedSources) {
+                ExecutionTask.decode(linked);
+            }
         } catch (IllegalArgumentException malformed) {
             throw new IOException("Source execution task is malformed: "
                     + sourceId, malformed);
         }
 
         ConcolicConstraintSolver.Result solved =
-                ConcolicConstraintSolver.solve(task, source,
+                ConcolicConstraintSolver.solve(task, linkedSources, source,
                         Paths.get(firstNonBlank(options.get("z3"), "z3")),
                         number(options, "solver-timeout-ms", 20_000L));
         String status = string(solved.record, "status");
-        JsonObject replay = "SAT_MODEL_READY".equals(status)
-                ? PathReplayTaskFactory.create(task, source,
-                solved.modelAssignments, solved.replayContract,
-                solved.readCut) : null;
+        List<JsonObject> replay = "SAT_MODEL_READY".equals(status)
+                ? PathReplayTaskFactory.createLinked(task, taskById,
+                solved.modelAssignments, array(solved.record,
+                        ExecutionTask.GUARDED_READ_ASSIGNMENTS),
+                solved.replayContract)
+                : Collections.<JsonObject>emptyList();
+        solved.record.addProperty("primarySourceTaskId", sourceId);
+        solved.record.addProperty("regionId", string(task, "regionId"));
+        solved.record.addProperty("goalId", string(task, "goalId"));
+        solved.record.addProperty("sourceSummaryId",
+                string(task, "sourceSummaryId"));
+        solved.record.addProperty("sourcePathKey",
+                string(task, "sourcePathKey"));
+        solved.record.addProperty("sourceActivationOccurrenceId",
+                string(task, "sourceActivationOccurrenceId"));
+        solved.record.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
+                string(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
+        solved.record.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
+                string(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
+        if (!replay.isEmpty()) {
+            for (JsonObject replayTask : replay) {
+                if (LinkedReplayBundle.PRIMARY.equals(string(replayTask,
+                        LinkedReplayBundle.ROLE_FIELD))) {
+                    solved.record.addProperty("primaryReplayTaskId",
+                            string(replayTask, "taskId"));
+                }
+            }
+        }
 
         Path directory = requiredPath(options, "output-dir");
         String record = PRETTY.toJson(solved.record);
@@ -77,8 +126,7 @@ public final class ConcolicPathFlipSolver {
         ArtifactIO.replace(directory.resolve("path_flip_query.smt2"),
                 solved.smtLib);
         ArtifactIO.replaceJsonl(directory.resolve("execution_task_plan.jsonl"),
-                replay == null ? Collections.<JsonObject>emptyList()
-                        : Collections.singletonList(replay));
+                replay);
         System.out.println(record);
 
         // UNSUPPORTED and MATERIALIZATION_GAP are recorded terminal
