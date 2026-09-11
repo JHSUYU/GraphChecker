@@ -24,17 +24,9 @@ public final class JavaPrimitiveSmtSemantics {
 
     /** Java's two binary IEEE-754 computational formats. */
     enum FloatingKind {
-        NONE("", 0),
-        JAVA_FLOAT("(_ FloatingPoint 8 24)", 32),
-        JAVA_DOUBLE("(_ FloatingPoint 11 53)", 64);
-
-        final String smtSort;
-        final int bitWidth;
-
-        FloatingKind(String smtSort, int bitWidth) {
-            this.smtSort = smtSort;
-            this.bitWidth = bitWidth;
-        }
+        NONE,
+        JAVA_FLOAT,
+        JAVA_DOUBLE
     }
 
     static final class IntegralDomain {
@@ -100,17 +92,6 @@ public final class JavaPrimitiveSmtSemantics {
             return FloatingKind.JAVA_DOUBLE;
         }
         return FloatingKind.NONE;
-    }
-
-    /** Java binary numeric promotion for already-floating operands. */
-    static FloatingKind promote(FloatingKind left, FloatingKind right) {
-        if (left == null || right == null || left == FloatingKind.NONE
-                || right == FloatingKind.NONE) {
-            return FloatingKind.NONE;
-        }
-        return left == FloatingKind.JAVA_DOUBLE
-                || right == FloatingKind.JAVA_DOUBLE
-                ? FloatingKind.JAVA_DOUBLE : FloatingKind.JAVA_FLOAT;
     }
 
     /**

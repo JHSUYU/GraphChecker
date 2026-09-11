@@ -2,7 +2,6 @@
 
 #include "concolic/shadow/shadowTable.hpp"
 #include "utilities/ostream.hpp"
-#include "concolic/concolicMngr.hpp"
 
 ShadowTable::ShadowTable() {}
 
@@ -51,17 +50,6 @@ void ShadowTable::clear_slots(int first_offset, int slot_count) {
 
 void ShadowTable::clear_all() {
   clear_slots(0, size());
-}
-
-void ShadowTable::print() {
-  int size = _tbl.size();
-  tty->print_cr(" size: %d", size);
-  for (int i = 0; i < size; ++i) {
-    int offset = size - i - 1;
-    Entry &entry = _tbl[offset];
-    tty->print_cr("     [%d] SymExpression: %p, sym_rid: %lu, index %d", offset,
-                  entry.exp, entry.sym_rid, entry.index);
-  }
 }
 
 void ShadowTable::set_slot(int offset, Expression *exp, sym_rid_t sym_rid, int index) {

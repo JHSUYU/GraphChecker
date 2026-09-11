@@ -80,10 +80,9 @@ public:
     HANDOFF_NOT_SYMBOLIC         = -4,
     HANDOFF_FOREIGN_HANDLE       = -5,
     HANDOFF_UNKNOWN_HANDLE       = -6,
-    // The destination's declared sort is not the exported leaf's.  This is
-    // the one compatibility question an attach still asks: a live handle
-    // names the expression, but a location of another sort cannot hold it
-    // without an adapter-declared encoding transform.
+    // The destination's declared sort is not the exported leaf's. A live
+    // handle names the expression, but a location of another sort cannot
+    // hold it.
     HANDOFF_SORT_MISMATCH        = -9,
     HANDOFF_UNSUPPORTED_TARGET   = -12
   };
@@ -129,8 +128,6 @@ public:
    * each attach records its own VALUE_HANDOFF edge.
    */
   static HandoffStatus resolve(jlong handle, Leaf *leaf);
-  static const char *status_name(HandoffStatus status);
-
 private:
   typedef std::map<jlong, Leaf> LeafStore;
 

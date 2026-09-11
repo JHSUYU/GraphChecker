@@ -1173,25 +1173,22 @@ public final class BooleanReachConditionExtractor {
     }
 
     private enum ScalarEncoding {
-        BOOL("BOOL", "Bool", "Z"),
-        BYTE("INT", "Int", "B"),
-        CHAR("INT", "Int", "C"),
-        SHORT("INT", "Int", "S"),
-        INT("INT", "Int", "I"),
-        LONG("INT", "Int", "J"),
-        FLOAT32("FLOAT32", "(_ FloatingPoint 8 24)", "F"),
-        FLOAT64("FLOAT64", "(_ FloatingPoint 11 53)", "D"),
-        STRING("STRING", "String", "Ljava/lang/String;");
+        BOOL("BOOL", "Bool"),
+        BYTE("INT", "Int"),
+        CHAR("INT", "Int"),
+        SHORT("INT", "Int"),
+        INT("INT", "Int"),
+        LONG("INT", "Int"),
+        FLOAT32("FLOAT32", "(_ FloatingPoint 8 24)"),
+        FLOAT64("FLOAT64", "(_ FloatingPoint 11 53)"),
+        STRING("STRING", "String");
 
         private final String occurrenceSort;
         private final String solverSort;
-        private final String javaDescriptor;
 
-        ScalarEncoding(String occurrenceSort, String solverSort,
-                       String javaDescriptor) {
+        ScalarEncoding(String occurrenceSort, String solverSort) {
             this.occurrenceSort = occurrenceSort;
             this.solverSort = solverSort;
-            this.javaDescriptor = javaDescriptor;
         }
 
         private static ScalarEncoding of(String descriptor) {

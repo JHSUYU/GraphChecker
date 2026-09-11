@@ -6,12 +6,10 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -50,8 +48,6 @@ public final class SymbolicPropagationClosure {
      *  evidence cannot be folded into the case's replay-independent value. */
     public static final String OBSERVATION_SELECTOR =
             "replayObservationSelector";
-    public static final String EXECUTION_SELECTOR =
-            "replayExecutionSelector";
     public static final String OBSERVATION_SCOPE =
             "replayObservationScope";
     public static final String DEPENDENCY_KIND =
@@ -85,7 +81,6 @@ public final class SymbolicPropagationClosure {
      */
     public static final String READ_CHOICE_IDENTITY = "readChoiceIdentity";
     public static final String READ_CHOICE_OWNER = "readChoiceOwner";
-    public static final String READ_CHOICE_TASK_ID = "readChoiceTaskId";
     public static final String READ_CHOICE_OCCURRENCE_ID =
             "readChoiceOccurrenceId";
     /** Dependency rows with this policy are enabled by an RF arm. */
@@ -304,8 +299,6 @@ public final class SymbolicPropagationClosure {
             row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH,
                     first(string(row, VmExpressionIr.TOPOLOGY_EPOCH),
                             string(summary, VmExpressionIr.TOPOLOGY_EPOCH)));
-            row.addProperty("_pathSetClosed", casePathSetClosed(row,
-                    bool(summary, "pathSetClosed", false)));
             String caseId = first(string(row, "caseId"),
                     string(summary, LocalCaseIdentity.FIELD));
             String owner = LocalCaseIdentity.owner(region, occurrence,
@@ -330,7 +323,6 @@ public final class SymbolicPropagationClosure {
                     first(string(row, VmExpressionIr.TOPOLOGY_EPOCH),
                             string(summaryRow,
                                     VmExpressionIr.TOPOLOGY_EPOCH)),
-                    casePathSetClosed(row, summary.pathSetClosed()),
                     object(row, "guard").get("conditions"));
             putCase(info);
         }
@@ -357,8 +349,6 @@ public final class SymbolicPropagationClosure {
                     string(row, "boundarySessionScope"),
                     first(string(row, VmExpressionIr.TOPOLOGY_EPOCH),
                             held == null ? "" : held.epoch),
-                    held == null ? casePathSetClosed(row, false)
-                            : held.closed,
                     object(row, "guard").get("conditions"));
             putCase(info);
         }
@@ -559,7 +549,7 @@ public final class SymbolicPropagationClosure {
                     }
                     putFieldRead(new DynamicKey(scope, eventId),
                             new FieldRead(family, readerCase, receiverOwner,
-                                    scope, epoch, complete,
+                                    scope, epoch,
                                     // The envelope is session-wide; this row
                                     // records the exact read-time snapshot.
                                     integer(read, "candidateCount", -1),
@@ -634,8 +624,6 @@ public final class SymbolicPropagationClosure {
                         "one dynamic field read maps to two exact lineages");
                 return;
             }
-            // A repeated snapshot can only weaken the completeness flag.
-            prior.closed &= read.closed;
         }
 
         private void scanFieldBoundaryPayloads(
@@ -669,7 +657,6 @@ public final class SymbolicPropagationClosure {
                                 + "match the propagated guarded read";
                     }
                     if (!fault.isEmpty()) {
-                        read.closed = false;
                         gap("READ_FROM_SNAPSHOT_MISMATCH", read.family,
                                 fault);
                         return;
@@ -679,8 +666,6 @@ public final class SymbolicPropagationClosure {
                             read.receiverOwner,
                             payload,
                             string(node, "_java_type"), eventId);
-                    Family family = families.get(read.family);
-                    if (family != null) family.pathSetClosed &= read.closed;
                 }
                 // A propagated field value can itself contain earlier field
                 // boundaries. Their read evidence is owned by earlier rows,
@@ -891,10 +876,6 @@ public final class SymbolicPropagationClosure {
                     ? rewritten.getAsJsonObject() : new JsonObject();
         }
 
-        private JsonElement rewriteElement(JsonElement value, String scope) {
-            return rewriteElement(value, scope, null);
-        }
-
         /**
          * Closes an expression in one physical case observation.  A boundary
          * owned by that exact execution is already the propagated value for
@@ -1012,11 +993,10 @@ public final class SymbolicPropagationClosure {
                     + owner.owner);
             target.addProperty(READ_CHOICE_IDENTITY, identity);
             target.addProperty(READ_CHOICE_OWNER, owner.owner);
-            target.addProperty(READ_CHOICE_TASK_ID, owner.task);
             target.addProperty(READ_CHOICE_OCCURRENCE_ID, owner.occurrence);
             FieldRead read = fieldReads.get(dynamic);
             if (read != null) {
-                target.add("replayReadAnchor", read.replayAnchor());
+                target.addProperty("replayReadDescriptor", read.descriptor);
             }
         }
 
@@ -1225,7 +1205,7 @@ public final class SymbolicPropagationClosure {
                     INITIAL_SOURCE_CASE_PREFIX
                             + CanonicalJson.sha256(location),
                     owner, INITIAL_SOURCE_CASE_PREFIX + digest,
-                    reader.sessionScope, reader.epoch, true,
+                    reader.sessionScope, reader.epoch,
                     new JsonArray());
             putCase(initial);
             return casesByOwner.get(owner);
@@ -1271,11 +1251,6 @@ public final class SymbolicPropagationClosure {
                     READ_FROM_DEPENDENCY_POLICY + "\n" + producer.epoch
                             + "\n" + producer.region + "\n"
                             + producer.occurrence);
-        }
-
-        private JsonElement resolveBoundary(JsonObject boundary,
-                                            String scope) {
-            return resolveBoundary(boundary, scope, null);
         }
 
         private JsonElement resolveBoundary(JsonObject boundary,
@@ -1385,8 +1360,7 @@ public final class SymbolicPropagationClosure {
                     Collections.sort(physical);
                     for (String observationSelector : physical) {
                         Arm arm = armByObservation.get(observationSelector);
-                        if (observationSelector.isEmpty()
-                                || arm.producer.executionSelector.isEmpty()) {
+                        if (observationSelector.isEmpty()) {
                             gap("CONSUMER_BOUNDARY_OBSERVATION_SCOPE_MISSING",
                                     family.key, "different replay values have"
                                             + " no exact session scope");
@@ -1423,12 +1397,6 @@ public final class SymbolicPropagationClosure {
             if (observed) {
                 encoded.addProperty(OBSERVATION_SELECTOR,
                         arm.producer.observationSelector);
-                encoded.addProperty(EXECUTION_SELECTOR,
-                        arm.producer.executionSelector);
-                encoded.addProperty(OBSERVATION_SCOPE,
-                        arm.producer.sessionScope);
-                encoded.addProperty("observationTaskId",
-                        arm.producer.task);
             }
             encoded.add("expression", expression);
             return encoded;
@@ -1438,8 +1406,6 @@ public final class SymbolicPropagationClosure {
                                              CaseInfo observation) {
             row.addProperty(OBSERVATION_SELECTOR,
                     observation.observationSelector);
-            row.addProperty(EXECUTION_SELECTOR,
-                    observation.executionSelector);
             row.addProperty(OBSERVATION_SCOPE,
                     observation.sessionScope);
         }
@@ -1452,7 +1418,6 @@ public final class SymbolicPropagationClosure {
             row.addProperty(VmExpressionIr.FAMILY_KEY, family.key);
             row.addProperty("boundaryKind", family.kind);
             row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH, family.epoch);
-            row.addProperty("pathSetClosed", family.pathSetClosed);
             JsonArray encoded = new JsonArray();
             for (JsonElement element : arms) {
                 JsonObject arm = element.getAsJsonObject();
@@ -1530,8 +1495,7 @@ public final class SymbolicPropagationClosure {
         private static void copyObservationIdentity(JsonObject source,
                                                     JsonObject target) {
             for (String field : new String[]{OBSERVATION_SELECTOR,
-                    EXECUTION_SELECTOR, OBSERVATION_SCOPE,
-                    "observationTaskId"}) {
+                    OBSERVATION_SCOPE}) {
                 JsonElement value = source.get(field);
                 if (value != null) target.add(field, value);
             }
@@ -1543,7 +1507,6 @@ public final class SymbolicPropagationClosure {
             if (observation.sessionScope.isEmpty()) return;
             target.addProperty(OBSERVATION_SCOPE,
                     observation.sessionScope);
-            target.addProperty("observationTaskId", observation.task);
         }
 
         private CaseInfo caseObservation(String owner, String selector) {
@@ -1587,7 +1550,6 @@ public final class SymbolicPropagationClosure {
             row.addProperty("selectionPolicy",
                     READ_FROM_DEPENDENCY_POLICY);
             JsonArray arms = new JsonArray();
-            boolean closed = true;
             List<String> owners = new ArrayList<>(partition.keySet());
             Collections.sort(owners);
             for (String owner : owners) {
@@ -1626,9 +1588,7 @@ public final class SymbolicPropagationClosure {
                     arm.add("pathCondition", pathCondition);
                     arms.add(arm);
                 }
-                closed &= producer.closed;
             }
-            row.addProperty("pathSetClosed", closed);
             row.add("arms", arms);
             JsonObject held = dependencies.putIfAbsent(family, row);
             if (held != null
@@ -1700,7 +1660,6 @@ public final class SymbolicPropagationClosure {
             for (CaseInfo observation : observations) {
                 if (observation.pathCondition == null
                         || observation.observationSelector.isEmpty()
-                        || observation.executionSelector.isEmpty()
                         || !emitted.add(observation.observationSelector)) {
                     continue;
                 }
@@ -1710,11 +1669,8 @@ public final class SymbolicPropagationClosure {
                 encoded.addProperty("caseSelector", observation.selector);
                 encoded.addProperty(OBSERVATION_SELECTOR,
                         observation.observationSelector);
-                encoded.addProperty(EXECUTION_SELECTOR,
-                        observation.executionSelector);
                 encoded.addProperty(OBSERVATION_SCOPE,
                         observation.sessionScope);
-                encoded.addProperty("observationTaskId", observation.task);
                 encoded.add("pathCondition", rewriteElement(
                         observation.pathCondition,
                         observation.sessionScope, observation));
@@ -1952,12 +1908,6 @@ public final class SymbolicPropagationClosure {
 
     }
 
-    /** One decoder for the public closure verdict and its internal override. */
-    static boolean casePathSetClosed(JsonObject row, boolean fallback) {
-        return bool(row, "_pathSetClosed",
-                bool(row, "pathSetClosed", fallback));
-    }
-
     private static final class CaseInfo {
         private final String owner;
         private final String selector;
@@ -1966,22 +1916,13 @@ public final class SymbolicPropagationClosure {
         private final String task;
         private final String sessionScope;
         private final String epoch;
-        private final boolean closed;
         private final JsonElement pathCondition;
         private final String observationSelector;
-        private final String executionSelector;
-
-        private CaseInfo(String owner, String selector, String region,
-                         String occurrence, String task, String epoch,
-                         boolean closed, JsonElement pathCondition) {
-            this(owner, selector, region, occurrence, task, "", epoch,
-                    closed, pathCondition);
-        }
 
         private CaseInfo(String owner, String selector, String region,
                          String occurrence, String task,
                          String sessionScope, String epoch,
-                         boolean closed, JsonElement pathCondition) {
+                         JsonElement pathCondition) {
             this.owner = safe(owner);
             this.selector = safe(selector);
             this.region = safe(region);
@@ -1989,11 +1930,8 @@ public final class SymbolicPropagationClosure {
             this.task = safe(task);
             this.sessionScope = safe(sessionScope);
             this.epoch = safe(epoch);
-            this.closed = closed;
             this.pathCondition = pathCondition;
-            this.executionSelector = this.sessionScope.isEmpty() ? ""
-                    : executionSelector(this.epoch, this.sessionScope);
-            this.observationSelector = this.executionSelector.isEmpty()
+            this.observationSelector = this.sessionScope.isEmpty()
                     ? "" : observationSelector(this.owner,
                     executionIdentity());
         }
@@ -2021,7 +1959,6 @@ public final class SymbolicPropagationClosure {
         private final String epoch;
         private final String javaType;
         private final Map<String, List<Arm>> arms = new LinkedHashMap<>();
-        private boolean pathSetClosed = true;
 
         private Family(String key, String kind, String epoch,
                        String javaType) {
@@ -2034,7 +1971,6 @@ public final class SymbolicPropagationClosure {
         private void add(Arm arm) {
             arms.computeIfAbsent(arm.producer.selector,
                     ignored -> new ArrayList<>()).add(arm);
-            pathSetClosed &= arm.producer.closed;
         }
     }
 
@@ -2143,11 +2079,10 @@ public final class SymbolicPropagationClosure {
         private final String descriptor;
         private final String consumerSiteId;
         private final int consumerSiteOccurrence;
-        private boolean closed;
 
         private FieldRead(String family, CaseInfo producer,
                           String receiverOwner, String scope, String epoch,
-                          boolean closed, int candidateCount,
+                          int candidateCount,
                           String stableLocation, JsonObject carrier,
                           JsonObject read) {
             this.family = family;
@@ -2155,7 +2090,6 @@ public final class SymbolicPropagationClosure {
             this.receiverOwner = safe(receiverOwner);
             this.scope = safe(scope);
             this.epoch = safe(epoch);
-            this.closed = closed;
             this.candidateCount = candidateCount;
             this.stableLocation = safe(stableLocation);
             this.declaringClass = string(carrier, "declaringClass");
@@ -2165,19 +2099,6 @@ public final class SymbolicPropagationClosure {
                     SharedStateEvidence.CONSUMER_SITE_ID);
             this.consumerSiteOccurrence = integer(read,
                     SharedStateEvidence.CONSUMER_SITE_OCCURRENCE, -1);
-        }
-
-        private JsonObject replayAnchor() {
-            JsonObject result = new JsonObject();
-            result.addProperty("familyKey", family);
-            result.addProperty("stableLocation", stableLocation);
-            result.addProperty("consumerSiteId", consumerSiteId);
-            result.addProperty("consumerSiteOccurrence",
-                    consumerSiteOccurrence);
-            result.addProperty("declaringClass", declaringClass);
-            result.addProperty("fieldName", fieldName);
-            result.addProperty("descriptor", descriptor);
-            return result;
         }
 
         private boolean sameLineage(FieldRead other) {
@@ -2311,13 +2232,6 @@ public final class SymbolicPropagationClosure {
         }
         return "case_observation__" + CanonicalJson.sha256(
                 owner + "\n" + executionIdentity);
-    }
-
-    /** One atom shared by the replay-specific evidence in one VM session. */
-    static String executionSelector(String epoch, String scope) {
-        if (safe(scope).isEmpty()) return "";
-        return "replay_execution__" + CanonicalJson.sha256(
-                safe(epoch) + "\n" + scope);
     }
 
     /** Removes VM object ids while retaining the declared field/read slot. */

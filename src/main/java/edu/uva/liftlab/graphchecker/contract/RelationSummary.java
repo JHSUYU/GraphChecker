@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.LocalCaseIdentity;
-import edu.uva.liftlab.graphchecker.concolic.SharedExpressionTable;
 
 import java.util.Map;
 
@@ -21,10 +20,6 @@ public final class RelationSummary {
 
     private RelationSummary(JsonObject row) {
         this.row = row;
-    }
-
-    public static RelationSummary decode(JsonObject encoded) {
-        return decodeExpanded(SharedExpressionTable.expand(encoded));
     }
 
     /**
@@ -47,7 +42,6 @@ public final class RelationSummary {
         return new RelationSummary(expanded);
     }
 
-    public JsonObject toJson() { return row.deepCopy(); }
     /** Read-only view which retains shared expression-node identity. */
     public JsonObject immutableJson() { return row; }
     public String summaryId() { return string(row, "summaryId"); }

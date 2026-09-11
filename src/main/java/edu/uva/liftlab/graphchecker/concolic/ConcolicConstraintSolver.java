@@ -7,11 +7,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -39,7 +36,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -2996,7 +2992,6 @@ public final class ConcolicConstraintSolver {
         private final Integer index;
         private final JsonObject selector;
         private final String iterationProjection;
-        private final String javaType;
         private final boolean dynamic;
         private final Term value;
         private JsonObject action;
@@ -3011,7 +3006,6 @@ public final class ConcolicConstraintSolver {
             this.index = read.index;
             this.selector = read.selector;
             this.iterationProjection = read.iterationProjection;
-            this.javaType = read.javaType;
             this.dynamic = read.dynamicAssociativeSelector();
             this.value = value;
         }
@@ -3328,7 +3322,7 @@ public final class ConcolicConstraintSolver {
                         : "." + String.join(".", segments));
                 if (matchesEngineSymbol(raw, label)
                         && label.length() > bestLength) {
-                    best = new ActionMatch(action, segments);
+                    best = new ActionMatch(action);
                     bestLength = label.length();
                 }
             }
@@ -3369,8 +3363,7 @@ public final class ConcolicConstraintSolver {
                 }
                 if (selected != null) return null;
                 selected = new ConfiguredSourceMatch(phase.phaseId(),
-                        phase.sourceId(), field.signature(),
-                        phase.sourceOccurrenceId(), phase.runtimeEventSeq());
+                        phase.sourceId(), field.signature());
             }
         }
         return selected;
@@ -3449,11 +3442,9 @@ public final class ConcolicConstraintSolver {
 
     private static final class ActionMatch {
         private final JsonObject action;
-        private final List<String> path;
 
-        private ActionMatch(JsonObject action, List<String> path) {
+        private ActionMatch(JsonObject action) {
             this.action = action;
-            this.path = new ArrayList<>(path);
         }
     }
 
@@ -3461,18 +3452,12 @@ public final class ConcolicConstraintSolver {
         private final String sourcePhaseId;
         private final String sourceId;
         private final String fieldSignature;
-        private final String sourceOccurrenceId;
-        private final long runtimeEventSeq;
 
         private ConfiguredSourceMatch(String sourcePhaseId, String sourceId,
-                                      String fieldSignature,
-                                      String sourceOccurrenceId,
-                                      long runtimeEventSeq) {
+                                      String fieldSignature) {
             this.sourcePhaseId = sourcePhaseId;
             this.sourceId = sourceId;
             this.fieldSignature = fieldSignature;
-            this.sourceOccurrenceId = sourceOccurrenceId;
-            this.runtimeEventSeq = runtimeEventSeq;
         }
     }
 

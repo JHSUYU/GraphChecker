@@ -54,11 +54,6 @@ public final class RecordedEvidenceIdentity {
         return nonNull(System.getProperty(RUN_ID_PROPERTY)).trim();
     }
 
-    /** The cross-run address of one activation. */
-    public static String siteKey(String occurrenceId) {
-        return nonNull(occurrenceId).trim();
-    }
-
     public JsonObject toJson() {
         JsonObject identity = new JsonObject();
         identity.addProperty("schemaVersion", SCHEMA_VERSION);

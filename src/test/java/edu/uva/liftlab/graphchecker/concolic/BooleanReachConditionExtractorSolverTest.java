@@ -118,7 +118,6 @@ public class BooleanReachConditionExtractorSolverTest {
                 "iteration-0000");
         dependency.addProperty("selectionPolicy",
                 SymbolicPropagationClosure.READ_FROM_DEPENDENCY_POLICY);
-        dependency.addProperty("pathSetClosed", false);
         dependency.add("arms", arms);
         JsonArray dependencies = new JsonArray();
         dependencies.add(dependency);

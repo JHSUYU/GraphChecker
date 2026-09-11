@@ -258,11 +258,6 @@ final class RuntimeTraceContext {
                 + "|" + encoded(view.requestApi);
     }
 
-    /** Installs exactly the context carried by a received message. */
-    static long enterInbound(String header, Object localOwner) {
-        return enterInbound(header, "", "", "", "", localOwner);
-    }
-
     /** Installs one received message and its exact transport exchange. */
     static long enterInbound(String header, String transport,
                              String correlationId, String attemptId,

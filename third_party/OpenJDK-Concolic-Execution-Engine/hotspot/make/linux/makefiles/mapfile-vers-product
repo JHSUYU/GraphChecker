@@ -253,7 +253,6 @@ SUNWprivate_1.1 {
                 JVM_handle_linux_signal;
 
                 #Concolic
-                JVM_PrintObjInfo;
                 JVM_StartConcolicRegion;
                 JVM_GetCurrentConcolicContextId;
                 JVM_GetCurrentConcolicRegionEnterEventId;
@@ -267,7 +266,6 @@ SUNWprivate_1.1 {
                 JVM_SymbolizeExactField;
                 JVM_ObserveExactPrimitiveField;
                 JVM_SymbolizeMethod;
-                JVM_PrintSymExp;
                 JVM_GetPcStr;
                 JVM_PauseConcolicPathCondition;
                 JVM_ResumeConcolicPathCondition;

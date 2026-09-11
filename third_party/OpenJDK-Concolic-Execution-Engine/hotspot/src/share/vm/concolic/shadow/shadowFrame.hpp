@@ -10,16 +10,13 @@ class ShadowFrame {
 
 private:
   const ZeroFrame *_zero_frame;
-  intptr_t *_sp;
-  int _fr_index; // TODO: remove this useless field
   bool _symbolic_tracking_enabled;
   ShadowTable _opr_stack;
   ShadowTable _local_tbl;
 
 public:
-  ShadowFrame(frame &fr, int fr_index);
-  ShadowFrame(const ZeroFrame *zero_frame, intptr_t *sp, int fr_index,
-              bool symbolic_tracking_enabled);
+  explicit ShadowFrame(frame &fr);
+  ShadowFrame(const ZeroFrame *zero_frame, bool symbolic_tracking_enabled);
   ~ShadowFrame() {}
 
   void copy();
@@ -32,11 +29,6 @@ public:
   }
   void check(ZeroFrame *zero_frame);
 
-  void print_origin();
-  void print();
-
-private:
-  inline intptr_t *fp() { return (intptr_t *)_zero_frame; }
 };
 
 #endif

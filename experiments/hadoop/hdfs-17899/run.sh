@@ -2,7 +2,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-case_id=${1:?usage: run.sh bug1|bug2|bug3 build|config|validate|catalog|campaign}
+case_id=${1:?usage: run.sh bug1|bug2|bug3 build|config|validate|campaign}
 command=${2:?missing command}
 shift 2
 source "${here}/case.sh" "${case_id}"

@@ -120,16 +120,4 @@ void PathCondition::gc() {
   _conjunction_size = 0;
 }
 
-void PathCondition::print() {
-  tty->print_cr("PathCondition:");
-  int size = _conds.size();
-  for (int i = 0; i < size; ++i) {
-    tty->print("[exp:%d]\t", i);
-    Condition *cond = _conds[i];
-    tty->print_cr("%s", cond->_code_pos.c_str());
-    tty->print("\t\t  ");
-    cond->_exp->print_cr();
-  }
-}
-
 #endif

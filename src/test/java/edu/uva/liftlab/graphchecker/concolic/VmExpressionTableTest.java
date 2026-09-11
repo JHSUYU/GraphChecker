@@ -26,8 +26,6 @@ public class VmExpressionTableTest {
         assertFalse(portable.has(VmExpressionTable.FIELD));
 
         JsonObject expanded = SharedExpressionTable.expand(portable);
-        assertEquals("PORTABLE_MERKLE_EXPRESSION_DAG_V1",
-                expanded.get("expressionEncoding").getAsString());
         assertEquals(binary(symbol("x"), constant(1)),
                 expanded.getAsJsonObject("expression"));
     }
@@ -91,8 +89,6 @@ public class VmExpressionTableTest {
     public void inactiveVmMayPublishOneEmptySessionZeroTable() {
         JsonObject envelope = new JsonObject();
         envelope.addProperty("active", false);
-        envelope.addProperty(VmExpressionTable.ENCODING_FIELD,
-                VmExpressionTable.VM_ENCODING);
         JsonObject table = new JsonObject();
         table.addProperty("schemaVersion", 1);
         table.addProperty("kind", VmExpressionTable.KIND);
@@ -105,15 +101,12 @@ public class VmExpressionTableTest {
         JsonObject decoded = new VmExpressionTable.Store()
                 .importEnvelope(envelope);
         assertFalse(decoded.get("active").getAsBoolean());
-        assertFalse(decoded.has(VmExpressionTable.ENCODING_FIELD));
         assertFalse(decoded.has(VmExpressionTable.FIELD));
     }
 
     private static JsonObject envelope(long session, long base) {
         if (session == 0L) {
             JsonObject envelope = new JsonObject();
-            envelope.addProperty(VmExpressionTable.ENCODING_FIELD,
-                    VmExpressionTable.VM_ENCODING);
             JsonObject table = new JsonObject();
             table.addProperty("schemaVersion", 1);
             table.addProperty("kind", VmExpressionTable.KIND);
@@ -126,8 +119,6 @@ public class VmExpressionTableTest {
         }
         JsonObject envelope = new JsonObject();
         envelope.addProperty("kind", "CONCOLIC_EXPRESSION");
-        envelope.addProperty(VmExpressionTable.ENCODING_FIELD,
-                VmExpressionTable.VM_ENCODING);
         envelope.add("expression", reference(session, base + 2));
 
         JsonArray definitions = new JsonArray();

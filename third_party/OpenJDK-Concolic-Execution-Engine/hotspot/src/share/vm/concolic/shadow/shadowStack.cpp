@@ -26,8 +26,8 @@ ShadowStack::ShadowStack(JavaThread *jt)
              "top frame might be junk");
     }
 
-    for (int frame_index = 0; !sfs.is_done(); sfs.next(), frame_index++) {
-      ShadowFrame *s_frame = new ShadowFrame(*sfs.current(), frame_index);
+    for (; !sfs.is_done(); sfs.next()) {
+      ShadowFrame *s_frame = new ShadowFrame(*sfs.current());
       s_frame->copy();
       _s_frames.push_back(s_frame);
     }
@@ -78,10 +78,7 @@ ShadowStack::~ShadowStack() {
 }
 
 void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
-                       intptr_t *sp, bool symbolic_tracking_enabled) {
-  // ConcolicMngr::ctx->print_stack_trace();
-  // ConcolicMngr::ctx->get_shadow_stack().print();
-
+                       bool symbolic_tracking_enabled) {
   if (_s_frames.empty()) {
     // There is no sound caller state from which to seed this frame.  This can
     // only occur after the region owner has escaped without a matching
@@ -97,8 +94,7 @@ void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
   ShadowTable &last_opr_stack = last_s_frame.get_opr_stack();
   bool effective_tracking = symbolic_tracking_enabled
       && last_s_frame.symbolic_tracking_enabled();
-  ShadowFrame *s_frame = new ShadowFrame(callee_frame, sp, 8,
-                                         effective_tracking);
+  ShadowFrame *s_frame = new ShadowFrame(callee_frame, effective_tracking);
   s_frame->copy();
   if (!effective_tracking) {
     // Paused and method-symbolized callees still perform real JVM stack
@@ -370,24 +366,6 @@ bool ShadowStack::cancel_reflection_call(jlong token) {
     return true;
   }
   return false;
-}
-
-void ShadowStack::print_origin() {
-  for (ShadowFrames::reverse_iterator iter = _s_frames.rbegin();
-       iter != _s_frames.rend(); ++iter) {
-    ShadowFrame *s_frame = *iter;
-    s_frame->print_origin();
-  }
-}
-
-void ShadowStack::print() {
-  tty->print_cr("ShadowStack: ");
-  for (ShadowFrames::reverse_iterator iter = _s_frames.rbegin();
-       iter != _s_frames.rend(); ++iter) {
-    ShadowFrame *s_frame = *iter;
-    s_frame->print();
-    tty->print("\n");
-  }
 }
 
 #endif

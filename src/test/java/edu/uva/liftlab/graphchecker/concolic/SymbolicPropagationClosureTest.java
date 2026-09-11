@@ -510,7 +510,7 @@ public class SymbolicPropagationClosureTest {
                                 JsonObject wrapper) {
         JsonObject event = VmHandoffEvidence.event(port, attachEvent - 1,
                 attachEvent, wrapper, producerTask, producerOccurrence);
-        event = VmHandoffEvidence.withBoundaryFamily(event, family, EPOCH, 1);
+        event = VmHandoffEvidence.withBoundaryFamily(event, family, EPOCH);
         event.addProperty("boundarySessionScope",
                 receiver.get("boundarySessionScope").getAsString());
         JsonArray events = receiver.has(VmHandoffEvidence.FIELD)

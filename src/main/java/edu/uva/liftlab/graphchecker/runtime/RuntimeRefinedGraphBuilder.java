@@ -178,7 +178,6 @@ final class RuntimeRefinedGraphBuilder {
         }
 
         final List<Map<String, Object>> refined = new ArrayList<>();
-        final int[] runtimeBoundCounter = {0};
         // The candidate graph can be multi-gigabyte.
         streamRows(candidateGraph, candidate -> {
             requireCandidateEdge(candidate, candidateGraph);
@@ -203,7 +202,6 @@ final class RuntimeRefinedGraphBuilder {
                     edge.put("runtimeExplicitFaultBindings",
                             encodeExplicitFaultBindings(bindings));
                     edge.put("runtimeObserved", true);
-                    runtimeBoundCounter[0]++;
                 }
             } else if ("accessor_field_return".equals(
                     string(edge.get("kind")))) {
@@ -215,7 +213,6 @@ final class RuntimeRefinedGraphBuilder {
                     edge.put("runtimeAccessorBindings",
                             encodeAccessorBindings(bindings, edge));
                     edge.put("runtimeObserved", true);
-                    runtimeBoundCounter[0]++;
                 }
             } else if ("HEAP_READ".equals(transfer)
                     || "HEAP_WRITE".equals(transfer)) {
@@ -234,7 +231,6 @@ final class RuntimeRefinedGraphBuilder {
                         edge.put("fieldPathDeclarations", uniqueDeclarations);
                     }
                     edge.put("runtimeObserved", true);
-                    runtimeBoundCounter[0]++;
                 } else {
                     edge.put("runtimeObserved", false);
                 }
@@ -252,8 +248,7 @@ final class RuntimeRefinedGraphBuilder {
         for (Map<String, Object> row : refined) {
             normalizeNumbersInPlace(row);
         }
-        return new Result(output, refined, runtimeBoundCounter[0],
-                activations.size(), selectedMethods.size());
+        return new Result(refined);
     }
 
     /** Receives rows strictly in file order. */
@@ -820,31 +815,16 @@ final class RuntimeRefinedGraphBuilder {
     }
 
     static final class Result {
-        final Path output;
         /** Refined rows, normalized to the exact JSONL round-trip domain. */
         final List<Map<String, Object>> rows;
-        final int edgeCount;
-        final int runtimeBoundEdgeCount;
-        final int activationCount;
-        final int selectedMethodCount;
 
-        private Result(Path output, List<Map<String, Object>> rows,
-                       int runtimeBoundEdgeCount,
-                       int activationCount,
-                       int selectedMethodCount) {
-            this.output = output;
+        private Result(List<Map<String, Object>> rows) {
             this.rows = rows;
-            this.edgeCount = rows.size();
-            this.runtimeBoundEdgeCount = runtimeBoundEdgeCount;
-            this.activationCount = activationCount;
-            this.selectedMethodCount = selectedMethodCount;
         }
     }
 
     private static final class SkeletonCatalog {
         private final Set<String> methods = new LinkedHashSet<>();
-        private final Set<String> roots = new LinkedHashSet<>();
-        private final List<Skeleton> skeletons = new ArrayList<>();
         private final Map<String, Skeleton> byRegion = new LinkedHashMap<>();
         private final Map<String, List<String>> regionsByMethod =
                 new LinkedHashMap<>();
@@ -866,38 +846,21 @@ final class RuntimeRefinedGraphBuilder {
                     throw new IOException("selected skeleton requires regionId"
                             + " and rootMethod: " + file);
                 }
-                result.roots.add(root);
                 Object methods = row.get("methods");
                 if (!(methods instanceof Collection<?>)) {
                     throw new IOException("selected skeleton requires methods: "
                             + file);
                 }
-                Set<String> skeletonMethods = new LinkedHashSet<>();
                 for (Object value : (Collection<?>) methods) {
                     String method = string(value);
                     if (method.isEmpty()) {
                         continue;
                     }
                     result.methods.add(method);
-                    skeletonMethods.add(method);
                     result.regionsByMethod.computeIfAbsent(method,
                             ignored -> new ArrayList<>()).add(region);
                 }
-                Set<String> anchors = new LinkedHashSet<>();
-                Object anchorMethods = row.get("anchorMethods");
-                if (anchorMethods instanceof Collection<?>) {
-                    for (Object value : (Collection<?>) anchorMethods) {
-                        String anchor = string(value);
-                        if (!anchor.isEmpty()) anchors.add(anchor);
-                    }
-                }
-                if (anchors.isEmpty()) {
-                    String anchor = string(row.get("anchorMethod"));
-                    if (!anchor.isEmpty()) anchors.add(anchor);
-                }
-                Skeleton skeleton = new Skeleton(region, root,
-                        anchors, skeletonMethods);
-                result.skeletons.add(skeleton);
+                Skeleton skeleton = new Skeleton(region);
                 result.byRegion.put(region, skeleton);
             }
             if (result.methods.isEmpty()) {
@@ -910,16 +873,9 @@ final class RuntimeRefinedGraphBuilder {
 
     private static final class Skeleton {
         private final String regionId;
-        private final String rootMethod;
-        private final Set<String> anchorMethods;
-        private final Set<String> methods;
 
-        private Skeleton(String regionId, String rootMethod,
-                         Set<String> anchorMethods, Set<String> methods) {
+        private Skeleton(String regionId) {
             this.regionId = regionId;
-            this.rootMethod = rootMethod;
-            this.anchorMethods = anchorMethods;
-            this.methods = methods;
         }
     }
 

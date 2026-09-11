@@ -7,7 +7,6 @@ import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
-import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
 import java.io.BufferedReader;
@@ -34,7 +33,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -1188,13 +1186,11 @@ public final class ConcolicSummaryImporter {
                 String familyKey = "CBF."
                         + CanonicalJson.sha256(identity);
                 JsonObject admitted = VmHandoffEvidence.withBoundaryFamily(
-                        record, familyKey, topologyEpoch, ordinal);
+                        record, familyKey, topologyEpoch);
                 admitted.addProperty("boundarySessionScope",
                         row.boundarySessionScope);
                 admitted.addProperty("consumerOccurrenceId",
                         row.rowOccurrenceId);
-                admitted.addProperty("consumerPlannedOccurrenceId",
-                        row.plannedOccurrenceId);
                 events.add(admitted);
             } else {
                 gaps.add(RpcExpressionHandoff.gap(
@@ -1784,7 +1780,7 @@ public final class ConcolicSummaryImporter {
             throw new IllegalArgumentException(
                     "switch outcome differs from exact successor");
         }
-        return new BranchEvent(site, occurrence, outcome, token);
+        return new BranchEvent(site, occurrence, token, "");
     }
 
     private static Boolean exactBoolean(JsonObject object, String field) {
@@ -1938,45 +1934,28 @@ public final class ConcolicSummaryImporter {
     private static final class BranchEvent {
         private final String site;
         private final int occurrence;
-        private final boolean outcome;
         private final String identity;
         private final String decisionToken;
         private final String symbolicSupportDigest;
 
         private BranchEvent(String site, int occurrence, boolean outcome) {
-            this(site, occurrence, outcome,
+            this(site, occurrence,
                     ExactConcreteBranchObservation.binaryDecisionToken(
                             outcome), "");
         }
 
-        private BranchEvent(String site, int occurrence, boolean outcome,
-                            String decisionToken) {
-            this(site, occurrence, outcome, decisionToken, "");
-        }
-
-        private BranchEvent(String site, int occurrence, boolean outcome,
-                            String decisionToken,
+        private BranchEvent(String site, int occurrence, String decisionToken,
                             String symbolicSupportDigest) {
             this.site = site;
             this.occurrence = occurrence;
-            this.outcome = outcome;
             this.identity = site + "\u0000" + occurrence;
             this.decisionToken = decisionToken;
             this.symbolicSupportDigest = symbolicSupportDigest == null
                     ? "" : symbolicSupportDigest;
         }
 
-        private static BranchEvent concrete(
-                ExactConcreteBranchObservation observation) {
-            return new BranchEvent(observation.siteId(),
-                    observation.occurrence(),
-                    observation.sourceTakenOutcome(),
-                    observation.exactDecisionToken());
-        }
-
         private static BranchEvent mapping(SummaryBranchMapping mapping) {
             return new BranchEvent(mapping.siteId(), mapping.occurrence(),
-                    mapping.sourceTakenOutcome(),
                     mapping.exactDecisionToken(), mapping.isWitnessed()
                     ? mapping.witness().symbolicSupportDigest() : "");
         }
@@ -2500,11 +2479,7 @@ public final class ConcolicSummaryImporter {
                         "expected --name value, got " + argument);
             }
             String name = argument.substring(2);
-            int equals = name.indexOf('=');
-            if (equals >= 0) {
-                result.put(name.substring(0, equals),
-                        name.substring(equals + 1));
-            } else if (index + 1 < args.length) {
+            if (index + 1 < args.length) {
                 result.put(name, args[++index]);
             } else {
                 throw new IllegalArgumentException(

@@ -77,9 +77,6 @@ final class RuntimeRegionPlanner {
             "RUNTIME_ACTIVATION_SOURCE_UNSTAMPED";
     /** Skeleton field naming why the admission half selected this region. */
     static final String ADMISSION_BASIS = "admissionBasis";
-    /** Admission by the recorded version store of an enumerated location. */
-    static final String SHARED_LOCATION_DEMAND_ADMISSION =
-            "SHARED_LOCATION_DEMAND_V1";
     /** Skeleton field: the region whose demand admitted this one. */
     static final String DEMANDED_BY_REGIONS = "demandedByRegionIds";
     /** Skeleton field: the enumerated locations that demand covers. */
@@ -2593,32 +2590,6 @@ final class RuntimeRegionPlanner {
             return result;
         }
 
-        static RefinedFlowIndex read(File graph) {
-            if (graph == null || !graph.isFile()) {
-                throw new IllegalArgumentException(
-                        "artifact is missing: " + graph);
-            }
-            RefinedFlowIndex result = new RefinedFlowIndex();
-            int rows = 0;
-            try (BufferedReader input = reader(graph)) {
-                String line;
-                while ((line = input.readLine()) != null) {
-                    if (line.trim().isEmpty()) continue;
-                    rows++;
-                    result.admitRefinedRow(GSON.fromJson(line, ROW), graph);
-                }
-            } catch (IOException exception) {
-                throw new IllegalArgumentException(
-                        "cannot read runtime-refined graph: " + graph,
-                        exception);
-            }
-            if (rows == 0) {
-                throw new IllegalArgumentException(
-                        "refined graph is empty: " + graph);
-            }
-            return result;
-        }
-
         /** Builds one failure-sliced local path frontier. Runtime fixes the
          * activation and the concrete heap access sites; static value/control
          * flow may then prove an alternate callee relevant even when the
@@ -3275,8 +3246,6 @@ final class RuntimeRegionPlanner {
         final long parentSpanId;
         final long remoteParentSpanId;
         final SourceRef source;
-        /** Stable logical scope of this event; never a transient trace id. */
-        final String sourceKey;
         final String requestKey;
         final String requestApi;
         ProtocolEvent(long seq, String direction, String transport,
@@ -3303,7 +3272,6 @@ final class RuntimeRegionPlanner {
             this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
-            this.sourceKey = sourceOf(source).key();
             this.requestKey = safe(requestKey);
             this.requestApi = safe(requestApi);
         }
@@ -3329,7 +3297,6 @@ final class RuntimeRegionPlanner {
         final String method;
         final long callId;
         final long invocationId;
-        final long parentSiteId;
         final String siteId;
         final String declaredCallee;
         final int argumentIndex;
@@ -3342,7 +3309,7 @@ final class RuntimeRegionPlanner {
         final String switchCaseKeys;
 
         RuntimeEvent(long seq, String kind, String method, long callId,
-                     long invocationId, long parentSiteId, String siteId,
+                     long invocationId, String siteId,
                      String declaredCallee, int argumentIndex,
                      String runtimeType, int objectId, String primitiveValue,
                      Boolean outcome, Integer successorIndex, String branchKind,
@@ -3352,7 +3319,6 @@ final class RuntimeRegionPlanner {
             this.method = safe(method);
             this.callId = callId;
             this.invocationId = invocationId;
-            this.parentSiteId = parentSiteId;
             this.siteId = safe(siteId);
             this.declaredCallee = safe(declaredCallee);
             this.argumentIndex = argumentIndex;

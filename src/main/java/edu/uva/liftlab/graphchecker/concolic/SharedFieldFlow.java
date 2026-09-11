@@ -9,9 +9,6 @@ public final class SharedFieldFlow {
             "RUNTIME_SHARED_LOCATION_MATCH_V1";
     /** Declared owner/name address shared by the two observed accesses. */
     public static final String EDGE_LOCATION = "sharedLocation";
-    /** Source scope in which the receiver identity was observed. */
-    public static final String EDGE_SOURCE_KEY = "sharedLocationSourceKey";
-
     private SharedFieldFlow() {
     }
 

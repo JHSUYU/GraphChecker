@@ -76,14 +76,11 @@ public:
     return *_s_frames.at(size - 1 - index);
   }
 
-  void push(ZeroFrame *callee_frame, ZeroFrame *caller_frame, intptr_t *sp,
+  void push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
             bool symbolic_tracking_enabled);
 
   void pop(ZeroFrame *zero_frame);
 
-  void print_origin();
-
-  void print();
 };
 
 #endif

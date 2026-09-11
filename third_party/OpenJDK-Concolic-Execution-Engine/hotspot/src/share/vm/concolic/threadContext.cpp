@@ -11,12 +11,10 @@
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
-#include "utilities/vmError.hpp"
 #include "utilities/exceptions.hpp"
 #include "concolic/reference/symbolicNDFunc.hpp"
 #include "classfile/javaClasses.hpp"
 #include "runtime/osThread.hpp"
-#include <cstdio>
 
 ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
     : _thread(jt), _s_stack(jt),
@@ -146,8 +144,6 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
   writer.String("VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1");
   writer.Key("authority");
   writer.String("VM_THREAD_PATH_CONDITION_RANGE_V1");
-  writer.Key("expressionEncoding");
-  writer.String("VM_SESSION_DAG_V1");
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
@@ -204,8 +200,6 @@ std::string ThreadContext::get_auxiliary_path_conditions() {
   writer.Int(emitted_auxiliary_conditions);
   writer.Key("authority");
   writer.String("VM_THREAD_AUXILIARY_PATH_CONDITION_V1");
-  writer.Key("expressionEncoding");
-  writer.String("VM_SESSION_DAG_V1");
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
@@ -310,13 +304,6 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     note_conditional_removal_guard(guard);
     BranchEvent event;
     event.event_id = _pending_branch_event_id;
-    event.context_id = _context_id;
-    event.owner_java_thread_id = _owner_java_thread_id;
-    event.owner_os_thread_id = _owner_os_thread_id;
-    // The current frame owns both this identity and this event.  Popping the
-    // frame releases the event after its summary has been serialized.
-    event.region_id = frame->region_id;
-    event.task_id = frame->task_id;
     event.site_id = _pending_branch_site_id;
     event.occurrence = _pending_branch_occurrence;
     event.outcome = outcome;
@@ -366,16 +353,6 @@ std::string ThreadContext::get_branch_events() const {
     writer.StartObject();
     writer.Key("eventId");
     writer.Int64(event.event_id);
-    writer.Key("contextId");
-    writer.Int64(event.context_id);
-    writer.Key("ownerJavaThreadId");
-    writer.Int64(event.owner_java_thread_id);
-    writer.Key("ownerOsThreadId");
-    writer.Int64(event.owner_os_thread_id);
-    writer.Key("regionId");
-    writer.String(event.region_id.c_str());
-    writer.Key("taskId");
-    writer.String(event.task_id.c_str());
     writer.Key("siteId");
     writer.String(event.site_id.c_str());
     writer.Key("occurrence");
@@ -675,29 +652,8 @@ std::string ThreadContext::get_code_pos_for_first(const std::string &str) {
   return std::string(buf, ss.size());
 }
 
-void ThreadContext::print() {
-  _path_condition.print();
-}
-
-void ThreadContext::print_stack_trace() {
-  char buf[O_BUFLEN];
-  VMError::print_stack_trace(tty, _thread, buf, sizeof(buf));
-//  this->get_shadow_stack().print();
-}
-
-void ThreadContext::memory_leak_check() {
-  tty->print_cr("Session holds %lu expressions...",
-                (unsigned long) GlobalSymbolicSession::expression_count());
-}
-
 PathCondition &ThreadContext::get_path_condition() {
   return _path_condition;
-}
-
-void ThreadContext::set_pc_enabled(bool pathConditionEnabled) {
-  if (!_aborted) {
-    _path_condition_enabled = pathConditionEnabled;
-  }
 }
 
 void ThreadContext::set_pc_admitted(bool pathConditionAdmitted) {

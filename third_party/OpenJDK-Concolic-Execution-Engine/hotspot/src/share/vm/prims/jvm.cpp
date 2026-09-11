@@ -311,21 +311,6 @@ JVM_LEAF(jlong, JVM_NanoTime(JNIEnv *env, jclass ignored))
   return os::javaTimeNanos();
 JVM_END
 
-JVM_ENTRY(void, JVM_PrintObjInfo(JNIEnv *env, jclass ignored, jobject obj))
-  JVMWrapper("JVM_PrintObjInfo");
-#ifdef ENABLE_CONCOLIC
-  oop o = JNIHandles::resolve_non_null(obj);
-  o->print();
-  o->klass()->print();
-  tty->print_cr("symbolic?: %s", o->is_symbolic() ? "true" : "false");
-  if (o->is_symbolic()) {
-    ConcolicMngr::ctx->get_sym_inst(o)->print();
-  }
-#else
-  return;
-#endif
-JVM_END
-
 JVM_ENTRY(jlong, JVM_StartConcolicRegion(JNIEnv *env, jclass ignored,
                                          jstring region_id,
                                          jstring task_id))
@@ -531,28 +516,6 @@ JVM_ENTRY(void, JVM_ObserveExactPrimitiveField(
       JNIHandles::resolve_non_null(descriptor));
   ConcolicMngr::observeExactPrimitiveField(
       field_owner, holder, name, type);
-#else
-  return;
-#endif
-JVM_END
-
-JVM_ENTRY(void, JVM_PrintSymExp(JNIEnv *env, jclass ignored, jobject obj))
-  JVMWrapper("JVM_PrintSymExp");
-#ifdef ENABLE_CONCOLIC
-  if (obj == NULL) {
-    // TODO: use THROW instead of assertion
-    assert(false, "JVM_Symbolize: obj is null");
-  }
-  // TODO: check behaviors when facing like `arrayOop`
-  oop o = JNIHandles::resolve_non_null(obj);
-
-  {
-    HandleMark hm;
-
-    Handle handle(THREAD, o);
-    assert(handle()->is_oop(), "JVM_Symbolize: obj not an oop");
-    ConcolicMngr::printSymExp(handle);
-  }
 #else
   return;
 #endif

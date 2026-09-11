@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
@@ -2949,7 +2948,6 @@ public final class RuntimeSelectedRegionFinalizer {
         // This is a scheduling address. The value itself is the VM's
         // GuardedRead expression and is never reconstructed from this edge.
         edge.put(SharedFieldFlow.EDGE_LOCATION, recordedFieldKey(read));
-        edge.put(SharedFieldFlow.EDGE_SOURCE_KEY, read.sourceKey);
         return edge;
     }
 
@@ -3104,11 +3102,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         longNumber(access.get("rootCallId"),
                                 longNumber(port.get("rootCallId"), 0L)),
                         address.receiver,
-                        longNumber(access.get("eventSeq"),
-                                longNumber(port.get("eventSeq"), 0L)),
                         address.declarations,
-                        first(text(access.get("bindingKind")),
-                                text(port.get("bindingKind"))),
                         DependencyRole.normalize(
                                 port.get("dependencyRole")),
                         first(text(access.get("staticAccessSiteId")),
@@ -3788,17 +3782,15 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Recorded trace evidence republished on the emitted edge. */
         private final long rootCallId;
         private final int receiver;
-        private final long seq;
         private final List<String> declarations;
-        private final String bindingKind;
         private final String dependencyRole;
         private final String site;
         private final int occurrence;
 
         private BoundPort(String region, String port, String sourceKey,
                           String occurrenceId,
-                          long rootCallId, int receiver, long seq,
-                          List<String> declarations, String bindingKind,
+                          long rootCallId, int receiver,
+                          List<String> declarations,
                           String dependencyRole, String site,
                           int occurrence) {
             this.region = region;
@@ -3807,9 +3799,7 @@ public final class RuntimeSelectedRegionFinalizer {
             this.occurrenceId = occurrenceId;
             this.rootCallId = rootCallId;
             this.receiver = receiver;
-            this.seq = seq;
             this.declarations = declarations;
-            this.bindingKind = bindingKind;
             this.dependencyRole = dependencyRole;
             this.site = site;
             this.occurrence = occurrence;

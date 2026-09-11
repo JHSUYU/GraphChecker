@@ -26,7 +26,6 @@ class MethodSymbolizer {
   MethodSymbolizerHandle _handle;
   invoke_helper_method_map_t _invoke_helper_methods;
   finish_helper_method_map_t _finish_helper_methods;
-  std::vector<std::string> _classes_prefix_to_symbolize;
   // Logging is an observation sink, not part of the program relation.  A
   // symbolic argument may flow into formatters, encoders and appenders, but
   // none of their results flows back into the workload.  Keep those callees
@@ -51,8 +50,6 @@ public:
   void invoke_method(ZeroFrame *caller_frame, ZeroFrame *callee_frame);
   void finish_method(ZeroFrame *caller_frame);
 
-  void print();
-
 private:
   SymMethodSet *get_sym_methods(const std::string &class_name);
   void init_helper_methods();
@@ -66,7 +63,6 @@ public:
   void add_invoke_helper_methods(const std::string class_name, bool(*invoke_helper_func)(MethodSymbolizerHandle&));
   void add_finish_helper_methods(const std::string class_name, Expression*(*finish_helper_func)(MethodSymbolizerHandle&));
 
-  void add_prefix_symbolic_class(const std::string class_name);
   void add_prefix_disabled_class(const std::string class_name);
 
 private:

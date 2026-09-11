@@ -15,7 +15,6 @@ import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.CoverageDivergence;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
-import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.concolic.RpcExpressionHandoff;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicPropagationClosure;
@@ -551,43 +550,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    static void resetForTests() {
-        // A publication owns the configuration and test hooks that were live
-        // when it was queued.
-        boolean interrupted = false;
-        synchronized (PUBLICATION_LOCK) {
-            while (resultPublicationsInFlight > 0) {
-                try {
-                    PUBLICATION_LOCK.wait();
-                } catch (InterruptedException ignored) {
-                    interrupted = true;
-                }
-            }
-        }
-        synchronized (CONFIG_LOCK) {
-            configuration = null;
-            engineApi = null;
-            workloadSessionId = 0L;
-            workloadExpressionStore = new VmExpressionTable.Store();
-        }
-        clearContextActivations();
-        SymbolicMessageEnvelope.clear();
-        ACTIVE.clear();
-        CURRENT_TOKENS.remove();
-        ROOT_INVOCATION_FRAMES.remove();
-        LOOP_ROOT_INVOCATIONS.remove();
-        CURRENT_ACCESSOR_CALL_CONTEXT.remove();
-        synchronized (PUBLICATION_LOCK) {
-            if (resultPublicationsInFlight != 0) {
-                throw new IllegalStateException(
-                        "selected result publication survived test reset");
-            }
-            liveSelectedRegions = 0;
-            PUBLICATION_LOCK.notifyAll();
-        }
-        if (interrupted) Thread.currentThread().interrupt();
-    }
-
     /**
      * Waits until every selected activation that is live or already publishing
      * a result has either durably closed its JSONL record or reported a write
@@ -770,11 +732,6 @@ public final class ConcolicRegionRuntime {
         workloadSessionId = 0L;
         workloadExpressionStore = new VmExpressionTable.Store();
         return "";
-    }
-
-    /** One JSON snapshot of the VM session, or {@code ""} when absent. */
-    public static String workloadSessionStatus() {
-        return engine().workloadSessionStatus();
     }
 
     private static String workloadSessionStatusName(long status) {
@@ -1817,16 +1774,12 @@ public final class ConcolicRegionRuntime {
         private final ConfiguredSourcePhaseContract.Occurrence phase;
         private final String siteId;
         private final int ordinal;
-        /** Whether this entry maps onto a catalog row of its own. */
-        private final boolean cataloged;
-
         private SourceSiteEntry(
                 ConfiguredSourcePhaseContract.Occurrence phase,
-                String siteId, int ordinal, boolean cataloged) {
+                String siteId, int ordinal) {
             this.phase = phase;
             this.siteId = safe(siteId);
             this.ordinal = ordinal;
-            this.cataloged = cataloged;
         }
 
         private String phaseId() {
@@ -2096,12 +2049,11 @@ public final class ConcolicRegionRuntime {
 
     private static HandoffResult exportSymbolicLeaf(
             Object owner, String declaringClass, String fieldName,
-            String descriptor, String declaredPortId) {
+            String descriptor) {
         HandoffResult result;
         beginBookkeeping();
         try {
-            result = exportLeaf(owner, declaringClass, fieldName, descriptor,
-                    declaredPortId);
+            result = exportLeaf(owner, declaringClass, fieldName, descriptor);
         } finally {
             endBookkeeping();
         }
@@ -2110,7 +2062,7 @@ public final class ConcolicRegionRuntime {
 
     private static HandoffResult exportLeaf(
             Object owner, String declaringClass, String fieldName,
-            String descriptor, String declaredPortId) {
+            String descriptor) {
         String missing = missingFieldMetadata(owner, declaringClass,
                 fieldName, descriptor);
         if (!missing.isEmpty()) {
@@ -2146,12 +2098,6 @@ public final class ConcolicRegionRuntime {
                 RpcExpressionHandoff.STAGE_EXPORT,
                 RpcExpressionHandoff.OK, handle, exported);
         record(result);
-        ActiveRegion exporting = activeRegion();
-        if (exportEvent[0] > 0L && !safe(declaredPortId).isEmpty()
-                && exporting != null) {
-            exporting.exportEventByPort.put(safe(declaredPortId),
-                    Long.valueOf(exportEvent[0]));
-        }
         return result;
     }
 
@@ -2245,7 +2191,7 @@ public final class ConcolicRegionRuntime {
         }
         if (site == null || carrier == null) return;
         HandoffResult result = exportSymbolicLeaf(carrier, CARRIER_CLASS,
-                field, descriptor, site.portId());
+                field, descriptor);
         // A concrete leaf is still a leaf the message carried.
         if (!result.ok()
                 && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
@@ -2700,17 +2646,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Selects one element of a fixed-shape array as a symbolic carrier. */
-    private static SharedStateResult selectSharedElementCarrier(Object array,
-                                                               int index) {
-        beginBookkeeping();
-        try {
-            return selectedCarrier(SharedCarrier.element(array, index));
-        } finally {
-            endBookkeeping();
-        }
-    }
-
     /** Selects one map as a symbolic carrier of its own whole state. */
     private static SharedStateResult selectSharedMapCarrier(
             Object map, String declaringClass, String fieldName,
@@ -2865,18 +2800,12 @@ public final class ConcolicRegionRuntime {
                                               ActiveRegion active,
                                               SharedCarrier carrier) {
         Configuration config = configuration();
-        int versionOrdinal = 0;
         for (JsonElement element : array(envelope, "versions")) {
             if (!element.isJsonObject()) continue;
             JsonObject version = element.getAsJsonObject();
             // Wave 3 concurrency: every symbolic write of the session is a
             // version the composer may read from, so each one is addressed
-            // by the write that produced it, the thread that ran it, and its
-            // position in this location's bounded snapshot.
-            versionOrdinal++;
-            version.addProperty("versionOrdinal", versionOrdinal);
-            version.addProperty("writerEventId",
-                    longInteger(version, "fieldVersionId", 0L));
+            // by the write that produced it and the thread that ran it.
             RuntimeTask writer = config.taskById(
                     string(version, "taskId"));
             if (writer == null) continue;
@@ -3061,10 +2990,6 @@ public final class ConcolicRegionRuntime {
 
         boolean observesSharedRead(String fieldSignature) {
             return plannerDeclared && matchesAccess(fieldSignature);
-        }
-
-        String fieldKey() {
-            return SharedFieldFlow.fieldKey(declaringClass, fieldName);
         }
 
         /** Activation-local identity of this exact access-bound request. */
@@ -4245,8 +4170,6 @@ public final class ConcolicRegionRuntime {
         long envelopeContext = longInteger(envelope, "contextId", 0L);
         long envelopeOwner = longInteger(envelope,
                 "ownerJavaThreadId", 0L);
-        long envelopeOsOwner = longInteger(envelope,
-                "ownerOsThreadId", 0L);
         if (envelopeContext <= 0L) {
             return VmBranchEventAttestation.invalid(
                     "missing positive VM thread context id");
@@ -4283,21 +4206,6 @@ public final class ConcolicRegionRuntime {
         if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
             return VmBranchEventAttestation.invalid(
                     "unsupported event authority " + authority);
-        }
-        if (longInteger(selected, "contextId", 0L) != envelopeContext
-                || longInteger(selected, "ownerJavaThreadId", 0L)
-                != envelopeOwner
-                || longInteger(selected, "ownerOsThreadId", 0L)
-                != envelopeOsOwner) {
-            return VmBranchEventAttestation.invalid(
-                    "event owner/context differs from its thread envelope");
-        }
-        if (!safe(active.activation.regionId).equals(
-                string(selected, "regionId"))
-                || !safe(active.activation.taskId).equals(
-                string(selected, "taskId"))) {
-            return VmBranchEventAttestation.invalid(
-                    "event region/task differs from its owner");
         }
         if (!safe(siteId).equals(string(selected, "siteId"))
                 || integer(selected, "occurrence", -1) != occurrence) {
@@ -6318,11 +6226,6 @@ public final class ConcolicRegionRuntime {
         /** One hook may attest and then consume the same exact condition. */
         private final JsonElement[] parsed;
 
-        private PathConditionElements(String raw, int[] bounds) {
-            this(raw, bounds, null, 0, bounds.length / 2, bounds.length / 2,
-                    false);
-        }
-
         private PathConditionElements(JsonArray tree) {
             this(null, null, tree, 0, tree.size(), tree.size(), false);
         }
@@ -6341,27 +6244,10 @@ public final class ConcolicRegionRuntime {
                     : new JsonElement[bounds.length / 2];
         }
 
-        /** Reads a serialized path condition. */
-        static PathConditionElements of(String raw) {
-            if (raw == null) return EMPTY;
-            char[] document = raw.toCharArray();
-            int[] bounds = scanElements(document, 0, document.length);
-            if (bounds != null) return new PathConditionElements(raw, bounds);
-            JsonElement parsed = parseJson(raw);
-            return parsed.isJsonArray()
-                    ? new PathConditionElements(parsed.getAsJsonArray())
-                    : EMPTY;
-        }
-
         /**
          * Reads one {@code CONCOLIC_PATH_CONDITION_RANGE} envelope as the
          * conditions at absolute indices {@code [startIndex, endIndex)}.
          */
-        static PathConditionElements window(String envelope, int expectedStart) {
-            return window(envelope, expectedStart,
-                    new VmExpressionTable.Store());
-        }
-
         static PathConditionElements window(String envelope, int expectedStart,
                                             VmExpressionTable.Store store) {
             if (envelope == null) return null;
@@ -6961,8 +6847,6 @@ public final class ConcolicRegionRuntime {
          */
         private final Set<String> reachedConfiguredSourceSites =
                 new LinkedHashSet<>();
-        private final Set<String> mintedConfiguredSourceFields =
-                new LinkedHashSet<>();
         /** Phase entries used by this activation; committed on publication. */
         private final Map<String, Integer> configuredSourcePhaseOrdinals =
                 new LinkedHashMap<>();
@@ -7002,8 +6886,6 @@ public final class ConcolicRegionRuntime {
          * <p>README {@code RPC-1}: written down from the VM's own export
          * answer so the producer's interaction row can name it.</p>
          */
-        private final Map<String, Long> exportEventByPort =
-                new LinkedHashMap<>();
         private final List<JsonObject> rpcHandoffGaps = new ArrayList<>();
 
         /**
@@ -7573,9 +7455,8 @@ public final class ConcolicRegionRuntime {
             }
             reachedConfiguredSourceSites.add(matched.siteId());
             if (!site.isEmpty()) reachedConfiguredSourceSites.add(site);
-            mintedConfiguredSourceFields.add(matched.fieldSignature());
             recordConfiguredSourcePhaseObservation(matched, context);
-            return new SourceSiteEntry(matched, site, ordinal, cataloged);
+            return new SourceSiteEntry(matched, site, ordinal);
         }
 
         /**
@@ -7904,11 +7785,6 @@ public final class ConcolicRegionRuntime {
             this.attemptedBody = attemptedBody;
         }
 
-        String detail() {
-            return REASON + ':' + loopId + ':' + attemptedBody + '/'
-                    + maxBodies;
-        }
-
         JsonObject toJson() {
             JsonObject encoded = new JsonObject();
             encoded.addProperty("kind", REASON);
@@ -7993,8 +7869,6 @@ public final class ConcolicRegionRuntime {
         private final List<String> fieldPath;
         private final String javaType;
         private final String symbolicName;
-        /** Whether the frozen task selected this action as a solver root. */
-        private final boolean symbolic;
         private final Set<Integer> definitionUnitIndices =
                 new LinkedHashSet<>();
         private final Map<String, String> leafFieldSignaturesByPath =
@@ -8078,8 +7952,6 @@ public final class ConcolicRegionRuntime {
                         this.fieldPath), explicitLeafSignature);
             }
             this.symbolicName = string(json, "symbolicName");
-            this.symbolic = InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                    string(json, "mode"));
         }
 
         private boolean declaresArrayInput(List<String> actualPath) {

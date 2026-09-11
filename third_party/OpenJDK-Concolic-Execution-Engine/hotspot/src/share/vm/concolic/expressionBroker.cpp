@@ -172,21 +172,6 @@ ExpressionBroker::HandoffStatus ExpressionBroker::resolve(jlong handle,
   return HANDOFF_OK;
 }
 
-const char *ExpressionBroker::status_name(HandoffStatus status) {
-  switch (status) {
-    case HANDOFF_OK:                   return "OK";
-    case HANDOFF_NO_ACTIVE_REGION:     return "NO_ACTIVE_REGION";
-    case HANDOFF_MISSING_METADATA:     return "MISSING_METADATA";
-    case HANDOFF_FIELD_NOT_FOUND:      return "FIELD_NOT_FOUND";
-    case HANDOFF_NOT_SYMBOLIC:         return "NOT_SYMBOLIC";
-    case HANDOFF_FOREIGN_HANDLE:       return "FOREIGN_HANDLE";
-    case HANDOFF_UNKNOWN_HANDLE:       return "UNKNOWN_HANDLE";
-    case HANDOFF_SORT_MISMATCH:        return "SORT_MISMATCH";
-    case HANDOFF_UNSUPPORTED_TARGET:   return "UNSUPPORTED_TARGET";
-    default:                           return "UNKNOWN_STATUS";
-  }
-}
-
 // ---------------------------------------------------------------------------
 // ConcolicMngr facade
 //
@@ -324,10 +309,9 @@ jlong ConcolicMngr::attachExpression(
     return ExpressionBroker::HANDOFF_FIELD_NOT_FOUND;
   }
 
-  // The one compatibility question left: a destination of another sort
-  // cannot hold this expression without an adapter-declared encoding
-  // transform.  A caller that widens or reinterprets gets a named gap and
-  // keeps its concrete value; it never gets a silent binding.
+  // A destination of another sort cannot hold this expression. A caller that
+  // widens or reinterprets gets a named gap and keeps its concrete value; it
+  // never gets a silent binding.
   if (leaf.descriptor != descriptor) {
     return ExpressionBroker::HANDOFF_SORT_MISMATCH;
   }

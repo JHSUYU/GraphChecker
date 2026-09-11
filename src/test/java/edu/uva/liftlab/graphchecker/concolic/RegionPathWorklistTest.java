@@ -66,27 +66,17 @@ public class RegionPathWorklistTest {
         JsonObject decoded = LinkedReplayBundle.decode(carrier);
 
         assertEquals(3, decoded.getAsJsonArray("members").size());
-        assertEquals("REPLAY.GROUP.SEED", decoded.get(
-                LinkedReplayBundle.SOURCE_REPLAY_GROUP_FIELD).getAsString());
         assertEquals("ITERATION.7", decoded.get(
                 LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD).getAsString());
         int primaries = 0;
-        int bActivations = 0;
         for (JsonElement element : decoded.getAsJsonArray("members")) {
             JsonObject member = element.getAsJsonObject();
             if (LinkedReplayBundle.PRIMARY.equals(
                     member.get("role").getAsString())) {
                 primaries++;
             }
-            assertTrue(member.has(LoopBoundPolicy.FIELD));
-            if ("TASK.B".equals(member.get("sourceTaskId").getAsString())) {
-                bActivations = member.getAsJsonArray(
-                        "sourceActivations").size();
-            }
         }
         assertEquals(1, primaries);
-        assertEquals("activation occurrences stay distinct", 2,
-                bActivations);
 
         BranchReplayContract oldContract = BranchReplayContract.fromSummary(
                 summaries.get(0), "SITE.C", 1);

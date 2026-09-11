@@ -172,7 +172,7 @@ public final class RuntimeWorkflowDiscovery {
                         plan, goal));
             }
         }
-        return new RankedWorkflow(target, selections);
+        return new RankedWorkflow(selections);
     }
 
     /** All graph-connected occurrences of every execution of the same
@@ -973,11 +973,9 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     static final class RankedWorkflow {
-        private final Target target;
         private final List<Selection> selections;
 
-        private RankedWorkflow(Target target, List<Selection> selections) {
-            this.target = target;
+        private RankedWorkflow(List<Selection> selections) {
             this.selections = Collections.unmodifiableList(
                     new ArrayList<>(selections));
         }

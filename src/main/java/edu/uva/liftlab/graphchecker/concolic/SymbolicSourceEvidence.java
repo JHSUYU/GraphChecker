@@ -204,11 +204,6 @@ public final class SymbolicSourceEvidence {
      * Builds the one-to-one raw-symbol registry consumed by the Composer.
      * A collision is evidence corruption, never a reason to pick one row.
      */
-    public static Map<String, String> rawSymbolIdentities(
-            Iterable<JsonObject> owners) {
-        return rawSymbolIdentities(owners, null);
-    }
-
     /** Raw-root registry restricted to configured ({@code false}) or manual
      * ({@code true}) events. A null restriction admits both. */
     public static Map<String, String> rawSymbolIdentities(

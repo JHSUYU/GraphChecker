@@ -49,7 +49,7 @@ void JavaThread::push_zero_frame(ZeroFrame *zframe) {
   }
   if (ConcolicMngr::can_maintain_shadow_stack()) {
     ConcolicMngr::ctx->get_shadow_stack().push(
-        _top_zero_frame, *(ZeroFrame **)zframe, zero_stack()->sp(),
+        _top_zero_frame, *(ZeroFrame **)zframe,
         ConcolicMngr::can_do_concolic());
   }
 #endif

@@ -414,24 +414,5 @@ public final class InitialContainerObservation {
                     && selector == null && selectorExpression != null;
         }
 
-        String selectorIdentity() {
-            return "INDEXED".equals(shape)
-                    ? String.valueOf(index)
-                    : !iterationProjection.isEmpty()
-                    ? "ITERATION:" + iterationProjection + ":" + index
-                    : selector != null ? CanonicalJson.render(selector)
-                    : selectorExpression == null ? ""
-                    : "ACCESS:" + ArtifactIO.sha256(
-                    CanonicalJson.render(selectorExpression));
-        }
-
-        String keyJavaType() {
-            return selector == null ? "" : string(selector, "_java_type");
-        }
-
-        String keyValue() {
-            return selector == null ? ""
-                    : constantPayload(string(selector, "_exp"));
-        }
     }
 }

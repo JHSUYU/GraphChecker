@@ -200,8 +200,6 @@ public final class SymbolicMessageEnvelope {
 
         public boolean present() { return present; }
 
-        public String portId() { return portId; }
-
         public long handle() { return handle; }
 
         public String producerTaskId() { return producerTaskId; }

@@ -38,9 +38,7 @@ public class GuardedChoiceActivationTest {
     public void guardedReadSortUsesAnchorAndRejectsMixedArms() {
         JsonObject anchored = new JsonObject();
         anchored.addProperty("_java_type", "L");
-        JsonObject anchor = new JsonObject();
-        anchor.addProperty("descriptor", "Ljava/lang/String;");
-        anchored.add("replayReadAnchor", anchor);
+        anchored.addProperty("replayReadDescriptor", "Ljava/lang/String;");
         assertEquals(ConcolicSmtComposer.Sort.STRING,
                 ConcolicSmtComposer.guardedReadSort(anchored,
                         ConcolicSmtComposer.Sort.REF,

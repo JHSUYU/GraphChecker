@@ -78,7 +78,6 @@ final class PathReplayTaskFactory {
                 guardedReads, sources);
         String queryKey = string(query, "queryKey");
         String groupId = "REPLAY.GROUP." + ArtifactIO.sha256(queryKey + "\n"
-                + string(bundle, "bundleDigest") + "\n"
                 + CanonicalJson.render(assignments) + "\n"
                 + CanonicalJson.render(guardedReads));
 
@@ -120,7 +119,6 @@ final class PathReplayTaskFactory {
                     string(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
             replay.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
                     string(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
-            replay.addProperty("linkedPrimaryQueryKey", queryKey);
             result.add(replay);
         }
         result.sort(Comparator.comparing((JsonObject task) ->

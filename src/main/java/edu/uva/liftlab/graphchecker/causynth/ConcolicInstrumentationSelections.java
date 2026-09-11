@@ -109,7 +109,6 @@ public final class ConcolicInstrumentationSelections {
         /** Exact plan selector shared by a seed task and its replays. */
         private final String instrumentationSelector;
         private final String rootMethod;
-        private final String receiverClass;
         private final ConcolicBranchSelection branches;
         private final LoopBoundPolicy loopBound;
         /** Array-indexed loops whose concrete cardinality is not a K_L. */
@@ -135,7 +134,6 @@ public final class ConcolicInstrumentationSelections {
         private final Set<String> instrumentationMethods;
         private final Set<String> replayAnchorMethods;
         private final String targetMethod;
-        private final boolean dynamicAssociativeTarget;
 
         private InstrumentationPlan(ExecutionTask task) throws IOException {
             if (!task.executable()) {
@@ -148,12 +146,9 @@ public final class ConcolicInstrumentationSelections {
                 throw new IOException("Execution task " + task.taskId()
                         + " has no root method");
             }
-            receiverClass = string(task.rootSelector(), "receiverClass");
             InputActionCatalog inputActions = task.inputActions();
             JsonArray symbolic = inputActions.symbolic();
             targetMethod = task.targetMethod();
-            dynamicAssociativeTarget = declaresDynamicAssociativeTarget(
-                    task.modelAssignments());
             branches = ConcolicBranchSelection.from(task.branches());
             branches.addLoopExitSites(task.retainedLoops());
             loopBound = task.loopBound();
@@ -308,10 +303,6 @@ public final class ConcolicInstrumentationSelections {
             return instrumentationSelector;
         }
 
-        String receiverClass() {
-            return receiverClass;
-        }
-
         ConcolicBranchSelection branches() {
             return branches;
         }
@@ -367,15 +358,6 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * Whether this task's solver model selects a value by associative
-         * access ordinal, and therefore needs an instrumented {@code Map} read
-         * site to apply it.
-         */
-        boolean dynamicAssociativeTarget() {
-            return dynamicAssociativeTarget;
-        }
-
-        /**
          * The methods this task's envelope may rewrite, before the replay
          * entry Soot selects is added to it. This is README section 1's per-
          * task envelope as the plan states it: the mandatory target, region,
@@ -403,23 +385,6 @@ public final class ConcolicInstrumentationSelections {
             }
             methods.remove("");
             return methods;
-        }
-
-        private static boolean declaresDynamicAssociativeTarget(
-                JsonArray modelAssignments) {
-            for (JsonElement element : modelAssignments) {
-                if (!element.isJsonObject()) continue;
-                JsonElement encoded = element.getAsJsonObject()
-                        .get("containerTarget");
-                if (encoded == null || !encoded.isJsonObject()) continue;
-                JsonObject container = encoded.getAsJsonObject();
-                if ("ASSOCIATIVE".equals(string(container, "shape"))
-                        && "ACCESS_ORDINAL".equals(
-                        string(container, "selectorKind"))) {
-                    return true;
-                }
-            }
-            return false;
         }
 
     }

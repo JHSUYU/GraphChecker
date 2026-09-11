@@ -114,13 +114,6 @@ void GlobalSymbolicSession::record_expression(Expression *expression) {
   pthread_mutex_unlock(&_arena_mutex);
 }
 
-size_t GlobalSymbolicSession::expression_count() {
-  pthread_mutex_lock(&_arena_mutex);
-  size_t count = _arena.size();
-  pthread_mutex_unlock(&_arena_mutex);
-  return count;
-}
-
 uint GlobalSymbolicSession::next_expression_id() {
   return (uint) Atomic::add_ptr((intptr_t) 1, &_next_expression_id);
 }

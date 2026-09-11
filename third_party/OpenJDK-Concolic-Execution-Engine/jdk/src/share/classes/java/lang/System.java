@@ -401,11 +401,6 @@ public final class System {
     public static native long nanoTime();
 
     /**
-     * Print Object Infomation
-     */
-    public static native void printObjInfo(Object obj);
-
-    /**
      * Starts a named concolic region.  The identifiers are copied into the
      * VM-owned thread context and are returned in the machine-readable region
      * summary.
@@ -729,11 +724,6 @@ public final class System {
      * Callers should use this method from a finally block.
      */
     public static native String finishConcolicRegion();
-
-    /**
-     * Print the symbol expression of obj
-    */
-    public static native void printSymExp(Object obj);
 
     /**
      * make an Object symbolic

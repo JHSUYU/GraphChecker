@@ -534,7 +534,6 @@ public final class RegionPathWorklist {
             task.addProperty("schemaVersion", 3);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
-            task.addProperty("semanticFlipKey", semanticKey);
             task.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
                     familySnapshotDigest);
             task.addProperty("regionId", path.regionId());
@@ -547,8 +546,6 @@ public final class RegionPathWorklist {
             task.addProperty("sourcePathKey", path.pathKey());
             task.addProperty("sourceActivationOccurrenceId",
                     path.occurrenceId());
-            task.addProperty("sourceActivationOrdinal",
-                    path.activationOrdinal());
             replay.addTo(task);
             if (path.scope().goalKind().capturesTargetReach()) {
                 VmHandoffEvidence.writeTo(task, path.vmHandoffEvents());

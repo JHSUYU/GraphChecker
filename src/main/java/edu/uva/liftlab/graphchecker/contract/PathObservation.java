@@ -5,14 +5,12 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.LocalCaseIdentity;
-import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
 import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -101,11 +99,6 @@ public final class PathObservation {
     public static final String PLANNED_OCCURRENCE_ID = "plannedOccurrenceId";
     /** Whether this activation exited through the selected target throw. */
     public static final String TARGET_REACHED = "targetReached";
-
-    /** This activation's required positive ordinal. */
-    public int activationOrdinal() {
-        return activationOrdinal;
-    }
 
     /** The required planned address shared by this task's activations. */
     public String plannedOccurrenceId() {
@@ -253,12 +246,6 @@ public final class PathObservation {
             event.addProperty("outcome", outcome);
             return event;
         }
-    }
-
-    /** VM read-time candidate snapshots recorded by this path.  Case-local:
-     *  two paths never share this object. */
-    public JsonObject recordedSharedState() {
-        return object(raw, SharedStateEvidence.RECORDED_FIELD);
     }
 
     /** VM handoffs attached by this path, keyed by stable expression

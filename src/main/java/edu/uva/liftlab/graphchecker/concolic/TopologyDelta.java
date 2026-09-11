@@ -21,7 +21,6 @@ import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Compares one raw VM result with the frozen task that planned it and records
@@ -49,10 +48,6 @@ public final class TopologyDelta {
     /** A planned task no raw result of this iteration ever named. */
     public static final String PLANNED_TASK_PRODUCED_NO_RESULT =
             "PLANNED_TASK_PRODUCED_NO_RESULT";
-    /** A branch site the frozen plan declared and no execution decided. */
-    public static final String PLANNED_BRANCH_EVENT_NOT_OBSERVED =
-            "PLANNED_BRANCH_EVENT_NOT_OBSERVED";
-
     private static final String[] IDENTITY_FIELDS = {
             "sourceKey", "occurrenceId", "relationKey", "regionId"
     };

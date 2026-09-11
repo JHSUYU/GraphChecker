@@ -499,8 +499,6 @@ std::string SharedFieldVersions::describe(const Location &location) {
     writer.EndObject();
   }
   writer.EndArray();
-  writer.Key("expressionEncoding");
-  writer.String("VM_SESSION_DAG_V1");
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());

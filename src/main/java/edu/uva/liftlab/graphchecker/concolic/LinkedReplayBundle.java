@@ -4,11 +4,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -35,7 +33,6 @@ final class LinkedReplayBundle {
     static final String ROLE_FIELD = "linkedReplayRole";
     static final String FAMILY_DIGEST_FIELD = "familySnapshotDigest";
     static final String TOPOLOGY_EPOCH_FIELD = "topologyEpoch";
-    static final String SOURCE_REPLAY_GROUP_FIELD = "sourceReplayGroupId";
     static final String CASE_DEPENDENCIES_FIELD =
             "consumerAnchorCaseDependencies";
     static final String PRIMARY = "PRIMARY";
@@ -86,22 +83,13 @@ final class LinkedReplayBundle {
                             + primarySourceTaskId);
         }
 
-        Map<String, List<JsonObject>> summariesByTask =
-                new LinkedHashMap<>();
-        List<String> summaryIds = new ArrayList<>();
         JsonObject primarySummary = null;
         if (closureSummaries != null) {
             for (JsonObject summary : closureSummaries) {
                 String summaryId = string(summary, "summaryId");
-                if (!summaryId.isEmpty()) summaryIds.add(summaryId);
                 if (primarySummaryId != null
                         && primarySummaryId.equals(summaryId)) {
                     primarySummary = summary;
-                }
-                String taskId = string(summary, "taskId");
-                if (!taskId.isEmpty()) {
-                    summariesByTask.computeIfAbsent(taskId,
-                            ignored -> new ArrayList<>()).add(summary);
                 }
             }
         }
@@ -161,39 +149,6 @@ final class LinkedReplayBundle {
                 throw new IllegalArgumentException(
                         "linked replay member has no loop bound: " + taskId);
             }
-            member.add(LoopBoundPolicy.FIELD, loopBound.deepCopy());
-            JsonArray activations = new JsonArray();
-            List<JsonObject> sourceSummaries = summariesByTask.getOrDefault(
-                    taskId, Collections.emptyList());
-            sourceSummaries.sort(Comparator
-                    .comparingInt((JsonObject summary) -> integer(summary,
-                            PathObservation.ACTIVATION_ORDINAL, -1))
-                    .thenComparing(summary -> string(summary, "summaryId")));
-            for (JsonObject summary : sourceSummaries) {
-                int activationOrdinal = integer(summary,
-                        PathObservation.ACTIVATION_ORDINAL, -1);
-                String activationOccurrence = string(summary,
-                        "occurrenceId");
-                if (activationOrdinal < 1 || activationOccurrence.isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "linked replay summary has no activation tuple: "
-                                    + string(summary, "summaryId"));
-                }
-                JsonObject activation = new JsonObject();
-                activation.addProperty("summaryId",
-                        string(summary, "summaryId"));
-                activation.addProperty("occurrenceId",
-                        activationOccurrence);
-                activation.addProperty(PathObservation.ACTIVATION_ORDINAL,
-                        activationOrdinal);
-                if (summary.has(LoopBoundPolicy.PATH_LOOP_COUNTS)) {
-                    activation.add(LoopBoundPolicy.PATH_LOOP_COUNTS,
-                            summary.get(LoopBoundPolicy.PATH_LOOP_COUNTS)
-                                    .deepCopy());
-                }
-                activations.add(activation);
-            }
-            member.add("sourceActivations", activations);
             boolean isPrimary = primarySourceTaskId.equals(taskId);
             member.addProperty("role", isPrimary ? PRIMARY : COMPANION);
             encodedMembers.add(member);
@@ -207,19 +162,7 @@ final class LinkedReplayBundle {
                 requireDigest(familySnapshotDigest));
         result.addProperty(TOPOLOGY_EPOCH_FIELD,
                 epoch);
-        result.addProperty(SOURCE_REPLAY_GROUP_FIELD, sourceReplayGroup);
-        result.addProperty("primarySummaryId", primarySummaryId);
-        JsonArray encodedSummaryIds = new JsonArray();
-        Collections.sort(summaryIds);
-        String previous = "";
-        for (String summaryId : summaryIds) {
-            if (summaryId.equals(previous)) continue;
-            encodedSummaryIds.add(summaryId);
-            previous = summaryId;
-        }
-        result.add("closureSummaryIds", encodedSummaryIds);
         result.add("members", encodedMembers);
-        result.addProperty("bundleDigest", CanonicalJson.sha256(result));
         return result;
     }
 
@@ -237,10 +180,7 @@ final class LinkedReplayBundle {
         }
         requireDigest(string(bundle, FAMILY_DIGEST_FIELD));
         JsonArray members = array(bundle, "members");
-        JsonArray summaries = array(bundle, "closureSummaryIds");
-        if (members.size() == 0 || summaries.size() == 0
-                || string(bundle, "primarySummaryId").isEmpty()
-                || string(bundle, SOURCE_REPLAY_GROUP_FIELD).isEmpty()
+        if (members.size() == 0
                 || string(bundle, TOPOLOGY_EPOCH_FIELD).isEmpty()) {
             throw new IllegalArgumentException(
                     "linked replay bundle has no members or summary refs");
@@ -257,11 +197,7 @@ final class LinkedReplayBundle {
             String id = string(member, "sourceTaskId");
             String role = string(member, "role");
             if (id.isEmpty() || !ids.add(id)
-                    || !addresses.add(memberKey(member))
-                    || !member.has(LoopBoundPolicy.FIELD)
-                    || !member.get(LoopBoundPolicy.FIELD).isJsonObject()
-                    || !member.has("sourceActivations")
-                    || !member.get("sourceActivations").isJsonArray()) {
+                    || !addresses.add(memberKey(member))) {
                 throw new IllegalArgumentException(
                         "linked replay members are missing or duplicate");
             }
@@ -275,14 +211,6 @@ final class LinkedReplayBundle {
                 "primarySourceTaskId"))) {
             throw new IllegalArgumentException(
                     "linked replay primary and members disagree");
-        }
-        JsonObject digestBase = bundle.deepCopy();
-        String statedDigest = string(digestBase, "bundleDigest");
-        digestBase.remove("bundleDigest");
-        if (statedDigest.isEmpty()
-                || !statedDigest.equals(CanonicalJson.sha256(digestBase))) {
-            throw new IllegalArgumentException(
-                    "linked replay bundle digest differs");
         }
         return bundle;
     }

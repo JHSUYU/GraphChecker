@@ -139,23 +139,10 @@ bool MethodSymbolizer::intercepts(Method *callee_method) {
     }
   }
   if (boxes_a_primitive(holder)) return true;
-  // Only the prefix registry matches on a substring rather than the whole
-  // name, so it is the one test that needs the name as a string.  It is
-  // empty unless something registered a prefix, and then the conversion is
-  // that registration's own cost.
-  if (_classes_prefix_to_symbolize.empty()
-      && _classes_prefix_to_disable.empty()) return false;
+  if (_classes_prefix_to_disable.empty()) return false;
   ResourceMark rm;
   std::string holder_name(holder->as_C_string());
-  if (disabled_class(holder_name)) return true;
-  for (size_t index = 0; index < _classes_prefix_to_symbolize.size();
-       ++index) {
-    if (holder_name.find(_classes_prefix_to_symbolize[index])
-        != std::string::npos) {
-      return true;
-    }
-  }
-  return false;
+  return disabled_class(holder_name);
 }
 
 void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
@@ -210,15 +197,6 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
 //                  callee_method->name_and_sig_as_C_string());
     invoke_method_helper(_handle);
     need_symbolize = true;
-  } else {
-    for (size_t klz_index = 0;
-         klz_index < _classes_prefix_to_symbolize.size();
-         ++klz_index) {
-      if (callee_holder_name.find(_classes_prefix_to_symbolize[klz_index]) != std::string::npos) {
-        need_symbolize = true;
-//        tty->print_cr("symbolizing method: %s.%s", callee_holder_name.c_str(), _handle.get_callee_name().c_str());
-      }
-    }
   }
 
   if (need_symbolize) {
@@ -407,25 +385,6 @@ int MethodSymbolizer::prepare_param(MethodSymbolizerHandle &handle,
 
   handle.get_param_list().push_back(exp);
   return offset;
-}
-
-void MethodSymbolizer::print() {
-  tty->print_cr("symbolic methods:");
-  for (SymClassMapIt sym_class_map_it = _symbolicMethods.begin();
-       sym_class_map_it != _symbolicMethods.end(); ++sym_class_map_it) {
-    tty->print_cr("%s", sym_class_map_it->first.c_str());
-    if (sym_class_map_it->second) {
-      SymMethodSet *sym_method_set = sym_class_map_it->second;
-      for (SymMethodSetIt sym_method_set_it = sym_method_set->begin();
-           sym_method_set_it != sym_method_set->end(); ++sym_method_set_it) {
-        tty->print_cr("  %s", sym_method_set_it->c_str());
-      }
-    }
-  }
-}
-
-void MethodSymbolizer::add_prefix_symbolic_class(const std::string class_name) {
-  _classes_prefix_to_symbolize.push_back(class_name);
 }
 
 void MethodSymbolizer::add_prefix_disabled_class(

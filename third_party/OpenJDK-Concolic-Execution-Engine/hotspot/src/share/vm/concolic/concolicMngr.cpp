@@ -74,8 +74,6 @@ std::string serialize_field_expression(const char *kind, bool symbolic,
   } else {
     expression->serialize(writer);
   }
-  writer.Key("expressionEncoding");
-  writer.String("VM_SESSION_DAG_V1");
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
@@ -137,13 +135,6 @@ bool object_array_contains_symbolic_reference(arrayOop array,
 
 jlong ConcolicMngr::next_context_id() {
   return (jlong) Atomic::add_ptr((intptr_t) 1, &_next_context_id);
-}
-
-int ConcolicMngr::session_member_count() {
-  pthread_mutex_lock(&mutex);
-  int members = _session_members;
-  pthread_mutex_unlock(&mutex);
-  return members;
 }
 
 void ConcolicMngr::session_snapshot(int *members, bool *workload_open,
@@ -346,8 +337,6 @@ void ConcolicMngr::detach() {
   // members.
   delete ctx;
   ctx = NULL;
-  ThreadContext::memory_leak_check();
-
   bool last_owner = false;
   {
     pthread_mutex_lock(&mutex);
@@ -463,8 +452,6 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
             ? "CONCOLIC_ABORTED" : "CONCOLIC_DISABLED"));
     writer.Key("symbolic");
     writer.Bool(false);
-    writer.Key("expressionEncoding");
-    writer.String("VM_SESSION_DAG_V1");
     expression_artifact.write_table(writer);
     writer.EndObject();
     return std::string(buffer.GetString(), buffer.GetLength());
@@ -542,8 +529,6 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   } else {
     expression->serialize(writer);
   }
-  writer.Key("expressionEncoding");
-  writer.String("VM_SESSION_DAG_V1");
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
@@ -904,13 +889,6 @@ jlong ConcolicMngr::endConcolic() {
   // itself ends depends on the other members, not on this region.
   detach();
   return 0;
-}
-
-void ConcolicMngr::printSymExp(Handle handle) {
-  if (can_do_concolic()) {
-    oop obj = handle();
-    ctx->printSymExp(obj);
-  }
 }
 
 void ConcolicMngr::symbolize(Handle handle) {

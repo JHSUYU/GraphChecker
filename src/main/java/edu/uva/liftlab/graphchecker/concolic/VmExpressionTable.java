@@ -33,10 +33,6 @@ public final class VmExpressionTable {
     public static final String AUTHORITY = "VM_SESSION_EXPRESSION_ID_V1";
     public static final String REFERENCE_TYPE = "VmExpressionReference";
     public static final String DEFINITION_TYPE = "VmExpressionDefinition";
-    public static final String ENCODING_FIELD = "expressionEncoding";
-    public static final String VM_ENCODING = "VM_SESSION_DAG_V1";
-    private static final String PORTABLE_ENCODING =
-            "PORTABLE_MERKLE_EXPRESSION_DAG_V1";
 
     private VmExpressionTable() {
     }
@@ -68,7 +64,6 @@ public final class VmExpressionTable {
         if (!usesNativeDag(artifact)) return artifact;
         Store store = new Store();
         JsonObject expanded = store.importEnvelope(artifact);
-        expanded.addProperty(ENCODING_FIELD, PORTABLE_ENCODING);
         return store.compact(expanded);
     }
 
@@ -116,9 +111,6 @@ public final class VmExpressionTable {
             } else {
                 expanded = decoder.expand(envelope);
             }
-            // Encoding is an artifact transport detail, not execution
-            // semantics and therefore must not perturb summary/case identity.
-            expanded.remove(ENCODING_FIELD);
             return expanded;
         }
 

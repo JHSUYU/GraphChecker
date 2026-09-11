@@ -15,7 +15,6 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
@@ -53,10 +52,6 @@ public final class BoundedLoopComposition {
     private final Set<String> gapKeys = new LinkedHashSet<>();
 
     private BoundedLoopComposition() {
-    }
-
-    public static BoundedLoopComposition empty() {
-        return new BoundedLoopComposition();
     }
 
     /** Reads one declaration per {@code (occurrenceId, loopSiteId)}. */
@@ -215,9 +210,7 @@ public final class BoundedLoopComposition {
         }
         return new BoundedLoop(occurrence, site, runtime, bound,
                 string(first, LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY),
-                classification, classificationAuthority,
-                array(first, LoopBoundPolicy.LOOP_CONTROL_SITE_IDS),
-                required);
+                classification, classificationAuthority, required);
     }
 
     /** Adds one complete region-path count vector to the audit model. */
@@ -360,10 +353,6 @@ public final class BoundedLoopComposition {
         return bodyCount <= cardinalityTotal;
     }
 
-    public List<JsonObject> gaps() {
-        return Collections.unmodifiableList(gaps);
-    }
-
     public void gap(String reason, String subject, String detail) {
         String key = reason + "\n" + subject;
         if (!gapKeys.add(key)) return;
@@ -405,7 +394,6 @@ public final class BoundedLoopComposition {
         public final String boundAuthority;
         public final String classification;
         public final String classificationAuthority;
-        public final List<String> controlSiteIds;
         public final String identity;
         public final boolean failureRelevant;
         private final List<JsonObject> pathCounts = new ArrayList<>();
@@ -414,7 +402,6 @@ public final class BoundedLoopComposition {
                             String runtimeLoopId, int bodyBound,
                             String boundAuthority, String classification,
                             String classificationAuthority,
-                            JsonArray controlSites,
                             boolean failureRelevant) {
             this.occurrenceId = occurrenceId;
             this.loopSiteId = loopSiteId;
@@ -423,11 +410,6 @@ public final class BoundedLoopComposition {
             this.boundAuthority = boundAuthority;
             this.classification = classification;
             this.classificationAuthority = classificationAuthority;
-            List<String> sites = new ArrayList<>();
-            for (JsonElement site : controlSites) {
-                if (site.isJsonPrimitive()) sites.add(site.getAsString());
-            }
-            this.controlSiteIds = Collections.unmodifiableList(sites);
             this.identity = occurrenceId + "\n" + loopSiteId;
             this.failureRelevant = failureRelevant;
         }

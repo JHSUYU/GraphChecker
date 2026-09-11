@@ -328,8 +328,4 @@ bool SymString::has_sym_exp(int field_offset) {
   return false;
 }
 
-bool SymString::get_condition_value(oop s1, oop s2, std::string comp) {
-  return false;
-}
-
 #endif

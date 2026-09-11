@@ -73,7 +73,6 @@ public:
 
   inline int size() { return _tbl.size(); }
 
-  void print();
 };
 
 #endif

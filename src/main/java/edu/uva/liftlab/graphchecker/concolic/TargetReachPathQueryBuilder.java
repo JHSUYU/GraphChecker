@@ -453,8 +453,6 @@ public final class TargetReachPathQueryBuilder {
             result.add("coverageGaps", gaps);
         }
         result.add("selectedTargetOccurrence", selected.encoded.deepCopy());
-        result.addProperty("constraintAuthority",
-                "RECORDED_TARGET_PREFIX_V1");
         return expressions.compact(result);
     }
 

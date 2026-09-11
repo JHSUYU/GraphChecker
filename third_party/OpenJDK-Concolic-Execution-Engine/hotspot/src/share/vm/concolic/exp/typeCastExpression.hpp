@@ -28,8 +28,8 @@ public:
       : _exp_to_cast(exp),
         _source_type(source_type == NULL ? "" : source_type),
         _target_type(target_type == NULL ? "" : target_type) {
-    // SymbolExpression::_type remains the legacy result descriptor consumed
-    // by existing JSON readers.  Keep it in sync with the explicit target.
+    // SymbolExpression::_type is the result descriptor serialized for every
+    // symbolic expression. Keep it in sync with the explicit cast target.
     set_type(_target_type);
   }
 

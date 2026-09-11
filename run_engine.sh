@@ -719,7 +719,7 @@ do_workload() {
 #
 # Two directory rules hold everywhere below: an iteration or worker directory
 # is written once and never rewritten, and every consumer is handed the exact
-# path it must read. `latest` is a diagnostic symlink and is never read back.
+# path it must read.
 # ---------------------------------------------------------------------------
 
 campaign_root=""
@@ -2656,7 +2656,6 @@ campaign_publish_iteration_manifest() {
   rm -f "${members}"
   require_nonempty "iteration manifest" \
     "${iteration_dir}/iteration_manifest.json"
-  ln -sfn "$(basename "${iteration_dir}")" "${campaign_root}/latest"
 }
 
 # Composition consumes the closure-wide local cases. Consumer anchors inside

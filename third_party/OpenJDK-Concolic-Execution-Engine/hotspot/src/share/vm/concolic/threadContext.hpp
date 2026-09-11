@@ -43,11 +43,6 @@ class ThreadContext {
 private:
   struct BranchEvent {
     jlong event_id;
-    jlong context_id;
-    jlong owner_java_thread_id;
-    jlong owner_os_thread_id;
-    std::string region_id;
-    std::string task_id;
     std::string site_id;
     int occurrence;
     bool outcome;
@@ -218,7 +213,6 @@ public:
                                 int opcode);
   std::string get_branch_events() const;
 
-  void set_pc_enabled(bool pathConditionEnabled);
   void set_pc_admitted(bool pathConditionAdmitted);
   int pause_path_condition_recording();
   int resume_path_condition_recording();
@@ -227,15 +221,6 @@ public:
   }
 
 public:
-  void __attribute__((optimize("O0"))) printSymExp(oop obj) {
-    obj->print();
-    SymInstance *sym_inst = this->find_sym_inst(obj);
-    tty->print_cr("is symbolic: %d", sym_inst == NULL ? 0 : 1);
-    if (sym_inst != NULL) {
-      sym_inst->print();
-    }
-  }
-
   inline MethodSymbolizer &get_method_symbolizer() {
     return _method_symbolizer;
   }
@@ -421,9 +406,6 @@ private:
   }
 
 public:
-  void print();
-  void print_stack_trace();
-  static void memory_leak_check();
 };
 
 #endif

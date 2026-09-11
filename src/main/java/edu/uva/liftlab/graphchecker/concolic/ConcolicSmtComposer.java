@@ -8,7 +8,6 @@ import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
@@ -43,7 +42,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -55,7 +53,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
@@ -1116,7 +1113,6 @@ public final class ConcolicSmtComposer {
     }
 
     private static final class Emitter {
-        private final InvocationKey fatalInvocation;
         private final List<String> preamble = new ArrayList<>();
         private final Map<String, String> declarations =
                 new LinkedHashMap<>();
@@ -1203,9 +1199,6 @@ public final class ConcolicSmtComposer {
         /** Compact evidence for each direct read-from arm in the formula. */
         private final JsonArray guardedReadChoices = new JsonArray();
 
-        /** Selectors already lowered into region-local path implications. */
-        private final Set<String> loweredCaseSelectors =
-                new LinkedHashSet<>();
         private final Set<String> loweredRegionCaseOwners =
                 new LinkedHashSet<>();
         private final Map<InvocationKey, Set<String>> casePartitions =
@@ -1283,7 +1276,6 @@ public final class ConcolicSmtComposer {
         private InvocationKey currentInvocation;
 
         private Emitter(InvocationKey fatalInvocation) {
-            this.fatalInvocation = fatalInvocation;
             this.currentInvocation = fatalInvocation;
         }
 
@@ -4406,7 +4398,6 @@ public final class ConcolicSmtComposer {
                 assertNamed("case_selector_definition_"
                                 + smtName(loweredIdentity),
                         "(=> " + selector + " " + and(conditions) + ")");
-                loweredCaseSelectors.add(selector);
                 casePartitions.computeIfAbsent(invocation,
                         ignored -> new LinkedHashSet<>()).add(baseSelector);
                 if (!observationSelector.isEmpty()) {
@@ -4929,27 +4920,19 @@ public final class ConcolicSmtComposer {
     /**
      * Chooses the value sort for one VM guarded read.  The VM's generic
      * reference tag ({@code L}/{@code REF}) loses the declared field type,
-     * while the stable replay anchor retains its JVM descriptor.  An exact
+     * while the replay metadata retains its JVM descriptor.  An exact
      * String descriptor proves the String refinement before arms are lowered;
-     * other reference descriptors retain the REF representation.  If an old
-     * artifact lacks a descriptor, unanimous String arms provide the only
-     * safe refinement; any real mixture remains unsupported.
+     * other reference descriptors retain the REF representation.  Missing
+     * metadata remains unsupported rather than being inferred from arms.
      */
     static Sort guardedReadSort(JsonObject node, Sort expected,
                                 Collection<Sort> armSorts) {
-        String encodedType = string(node, "_java_type");
         String effectiveType = guardedReadJavaType(node);
         Sort result = sortOfJava(effectiveType);
         if (result == Sort.VALUE) result = expected;
 
         Collection<Sort> candidates = armSorts == null
                 ? Collections.emptyList() : armSorts;
-        if (erasedReferenceType(encodedType)
-                && !hasPreciseReplayReadDescriptor(node)
-                && !candidates.isEmpty()
-                && candidates.stream().allMatch(sort -> sort == Sort.STRING)) {
-            result = Sort.STRING;
-        }
         if ((result == null || result == Sort.VALUE)
                 && !candidates.isEmpty()) {
             result = candidates.iterator().next();
@@ -4967,13 +4950,8 @@ public final class ConcolicSmtComposer {
         return sortOfJava(descriptor) == Sort.STRING ? descriptor : encoded;
     }
 
-    private static boolean hasPreciseReplayReadDescriptor(JsonObject node) {
-        String descriptor = replayReadDescriptor(node);
-        return !descriptor.isEmpty() && !erasedReferenceType(descriptor);
-    }
-
     private static String replayReadDescriptor(JsonObject node) {
-        return string(object(node, "replayReadAnchor"), "descriptor");
+        return string(node, "replayReadDescriptor");
     }
 
     private static boolean erasedReferenceType(String type) {

@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.junit.Test;
 

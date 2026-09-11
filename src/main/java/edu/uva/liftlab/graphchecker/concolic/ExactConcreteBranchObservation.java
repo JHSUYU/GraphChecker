@@ -163,10 +163,6 @@ public final class ExactConcreteBranchObservation {
 
     public String siteId() { return siteId; }
 
-    public String method() { return method; }
-
-    public int unitIndex() { return unitIndex; }
-
     public int occurrence() { return occurrence; }
 
     public boolean sourceTakenOutcome() { return sourceTakenOutcome; }
@@ -177,12 +173,6 @@ public final class ExactConcreteBranchObservation {
     public boolean isMultiwaySwitch() {
         return isSwitchObservation() && caseKeys.size() > 1;
     }
-
-    public String branchKind() { return branchKind; }
-
-    public List<Integer> caseKeys() { return caseKeys; }
-
-    public int observedSuccessorIndex() { return observedSuccessorIndex; }
 
     /** Exact decision token used when comparing one observed execution. */
     public String exactDecisionToken() {

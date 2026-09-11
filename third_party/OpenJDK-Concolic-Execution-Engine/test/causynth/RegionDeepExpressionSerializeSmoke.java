@@ -324,8 +324,6 @@ public final class RegionDeepExpressionSerializeSmoke {
     }
 
     private static void requireDagArtifact(String json) {
-        require(json.contains("\"expressionEncoding\":\"VM_SESSION_DAG_V1\""),
-                "missing DAG encoding marker: " + head(json));
         require(json.contains("\"_type\":\"VmExpressionReference\""),
                 "expression root was not encoded as a reference: "
                         + head(json));

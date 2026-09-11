@@ -78,8 +78,6 @@ public final class VmHandoffEvidence {
     public static final String BOUNDARY_FAMILY_KEY = "boundaryFamilyKey";
     /** Frozen topology epoch in which the family was observed. */
     public static final String TOPOLOGY_EPOCH = "topologyEpoch";
-    /** Occurrence-local ordinal of this receive site. */
-    public static final String BOUNDARY_ORDINAL = "boundaryOrdinal";
     /** Exact producer execution that exported the live handle. */
     public static final String PRODUCER_TASK_ID = "producerTaskId";
     public static final String PRODUCER_OCCURRENCE_ID =
@@ -191,17 +189,15 @@ public final class VmHandoffEvidence {
      */
     public static JsonObject withBoundaryFamily(JsonObject event,
                                                 String familyKey,
-                                                String topologyEpoch,
-                                                int ordinal) {
+                                                String topologyEpoch) {
         JsonObject result = event == null ? new JsonObject()
                 : shallowCopy(event);
         result.addProperty(BOUNDARY_FAMILY_KEY, nonNull(familyKey));
         result.addProperty(TOPOLOGY_EPOCH, nonNull(topologyEpoch));
-        result.addProperty(BOUNDARY_ORDINAL, ordinal);
         JsonElement raw = result.get(EXPRESSION);
         if (raw != null && raw.isJsonObject()) {
             result.add(EXPRESSION, VmExpressionIr.boundaryReference(
-                    raw.getAsJsonObject(), familyKey, topologyEpoch));
+                    raw.getAsJsonObject(), familyKey));
         }
         return result;
     }

@@ -121,8 +121,6 @@ private:
   }
 
 public:
-  void print();
-
   /**
    * Serializes the half-open index range [start, end) as a JSON array, and
    * returns the number of array entries written.

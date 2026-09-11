@@ -98,7 +98,6 @@ public:
    * never delete the expression it just handed over.
    */
   static void record_expression(Expression *expression);
-  static size_t expression_count();
 
   /**
    * The session's shadow heap.  Valid only while the session is open; every

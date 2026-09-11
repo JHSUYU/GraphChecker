@@ -1,6 +1,5 @@
 #ifdef ENABLE_CONCOLIC
 
-#include <concolic/exp/methodExpression.hpp>
 #include "concolic/concolicMngr.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/containerSupport.hpp"
@@ -173,58 +172,6 @@ bool MethodSymbolizerHandle::general_check_param_symbolized_helper(BasicType typ
   }
 
   return recording;
-}
-
-Expression __attribute__((optimize("O0")))
-*MethodSymbolizerHandle::general_result_expression() {
-  Expression *exp = NULL;
-  BasicType type = this->get_result_type();
-  oop obj = NULL;
-
-  switch (type) {
-    case T_VOID:
-      exp = SymbolExpression::get(Sym_VOID);
-      break;
-    case T_OBJECT:
-      obj = this->get_result<oop>(type);
-      if (obj != NULL) {
-        SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
-        if (sym_inst != NULL) {
-          exp = sym_inst->get_or_create_ref_exp(obj);
-        } else {
-          exp = SymbolExpression::get(Sym_NULL);
-        }
-      } else {
-        exp = SymbolExpression::get(Sym_NULL);
-      }
-      break;
-    case T_BOOLEAN:
-    case T_INT:
-      exp = new MethodReturnSymbolExp(type);
-      break;
-    default:
-      tty->print_cr("%c", type2char(type));
-      this->get_callee_method()->print_name(tty);
-      tty->cr();
-      ShouldNotCallThis();
-      break;
-  }
-
-  if (exp == NULL) {
-    tty->print_cr("exp is NULL for ");
-    obj->print();
-  }
-
-  return exp;
-}
-
-Expression __attribute__((optimize("O0")))
-*MethodSymbolizerHandle::general_prepare_result_helper() {
-  Expression *exp = general_result_expression();
-  ConcolicMngr::record_path_condition(new MethodExpression(
-      this->get_callee_holder_name(), this->get_callee_name(),
-      this->get_param_list(), exp));
-  return exp;
 }
 
 #endif

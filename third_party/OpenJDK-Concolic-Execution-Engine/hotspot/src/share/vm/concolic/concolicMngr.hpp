@@ -134,7 +134,6 @@ public:
    */
   static void detach();
   static jlong next_context_id();
-  static int session_member_count();
 
   /**
    * Takes the workload session's reference on the symbolic session, opening
@@ -281,7 +280,6 @@ public:
       const char *descriptor);
   static void symbolizeMethod(Handle holder_name_handle,
                               Handle callee_name_handle);
-  static void printSymExp(Handle handle);
 
   /* let compiler not optimize this  code!! */
   inline static bool __attribute__((optimize("O0"))) has_symbolized_method() {

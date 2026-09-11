@@ -298,8 +298,7 @@ public final class BranchReplayContract {
                 loops.isExitSite(source.siteId)));
         loops.advance(source.siteId, sourceToken);
         enableBoundedLoopSupport(decisions);
-        return new RuntimeSchedule(runtimePrefix, decisions, source.siteId,
-                source.occurrence, !source.sourceTakenOutcome, loopCatalog);
+        return new RuntimeSchedule(decisions, source.siteId, loopCatalog);
     }
 
     /**
@@ -420,21 +419,16 @@ public final class BranchReplayContract {
     /** Branch metadata needed to validate replay order without its SMT DAG. */
     private static final class RuntimeWitness {
         private final String siteId;
-        private final String method;
-        private final int unitIndex;
         private final int occurrence;
         private final boolean sourceTakenOutcome;
         private final int decisionOrdinal;
         private final String symbolicSupportDigest;
 
-        private RuntimeWitness(String siteId, String method, int unitIndex,
-                               int occurrence,
+        private RuntimeWitness(String siteId, int occurrence,
                                boolean sourceTakenOutcome,
                                int decisionOrdinal,
                                String symbolicSupportDigest) {
             this.siteId = siteId;
-            this.method = method;
-            this.unitIndex = unitIndex;
             this.occurrence = occurrence;
             this.sourceTakenOutcome = sourceTakenOutcome;
             this.decisionOrdinal = decisionOrdinal;
@@ -483,7 +477,7 @@ public final class BranchReplayContract {
                 throw new IllegalArgumentException(
                         "replay branch witness schedule is incomplete");
             }
-            return new RuntimeWitness(siteId, method, unitIndex, occurrence,
+            return new RuntimeWitness(siteId, occurrence,
                     outcome.getAsBoolean(), decisionOrdinal,
                     support);
         }
@@ -596,44 +590,25 @@ public final class BranchReplayContract {
 
     /** Predicate-free projection consumed by the runtime replay matcher. */
     public static final class RuntimeSchedule {
-        private final List<ExactConcreteBranchObservation> runtimePrefix;
         private final List<RuntimeDecision> decisions;
         private final String sourceSiteId;
-        private final int sourceOccurrence;
-        private final boolean requiredTakenOutcome;
         private final LoopMembership loopMembership;
 
         private RuntimeSchedule(
-                List<ExactConcreteBranchObservation> runtimePrefix,
                 List<RuntimeDecision> decisions,
-                String sourceSiteId, int sourceOccurrence,
-                boolean requiredTakenOutcome,
+                String sourceSiteId,
                 LoopMembership loopMembership) {
-            this.runtimePrefix = Collections.unmodifiableList(
-                    new ArrayList<>(runtimePrefix));
             this.decisions = Collections.unmodifiableList(
                     new ArrayList<>(decisions));
             this.sourceSiteId = sourceSiteId;
-            this.sourceOccurrence = sourceOccurrence;
-            this.requiredTakenOutcome = requiredTakenOutcome;
             this.loopMembership = loopMembership == null
                     ? new LoopMembership() : loopMembership.fresh();
-        }
-
-        public List<ExactConcreteBranchObservation> runtimePrefix() {
-            return runtimePrefix;
         }
 
         /** Compact events consumed by the runtime replay matcher. */
         public List<RuntimeDecision> decisions() { return decisions; }
 
         public String sourceSiteId() { return sourceSiteId; }
-
-        public int sourceOccurrence() { return sourceOccurrence; }
-
-        public boolean requiredTakenOutcome() {
-            return requiredTakenOutcome;
-        }
 
     }
 

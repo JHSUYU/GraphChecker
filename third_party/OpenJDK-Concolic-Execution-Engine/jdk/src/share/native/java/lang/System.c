@@ -38,7 +38,6 @@
 static JNINativeMethod methods[] = {
     {"currentTimeMillis",   "()J",                     (void *)&JVM_CurrentTimeMillis},
     {"nanoTime",            "()J",                     (void *)&JVM_NanoTime},
-    {"printObjInfo",        "(" OBJ ")V",              (void *)&JVM_PrintObjInfo},
     {"startConcolicRegion", "(Ljava/lang/String;Ljava/lang/String;)J",
                                                         (void *)&JVM_StartConcolicRegion},
     {"getCurrentConcolicContextId", "()J",
@@ -110,7 +109,6 @@ static JNINativeMethod methods[] = {
     {"getConcolicRegionSummary", "()Ljava/lang/String;",
                                                         (void *)&JVM_GetConcolicRegionSummary},
     {"finishConcolicRegion", "()Ljava/lang/String;",   (void *)&JVM_FinishConcolicRegion},
-    {"printSymExp",         "(" OBJ ")V",              (void *)&JVM_PrintSymExp},
 };
 
 #undef OBJ

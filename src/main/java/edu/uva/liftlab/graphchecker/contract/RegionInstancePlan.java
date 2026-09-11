@@ -30,18 +30,9 @@ public final class RegionInstancePlan extends PlanRow {
                     .PLAN_FIELD
     };
     private final List<Goal> goals;
-    private final Set<String> demandedByRegionIds;
 
     private RegionInstancePlan(JsonObject source) {
         super(source, "region plan", true);
-        Set<String> consumers = new LinkedHashSet<>();
-        for (JsonElement element : array(encoded, "demandedByRegionIds")) {
-            if (element.isJsonPrimitive()
-                    && !element.getAsString().isEmpty()) {
-                consumers.add(element.getAsString());
-            }
-        }
-        demandedByRegionIds = Collections.unmodifiableSet(consumers);
         List<Goal> decoded = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>();
         for (JsonElement element : array(encoded, "closureGoals")) {
@@ -78,9 +69,6 @@ public final class RegionInstancePlan extends PlanRow {
     }
 
     public List<Goal> goals() { return goals; }
-
-    /** The consumer regions a shared-location admission serves. */
-    public Set<String> demandedByRegionIds() { return demandedByRegionIds; }
 
     void writeTaskIdentityTo(JsonObject target) {
         target.addProperty("sourceKey", sourceKey());

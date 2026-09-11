@@ -52,7 +52,6 @@ private:
   static std::map<std::string, bool> init_skip_method_names();
   static void symbolize_split_elements(MethodSymbolizerHandle &handle,
                                        objArrayOop result);
-  static bool get_condition_value(oop s1, oop s2, std::string comp);
 };
 
 #endif // ENABLE_CONCOLIC

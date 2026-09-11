@@ -57,8 +57,8 @@ Expression *ConsumerBoundaryExpression::logical_negation() {
 }
 
 std::string ConsumerBoundaryExpression::get_name() {
-  // Several legacy models use get_name() as a value rendering.  An identity
-  // marker must not alter it.
+  // get_name() renders expression values polymorphically. An identity marker
+  // must not alter the wrapped value.
   return _expression->get_name();
 }
 

@@ -94,10 +94,6 @@ public final class SummaryBranchMapping {
         return new SummaryBranchMapping(null, observation, -1, policy);
     }
 
-    public static SummaryBranchMapping fromJson(JsonObject json) {
-        return fromJson(json, false);
-    }
-
     /** Decoder-owned view used while importing a shared expression DAG. */
     static SummaryBranchMapping fromImmutableJson(JsonObject json) {
         return fromJson(json, true);

@@ -1564,19 +1564,11 @@ public final class CausynthTraceRecorder {
             return;
         } else if ("SOURCE_REGISTER".equals(eventKind)
                 || "SOURCE_ALIAS".equals(eventKind)
-                || "SOURCE_RESTART".equals(eventKind)
-                || "REQUEST_BEGIN".equals(eventKind)
-                || "REQUEST_END".equals(eventKind)) {
+                || "SOURCE_RESTART".equals(eventKind)) {
             trace.sources.add(new SourceTraceEvent(
                     row.longValue("seq", 0L), eventKind,
                     sourceRef(row), relatedSourceRef(row),
-                    row.longValue("requestId", 0L),
-                    row.stringValue("requestKey"),
-                    row.stringValue("apiName"),
-                    row.stringValue("aliasClass"),
-                    row.intValue("objectId", 0),
-                    row.longValue("laneId", 0L),
-                    row.longValue("spanId", 0L)));
+                    row.intValue("objectId", 0)));
         } else if ((!skeletonOnly || "CALL_SITE_ENTER".equals(eventKind))
                 && isExecutionEventKind(eventKind)) {
             trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
@@ -1584,7 +1576,6 @@ public final class CausynthTraceRecorder {
                     row.stringValue("method"),
                     row.longValue("callId", 0L),
                     row.longValue("invocationId", 0L),
-                    0L,
                     row.stringValue("siteId"),
                     row.stringValue("declaredCallee"),
                     row.intValue("argumentIndex", -1),
@@ -1799,11 +1790,7 @@ public final class CausynthTraceRecorder {
             }
             String key = arg.substring(2);
             String value = "true";
-            int equals = key.indexOf('=');
-            if (equals >= 0) {
-                value = key.substring(equals + 1);
-                key = key.substring(0, equals);
-            } else if (i + 1 < args.length && args[i + 1] != null
+            if (i + 1 < args.length && args[i + 1] != null
                     && !args[i + 1].startsWith("--")) {
                 value = args[++i];
             }
@@ -1898,31 +1885,16 @@ public final class CausynthTraceRecorder {
         private final String kind;
         private final SourceRef source;
         private final SourceRef relatedSource;
-        private final long requestId;
-        private final String requestKey;
-        private final String apiName;
-        private final String aliasClass;
         /** Recorded identity of the object this row registered, or 0. */
         private final int objectId;
-        private final long laneId;
-        private final long spanId;
 
         private SourceTraceEvent(long seq, String kind, SourceRef source,
-                                 SourceRef relatedSource, long requestId,
-                                 String requestKey, String apiName,
-                                 String aliasClass, int objectId,
-                                 long laneId, long spanId) {
+                                 SourceRef relatedSource, int objectId) {
             this.objectId = objectId;
             this.seq = seq;
             this.kind = MapFields.safe(kind);
             this.source = source;
             this.relatedSource = relatedSource;
-            this.requestId = requestId;
-            this.requestKey = MapFields.safe(requestKey);
-            this.apiName = MapFields.safe(apiName);
-            this.aliasClass = MapFields.safe(aliasClass);
-            this.laneId = laneId;
-            this.spanId = spanId;
         }
     }
 

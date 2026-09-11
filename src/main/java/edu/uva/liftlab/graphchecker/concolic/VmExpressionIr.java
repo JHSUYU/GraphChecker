@@ -116,13 +116,10 @@ final class VmExpressionIr {
     }
 
     static JsonObject boundaryReference(JsonObject boundary,
-                                        String familyKey,
-                                        String topologyEpoch) {
+                                        String familyKey) {
         JsonObject reference = JsonFields.shallowCopy(boundary);
         reference.addProperty("_type", CONSUMER_BOUNDARY_REFERENCE_TYPE);
         reference.addProperty(FAMILY_KEY, familyKey == null ? "" : familyKey);
-        reference.addProperty(TOPOLOGY_EPOCH,
-                topologyEpoch == null ? "" : topologyEpoch);
         return reference;
     }
 

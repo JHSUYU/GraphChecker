@@ -2,7 +2,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-command=${1:?usage: run.sh build|config|validate|catalog|campaign}
+command=${1:?usage: run.sh build|config|validate|campaign}
 shift
 if [[ "${command}" == build ]]; then
   exec "${here}/build.sh" "$@"
