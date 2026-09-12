@@ -406,6 +406,25 @@ public final class ConcolicConstraintSolver {
                     public Sort castSort(String descriptor) {
                         return ConcolicConstraintSolver.castSort(descriptor);
                     }
+
+                    @Override
+                    public VmTermLowering.RenderedInteger renderedInteger(
+                            JsonElement element, String origin) {
+                        SplitPrefix match = exactSplitPrefix(element);
+                        if (!match.complete()) {
+                            return VmTermLowering.RenderedInteger.gap(
+                                    "ROUNDTRIP_NOT_PROVED_" + match.gap);
+                        }
+                        return VmTermLowering.RenderedInteger.of(term(
+                                match.integerExpression, Sort.INT,
+                                origin + ":parseInt"));
+                    }
+
+                    @Override
+                    public void assertJavaIntRange(Term integer) {
+                        ConcolicConstraintSolver.Encoder.this
+                                .assertJavaIntRange(integer);
+                    }
                 };
 
         private Encoder() {
@@ -2311,8 +2330,8 @@ public final class ConcolicConstraintSolver {
 
         private Term booleanStringResult(String predicate,
                                          boolean negated) {
-            return Term.vm(negated ? "(not " + predicate + ")"
-                    : predicate, Sort.BOOL);
+            return VmTermLowering.booleanStringResult(predicate, negated,
+                    "true");
         }
 
         private String methodConstraint(JsonObject expression,
@@ -2346,30 +2365,7 @@ public final class ConcolicConstraintSolver {
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}. */
         private Term parseIntTerm(JsonObject expression, String origin) {
-            JsonArray params = array(expression, "_param_list");
-            if (params.size() != 1 && params.size() != 2) {
-                return codecGap("java/lang/Integer.parseInt", "ARITY", origin);
-            }
-            if (params.size() == 2) {
-                Integer radix = exactIntLiteral(params.get(1));
-                if (radix == null || radix != 10) {
-                    return codecGap("java/lang/Integer.parseInt",
-                            "RADIX_NOT_LITERAL_10", origin);
-                }
-            }
-            SplitPrefix match = exactSplitPrefix(params.get(0));
-            if (!match.complete()) {
-                return codecGap("java/lang/Integer.parseInt",
-                        "ROUNDTRIP_NOT_PROVED_" + match.gap, origin);
-            }
-            Term integer = term(match.integerExpression, Sort.INT,
-                    origin + ":parseInt");
-            if (integer == null || integer.sort != Sort.INT) {
-                return codecGap("java/lang/Integer.parseInt",
-                        "ROUNDTRIP_SOURCE_NOT_INT", origin);
-            }
-            assertJavaIntRange(integer);
-            return integer;
+            return VmTermLowering.parseIntTerm(lowering, expression, origin);
         }
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code splitElementTerm}. */
@@ -2488,14 +2484,12 @@ public final class ConcolicConstraintSolver {
 
         private Term javaIntString(Term integer) {
             usesJavaIntString = true;
-            return Term.nonNullString("(java_int_to_string "
-                    + integer.text + ")", "true");
+            return VmTermLowering.javaIntString(integer);
         }
 
         private void assertJavaIntRange(Term integer) {
             if (!javaIntRangeAssertions.add(integer.text)) return;
-            assertions.add("(and (<= (- 2147483648) " + integer.text
-                    + ") (<= " + integer.text + " 2147483647))");
+            assertions.add(VmTermLowering.javaIntRange(integer.text));
         }
 
         /** Emits only reachable shared terms and inlines one-use aliases. */

@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -117,6 +118,16 @@ final class VmTermLowering {
 
         /** The sort one JVM cast descriptor denotes for this caller. */
         Sort castSort(String descriptor);
+
+        /**
+         * The integer this element is the exact Integer.toString rendering
+         * of.  The two callers prove the round trip over different element
+         * analyses, so each states its own gap.
+         */
+        RenderedInteger renderedInteger(JsonElement element, String origin);
+
+        /** States {@link #javaIntRange} for one parsed integer. */
+        void assertJavaIntRange(Term integer);
     }
 
     /**
@@ -323,6 +334,84 @@ final class VmTermLowering {
         GuardedReadUse held = uses.computeIfAbsent(readIdentity,
                 ignored -> new LinkedHashMap<>()).putIfAbsent(identity, use);
         if (held != null && !held.same(use)) ambiguous.accept(identity);
+    }
+
+
+    /** The name Integer.parseInt is refused under. */
+    private static final String PARSE_INT = "java/lang/Integer.parseInt";
+
+    /**
+     * The integer an element is the exact Integer.toString rendering of, or
+     * the named gap that stopped the round-trip proof.
+     */
+    static final class RenderedInteger {
+        private final Term integer;
+        private final String gap;
+
+        private RenderedInteger(Term integer, String gap) {
+            this.integer = integer;
+            this.gap = gap;
+        }
+
+        static RenderedInteger of(Term integer) {
+            return new RenderedInteger(integer, "");
+        }
+
+        static RenderedInteger gap(String gap) {
+            return new RenderedInteger(null, gap);
+        }
+    }
+
+    /**
+     * Integer.parseInt inverts Integer.toString only on an element that is
+     * that rendering and nothing else, in decimal, and only inside Java's
+     * int range - which is then stated as the parse's definedness.
+     */
+    static Term parseIntTerm(Policy policy, JsonObject expression,
+                             String origin) {
+        JsonArray params = JsonFields.array(expression, "_param_list");
+        if (params.size() != 1 && params.size() != 2) {
+            return codecGap(policy, PARSE_INT, "ARITY", origin, Sort.INT);
+        }
+        if (params.size() == 2) {
+            Integer radix = VmExpressionIr.exactIntLiteral(params.get(1));
+            if (radix == null || radix != 10) {
+                return codecGap(policy, PARSE_INT, "RADIX_NOT_LITERAL_10",
+                        origin, Sort.INT);
+            }
+        }
+        RenderedInteger rendered = policy.renderedInteger(params.get(0),
+                origin);
+        if (!rendered.gap.isEmpty()) {
+            return codecGap(policy, PARSE_INT, rendered.gap, origin,
+                    Sort.INT);
+        }
+        Term integer = rendered.integer;
+        if (integer == null || integer.sort != Sort.INT) {
+            return codecGap(policy, PARSE_INT, "ROUNDTRIP_SOURCE_NOT_INT",
+                    origin, Sort.INT);
+        }
+        policy.assertJavaIntRange(integer);
+        return integer;
+    }
+
+    /** Java's int range, stated over one lowered integer. */
+    static String javaIntRange(String integer) {
+        return "(and (<= (- 2147483648) " + integer + ") (<= " + integer
+                + " 2147483647))";
+    }
+
+    /** Java's decimal Integer.toString of one lowered integer. */
+    static Term javaIntString(Term integer) {
+        return Term.nonNullString("(java_int_to_string " + integer.text + ")",
+                integer.precondition);
+    }
+
+    /** One String predicate, possibly negated by its call site. */
+    static Term booleanStringResult(String predicate, boolean negated,
+                                    String precondition) {
+        return Term.of(negated ? "(not " + predicate + ")" : predicate,
+                Sort.BOOL).withPrecondition(precondition);
     }
 
     /** One lowered VM expression: its SMT text plus its Java-level facts. */

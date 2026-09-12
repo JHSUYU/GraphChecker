@@ -1309,6 +1309,33 @@ public final class ConcolicSmtComposer {
                     public Sort castSort(String descriptor) {
                         return ConcolicSmtComposer.castSort(descriptor);
                     }
+
+                    @Override
+                    public VmTermLowering.RenderedInteger renderedInteger(
+                            JsonElement element, String origin) {
+                        SplitSegment match = exactSplitSegment(element);
+                        if (!match.complete()) {
+                            return VmTermLowering.RenderedInteger.gap(
+                                    "ROUNDTRIP_NOT_PROVED_" + match.gap);
+                        }
+                        // parseInt inverts Integer.toString only when the
+                        // element is that rendering and nothing else; any
+                        // surrounding text would need a parser, not a proof.
+                        SplitPiece source = match.singleIntegerPiece();
+                        if (source == null) {
+                            return VmTermLowering.RenderedInteger.gap(
+                                    "ROUNDTRIP_ELEMENT_NOT_ONE_INT_"
+                                            + "RENDERING");
+                        }
+                        return VmTermLowering.RenderedInteger.of(
+                                integerPieceTerm(source));
+                    }
+
+                    @Override
+                    public void assertJavaIntRange(Term integer) {
+                        ConcolicSmtComposer.Emitter.this.assertJavaIntRange(
+                                integer);
+                    }
                 };
 
         private Emitter(InvocationKey fatalInvocation) {
@@ -3918,45 +3945,15 @@ public final class ConcolicSmtComposer {
         private Term booleanStringResult(String predicate,
                                          boolean negated,
                                          String precondition) {
-            return Term.of(negated ? "(not " + predicate + ")"
-                    : predicate, Sort.BOOL).withPrecondition(precondition);
+            return VmTermLowering.booleanStringResult(predicate, negated,
+                    precondition);
         }
 
         /**
          * Recognizes the sound Java round trip
          */
         private Term parseIntTerm(JsonObject expression) {
-            JsonArray params = array(expression, "_param_list");
-            if (params.size() != 1 && params.size() != 2) {
-                return codecGap("java/lang/Integer.parseInt", "ARITY",
-                        Sort.INT);
-            }
-            if (params.size() == 2) {
-                Integer radix = exactIntLiteral(params.get(1));
-                if (radix == null || radix != 10) {
-                    return codecGap("java/lang/Integer.parseInt",
-                            "RADIX_NOT_LITERAL_10", Sort.INT);
-                }
-            }
-            SplitSegment match = exactSplitSegment(params.get(0));
-            if (!match.complete()) {
-                return codecGap("java/lang/Integer.parseInt",
-                        "ROUNDTRIP_NOT_PROVED_" + match.gap, Sort.INT);
-            }
-            // parseInt inverts Integer.toString only when the element is
-            // that rendering and nothing else; any surrounding text would
-            SplitPiece source = match.singleIntegerPiece();
-            if (source == null) {
-                return codecGap("java/lang/Integer.parseInt",
-                        "ROUNDTRIP_ELEMENT_NOT_ONE_INT_RENDERING", Sort.INT);
-            }
-            Term integer = integerPieceTerm(source);
-            if (integer.sort != Sort.INT) {
-                return codecGap("java/lang/Integer.parseInt",
-                        "ROUNDTRIP_SOURCE_NOT_INT", Sort.INT);
-            }
-            assertJavaIntRange(integer);
-            return integer;
+            return VmTermLowering.parseIntTerm(lowering, expression, "");
         }
 
         private Term splitElementTerm(JsonObject expression) {
@@ -4151,16 +4148,14 @@ public final class ConcolicSmtComposer {
         }
 
         private Term javaIntString(Term integer) {
-            return Term.nonNullString("(java_int_to_string "
-                    + integer.text + ")", integer.precondition);
+            return VmTermLowering.javaIntString(integer);
         }
 
         private void assertJavaIntRange(Term integer) {
             String key = currentGuard + "\u0000" + integer.text;
             if (!javaIntRangeAssertions.add(key)) return;
             assertNamed("java_int_range_" + javaIntRangeAssertions.size(),
-                    "(and (<= (- 2147483648) " + integer.text + ")"
-                            + " (<= " + integer.text + " 2147483647))");
+                    VmTermLowering.javaIntRange(integer.text));
         }
 
         private void assertJavaIntegralDomain(String term, Sort sort,
