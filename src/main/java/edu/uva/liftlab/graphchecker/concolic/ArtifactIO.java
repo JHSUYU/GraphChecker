@@ -112,8 +112,12 @@ public final class ArtifactIO {
      * atomic move onto the name.  A reader of the artifact never sees a
      * partial write, and a write that fails leaves the previous artifact
      * where it was rather than truncating it.
+     *
+     * <p>Public because the runtime trace recorder stages a streamed
+     * artifact the same way; it is the one staging envelope in this
+     * repository.</p>
      */
-    private static void atomicReplace(Path path, Body body)
+    public static void atomicReplace(Path path, Body body)
             throws IOException {
         Path absolute = path.toAbsolutePath().normalize();
         Path parent = absolute.getParent();
@@ -133,13 +137,21 @@ public final class ArtifactIO {
                 Files.move(temporary, path,
                         StandardCopyOption.REPLACE_EXISTING);
             }
-        } finally {
-            Files.deleteIfExists(temporary);
+        } catch (IOException | RuntimeException | Error failure) {
+            // A successful move consumed the staged file, so this runs only
+            // on the failing path -- and removing the staging is cleanup:
+            // it must never replace what actually went wrong.
+            try {
+                Files.deleteIfExists(temporary);
+            } catch (IOException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
         }
     }
 
     /** What one artifact's bytes are, given the staged file to write them to. */
-    private interface Body {
+    public interface Body {
         void writeTo(BufferedWriter output) throws IOException;
     }
 

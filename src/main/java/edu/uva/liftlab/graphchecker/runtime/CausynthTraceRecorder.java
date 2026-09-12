@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.concolic.ArtifactIO;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
@@ -15,8 +16,6 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -1128,55 +1127,45 @@ public final class CausynthTraceRecorder {
             throw new IOException("selected region skeletons must not "
                     + "overwrite the candidate skeletons: " + candidates);
         }
-        File parent = output.getParentFile();
-        if (parent != null) {
-            Files.createDirectories(parent.toPath());
-        }
         // A row that fails the root check throws mid-stream, so the rows are
         // staged beside the artifact and moved onto it only once every row
         // has been written: a failed pass leaves the previous file intact
-        // rather than a truncated one.
-        Path target = output.toPath();
-        Path staged = target.resolveSibling(output.getName() + ".tmp");
-        try (BufferedReader reader = MapFields.rowReader(candidates);
-             BufferedWriter writer = Files.newBufferedWriter(staged,
-                     StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
+        // rather than a truncated one.  ArtifactIO owns that staging
+        // envelope, including the non-atomic-move fallback.
+        ArtifactIO.atomicReplace(output.toPath(), writer -> {
+            try (BufferedReader reader = MapFields.rowReader(candidates)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.trim().isEmpty()) {
+                        continue;
+                    }
+                    JsonObject row = JsonParser.parseString(line)
+                            .getAsJsonObject();
+                    String region = optionalString(row, "regionId");
+                    String selectedAnchor = anchorByRegion.get(region);
+                    if (selectedAnchor == null) {
+                        continue;
+                    }
+                    String rootMethod = optionalString(row, "rootMethod");
+                    boolean rooted = false;
+                    for (JsonElement method : row.getAsJsonArray("methods")) {
+                        rooted = rooted || rootMethod.equals(method.getAsString());
+                    }
+                    if (!rooted) {
+                        throw new IOException("coalesced static region methods "
+                                + "must contain the runtime root: " + region);
+                    }
+                    row.addProperty("anchorMethod", selectedAnchor);
+                    JsonArray selectedAnchors = new JsonArray();
+                    for (String anchor : anchorsByRegion.get(region)) {
+                        selectedAnchors.add(anchor);
+                    }
+                    row.add("anchorMethods", selectedAnchors);
+                    writer.write(row.toString());
+                    writer.write('\n');
                 }
-                JsonObject row = JsonParser.parseString(line)
-                        .getAsJsonObject();
-                String region = optionalString(row, "regionId");
-                String selectedAnchor = anchorByRegion.get(region);
-                if (selectedAnchor == null) {
-                    continue;
-                }
-                String rootMethod = optionalString(row, "rootMethod");
-                boolean rooted = false;
-                for (JsonElement method : row.getAsJsonArray("methods")) {
-                    rooted = rooted || rootMethod.equals(method.getAsString());
-                }
-                if (!rooted) {
-                    throw new IOException("coalesced static region methods "
-                            + "must contain the runtime root: " + region);
-                }
-                row.addProperty("anchorMethod", selectedAnchor);
-                JsonArray selectedAnchors = new JsonArray();
-                for (String anchor : anchorsByRegion.get(region)) {
-                    selectedAnchors.add(anchor);
-                }
-                row.add("anchorMethods", selectedAnchors);
-                writer.write(row.toString());
-                writer.write('\n');
             }
-        } catch (IOException | RuntimeException failed) {
-            Files.deleteIfExists(staged);
-            throw failed;
-        }
-        Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE);
+        });
     }
 
     private static void requireClosedTrace(File manifestFile)
