@@ -120,6 +120,15 @@ public final class ConcolicSmtComposer {
     /** Whether this artifact may be accepted as the milestone result. */
     public static final String FINAL_STATUS = "finalStatus";
     /** Whether all selected producer and target path sets were explored. */
+    /** Per declared value handoff: whether its family reached a term. */
+    public static final String WIRE_FLOW_BINDINGS = "wireFlowBindings";
+    /**
+     * One declared value handoff whose consumer boundary family the closure
+     * built and this composition never lowered, so the value the wire carried
+     * constrains nothing in the emitted formula.
+     */
+    public static final String WIRE_FLOW_VALUE_UNBOUND =
+            "WIRE_FLOW_VALUE_UNBOUND";
     /**
      * Case partitions the formula asserts only under a condition, so a
      * consumer must not pin them: doing so decides the condition silently.
@@ -228,6 +237,10 @@ public final class ConcolicSmtComposer {
         JsonObject clockPhysics = emitter.lowerClockRoots(
                 runtimePlan.plans(), arguments.clockSkewMillis);
         emitter.finishGuardedReadSelections();
+        // Before finish(): an unbound handoff is a refusal, and a refusal has
+        // to reach the emitted formula's fail-closed marker too.
+        JsonArray wireFlowBindings = emitter.wireFlowBindings(
+                propagation.caseDependencies());
         emitter.finish();
         String composedSmt = emitter.render();
 
@@ -258,6 +271,7 @@ public final class ConcolicSmtComposer {
                 loops.manifest());
         manifest.add("guardedReadModel", emitter.guardedReadModel());
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
+        manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
         JsonArray gaps = new JsonArray();
         appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported,
                 emitter.unsupportedDetail);
@@ -1318,6 +1332,12 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private boolean guardedReadComplete = true;
         /** One SMT definition per propagated guarded output. */
+        /** Wire port each boundary family carries, for naming a gap. */
+        private final Map<String, String> boundaryPortsByFamily =
+                new LinkedHashMap<>();
+        /** Boundary families this composition lowered, and to what term. */
+        private final Map<String, String> loweredBoundaryFamilies =
+                new LinkedHashMap<>();
         private final Map<String, Term> guardedMergeTerms =
                 new LinkedHashMap<>();
         /**
@@ -1635,6 +1655,59 @@ public final class ConcolicSmtComposer {
         }
 
         /**
+         * Which declared value handoffs actually constrain this formula.
+         *
+         * <p>A value crossing a wire is not lowered as an equality between
+         * two port symbols -- the VM propagated the producer's expression
+         * into the consumer's own storage, so the consumer's reference *is*
+         * the producer's expression and the closure substitutes it.  The
+         * observable form is one boundary family per handoff, lowered by
+         * {@link #caseMergeTerm} into a {@code merged_boundary__} constant.
+         * The failure mode this ledger catches is a family the closure built
+         * from the recorded handoff and no lowered expression ever referred
+         * to: the wire's value then constrains nothing, silently, and the
+         * consumer's own read is free.</p>
+         */
+        private JsonArray wireFlowBindings(JsonArray dependencies) {
+            JsonArray rows = new JsonArray();
+            Set<String> seen = new LinkedHashSet<>();
+            for (JsonElement element : dependencies) {
+                if (!element.isJsonObject()) continue;
+                JsonObject dependency = element.getAsJsonObject();
+                if (!VmExpressionIr.RPC_ATTACH.equals(optionalString(
+                        dependency, "boundaryKind"))) {
+                    continue;
+                }
+                String familyKey = optionalString(dependency, "familyKey");
+                if (familyKey.isEmpty() || !seen.add(familyKey)) continue;
+                boolean bound = loweredBoundaryFamilies.containsKey(
+                        familyKey);
+                JsonObject row = new JsonObject();
+                row.addProperty("familyKey", familyKey);
+                row.addProperty("boundaryKind", VmExpressionIr.RPC_ATTACH);
+                row.addProperty("portId", boundaryPortsByFamily
+                        .getOrDefault(familyKey, ""));
+                row.addProperty("armCount",
+                        array(dependency, "arms").size());
+                row.addProperty("valueBound", bound);
+                row.addProperty("solverTerm",
+                        loweredBoundaryFamilies.getOrDefault(familyKey, ""));
+                rows.add(row);
+                if (!bound) {
+                    refuse(WIRE_FLOW_VALUE_UNBOUND + "["
+                                    + firstNonBlank(boundaryPortsByFamily
+                                    .get(familyKey), familyKey) + "]",
+                            "a declared value handoff reached the composition"
+                                    + " with a consumer boundary family no"
+                                    + " lowered expression refers to, so the"
+                                    + " value the wire carried constrains"
+                                    + " nothing");
+                }
+            }
+            return rows;
+        }
+
+        /**
          * The case partitions this formula asserts unconditionally.
          *
          * <p>A fault-controlled occurrence keeps no unconditional
@@ -1835,6 +1908,17 @@ public final class ConcolicSmtComposer {
             locationProvenance = SharedStateEvidence.locationProvenance(
                     owners);
             indexRequestFaultControl(owners);
+            for (JsonObject owner : owners == null
+                    ? Collections.<JsonObject>emptyList() : owners) {
+                for (JsonObject event : VmHandoffEvidence.eventsOf(owner)) {
+                    String family = optionalString(event,
+                            VmHandoffEvidence.BOUNDARY_FAMILY_KEY);
+                    String port = optionalString(event, "portId");
+                    if (!family.isEmpty() && !port.isEmpty()) {
+                        boundaryPortsByFamily.putIfAbsent(family, port);
+                    }
+                }
+            }
             try {
                 symbolicSourceIdentities =
                         SymbolicSourceEvidence.rawSymbolIdentities(owners,
@@ -3245,6 +3329,11 @@ public final class ConcolicSmtComposer {
             String projectionIdentity = projectionTermIdentity(
                     "MERGE", mergeId,
                     expected == null ? "" : expected.name(), "");
+            String familyKey = optionalString(node,
+                    VmExpressionIr.FAMILY_KEY);
+            if (!familyKey.isEmpty()) {
+                loweredBoundaryFamilies.putIfAbsent(familyKey, "");
+            }
             Term held = guardedMergeTerms.get(projectionIdentity);
             if (held != null) return held;
             if (!activeGuardedMerges.add(mergeId)) {
@@ -3333,6 +3422,9 @@ public final class ConcolicSmtComposer {
                 }
                 String name = smtSymbols.mint("merged_boundary__",
                         projectionIdentity, 20);
+                if (!familyKey.isEmpty()) {
+                    loweredBoundaryFamilies.put(familyKey, name);
+                }
                 defineConstant(name, sort, value);
                 if (sort == Sort.STRING) {
                     defineConstant(name + "__is_null", Sort.BOOL, nullness);
