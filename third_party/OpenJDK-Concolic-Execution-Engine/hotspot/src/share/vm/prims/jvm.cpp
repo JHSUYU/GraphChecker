@@ -386,11 +386,11 @@ JVM_ENTRY(jstring, JVM_GetWorkloadSessionStatus(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_GetWorkloadSessionStatus");
 #ifdef ENABLE_CONCOLIC
   std::string serialized = ConcolicMngr::getWorkloadSessionStatus();
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_WORKLOAD_SESSION\","
       "\"workloadSessionOpen\":false,\"sessionOpen\":false,"
       "\"sessionState\":\"CLOSED\",\"sessionId\":0,\"sessionMembers\":0,"
@@ -571,7 +571,7 @@ JVM_ENTRY(jstring, JVM_GetPcStr(JNIEnv *env, jclass ignored))
   } else {
     pcStr = "ERROR: Concolic execution is disabled";
   }
-  Handle str = java_lang_String::create_from_platform_dependent_str(pcStr, THREAD);
+  Handle str = java_lang_String::create_from_str(pcStr, THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
   ShouldNotReachHere();
@@ -613,11 +613,11 @@ JVM_ENTRY(jstring, JVM_GetConcolicBranchEvents(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_GetConcolicBranchEvents");
 #ifdef ENABLE_CONCOLIC
   std::string serialized = ConcolicMngr::getBranchEvents();
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_THREAD_BRANCH_EVENTS\","
       "\"active\":false,\"events\":[]}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
@@ -630,11 +630,11 @@ JVM_ENTRY(jstring, JVM_GetSymbolicExpression(JNIEnv *env, jclass ignored,
 #ifdef ENABLE_CONCOLIC
   Handle value(THREAD, JNIHandles::resolve(obj));
   std::string serialized = ConcolicMngr::getSymbolicExpression(value);
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"active\":false,\"kind\":\"CONCOLIC_DISABLED\",\"symbolic\":false}",
       THREAD);
   return (jstring) JNIHandles::make_local(env, str());
@@ -661,11 +661,11 @@ JVM_ENTRY(jstring, JVM_GetSymbolicFieldExpression(
           JNIHandles::resolve_non_null(descriptor));
   std::string serialized = ConcolicMngr::getSymbolicFieldExpression(
       field_owner, holder, name, type, field_value);
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"active\":false,"
       "\"kind\":\"CONCOLIC_DISABLED\",\"symbolic\":false,"
       "\"expression\":null}", THREAD);
@@ -796,11 +796,11 @@ JVM_ENTRY(jstring, JVM_GetConcolicPathConditionRange(
 #ifdef ENABLE_CONCOLIC
   std::string serialized =
       ConcolicMngr::getPathConditionRange(start_index, end_index);
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_PATH_CONDITION_RANGE\","
       "\"active\":false,\"startIndex\":0,\"endIndex\":0,"
       "\"pathConditionWatermark\":0,\"conditionCount\":0,"
@@ -916,11 +916,11 @@ JVM_ENTRY(jstring, JVM_GetSharedFieldVersions(
           JNIHandles::resolve_non_null(descriptor));
   std::string serialized = ConcolicMngr::getSharedFieldVersions(
       field_owner, holder, name, type);
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"SHARED_FIELD_VERSIONS\","
       "\"selected\":false,\"versions\":[]}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
@@ -936,11 +936,11 @@ JVM_ENTRY(jstring, JVM_GetSharedElementVersions(
   Handle target(THREAD, JNIHandles::resolve(array));
   std::string serialized =
       ConcolicMngr::getSharedElementVersions(target, index);
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"SHARED_FIELD_VERSIONS\","
       "\"selected\":false,\"versions\":[]}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
@@ -955,11 +955,11 @@ JVM_ENTRY(jstring, JVM_GetSharedMapVersions(
   ResourceMark rm(THREAD);
   Handle target(THREAD, JNIHandles::resolve(map));
   std::string serialized = ConcolicMngr::getSharedMapVersions(target);
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"SHARED_FIELD_VERSIONS\","
       "\"selected\":false,\"versions\":[]}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
@@ -970,11 +970,11 @@ JVM_ENTRY(jstring, JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_GetConcolicRegionSummary");
 #ifdef ENABLE_CONCOLIC
   std::string serialized = ConcolicMngr::getRegionSummary();
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"engine\":\"disabled\",\"active\":false,\"regionId\":\"\",\"taskId\":\"\",\"pathCondition\":[]}",
       THREAD);
   return (jstring) JNIHandles::make_local(env, str());
@@ -985,7 +985,7 @@ JVM_ENTRY(jstring, JVM_FinishConcolicRegion(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_FinishConcolicRegion");
 #ifdef ENABLE_CONCOLIC
   std::string serialized = ConcolicMngr::getRegionSummary();
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       serialized.c_str(), THREAD);
   jstring result = (jstring) JNIHandles::make_local(env, str());
   // Finish is transactional from Java's point of view.  Allocate every
@@ -996,7 +996,7 @@ JVM_ENTRY(jstring, JVM_FinishConcolicRegion(JNIEnv *env, jclass ignored))
   ConcolicMngr::endConcolic();
   return result;
 #else
-  Handle str = java_lang_String::create_from_platform_dependent_str(
+  Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"engine\":\"disabled\",\"active\":false,\"regionId\":\"\",\"taskId\":\"\",\"pathCondition\":[]}",
       THREAD);
   return (jstring) JNIHandles::make_local(env, str());
