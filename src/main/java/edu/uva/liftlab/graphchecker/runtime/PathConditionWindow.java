@@ -111,6 +111,36 @@ final class PathConditionWindow {
         }
     }
 
+    /** Told the exact range a read is about to take, for a tracing caller. */
+    interface RangeTrace {
+        void range(int start, int end);
+    }
+
+    /**
+     * The condition window one VM branch event owns.  An event that named no
+     * condition contributes none; an event whose condition indices are not
+     * contiguous is not an exact range, and the event stream is the only
+     * authority on which conditions belong to the branch, so neither is read
+     * from the store.  Both branch hooks used to spell this out themselves.
+     */
+    static Read forEvent(VmExpressionTable.Store store, ConcolicVmBroker api,
+                         List<Integer> eventConditionIndices,
+                         RangeTrace trace) throws Exception {
+        if (eventConditionIndices != null && eventConditionIndices.isEmpty()) {
+            return new Read(PathConditionWindow.EMPTY, 0,
+                    "CONDITIONLESS_EVENT");
+        }
+        if (!contiguousConditionIndices(eventConditionIndices)) {
+            return new Read(PathConditionWindow.EMPTY, -1,
+                    "EXACT_RANGE_UNAVAILABLE");
+        }
+        int start = eventConditionIndices.get(0);
+        int end = eventConditionIndices.get(
+                eventConditionIndices.size() - 1) + 1;
+        if (trace != null) trace.range(start, end);
+        return readPathConditionRange(store, api, start, end);
+    }
+
     /** Reads only the absolute indices named by an exact VM branch event. */
     static Read readPathConditionRange(
             VmExpressionTable.Store store, ConcolicVmBroker api,

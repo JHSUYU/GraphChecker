@@ -93,7 +93,6 @@ import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectDecl
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectSharedFieldCarrier;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectSharedMapCarrier;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
-import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.readPathConditionRange;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
 
 /**
@@ -2771,38 +2770,24 @@ public final class ConcolicRegionRuntime {
                 vmEventConditionIndices(events, vmEventId);
         boolean noVmCondition = eventConditionIndices != null
                 && eventConditionIndices.isEmpty();
-        PathConditionWindow conditions;
-        int rawPathConditionSize;
-        int attestationBaseline;
-        if (noVmCondition) {
-            // An exact conditionless event cannot contribute a branch guard.
-            conditions = PathConditionWindow.EMPTY;
-            rawPathConditionSize = baseline;
-            attestationBaseline = 0;
-        } else if (contiguousConditionIndices(eventConditionIndices)) {
-            int firstCondition = eventConditionIndices.get(0);
-            int lastCondition = eventConditionIndices.get(
-                    eventConditionIndices.size() - 1);
-            diag("PC_READ_BEGIN", siteId + " occ=" + occurrence
-                    + " range=[" + firstCondition + ","
-                    + (lastCondition + 1) + ")");
-            PathConditionWindow.Read read = readPathConditionRange(
-                    active.expressionStore, api,
-                    firstCondition, lastCondition + 1);
+        // An exact conditionless event contributes no branch guard, and a
+        // non-contiguous one names no exact range: both leave the window
+        // empty and the raw size at the baseline.
+        boolean exactRange = !noVmCondition
+                && contiguousConditionIndices(eventConditionIndices);
+        PathConditionWindow.Read read = PathConditionWindow.forEvent(
+                active.expressionStore, api, eventConditionIndices,
+                (start, end) -> diag("PC_READ_BEGIN", siteId + " occ="
+                        + occurrence + " range=[" + start + "," + end + ")"));
+        PathConditionWindow conditions = read.conditions;
+        int rawPathConditionSize = exactRange ? conditions.size() : baseline;
+        int attestationBaseline = noVmCondition ? 0 : baseline;
+        if (exactRange) {
             diag("PC_READ_END", siteId + " occ=" + occurrence
                     + " chars=" + read.chars + " source=" + read.source);
-            conditions = read.conditions;
-            rawPathConditionSize = conditions.size();
-            attestationBaseline = baseline;
             diag("PC_PARSED", siteId + " occ=" + occurrence
                     + " conditions=" + rawPathConditionSize
                     + " mode=" + conditions.mode());
-        } else {
-            // The exact event stream is the only authority on which path
-            // conditions belong to this branch.
-            conditions = PathConditionWindow.EMPTY;
-            rawPathConditionSize = baseline;
-            attestationBaseline = baseline;
         }
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
@@ -2879,21 +2864,9 @@ public final class ConcolicRegionRuntime {
                 vmEventConditionIndices(events, vmEventId);
         boolean noVmCondition = eventConditionIndices != null
                 && eventConditionIndices.isEmpty();
-        PathConditionWindow.Read read;
-        if (noVmCondition) {
-            read = new PathConditionWindow.Read(PathConditionWindow.EMPTY, 0,
-                    "CONDITIONLESS_EVENT");
-        } else if (contiguousConditionIndices(eventConditionIndices)) {
-            int firstCondition = eventConditionIndices.get(0);
-            int lastCondition = eventConditionIndices.get(
-                    eventConditionIndices.size() - 1);
-            read = readPathConditionRange(active.expressionStore, api,
-                    firstCondition,
-                    lastCondition + 1);
-        } else {
-            read = new PathConditionWindow.Read(PathConditionWindow.EMPTY, -1,
-                    "EXACT_RANGE_UNAVAILABLE");
-        }
+        // The switch hook does not trace the range it is about to read.
+        PathConditionWindow.Read read = PathConditionWindow.forEvent(
+                active.expressionStore, api, eventConditionIndices, null);
         diag("PC_READ_END", siteId + " occ=" + occurrence
                 + " chars=" + read.chars + " source=" + read.source);
         PathConditionWindow conditions = read.conditions;
