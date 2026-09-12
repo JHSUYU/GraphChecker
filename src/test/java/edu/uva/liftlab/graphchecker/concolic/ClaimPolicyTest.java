@@ -307,28 +307,16 @@ public class ClaimPolicyTest {
 
     /**
      * The Composer publishes boundary families as
-     * casePathConditionDependencies rows. Reading the retired
-     * symbolicPropagation array instead counted zero on every real manifest.
+     * casePathConditionDependencies rows, and that is the only place they are
+     * counted from.
      */
     @Test
     public void boundaryFamiliesAreCountedFromTheRowsTheComposerPublishes() {
         JsonObject manifest = boundaryManifest(CONSUMER_REGION,
                 PRODUCER_REGION);
 
-        assertFalse(manifest.has("symbolicPropagation"));
         assertEquals(2, ClaimPolicy.consumerBoundaryFamilies(manifest));
         assertEquals(0, ClaimPolicy.consumerBoundaryFamilies(manifest()));
-    }
-
-    /** A manifest that still carries the retired array is still counted. */
-    @Test
-    public void legacyPropagationArrayStillCountsAsBoundaryFamilies() {
-        JsonObject manifest = manifest();
-        JsonArray legacy = new JsonArray();
-        legacy.add(parse("{\"armCount\":2}"));
-        manifest.add("symbolicPropagation", legacy);
-
-        assertEquals(1, ClaimPolicy.consumerBoundaryFamilies(manifest));
     }
 
     /** Region identities are read wherever the manifest names one. */
