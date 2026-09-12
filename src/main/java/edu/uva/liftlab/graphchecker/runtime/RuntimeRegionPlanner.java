@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
+import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -1379,10 +1380,22 @@ final class RuntimeRegionPlanner {
                 appendGoalBinding(consumerGoal, evidence);
             }
         }
-        // The catalog is published after activation binding so that every
-        // emitted port names the occurrence that owns it.
+        // The plan catalog names the planned regions and the static
+        // symbolic sources a scheduler admits inside them.  Ports, methods,
+        // branch policies and access history stay in the refined graph,
+        // which is the artifact that owns them.
         for (StaticProgram.RegionRow region : regionById.values()) {
-            result.regionCatalog.add(deepCopy(region.json));
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("schemaVersion", 3);
+            row.put("kind", "SYMBOLIC_REGION");
+            row.put("regionId", region.regionId);
+            Object declaredSources = region.json.get(
+                    StaticSymbolicSourceDeclaration.FIELD);
+            if (declaredSources != null) {
+                row.put(StaticSymbolicSourceDeclaration.FIELD,
+                        declaredSources);
+            }
+            result.regionCatalog.add(row);
         }
         declareSharedCarriers(result, regionById);
         return result;

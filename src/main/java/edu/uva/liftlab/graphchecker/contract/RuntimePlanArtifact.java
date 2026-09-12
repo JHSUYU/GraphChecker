@@ -26,18 +26,16 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 /**
  * Canonical runtime-planning artifact.
  *
- * <p>The first JSONL row owns the region-port catalog and runtime edge
- * evidence exactly once; occurrence goals store only edge ids, and
- * {@link #read(Path)} hydrates them back into {@code edgeBindings}.</p>
+ * <p>The first JSONL row owns the region catalog and runtime edge evidence
+ * exactly once; occurrence goals store only edge ids, and {@link #read(Path)}
+ * hydrates them back into {@code edgeBindings}.</p>
  */
 public final class RuntimePlanArtifact {
-    public static final int SCHEMA_VERSION = 2;
-    public static final String CATALOG_KIND =
+    private static final int SCHEMA_VERSION = 2;
+    private static final String CATALOG_KIND =
             "CONCOLIC_RUNTIME_MODEL_CATALOG";
-    public static final String PLAN_KIND = "CONCOLIC_REGION_PLAN";
-    public static final String EDGE_BINDING_IDS = "edgeBindingIds";
-    private static final int REGION_SCHEMA_VERSION = 3;
-    private static final String REGION_KIND = "SYMBOLIC_REGION";
+    private static final String PLAN_KIND = "CONCOLIC_REGION_PLAN";
+    private static final String EDGE_BINDING_IDS = "edgeBindingIds";
 
     private final List<RegionInstancePlan> plans;
     private final List<JsonObject> regions;
@@ -69,8 +67,7 @@ public final class RuntimePlanArtifact {
         Map<String, JsonObject> edgeById = indexEdges(edges);
 
         StringBuilder output = new StringBuilder();
-        output.append(encodeCatalog(edges,
-                compactRegions(encodedRegions)));
+        output.append(encodeCatalog(edges, copies(encodedRegions)));
         for (JsonObject source : encodedPlans) {
             output.append(CanonicalJson.render(
                     compactBindings(source, edgeById))).append('\n');
@@ -265,125 +262,6 @@ public final class RuntimePlanArtifact {
             }
         }
         return result;
-    }
-
-    /**
-     * Keeps only the region schema needed after runtime planning; the full
-     * method, branch and access history stays in the trace/refined graph.
-     */
-    private static List<JsonObject> compactRegions(
-            Collection<JsonObject> encodedRegions) {
-        List<JsonObject> result = new ArrayList<>();
-        Set<String> ids = new LinkedHashSet<>();
-        if (encodedRegions == null) return result;
-        for (JsonObject source : encodedRegions) {
-            if (source == null
-                    || !exactSchemaVersion(source, REGION_SCHEMA_VERSION)
-                    || !REGION_KIND.equals(string(source, "kind"))) {
-                throw new IllegalArgumentException(
-                        "runtime region has an unsupported schema");
-            }
-            JsonObject region = new JsonObject();
-            copy(region, source, "schemaVersion");
-            copy(region, source, "kind");
-            copy(region, source, "regionId");
-            String id = string(region, "regionId");
-            if (id.isEmpty() || !ids.add(id)) {
-                throw new IllegalArgumentException(
-                        "runtime region ids must be unique and nonempty: "
-                                + id);
-            }
-            region.add("symbolicInputs", compactPorts(
-                    array(source, "symbolicInputs")));
-            region.add("outputs", compactPorts(array(source, "outputs")));
-            copy(region, source, StaticSymbolicSourceDeclaration.FIELD);
-            result.add(region);
-        }
-        return result;
-    }
-
-    private static boolean exactSchemaVersion(JsonObject row, int expected) {
-        JsonElement value = row.get("schemaVersion");
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isNumber()
-                && Integer.toString(expected).equals(value.getAsString());
-    }
-
-    private static JsonArray compactPorts(JsonArray ports) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : ports) {
-            if (!element.isJsonObject()) {
-                throw new IllegalArgumentException(
-                        "runtime region ports must be objects");
-            }
-            JsonObject source = element.getAsJsonObject();
-            JsonObject port = new JsonObject();
-            for (String field : new String[]{
-                    "portId", "symbol", "cell", "javaType",
-                    "sourceKind", "dependencyRole", "symbolicDemand",
-                    "declaredFieldSignature", "accessFieldSignature",
-                    "leafFieldSignature", "callerMethod", "unitIndex",
-                    // Where a cut port's value is read, by name.  Dropping
-                    // the names left the composer to re-derive the capture
-                    // from a position - the guess the cut vocabulary exists
-                    // to avoid.
-                    CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
-                    CommunicationCatalogContract.PORT_ARGUMENT_INDEX,
-                    CommunicationCatalogContract.PORT_DEFINITION_METHOD,
-                    CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX,
-                    // Which side of which call site this port is; without
-                    // them a consumer has to re-derive the direction from the
-                    // id's spelling.
-                    CommunicationCatalogContract.PORT_DIRECTION,
-                    CommunicationCatalogContract.TRANSPORT,
-                    "portRole",
-                    CommunicationCatalogContract.EXCHANGE_SITE_KEY,
-                    CommunicationCatalogContract.CALL_SITE_ID,
-                    CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
-                    "declaredCallee", "accessorImplementationMethod",
-                    "fieldPath", "fieldPathDeclarations"}) {
-                copy(port, source, field);
-            }
-            JsonArray accesses = compactProjectionAccesses(
-                    array(source, "runtimeAccesses"));
-            if (accesses.size() > 0) port.add("runtimeAccesses", accesses);
-            if (string(port, "portId").isEmpty()
-                    && string(port, "symbol").isEmpty()) {
-                throw new IllegalArgumentException(
-                        "runtime region port has no stable id");
-            }
-            result.add(port);
-        }
-        return result;
-    }
-
-    private static JsonArray compactProjectionAccesses(JsonArray accesses) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : accesses) {
-            if (!element.isJsonObject()) continue;
-            JsonObject source = element.getAsJsonObject();
-            if (!"EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1"
-                    .equals(string(source,
-                            "containerMemberIdentityAuthority"))) {
-                continue;
-            }
-            JsonObject access = new JsonObject();
-            // The observed event ordinal is the only identity a compacted
-            // access needs.
-            copy(access, source, "eventSeq");
-            copy(access, source, "containerMemberIdentityAuthority");
-            copy(access, source, "containerValueObjectId");
-            result.add(access);
-        }
-        return result;
-    }
-
-    private static void copy(JsonObject target, JsonObject source,
-                             String field) {
-        JsonElement value = source.get(field);
-        if (value != null && !value.isJsonNull()) {
-            target.add(field, value.deepCopy());
-        }
     }
 
     private static List<JsonObject> objects(JsonArray values, String label,
