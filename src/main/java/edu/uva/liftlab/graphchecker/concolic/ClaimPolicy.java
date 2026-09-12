@@ -155,12 +155,14 @@ public final class ClaimPolicy {
      * flow, so a composition can be asked which flows it realized rather
      * than only how many exist.
      *
-     * <p>A consumer boundary family is one of two mechanisms by which a
-     * declared flow becomes real: the other is an exchange handoff, where the
-     * plan binds a flow's {@code XCH.<site>.<req|resp>.<flow>} ports to one
-     * producer region and one consumer region and the composition then draws
-     * cases from both. Counting only boundary families called the realized
-     * SASL flow of hdfs-17899-bug3 unrealized.</p>
+     * <p>The plan binds a flow's {@code XCH.<site>.<req|resp>.<flow>} ports
+     * to one producer region and one consumer region; the regions are kept
+     * here so a report can say what the plan expected. Whether the flow is
+     * <em>realized</em> is decided elsewhere and by one thing only: whether
+     * the composition lowered the value of a boundary family sitting on one
+     * of those ports into a term. Deciding it from the regions instead --
+     * asking whether either endpoint's id occurs in the manifest -- accepts a
+     * mention in place of a constraint.</p>
      */
     public static final class WireFlowEvidence {
         private final List<String> declared;
@@ -289,75 +291,105 @@ public final class ClaimPolicy {
         }
 
         /**
-         * The declared flows this composition did not realize. A flow whose
-         * ports the plan bound is realized when the composition drew a case
-         * from a region on each side of its exchange; a flow with no port
-         * evidence at all falls back to whether the composition realized any
-         * consumer boundary family, because nothing else can single it out.
+         * The declared flows whose value never constrains this formula.
+         *
+         * <p>A flow is realized when at least one consumer boundary family
+         * carried on one of <em>its</em> ports reached a lowered term. That
+         * is the only reading under which the blocker means what its name
+         * says. The earlier reading -- a region id of either endpoint
+         * occurring anywhere in the manifest text, or any boundary family at
+         * all being present -- is satisfied by a mention rather than by a
+         * constraint: on hdfs-17899-bug3 it called {@code block-key-id}
+         * realized while all eight of its families were unreferenced and no
+         * term carried the wire's value.</p>
          */
-        List<String> unrealized(Set<String> realizedRegions,
-                                int boundaryFamilies) {
+        List<String> unrealized(List<BoundFamily> ledger) {
             List<String> missing = new ArrayList<>();
             for (String flow : declared) {
-                if (!realized(flow, realizedRegions, boundaryFamilies)) {
-                    missing.add(flow);
-                }
+                if (!realized(flow, ledger)) missing.add(flow);
             }
             return missing;
         }
 
-        private boolean realized(String flow, Set<String> realizedRegions,
-                                 int boundaryFamilies) {
-            Set<String> consumers = consumerRegions.get(flow);
-            Set<String> producers = producerRegions.get(flow);
-            if (consumers == null && producers == null) {
-                return boundaryFamilies > 0;
-            }
-            return intersects(consumers, realizedRegions)
-                    && intersects(producers, realizedRegions);
-        }
-
-        private static boolean intersects(Set<String> ports,
-                                          Set<String> realized) {
-            if (ports == null) {
-                return false;
-            }
-            for (String port : ports) {
-                if (realized.contains(port)) {
+        private boolean realized(String flow, List<BoundFamily> ledger) {
+            for (BoundFamily family : ledger) {
+                if (family.bound && namesFlow(family.portId, flow)) {
                     return true;
                 }
             }
             return false;
         }
 
+        /**
+         * Whether one exchange port carries one declared flow. The Composer
+         * spells a port {@code XCH.<site>.<req|resp>.<flow>}, and a flow id
+         * may itself contain '-' but never the '.' that delimits it here.
+         */
+        private static boolean namesFlow(String portId, String flow) {
+            return !flow.isEmpty() && portId.endsWith("." + flow);
+        }
+
         /** The per-flow realization rows the claim publishes as evidence. */
-        JsonArray report(Set<String> realizedRegions, int boundaryFamilies) {
+        JsonArray report(List<BoundFamily> ledger) {
             JsonArray rows = new JsonArray();
             for (String flow : declared) {
                 JsonObject row = new JsonObject();
                 row.addProperty("flow", flow);
                 Set<String> consumers = consumerRegions.get(flow);
                 Set<String> producers = producerRegions.get(flow);
-                boolean realized = realized(flow, realizedRegions,
-                        boundaryFamilies);
-                row.addProperty("realized", realized);
-                row.addProperty("mechanism", consumers == null
-                        && producers == null
-                        ? (realized ? "CONSUMER_BOUNDARY_FAMILY"
-                                : "NO_PORT_EVIDENCE")
-                        : "EXCHANGE_PORT_PAIR");
+                int families = 0;
+                int bound = 0;
+                for (BoundFamily family : ledger) {
+                    if (!namesFlow(family.portId, flow)) continue;
+                    families++;
+                    if (family.bound) bound++;
+                }
+                row.addProperty("realized", bound > 0);
+                row.addProperty("mechanism", "BOUND_BOUNDARY_FAMILY");
                 row.addProperty("consumerRegionsPlanned",
                         consumers == null ? 0 : consumers.size());
                 row.addProperty("producerRegionsPlanned",
                         producers == null ? 0 : producers.size());
-                row.addProperty("consumerRealized",
-                        intersects(consumers, realizedRegions));
-                row.addProperty("producerRealized",
-                        intersects(producers, realizedRegions));
+                row.addProperty("familiesObserved", families);
+                row.addProperty("familiesBound", bound);
                 rows.add(row);
             }
             return rows;
         }
+    }
+
+    /** One observed boundary family: the port it sat on, and whether the
+     * composition lowered its value into a term. */
+    static final class BoundFamily {
+        private final String portId;
+        private final boolean bound;
+
+        private BoundFamily(String portId, boolean bound) {
+            this.portId = portId;
+            this.bound = bound;
+        }
+    }
+
+    /**
+     * Every boundary family the composition observed on a declared exchange
+     * port, read from the Composer's own handoff ledger.
+     *
+     * <p>A manifest with no ledger contributes nothing, which is the honest
+     * reading of a composition that published no handoff evidence: it did
+     * not show that any wire's value constrains it.</p>
+     */
+    static List<BoundFamily> wireFlowLedger(JsonObject manifest) {
+        List<BoundFamily> ledger = new ArrayList<>();
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.WIRE_FLOW_BINDINGS)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            String port = optionalString(row, "portId");
+            if (port.isEmpty()) continue;
+            ledger.add(new BoundFamily(port,
+                    optionalBool(row, "valueBound", false)));
+        }
+        return ledger;
     }
 
     /**
@@ -449,9 +481,8 @@ public final class ClaimPolicy {
                 object(reach, "existentialRootProbe"),
                 "constrainsRootSpace", false);
         int boundaryFamilies = consumerBoundaryFamilies(manifest);
-        Set<String> realized = realizedRegions(manifest);
-        List<String> unrealizedFlows = flows.unrealized(realized,
-                boundaryFamilies);
+        List<BoundFamily> wireFlowLedger = wireFlowLedger(manifest);
+        List<String> unrealizedFlows = flows.unrealized(wireFlowLedger);
 
         List<JsonObject> blockers = new ArrayList<>();
 
@@ -517,10 +548,12 @@ public final class ClaimPolicy {
         if (!unrealizedFlows.isEmpty()) {
             blockers.add(blocker(DECLARED_WIRE_FLOWS_UNREALIZED,
                     String.join(",", unrealizedFlows),
-                    "the composition realized neither side of "
+                    "no consumer boundary family of "
                             + unrealizedFlows.size() + " of "
                             + flows.declaredCount()
-                            + " declared WIRE_FLOW(s): "
+                            + " declared WIRE_FLOW(s) reached a lowered"
+                            + " term, so the value each wire carried"
+                            + " constrains nothing in this formula: "
                             + String.join(", ", unrealizedFlows)));
         }
 
@@ -577,11 +610,12 @@ public final class ClaimPolicy {
         rootSpace.addProperty("declaredWireFlows", flows.declaredCount());
         rootSpace.addProperty("unrealizedWireFlows",
                 String.join(",", unrealizedFlows));
-        rootSpace.add("wireFlows", flows.report(realized, boundaryFamilies));
+        rootSpace.add("wireFlows", flows.report(wireFlowLedger));
         rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
         rootSpace.addProperty("consumerBoundaryArms",
                 consumerBoundaryArms(manifest));
-        rootSpace.addProperty("realizedRegions", realized.size());
+        rootSpace.addProperty("realizedRegions",
+                realizedRegions(manifest).size());
         rootSpace.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
         result.add("rootSpace", rootSpace);

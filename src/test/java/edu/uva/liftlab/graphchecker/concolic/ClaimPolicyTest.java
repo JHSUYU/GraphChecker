@@ -189,37 +189,42 @@ public class ClaimPolicyTest {
     }
 
     /**
-     * An exchange handoff realizes a declared flow: the plan binds the flow's
-     * ports to a producer and a consumer region, and the composition drew a
-     * case from both. Counting consumer boundary families alone called this
-     * flow unrealized on hdfs-17899-bug3, which it is not.
+     * A declared flow is realized when one of its own boundary families
+     * reached a lowered term. That is the reading under which the blocker
+     * means what its name says: the value the wire carried constrains the
+     * formula.
      */
     @Test
-    public void exchangePortPairRealizesADeclaredFlow() throws IOException {
+    public void aBoundBoundaryFamilyRealizesADeclaredFlow()
+            throws IOException {
         JsonObject claim = ClaimPolicy.decide(
-                boundaryManifest(CONSUMER_REGION, PRODUCER_REGION),
+                ledgerManifest(bound(SASL_PORT), unbound(SASL_PORT)),
                 reach(), flows());
 
         assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim")
                 .getAsString());
         assertEquals(0, claim.getAsJsonArray("blockers").size());
-        assertTrue(wireFlow(claim, "data-encryption-key-id").get("realized")
-                .getAsBoolean());
-        assertEquals("EXCHANGE_PORT_PAIR",
-                wireFlow(claim, "data-encryption-key-id").get("mechanism")
-                        .getAsString());
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertTrue(flow.get("realized").getAsBoolean());
+        assertEquals("BOUND_BOUNDARY_FAMILY",
+                flow.get("mechanism").getAsString());
+        // One port carries several families; the port is bound when any is.
+        assertEquals(2, flow.get("familiesObserved").getAsInt());
+        assertEquals(1, flow.get("familiesBound").getAsInt());
     }
 
     /**
-     * The main-baseline hdfs-17899-bug3 shape: the consumer side of a flow is
-     * in the composition and the producer side never entered it, so the flow
-     * crossed no wire. The blocker names that flow and leaves the realized
-     * one alone.
+     * The hdfs-17899-bug3 {@code block-key-id} shape: the composition
+     * observed the flow's families and referred to none of them, so no term
+     * carries the wire's value. Region ids of both endpoints still occur all
+     * over that manifest, which is exactly what the old reading mistook for
+     * realization.
      */
     @Test
-    public void oneSidedFlowIsNamedUnrealized() throws IOException {
+    public void observedButUnboundFamiliesLeaveTheFlowUnrealized()
+            throws IOException {
         JsonObject claim = ClaimPolicy.decide(
-                boundaryManifest(CONSUMER_REGION, OTHER_REGION),
+                ledgerManifest(unbound(SASL_PORT), unbound(SASL_PORT)),
                 reach(), flows());
 
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
@@ -234,46 +239,51 @@ public class ClaimPolicyTest {
                 .get("detail").getAsString()
                 .contains("data-encryption-key-id"));
         JsonObject flow = wireFlow(claim, "data-encryption-key-id");
-        assertTrue(flow.get("consumerRealized").getAsBoolean());
-        assertFalse(flow.get("producerRealized").getAsBoolean());
+        assertFalse(flow.get("realized").getAsBoolean());
+        assertEquals(2, flow.get("familiesObserved").getAsInt());
+        assertEquals(0, flow.get("familiesBound").getAsInt());
     }
 
-    /** Neither side in the composition is still one named unrealized flow. */
+    /**
+     * A family bound on a different flow's port does not realize this one.
+     * Counting bound families in bulk, rather than per port, would.
+     */
     @Test
-    public void flowWithNeitherSideRealizedIsNamed() throws IOException {
+    public void anotherFlowsBoundFamilyDoesNotRealizeThisOne()
+            throws IOException {
         JsonObject claim = ClaimPolicy.decide(
-                boundaryManifest(OTHER_REGION, OTHER_REGION),
-                reach(), flows());
+                ledgerManifest(bound(BLOCK_KEY_PORT)), reach(), flows());
 
         assertEquals(codes(ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED),
                 codes(claim));
         JsonObject flow = wireFlow(claim, "data-encryption-key-id");
-        assertFalse(flow.get("consumerRealized").getAsBoolean());
-        assertFalse(flow.get("producerRealized").getAsBoolean());
+        assertFalse(flow.get("realized").getAsBoolean());
+        assertEquals(0, flow.get("familiesObserved").getAsInt());
     }
 
     /**
-     * A consumer boundary family is the other realization mechanism. With no
-     * plan to bind a flow's ports, nothing can single that flow out, so the
-     * realized families answer for it.
+     * Consumer boundary families the composition drew but whose wire value
+     * no term carries do not answer for a declared flow. Before this, any
+     * family at all -- a FIELD_READ one included -- realized a flow with no
+     * port evidence.
      */
     @Test
-    public void consumerBoundaryFamilyRealizesAFlowWithNoPortEvidence() {
+    public void boundaryFamiliesAloneDoNotRealizeAFlow() {
         JsonObject claim = ClaimPolicy.decide(
                 boundaryManifest(CONSUMER_REGION, PRODUCER_REGION), reach(),
                 ClaimPolicy.WireFlowEvidence.declaredOnly(
                         Collections.singletonList("block-key-id")));
 
-        assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim")
-                .getAsString());
-        assertEquals("CONSUMER_BOUNDARY_FAMILY",
+        assertEquals(codes(ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED),
+                codes(claim));
+        assertEquals("BOUND_BOUNDARY_FAMILY",
                 wireFlow(claim, "block-key-id").get("mechanism")
                         .getAsString());
     }
 
-    /** No family and no port evidence leaves the declared flow unrealized. */
+    /** A composition that published no handoff ledger binds nothing. */
     @Test
-    public void noBoundaryFamilyAndNoPortEvidenceBlocksTheClaim() {
+    public void noWireFlowLedgerBlocksTheClaim() {
         JsonObject claim = ClaimPolicy.decide(manifest(), reach(),
                 ClaimPolicy.WireFlowEvidence.declaredOnly(
                         Collections.singletonList("block-key-id")));
@@ -283,9 +293,8 @@ public class ClaimPolicyTest {
         assertEquals("block-key-id", blocker(claim,
                 ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED).get("subject")
                 .getAsString());
-        assertEquals("NO_PORT_EVIDENCE",
-                wireFlow(claim, "block-key-id").get("mechanism")
-                        .getAsString());
+        assertEquals(0, wireFlow(claim, "block-key-id")
+                .get("familiesObserved").getAsInt());
     }
 
     /** An experiment that declares no flow has none to realize. */
@@ -486,6 +495,42 @@ public class ClaimPolicyTest {
             "REGION.d930c3a2-ffc2-35e8-abea-8ff12526d930";
     private static final String OTHER_REGION =
             "REGION.11111111-2222-3333-4444-555555555555";
+
+    private static final String SASL_PORT =
+            "XCH.da84e470-fe7e-3068-b93f-caafeef64a70"
+                    + ".req.data-encryption-key-id";
+    private static final String BLOCK_KEY_PORT =
+            "XCH.1174244c-3118-3892-a173-6cc5895259bf.resp.block-key-id";
+
+    /** One Composer handoff-ledger row whose value reached a term. */
+    private static JsonObject bound(String port) {
+        return ledgerRow(port, true);
+    }
+
+    /** One observed family whose value no lowered expression refers to. */
+    private static JsonObject unbound(String port) {
+        return ledgerRow(port, false);
+    }
+
+    private static JsonObject ledgerRow(String port, boolean bound) {
+        JsonObject row = new JsonObject();
+        row.addProperty("familyKey", "CBF.ledger" + port.hashCode()
+                + (bound ? "b" : "u"));
+        row.addProperty("boundaryKind", "RPC_ATTACH");
+        row.addProperty("portId", port);
+        row.addProperty("valueBound", bound);
+        return row;
+    }
+
+    /** A composition that published the Composer's handoff ledger. */
+    private static JsonObject ledgerManifest(JsonObject... rows) {
+        JsonObject manifest = boundaryManifest(CONSUMER_REGION,
+                PRODUCER_REGION);
+        JsonArray ledger = new JsonArray();
+        for (JsonObject row : rows) ledger.add(row);
+        manifest.add(ConcolicSmtComposer.WIRE_FLOW_BINDINGS, ledger);
+        return manifest;
+    }
 
     private static ClaimPolicy.WireFlowEvidence noFlows() {
         return ClaimPolicy.WireFlowEvidence.none();

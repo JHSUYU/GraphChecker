@@ -132,6 +132,19 @@ public final class ConcolicSmtComposer {
     public static final String WIRE_FLOW_VALUE_UNBOUND =
             "WIRE_FLOW_VALUE_UNBOUND";
     /**
+     * One consumer boundary family the recorded evidence carries and no
+     * lowered expression in this composition referred to.
+     *
+     * <p>This is not a defect by itself: a family observed in a region the
+     * causal slice never composed legitimately constrains nothing here. It
+     * is published so that it is <em>counted</em> rather than dropped in
+     * silence -- the ledger row carries {@code valueBound: false}, and it is
+     * the claim gate, reading one row per declared flow, that decides
+     * whether a flow with no bound family anywhere is unrealized.</p>
+     */
+    public static final String CONSUMER_BOUNDARY_FAMILY_UNREFERENCED =
+            "CONSUMER_BOUNDARY_FAMILY_UNREFERENCED";
+    /**
      * Case partitions the formula asserts only under a condition, so a
      * consumer must not pin them: doing so decides the condition silently.
      */
@@ -1339,6 +1352,9 @@ public final class ConcolicSmtComposer {
         /** Wire port each boundary family carries, for naming a gap. */
         private final Map<String, String> boundaryPortsByFamily =
                 new LinkedHashMap<>();
+        /** Receiving occurrence each boundary family was observed at. */
+        private final Map<String, String> boundaryReceiversByFamily =
+                new LinkedHashMap<>();
         /** Boundary families this composition lowered, and to what term. */
         private final Map<String, String> loweredBoundaryFamilies =
                 new LinkedHashMap<>();
@@ -1728,8 +1744,7 @@ public final class ConcolicSmtComposer {
          * consumer's own read is free.</p>
          */
         private JsonArray wireFlowBindings(JsonArray dependencies) {
-            JsonArray rows = new JsonArray();
-            Set<String> seen = new LinkedHashSet<>();
+            Map<String, JsonObject> byFamily = new LinkedHashMap<>();
             for (JsonElement element : dependencies) {
                 if (!element.isJsonObject()) continue;
                 JsonObject dependency = element.getAsJsonObject();
@@ -1738,7 +1753,24 @@ public final class ConcolicSmtComposer {
                     continue;
                 }
                 String familyKey = optionalString(dependency, "familyKey");
-                if (familyKey.isEmpty() || !seen.add(familyKey)) continue;
+                if (!familyKey.isEmpty()) {
+                    byFamily.putIfAbsent(familyKey, dependency);
+                }
+            }
+            // Seed from every family the recorded handoff evidence carries,
+            // not only from the ones that produced a dependency row: a
+            // family the closure never resolved has no row at all, and
+            // iterating rows alone is exactly how such a family used to
+            // leave no trace.
+            List<String> families = new ArrayList<>(byFamily.keySet());
+            for (String observed : boundaryPortsByFamily.keySet()) {
+                if (!byFamily.containsKey(observed)) families.add(observed);
+            }
+            Collections.sort(families);
+            JsonArray rows = new JsonArray();
+            for (String familyKey : families) {
+                JsonObject dependency = byFamily.get(familyKey);
+                boolean referenced = dependency != null;
                 boolean bound = loweredBoundaryFamilies.containsKey(
                         familyKey);
                 JsonObject row = new JsonObject();
@@ -1746,13 +1778,26 @@ public final class ConcolicSmtComposer {
                 row.addProperty("boundaryKind", VmExpressionIr.RPC_ATTACH);
                 row.addProperty("portId", boundaryPortsByFamily
                         .getOrDefault(familyKey, ""));
-                row.addProperty("armCount",
-                        array(dependency, "arms").size());
+                row.addProperty("receiverOccurrenceId",
+                        boundaryReceiversByFamily.getOrDefault(familyKey,
+                                ""));
+                row.addProperty("armCount", referenced
+                        ? array(dependency, "arms").size() : 0);
+                row.addProperty("referenced", referenced);
                 row.addProperty("valueBound", bound);
                 row.addProperty("solverTerm",
                         loweredBoundaryFamilies.getOrDefault(familyKey, ""));
+                if (!referenced) {
+                    row.addProperty("reason",
+                            CONSUMER_BOUNDARY_FAMILY_UNREFERENCED);
+                }
                 rows.add(row);
-                if (!bound) {
+                // A family no lowered expression referred to is telemetry,
+                // not a refusal: the region it was observed in may simply be
+                // outside this causal slice.  A family that *is* referenced
+                // and still reached no term is the original defect -- the
+                // wire's value then constrains nothing, silently.
+                if (referenced && !bound) {
                     refuse(WIRE_FLOW_VALUE_UNBOUND + "["
                                     + firstNonBlank(boundaryPortsByFamily
                                     .get(familyKey), familyKey) + "]",
@@ -1975,6 +2020,12 @@ public final class ConcolicSmtComposer {
                     String port = optionalString(event, "portId");
                     if (!family.isEmpty() && !port.isEmpty()) {
                         boundaryPortsByFamily.putIfAbsent(family, port);
+                        String receiver = optionalString(event,
+                                "consumerOccurrenceId");
+                        if (!receiver.isEmpty()) {
+                            boundaryReceiversByFamily.putIfAbsent(family,
+                                    receiver);
+                        }
                     }
                 }
             }
