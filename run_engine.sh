@@ -1935,9 +1935,15 @@ campaign_replay() {
     die "linked replay plan has mixed or conflicting group ids: ${plan}"
   fi
   if [[ -z "${replay_group}" ]]; then
+    # The group names one propagation ledger, so it is seeded from what the
+    # ledger is over: the plan these tasks came from and the task ids this
+    # invocation replays. The worker directory used to be in the seed and is
+    # not: it is a per-iteration filesystem path, so the same plan and the
+    # same task ids were given a different group id in every iteration and in
+    # every campaign root, which no reader could join across two runs.
     plan_digest=$(campaign_digest "${plan}") \
       || die "failed to digest linked replay plan: ${plan}"
-    replay_group_seed=$(printf '%s\0' "${plan_digest}" "${ids}" "${worker}" \
+    replay_group_seed=$(printf '%s\0' "${plan_digest}" "${ids}" \
       | sha256sum | awk '{print $1}')
     replay_group="REPLAY.GROUP.${replay_group_seed}"
   fi

@@ -130,6 +130,18 @@ public final class SymbolicPropagationClosure {
      * stamps RPC boundaries as it admits a result, and this closure, which
      * addresses field reads, key on the same five parts in the same order.
      * </p>
+     *
+     * <p>The topology epoch is the campaign's refinement iteration
+     * ({@code iteration-NNNN}), and it stays in the key on purpose.  It is
+     * not a per-run counter: the refinement loop is deterministic, so two
+     * campaigns over one obligation walk the same iterations and mint the
+     * same epochs.  It is also load-bearing, because the epoch is what the
+     * family is addressed <em>within</em>: the same planned occurrence
+     * consuming the same slot is a different obligation once refinement has
+     * changed the topology around it, and dropping the epoch would join two
+     * families that were never the same one.  Every other component here is
+     * already content-addressed, and this key reaches no published plan row;
+     * it names boundary families inside the importer and the closure.</p>
      */
     public static String boundaryFamilyKey(String topologyEpoch,
                                            String plannedOccurrenceId,
