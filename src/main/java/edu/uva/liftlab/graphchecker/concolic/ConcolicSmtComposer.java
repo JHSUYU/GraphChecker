@@ -1280,6 +1280,37 @@ public final class ConcolicSmtComposer {
                 configuredSourceRecordedByEvent = new LinkedHashMap<>();
         private InvocationKey currentInvocation;
 
+
+        /** This emitter's view of the shared lowering's three policies. */
+        private final VmTermLowering.Policy lowering =
+                new VmTermLowering.Policy() {
+                    @Override
+                    public Term lower(JsonElement expression, Sort expected,
+                                      String origin) {
+                        return term(expression, expected);
+                    }
+
+                    @Override
+                    public Term refuse(VmTermLowering.Reason reason,
+                                       String origin, String detail,
+                                       Sort sort) {
+                        unsupported.add(reason.composedSubject(origin,
+                                detail));
+                        return unsupportedTerm(sort);
+                    }
+
+                    @Override
+                    public Term dependent(Term result, Term... inputs) {
+                        return ConcolicSmtComposer.Emitter.this
+                                .dependent(result, inputs);
+                    }
+
+                    @Override
+                    public Sort castSort(String descriptor) {
+                        return ConcolicSmtComposer.castSort(descriptor);
+                    }
+                };
+
         private Emitter(InvocationKey fatalInvocation) {
             this.currentInvocation = fatalInvocation;
         }
@@ -2862,7 +2893,7 @@ public final class ConcolicSmtComposer {
                 @Override
                 public ContainerSmtCodec.Term box(JsonElement expression) {
                     return toContainerTerm(asValue(term(expression, null),
-                            expressionJavaType(expression)));
+                            VmTermLowering.expressionJavaType(expression)));
                 }
 
                 @Override
@@ -3481,41 +3512,7 @@ public final class ConcolicSmtComposer {
         }
 
         private Term typeCast(JsonObject expression) {
-            JsonElement sourceExpression = expression.get("_exp");
-            Term source = term(sourceExpression, null);
-            String sourceType = castDescriptor(
-                    firstNonBlank(optionalString(expression, "sourceJavaType"),
-                            expressionJavaType(sourceExpression)));
-            String targetType = castDescriptor(firstNonBlank(
-                    optionalString(expression, "targetJavaType"),
-                    optionalString(expression, "_java_type")));
-            Sort sourceSort = castSort(sourceType);
-            Sort targetSort = castSort(targetType);
-            boolean primitivePair = JavaPrimitiveSmtSemantics
-                    .primitiveNumericDescriptor(sourceType)
-                    && JavaPrimitiveSmtSemantics
-                    .primitiveNumericDescriptor(targetType);
-            if (primitivePair && source.sort == sourceSort) {
-                String conversion = JavaPrimitiveSmtSemantics.primitiveCast(
-                        source.text, sourceType, targetType);
-                if (conversion != null) {
-                    return dependent(Term.of(conversion, targetSort,
-                            integralWidthOfJava(targetType)), source);
-                }
-            } else if (primitivePair) {
-                unsupported.add("JavaCastSourceSortConflict:"
-                        + firstNonBlank(sourceType, "UNKNOWN") + ":"
-                        + source.sort + "!=" + sourceSort);
-                Sort diagnosticSort = targetSort == Sort.VALUE
-                        ? Sort.REF : targetSort;
-                return unsupportedTerm(diagnosticSort);
-            }
-            unsupported.add("MODEL_SEMANTICS_MISSING:TypeCastExpression:"
-                    + firstNonBlank(sourceType, "UNKNOWN") + "->"
-                    + firstNonBlank(targetType, "UNKNOWN"));
-            Sort diagnosticSort = targetSort == Sort.VALUE
-                    ? Sort.REF : targetSort;
-            return unsupportedTerm(diagnosticSort);
+            return VmTermLowering.typeCast(lowering, expression, "");
         }
 
         private Term binary(JsonObject expression) {
@@ -3810,24 +3807,8 @@ public final class ConcolicSmtComposer {
 
         private Term floatingPromotion(Term term, Sort target,
                                        String origin) {
-            FloatingKind targetKind = floatingKind(target);
-            if (term.sort == target) return term;
-            if (term.sort.floating()) {
-                String converted = JavaPrimitiveSmtSemantics
-                        .floatingConversion(term.text,
-                                floatingKind(term.sort), targetKind);
-                if (converted != null) return dependent(Term.of(converted,
-                        target), term);
-            } else if (term.sort == Sort.INT
-                    && term.integralWidth != IntegralWidth.NONE) {
-                String converted = JavaPrimitiveSmtSemantics
-                        .integralToFloating(term.text, targetKind);
-                if (converted != null) return dependent(Term.of(converted,
-                        target), term);
-            }
-            unsupported.add("UnsupportedJavaNumericPromotion:" + origin
-                    + ":" + term.sort + "->" + target);
-            return unsupportedTerm(target);
+            return VmTermLowering.floatingPromotion(lowering, term, target,
+                    origin);
         }
 
         /** Emits exact core Java String predicates/value operations plus the
@@ -4243,9 +4224,8 @@ public final class ConcolicSmtComposer {
         }
 
         private Term codecGap(String operation, String gap, Sort sort) {
-            unsupported.add("MODEL_SEMANTICS_MISSING:" + operation + ":"
-                    + gap);
-            return unsupportedTerm(sort);
+            return VmTermLowering.codecGap(lowering, operation, gap, "",
+                    sort);
         }
 
         /**
@@ -4918,18 +4898,6 @@ public final class ConcolicSmtComposer {
         return JavaPrimitiveSmtSemantics.primitiveDescriptor(javaType);
     }
 
-    private static String expressionJavaType(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return "";
-        JsonObject object = expression.getAsJsonObject();
-        String type = optionalString(object, "_type");
-        if ("TypeCastExpression".equals(type)) {
-            return optionalString(object, "_java_type");
-        }
-        if ("MethodExpression".equals(type)) {
-            return optionalString(object(object, "_res_exp"), "_java_type");
-        }
-        return optionalString(object, "_java_type");
-    }
 
     private static String integerLiteral(String value) {
         String raw = firstNonBlank(value).trim();
