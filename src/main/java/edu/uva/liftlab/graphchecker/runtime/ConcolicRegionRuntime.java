@@ -1588,12 +1588,23 @@ public final class ConcolicRegionRuntime {
      * {@code putfield} publishes the writer's expression as a {@code WRITE}
      * version over a pre-write initial.</p>
      *
+     * <p>The store site is the carrier's anchor.  A carrier selected here has
+     * no read in this activation to take a consumer site from, so without one
+     * it is a location no later session can name, and it fails closed at
+     * read-out instead of publishing its versions.  The store is an exact
+     * bytecode site and its activation-local occurrence is counted the same
+     * way a read's is, so it names the receiver exactly as well.</p>
      */
-    public static void selectFieldWriteCarrier(Object owner,
+    public static void selectFieldWriteCarrier(String method, int unitIndex,
+                                               Object owner,
                                                String fieldSignature) {
         ActiveRegion active = activeRegion();
         if (active == null || owner == null) return;
-        selectAccessOwnerSharedCarriers(active, owner, fieldSignature, null);
+        int occurrence = active.materializationOccurrences.fieldWrite(
+                method, unitIndex);
+        selectAccessOwnerSharedCarriers(active, owner, fieldSignature,
+                consumerAccessAnchor(active, method, unitIndex, occurrence,
+                        owner));
     }
 
     /** Records a stable logical source a live occurrence just entered. */
@@ -4906,6 +4917,21 @@ public final class ConcolicRegionRuntime {
 
         int field(String method, int unitIndex) {
             return observe("FIELD\u0000"
+                    + SiteId.render(method, unitIndex));
+        }
+
+        /**
+         * A store site counts in its own namespace: a read and a write at the
+         * same bytecode index are different accesses, and sharing one counter
+         * would give the second of them an occurrence its site never had.
+         *
+         * <p>{@code SiteId.render} and not {@code SiteId.of}: the
+         * instrumentation deliberately passes a {@code -1} unit index for an
+         * accessor implementation that has no unit of its own, and a strict
+         * parse of that sentinel throws inside the workload.</p>
+         */
+        int fieldWrite(String method, int unitIndex) {
+            return observe("FIELD_WRITE\u0000"
                     + SiteId.render(method, unitIndex));
         }
 

@@ -131,6 +131,32 @@ public class ConcolicHookAbiTest {
                 3, wovenOnSystem);
     }
 
+    /**
+     * A carrier selected at a store has no read in its activation to take a
+     * consumer site from, so the store site itself is its anchor.  The two
+     * extra arguments are that anchor; dropping them turns every
+     * putfield-selected carrier back into a location no later session can
+     * name, which fails closed at read-out rather than loudly here.
+     */
+    @Test
+    public void theFieldWriteHookCarriesItsStoreAnchor() throws Exception {
+        List<String[]> entries = catalogEntries("concolic");
+        String[] selected = null;
+        for (String[] entry : entries) {
+            if ("selectFieldWriteCarrier".equals(entry[1])) {
+                assertTrue("one field-write hook entry", selected == null);
+                selected = entry;
+            }
+        }
+        assertFalse("the field-write hook is still woven", selected == null);
+        assertEquals("selectFieldWriteCarrier(method, unitIndex, owner,"
+                        + " fieldSignature)",
+                "VoidType.v(),string,IntType.v(),object,string",
+                selected[2] + "," + selected[3] + "," + selected[4] + ","
+                        + selected[5] + "," + selected[6]);
+        assertEquals("no further arguments", 7, selected.length);
+    }
+
     @Test
     public void everyDriverEntryPointKeepsItsPinnedSignature()
             throws Exception {

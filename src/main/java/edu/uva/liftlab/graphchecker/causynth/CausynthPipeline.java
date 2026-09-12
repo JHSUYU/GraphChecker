@@ -1539,7 +1539,8 @@ public final class CausynthPipeline {
                     Value selectionOwner = objectArg(body,
                             ((InstanceInvokeExpr) invoke).getBase(), before);
                     refs.bracket(before, Hook.SELECT_FIELD_WRITE_CARRIER,
-                            selectionOwner,
+                            StringConstant.v(method.getSignature()),
+                            IntConstant.v(index), selectionOwner,
                             StringConstant.v(atomicCarrier));
                     insertBeforeSequence(body, unit, before);
                 }
@@ -1563,7 +1564,9 @@ public final class CausynthPipeline {
                 Value selectionOwner = objectArg(body, field.getBase(),
                         before);
                 emit(before, refs.ref(Hook.SELECT_FIELD_WRITE_CARRIER),
-                        selectionOwner, StringConstant.v(declaredField));
+                        StringConstant.v(method.getSignature()),
+                        IntConstant.v(index), selectionOwner,
+                        StringConstant.v(declaredField));
                 emit(before, refs.ref(Hook.RESUME_OBSERVATION));
                 insertBeforeSequence(body, unit, before);
 
@@ -3434,8 +3437,8 @@ public final class CausynthPipeline {
                             "materializeAssociativeRead", VoidType.v(),
                             object, object)
                     .add(Hook.SELECT_FIELD_WRITE_CARRIER, runtime,
-                            "selectFieldWriteCarrier", VoidType.v(), object,
-                            string)
+                            "selectFieldWriteCarrier", VoidType.v(), string,
+                            IntType.v(), object, string)
                     .add(Hook.RECORD_FIELD_WRITE, runtime,
                             "recordFieldWrite", VoidType.v(), object, string)
                     .add(Hook.EXPORT_COMMUNICATION_LEAF, runtime,
