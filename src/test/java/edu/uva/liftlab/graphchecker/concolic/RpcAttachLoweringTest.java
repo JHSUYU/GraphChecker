@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -492,6 +493,142 @@ public class RpcAttachLoweringTest {
             found.add(optionalString(gap.getAsJsonObject(), "subject"));
         }
         return found;
+    }
+
+
+    private static final String FAMILY_AB = "CBF.WIRE.AB";
+    private static final String FAMILY_BC = "CBF.WIRE.BC";
+    private static final String PORT_AB =
+            "XCH.e244e592-6913-3e09-bdeb-7725d3983d4e.resp.a-to-b";
+    private static final String PORT_BC =
+            "XCH.da84e470-fe7e-3068-b93f-caafeef64a70.req.b-to-c";
+
+    /**
+     * NN -> client -> DN is one chain, so a boundary leaf that arrives inside
+     * another boundary's payload has to be resolved by the same walk. Three
+     * regions, two wires: what C reads must still be decided by which case A
+     * ran, with B only passing it on.
+     */
+    @Test
+    public void aBoundaryInsideAnotherBoundaryResolvesTransitively()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        SymbolicPropagationClosure.Result result = chainCorpus();
+
+        JsonObject downstream = merge(result, FAMILY_BC);
+        assertTrue("C's leaf is the B->C merge", downstream.size() > 0);
+        JsonObject upstream = firstMerge(downstream, FAMILY_AB);
+        assertTrue("and the A->B merge is resolved inside it",
+                upstream.size() > 0);
+
+        JsonArray arms = upstream.getAsJsonArray("arms");
+        assertEquals(2, arms.size());
+        List<String> selectors = new ArrayList<>();
+        Map<String, Integer> valueBySelector = new LinkedHashMap<>();
+        for (JsonElement encoded : arms) {
+            JsonObject arm = encoded.getAsJsonObject();
+            String selector = optionalString(arm, "caseSelector");
+            selectors.add(selector);
+            valueBySelector.put(selector, senderValue(arm.get("expression")));
+        }
+        assertEquals("A's two cases export two values",
+                2, new LinkedHashSet<>(valueBySelector.values()).size());
+
+        StringBuilder model = new StringBuilder();
+        for (String selector : selectors) {
+            model.append("(declare-const ").append(selector)
+                    .append(" Bool)\n");
+        }
+        // What C read, equal to the nested A->B merge: the B->C hop carries
+        // it and adds nothing of its own.
+        model.append("(declare-const read_in_c Int)\n")
+                .append(assertion(ConcolicSmtComposer.conditionalExactlyOne(
+                        "true", selectors)));
+        for (String selector : selectors) {
+            model.append(assertion("(=> " + selector + " (= read_in_c "
+                    + valueBySelector.get(selector) + "))"));
+        }
+
+        for (String selector : selectors) {
+            int expected = valueBySelector.get(selector);
+            assertEquals("pinning A's case fixes what C read", "unsat",
+                    solve(model + assertion(selector)
+                            + assertion("(not (= read_in_c " + expected
+                            + "))")));
+            for (Map.Entry<String, Integer> other
+                    : valueBySelector.entrySet()) {
+                if (other.getValue() == expected) continue;
+                assertEquals("and rules out A's other case", "unsat",
+                        solve(model + assertion(selector)
+                                + assertion("(= read_in_c "
+                                + other.getValue() + ")")));
+            }
+        }
+    }
+
+    /** Both hops are published, with the depth each one sits at. */
+    @Test
+    public void eachHopRecordsTheDepthItWasResolvedAt() {
+        SymbolicPropagationClosure.Result result = chainCorpus();
+
+        assertEquals("C reads the B->C wire directly", 0,
+                optionalInteger(dependency(result, FAMILY_BC),
+                        SymbolicPropagationClosure.BOUNDARY_DEPTH, -1));
+        assertEquals("and A->B is one wire further back", 1,
+                optionalInteger(dependency(result, FAMILY_AB),
+                        SymbolicPropagationClosure.BOUNDARY_DEPTH, -1));
+    }
+
+    /** A -> B -> C over two wires, with A taking a different case per replay. */
+    private static SymbolicPropagationClosure.Result chainCorpus() {
+        List<JsonObject> rows = new ArrayList<>();
+        for (int replay = 1; replay <= 2; replay++) {
+            String scope = "replay-group:chain-" + replay;
+            String senderTask = replay == 1 ? "TASK.A.1" : "TASK.A.2";
+            JsonElement exported = replay == 1 ? symbol("M_K")
+                    : sum(symbol("M_K"), constant(1));
+            rows.add(summary("A", "A#a1", senderTask, scope, exported));
+
+            long eventAB = 800L + replay;
+            JsonObject leafAB = boundary(eventAB, exported);
+            // B's own value is its own. It received A's and forwarded it,
+            // which is the client's part in NN -> client -> DN: the leaf
+            // reaches the walk only inside what B sent on.
+            JsonObject middle = summary("B", "B#a1", "TASK.B." + replay,
+                    scope, constant(7));
+            attach(middle, FAMILY_AB, PORT_AB, eventAB, senderTask, "A#a1",
+                    leafAB);
+            rows.add(middle);
+
+            // What B forwarded is the very leaf it received: the value never
+            // becomes B's own, so C's read stays a question about A.
+            long eventBC = 850L + replay;
+            JsonObject leafBC = boundary(eventBC, leafAB);
+            JsonObject last = summary("C", "C#a1", "TASK.C." + replay,
+                    scope, leafBC);
+            attach(last, FAMILY_BC, PORT_BC, eventBC, "TASK.B." + replay,
+                    "B#a1", leafBC);
+            rows.add(last);
+        }
+        return rewrite(rows);
+    }
+
+    /** Like {@link #handoff} but names its own port, and appends. */
+    private static void attach(JsonObject receiver, String family,
+                               String port, long attachEvent,
+                               String producerTask, String producerOccurrence,
+                               JsonObject wrapper) {
+        JsonObject event = VmHandoffEvidence.event(port, attachEvent - 1,
+                attachEvent, wrapper, producerTask, producerOccurrence);
+        event = VmHandoffEvidence.withBoundaryFamily(event, family, EPOCH);
+        event.addProperty("boundarySessionScope",
+                receiver.get("boundarySessionScope").getAsString());
+        JsonArray events = receiver.getAsJsonArray(VmHandoffEvidence.FIELD);
+        if (events == null) {
+            events = new JsonArray();
+            receiver.add(VmHandoffEvidence.FIELD, events);
+        }
+        events.add(event);
     }
 
 }

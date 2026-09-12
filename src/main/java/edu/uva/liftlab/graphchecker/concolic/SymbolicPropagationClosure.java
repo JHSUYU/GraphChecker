@@ -115,6 +115,15 @@ public final class SymbolicPropagationClosure {
      */
     public static final String RPC_ATTACH_SENDER_EXPRESSION_MISSING =
             "RPC_ATTACH_SENDER_EXPRESSION_MISSING";
+    /**
+     * How many wires a resolved boundary sits behind the fatal cone.
+     *
+     * <p>Zero is a boundary the target reads directly. One is a boundary that
+     * arrived inside another boundary's payload -- the client's cached key
+     * inside what the client then sent on -- and so on, because NN to client
+     * to DN is one chain and the walk follows it.</p>
+     */
+    public static final String BOUNDARY_DEPTH = "boundaryDepth";
     public static final String INITIAL_SOURCE_CASE_PREFIX =
             "INITIAL_SOURCE.";
     public static final String GAP_KIND = "SYMBOLIC_PROPAGATION_GAP";
@@ -248,6 +257,10 @@ public final class SymbolicPropagationClosure {
         private final Map<DynamicKey, String> dynamicFamilies =
                 new LinkedHashMap<>();
         /** Boundary kind of every family the evidence named. */
+        /** How deep in the chain each family was first reached. */
+        private final Map<String, Integer> depthByFamily =
+                new LinkedHashMap<>();
+        private int chainDepth;
         /** Families a resolve-time or payload gap already named once. */
         private final Set<String> namedEmptyFamilies = new LinkedHashSet<>();
         /** Declared wire port and receiving occurrence, per attach family. */
@@ -1728,6 +1741,14 @@ public final class SymbolicPropagationClosure {
                         "boundary families form a value cycle");
                 return missingReference(key);
             }
+            // The depth a family is first reached at is the one that answers
+            // "how far behind the target is this wire"; reaching it again
+            // through a longer path does not move it further away.
+            Integer heldDepth = depthByFamily.get(key);
+            if (heldDepth == null || chainDepth < heldDepth) {
+                depthByFamily.put(key, chainDepth);
+            }
+            chainDepth++;
             try {
                 JsonObject merge = new JsonObject();
                 merge.addProperty("_type", ITE_TYPE);
@@ -1811,6 +1832,7 @@ public final class SymbolicPropagationClosure {
                 resolved.put(key, merge);
                 return merge;
             } finally {
+                chainDepth--;
                 active.remove(key);
             }
         }
@@ -1854,6 +1876,8 @@ public final class SymbolicPropagationClosure {
             row.addProperty(VmExpressionIr.FAMILY_KEY, family.key);
             row.addProperty("boundaryKind", family.kind);
             row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH, family.epoch);
+            Integer depth = depthByFamily.get(family.key);
+            row.addProperty(BOUNDARY_DEPTH, depth == null ? 0 : depth);
             JsonArray encoded = new JsonArray();
             for (JsonElement element : arms) {
                 JsonObject arm = element.getAsJsonObject();

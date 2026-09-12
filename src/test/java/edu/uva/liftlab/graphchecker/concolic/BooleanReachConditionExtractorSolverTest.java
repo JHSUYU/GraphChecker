@@ -612,4 +612,75 @@ public class BooleanReachConditionExtractorSolverTest {
         return row;
     }
 
+
+    /**
+     * A composition the Composer refused is still solved, because the
+     * valuations and the arm the model picks are how anyone finds out why it
+     * was refused. What it may never do is carry authority: the report stays
+     * CANDIDATE_WITH_GAPS, keeps the eligibility gap, and every row it
+     * publishes says so.
+     */
+    @Test
+    public void aRefusedCompositionIsSolvedForEvidenceOnly() throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject manifest = candidateManifest();
+        manifest.addProperty("state", "CANDIDATE_WITH_GAPS");
+        manifest.addProperty(ConcolicSmtComposer.FINAL_STATUS,
+                "FINAL_REFUSED");
+        // A refusal fails the formula closed, so without lifting that marker
+        // every valuation of it is unsat and answers nothing.
+        String smt = "(set-logic ALL)\n(declare-const x Int)\n"
+                + "(assert (> x 0))\n"
+                + "(assert false) ; fail closed: unsupported\n"
+                + "(check-sat)\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(smt,
+                manifest, new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+
+        assertTrue(report.get(BooleanReachConditionExtractor.EVIDENCE_ONLY)
+                .getAsBoolean());
+        assertEquals(1, report.get("failClosedMarkersLifted").getAsInt());
+        // Solved, and the valuation is real rather than the refusal's own.
+        assertEquals(1, report.getAsJsonArray("valuations").size());
+        JsonObject valuation = report.getAsJsonArray("valuations").get(0)
+                .getAsJsonObject();
+        assertEquals("sat", valuation.get("status").getAsString());
+        assertTrue(valuation.get(BooleanReachConditionExtractor.EVIDENCE_ONLY)
+                .getAsBoolean());
+        // And it can never be believed.
+        assertEquals("CANDIDATE_WITH_GAPS", report.get("state").getAsString());
+        assertTrue(report.getAsJsonArray("gaps").toString().contains(
+                "COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE"));
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                report.getAsJsonObject(ClaimPolicy.CLAIM).get("claim")
+                        .getAsString());
+        assertEquals(ClaimPolicy.COMPOSER_NOT_FINAL_READY,
+                report.getAsJsonObject(ClaimPolicy.CLAIM)
+                        .getAsJsonArray("blockers").get(0).getAsJsonObject()
+                        .get("code").getAsString());
+    }
+
+    /** A composition nobody refused keeps its fail-closed marker. */
+    @Test
+    public void anEligibleCompositionKeepsItsFailClosedMarker()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        String smt = "(set-logic ALL)\n(declare-const x Int)\n"
+                + "(assert (> x 0))\n"
+                + "(assert false) ; fail closed: unsupported\n"
+                + "(check-sat)\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(smt,
+                candidateManifest(),
+                new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+
+        assertFalse(report.get(BooleanReachConditionExtractor.EVIDENCE_ONLY)
+                .getAsBoolean());
+        assertEquals(0, report.get("failClosedMarkersLifted").getAsInt());
+        assertEquals("unsat", report.getAsJsonArray("valuations").get(0)
+                .getAsJsonObject().get("status").getAsString());
+    }
+
 }
