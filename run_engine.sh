@@ -2926,10 +2926,16 @@ campaign_emit() {
      evidence: {
        symbolicPropagationComplete:
          ($c.symbolicPropagationComplete // false),
+       # Copied from the policy, which counts the consumer boundary families
+       # the Composer publishes. Reading the retired symbolicPropagation
+       # array here reported zero families on every real manifest.
        consumerBoundaryFamilies:
-         (($c.symbolicPropagation // []) | length),
+         ($decided.rootSpace.consumerBoundaryFamilies // 0),
        consumerBoundaryArms:
-         ([$c.symbolicPropagation[]? | (.armCount // 0)] | add // 0),
+         ($decided.rootSpace.consumerBoundaryArms // 0),
+       declaredWireFlows:
+         ($decided.rootSpace.declaredWireFlows // 0),
+       wireFlows: ($decided.rootSpace.wireFlows // []),
        guardedReadModelComplete:
          ($c.guardedReadModelComplete // false),
        guardedReads:

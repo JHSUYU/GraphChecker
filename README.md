@@ -179,7 +179,8 @@ in `schedule/frozen-inputs/`. Accepted outcomes are:
 `result.json`: one `blockers` row per reason and one `whyNotAccepted` line,
 which EMIT also prints. A claim is accepted only when that list is empty, so a
 run needs zero aggregate gaps, a root space the solver decided is constrained,
-every declared `WIRE_FLOW` realized as a consumer boundary family, a witness
+every declared `WIRE_FLOW` realized -- as an exchange port pair or a consumer
+boundary family -- a witness
 some root flips, and matching fresh provenance. Closed selected-path authority
 is required for `UNSAT_CLOSED` alone; open sibling paths leave a SAT candidate
 accepted. The Composer's `finalStatus: FINAL_READY` states that the formula is

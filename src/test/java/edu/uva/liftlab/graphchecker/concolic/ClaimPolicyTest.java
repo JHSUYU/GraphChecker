@@ -6,13 +6,15 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.Test;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -27,7 +29,7 @@ public class ClaimPolicyTest {
     /** A fault-sensitive SAT witness on a complete composition is accepted. */
     @Test
     public void connectedWitnessIsAcceptedAsSatCandidate() {
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach(), 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach(), noFlows());
 
         assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim")
                 .getAsString());
@@ -44,14 +46,15 @@ public class ClaimPolicyTest {
         reach.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false);
 
         assertEquals(ClaimPolicy.SAT_CANDIDATE,
-                ClaimPolicy.decide(manifest(), reach, 0).get("claim")
+                ClaimPolicy.decide(manifest(), reach, noFlows()).get("claim")
                         .getAsString());
     }
 
     /** A closed refutation is accepted only with closure authority. */
     @Test
     public void closedRefutationIsAcceptedAsUnsatClosed() {
-        JsonObject claim = ClaimPolicy.decide(manifest(), refutation(true), 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), refutation(true),
+                noFlows());
 
         assertEquals(ClaimPolicy.UNSAT_CLOSED, claim.get("claim")
                 .getAsString());
@@ -61,7 +64,7 @@ public class ClaimPolicyTest {
     @Test
     public void openRefutationIsWithheldAsUnsatClosureIncomplete() {
         JsonObject claim = ClaimPolicy.decide(manifest(), refutation(false),
-                0);
+                noFlows());
 
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
                 .getAsString());
@@ -77,7 +80,7 @@ public class ClaimPolicyTest {
                 "[{\"code\":\"GUARDED_READ_ARM_UNNAMED\","
                         + "\"subject\":\"R#1\",\"detail\":\"x\"}]"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest, reach(), 0);
+        JsonObject claim = ClaimPolicy.decide(manifest, reach(), noFlows());
 
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
                 .getAsString());
@@ -93,7 +96,7 @@ public class ClaimPolicyTest {
         JsonObject reach = reach();
         reach.add("gaps", parseArray("[\"UNDECIDED_SOLVER_VALUATIONS:2\"]"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(codes(ClaimPolicy.COMPOSITION_GAPS_UNRESOLVED),
                 codes(claim));
@@ -109,7 +112,7 @@ public class ClaimPolicyTest {
         reach.getAsJsonObject("reachCondition").addProperty("degeneracyCheck",
                 "DEGENERATE_UNCONSTRAINED_ROOT_SPACE");
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
                 .getAsString());
@@ -127,7 +130,7 @@ public class ClaimPolicyTest {
         reach.getAsJsonObject("reachCondition").addProperty("degeneracyCheck",
                 "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9");
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
                 .getAsString());
@@ -145,7 +148,7 @@ public class ClaimPolicyTest {
                 "[{\"values\":[false],\"status\":\"sat\"},"
                         + "{\"values\":[true],\"status\":\"sat\"}]"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(codes(ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS),
                 codes(claim));
@@ -163,7 +166,7 @@ public class ClaimPolicyTest {
         reach.add("existentialRootProbe", parse(
                 "{\"constrainsRootSpace\":true}"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim")
                 .getAsString());
@@ -186,35 +189,148 @@ public class ClaimPolicyTest {
     }
 
     /**
-     * The hdfs-17899-bug3 finding: the experiment declares cross-node wire
-     * flows and the composition realized no consumer boundary family, so
-     * neither side of the wire is in the formula the witness satisfies.
+     * An exchange handoff realizes a declared flow: the plan binds the flow's
+     * ports to a producer and a consumer region, and the composition drew a
+     * case from both. Counting consumer boundary families alone called this
+     * flow unrealized on hdfs-17899-bug3, which it is not.
      */
     @Test
-    public void declaredWireFlowsWithNoBoundaryFamilyBlockTheClaim() {
-        JsonObject manifest = manifest();
-        manifest.add("symbolicPropagation", new JsonArray());
+    public void exchangePortPairRealizesADeclaredFlow() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                boundaryManifest(CONSUMER_REGION, PRODUCER_REGION),
+                reach(), flows());
 
-        JsonObject claim = ClaimPolicy.decide(manifest, reach(), 2);
+        assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim")
+                .getAsString());
+        assertEquals(0, claim.getAsJsonArray("blockers").size());
+        assertTrue(wireFlow(claim, "data-encryption-key-id").get("realized")
+                .getAsBoolean());
+        assertEquals("EXCHANGE_PORT_PAIR",
+                wireFlow(claim, "data-encryption-key-id").get("mechanism")
+                        .getAsString());
+    }
+
+    /**
+     * The main-baseline hdfs-17899-bug3 shape: the consumer side of a flow is
+     * in the composition and the producer side never entered it, so the flow
+     * crossed no wire. The blocker names that flow and leaves the realized
+     * one alone.
+     */
+    @Test
+    public void oneSidedFlowIsNamedUnrealized() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                boundaryManifest(CONSUMER_REGION, OTHER_REGION),
+                reach(), flows());
 
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
                 .getAsString());
         assertEquals(codes(ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED),
                 codes(claim));
-        assertEquals("2", blocker(claim,
+        // The blocker names the flow, because a count cannot be acted on.
+        assertEquals("data-encryption-key-id", blocker(claim,
                 ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED)
                 .get("subject").getAsString());
+        assertTrue(blocker(claim, ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED)
+                .get("detail").getAsString()
+                .contains("data-encryption-key-id"));
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertTrue(flow.get("consumerRealized").getAsBoolean());
+        assertFalse(flow.get("producerRealized").getAsBoolean());
+    }
+
+    /** Neither side in the composition is still one named unrealized flow. */
+    @Test
+    public void flowWithNeitherSideRealizedIsNamed() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                boundaryManifest(OTHER_REGION, OTHER_REGION),
+                reach(), flows());
+
+        assertEquals(codes(ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED),
+                codes(claim));
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertFalse(flow.get("consumerRealized").getAsBoolean());
+        assertFalse(flow.get("producerRealized").getAsBoolean());
+    }
+
+    /**
+     * A consumer boundary family is the other realization mechanism. With no
+     * plan to bind a flow's ports, nothing can single that flow out, so the
+     * realized families answer for it.
+     */
+    @Test
+    public void consumerBoundaryFamilyRealizesAFlowWithNoPortEvidence() {
+        JsonObject claim = ClaimPolicy.decide(
+                boundaryManifest(CONSUMER_REGION, PRODUCER_REGION), reach(),
+                ClaimPolicy.WireFlowEvidence.declaredOnly(
+                        Collections.singletonList("block-key-id")));
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim")
+                .getAsString());
+        assertEquals("CONSUMER_BOUNDARY_FAMILY",
+                wireFlow(claim, "block-key-id").get("mechanism")
+                        .getAsString());
+    }
+
+    /** No family and no port evidence leaves the declared flow unrealized. */
+    @Test
+    public void noBoundaryFamilyAndNoPortEvidenceBlocksTheClaim() {
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach(),
+                ClaimPolicy.WireFlowEvidence.declaredOnly(
+                        Collections.singletonList("block-key-id")));
+
+        assertEquals(codes(ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED),
+                codes(claim));
+        assertEquals("block-key-id", blocker(claim,
+                ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED).get("subject")
+                .getAsString());
+        assertEquals("NO_PORT_EVIDENCE",
+                wireFlow(claim, "block-key-id").get("mechanism")
+                        .getAsString());
     }
 
     /** An experiment that declares no flow has none to realize. */
     @Test
     public void noDeclaredWireFlowNeedsNoBoundaryFamily() {
-        JsonObject manifest = manifest();
-        manifest.add("symbolicPropagation", new JsonArray());
-
         assertEquals(ClaimPolicy.SAT_CANDIDATE,
-                ClaimPolicy.decide(manifest, reach(), 0).get("claim")
-                        .getAsString());
+                ClaimPolicy.decide(manifest(), reach(), noFlows())
+                        .get("claim").getAsString());
+    }
+
+    /**
+     * The Composer publishes boundary families as
+     * casePathConditionDependencies rows. Reading the retired
+     * symbolicPropagation array instead counted zero on every real manifest.
+     */
+    @Test
+    public void boundaryFamiliesAreCountedFromTheRowsTheComposerPublishes() {
+        JsonObject manifest = boundaryManifest(CONSUMER_REGION,
+                PRODUCER_REGION);
+
+        assertFalse(manifest.has("symbolicPropagation"));
+        assertEquals(2, ClaimPolicy.consumerBoundaryFamilies(manifest));
+        assertEquals(0, ClaimPolicy.consumerBoundaryFamilies(manifest()));
+    }
+
+    /** A manifest that still carries the retired array is still counted. */
+    @Test
+    public void legacyPropagationArrayStillCountsAsBoundaryFamilies() {
+        JsonObject manifest = manifest();
+        JsonArray legacy = new JsonArray();
+        legacy.add(parse("{\"armCount\":2}"));
+        manifest.add("symbolicPropagation", legacy);
+
+        assertEquals(1, ClaimPolicy.consumerBoundaryFamilies(manifest));
+    }
+
+    /** Region identities are read wherever the manifest names one. */
+    @Test
+    public void realizedRegionsAreReadFromEveryIdentityTheyAppearIn() {
+        Set<String> regions = ClaimPolicy.realizedRegions(
+                boundaryManifest(CONSUMER_REGION, PRODUCER_REGION));
+
+        assertTrue(regions.contains(CONSUMER_REGION));
+        assertTrue(regions.contains(PRODUCER_REGION));
+        assertFalse(regions.contains(OTHER_REGION));
     }
 
     @Test
@@ -226,7 +342,7 @@ public class ClaimPolicyTest {
                         + "{\"value\":\"(- 0)\"}]},"
                         + "{\"values\":[true],\"status\":\"unsat\"}]"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(codes(ClaimPolicy.WITNESS_UNINFORMATIVE), codes(claim));
         assertEquals("ALL_ZERO", blocker(claim,
@@ -245,7 +361,7 @@ public class ClaimPolicyTest {
                         + "\"existentialWitness\":[{\"value\":\"7\"}]},"
                         + "{\"values\":[true,true],\"status\":\"unsat\"}]"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(codes(ClaimPolicy.WITNESS_UNINFORMATIVE), codes(claim));
         assertEquals("INVARIANT_ACROSS_VALUATIONS", blocker(claim,
@@ -265,7 +381,7 @@ public class ClaimPolicyTest {
                         + "{\"values\":[true,true],\"status\":\"unsat\"}]"));
 
         assertEquals(ClaimPolicy.SAT_CANDIDATE,
-                ClaimPolicy.decide(manifest(), reach, 0).get("claim")
+                ClaimPolicy.decide(manifest(), reach, noFlows()).get("claim")
                         .getAsString());
     }
 
@@ -277,7 +393,7 @@ public class ClaimPolicyTest {
                         + "{\"values\":[true],\"status\":\"unsat\"},"
                         + "{\"values\":[true],\"status\":\"unknown\"}]"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(codes(ClaimPolicy.SOLVER_UNDECIDED_VALUATIONS),
                 codes(claim));
@@ -292,7 +408,7 @@ public class ClaimPolicyTest {
         reach.getAsJsonObject("reachCondition").addProperty("reachability",
                 "UNKNOWN");
 
-        JsonObject claim = ClaimPolicy.decide(manifest(), reach, 0);
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
                 .getAsString());
@@ -303,7 +419,6 @@ public class ClaimPolicyTest {
     @Test
     public void whyNotAcceptedNamesEveryBlockerOnItsOwnLine() {
         JsonObject manifest = manifest();
-        manifest.add("symbolicPropagation", new JsonArray());
         JsonObject reach = reach();
         reach.getAsJsonObject("reachCondition").addProperty("degeneracyCheck",
                 "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9");
@@ -311,7 +426,9 @@ public class ClaimPolicyTest {
                 "[{\"values\":[false],\"status\":\"sat\"},"
                         + "{\"values\":[true],\"status\":\"sat\"}]"));
 
-        JsonObject claim = ClaimPolicy.decide(manifest, reach, 2);
+        JsonObject claim = ClaimPolicy.decide(manifest, reach,
+                ClaimPolicy.WireFlowEvidence.declaredOnly(
+                        Collections.singletonList("block-key-id")));
         String[] lines = claim.get("whyNotAccepted").getAsString()
                 .split("\\R");
 
@@ -331,19 +448,115 @@ public class ClaimPolicyTest {
 
     /** Only WIRE_FLOW rows are declared flows; no mapping file is none. */
     @Test
-    public void declaredWireFlowsCountsOnlyWireFlowRows() throws IOException {
-        File directory = Files.createTempDirectory("claim-policy").toFile();
-        Path mappings = directory.toPath().resolve("mappings.jsonl");
+    public void declaredFlowsAreReadOnlyFromWireFlowRows()
+            throws IOException {
+        Path directory = Files.createTempDirectory("claim-policy");
+        Path mappings = directory.resolve("mappings.jsonl");
         Files.write(mappings, (
                 "{\"schemaVersion\":1,\"kind\":\"WIRE_FLOW\",\"id\":\"a\"}\n"
                 + "{\"schemaVersion\":1,\"kind\":\"WIRE_FLOW\",\"id\":\"b\"}\n"
                 + "{\"schemaVersion\":1,\"kind\":\"SHARED_FIELD\",\"id\":\"c\"}\n")
                 .getBytes(StandardCharsets.UTF_8));
 
-        assertEquals(2, ClaimPolicy.declaredWireFlows(mappings.toString()));
-        assertEquals(0, ClaimPolicy.declaredWireFlows(""));
-        assertEquals(0, ClaimPolicy.declaredWireFlows(
-                directory.toPath().resolve("absent.jsonl").toString()));
+        assertEquals(2, ClaimPolicy.WireFlowEvidence
+                .read(mappings.toString(), "").declaredCount());
+        assertEquals(0, ClaimPolicy.WireFlowEvidence.read("", "")
+                .declaredCount());
+        assertEquals(0, ClaimPolicy.WireFlowEvidence
+                .read(directory.resolve("absent.jsonl").toString(), "")
+                .declaredCount());
+    }
+
+    /** The plan binds a flow's ports by the flow name the port id carries. */
+    @Test
+    public void plannedPortsAreReadFromTheHandoffPortIds()
+            throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                boundaryManifest(CONSUMER_REGION, PRODUCER_REGION), reach(),
+                flows());
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+
+        assertEquals(1, flow.get("consumerRegionsPlanned").getAsInt());
+        assertEquals(1, flow.get("producerRegionsPlanned").getAsInt());
+    }
+
+    private static final String CONSUMER_REGION =
+            "REGION.53092d3e-263d-3a18-b7a5-ae5b437d96de";
+    private static final String PRODUCER_REGION =
+            "REGION.d930c3a2-ffc2-35e8-abea-8ff12526d930";
+    private static final String OTHER_REGION =
+            "REGION.11111111-2222-3333-4444-555555555555";
+
+    private static ClaimPolicy.WireFlowEvidence noFlows() {
+        return ClaimPolicy.WireFlowEvidence.none();
+    }
+
+    /**
+     * One declared flow whose exchange ports the plan bound to a consumer and
+     * a producer region, written as the campaign writes them.
+     */
+    private static ClaimPolicy.WireFlowEvidence flows() throws IOException {
+        Path directory = Files.createTempDirectory("claim-flows");
+        Path mappings = directory.resolve("communication-mappings.jsonl");
+        Files.write(mappings, ("{\"schemaVersion\":1,"
+                + "\"kind\":\"WIRE_FLOW\","
+                + "\"id\":\"data-encryption-key-id\","
+                + "\"transport\":\"HDFS_SASL\","
+                + "\"direction\":\"REQUEST\"}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        Path plan = directory.resolve("concolic_region_plan.jsonl");
+        Files.write(plan, ("{\"schemaVersion\":1,"
+                + "\"kind\":\"CONCOLIC_REGION_PLAN\",\"regions\":["
+                + "{\"regionId\":\"" + CONSUMER_REGION + "\","
+                + "\"communicationHandoffs\":[{\"side\":\"IN\","
+                + "\"portId\":\"XCH.da84e470-fe7e-3068-b93f-caafeef64a70"
+                + ".req.data-encryption-key-id\"}]},"
+                + "{\"regionId\":\"" + PRODUCER_REGION + "\","
+                + "\"communicationHandoffs\":[{\"side\":\"OUT\","
+                + "\"portId\":\"XCH.da84e470-fe7e-3068-b93f-caafeef64a70"
+                + ".req.data-encryption-key-id\"}]}]}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        return ClaimPolicy.WireFlowEvidence.read(mappings.toString(),
+                plan.toString());
+    }
+
+    /**
+     * A complete composition that drew two consumer boundary families, one
+     * from each of the two named regions -- the rows the Composer publishes
+     * under casePathConditionDependencies.
+     */
+    private static JsonObject boundaryManifest(String consumer,
+                                               String producer) {
+        JsonObject manifest = manifest();
+        JsonArray dependencies = new JsonArray();
+        int ordinal = 0;
+        for (String region : Arrays.asList(consumer, producer)) {
+            JsonObject arm = new JsonObject();
+            arm.addProperty("regionId", region);
+            arm.addProperty("occurrenceId",
+                    "hdfs-17899/nn0#epoch0/region/" + region + "#1#a1");
+            JsonArray arms = new JsonArray();
+            arms.add(arm);
+            JsonObject family = new JsonObject();
+            family.addProperty("kind", "CONSUMER_BOUNDARY_CASE_DEPENDENCY");
+            family.addProperty("familyKey", "CBF.fixture" + ordinal++);
+            family.addProperty("boundaryKind", "RPC_ATTACH");
+            family.add("arms", arms);
+            dependencies.add(family);
+        }
+        manifest.add("casePathConditionDependencies", dependencies);
+        return manifest;
+    }
+
+    private static JsonObject wireFlow(JsonObject claim, String flow) {
+        for (JsonElement element : claim.getAsJsonObject("rootSpace")
+                .getAsJsonArray("wireFlows")) {
+            JsonObject row = element.getAsJsonObject();
+            if (flow.equals(row.get("flow").getAsString())) {
+                return row;
+            }
+        }
+        throw new AssertionError("no wire-flow row for " + flow);
     }
 
     /** A composition the Composer published as complete and candidate-ready. */
@@ -354,7 +567,7 @@ public class ClaimPolicyTest {
                 + "\"finalStatus\":\"FINAL_READY\","
                 + "\"finalStatusRefusals\":[],"
                 + "\"symbolicPropagationComplete\":true,"
-                + "\"symbolicPropagation\":[{\"armCount\":2}],"
+                + "\"casePathConditionDependencies\":[],"
                 + "\"guardedReadModelComplete\":true,"
                 + "\"gaps\":[]}");
     }

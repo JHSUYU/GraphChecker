@@ -260,7 +260,7 @@ else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
 | `DEGENERATE_ROOT_SPACE` | `degeneracyCheck` is `DEGENERATE_*`: the target provably ignores every root |
 | `UNDECIDED_ROOT_SPACE` | `degeneracyCheck` is `UNDECIDED_*`: the question was never decided, so it is not answered |
 | `TARGET_UNCONSTRAINED_BY_ROOTS` | a `REACHABLE` result where no single root flip changes satisfiability and no existential perturbation was rejected |
-| `DECLARED_WIRE_FLOWS_UNREALIZED` | `communication-mappings.jsonl` declares `WIRE_FLOW`s and the manifest realized no consumer boundary family |
+| `DECLARED_WIRE_FLOWS_UNREALIZED` | `communication-mappings.jsonl` declares a `WIRE_FLOW` the composition realized neither side of; the blocker names those flows |
 | `WITNESS_UNINFORMATIVE` | the existential witness is every-zero, or identical under every satisfying valuation, while no perturbation of it was rejected |
 | `SOLVER_UNDECIDED_VALUATIONS` | the solver returned neither sat nor unsat on an enumerated valuation |
 | `UNSAT_CLOSURE_INCOMPLETE` | an `UNREACHABLE` result without closed selected-path authority |
@@ -276,3 +276,28 @@ apply to an `UNREACHABLE` result, which has no witness to tie to a root.
 
 `UNSAT_CLOSURE_INCOMPLETE` is required for `UNSAT_CLOSED` and for nothing
 else: one connected SAT witness stays valid while sibling paths are open.
+
+### Realizing a declared wire flow
+
+A declared `WIRE_FLOW` becomes real in a composition by either of two
+mechanisms, and both count:
+
+- **an exchange port pair.** The runtime plan binds the flow's
+  `XCH.<exchangeSiteKey>.<req|resp>.<flow>` ports to regions, `side: "IN"` for
+  the consumer and `side: "OUT"` for the producer. The flow is realized when
+  the composition drew a case, a guarded read or a witness from a region on
+  each side. This is the mechanism by which the hdfs-17899 SASL
+  `data-encryption-key-id` flow is real.
+- **a consumer boundary family.** The Composer publishes these as
+  `casePathConditionDependencies` rows of kind
+  `CONSUMER_BOUNDARY_CASE_DEPENDENCY`, whose `boundaryKind` says whether the
+  family came from an `RPC_ATTACH` or a `FIELD_READ`. A declared flow whose
+  ports no plan bound is realized when the composition realized any such
+  family, because nothing else can single that flow out.
+
+`ClaimPolicy` reports one row per declared flow in `rootSpace.wireFlows`
+(`flow`, `realized`, `mechanism`, and whether each side was realized), and the
+blocker's `subject` is the comma-joined names of the flows that were not
+realized -- a count cannot be acted on. Counting consumer boundary families
+alone called the realized SASL flow of hdfs-17899-bug3 unrealized, and reading
+them from the retired `symbolicPropagation` array reported none at all.
