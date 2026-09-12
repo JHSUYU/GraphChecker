@@ -220,10 +220,10 @@ public final class ConcolicScheduler {
             throws IOException {
         LoadedInputs loaded = loadInputs(arguments);
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                arguments.activeObservedClosure
+                arguments.closureMode == ClosureMode.ACTIVE_OBSERVED
                 ? RuntimeWorkflowDiscovery.rankedWorkflow(
                         loaded.regionPlans, loaded.summaries)
-                : arguments.seedReplayClosure
+                : arguments.closureMode == ClosureMode.SEED_REPLAY
                 ? RuntimeWorkflowDiscovery.seedReplayWorkflow(
                         loaded.regionPlans)
                 : RuntimeWorkflowDiscovery.rankedWorkflow(
@@ -2060,6 +2060,38 @@ public final class ConcolicScheduler {
         }
     }
 
+    /**
+     * Which closure the schedule is drawn from.  Exactly one of the three
+     * answers the question "which region occurrences are in scope", so the
+     * caller states it once rather than leaving two independent flags to
+     * contradict each other.
+     */
+    public enum ClosureMode {
+        /** Every candidate occurrence the frozen region plan declares. */
+        CANDIDATE("candidate"),
+        /** Only the occurrences a seed activation can replay. */
+        SEED_REPLAY("seed-replay"),
+        /** Only the occurrences this iteration's summaries observed. */
+        ACTIVE_OBSERVED("active-observed");
+
+        private final String option;
+
+        ClosureMode(String option) {
+            this.option = option;
+        }
+
+        static ClosureMode parse(String value) {
+            String requested = value == null || value.trim().isEmpty()
+                    ? CANDIDATE.option : value.trim();
+            for (ClosureMode mode : values()) {
+                if (mode.option.equals(requested)) return mode;
+            }
+            throw new IllegalArgumentException("--closure-mode must be one "
+                    + "of candidate|seed-replay|active-observed, not: "
+                    + requested);
+        }
+    }
+
     public static final class Arguments {
         public final Path regionPlan;
         public final Path refinedGraph;
@@ -2071,16 +2103,13 @@ public final class ConcolicScheduler {
         public final int maxJobs;
         public final int maxLoopIterations;
         public final Path symbolicInputs;
-        private final boolean activeObservedClosure;
-        private final boolean seedReplayClosure;
+        private final ClosureMode closureMode;
 
         private Arguments(Path regionPlan, Path refinedGraph, Path summaries,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
                           int maxJobs, int maxLoopIterations,
-                          Path symbolicInputs,
-                          boolean activeObservedClosure,
-                          boolean seedReplayClosure) {
+                          Path symbolicInputs, ClosureMode closureMode) {
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
             this.summaries = summaries;
@@ -2091,15 +2120,14 @@ public final class ConcolicScheduler {
             this.maxJobs = Math.max(1, maxJobs);
             this.maxLoopIterations = maxLoopIterations;
             this.symbolicInputs = symbolicInputs;
-            this.activeObservedClosure = activeObservedClosure;
-            this.seedReplayClosure = seedReplayClosure;
+            this.closureMode = closureMode;
         }
 
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
                     "refined-graph", "summaries", "output-dir", "max-jobs",
                     "symbolic-inputs", "max-loop-iterations",
-                    "active-observed-closure", "seed-replay-closure");
+                    "closure-mode");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
@@ -2108,22 +2136,15 @@ public final class ConcolicScheduler {
             Path summaries = optionalPath(values.get("summaries"));
             Path symbolicInputs = optionalPath(
                     values.get("symbolic-inputs"));
-            boolean activeObserved = Boolean.parseBoolean(values.get(
-                    "active-observed-closure"));
-            boolean seedReplay = Boolean.parseBoolean(values.get(
-                    "seed-replay-closure"));
-            if (activeObserved && seedReplay) {
-                throw new IllegalArgumentException(
-                        "--active-observed-closure and "
-                        + "--seed-replay-closure are mutually exclusive");
-            }
+            ClosureMode closureMode = ClosureMode.parse(
+                    values.get("closure-mode"));
             return new Arguments(regionPlan, refinedGraph,
                     summaries, output, "", "", "",
                     parseInt(values.get("max-jobs"), 1),
                     positiveInt(values.get("max-loop-iterations"),
                             LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                             "max-loop-iterations"),
-                    symbolicInputs, activeObserved, seedReplay);
+                    symbolicInputs, closureMode);
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -2170,8 +2191,7 @@ public final class ConcolicScheduler {
                     summaries, outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1, maxLoopIterations,
-                    symbolicInputs, activeObservedClosure,
-                    seedReplayClosure);
+                    symbolicInputs, closureMode);
         }
 
     }

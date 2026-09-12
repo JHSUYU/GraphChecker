@@ -82,8 +82,7 @@ reset_config() {
   # Internal campaign paths. They are derived from the immutable iteration and
   # are not workflow/CLI override points.
   schedule_summaries=""
-  schedule_active_observed=false
-  schedule_seed_replay=false
+  schedule_closure_mode=candidate
   schedule_max_jobs=""
   solver_timeout_ms=""
   reach_max_inputs=""
@@ -524,12 +523,7 @@ do_schedule() {
     require_file "scheduler summaries" "${schedule_summaries}"
     args+=(--summaries "${schedule_summaries}")
   fi
-  if [[ "${schedule_active_observed}" == true ]]; then
-    args+=(--active-observed-closure)
-  fi
-  if [[ "${schedule_seed_replay}" == true ]]; then
-    args+=(--seed-replay-closure)
-  fi
+  args+=(--closure-mode "${schedule_closure_mode}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}"
 }
@@ -1859,9 +1853,9 @@ campaign_plan() {
 
   mkdir -p "${seed_dir}"
   schedule_output_dir="${seed_dir}"
-  schedule_seed_replay=true
+  schedule_closure_mode=seed-replay
   do_schedule
-  schedule_seed_replay=false
+  schedule_closure_mode=candidate
   require_nonempty "seed replay task plan" "${seed_plan}"
   require_nonempty "seed replay workflow index" "${seed_index}"
   # Seed activation may narrow candidate membership, but task identity must
@@ -2044,9 +2038,9 @@ campaign_seed_query() {
   mkdir -p "${query_dir}"
   schedule_output_dir="${query_dir}"
   schedule_summaries="${iteration_dir}/concolic_region_summaries.jsonl"
-  schedule_active_observed=true
+  schedule_closure_mode=active-observed
   do_schedule
-  schedule_active_observed=false
+  schedule_closure_mode=candidate
   require_nonempty "active observed workflow index" "${active_index}"
   require_nonempty "active observed task plan" \
     "${query_dir}/execution_task_plan.jsonl"
