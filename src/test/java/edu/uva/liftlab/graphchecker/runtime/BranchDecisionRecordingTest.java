@@ -150,12 +150,28 @@ public class BranchDecisionRecordingTest {
                 + ".ConcolicRegionRuntime$SwitchExpectation");
     }
 
-    private static Object switchDecision(String kind, String keys,
-                                         int successor) throws Exception {
+    private static Class<?> decisionType() throws Exception {
+        return Class.forName("edu.uva.liftlab.graphchecker.runtime"
+                + ".ConcolicRegionRuntime$BranchDecision");
+    }
+
+    private static Object binary(boolean outcome) throws Exception {
+        Method factory = decisionType().getDeclaredMethod("binary",
+                boolean.class);
+        factory.setAccessible(true);
+        return factory.invoke(null, outcome);
+    }
+
+    private static Object multiway(String kind, String keys, int successor)
+            throws Exception {
         Method parse = switchType().getDeclaredMethod("parse", String.class,
                 String.class, int.class);
         parse.setAccessible(true);
-        return parse.invoke(null, kind, keys, successor);
+        Method factory = decisionType().getDeclaredMethod("multiway",
+                switchType());
+        factory.setAccessible(true);
+        return factory.invoke(null, parse.invoke(null, kind, keys,
+                successor));
     }
 
     private static Object call(Object target, String name, Class<?>[] types,
@@ -227,9 +243,9 @@ public class BranchDecisionRecordingTest {
     public void concreteDecisionAtADeclaredSiteRecordsOneRowAndTheReach()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion binary = region(true, false);
-        Object observation = call(binary, "recordConcreteBranch",
-                new Class<?>[] {String.class, int.class, boolean.class},
-                METHOD, 4, true);
+        Object observation = call(binary, "recordConcreteDecision",
+                new Class<?>[] {String.class, int.class, decisionType()},
+                METHOD, 4, binary(true));
         assertEquals("rows=[{\"concreteObservation\":{\"kind\":"
                 + "\"EXACT_CONCRETE_BINARY_BRANCH_OBSERVATION\","
                 + "\"schemaVersion\":1,\"site\":{\"method\":\"" + METHOD
@@ -249,9 +265,9 @@ public class BranchDecisionRecordingTest {
                 + "#1\n", transcript(binary, observation));
 
         ConcolicRegionRuntime.ActiveRegion multiway = region(true, false);
-        observation = call(multiway, "recordConcreteSwitchBranch",
-                new Class<?>[] {String.class, int.class, switchType()},
-                METHOD, 4, switchDecision("TABLE_SWITCH", "0,1,2", 1));
+        observation = call(multiway, "recordConcreteDecision",
+                new Class<?>[] {String.class, int.class, decisionType()},
+                METHOD, 4, multiway("TABLE_SWITCH", "0,1,2", 1));
         assertEquals("rows=[{\"concreteObservation\":{\"branchKind\":"
                 + "\"TABLE_SWITCH\",\"caseKeys\":[0,1,2],\"kind\":"
                 + "\"EXACT_CONCRETE_SWITCH_BRANCH_OBSERVATION\","
@@ -276,9 +292,9 @@ public class BranchDecisionRecordingTest {
     public void concreteDecisionAtAnUndeclaredSiteRecordsOnlyItsWitness()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion binary = region(true, false);
-        Object observation = call(binary, "recordConcreteBranch",
-                new Class<?>[] {String.class, int.class, boolean.class},
-                METHOD, 9, false);
+        Object observation = call(binary, "recordConcreteDecision",
+                new Class<?>[] {String.class, int.class, decisionType()},
+                METHOD, 9, binary(false));
         assertEquals("rows=[]\n"
                 + "witnesses=[{\"kind\":"
                 + "\"CONCRETE_BRANCH_EXECUTION_WITNESS_V1\",\"method\":\""
@@ -289,9 +305,9 @@ public class BranchDecisionRecordingTest {
                 + "returned=null\n", transcript(binary, observation));
 
         ConcolicRegionRuntime.ActiveRegion multiway = region(true, false);
-        observation = call(multiway, "recordConcreteSwitchBranch",
-                new Class<?>[] {String.class, int.class, switchType()},
-                METHOD, 9, switchDecision("LOOKUP_SWITCH", "7,9", 2));
+        observation = call(multiway, "recordConcreteDecision",
+                new Class<?>[] {String.class, int.class, decisionType()},
+                METHOD, 9, multiway("LOOKUP_SWITCH", "7,9", 2));
         assertEquals("rows=[]\n"
                 + "witnesses=[{\"branchKind\":\"LOOKUP_SWITCH\","
                 + "\"caseKeys\":[7,9],\"kind\":"
@@ -310,7 +326,7 @@ public class BranchDecisionRecordingTest {
         ConcolicRegionRuntime.ActiveRegion binary = region(false, false);
         Object observation = call(binary, "recordReplayBoundary",
                 new Class<?>[] {String.class, int.class, int.class,
-                        boolean.class}, METHOD, 12, 3, true);
+                        decisionType()}, METHOD, 12, 3, binary(true));
         assertEquals("rows=[{\"concreteObservation\":{\"kind\":"
                 + "\"EXACT_CONCRETE_BINARY_BRANCH_OBSERVATION\","
                 + "\"schemaVersion\":1,\"site\":{\"method\":\"" + METHOD
@@ -326,10 +342,10 @@ public class BranchDecisionRecordingTest {
                 + "returned=observation\n", transcript(binary, observation));
 
         ConcolicRegionRuntime.ActiveRegion multiway = region(false, false);
-        observation = call(multiway, "recordReplaySwitchBoundary",
+        observation = call(multiway, "recordReplayBoundary",
                 new Class<?>[] {String.class, int.class, int.class,
-                        switchType()}, METHOD, 12, 3,
-                switchDecision("TABLE_SWITCH", "0,1,2", 3));
+                        decisionType()}, METHOD, 12, 3,
+                multiway("TABLE_SWITCH", "0,1,2", 3));
         assertEquals("rows=[{\"concreteObservation\":{\"branchKind\":"
                 + "\"TABLE_SWITCH\",\"caseKeys\":[0,1,2],\"kind\":"
                 + "\"EXACT_CONCRETE_SWITCH_BRANCH_OBSERVATION\","
@@ -351,9 +367,9 @@ public class BranchDecisionRecordingTest {
     public void replayObservationTracesItsOwnDecisionVocabulary()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion binary = region(false, false);
-        Object matched = call(binary, "observeReplayBranch",
-                new Class<?>[] {String.class, int.class, boolean.class,
-                        String.class}, DECLARED, 2, true, "DIGEST");
+        Object matched = call(binary, "observeReplayDecision",
+                new Class<?>[] {String.class, int.class, decisionType(),
+                        String.class}, DECLARED, 2, binary(true), "DIGEST");
         assertEquals("rows=[]\n"
                 + "witnesses=[]\n"
                 + "unresolved=[]\n"
@@ -364,17 +380,20 @@ public class BranchDecisionRecordingTest {
                 transcript(binary, matched));
 
         ConcolicRegionRuntime.ActiveRegion multiway = region(false, false);
-        Object none = call(multiway, "observeReplaySwitch",
-                new Class<?>[] {String.class, int.class, switchType()},
-                DECLARED, 2, switchDecision("TABLE_SWITCH", "0,1,2", 1));
+        Object observed = call(multiway, "observeReplayDecision",
+                new Class<?>[] {String.class, int.class, decisionType(),
+                        String.class}, DECLARED, 2,
+                multiway("TABLE_SWITCH", "0,1,2", 1), "");
         assertEquals("rows=[]\n"
                 + "witnesses=[]\n"
                 + "unresolved=[]\n"
                 + "targetReach=none\n"
-                + "returned=null\n"
+                // The successor is the replay authority itself, so a
+                // multiway decision always matches what it observes.
+                + "returned=true\n"
                 + "diag=REPLAY_OBSERVE|" + DECLARED + " occ=2 successor=1"
                 + " complete=true failed=false\n",
-                transcript(multiway, none));
+                transcript(multiway, observed));
     }
 
     @Test

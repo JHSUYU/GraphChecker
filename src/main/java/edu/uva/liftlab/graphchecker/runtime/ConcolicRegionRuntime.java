@@ -2529,6 +2529,7 @@ public final class ConcolicRegionRuntime {
                                         boolean observedOutcome) {
         ActiveRegion active = activeRegion();
         if (active == null) return observedOutcome;
+        BranchDecision decision = BranchDecision.binary(observedOutcome);
         String branchSite = SiteId.of(method, unitIndex);
         boolean declared = active.activation.declaresBranch(branchSite);
         boolean replayBoundary = active.activation
@@ -2554,10 +2555,10 @@ public final class ConcolicRegionRuntime {
             }
             ExactConcreteBranchObservation observation =
                     active.recordReplayBoundary(method, unitIndex,
-                            occurrence, observedOutcome);
+                            occurrence, decision);
             if (observation != null) {
-                active.observeReplayBranch(branchSite, occurrence,
-                        observedOutcome);
+                active.observeReplayDecision(branchSite, occurrence,
+                        decision);
             }
             if (active.replayPrefixContradicted()) {
                 finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
@@ -2567,11 +2568,11 @@ public final class ConcolicRegionRuntime {
         }
         if (!active.pathRecordingStarted) {
             ExactConcreteBranchObservation observation =
-                    active.recordConcreteBranch(method, unitIndex,
-                            observedOutcome);
+                    active.recordConcreteDecision(method, unitIndex,
+                            decision);
             if (observation != null) {
-                active.observeReplayBranch(observation.siteId(),
-                        observation.occurrence(), observedOutcome);
+                active.observeReplayDecision(observation.siteId(),
+                        observation.occurrence(), decision);
                 if (active.replayPrefixContradicted()) {
                     finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
                             null);
@@ -2598,9 +2599,9 @@ public final class ConcolicRegionRuntime {
             RecordedBranch recorded = recordBranchPaused(active, api, method,
                     unitIndex, expression, prepared.occurrence,
                     observedOutcome, vmEventId);
-            boolean replayTargetMatched = active.observeReplayBranch(
+            boolean replayTargetMatched = active.observeReplayDecision(
                     SiteId.of(method, unitIndex), prepared.occurrence,
-                    observedOutcome, recorded.symbolicSupportDigest);
+                    decision, recorded.symbolicSupportDigest);
             replayContradicted = active.replayPrefixContradicted();
             if (recorded.solverWitness && replayTargetMatched
                     && !active.activation.targetBranchSite.isEmpty()
@@ -2661,6 +2662,7 @@ public final class ConcolicRegionRuntime {
         }
         ActiveRegion active = activeRegion();
         if (active == null) return observedSuccessorIndex;
+        BranchDecision decision = BranchDecision.multiway(expected);
         String branchSite = SiteId.of(method, unitIndex);
         boolean declared = active.activation.declaresBranch(branchSite);
         boolean replayBoundary = active.activation
@@ -2685,10 +2687,11 @@ public final class ConcolicRegionRuntime {
                 return observedSuccessorIndex;
             }
             ExactConcreteBranchObservation observation =
-                    active.recordReplaySwitchBoundary(method, unitIndex,
-                            occurrence, expected);
+                    active.recordReplayBoundary(method, unitIndex,
+                            occurrence, decision);
             if (observation != null) {
-                active.observeReplaySwitch(branchSite, occurrence, expected);
+                active.observeReplayDecision(branchSite, occurrence,
+                        decision);
             }
             if (active.replayPrefixContradicted()) {
                 finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
@@ -2698,11 +2701,11 @@ public final class ConcolicRegionRuntime {
         }
         if (!active.pathRecordingStarted) {
             ExactConcreteBranchObservation observation =
-                    active.recordConcreteSwitchBranch(method, unitIndex,
-                            expected);
+                    active.recordConcreteDecision(method, unitIndex,
+                            decision);
             if (observation != null) {
-                active.observeReplaySwitch(observation.siteId(),
-                        observation.occurrence(), expected);
+                active.observeReplayDecision(observation.siteId(),
+                        observation.occurrence(), decision);
                 if (active.replayPrefixContradicted()) {
                     finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
                             null);
@@ -2727,8 +2730,8 @@ public final class ConcolicRegionRuntime {
             boolean attested = recordSwitchBranchPaused(active, api, method,
                     unitIndex,
                     expression, prepared.occurrence, expected, vmEventId);
-            active.observeReplaySwitch(branchSite, prepared.occurrence,
-                    expected);
+            active.observeReplayDecision(branchSite, prepared.occurrence,
+                    decision);
             replayContradicted = active.replayPrefixContradicted();
             if (attested
                     && active.activation.targetBranchSite.equals(branchSite)
@@ -4745,6 +4748,130 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /**
+     * One decision an instrumented site made: the outcome a binary branch
+     * took, or the successor a multiway switch selected out of its static
+     * case-key domain.
+     *
+     * <p>The stages of one observation -- record the decision behind a closed
+     * symbolic gate, record it at a replay-invocation boundary, capture it
+     * against the open VM path-condition window, observe it against the
+     * recorded replay prefix, and address the target reach it may complete --
+     * ask the same questions of both kinds, and are written once against
+     * this.  A switch carries its {@link SwitchExpectation}; a binary branch
+     * carries none, exactly as {@link ExactConcreteBranchObservation}
+     * distinguishes the two observations it publishes.</p>
+     */
+    private static final class BranchDecision {
+        private final boolean outcome;
+        private final SwitchExpectation expected;
+
+        private BranchDecision(boolean outcome, SwitchExpectation expected) {
+            this.outcome = outcome;
+            this.expected = expected;
+        }
+
+        static BranchDecision binary(boolean outcome) {
+            return new BranchDecision(outcome, null);
+        }
+
+        static BranchDecision multiway(SwitchExpectation expected) {
+            return new BranchDecision(expected.caseArm(), expected);
+        }
+
+        /** The source-level outcome this decision took. */
+        boolean outcome() { return outcome; }
+
+        /** This decision's exact observation at one occurrence of a site. */
+        ExactConcreteBranchObservation observationAt(
+                String siteId, String method, int unitIndex, int occurrence) {
+            return expected == null
+                    ? ExactConcreteBranchObservation.attested(siteId, method,
+                    unitIndex, occurrence, outcome)
+                    : ExactConcreteBranchObservation.attestedSwitch(siteId,
+                    method, unitIndex, occurrence, expected.branchKind,
+                    expected.caseKeys, expected.observedSuccessorIndex);
+        }
+
+        /**
+         * Tells the replay ledger this decision ran, and whether it is the
+         * decision the recorded prefix was waiting for.  A successor is the
+         * replay authority itself, so there is no second, symbolic reading of
+         * a switch for the prefix to disagree with.
+         */
+        boolean observeReplayProgress(
+                BranchReplayContract.ReplayProgress progress, String siteId,
+                int occurrence, String symbolicSupportDigest) {
+            if (expected == null) {
+                return progress.observeBinary(siteId, occurrence, outcome,
+                        symbolicSupportDigest);
+            }
+            progress.observeSwitch(siteId, occurrence, expected.branchKind,
+                    expected.caseKeys, expected.observedSuccessorIndex);
+            return true;
+        }
+
+        /** How {@code REPLAY_OBSERVE} names the decision it just observed. */
+        String replayTrace(boolean matched) {
+            return expected == null
+                    ? " outcome=" + outcome + " matched=" + matched
+                    : " successor=" + expected.observedSuccessorIndex;
+        }
+
+        /** This decision's exact capture while the VM window is open. */
+        RecordedBranch recordPaused(
+                ActiveRegion active, ConcolicVmBroker api, String method,
+                int unitIndex, String expression, int occurrence,
+                long vmEventId) throws Exception {
+            return expected == null
+                    ? recordBranchPaused(active, api, method, unitIndex,
+                    expression, occurrence, outcome, vmEventId)
+                    : new RecordedBranch(recordSwitchBranchPaused(active, api,
+                    method, unitIndex, expression, occurrence, expected,
+                    vmEventId), "");
+        }
+
+        /** What an absent replay-boundary handle is refused as. */
+        String boundaryNoun() {
+            return expected == null ? "replay loop boundary"
+                    : "replay loop switch boundary";
+        }
+
+        /** What an absent prepared event is refused as. */
+        String preparedNoun() {
+            return expected == null ? "prepared branch" : "prepared switch";
+        }
+
+        /** What a failed exact-event observation is reported as. */
+        String observationNoun() {
+            return expected == null ? "branch/PC" : "switch/PC";
+        }
+
+        /**
+         * Whether a bounded-loop permutation may address the planned target
+         * occurrence from a different one.  A binary branch is the decision
+         * the solver flips, so it may; a multiway successor is retained as a
+         * path assumption, so it addresses only the planned occurrence.
+         */
+        boolean addressesPermutedTargetOccurrence() {
+            return expected == null;
+        }
+
+        /** The pre-gate execution witness of an undeclared site. */
+        JsonObject concreteWitness(String method, int unitIndex) {
+            JsonObject witness = concreteBranchWitness(method, unitIndex,
+                    outcome);
+            if (expected == null) return witness;
+            witness.addProperty("branchKind", expected.branchKind);
+            JsonArray keys = new JsonArray();
+            for (Integer key : expected.caseKeys) keys.add(key);
+            witness.add("caseKeys", keys);
+            witness.addProperty("observedSuccessorIndex",
+                    expected.observedSuccessorIndex);
+            return witness;
+        }
+    }
+
     private static final class VmBranchEventAttestation {
         private final List<Integer> conditionIndices;
         private final boolean valid;
@@ -5199,34 +5326,34 @@ public final class ConcolicRegionRuntime {
             return occurrence;
         }
 
-        /** Records a branch while the symbolic gate is closed. */
-        private ExactConcreteBranchObservation recordConcreteBranch(
-                String method, int unitIndex, boolean outcome) {
+        /** Records a decision while the symbolic gate is closed. */
+        private ExactConcreteBranchObservation recordConcreteDecision(
+                String method, int unitIndex, BranchDecision decision) {
             try {
                 String site = SiteId.of(method, unitIndex);
-                if (!activation.declaresBranch(site)) {
+                boolean declared = activation.declaresBranch(site);
+                // An undeclared site publishes one witness per distinct
+                // decision rather than a row per execution, so it numbers no
+                // occurrence of its own.
+                ExactConcreteBranchObservation observation =
+                        decision.observationAt(site, safe(method), unitIndex,
+                                declared ? nextBranchOccurrence(site) : 1);
+                if (!declared) {
                     String token = site + "\u0000"
-                            + ExactConcreteBranchObservation
-                            .binaryDecisionToken(outcome);
+                            + observation.exactDecisionToken();
                     if (concreteBranchDecisionTokens.add(token)) {
-                        concreteBranchWitnesses.add(concreteBranchWitness(
-                                method, unitIndex, outcome));
+                        concreteBranchWitnesses.add(decision.concreteWitness(
+                                method, unitIndex));
                     }
                     return null;
                 }
-                int occurrence = nextBranchOccurrence(site);
-                ExactConcreteBranchObservation observation =
-                        ExactConcreteBranchObservation.attested(site,
-                                safe(method), unitIndex, occurrence, outcome);
-                JsonObject mapping = branchMapping(method, unitIndex,
-                        occurrence);
-                mapping.addProperty("rawPathConditionSize", 0);
-                mapping.addProperty("rawPathConditionBaseline", 0);
-                mapping.add("concreteObservation", observation.toJson());
-                branchMappings.add(mapping);
+                recordDecisionRow(method, unitIndex,
+                        observation.occurrence(), observation);
                 if (activation.targetBranchSite.equals(site)
-                        && activation.targetBranchOccurrence == occurrence) {
-                    recordTargetReach(site, occurrence, outcome);
+                        && activation.targetBranchOccurrence
+                        == observation.occurrence()) {
+                    recordTargetReach(site, observation.occurrence(),
+                            decision.outcome());
                 }
                 return observation;
             } catch (Throwable ignored) {
@@ -5238,108 +5365,41 @@ public final class ConcolicRegionRuntime {
         /** Persists an exact replay-invocation boundary without adding a PC. */
         private ExactConcreteBranchObservation recordReplayBoundary(
                 String method, int unitIndex, int occurrence,
-                boolean outcome) {
+                BranchDecision decision) {
             try {
-                String site = SiteId.of(method, unitIndex);
                 ExactConcreteBranchObservation observation =
-                        ExactConcreteBranchObservation.attested(site,
-                                safe(method), unitIndex, occurrence, outcome);
-                JsonObject mapping = branchMapping(method, unitIndex,
-                        occurrence);
-                mapping.addProperty("rawPathConditionSize", 0);
-                mapping.addProperty("rawPathConditionBaseline", 0);
-                mapping.add("concreteObservation", observation.toJson());
-                branchMappings.add(mapping);
+                        decision.observationAt(SiteId.of(method, unitIndex),
+                                safe(method), unitIndex, occurrence);
+                recordDecisionRow(method, unitIndex, occurrence, observation);
                 return observation;
             } catch (Throwable ignored) {
                 return null;
             }
         }
 
-        /** Switch counterpart of {@link #recordReplayBoundary}. */
-        private ExactConcreteBranchObservation recordReplaySwitchBoundary(
+        /** The branch row one decision that added no path condition is. */
+        private void recordDecisionRow(
                 String method, int unitIndex, int occurrence,
-                SwitchExpectation expected) {
-            try {
-                String site = SiteId.of(method, unitIndex);
-                ExactConcreteBranchObservation observation =
-                        ExactConcreteBranchObservation.attestedSwitch(site,
-                                safe(method), unitIndex, occurrence,
-                                expected.branchKind, expected.caseKeys,
-                                expected.observedSuccessorIndex);
-                JsonObject mapping = branchMapping(method, unitIndex,
-                        occurrence);
-                mapping.addProperty("rawPathConditionSize", 0);
-                mapping.addProperty("rawPathConditionBaseline", 0);
-                mapping.add("concreteObservation", observation.toJson());
-                branchMappings.add(mapping);
-                return observation;
-            } catch (Throwable ignored) {
-                return null;
-            }
+                ExactConcreteBranchObservation observation) {
+            JsonObject mapping = branchMapping(method, unitIndex, occurrence);
+            mapping.addProperty("rawPathConditionSize", 0);
+            mapping.addProperty("rawPathConditionBaseline", 0);
+            mapping.add("concreteObservation", observation.toJson());
+            branchMappings.add(mapping);
         }
 
-        /** Records one exact switch successor while the symbolic gate is
-         * closed. */
-        private ExactConcreteBranchObservation recordConcreteSwitchBranch(
-                String method, int unitIndex, SwitchExpectation expected) {
-            try {
-                String site = SiteId.of(method, unitIndex);
-                ExactConcreteBranchObservation observation =
-                        ExactConcreteBranchObservation.attestedSwitch(site,
-                                safe(method), unitIndex,
-                                activation.declaresBranch(site)
-                                        ? nextBranchOccurrence(site) : 1,
-                                expected.branchKind, expected.caseKeys,
-                                expected.observedSuccessorIndex);
-                if (!activation.declaresBranch(site)) {
-                    String token = site + "\u0000"
-                            + observation.exactDecisionToken();
-                    if (concreteBranchDecisionTokens.add(token)) {
-                        JsonObject witness = concreteBranchWitness(
-                                method, unitIndex, expected.caseArm());
-                        witness.addProperty("branchKind",
-                                expected.branchKind);
-                        JsonArray keys = new JsonArray();
-                        for (Integer key : expected.caseKeys) keys.add(key);
-                        witness.add("caseKeys", keys);
-                        witness.addProperty("observedSuccessorIndex",
-                                expected.observedSuccessorIndex);
-                        concreteBranchWitnesses.add(witness);
-                    }
-                    return null;
-                }
-                JsonObject mapping = branchMapping(method, unitIndex,
-                        observation.occurrence());
-                mapping.addProperty("rawPathConditionSize", 0);
-                mapping.addProperty("rawPathConditionBaseline", 0);
-                mapping.add("concreteObservation", observation.toJson());
-                branchMappings.add(mapping);
-                if (activation.targetBranchSite.equals(site)
-                        && activation.targetBranchOccurrence
-                        == observation.occurrence()) {
-                    recordTargetReach(site, observation.occurrence(),
-                            expected.caseArm());
-                }
-                return observation;
-            } catch (Throwable ignored) {
-                // Observation must never alter the workload's own outcome.
-                return null;
-            }
+        private boolean observeReplayDecision(
+                String siteId, int occurrence, BranchDecision decision) {
+            return observeReplayDecision(siteId, occurrence, decision, "");
         }
 
-        private boolean observeReplayBranch(
-                String siteId, int occurrence, boolean outcome) {
-            return observeReplayBranch(siteId, occurrence, outcome, "");
-        }
-
-        private boolean observeReplayBranch(
-                String siteId, int occurrence, boolean outcome,
+        private boolean observeReplayDecision(
+                String siteId, int occurrence, BranchDecision decision,
                 String symbolicSupportDigest) {
-            boolean matched = replayProgress.observeBinary(
-                    siteId, occurrence, outcome, symbolicSupportDigest);
+            boolean matched = decision.observeReplayProgress(replayProgress,
+                    siteId, occurrence, symbolicSupportDigest);
             diag("REPLAY_OBSERVE", siteId + " occ=" + occurrence
-                    + " outcome=" + outcome + " matched=" + matched
+                    + decision.replayTrace(matched)
                     + " complete=" + replayProgress.complete()
                     + " failed=" + replayProgress.failed());
             if (replayProgress.failed()) {
@@ -5347,21 +5407,6 @@ public final class ConcolicRegionRuntime {
                         + replayProgress.failure());
             }
             return matched;
-        }
-
-        private void observeReplaySwitch(String siteId, int occurrence,
-                                         SwitchExpectation expected) {
-            replayProgress.observeSwitch(siteId, occurrence,
-                    expected.branchKind, expected.caseKeys,
-                    expected.observedSuccessorIndex);
-            diag("REPLAY_OBSERVE", siteId + " occ=" + occurrence
-                    + " successor=" + expected.observedSuccessorIndex
-                    + " complete=" + replayProgress.complete()
-                    + " failed=" + replayProgress.failed());
-            if (replayProgress.failed()) {
-                addUnresolvedOnce("REPLAY_PREFIX_MISMATCH:"
-                        + replayProgress.failure());
-            }
         }
 
         /**
