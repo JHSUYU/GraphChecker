@@ -468,6 +468,11 @@ std::string SharedFieldVersions::describe(const Location &location) {
   writer.Int(1);
   writer.Key("kind");
   writer.String("SHARED_FIELD_VERSIONS");
+  // The symbolic universe these ids belong to.  An id is only comparable
+  // against another id minted by the same session, so every envelope that
+  // carries ids names the session that minted them.
+  writer.Key("sessionId");
+  writer.Int64(GlobalSymbolicSession::session_id());
   writer.Key("selected");
   writer.Bool(selected);
   writer.Key("location");

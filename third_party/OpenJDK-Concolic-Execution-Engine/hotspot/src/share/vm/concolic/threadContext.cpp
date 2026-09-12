@@ -91,6 +91,11 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
   writer.Int(1);
   writer.Key("kind");
   writer.String("CONCOLIC_PATH_CONDITION_RANGE");
+  // The symbolic universe these ids belong to.  An id is only comparable
+  // against another id minted by the same session, so every envelope that
+  // carries ids names the session that minted them.
+  writer.Key("sessionId");
+  writer.Int64(GlobalSymbolicSession::session_id());
   writer.Key("active");
   writer.Bool(!_aborted);
   writer.Key("aborted");
@@ -327,6 +332,11 @@ std::string ThreadContext::get_branch_events() const {
   writer.Int(1);
   writer.Key("kind");
   writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
+  // The symbolic universe these ids belong to.  An id is only comparable
+  // against another id minted by the same session, so every envelope that
+  // carries ids names the session that minted them.
+  writer.Key("sessionId");
+  writer.Int64(GlobalSymbolicSession::session_id());
   writer.Key("active");
   writer.Bool(!_aborted);
   writer.Key("aborted");
