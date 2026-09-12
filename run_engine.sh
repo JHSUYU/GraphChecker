@@ -597,6 +597,7 @@ do_compose() {
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --clock-skew-ms "${clock_skew_ms}" \
+    --mappings "${causynth_communication_mappings}" \
     "${selection[@]}"
 }
 
