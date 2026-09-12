@@ -1117,7 +1117,7 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static final class Emitter {
+    private static final class Emitter implements VmTermLowering.Policy {
         private final SmtSymbolTable smtSymbols = new SmtSymbolTable();
         private final List<String> preamble = new ArrayList<>();
         private final Map<String, String> declarations =
@@ -1280,62 +1280,47 @@ public final class ConcolicSmtComposer {
         private InvocationKey currentInvocation;
 
 
-        /** This emitter's view of the shared lowering's three policies. */
-        private final VmTermLowering.Policy lowering =
-                new VmTermLowering.Policy() {
-                    @Override
-                    public Term lower(JsonElement expression, Sort expected,
-                                      String origin) {
-                        return term(expression, expected);
-                    }
+        // The shared lowering's policies: how a sub-expression is lowered,
+        // what an unsupported construct becomes, how Java evaluation
+        // definedness is carried, and how a rendering is proved.
 
-                    @Override
-                    public Term refuse(VmTermLowering.Reason reason,
-                                       String origin, String detail,
-                                       Sort sort) {
-                        unsupported.add(reason.composedSubject(origin,
-                                detail));
-                        return unsupportedTerm(sort);
-                    }
+        @Override
+        public Term lower(JsonElement expression, Sort expected,
+                          String origin) {
+            return term(expression, expected);
+        }
 
-                    @Override
-                    public Term dependent(Term result, Term... inputs) {
-                        return ConcolicSmtComposer.Emitter.this
-                                .dependent(result, inputs);
-                    }
+        @Override
+        public Term refuse(VmTermLowering.Reason reason, String origin,
+                           String detail, Sort sort) {
+            unsupported.add(reason.composedSubject(origin, detail));
+            return unsupportedTerm(sort);
+        }
 
-                    @Override
-                    public Sort castSort(String descriptor) {
-                        return ConcolicSmtComposer.castSort(descriptor);
-                    }
+        @Override
+        public Sort castSort(String descriptor) {
+            return ConcolicSmtComposer.castSort(descriptor);
+        }
 
-                    @Override
-                    public VmTermLowering.RenderedInteger renderedInteger(
-                            JsonElement element, String origin) {
-                        SplitSegment match = exactSplitSegment(element);
-                        if (!match.complete()) {
-                            return VmTermLowering.RenderedInteger.gap(
-                                    "ROUNDTRIP_NOT_PROVED_" + match.gap);
-                        }
-                        // parseInt inverts Integer.toString only when the
-                        // element is that rendering and nothing else; any
-                        // surrounding text would need a parser, not a proof.
-                        SplitPiece source = match.singleIntegerPiece();
-                        if (source == null) {
-                            return VmTermLowering.RenderedInteger.gap(
-                                    "ROUNDTRIP_ELEMENT_NOT_ONE_INT_"
-                                            + "RENDERING");
-                        }
-                        return VmTermLowering.RenderedInteger.of(
-                                integerPieceTerm(source));
-                    }
-
-                    @Override
-                    public void assertJavaIntRange(Term integer) {
-                        ConcolicSmtComposer.Emitter.this.assertJavaIntRange(
-                                integer);
-                    }
-                };
+        @Override
+        public VmTermLowering.RenderedInteger renderedInteger(
+                JsonElement element, String origin) {
+            SplitSegment match = exactSplitSegment(element);
+            if (!match.complete()) {
+                return VmTermLowering.RenderedInteger.gap(
+                        "ROUNDTRIP_NOT_PROVED_" + match.gap);
+            }
+            // parseInt inverts Integer.toString only when the element is
+            // that rendering and nothing else; surrounding text would need
+            // a parser rather than a proof.
+            SplitPiece source = match.singleIntegerPiece();
+            if (source == null) {
+                return VmTermLowering.RenderedInteger.gap(
+                        "ROUNDTRIP_ELEMENT_NOT_ONE_INT_RENDERING");
+            }
+            return VmTermLowering.RenderedInteger.of(
+                    integerPieceTerm(source));
+        }
 
         private Emitter(InvocationKey fatalInvocation) {
             this.currentInvocation = fatalInvocation;
@@ -2082,7 +2067,8 @@ public final class ConcolicSmtComposer {
             return and(Arrays.asList(term.precondition, term.text));
         }
 
-        private Term dependent(Term result, Term... inputs) {
+        @Override
+        public Term dependent(Term result, Term... inputs) {
             List<String> values = new ArrayList<>();
             values.add(result.precondition);
             if (inputs != null) {
@@ -3495,7 +3481,7 @@ public final class ConcolicSmtComposer {
         }
 
         private Term typeCast(JsonObject expression) {
-            return VmTermLowering.typeCast(lowering, expression, "");
+            return VmTermLowering.typeCast(this, expression, "");
         }
 
         private Term binary(JsonObject expression) {
@@ -3790,7 +3776,7 @@ public final class ConcolicSmtComposer {
 
         private Term floatingPromotion(Term term, Sort target,
                                        String origin) {
-            return VmTermLowering.floatingPromotion(lowering, term, target,
+            return VmTermLowering.floatingPromotion(this, term, target,
                     origin);
         }
 
@@ -3952,7 +3938,7 @@ public final class ConcolicSmtComposer {
          * Recognizes the sound Java round trip
          */
         private Term parseIntTerm(JsonObject expression) {
-            return VmTermLowering.parseIntTerm(lowering, expression, "");
+            return VmTermLowering.parseIntTerm(this, expression, "");
         }
 
         private Term splitElementTerm(JsonObject expression) {
@@ -4150,7 +4136,8 @@ public final class ConcolicSmtComposer {
             return VmTermLowering.javaIntString(integer);
         }
 
-        private void assertJavaIntRange(Term integer) {
+        @Override
+        public void assertJavaIntRange(Term integer) {
             String key = currentGuard + "\u0000" + integer.text;
             if (!javaIntRangeAssertions.add(key)) return;
             assertNamed("java_int_range_" + javaIntRangeAssertions.size(),
@@ -4175,7 +4162,7 @@ public final class ConcolicSmtComposer {
         }
 
         private Term codecGap(String operation, String gap, Sort sort) {
-            return VmTermLowering.codecGap(lowering, operation, gap, "",
+            return VmTermLowering.codecGap(this, operation, gap, "",
                     sort);
         }
 

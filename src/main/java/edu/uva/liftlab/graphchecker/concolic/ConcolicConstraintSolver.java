@@ -305,7 +305,7 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    private static final class Encoder {
+    private static final class Encoder implements VmTermLowering.Policy {
         private static final String SHARED_TERM_PREFIX = "container_dag__";
         private final SmtSymbolTable smtSymbols = new SmtSymbolTable();
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
@@ -379,53 +379,45 @@ public final class ConcolicConstraintSolver {
         private Set<String> currentConstraintSymbols;
 
 
-        /** This encoder's view of the shared lowering's three policies. */
-        private final VmTermLowering.Policy lowering =
-                new VmTermLowering.Policy() {
-                    @Override
-                    public Term lower(JsonElement expression, Sort expected,
-                                      String origin) {
-                        return term(expression, expected, origin);
-                    }
+        // The shared lowering's policies: how a sub-expression is lowered,
+        // what an unsupported construct becomes, how Java evaluation
+        // definedness is carried, and how a rendering is proved.
 
-                    @Override
-                    public Term refuse(VmTermLowering.Reason reason,
-                                       String origin, String detail,
-                                       Sort sort) {
-                        unsupported.add(reason.solverSubject(origin,
-                                detail));
-                        return null;
-                    }
+        @Override
+        public Term lower(JsonElement expression, Sort expected,
+                          String origin) {
+            return term(expression, expected, origin);
+        }
 
-                    @Override
-                    public Term dependent(Term result, Term... inputs) {
-                        return result;
-                    }
+        @Override
+        public Term refuse(VmTermLowering.Reason reason, String origin,
+                           String detail, Sort sort) {
+            unsupported.add(reason.solverSubject(origin, detail));
+            return null;
+        }
 
-                    @Override
-                    public Sort castSort(String descriptor) {
-                        return ConcolicConstraintSolver.castSort(descriptor);
-                    }
+        /** The solver asserts definedness eagerly, so nothing is carried. */
+        @Override
+        public Term dependent(Term result, Term... inputs) {
+            return result;
+        }
 
-                    @Override
-                    public VmTermLowering.RenderedInteger renderedInteger(
-                            JsonElement element, String origin) {
-                        SplitPrefix match = exactSplitPrefix(element);
-                        if (!match.complete()) {
-                            return VmTermLowering.RenderedInteger.gap(
-                                    "ROUNDTRIP_NOT_PROVED_" + match.gap);
-                        }
-                        return VmTermLowering.RenderedInteger.of(term(
-                                match.integerExpression, Sort.INT,
-                                origin + ":parseInt"));
-                    }
+        @Override
+        public Sort castSort(String descriptor) {
+            return ConcolicConstraintSolver.castSort(descriptor);
+        }
 
-                    @Override
-                    public void assertJavaIntRange(Term integer) {
-                        ConcolicConstraintSolver.Encoder.this
-                                .assertJavaIntRange(integer);
-                    }
-                };
+        @Override
+        public VmTermLowering.RenderedInteger renderedInteger(
+                JsonElement element, String origin) {
+            SplitPrefix match = exactSplitPrefix(element);
+            if (!match.complete()) {
+                return VmTermLowering.RenderedInteger.gap(
+                        "ROUNDTRIP_NOT_PROVED_" + match.gap);
+            }
+            return VmTermLowering.RenderedInteger.of(term(
+                    match.integerExpression, Sort.INT, origin + ":parseInt"));
+        }
 
         private Encoder() {
         }
@@ -1824,7 +1816,7 @@ public final class ConcolicConstraintSolver {
 
         /** Lowers only casts whose value relation the SMT sorts preserve. */
         private Term typeCast(JsonObject expression, String origin) {
-            return VmTermLowering.typeCast(lowering, expression, origin);
+            return VmTermLowering.typeCast(this, expression, origin);
         }
 
         private Term binary(JsonObject expression, String origin) {
@@ -2106,7 +2098,7 @@ public final class ConcolicConstraintSolver {
 
         private Term floatingPromotion(Term term, Sort target,
                                        String origin) {
-            return VmTermLowering.floatingPromotion(lowering, term, target,
+            return VmTermLowering.floatingPromotion(this, term, target,
                     origin);
         }
 
@@ -2365,7 +2357,7 @@ public final class ConcolicConstraintSolver {
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}. */
         private Term parseIntTerm(JsonObject expression, String origin) {
-            return VmTermLowering.parseIntTerm(lowering, expression, origin);
+            return VmTermLowering.parseIntTerm(this, expression, origin);
         }
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code splitElementTerm}. */
@@ -2386,7 +2378,7 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term codecGap(String operation, String gap, String origin) {
-            return VmTermLowering.codecGap(lowering, operation, gap, origin,
+            return VmTermLowering.codecGap(this, operation, gap, origin,
                     null);
         }
 
@@ -2487,7 +2479,8 @@ public final class ConcolicConstraintSolver {
             return VmTermLowering.javaIntString(integer);
         }
 
-        private void assertJavaIntRange(Term integer) {
+        @Override
+        public void assertJavaIntRange(Term integer) {
             if (!javaIntRangeAssertions.add(integer.text)) return;
             assertions.add(VmTermLowering.javaIntRange(integer.text));
         }
