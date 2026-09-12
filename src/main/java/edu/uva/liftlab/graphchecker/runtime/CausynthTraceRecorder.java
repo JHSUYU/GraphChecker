@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -1073,11 +1074,11 @@ public final class CausynthTraceRecorder {
                 throw new IOException("skeleton aggregation requires the "
                         + "schema-3 candidate skeleton artifact");
             }
-            File planningSkeletons = candidateSkeletons;
-
             RuntimeRegionPlanner.Result graph =
-                    RuntimeRegionPlanner.planSkeletonGraph(planningSkeletons,
-                            trace.methods);
+                    RuntimeRegionPlanner.planSkeletonGraph(
+                            candidateSkeletons, trace.methods,
+                            Collections.emptyList(),
+                            Collections.emptyList());
             if (graph.staticRegionCount == 0) {
                 throw new IOException(
                         "skeleton aggregation selected no static regions");
@@ -1092,53 +1093,40 @@ public final class CausynthTraceRecorder {
         }
     }
 
+    /**
+     * The selected skeleton of a region a pass-1 activation entered is that
+     * region's candidate skeleton with the anchor names the run observed.
+     * Every other member is the candidate's own, so the two artifacts state
+     * one static region and not two.
+     */
     private static void writeSelectedSkeletons(
             File candidates, File output,
             Collection<Map<String, Object>> runtimeInstances)
             throws IOException {
-        Map<String, String> rootByRegion = new LinkedHashMap<>();
-        Map<String, Set<String>> methodsByRegion = new LinkedHashMap<>();
-        Map<String, String> selectionByRegion = new LinkedHashMap<>();
         Map<String, String> anchorByRegion = new LinkedHashMap<>();
         Map<String, Set<String>> anchorsByRegion = new LinkedHashMap<>();
         for (Map<String, Object> instance : runtimeInstances) {
             String region = String.valueOf(instance.get("regionId"));
-            String root = String.valueOf(instance.get("rootMethod"));
-            String previous = rootByRegion.putIfAbsent(region, root);
-            if (previous != null && !previous.equals(root)) {
-                throw new IOException("one region definition resolved to "
-                        + "multiple execution-context roots: " + region);
-            }
-            String selection = String.valueOf(instance.get("selection"));
-            String previousSelection = selectionByRegion.get(region);
-            if (previousSelection == null
-                    || RuntimeRegionPlanner.selectionRank(selection)
-                    > RuntimeRegionPlanner.selectionRank(
-                    previousSelection)) {
-                selectionByRegion.put(region, selection);
-                anchorByRegion.put(region,
-                        String.valueOf(instance.get("anchorMethod")));
-            }
-            Set<String> runtimeAnchors = anchorsByRegion.computeIfAbsent(
+            // The first activation of a region names its anchor; every
+            // activation of one region carries the same selection.
+            anchorByRegion.putIfAbsent(region,
+                    String.valueOf(instance.get("anchorMethod")));
+            Set<String> anchors = anchorsByRegion.computeIfAbsent(
                     region, ignored -> new LinkedHashSet<>());
             Object encodedAnchors = instance.get("anchorMethods");
             if (encodedAnchors instanceof Collection<?>) {
                 for (Object anchor : (Collection<?>) encodedAnchors) {
-                    runtimeAnchors.add(String.valueOf(anchor));
-                }
-            }
-            Set<String> observed = methodsByRegion.computeIfAbsent(region,
-                    ignored -> new LinkedHashSet<>());
-            Object methods = instance.get("observedMethods");
-            if (methods instanceof Collection<?>) {
-                for (Object method : (Collection<?>) methods) {
-                    observed.add(String.valueOf(method));
+                    anchors.add(String.valueOf(anchor));
                 }
             }
         }
-        List<JsonObject> candidateRows = new ArrayList<>();
-        Map<String, JsonObject> candidateByRegion = new LinkedHashMap<>();
-        try (BufferedReader reader = skeletonReader(candidates)) {
+        File parent = output.getParentFile();
+        if (parent != null) {
+            Files.createDirectories(parent.toPath());
+        }
+        try (BufferedReader reader = skeletonReader(candidates);
+             BufferedWriter writer = Files.newBufferedWriter(output.toPath(),
+                     StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (line.trim().isEmpty()) {
@@ -1146,92 +1134,21 @@ public final class CausynthTraceRecorder {
                 }
                 JsonObject row = JsonParser.parseString(line)
                         .getAsJsonObject();
-                candidateRows.add(row);
-                candidateByRegion.put(string(row, "regionId"), row);
-            }
-        }
-
-        File parent = output.getParentFile();
-        if (parent != null) {
-            Files.createDirectories(parent.toPath());
-        }
-        try (BufferedWriter writer = Files.newBufferedWriter(output.toPath(),
-                     StandardCharsets.UTF_8)) {
-            for (JsonObject candidate : candidateRows) {
-                JsonObject row = candidate.deepCopy();
                 String region = string(row, "regionId");
-                String selectedRoot = rootByRegion.get(region);
-                if (selectedRoot == null) {
+                String selectedAnchor = anchorByRegion.get(region);
+                if (selectedAnchor == null) {
                     continue;
                 }
-                if (!selectedRoot.equals(string(row, "rootMethod"))) {
-                    throw new IOException("runtime changed authoritative "
-                            + "region root: " + region);
+                String rootMethod = string(row, "rootMethod");
+                boolean rooted = false;
+                for (JsonElement method : row.getAsJsonArray("methods")) {
+                    rooted = rooted || rootMethod.equals(method.getAsString());
                 }
-                Set<String> observedMethods = methodsByRegion.get(region);
-                String selectedAnchor = anchorByRegion.get(region);
-                if (selectedAnchor == null
-                        || !observedMethods.contains(selectedAnchor)) {
-                    throw new IOException("selected region anchor was not "
-                            + "observed inside its activation: " + region);
-                }
-                for (String anchor : anchorsByRegion.get(region)) {
-                    if (!observedMethods.contains(anchor)) {
-                        throw new IOException("selected region admission "
-                                + "anchor was not observed inside its "
-                                + "activation: " + region + " " + anchor);
-                    }
-                }
-                // One activation names exactly one static region, so its
-                // method universe and demanded scope are that region's own.
-                Set<String> potentialMethods = new LinkedHashSet<>();
-                Set<String> demandScope = new LinkedHashSet<>();
-                boolean demandScopeKnown = true;
-                JsonObject source = candidateByRegion.get(region);
-                if (source == null) {
-                    throw new IOException("runtime activation references "
-                            + "unknown static region: " + region);
-                }
-                for (JsonElement method
-                        : source.getAsJsonArray("methods")) {
-                    potentialMethods.add(method.getAsString());
-                }
-                JsonArray sourceScope = source.getAsJsonArray(
-                        RuntimeSelectedRegionFinalizer.DEMAND_SCOPE);
-                if (sourceScope == null) {
-                    demandScopeKnown = false;
-                } else {
-                    for (JsonElement method : sourceScope) {
-                        demandScope.add(method.getAsString());
-                    }
-                }
-                if (!potentialMethods.contains(selectedRoot)
-                        || !potentialMethods.contains(selectedAnchor)) {
+                if (!rooted) {
                     throw new IOException("coalesced static region methods "
-                            + "must contain runtime root and anchor: "
-                            + region);
+                            + "must contain the runtime root: " + region);
                 }
-                JsonArray encodedPotentialMethods = new JsonArray();
-                for (String method : potentialMethods) {
-                    encodedPotentialMethods.add(method);
-                }
-                row.add("methods", encodedPotentialMethods);
-                JsonArray encodedDemandScope = new JsonArray();
-                if (demandScopeKnown) {
-                    for (String method : demandScope) {
-                        encodedDemandScope.add(method);
-                    }
-                }
-                row.add(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE,
-                        encodedDemandScope);
-                JsonArray baselineObservedMethods = new JsonArray();
-                for (String method : observedMethods) {
-                    baselineObservedMethods.add(method);
-                }
-                row.add("baselineObservedMethods",
-                        baselineObservedMethods);
-                row.addProperty("selection", selectionByRegion.get(region));
-                row.addProperty("anchorMethod", anchorByRegion.get(region));
+                row.addProperty("anchorMethod", selectedAnchor);
                 JsonArray selectedAnchors = new JsonArray();
                 for (String anchor : anchorsByRegion.get(region)) {
                     selectedAnchors.add(anchor);

@@ -78,13 +78,6 @@ final class RuntimeRegionPlanner {
     private RuntimeRegionPlanner() {
     }
 
-    static Result planSkeletonGraph(File skeletonFile,
-                                    List<MethodEvent> methods) {
-        return planSkeletonGraph(skeletonFile, methods,
-                Collections.<RuntimeEvent>emptyList(),
-                Collections.<ProtocolEvent>emptyList());
-    }
-
     /** Binds static region skeletons to the activations a run performed. */
     static Result planSkeletonGraph(File skeletonFile,
                                     List<MethodEvent> methods,
@@ -894,17 +887,6 @@ final class RuntimeRegionPlanner {
                 + binding + "\n" + site + "\n" + cell + "\n"
                 + accessField + "\n" + leafField + "\n" + handoffPath
                 + "\n" + fieldPath + "\n" + argumentIndex;
-    }
-
-    /** Ranks how strong one region selection is when two fragments merge. */
-    static int selectionRank(String selection) {
-        if (selection != null && selection.startsWith("EXCEPTION")) {
-            return 3;
-        }
-        if (selection != null && selection.startsWith("PROTOCOL")) {
-            return 2;
-        }
-        return 1;
     }
 
     private static boolean validRootAuthority(String authority) {
