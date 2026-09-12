@@ -378,11 +378,7 @@ public final class ConcolicConstraintSolver {
         private boolean usesJavaIntString;
         private Set<String> currentConstraintSymbols;
 
-
-        // The shared lowering's policies: how a sub-expression is lowered,
-        // what an unsupported construct becomes, how Java evaluation
-        // definedness is carried, and how a rendering is proved.
-
+        // The shared lowering's policies.
         @Override
         public Term lower(JsonElement expression, Sort expected,
                           String origin) {
@@ -404,7 +400,7 @@ public final class ConcolicConstraintSolver {
 
         @Override
         public Sort castSort(String descriptor) {
-            return ConcolicConstraintSolver.castSort(descriptor);
+            return sortOfJava(descriptor);
         }
 
         @Override
@@ -412,11 +408,12 @@ public final class ConcolicConstraintSolver {
                 JsonElement element, String origin) {
             SplitPrefix match = exactSplitPrefix(element);
             if (!match.complete()) {
-                return VmTermLowering.RenderedInteger.gap(
+                return new VmTermLowering.RenderedInteger(null,
                         "ROUNDTRIP_NOT_PROVED_" + match.gap);
             }
-            return VmTermLowering.RenderedInteger.of(term(
-                    match.integerExpression, Sort.INT, origin + ":parseInt"));
+            return new VmTermLowering.RenderedInteger(term(
+                    match.integerExpression, Sort.INT, origin + ":parseInt"),
+                    "");
         }
 
         private Encoder() {
@@ -482,7 +479,8 @@ public final class ConcolicConstraintSolver {
                 return Term.vm("(not " + operand.text + ")", Sort.BOOL);
             }
             if ("TypeCastExpression".equals(type)) {
-                return typeCast(object, origin);
+                return VmTermLowering.typeCast(this, object,
+                        origin);
             }
             if ("MethodExpression".equals(type)) {
                 return methodTerm(object, origin);
@@ -1731,8 +1729,8 @@ public final class ConcolicConstraintSolver {
             JavaPrimitiveSmtSemantics.IntegralDomain domain =
                     JavaPrimitiveSmtSemantics.domainOfJavaType(javaType);
             if (domain == null) return;
-            assertions.add("(and (<= " + domain.lower + " " + name
-                    + ") (<= " + name + " " + domain.upper + "))");
+            assertions.add(VmTermLowering.integralRange(domain.lower,
+                    name, domain.upper));
         }
 
         private Term placeholder(JsonObject expression, String origin) {
@@ -1815,9 +1813,6 @@ public final class ConcolicConstraintSolver {
         }
 
         /** Lowers only casts whose value relation the SMT sorts preserve. */
-        private Term typeCast(JsonObject expression, String origin) {
-            return VmTermLowering.typeCast(this, expression, origin);
-        }
 
         private Term binary(JsonObject expression, String origin) {
             String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
@@ -1895,9 +1890,10 @@ public final class ConcolicConstraintSolver {
                 Sort promoted = left.sort == Sort.FLOAT64
                         || right.sort == Sort.FLOAT64
                         ? Sort.FLOAT64 : Sort.FLOAT32;
-                left = floatingPromotion(left, promoted, origin + ":left");
-                right = floatingPromotion(right, promoted,
-                        origin + ":right");
+                left = VmTermLowering.floatingPromotion(this, left,
+                        promoted, origin + ":left");
+                right = VmTermLowering.floatingPromotion(this, right,
+                        promoted, origin + ":right");
                 if (left == null || right == null) return null;
             }
             if ("==".equals(operator) || "!=".equals(operator)) {
@@ -2094,12 +2090,6 @@ public final class ConcolicConstraintSolver {
             String isNull = string.stringNullness;
             return Term.vm("!=".equals(operator)
                     ? "(not " + isNull + ")" : isNull, Sort.BOOL);
-        }
-
-        private Term floatingPromotion(Term term, Sort target,
-                                       String origin) {
-            return VmTermLowering.floatingPromotion(this, term, target,
-                    origin);
         }
 
         private Term stringOperation(JsonObject expression, String origin) {
@@ -2322,8 +2312,8 @@ public final class ConcolicConstraintSolver {
 
         private Term booleanStringResult(String predicate,
                                          boolean negated) {
-            return VmTermLowering.booleanStringResult(predicate, negated,
-                    "true");
+            return Term.vm(negated ? "(not " + predicate + ")" : predicate,
+                    Sort.BOOL);
         }
 
         private String methodConstraint(JsonObject expression,
@@ -2346,7 +2336,8 @@ public final class ConcolicConstraintSolver {
             // splitElement and parseInt carry the same structural round-trip
             // semantics the composition encoder proves; this mirrors
             if (isJavaParseInt(method)) {
-                return parseIntTerm(expression, origin);
+                return VmTermLowering.parseIntTerm(this, expression,
+                        origin);
             }
             if (isJavaSplitElement(method)) {
                 return splitElementTerm(expression, origin);
@@ -2356,9 +2347,6 @@ public final class ConcolicConstraintSolver {
         }
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}. */
-        private Term parseIntTerm(JsonObject expression, String origin) {
-            return VmTermLowering.parseIntTerm(this, expression, origin);
-        }
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code splitElementTerm}. */
         private Term splitElementTerm(JsonObject expression, String origin) {
@@ -3294,7 +3282,6 @@ public final class ConcolicConstraintSolver {
                 || payload.startsWith(semantic + "_");
     }
 
-
     private static boolean executable(JsonObject action) {
         return "SYMBOLIC".equals(optionalString(action, "mode"));
     }
@@ -3514,11 +3501,6 @@ public final class ConcolicConstraintSolver {
         return descriptor.startsWith("L") || descriptor.startsWith("[")
                 ? Sort.REF : Sort.UNKNOWN;
     }
-
-    private static Sort castSort(String descriptor) {
-        return sortOfJava(descriptor);
-    }
-
 
     private static String safeName(String value) {
         String safe = value.replaceAll("[^A-Za-z0-9_]", "_");

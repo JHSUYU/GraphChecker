@@ -21,7 +21,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -778,7 +777,6 @@ public final class ConcolicSmtComposer {
                 : "configured-source\u0000" + raw;
     }
 
-
     /** Stamps every case-local evidence family with its exact owner. */
     private static JsonObject retainCaseOwner(JsonObject item, String owner) {
         CaseOwnerCarrier carrier = new CaseOwnerCarrier(owner);
@@ -1279,11 +1277,7 @@ public final class ConcolicSmtComposer {
                 configuredSourceRecordedByEvent = new LinkedHashMap<>();
         private InvocationKey currentInvocation;
 
-
-        // The shared lowering's policies: how a sub-expression is lowered,
-        // what an unsupported construct becomes, how Java evaluation
-        // definedness is carried, and how a rendering is proved.
-
+        // The shared lowering's policies.
         @Override
         public Term lower(JsonElement expression, Sort expected,
                           String origin) {
@@ -1307,7 +1301,7 @@ public final class ConcolicSmtComposer {
                 JsonElement element, String origin) {
             SplitSegment match = exactSplitSegment(element);
             if (!match.complete()) {
-                return VmTermLowering.RenderedInteger.gap(
+                return new VmTermLowering.RenderedInteger(null,
                         "ROUNDTRIP_NOT_PROVED_" + match.gap);
             }
             // parseInt inverts Integer.toString only when the element is
@@ -1315,11 +1309,11 @@ public final class ConcolicSmtComposer {
             // a parser rather than a proof.
             SplitPiece source = match.singleIntegerPiece();
             if (source == null) {
-                return VmTermLowering.RenderedInteger.gap(
+                return new VmTermLowering.RenderedInteger(null,
                         "ROUNDTRIP_ELEMENT_NOT_ONE_INT_RENDERING");
             }
-            return VmTermLowering.RenderedInteger.of(
-                    integerPieceTerm(source));
+            return new VmTermLowering.RenderedInteger(
+                    integerPieceTerm(source), "");
         }
 
         private Emitter(InvocationKey fatalInvocation) {
@@ -2150,7 +2144,7 @@ public final class ConcolicSmtComposer {
                         IntegralWidth.JAVA_LONG);
             }
             if ("TypeCastExpression".equals(type)) {
-                return typeCast(object);
+                return VmTermLowering.typeCast(this, object, "");
             }
             if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
                 return guardedReadTerm(object, expected);
@@ -2307,7 +2301,7 @@ public final class ConcolicSmtComposer {
                     restoreGuard(previousGuard);
                 }
                 result = Term.of(value, sort,
-                        integralWidthOfJava(javaType));
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
                 guardedReadTerms.put(projectionIdentity, result);
             }
 
@@ -2950,7 +2944,7 @@ public final class ConcolicSmtComposer {
                             Term.of("", Sort.REF)), result);
                     return toContainerTerm(Term.of("(" + accessor + " "
                             + owner.text + ")", result,
-                            integralWidthOfJava(javaType)));
+                            JavaPrimitiveSmtSemantics.widthOfJavaType(javaType)));
                 }
 
                 @Override
@@ -3202,7 +3196,7 @@ public final class ConcolicSmtComposer {
             }
             recordSourceMaterialization(raw, symbol);
             return Term.of(symbol.name, symbol.sort,
-                    integralWidthOfJava(javaType));
+                    JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
         }
 
         private void recordSourceMaterialization(String raw,
@@ -3458,11 +3452,11 @@ public final class ConcolicSmtComposer {
                         ? invalidNumericLiteral(raw, sort)
                         : Term.of(literal, sort);
             } else if (sort == Sort.INT) {
-                String literal = integerLiteral(value);
+                String literal = SmtModelValueCodec.integerLiteral(value);
                 result = literal == null
                         ? invalidNumericLiteral(raw, sort)
                         : Term.of(literal, Sort.INT,
-                        integralWidthOfJava(javaType));
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
             } else if (sort == Sort.STRING) {
                 result = Term.nonNullString(quote(value), "true");
             } else {
@@ -3480,10 +3474,6 @@ public final class ConcolicSmtComposer {
             return unsupportedTerm(sort);
         }
 
-        private Term typeCast(JsonObject expression) {
-            return VmTermLowering.typeCast(this, expression, "");
-        }
-
         private Term binary(JsonObject expression) {
             String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
                     optionalString(expression, "_op"));
@@ -3497,7 +3487,7 @@ public final class ConcolicSmtComposer {
                                 operand);
                     }
                     if (operand.integralWidth != IntegralWidth.NONE) {
-                        return dependent(Term.of(wrapIntegral("(- " + operand.text
+                        return dependent(Term.of(JavaPrimitiveSmtSemantics.wrap("(- " + operand.text
                                 + ")", operand.integralWidth), Sort.INT,
                                 operand.integralWidth), operand);
                     }
@@ -3560,8 +3550,10 @@ public final class ConcolicSmtComposer {
                 Sort promoted = left.sort == Sort.FLOAT64
                         || right.sort == Sort.FLOAT64
                         ? Sort.FLOAT64 : Sort.FLOAT32;
-                left = floatingPromotion(left, promoted, "left");
-                right = floatingPromotion(right, promoted, "right");
+                left = VmTermLowering.floatingPromotion(this, left,
+                        promoted, "left");
+                right = VmTermLowering.floatingPromotion(this, right,
+                        promoted, "right");
             }
             if (("==".equals(operator) || "!=".equals(operator))
                     && (left.sort == Sort.STRING && isNull(right)
@@ -3741,7 +3733,7 @@ public final class ConcolicSmtComposer {
                             + right.integralWidth);
                     return unsupportedTerm(Sort.INT);
                 }
-                return dependent(Term.of(wrapIntegral(arithmeticExpression,
+                return dependent(Term.of(JavaPrimitiveSmtSemantics.wrap(arithmeticExpression,
                         resultWidth), Sort.INT, resultWidth), left, right);
             }
             unsupported.add("BinaryOperator:" + operator);
@@ -3772,12 +3764,6 @@ public final class ConcolicSmtComposer {
             }
             return JavaPrimitiveBoxing.wrapperType(
                     optionalString(object, "_java_type"));
-        }
-
-        private Term floatingPromotion(Term term, Sort target,
-                                       String origin) {
-            return VmTermLowering.floatingPromotion(this, term, target,
-                    origin);
         }
 
         /** Emits exact core Java String predicates/value operations plus the
@@ -3907,7 +3893,7 @@ public final class ConcolicSmtComposer {
                             "NON_INT_TERM", Sort.STRING);
                 }
                 assertJavaIntRange(integer);
-                return javaIntString(integer);
+                return VmTermLowering.javaIntString(integer);
             }
             return codecGap("OpStrExpression." + firstNonBlank(operation,
                     "unknown"), "UNSUPPORTED_OPERATION", Sort.STRING);
@@ -3930,16 +3916,13 @@ public final class ConcolicSmtComposer {
         private Term booleanStringResult(String predicate,
                                          boolean negated,
                                          String precondition) {
-            return VmTermLowering.booleanStringResult(predicate, negated,
-                    precondition);
+            return Term.of(negated ? "(not " + predicate + ")" : predicate,
+                    Sort.BOOL).withPrecondition(precondition);
         }
 
         /**
          * Recognizes the sound Java round trip
          */
-        private Term parseIntTerm(JsonObject expression) {
-            return VmTermLowering.parseIntTerm(this, expression, "");
-        }
 
         private Term splitElementTerm(JsonObject expression) {
             SplitSegment match = exactSplitSegment(expression);
@@ -3960,7 +3943,7 @@ public final class ConcolicSmtComposer {
                             "ROUNDTRIP_SOURCE_NOT_INT", Sort.STRING);
                 }
                 assertJavaIntRange(integer);
-                Term rendered = javaIntString(integer);
+                Term rendered = VmTermLowering.javaIntString(integer);
                 pieces.add(rendered.text);
                 preconditions.add(rendered.precondition);
             }
@@ -4132,10 +4115,6 @@ public final class ConcolicSmtComposer {
             return params.get(0);
         }
 
-        private Term javaIntString(Term integer) {
-            return VmTermLowering.javaIntString(integer);
-        }
-
         @Override
         public void assertJavaIntRange(Term integer) {
             String key = currentGuard + "\u0000" + integer.text;
@@ -4157,8 +4136,8 @@ public final class ConcolicSmtComposer {
             assertNamed("java_integral_domain_"
                             + javaIntegralRangeAssertions.size() + "_"
                             + smtName(firstNonBlank(identity, "value")),
-                    "(and (<= " + domain.lower + " " + term + ")"
-                            + " (<= " + term + " " + domain.upper + "))");
+                    VmTermLowering.integralRange(domain.lower, term,
+                            domain.upper));
         }
 
         private Term codecGap(String operation, String gap, Sort sort) {
@@ -4209,7 +4188,8 @@ public final class ConcolicSmtComposer {
         private Term methodTerm(JsonObject expression) {
             String method = optionalString(expression, "_name");
             if (isJavaParseInt(method)) {
-                return parseIntTerm(expression);
+                return VmTermLowering.parseIntTerm(this, expression,
+                        "");
             }
             if (isJavaSplitElement(method)) {
                 return splitElementTerm(expression);
@@ -4554,8 +4534,6 @@ public final class ConcolicSmtComposer {
         }
     }
 
-
-
     private static final class RawSymbol {
         private final String name;
         private final Sort sort;
@@ -4779,8 +4757,6 @@ public final class ConcolicSmtComposer {
         return Sort.REF;
     }
 
-
-
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
             "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
 
@@ -4799,10 +4775,6 @@ public final class ConcolicSmtComposer {
                 ? Sort.ARRAY_VALUE : Sort.VALUE;
     }
 
-    private static IntegralWidth integralWidthOfJava(String javaType) {
-        return JavaPrimitiveSmtSemantics.widthOfJavaType(javaType);
-    }
-
     /** Java binary numeric promotion for the two integral JVM widths. */
     private static IntegralWidth promotedIntegralWidth(Term left,
                                                         Term right) {
@@ -4811,11 +4783,6 @@ public final class ConcolicSmtComposer {
         }
         return JavaPrimitiveSmtSemantics.promote(left.integralWidth,
                 right.integralWidth);
-    }
-
-    private static String wrapIntegral(String expression,
-                                       IntegralWidth width) {
-        return JavaPrimitiveSmtSemantics.wrap(expression, width);
     }
 
     private static Sort castSort(String descriptor) {
@@ -4830,20 +4797,6 @@ public final class ConcolicSmtComposer {
             return Sort.REF;
         }
         return Sort.VALUE;
-    }
-
-
-    private static String integerLiteral(String value) {
-        String raw = firstNonBlank(value).trim();
-        if (raw.isEmpty() || raw.length() > 1024) return null;
-        try {
-            BigInteger parsed = new BigInteger(raw);
-            return parsed.signum() < 0
-                    ? "(- " + parsed.negate().toString() + ")"
-                    : parsed.toString();
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
     }
 
     private static String smtName(String value) {

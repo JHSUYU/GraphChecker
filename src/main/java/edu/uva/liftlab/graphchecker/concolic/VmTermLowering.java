@@ -19,17 +19,13 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
- * The one SMT lowering vocabulary shared by the two producers of VM
- * expression terms: {@code ConcolicSmtComposer.Emitter}, which composes the
- * whole causal candidate, and {@code ConcolicConstraintSolver.Encoder},
- * which encodes one path-flip query.
- *
- * <p>The two differ only in three declared policies, which stay with their
- * callers: an unsupported construct becomes a fresh unconstrained symbol in
- * the composer and a {@code null} term in the solver; the composer threads
- * Java evaluation definedness (notably String dereference guards) through
- * {@link Term#precondition} while the solver asserts it eagerly; and the
- * solver tags every refusal with an {@code origin} diagnostic string.
+ * The one SMT lowering vocabulary shared by {@code ConcolicSmtComposer
+ * .Emitter} and {@code ConcolicConstraintSolver.Encoder}.  They differ only
+ * in the three policies {@link Policy} names: an unsupported construct
+ * becomes a fresh unconstrained symbol in the composer and a {@code null}
+ * term in the solver; the composer threads Java evaluation definedness
+ * through {@link Term#precondition} while the solver asserts it eagerly;
+ * and the solver tags every refusal with an {@code origin} string.
  */
 final class VmTermLowering {
     private VmTermLowering() {
@@ -55,18 +51,14 @@ final class VmTermLowering {
             return this == ARRAY_VALUE || this == MAP;
         }
 
-        /**
-         * The solver's frozen spelling of a container sort.  It names the
-         * sort inside shared-term identities, which minted symbol names are
-         * derived from, and inside a replay model assignment's valueType.
-         */
+        boolean floating() {
+            return this == FLOAT32 || this == FLOAT64;
+        }
+
+        /** The solver's frozen spelling, frozen into its symbol names. */
         String replayName() {
             return this == MAP ? "ASSOCIATIVE"
                     : this == ARRAY_VALUE ? "INDEXED" : name();
-        }
-
-        boolean floating() {
-            return this == FLOAT32 || this == FLOAT64;
         }
     }
 
@@ -90,51 +82,56 @@ final class VmTermLowering {
                 : ContainerSmtCodec.Sort.VALUE;
     }
 
+    /** The container codec's sort for one lowered value, or null. */
+    static ContainerSmtCodec.Sort containerSortOf(Sort sort) {
+        return sort == null || sort == Sort.UNKNOWN ? null
+                : sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
+                : sort == Sort.INT ? ContainerSmtCodec.Sort.INT
+                : sort == Sort.FLOAT32 ? ContainerSmtCodec.Sort.FLOAT32
+                : sort == Sort.FLOAT64 ? ContainerSmtCodec.Sort.FLOAT64
+                : sort == Sort.STRING ? ContainerSmtCodec.Sort.STRING
+                : sort == Sort.REF ? ContainerSmtCodec.Sort.REF
+                : sort == Sort.VALUE ? ContainerSmtCodec.Sort.VALUE
+                : sort == Sort.ARRAY_VALUE ? ContainerSmtCodec.Sort.INDEXED
+                : ContainerSmtCodec.Sort.ASSOCIATIVE;
+    }
 
-    /**
-     * The three policies one lowering caller owns.  Everything else about
-     * lowering a VM expression is the same for both callers.
-     */
+    /** The lowered sort one container codec value carries. */
+    static Sort sortOfContainer(ContainerSmtCodec.Sort sort) {
+        return sort == null ? Sort.UNKNOWN
+                : sort == ContainerSmtCodec.Sort.BOOL ? Sort.BOOL
+                : sort == ContainerSmtCodec.Sort.INT ? Sort.INT
+                : sort == ContainerSmtCodec.Sort.FLOAT32 ? Sort.FLOAT32
+                : sort == ContainerSmtCodec.Sort.FLOAT64 ? Sort.FLOAT64
+                : sort == ContainerSmtCodec.Sort.STRING ? Sort.STRING
+                : sort == ContainerSmtCodec.Sort.REF ? Sort.REF
+                : sort == ContainerSmtCodec.Sort.VALUE ? Sort.VALUE
+                : sort == ContainerSmtCodec.Sort.INDEXED ? Sort.ARRAY_VALUE
+                : Sort.MAP;
+    }
+
+    /** What a lowering caller owns; everything else here is shared. */
     interface Policy {
-        /**
-         * Lowers a sub-expression.  {@code origin} names the position for a
-         * solver diagnostic and is ignored by the composer.
-         */
+        /** Lowers a sub-expression at the named diagnostic position. */
         Term lower(JsonElement expression, Sort expected, String origin);
 
-        /**
-         * Records one unsupported construct and yields the term lowering
-         * continues with: a fresh unconstrained value of {@code sort} in the
-         * composer, {@code null} - "no term at all" - in the solver.
-         */
+        /** Records a refusal and yields the term lowering continues with. */
         Term refuse(Reason reason, String origin, String detail, Sort sort);
 
-        /**
-         * Threads Java evaluation definedness from the inputs into the
-         * result.  The composer carries it as a precondition; the solver has
-         * already asserted it and returns the result unchanged.
-         */
+        /** Carries Java evaluation definedness from the inputs. */
         Term dependent(Term result, Term... inputs);
 
         /** The sort one JVM cast descriptor denotes for this caller. */
         Sort castSort(String descriptor);
 
-        /**
-         * The integer this element is the exact Integer.toString rendering
-         * of.  The two callers prove the round trip over different element
-         * analyses, so each states its own gap.
-         */
+        /** The integer this element exactly renders, or a named gap. */
         RenderedInteger renderedInteger(JsonElement element, String origin);
 
         /** States {@link #javaIntRange} for one parsed integer. */
         void assertJavaIntRange(Term integer);
     }
 
-    /**
-     * One named reason a construct could not be lowered.  The two callers
-     * spell the same reason differently in their artifacts, so each reason
-     * carries the composer's spelling beside the solver's constant name.
-     */
+    /** A refusal, in the composer's spelling beside the solver's. */
     enum Reason {
         UNSUPPORTED_JAVA_NUMERIC_PROMOTION(
                 "UnsupportedJavaNumericPromotion", true),
@@ -143,9 +140,7 @@ final class VmTermLowering {
                 false),
         MODEL_SEMANTICS_MISSING("MODEL_SEMANTICS_MISSING", false);
 
-        /** The composer's spelling of this reason. */
         private final String composed;
-        /** Whether the composer names the position beside the reason. */
         private final boolean composedNamesOrigin;
 
         Reason(String composed, boolean composedNamesOrigin) {
@@ -153,12 +148,11 @@ final class VmTermLowering {
             this.composedNamesOrigin = composedNamesOrigin;
         }
 
-        /** The composer's refusal subject: the reason first. */
+        /** The composer names the reason first, the solver the position. */
         String composedSubject(String origin, String detail) {
             return join(composed, composedNamesOrigin ? origin : "", detail);
         }
 
-        /** The solver's refusal subject: the position first. */
         String solverSubject(String origin, String detail) {
             return join(origin, name(), detail);
         }
@@ -254,23 +248,16 @@ final class VmTermLowering {
         return optionalString(object, "_java_type");
     }
 
-
-    /**
-     * SMT-LIB's str.from_int is defined only for non-negative integers, so
-     * Java's decimal Integer.toString needs the leading '-' spelled out.
-     */
+    /** str.from_int covers only non-negative integers; Java's decimal
+     *  Integer.toString needs the leading '-' spelled out. */
     static final String JAVA_INT_TO_STRING =
             "(define-fun java_int_to_string ((i Int)) String"
                     + " (ite (< i 0)"
                     + " (str.++ \"-\" (str.from_int (- i)))"
                     + " (str.from_int i)))";
 
-    /**
-     * The sort, datatype and helper declarations every lowered query opens
-     * with.  The two callers froze the nullRef declaration on either side of
-     * the Value datatype; the position is inert to SMT and is kept as each
-     * emitted it so their bytes do not move.
-     */
+    /** The declarations every lowered query opens with.  The two callers
+     *  froze nullRef on either side of the Value datatype; inert to SMT. */
     static List<String> preamble(boolean nullRefBeforeValueDatatype) {
         List<String> lines = new ArrayList<>();
         lines.add("(declare-sort Ref 0)");
@@ -285,44 +272,7 @@ final class VmTermLowering {
         return lines;
     }
 
-    /** The container codec's sort for one lowered value, or null. */
-    static ContainerSmtCodec.Sort containerSortOf(Sort sort) {
-        if (sort == null) return null;
-        switch (sort) {
-            case BOOL: return ContainerSmtCodec.Sort.BOOL;
-            case INT: return ContainerSmtCodec.Sort.INT;
-            case FLOAT32: return ContainerSmtCodec.Sort.FLOAT32;
-            case FLOAT64: return ContainerSmtCodec.Sort.FLOAT64;
-            case STRING: return ContainerSmtCodec.Sort.STRING;
-            case REF: return ContainerSmtCodec.Sort.REF;
-            case VALUE: return ContainerSmtCodec.Sort.VALUE;
-            case ARRAY_VALUE: return ContainerSmtCodec.Sort.INDEXED;
-            case MAP: return ContainerSmtCodec.Sort.ASSOCIATIVE;
-            default: return null;
-        }
-    }
-
-    /** The lowered sort one container codec value carries. */
-    static Sort sortOfContainer(ContainerSmtCodec.Sort sort) {
-        if (sort == null) return Sort.UNKNOWN;
-        switch (sort) {
-            case BOOL: return Sort.BOOL;
-            case INT: return Sort.INT;
-            case FLOAT32: return Sort.FLOAT32;
-            case FLOAT64: return Sort.FLOAT64;
-            case STRING: return Sort.STRING;
-            case REF: return Sort.REF;
-            case VALUE: return Sort.VALUE;
-            case INDEXED: return Sort.ARRAY_VALUE;
-            default: return Sort.MAP;
-        }
-    }
-
-    /**
-     * Records one read-time use of a guarded read under the identity the two
-     * callers already agree on, refusing when the same use is claimed twice
-     * with different candidates.
-     */
+    /** Records one read-time use, refusing a doubly-claimed identity. */
     static void recordGuardedReadUse(
             Map<String, Map<String, GuardedReadUse>> uses,
             String readIdentity, String projectionIdentity,
@@ -336,69 +286,57 @@ final class VmTermLowering {
         if (held != null && !held.same(use)) ambiguous.accept(identity);
     }
 
-
-    /** The name Integer.parseInt is refused under. */
-    private static final String PARSE_INT = "java/lang/Integer.parseInt";
-
-    /**
-     * The integer an element is the exact Integer.toString rendering of, or
-     * the named gap that stopped the round-trip proof.
-     */
+    /** The integer an element exactly renders, or the gap that stopped it. */
     static final class RenderedInteger {
-        private final Term integer;
-        private final String gap;
+        final Term integer;
+        final String gap;
 
-        private RenderedInteger(Term integer, String gap) {
+        RenderedInteger(Term integer, String gap) {
             this.integer = integer;
-            this.gap = gap;
-        }
-
-        static RenderedInteger of(Term integer) {
-            return new RenderedInteger(integer, "");
-        }
-
-        static RenderedInteger gap(String gap) {
-            return new RenderedInteger(null, gap);
+            this.gap = gap == null ? "" : gap;
         }
     }
 
-    /**
-     * Integer.parseInt inverts Integer.toString only on an element that is
-     * that rendering and nothing else, in decimal, and only inside Java's
-     * int range - which is then stated as the parse's definedness.
-     */
+    /** Integer.parseInt inverts Integer.toString only on an element that is
+     *  that rendering and nothing else, in decimal, and in Java's int range
+     *  - which is then stated as the parse's definedness. */
     static Term parseIntTerm(Policy policy, JsonObject expression,
                              String origin) {
+        String name = "java/lang/Integer.parseInt";
         JsonArray params = JsonFields.array(expression, "_param_list");
         if (params.size() != 1 && params.size() != 2) {
-            return codecGap(policy, PARSE_INT, "ARITY", origin, Sort.INT);
+            return codecGap(policy, name, "ARITY", origin, Sort.INT);
         }
         if (params.size() == 2) {
             Integer radix = VmExpressionIr.exactIntLiteral(params.get(1));
             if (radix == null || radix != 10) {
-                return codecGap(policy, PARSE_INT, "RADIX_NOT_LITERAL_10",
-                        origin, Sort.INT);
+                return codecGap(policy, name, "RADIX_NOT_LITERAL_10", origin,
+                        Sort.INT);
             }
         }
         RenderedInteger rendered = policy.renderedInteger(params.get(0),
                 origin);
         if (!rendered.gap.isEmpty()) {
-            return codecGap(policy, PARSE_INT, rendered.gap, origin,
-                    Sort.INT);
+            return codecGap(policy, name, rendered.gap, origin, Sort.INT);
         }
         Term integer = rendered.integer;
         if (integer == null || integer.sort != Sort.INT) {
-            return codecGap(policy, PARSE_INT, "ROUNDTRIP_SOURCE_NOT_INT",
-                    origin, Sort.INT);
+            return codecGap(policy, name, "ROUNDTRIP_SOURCE_NOT_INT", origin,
+                    Sort.INT);
         }
         policy.assertJavaIntRange(integer);
         return integer;
     }
 
+    /** One lowered value's Java integral domain, as an SMT predicate. */
+    static String integralRange(String lower, String value, String upper) {
+        return "(and (<= " + lower + " " + value + ") (<= " + value + " "
+                + upper + "))";
+    }
+
     /** Java's int range, stated over one lowered integer. */
     static String javaIntRange(String integer) {
-        return "(and (<= (- 2147483648) " + integer + ") (<= " + integer
-                + " 2147483647))";
+        return integralRange("(- 2147483648)", integer, "2147483647");
     }
 
     /** Java's decimal Integer.toString of one lowered integer. */
@@ -407,20 +345,13 @@ final class VmTermLowering {
                 integer.precondition);
     }
 
-    /** One String predicate, possibly negated by its call site. */
-    static Term booleanStringResult(String predicate, boolean negated,
-                                    String precondition) {
-        return Term.of(negated ? "(not " + predicate + ")" : predicate,
-                Sort.BOOL).withPrecondition(precondition);
-    }
-
     /** One lowered VM expression: its SMT text plus its Java-level facts. */
     static final class Term {
         final String text;
         final Sort sort;
         final IntegralWidth integralWidth;
-        /** Empty when unknown.  "false" means a known non-null String; any
-         * other value is the nullable reference companion Bool. */
+        /** Empty when unknown, "false" when a known non-null String, else
+         *  the nullable reference companion Bool. */
         final String stringNullness;
         /** Stable provenance used only for Java reference identity. */
         final String stringReferenceOrigin;
@@ -441,11 +372,8 @@ final class VmTermLowering {
             this.precondition = firstNonBlank(precondition, "true");
         }
 
-        /**
-         * A term whose String definedness is tracked: an unstated nullness on
-         * a String is the composer's "known non-null", and a nullness on a
-         * non-String is not a fact at all.
-         */
+        /** A term whose String definedness is tracked: an unstated
+         *  nullness on a String means "known non-null". */
         static Term of(String text, Sort sort) {
             return of(text, sort, IntegralWidth.NONE);
         }
@@ -465,10 +393,8 @@ final class VmTermLowering {
                     precondition);
         }
 
-        /**
-         * A term carrying exactly the facts it was given: an unstated String
-         * nullness stays unknown, which is the solver's refusal trigger.
-         */
+        /** A term carrying exactly the facts given: an unstated String
+         *  nullness stays unknown, the solver's refusal trigger. */
         static Term vm(String text, Sort sort) {
             return vm(text, sort, IntegralWidth.NONE, "", "");
         }
@@ -508,10 +434,7 @@ final class VmTermLowering {
         }
     }
 
-    /**
-     * One read-time use of a guarded read: the activation it was read under
-     * and the candidate writers it may have come from.
-     */
+    /** One read-time use: its activation and its candidate writers. */
     static final class GuardedReadUse {
         final String activation;
         final List<String> selectors;
