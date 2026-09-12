@@ -1597,7 +1597,13 @@ public final class ConcolicSmtComposer {
             preamble.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
         }
 
+        /** Both names and the Java field of every selected location. */
+        private Map<String, SharedStateEvidence.LocationProvenance>
+                locationProvenance = Collections.emptyMap();
+
         private void registerSymbolicSources(List<JsonObject> owners) {
+            locationProvenance = SharedStateEvidence.locationProvenance(
+                    owners);
             try {
                 symbolicSourceIdentities =
                         SymbolicSourceEvidence.rawSymbolIdentities(owners,
@@ -2775,8 +2781,16 @@ public final class ConcolicSmtComposer {
             evidence.addProperty("readIdentity", readIdentity);
             evidence.addProperty("candidateIdentity", arm.candidateIdentity);
             evidence.addProperty("selector", arm.selector);
+            String location = SharedStateEvidence.locationKey(node);
+            SharedStateEvidence.LocationProvenance provenance =
+                    locationProvenance.get(location);
             evidence.addProperty("locationKey",
-                    SharedStateEvidence.locationKey(node));
+                    provenance == null ? location : provenance.locationKey);
+            evidence.addProperty(SharedStateEvidence.SESSION_LOCATION_FIELD,
+                    provenance == null ? location
+                            : provenance.sessionLocationKey);
+            evidence.addProperty("declaredField",
+                    provenance == null ? "" : provenance.declaredField);
             evidence.addProperty("writerCaseOwner", optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_OWNER));
             evidence.addProperty("writerCaseSelector", writerCaseSelector);

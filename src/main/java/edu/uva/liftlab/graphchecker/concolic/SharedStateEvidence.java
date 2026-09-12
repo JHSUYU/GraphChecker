@@ -371,13 +371,80 @@ public final class SharedStateEvidence {
                 if (isMapState(sessionLocationKey(row))) continue;
                 String named = carrierLocationKey(row, occurrenceId);
                 if (named.isEmpty()) {
-                    if (!key.isEmpty()) unresolved.add(key);
+                    // Name the Java field too: a bare session-local rid does
+                    // not tell a reader which location went unnamed.
+                    if (!key.isEmpty()) {
+                        JsonObject carrier = object(row, "carrier");
+                        String field = optionalString(carrier,
+                                "declaringClass") + "#"
+                                + optionalString(carrier, "fieldName");
+                        unresolved.add("#".equals(field) ? key
+                                : key + " field=" + field);
+                    }
                     continue;
                 }
                 rename(row, key, named);
             }
         }
         return unresolved;
+    }
+
+    /**
+     * The three names one selected shared location answers to.
+     *
+     * <p>A location key alone does not say which name it is: the importer
+     * renames a location it can attribute to a declared field, and leaves a
+     * MAP_STATE whole-state key in its session spelling.  A reader chasing a
+     * guarded read back to the Java field it came from needs the canonical
+     * name, the session name, and the field, stated rather than inferred from
+     * the key's shape.</p>
+     */
+    public static final class LocationProvenance {
+        public final String locationKey;
+        public final String sessionLocationKey;
+        public final String declaredField;
+
+        LocationProvenance(String locationKey, String sessionLocationKey,
+                           String declaredField) {
+            this.locationKey = locationKey;
+            this.sessionLocationKey = sessionLocationKey;
+            this.declaredField = declaredField;
+        }
+    }
+
+    /**
+     * Indexes every selected shared location by both of its names, so a
+     * consumer holding either one can state the other and the Java field.
+     */
+    public static Map<String, LocationProvenance> locationProvenance(
+            Collection<JsonObject> summaries) {
+        Map<String, LocationProvenance> index = new LinkedHashMap<>();
+        if (summaries == null) return index;
+        for (JsonObject summary : summaries) {
+            if (summary == null) continue;
+            JsonObject recorded = object(summary, RECORDED_FIELD);
+            for (JsonElement element : array(recorded, "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                JsonObject carrier = object(row, "carrier");
+                String declaringClass = optionalString(carrier,
+                        "declaringClass");
+                String fieldName = optionalString(carrier, "fieldName");
+                String field = declaringClass.isEmpty() || fieldName.isEmpty()
+                        ? "" : declaringClass + "#" + fieldName;
+                String canonical = optionalString(row, "locationKey");
+                String session = sessionLocationKey(row);
+                LocationProvenance provenance = new LocationProvenance(
+                        canonical, session, field);
+                if (!canonical.isEmpty()) {
+                    index.putIfAbsent(canonical, provenance);
+                }
+                if (!session.isEmpty()) {
+                    index.putIfAbsent(session, provenance);
+                }
+            }
+        }
+        return index;
     }
 
     /** Prefix of a content-addressed runtime map-state witness. */
