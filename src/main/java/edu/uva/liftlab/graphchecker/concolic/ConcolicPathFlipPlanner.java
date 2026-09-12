@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
@@ -10,15 +11,19 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 
 /**
  * Plans the deterministic branch-flip frontier for every region of one
@@ -107,8 +112,10 @@ public final class ConcolicPathFlipPlanner {
         private final List<JsonObject> allSummaries;
         private final List<JsonObject> allRecords;
         private final SymbolicPropagationClosure.Result propagation;
-        private final JsonObject sharedPropagation;
-        private final JsonArray compactDependencies;
+        /** The wave's receiver-family rows, indexed by their family key.
+         *  Expanded, so the transitive family walk below sees every nested
+         *  family name instead of a Merkle reference to one. */
+        private final Map<String, JsonObject> dependenciesByFamily;
         private final String familyDigest;
         private final String topologyEpoch;
         private final RegionPathWorklist.Bounds bounds;
@@ -120,16 +127,15 @@ public final class ConcolicPathFlipPlanner {
                      List<JsonObject> allSummaries,
                      List<JsonObject> allRecords,
                      SymbolicPropagationClosure.Result propagation,
-                     JsonObject sharedPropagation,
-                     JsonArray compactDependencies, String familyDigest,
+                     Map<String, JsonObject> dependenciesByFamily,
+                     String familyDigest,
                      String topologyEpoch,
                      RegionPathWorklist.Bounds bounds) {
             this.allExecutionTasks = allExecutionTasks;
             this.allSummaries = allSummaries;
             this.allRecords = allRecords;
             this.propagation = propagation;
-            this.sharedPropagation = sharedPropagation;
-            this.compactDependencies = compactDependencies;
+            this.dependenciesByFamily = dependenciesByFamily;
             this.familyDigest = familyDigest;
             this.topologyEpoch = topologyEpoch;
             this.bounds = bounds;
@@ -145,17 +151,11 @@ public final class ConcolicPathFlipPlanner {
                     SymbolicPropagationClosure.rewriteSummaryRows(
                             observedSummaries);
             JsonArray caseDependencies = propagation.caseDependencies();
-            JsonObject sharedPropagation = new JsonObject();
-            sharedPropagation.add(LinkedReplayBundle.CASE_DEPENDENCIES_FIELD,
-                    caseDependencies);
-            sharedPropagation = SharedExpressionTable.compact(
-                    sharedPropagation);
             RegionPathWorklist.Bounds defaults =
                     RegionPathWorklist.Bounds.defaults();
             return new Wave(allExecutionTasks, propagation.summaries(),
-                    rows(options, "records"), propagation, sharedPropagation,
-                    array(sharedPropagation,
-                            LinkedReplayBundle.CASE_DEPENDENCIES_FIELD),
+                    rows(options, "records"), propagation,
+                    dependenciesByFamily(caseDependencies),
                     LinkedReplayBundle.familySnapshotDigest(caseDependencies),
                     optional(options, "topology-epoch"),
                     new RegionPathWorklist.Bounds(
@@ -203,12 +203,7 @@ public final class ConcolicPathFlipPlanner {
                     familyDigest);
             for (JsonObject task : result.tasks) {
                 task.add(LinkedReplayBundle.CASE_DEPENDENCIES_FIELD,
-                        compactDependencies);
-                if (sharedPropagation.has(SharedExpressionTable.FIELD)) {
-                    task.add(SharedExpressionTable.FIELD,
-                            sharedPropagation.get(
-                                    SharedExpressionTable.FIELD));
-                }
+                        scopedDependencies(task));
                 JsonObject bundle = LinkedReplayBundle.create(
                         optionalString(task, "sourceTaskId"),
                         allExecutionTasks, allSummaries,
@@ -228,10 +223,12 @@ public final class ConcolicPathFlipPlanner {
             // A worklist repeats the same upstream PCs in several independent
             // flip rows.  Preserve the portable one-row contract while storing
             // their immutable expression DAG once per row as Merkle references.
-            // Solver workers expand only the one query they select.  Every row
-            // of the wave carries the one table this process just built, so
-            // one compactor verifies it for the whole wave instead of once per
-            // row; each row still publishes only the rows it reaches.
+            // Solver workers expand only the one query they select.  The rows
+            // of a wave draw on one common pool of definitions, so one
+            // compactor verifies each definition once for the whole wave
+            // instead of once per row; each row still publishes only the
+            // definitions reachable from its own constraints and its own
+            // scoped family evidence.
             for (int index = 0; index < result.tasks.size(); index++) {
                 result.tasks.set(index, compactor.compact(
                         result.tasks.get(index)));
@@ -246,6 +243,97 @@ public final class ConcolicPathFlipPlanner {
                     PRETTY.toJson(result.manifest) + System.lineSeparator());
             return result.manifest;
         }
+
+        /**
+         * The receiver-family rows one flip row can actually reach.
+         *
+         * <p>{@link ConcolicConstraintSolver} binds "only families reached
+         * from this flip's local expression", so handing a row the whole
+         * wave's snapshot attaches evidence no worker will ever read -- and
+         * attaches it again, larger, in every later wave, because the
+         * snapshot is the union over a corpus that keeps growing. A row's
+         * payload has to track its own constraints, not the corpus: this
+         * publishes the transitive closure of the families the row names,
+         * which is exactly the set the solver walks.</p>
+         *
+         * <p>The closure is transitive because lowering one family's arm
+         * path condition can name a second family, which is the same reason
+         * the solver drains its family work set in a loop.</p>
+         */
+        private JsonArray scopedDependencies(JsonObject task) {
+            Set<String> reached = new TreeSet<>();
+            Deque<String> pending = new ArrayDeque<>(familyKeys(task));
+            while (!pending.isEmpty()) {
+                String family = pending.pop();
+                if (!reached.add(family)) continue;
+                JsonObject dependency = dependenciesByFamily.get(family);
+                // A family with no row is the solver's gap to name
+                // (CONSUMER_FAMILY_DEPENDENCY_MISSING), not one to invent.
+                if (dependency == null) continue;
+                for (String next : familyKeys(dependency)) {
+                    if (!reached.contains(next)) pending.push(next);
+                }
+            }
+            JsonArray scoped = new JsonArray();
+            for (String family : reached) {
+                JsonObject dependency = dependenciesByFamily.get(family);
+                if (dependency != null) scoped.add(dependency);
+            }
+            return scoped;
+        }
+    }
+
+    /** Indexes the wave's case dependencies by the family each one defines. */
+    private static Map<String, JsonObject> dependenciesByFamily(
+            JsonArray caseDependencies) {
+        Map<String, JsonObject> byFamily = new LinkedHashMap<>();
+        for (JsonElement element : caseDependencies) {
+            if (element == null || !element.isJsonObject()) continue;
+            JsonObject dependency = element.getAsJsonObject();
+            String family = optionalString(dependency,
+                    VmExpressionIr.FAMILY_KEY);
+            if (!family.isEmpty()) byFamily.put(family, dependency);
+        }
+        return byFamily;
+    }
+
+    /**
+     * Every receiver family named anywhere inside one payload.
+     *
+     * <p>A family reaches the solver under two spellings: {@code familyKey}
+     * on a {@code CaseMergeExpression} or consumer-boundary reference, and
+     * {@code writerCaseFamilyKey} on a ReadFrom candidate's writer case.
+     * Both discovery paths add to the solver's family work set, so both have
+     * to be followed here or a row would arrive without evidence the solver
+     * then reports as missing.</p>
+     */
+    private static Set<String> familyKeys(JsonElement root) {
+        Set<String> families = new LinkedHashSet<>();
+        Deque<JsonElement> pending = new ArrayDeque<>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            JsonElement node = pending.pop();
+            if (node == null || node.isJsonNull()) continue;
+            if (node.isJsonArray()) {
+                for (JsonElement item : node.getAsJsonArray()) {
+                    pending.push(item);
+                }
+                continue;
+            }
+            if (!node.isJsonObject()) continue;
+            JsonObject object = node.getAsJsonObject();
+            for (Map.Entry<String, JsonElement> field : object.entrySet()) {
+                String name = field.getKey();
+                if (VmExpressionIr.FAMILY_KEY.equals(name)
+                        || SymbolicPropagationClosure.WRITER_CASE_FAMILY
+                                .equals(name)) {
+                    String family = optionalString(object, name);
+                    if (!family.isEmpty()) families.add(family);
+                }
+                pending.push(field.getValue());
+            }
+        }
+        return families;
     }
 
     private static List<JsonObject> rows(Map<String, String> options,
