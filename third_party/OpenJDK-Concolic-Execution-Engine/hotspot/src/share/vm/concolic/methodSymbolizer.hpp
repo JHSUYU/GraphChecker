@@ -47,7 +47,6 @@ private:
   void init_helper_methods();
 
 public:
-  static void invoke_method_helper(MethodSymbolizerHandle &handle);
   static Expression *finish_method_helper(MethodSymbolizerHandle &handle);
 
   static int prepare_param(MethodSymbolizerHandle &handle, BasicType type,

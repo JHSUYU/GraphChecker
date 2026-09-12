@@ -570,9 +570,18 @@ JVM_ENTRY(jstring, JVM_GetConcolicBranchEvents(JNIEnv *env, jclass ignored))
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
+  // Concolic is compiled out: this literal is the only place the shape can
+  // come from, so it names exactly the members ThreadContext's live writer
+  // emits for a NULL context.  A reader must not have to tell an envelope
+  // this build produced from one a disabled build produced.  This envelope
+  // names path-condition indices rather than expression nodes, so like the
+  // live writer it carries no expression table.
   Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_THREAD_BRANCH_EVENTS\","
-      "\"active\":false,\"events\":[]}", THREAD);
+      "\"sessionId\":0,\"active\":false,\"aborted\":false,"
+      "\"abortReason\":\"\",\"contextId\":0,\"ownerJavaThreadId\":0,"
+      "\"ownerOsThreadId\":0,\"regionId\":\"\",\"taskId\":\"\","
+      "\"regionDepth\":0,\"events\":[]}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #endif
 JVM_END
@@ -763,7 +772,11 @@ JVM_ENTRY(jstring, JVM_GetConcolicPathConditionRange(
       "\"startIndex\":0,\"endIndex\":0,"
       "\"pathConditionWatermark\":0,\"conditionCount\":0,"
       "\"conditions\":[],\"emittedConditionCount\":0,"
-      "\"authority\":\"VM_THREAD_PATH_CONDITION_RANGE_V1\"}", THREAD);
+      "\"authority\":\"VM_THREAD_PATH_CONDITION_RANGE_V1\","
+      "\"vmExpressionTable\":{\"schemaVersion\":1,"
+      "\"kind\":\"VM_EXPRESSION_TABLE\","
+      "\"authority\":\"VM_SESSION_EXPRESSION_ID_V1\",\"sessionId\":0,"
+      "\"definitionCount\":0,\"definitions\":[]}}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #endif
 JVM_END

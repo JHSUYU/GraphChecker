@@ -232,25 +232,6 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
   }
 }
 
-void MethodSymbolizer::invoke_method_helper(MethodSymbolizerHandle &handle) {
-  int offset = handle.get_callee_local_begin_offset();
-  register intptr_t *locals = handle.get_locals_ptr();
-
-  // Currently, we do not consider "this" object
-  MethodSymbolizer::prepare_param(handle, T_OBJECT, locals, offset);
-  ++offset;
-
-  ResourceMark rm;
-  SignatureStream ss(handle.get_callee_method()->signature());
-  while (!ss.at_return_type()) {
-    offset = MethodSymbolizer::prepare_param(handle, ss.type(), locals, offset);
-
-    ss.next();
-    ++offset;
-  }
-  // assert(offset == handle.get_end_offset(), "equal");
-}
-
 Expression *
 MethodSymbolizer::finish_method_helper(MethodSymbolizerHandle &handle) {
   BasicType type = handle.get_result_type();
