@@ -448,16 +448,65 @@ public class RpcAttachLoweringTest {
     }
 
     /**
-     * A declared flow whose family reached no term is this composition's hole
-     * whether or not a lowered expression referred to it; an undeclared port
-     * nothing referred to stays telemetry.
+     * hdfs-17899-bug3 observed {@code block-key-id} eleven times and lowered
+     * three of them. Asked per family the composition refused the flow eight
+     * times over; asked per flow, which is what a wire carries, one lowered
+     * family is the wire's value being in the formula.
      */
     @Test
-    public void onlyADeclaredPortMakesAnUnreferencedFamilyARefusal() {
-        assertTrue(ConcolicSmtComposer.wireFlowRefusable(true, false, false));
-        assertTrue(ConcolicSmtComposer.wireFlowRefusable(false, false, true));
-        assertFalse(ConcolicSmtComposer.wireFlowRefusable(false, false, false));
-        assertFalse(ConcolicSmtComposer.wireFlowRefusable(true, true, true));
+    public void oneBoundFamilyRealizesTheWholeFlow() {
+        JsonArray ledger = new JsonArray();
+        ledger.add(ledgerRow(PORT, true, false, false));
+        ledger.add(ledgerRow(PORT, true, true, false));
+
+        assertEquals(java.util.Collections.emptyList(),
+                ConcolicSmtComposer.unboundDeclaredPorts(ledger));
+    }
+
+    /** No family bound anywhere on the port: the flow reached no term. */
+    @Test
+    public void noBoundFamilyOnADeclaredPortIsARefusal() {
+        JsonArray ledger = new JsonArray();
+        ledger.add(ledgerRow(PORT, true, false, false));
+        ledger.add(ledgerRow(PORT, true, false, false));
+
+        assertEquals(java.util.Collections.singletonList(PORT),
+                ConcolicSmtComposer.unboundDeclaredPorts(ledger));
+    }
+
+    /** The value left the wire on arrival, and the field it landed in is read. */
+    @Test
+    public void theConsumerFieldRouteAlsoRealizesTheFlow() {
+        JsonArray ledger = new JsonArray();
+        ledger.add(ledgerRow(PORT, true, false, false));
+        ledger.add(ledgerRow(PORT, true, false, true));
+
+        assertEquals(java.util.Collections.emptyList(),
+                ConcolicSmtComposer.unboundDeclaredPorts(ledger));
+    }
+
+    /** An undeclared port nobody referred to is some other slice's region. */
+    @Test
+    public void anUndeclaredPortIsNeverARefusal() {
+        JsonArray ledger = new JsonArray();
+        ledger.add(ledgerRow(PORT, false, false, false));
+
+        assertEquals(java.util.Collections.emptyList(),
+                ConcolicSmtComposer.unboundDeclaredPorts(ledger));
+        // The rule itself, stated on one flow's two facts.
+        assertTrue(ConcolicSmtComposer.wireFlowRefusable(false, false));
+        assertFalse(ConcolicSmtComposer.wireFlowRefusable(true, false));
+        assertFalse(ConcolicSmtComposer.wireFlowRefusable(false, true));
+    }
+
+    private static JsonObject ledgerRow(String port, boolean declared,
+                                        boolean bound, boolean fieldRead) {
+        JsonObject row = new JsonObject();
+        row.addProperty("portId", port);
+        row.addProperty("declaredWireFlow", declared);
+        row.addProperty("valueBound", bound);
+        row.addProperty("consumerFieldRead", fieldRead);
+        return row;
     }
 
     /** The declared ports are the plan's own handoff ports, both sides. */

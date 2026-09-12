@@ -978,19 +978,63 @@ public final class ConcolicSmtComposer {
     }
 
     /**
-     * Whether a boundary family that reached no term is this composition's
-     * problem or somebody else's region.
+     * Whether a declared flow reached no term at all.
      *
-     * <p>A family a lowered expression referred to and that still reached no
-     * term is the original defect: the wire's value constrains nothing,
-     * silently. A family nothing referred to is normally telemetry, because
-     * the region it was observed in may lie outside this causal slice --
-     * unless the experiment declared that port, in which case the slice is
-     * exactly where it belongs and nothing referring to it is the same hole.
+     * <p>Asked per flow, never per family. One flow is observed as many
+     * boundary families as the recording saw handoffs on its port, and the
+     * composition only has to lower one of them for the wire's value to be in
+     * the formula; the rest are observations of the same wire this causal
+     * slice did not need. Asked per family, a flow with three of eleven
+     * families lowered was called unbound eight times over.</p>
+     *
+     * <p>The second route is the field the consumer assigns the value to: when
+     * the value leaves the wire on arrival, a read of that field is where it
+     * ends up and the port's own family is a term nobody was going to build.
      */
-    static boolean wireFlowRefusable(boolean referenced, boolean bound,
-                                     boolean declared) {
-        return !bound && (referenced || declared);
+    static boolean wireFlowRefusable(boolean anyFamilyBound,
+                                     boolean consumerFieldRead) {
+        return !anyFamilyBound && !consumerFieldRead;
+    }
+
+    /**
+     * The declared ports whose flow reached no term, over a whole ledger.
+     *
+     * <p>The ledger has one row per boundary family and a flow has as many
+     * families as the recording saw handoffs on its port, so the rows are
+     * folded onto their port before the question is asked. A port with one
+     * bound family is a realized flow however many of its other families went
+     * unreferenced.</p>
+     */
+    static List<String> unboundDeclaredPorts(JsonArray ledger) {
+        Map<String, Boolean> bound = new LinkedHashMap<>();
+        Map<String, Boolean> fieldRead = new LinkedHashMap<>();
+        for (JsonElement element : ledger) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            if (!optionalBool(row, "declaredWireFlow", false)) {
+                continue;
+            }
+            String port = optionalString(row, "portId");
+            if (port.isEmpty()) {
+                continue;
+            }
+            bound.merge(port, optionalBool(row, "valueBound", false),
+                    Boolean::logicalOr);
+            fieldRead.merge(port,
+                    optionalBool(row, "consumerFieldRead", false),
+                    Boolean::logicalOr);
+        }
+        List<String> unbound = new ArrayList<>();
+        for (Map.Entry<String, Boolean> port : bound.entrySet()) {
+            if (wireFlowRefusable(Boolean.TRUE.equals(port.getValue()),
+                    Boolean.TRUE.equals(fieldRead.get(port.getKey())))) {
+                unbound.add(port.getKey());
+            }
+        }
+        Collections.sort(unbound);
+        return unbound;
     }
 
     /**
@@ -1891,24 +1935,19 @@ public final class ConcolicSmtComposer {
                             CONSUMER_BOUNDARY_FAMILY_UNREFERENCED);
                 }
                 rows.add(row);
-                // A family no lowered expression referred to is telemetry,
-                // not a refusal: the region it was observed in may simply be
-                // outside this causal slice.  Unless the experiment declared
-                // that port -- a declared flow is inside the slice by
-                // construction, so nothing referring to it is the same hole
-                // as a referenced family that reached no term: either way the
-                // value the wire carried constrains nothing, silently.
-                if (wireFlowRefusable(referenced, bound, declared)
-                        && !fieldRead) {
-                    refuse(WIRE_FLOW_VALUE_UNBOUND + "["
-                                    + firstNonBlank(boundaryPortsByFamily
-                                    .get(familyKey), familyKey) + "]",
-                            "a declared value handoff reached the composition"
-                                    + " with a consumer boundary family no"
-                                    + " lowered expression refers to, so the"
-                                    + " value the wire carried constrains"
-                                    + " nothing");
-                }
+            }
+            // Asked once per declared port, over the ledger this method just
+            // built, because one flow is many families and the composition
+            // only has to lower one of them. The families that reached no
+            // term stay in the ledger as telemetry: which observation was
+            // lowered is worth knowing even when the flow itself is fine.
+            for (String declaredPort : unboundDeclaredPorts(rows)) {
+                refuse(WIRE_FLOW_VALUE_UNBOUND + "[" + declaredPort + "]",
+                        "a declared value handoff reached the composition with"
+                                + " no consumer boundary family any lowered"
+                                + " expression refers to and no read of the"
+                                + " field its consumer assigns, so the value"
+                                + " the wire carried constrains nothing");
             }
             return rows;
         }
