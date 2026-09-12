@@ -110,6 +110,21 @@ public:
   static sym_rid_t next_sym_rid();
 
   /**
+   * The largest sym_rid this session has minted so far.
+   *
+   * A sanity check on an oop header word -- "is this id one we could have
+   * issued?" -- used to compare against a fixed MAX_SYM_RID cap, which both
+   * aborted legitimate long sessions and accepted every garbage value below
+   * the cap.  The high-water mark answers the same question exactly and needs
+   * no cap.  Read without the arena lock on purpose: it is monotonic, so a
+   * stale read can only make the check more permissive, never reject a real
+   * id.
+   */
+  static sym_rid_t minted_sym_rid_bound() {
+    return (sym_rid_t) _next_sym_rid;
+  }
+
+  /**
    * The session's monotonic identity space for region occurrences, shared
    * versions, reads and handoff endpoints.  These ids correlate runtime facts;
    * their numeric order has no execution-order meaning.
