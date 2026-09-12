@@ -294,7 +294,7 @@ public final class InitialContainerObservation {
                 || "NEXT".equals(string(relation, "operation")))
                 && "L".equals(string(relation, "_java_type"))
                 && "SymbolExpression".equals(string(value, "_type"))
-                && ("N".equals(symbol)
+                && (VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
                 || VmExpressionIr.isAllocatedInstanceReference(symbol))) {
             return true;
         }
@@ -343,8 +343,7 @@ public final class InitialContainerObservation {
             return false;
         }
         String type = string(expression.getAsJsonObject(), "_type");
-        return "ConstExpr".equals(type) || "ConSymbolExp".equals(type)
-                || "ConStringSymbolExp".equals(type);
+        return ContainerSmtCodec.constantKind(type);
     }
 
     private static String primitiveFamily(String javaType) {

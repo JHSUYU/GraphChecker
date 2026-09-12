@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.concolic.RpcExpressionHandoff;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicPropagationClosure;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
+import edu.uva.liftlab.graphchecker.concolic.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.concolic.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
@@ -1829,7 +1830,7 @@ public final class ConcolicRegionRuntime {
             // A constant answer (the VM folds an unsymbolized primitive to a
             // ConstExpr) is no expression of its own: only a tree that names
             // at least one non-constant node was propagated here.
-            boolean reused = isSymbolicExpression(carried);
+            boolean reused = VmExpressionIr.carriesPropagatedValue(carried);
             // The application's Map re-key reads the modeled value back
             // through this same path, so the model is written first.
             ModelAssignment assignment = reused ? null
@@ -1913,50 +1914,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * True when the expression tree already carries symbolic value or exact
-     * consumer provenance. A consumer boundary around a constant is retained:
-     * its producer case and PC still decide when that constant reaches here.
-     * A structural constant fold with neither a root nor a boundary may be
-     * minted afresh.
-     */
-    static boolean isSymbolicExpression(JsonElement expression) {
-        if (expression == null || expression.isJsonNull()) return false;
-        if (expression.isJsonArray()) {
-            for (JsonElement element : expression.getAsJsonArray()) {
-                if (isSymbolicExpression(element)) return true;
-            }
-            return false;
-        }
-        if (!expression.isJsonObject()) return false;
-        JsonObject node = expression.getAsJsonObject();
-        JsonElement type = node.get("_type");
-        if (type != null && type.isJsonPrimitive()) {
-            String kind = type.getAsString();
-            if ("SymbolExpression".equals(kind)
-                    || "ConsumerBoundaryExpression".equals(kind)
-                    || "ReadFromExpression".equals(kind)) {
-                return true;
-            }
-        }
-        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
-            if (!"_type".equals(member.getKey())
-                    && isSymbolicExpression(member.getValue())) return true;
-        }
-        return false;
-    }
-
-    /** Returns the expression only when the VM stated one exact root leaf. */
-    private static JsonObject exactVmSymbolExpression(
-            JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return null;
-        JsonObject symbolic = expression.getAsJsonObject();
-        return "SymbolExpression".equals(string(symbolic, "_type"))
-                && !string(symbolic, "_exp").isEmpty()
-                && !string(symbolic, "_java_type").isEmpty()
-                && !SharedStateEvidence.containsVmSerializationTruncation(
-                symbolic) ? symbolic : null;
-    }
 
     private static JsonElement engineExpression(String serialized) {
         try {
@@ -5063,7 +5020,7 @@ public final class ConcolicRegionRuntime {
                                            Object root,
                                            List<String> path,
                                            EngineApi api) {
-        String label = joinFieldPath(path);
+        String label = FieldPathSpec.join(path);
         if (path == null || path.isEmpty() || label.isEmpty()) {
             active.unresolved.add(action.symbol
                     + ": selective argument contains an empty field path");
@@ -5091,7 +5048,7 @@ public final class ConcolicRegionRuntime {
         if (assignment == null || path == null || path.isEmpty()) return;
         Object owner = resolveFieldPathLeafOwner(root, path);
         if (owner == null || owner == MissingValue.INSTANCE) {
-            active.unresolved.add(action.symbol + "." + joinFieldPath(path)
+            active.unresolved.add(action.symbol + "." + FieldPathSpec.join(path)
                     + ": solver-model field owner is unavailable");
             return;
         }
@@ -5105,7 +5062,7 @@ public final class ConcolicRegionRuntime {
         if (assignment == null) return;
         if (!writeModeledField(owner, action.exactLeafFieldSignature(path),
                 assignment)) {
-            active.unresolved.add(action.symbol + "." + joinFieldPath(path)
+            active.unresolved.add(action.symbol + "." + FieldPathSpec.join(path)
                     + ": solver model could not be written to real field");
             return;
         }
@@ -5501,24 +5458,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static String joinFieldPath(List<String> path) {
-        if (path == null || path.isEmpty()) {
-            return "";
-        }
-        StringBuilder result = new StringBuilder();
-        for (String segment : path) {
-            String value = safe(segment).trim();
-            if (value.isEmpty()) {
-                return "";
-            }
-            if (result.length() > 0) {
-                result.append('.');
-            }
-            result.append(value);
-        }
-        return result.toString();
-    }
-
     private static void symbolize(ActiveRegion active, SymbolizeAction action,
                                   Object value, EngineApi api) {
         try {
@@ -5562,7 +5501,7 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, SymbolizeAction action, Object value,
             JsonElement expression, String requestedSymbol,
             List<String> fieldPath, String fieldSignature) {
-        if (!isSymbolicExpression(expression)) return false;
+        if (!VmExpressionIr.carriesPropagatedValue(expression)) return false;
         ensurePathRecordingStarted(active);
         if (value != null && !value.getClass().isArray()) {
             active.recordSymbolizedInputPort(action.symbol, value);
@@ -5990,7 +5929,8 @@ public final class ConcolicRegionRuntime {
         }
         JsonObject object = element.getAsJsonObject();
         return "SymbolExpression".equals(string(object, "_type"))
-                && "N".equals(string(object, "_exp"));
+                && VmExpressionIr.SYMBOLIC_NULL.equals(
+                string(object, "_exp"));
     }
 
     private static Configuration configuration() {
@@ -7276,7 +7216,7 @@ public final class ConcolicRegionRuntime {
             row.addProperty("fieldSignature", safe(fieldSignature));
             row.add("expression", expression == null
                     ? JsonNull.INSTANCE : expression);
-            JsonObject exact = exactVmSymbolExpression(expression);
+            JsonObject exact = VmExpressionIr.exactSymbolRoot(expression);
             row.addProperty("rawSymbol", exact == null ? ""
                     : string(exact, "_exp"));
             row.addProperty("javaType", exact == null ? action.javaType
@@ -7684,14 +7624,14 @@ public final class ConcolicRegionRuntime {
                             this.fieldPath.get(hop))) {
                         continue;
                     }
-                    leafFieldSignaturesByPath.putIfAbsent(joinFieldPath(
+                    leafFieldSignaturesByPath.putIfAbsent(FieldPathSpec.join(
                             this.fieldPath.subList(0, hop + 1)), signature);
                 }
             }
             if (!this.fieldPath.isEmpty()
                     && FieldPathSpec.declaredField(
                     explicitLeafSignature) != null) {
-                leafFieldSignaturesByPath.put(joinFieldPath(
+                leafFieldSignaturesByPath.put(FieldPathSpec.join(
                         this.fieldPath), explicitLeafSignature);
             }
             this.symbolicName = string(json, "symbolicName");
@@ -7699,7 +7639,7 @@ public final class ConcolicRegionRuntime {
 
         private boolean declaresArrayInput(List<String> actualPath) {
             String pathSignature = leafFieldSignaturesByPath.get(
-                    joinFieldPath(actualPath));
+                    FieldPathSpec.join(actualPath));
             DeclaredField declared = FieldPathSpec.declaredField(
                     pathSignature);
             if (declared != null
@@ -7907,7 +7847,7 @@ public final class ConcolicRegionRuntime {
             String actualLeaf = actualPath == null || actualPath.isEmpty()
                     ? "" : actualPath.get(actualPath.size() - 1);
             String explicit = leafFieldSignaturesByPath.get(
-                    joinFieldPath(actualPath));
+                    FieldPathSpec.join(actualPath));
             DeclaredField declaration = FieldPathSpec.declaredField(
                     explicit);
             if (declaration != null

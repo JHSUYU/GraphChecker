@@ -207,7 +207,8 @@ public final class SolverPathContext {
         String type = primitiveString(object, "_type");
         if ("SymbolExpression".equals(type)) {
             String symbol = primitiveString(object, "_exp");
-            if (!symbol.isEmpty() && !"N".equals(symbol)
+            if (!symbol.isEmpty()
+                    && !VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
                     && !"V".equals(symbol)) {
                 result.add("SYMBOL:" + symbol);
             }

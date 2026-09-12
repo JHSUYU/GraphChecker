@@ -235,7 +235,8 @@ public final class BranchPredicateAlgebra {
         JsonObject object = value.getAsJsonObject();
         if ("SymbolExpression".equals(string(object, "_type"))) {
             String symbol = string(object, "_exp");
-            if (!symbol.isEmpty() && !"N".equals(symbol)
+            if (!symbol.isEmpty()
+                    && !VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
                     && !"V".equals(symbol)) {
                 support.add(string(object, "_java_type") + '\u0000'
                         + symbol);

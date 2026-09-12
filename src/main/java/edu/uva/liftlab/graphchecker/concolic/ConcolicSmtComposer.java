@@ -2078,9 +2078,7 @@ public final class ConcolicSmtComposer {
             if ("SymbolExpression".equals(type)) {
                 return symbol(object, expected);
             }
-            if ("ConstExpr".equals(type)
-                    || "ConSymbolExp".equals(type)
-                    || "ConStringSymbolExp".equals(type)) {
+            if (ContainerSmtCodec.constantKind(type)) {
                 return constant(object, expected);
             }
             if ("BinaryExpression".equals(type)) return binary(object);
@@ -3047,7 +3045,9 @@ public final class ConcolicSmtComposer {
 
         private Term symbol(JsonObject expression, Sort expected) {
             String raw = string(expression, "_exp");
-            if ("N".equals(raw)) return new Term("nullRef", Sort.REF);
+            if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
+                return new Term("nullRef", Sort.REF);
+            }
             if ("V".equals(raw)) return new Term("true", Sort.BOOL);
             String javaType = string(expression, "_java_type");
             Sort encoded = sortOfJava(javaType);
@@ -3492,7 +3492,7 @@ public final class ConcolicSmtComposer {
                             ? "true" : "false", Sort.BOOL);
                 }
             } else if (expected == Sort.REF && ("0".equals(value)
-                    || "N".equals(raw))) {
+                    || VmExpressionIr.SYMBOLIC_NULL.equals(raw))) {
                 result = new Term("nullRef", Sort.REF);
             } else if (sort.floating()) {
                 String literal = JavaPrimitiveSmtSemantics.floatingLiteral(

@@ -1290,7 +1290,7 @@ public final class ConcolicSummaryImporter {
                 // must resolve through their original source/boundary evidence.
                 continue;
             }
-            JsonObject expression = exactManualRoot(
+            JsonObject expression = VmExpressionIr.exactSymbolRoot(
                     observation.get("expression"));
             if (expression == null) {
                 // A container/compound expression may have been created by the
@@ -1391,7 +1391,7 @@ public final class ConcolicSummaryImporter {
             return "Java type is absent";
         }
         JsonElement expression = observation.get("expression");
-        JsonObject exact = exactManualRoot(expression);
+        JsonObject exact = VmExpressionIr.exactSymbolRoot(expression);
         if (exact == null) {
             if (!string(observation, "rawSymbol").isEmpty()) {
                 return "non-root expression claims a raw symbol";
@@ -1404,7 +1404,8 @@ public final class ConcolicSummaryImporter {
                 || !observedType.equals(string(exact, "_java_type"))) {
             return "root metadata differs from the exact expression";
         }
-        if (reused && !containsPropagatedExpression(expression)) {
+        if (reused
+                && !VmExpressionIr.carriesPropagatedValue(expression)) {
             return "reused observation contains no propagated expression";
         }
         return string(observation, "symbol").isEmpty()
@@ -1438,43 +1439,6 @@ public final class ConcolicSummaryImporter {
         declared.remove("");
         return declared.isEmpty() ? observed.isEmpty()
                 : declared.contains(observed);
-    }
-
-    /** Returns only one exact, complete VM symbol expression. */
-    private static JsonObject exactManualRoot(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return null;
-        JsonObject root = expression.getAsJsonObject();
-        return "SymbolExpression".equals(string(root, "_type"))
-                && !string(root, "_exp").isEmpty()
-                && !string(root, "_java_type").isEmpty()
-                && !SharedStateEvidence.containsVmSerializationTruncation(root)
-                ? root : null;
-    }
-
-    /** Whether an exact observation says value/provenance was propagated. */
-    private static boolean containsPropagatedExpression(JsonElement value) {
-        if (value == null || value.isJsonNull()) return false;
-        if (value.isJsonArray()) {
-            for (JsonElement child : value.getAsJsonArray()) {
-                if (containsPropagatedExpression(child)) return true;
-            }
-            return false;
-        }
-        if (!value.isJsonObject()) return false;
-        JsonObject node = value.getAsJsonObject();
-        String type = string(node, "_type");
-        if ("SymbolExpression".equals(type)
-                || "ConsumerBoundaryExpression".equals(type)
-                || "ReadFromExpression".equals(type)) {
-            return true;
-        }
-        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
-            if (!"_type".equals(member.getKey())
-                    && containsPropagatedExpression(member.getValue())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /** Ingests the shared-state evidence this execution recorded. */

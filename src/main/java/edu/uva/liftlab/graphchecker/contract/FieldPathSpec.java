@@ -38,6 +38,27 @@ public final class FieldPathSpec {
         return Collections.unmodifiableList(result);
     }
 
+    /**
+     * The dotted label one field path spells, or empty when the path is
+     * empty or any segment is blank.
+     *
+     * <p>Fail-closed on a blank segment: such a path names no field, and a
+     * label built from it - {@code symbol.a..b} - would match an engine
+     * symbol no materialization site ever wrote.  Runtime and Solver build
+     * the same label here so their two answers cannot drift.</p>
+     */
+    public static String join(List<String> path) {
+        if (path == null || path.isEmpty()) return "";
+        StringBuilder result = new StringBuilder();
+        for (String segment : path) {
+            String value = trimmed(segment);
+            if (value.isEmpty()) return "";
+            if (result.length() > 0) result.append('.');
+            result.append(value);
+        }
+        return result.toString();
+    }
+
     public static List<String> stringArray(JsonObject object,
                                            String member) {
         JsonElement value = object == null ? null : object.get(member);

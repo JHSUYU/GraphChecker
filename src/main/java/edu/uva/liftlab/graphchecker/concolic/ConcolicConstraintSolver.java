@@ -413,9 +413,7 @@ public final class ConcolicConstraintSolver {
             if ("SymbolExpression".equals(type)) {
                 return symbol(object, origin);
             }
-            if ("ConstExpr".equals(type)
-                    || "ConSymbolExp".equals(type)
-                    || "ConStringSymbolExp".equals(type)) {
+            if (ContainerSmtCodec.constantKind(type)) {
                 return constant(object, expected, origin);
             }
             if ("PlaceholderExpression".equals(type)) {
@@ -1560,7 +1558,9 @@ public final class ConcolicConstraintSolver {
 
         private Term symbol(JsonObject expression, String origin) {
             String raw = string(expression, "_exp");
-            if ("N".equals(raw)) return new Term("nullRef", Sort.REF);
+            if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
+                return new Term("nullRef", Sort.REF);
+            }
             if ("V".equals(raw)) return new Term("true", Sort.BOOL);
             if (currentConstraintSymbols != null && !raw.isEmpty()) {
                 currentConstraintSymbols.add(raw);
@@ -1761,7 +1761,7 @@ public final class ConcolicConstraintSolver {
                         Sort.BOOL);
             }
             if (expected == Sort.REF && ("0".equals(payload)
-                    || "N".equals(raw))) {
+                    || VmExpressionIr.SYMBOLIC_NULL.equals(raw))) {
                 return new Term("nullRef", Sort.REF);
             }
             if (sort == Sort.BOOL) {
@@ -1793,7 +1793,9 @@ public final class ConcolicConstraintSolver {
             if (sort == Sort.STRING) {
                 return Term.nonNullString(quote(payload));
             }
-            if ("N".equals(raw)) return new Term("nullRef", Sort.REF);
+            if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
+                return new Term("nullRef", Sort.REF);
+            }
             unsupported.add(origin + ":UNSUPPORTED_CONSTANT_TYPE:"
                     + firstNonBlank(string(expression, "_java_type"),
                     "MISSING"));
@@ -3318,8 +3320,12 @@ public final class ConcolicConstraintSolver {
             for (JsonArray path : paths) {
                 List<String> segments = stringList(path);
                 if (segments.size() != path.size()) continue;
-                String label = symbol + (segments.isEmpty() ? ""
-                        : "." + String.join(".", segments));
+                // The same dotted label the Runtime builds for this path, so
+                // a blank segment refuses here exactly as it does there.
+                String suffix = FieldPathSpec.join(segments);
+                if (!segments.isEmpty() && suffix.isEmpty()) continue;
+                String label = suffix.isEmpty() ? symbol
+                        : symbol + "." + suffix;
                 if (matchesEngineSymbol(raw, label)
                         && label.length() > bestLength) {
                     best = new ActionMatch(action);
@@ -3376,7 +3382,8 @@ public final class ConcolicConstraintSolver {
         Set<String> writable = new LinkedHashSet<>();
         Set<String> unresolved = new LinkedHashSet<>();
         for (String symbol : symbols) {
-            if ("N".equals(symbol) || "V".equals(symbol)) continue;
+            if (VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
+                    || "V".equals(symbol)) continue;
             SymbolNames names = encoder.names(symbol);
             if (names != null
                     && fixedNonNullReference(symbol, names.sort)) {

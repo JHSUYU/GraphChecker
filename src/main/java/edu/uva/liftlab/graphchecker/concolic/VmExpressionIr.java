@@ -22,8 +22,10 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
  * a parameter, never a second copy: {@code stringTyped} is the caller's own
  * Java-type-to-sort decision.</p>
  */
-final class VmExpressionIr {
+public final class VmExpressionIr {
 
+    /** The VM's spelling of a symbolic null reference. */
+    public static final String SYMBOLIC_NULL = "N";
     /** Transparent VM marker installed at a consumer-side value boundary. */
     static final String CONSUMER_BOUNDARY_TYPE =
             "ConsumerBoundaryExpression";
@@ -59,7 +61,56 @@ final class VmExpressionIr {
     private static final Pattern CANONICAL_MAP_STATE_REFERENCE =
             Pattern.compile("^MAP_STATE\\.v1\\.[0-9a-f]{64}$");
 
+    /** One exact VM value root: the symbol the VM minted for one site. */
+    private static final String SYMBOL_TYPE = "SymbolExpression";
+    /** A VM read that named the write it read from. */
+    private static final String READ_FROM_TYPE = "ReadFromExpression";
+
     private VmExpressionIr() {
+    }
+
+    /**
+     * True when the expression tree already carries symbolic value or exact
+     * consumer provenance.  A consumer boundary around a constant counts:
+     * its producer case and path condition still decide when that constant
+     * reaches the reader.  A structural constant fold with neither a root
+     * nor a boundary does not, and may be minted afresh.
+     */
+    public static boolean carriesPropagatedValue(JsonElement expression) {
+        if (expression == null || expression.isJsonNull()) return false;
+        if (expression.isJsonArray()) {
+            for (JsonElement child : expression.getAsJsonArray()) {
+                if (carriesPropagatedValue(child)) return true;
+            }
+            return false;
+        }
+        if (!expression.isJsonObject()) return false;
+        JsonObject node = expression.getAsJsonObject();
+        String type = string(node, "_type");
+        if (SYMBOL_TYPE.equals(type)
+                || CONSUMER_BOUNDARY_TYPE.equals(type)
+                || READ_FROM_TYPE.equals(type)) {
+            return true;
+        }
+        for (java.util.Map.Entry<String, JsonElement> member
+                : node.entrySet()) {
+            if (!"_type".equals(member.getKey())
+                    && carriesPropagatedValue(member.getValue())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The expression, only when the VM stated one exact, complete root. */
+    public static JsonObject exactSymbolRoot(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return null;
+        JsonObject root = expression.getAsJsonObject();
+        return SYMBOL_TYPE.equals(string(root, "_type"))
+                && !string(root, "_exp").isEmpty()
+                && !string(root, "_java_type").isEmpty()
+                && !SharedStateEvidence.containsVmSerializationTruncation(
+                root) ? root : null;
     }
 
     static boolean isConsumerBoundary(JsonElement expression) {

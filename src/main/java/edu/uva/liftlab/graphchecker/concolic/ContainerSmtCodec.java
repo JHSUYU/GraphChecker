@@ -237,9 +237,15 @@ public final class ContainerSmtCodec {
                 || constant(left) && constant(right);
     }
 
-    private static boolean constant(JsonElement expression) {
+    /** The VM's three constant-payload node kinds, stated once. */
+    public static boolean constant(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
-        String type = string(expression.getAsJsonObject(), "_type");
+        return constantKind(
+                string(expression.getAsJsonObject(), "_type"));
+    }
+
+    /** Whether one already-read {@code _type} names a constant payload. */
+    public static boolean constantKind(String type) {
         return "ConstExpr".equals(type) || "ConSymbolExp".equals(type)
                 || "ConStringSymbolExp".equals(type);
     }
