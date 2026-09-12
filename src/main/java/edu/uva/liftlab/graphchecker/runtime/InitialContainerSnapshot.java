@@ -105,6 +105,16 @@ final class InitialContainerSnapshot {
     private static final Set<Object> OFFERED = Collections.synchronizedSet(
             Collections.newSetFromMap(new IdentityHashMap<Object, Boolean>()));
 
+    /**
+     * Containers already reported as carried by a pointer rather than whole.
+     *
+     * <p>Kept apart from {@link #OFFERED} on purpose: the same container can
+     * be selected both ways, and a pointer selection must not consume the one
+     * chance the whole-state selection has to state the content.</p>
+     */
+    private static final Set<Object> POINTER_ONLY = Collections.synchronizedSet(
+            Collections.newSetFromMap(new IdentityHashMap<Object, Boolean>()));
+
     private InitialContainerSnapshot() {
     }
 
@@ -166,11 +176,15 @@ final class InitialContainerSnapshot {
             // to state, and saying so once per field read would be noise.
             return SILENT;
         }
-        if (!OFFERED.add(container)) return SILENT;
         if (!wholeState) {
-            return declined(NOT_A_WHOLE_STATE_CARRIER,
-                    container.getClass().getName(), -1);
+            // Said once per container: the same pointer carrier is selected
+            // at every access, and the answer never changes.
+            return POINTER_ONLY.add(container)
+                    ? declined(NOT_A_WHOLE_STATE_CARRIER,
+                    container.getClass().getName(), -1)
+                    : SILENT;
         }
+        if (!OFFERED.add(container)) return SILENT;
         if (installer == null) {
             return declined(VM_DECLINED,
                     "this VM has no snapshotContainerExpression", -1);
@@ -314,6 +328,7 @@ final class InitialContainerSnapshot {
     /** Test seam: forget which containers have already been offered. */
     static void forgetOfferedContainers() {
         OFFERED.clear();
+        POINTER_ONLY.clear();
     }
 
     private static Set<String> names(String... values) {

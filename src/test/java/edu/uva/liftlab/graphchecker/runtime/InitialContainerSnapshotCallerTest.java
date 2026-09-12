@@ -170,6 +170,29 @@ public class InitialContainerSnapshotCallerTest {
         assertEquals(0, vm.calls);
     }
 
+    /**
+     * A pointer selection of a container must not spend the one chance the
+     * whole-state selection has to state its content.
+     */
+    @Test
+    public void aPointerSelectionDoesNotConsumeTheWholeStateOffer() {
+        Map<Integer, String> allKeys = new LinkedHashMap<>();
+        allKeys.put(7, "k7");
+        FakeVm vm = new FakeVm();
+
+        assertEquals(InitialContainerSnapshot.NOT_A_WHOLE_STATE_CARRIER,
+                InitialContainerSnapshot.install(vm, allKeys, null, false)
+                        .reason);
+        InitialContainerSnapshot.Outcome whole =
+                InitialContainerSnapshot.install(vm, allKeys, null, true);
+        assertTrue(whole.reason, whole.installed);
+        assertEquals(1, vm.calls);
+        // And the pointer answer is given once, not at every access.
+        assertFalse(InitialContainerSnapshot.install(
+                vm, new LinkedHashMap<Integer, String>(), null, false)
+                .reason.isEmpty());
+    }
+
     /** A scalar carrier has no content, and is not worth a row. */
     @Test
     public void aScalarCarrierSaysNothing() {
