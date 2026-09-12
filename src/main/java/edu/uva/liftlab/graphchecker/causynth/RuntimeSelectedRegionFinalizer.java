@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
@@ -1914,44 +1913,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 : DependencyRole.VALUE_FRONTIER;
     }
 
-    /** One scheduling row for every bounded writer of a shared location. */
-    private static List<Map<String, Object>> writerFlows(
-            List<BoundPort> reads,
-            Map<String, List<BoundPort>> writesByReceiverLeaf,
-            BiFunction<BoundPort, BoundPort, Map<String, Object>> flow) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (BoundPort read : reads) {
-            for (BoundPort write : writesByReceiverLeaf.getOrDefault(
-                    read.receiver + "\n" + read.leafDeclaration(),
-                    Collections.<BoundPort>emptyList())) {
-                // A self edge adds no replay member. The VM still records all
-                // writes made inside that activation in the same version set.
-                if (sameActivation(write, read)) continue;
-                result.add(flow.apply(write, read));
-            }
-        }
-        return result;
-    }
-
-    /** The writes of every region's outputs, keyed by receiver and leaf. */
-    private static Map<String, List<BoundPort>> writesByReceiverLeaf(
-            List<Map<String, Object>> regions, RuntimeAccessDemand demand,
-            Predicate<BoundPort> retained) throws IOException {
-        List<BoundPort> writes = new ArrayList<>();
-        for (Map<String, Object> region : regions) {
-            collectPorts(writes, text(region.get("regionId")),
-                    rows(region.get("outputs")), demand);
-        }
-        Map<String, List<BoundPort>> index = new LinkedHashMap<>();
-        for (BoundPort write : writes) {
-            if (write.receiver == 0 || !retained.test(write)) continue;
-            index.computeIfAbsent(
-                    write.receiver + "\n" + write.leafDeclaration(),
-                    ignored -> new ArrayList<>()).add(write);
-        }
-        return index;
-    }
-
     private static void markMutationValueFrontiers(
             String start,
             Map<String, List<Map<String, Object>>> incoming,
@@ -2904,20 +2865,34 @@ public final class RuntimeSelectedRegionFinalizer {
         reads.removeIf(port -> !demandedFields.contains(
                 port.leafDeclaration()));
         RuntimeAccessDemand demand = leafReceiverDemand(reads);
+        List<BoundPort> writes = new ArrayList<>();
+        for (Map<String, Object> region : regions) {
+            collectPorts(writes, text(region.get("regionId")),
+                    rows(region.get("outputs")), demand);
+        }
         Map<String, List<BoundPort>> writesByReceiverAndField =
-                writesByReceiverLeaf(regions, demand,
-                        write -> demandedFields.contains(
-                                write.leafDeclaration()));
-        return writerFlows(reads, writesByReceiverAndField,
-                (write, read) -> fieldFlowEdge(write, read));
-    }
-
-    /** The cross-run identity of the read leaf: its owner and its name. */
-    private static String recordedFieldKey(BoundPort read) {
-        DeclaredFieldCell field = DeclaredFieldCell.parse(
-                read.leafDeclaration());
-        return field == null ? ""
-                : SharedFieldFlow.fieldKey(field.owner, field.name);
+                new LinkedHashMap<>();
+        for (BoundPort write : writes) {
+            if (write.receiver == 0 || !demandedFields.contains(
+                    write.leafDeclaration())) {
+                continue;
+            }
+            writesByReceiverAndField.computeIfAbsent(
+                    write.receiver + "\n" + write.leafDeclaration(),
+                    ignored -> new ArrayList<>()).add(write);
+        }
+        List<Map<String, Object>> flows = new ArrayList<>();
+        for (BoundPort read : reads) {
+            for (BoundPort write : writesByReceiverAndField.getOrDefault(
+                    read.receiver + "\n" + read.leafDeclaration(),
+                    Collections.<BoundPort>emptyList())) {
+                // A self edge adds no replay member. The VM still records all
+                // writes made inside that activation in the same version set.
+                if (write.occurrenceId.equals(read.occurrenceId)) continue;
+                flows.add(fieldFlowEdge(write, read));
+            }
+        }
+        return flows;
     }
 
     /** Renders one shared-location pair as linked-replay topology. */
@@ -2947,9 +2922,13 @@ public final class RuntimeSelectedRegionFinalizer {
         edge.put("dependencyRole", read.dependencyRole);
         edge.put("fieldPathDeclarations", Collections.singletonList(
                 write.leafDeclaration()));
-        // This is a scheduling address. The value itself is the VM's
-        // GuardedRead expression and is never reconstructed from this edge.
-        edge.put(SharedFieldFlow.EDGE_LOCATION, recordedFieldKey(read));
+        // This is a scheduling address, the read leaf named by its owner
+        // and its name.  The value itself is the VM's GuardedRead expression
+        // and is never reconstructed from this edge.
+        DeclaredFieldCell leaf = DeclaredFieldCell.parse(
+                read.leafDeclaration());
+        edge.put(SharedFieldFlow.EDGE_LOCATION, leaf == null ? ""
+                : SharedFieldFlow.fieldKey(leaf.owner, leaf.name));
         return edge;
     }
 
@@ -3065,11 +3044,6 @@ public final class RuntimeSelectedRegionFinalizer {
 
     private static String contextKey(String region, String cell) {
         return region + "\n" + cell;
-    }
-
-    private static boolean sameActivation(BoundPort left,
-                                          BoundPort right) {
-        return left.occurrenceId.equals(right.occurrenceId);
     }
 
     /** Ports that read or write one declared field of one observed object. */
