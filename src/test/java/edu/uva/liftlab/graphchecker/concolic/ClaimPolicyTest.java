@@ -679,4 +679,252 @@ public class ClaimPolicyTest {
     private static JsonArray parseArray(String json) {
         return JsonParser.parseString(json).getAsJsonArray();
     }
+
+    /**
+     * HDFS-17897: the Composer reported the DataNode's {@code allKeys} initial
+     * snapshot truncated, stayed FINAL_READY with no refusal, and the witness
+     * then read the fatal value out of exactly that carrier's initial arm --
+     * "the key was never there" rather than "the key expired". A gap the
+     * witness stands on is a blocker whatever the Composer's status says.
+     */
+    @Test
+    public void witnessOnTruncatedInitialStateIsBlocked() {
+        JsonObject claim = ClaimPolicy.decide(truncatedManifest(),
+                selectionReach(true), noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        JsonObject gap = blocker(claim,
+                ClaimPolicy.UNDETERMINED_INITIAL_STATE);
+        assertEquals("MAP_STATE/140#-3", gap.get("subject").getAsString());
+        assertTrue(gap.get("detail").getAsString()
+                .contains("read_selector__initial"));
+        assertEquals(1, claim.getAsJsonObject("rootSpace")
+                .getAsJsonObject("initialState")
+                .getAsJsonArray("onSelectedPath").size());
+    }
+
+    /**
+     * hdfs-17899-bug3: the witness sat on a reconstructed writer arm while the
+     * same read's container carried the truncation gap. A free
+     * {@code assoc_has} is a premise available under every arm, so the read is
+     * blocked whichever arm this particular model happened to take.
+     */
+    @Test
+    public void truncatedCarrierOfTheFatalReadBlocksWhicheverArmIsSelected() {
+        JsonObject claim = ClaimPolicy.decide(truncatedManifest(),
+                selectionReach(false), noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        JsonObject gap = blocker(claim,
+                ClaimPolicy.UNDETERMINED_INITIAL_STATE);
+        assertEquals("MAP_STATE/140#-3", gap.get("subject").getAsString());
+        assertTrue("the unselected initial arm is named as available",
+                gap.get("detail").getAsString().contains("initial state)"));
+        JsonObject initialState = claim.getAsJsonObject("rootSpace")
+                .getAsJsonObject("initialState");
+        assertEquals(1, initialState.getAsJsonArray("onSelectedPath").size());
+        assertEquals(1, initialState.getAsJsonArray("offSelectedPath").size());
+        assertTrue(initialState.get("fatalCarrierTruncated").getAsBoolean());
+    }
+
+    /** A truncated carrier the fatal read never touches is not this read's. */
+    @Test
+    public void truncatedCarrierOfAnotherReadIsNotBlocked() {
+        JsonObject reach = selectionReach(true);
+        JsonArray arms = reach.getAsJsonObject(
+                BooleanReachConditionExtractor.FATAL_STATE_SELECTION)
+                .getAsJsonArray("arms");
+        for (JsonElement arm : arms) {
+            arm.getAsJsonObject().addProperty("sessionLocationKey",
+                    "MAP_STATE/11#-3");
+        }
+
+        JsonObject claim = ClaimPolicy.decide(truncatedManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim").getAsString());
+        assertEquals(1, claim.getAsJsonObject("rootSpace")
+                .getAsJsonObject("initialState")
+                .get("truncatedCarrierCount").getAsInt());
+    }
+
+    private static JsonObject truncatedManifest() {
+        JsonObject manifest = manifest();
+        manifest.add("symbolicPropagationGaps", parseArray(
+                "[{\"schemaVersion\":2,"
+                + "\"kind\":\"SYMBOLIC_PROPAGATION_GAP\","
+                + "\"authority\":\"CONSUMER_BOUNDARY_CLOSURE_V1\","
+                + "\"reason\":\"INITIAL_CONTAINER_SNAPSHOT_TRUNCATED\","
+                + "\"subject\":\"MAP_STATE/140#-3\","
+                + "\"detail\":\"no complete initial content snapshot\"}]"));
+        return manifest;
+    }
+
+    /** A reach report whose fatal read names one initial and one writer arm. */
+    private static JsonObject selectionReach(boolean initialArmSelected) {
+        JsonObject reach = reach();
+        reach.add(BooleanReachConditionExtractor.FATAL_STATE_SELECTION, parse(
+                "{\"schemaVersion\":1,"
+                + "\"kind\":\"FATAL_READ_STATE_SELECTION\","
+                + "\"authority\":\"SOLVER_SELECTED_GUARDED_READ_ARM_V1\","
+                + "\"resolved\":true,\"arms\":["
+                + "{\"selector\":\"read_selector__initial\","
+                + "\"readIdentity\":\"RFC.fatal\","
+                + "\"sessionLocationKey\":\"MAP_STATE/140#-3\","
+                + "\"locationKey\":\"MAP_STATE/18ffea7d#-3\","
+                + "\"writerCaseOwner\":\"INITIAL_SOURCE.a706a1a\","
+                + "\"initialState\":true,\"modelled\":true,"
+                + "\"selected\":" + initialArmSelected + "},"
+                + "{\"selector\":\"read_selector__writer\","
+                + "\"readIdentity\":\"RFC.fatal\","
+                + "\"sessionLocationKey\":\"MAP_STATE/140#-3\","
+                + "\"locationKey\":\"MAP_STATE/18ffea7d#-3\","
+                + "\"writerCaseOwner\":\"region:REGION.addKeys\","
+                + "\"initialState\":false,\"modelled\":true,"
+                + "\"selected\":" + !initialArmSelected + "}]}"));
+        return reach;
+    }
+
+
+    /**
+     * hdfs-17899-bug3: both polarities of the injected IPC fault marker were
+     * satisfiable, and the run was accepted anyway because a perturbation of a
+     * wall clock at nn0 was rejected. The marker is the experiment's
+     * hypothesis; a clock three hops away is not an answer about it.
+     */
+    @Test
+    public void faultMarkerSatisfiableInBothPolaritiesIsBlocked() {
+        JsonObject claim = ClaimPolicy.decide(markerManifest(),
+                markerReach(true, "-300000"), noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        JsonObject gap = blocker(claim,
+                ClaimPolicy.FAULT_MARKER_NOT_DETERMINING);
+        assertEquals("MANUAL.fault", gap.get("subject").getAsString());
+        assertTrue(gap.get("detail").getAsString()
+                .contains("both polarities")
+                || gap.get("detail").getAsString().contains("recorded polarity sat"));
+    }
+
+    /** The marker deciding the verdict is what an accepted claim rests on. */
+    @Test
+    public void faultMarkerThatFlipsTheVerdictIsAccepted() {
+        JsonObject reach = markerReach(true, "-300000");
+        reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
+                .addProperty("status", "unsat");
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        assertTrue(markerRow(claim).get("polarityDecides").getAsBoolean());
+    }
+
+    /**
+     * A second mechanism may carry the polarity that has no fault, but only
+     * when it is inside what the recording allows. Saturated at the window
+     * bound is the analysis answering itself.
+     */
+    @Test
+    public void otherPolarityNeedsAMechanismInsideTheWindow() {
+        JsonObject saturated = ClaimPolicy.decide(markerManifest(),
+                markerReach(true, "300000"), noFlows());
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                saturated.get("claim").getAsString());
+        assertEquals(0, markerRow(saturated)
+                .getAsJsonArray("otherPolarityMechanisms").size());
+
+        JsonObject inside = ClaimPolicy.decide(markerManifest(),
+                markerReach(true, "245021"), noFlows());
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                inside.get("claim").getAsString());
+        assertEquals(1, markerRow(inside)
+                .getAsJsonArray("otherPolarityMechanisms").size());
+    }
+
+    /** The verdict must say which root the probe actually perturbed. */
+    @Test
+    public void probedRootNamesTheRejectedRoot() {
+        JsonObject reach = reach();
+        reach.add("existentialRootProbe", parse(
+                "{\"authority\":\"SOLVER_WITNESS_NEIGHBOR_PERTURBATION_V1\","
+                + "\"constrainsRootSpace\":true,\"perturbations\":["
+                + "{\"sourceIdentity\":\"MANUAL.clock\","
+                + "\"portId\":\"REGION.nn0.in.now\","
+                + "\"witnessValue\":\"5\",\"perturbedValue\":\"4\","
+                + "\"status\":\"skipped\","
+                + "\"rejectedBy\":\"WINDOW_BOUNDARY\"},"
+                + "{\"sourceIdentity\":\"MANUAL.other\","
+                + "\"portId\":\"REGION.nn0.in.later\","
+                + "\"witnessValue\":\"9\",\"perturbedValue\":\"8\","
+                + "\"status\":\"unsat\"}]}"));
+
+        JsonObject probed = ClaimPolicy.decide(manifest(), reach, noFlows())
+                .getAsJsonObject("rootSpace").getAsJsonObject("probedRoot");
+
+        assertTrue(probed.get("rejected").getAsBoolean());
+        assertEquals("MANUAL.other", probed.get("sourceIdentity").getAsString());
+        assertEquals("the window-boundary row is not a solved perturbation",
+                1, probed.get("solvedPerturbations").getAsInt());
+    }
+
+    private static JsonObject markerRow(JsonObject claim) {
+        return claim.getAsJsonObject("rootSpace")
+                .getAsJsonObject("faultMarkers")
+                .getAsJsonArray("markers").get(0).getAsJsonObject();
+    }
+
+    private static JsonObject markerManifest() {
+        JsonObject manifest = manifest();
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+                "[{\"solverTerm\":\"manual__fault\","
+                + "\"recordedValue\":\"false\",\"wallClock\":false}]"));
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD, parse(
+                "{\"schemaVersion\":1,\"kind\":\"CLOCK_ROOT_PHYSICS\","
+                + "\"clockSkewMillis\":300000,\"clockReads\":[]}"));
+        return manifest;
+    }
+
+    /**
+     * One declared marker, both polarities satisfiable, and the polarity that
+     * has no fault explained only by a clock moved by {@code skewMillis}.
+     */
+    private static JsonObject markerReach(boolean bothSat, String skewMillis) {
+        JsonObject reach = reach();
+        // bug3 was accepted with both polarities sat because a perturbation of
+        // an unrelated clock root was rejected; without that the older
+        // TARGET_UNCONSTRAINED_BY_ROOTS blocker fires and the marker rule is
+        // never the thing under test.
+        reach.add("existentialRootProbe", parse(
+                "{\"authority\":\"SOLVER_WITNESS_NEIGHBOR_PERTURBATION_V1\","
+                + "\"constrainsRootSpace\":true,\"perturbations\":["
+                + "{\"sourceIdentity\":\"MANUAL.clock\","
+                + "\"portId\":\"REGION.nn0.in.now\","
+                + "\"witnessValue\":\"9\",\"perturbedValue\":\"8\","
+                + "\"status\":\"unsat\"}]}"));
+        reach.add("roots", parse(
+                "{\"booleanInputs\":[{\"inputKind\":\"REGION_SYMBOLIC_INPUT\","
+                + "\"sourceIdentity\":\"MANUAL.fault\","
+                + "\"portId\":\"REGION.sendRpcRequest.in.fault\","
+                + "\"occurrenceId\":\"hdfs/dn0#epoch0/region/REGION.x#1\","
+                + "\"javaTypeDescriptor\":\"Z\","
+                + "\"solverTerm\":\"manual__fault\"}],"
+                + "\"existentialInputs\":[]}"));
+        reach.add("valuations", parseArray(
+                "[{\"values\":[false],\"status\":\""
+                + (bothSat ? "sat" : "unsat") + "\","
+                + "\"witnessMechanisms\":[{\"kind\":\"CLOCK_SKEW\","
+                + "\"skewMillis\":" + skewMillis + ","
+                + "\"siteId\":\"BlockTokenSecretManager.updateKeys()#u28\","
+                + "\"sourceKey\":\"hdfs/nn0#epoch0\"}]},"
+                + "{\"values\":[true],\"status\":\"sat\","
+                + "\"witnessMechanisms\":[{\"kind\":\"MARKER_FLIPPED\","
+                + "\"siteId\":\"Client$Connection.sendRpcRequest#u17\"}]}]"));
+        return reach;
+    }
+
 }

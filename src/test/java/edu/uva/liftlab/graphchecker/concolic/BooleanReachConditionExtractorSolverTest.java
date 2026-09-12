@@ -358,4 +358,167 @@ public class BooleanReachConditionExtractorSolverTest {
         }
     }
 
+
+    /**
+     * HDFS-17897's witness sat on its clock's own window floor: the recorded
+     * read 1789234993718 with the window collapsed onto it. The probe then
+     * tried 1789234993717, the solver refused it because it leaves the
+     * window, and that refusal was credited as proof that the target depends
+     * on the clock. It proves only that {@link ClockRootPhysics} works.
+     */
+    @Test
+    public void windowBoundaryPerturbationIsNotFaultSensitivity()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        long recorded = 1789234993718L;
+        JsonObject manifest = clockRootManifest(recorded, 0L);
+        String smt = "(set-logic ALL)\n"
+                + "(declare-const " + CLOCK_TERM + " Int)\n"
+                + "(assert (and (>= " + CLOCK_TERM + " " + recorded + ")"
+                + " (<= " + CLOCK_TERM + " " + recorded + ")))\n"
+                + "(check-sat)\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(smt,
+                manifest, new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+
+        JsonObject probe = report.getAsJsonObject("existentialRootProbe");
+        assertFalse("a window-boundary refusal is not fault sensitivity",
+                probe.get("constrainsRootSpace").getAsBoolean());
+        JsonArray perturbations = probe.getAsJsonArray("perturbations");
+        assertTrue(perturbations.size() > 0);
+        boolean sawBoundary = false;
+        for (int index = 0; index < perturbations.size(); index++) {
+            JsonObject row = perturbations.get(index).getAsJsonObject();
+            assertEquals("skipped", row.get("status").getAsString());
+            assertEquals(BooleanReachConditionExtractor.WINDOW_BOUNDARY,
+                    row.get("rejectedBy").getAsString());
+            sawBoundary |= String.valueOf(recorded - 1L).equals(
+                    row.get("perturbedValue").getAsString());
+        }
+        assertTrue("the 1789234993717 neighbour is named and not solved",
+                sawBoundary);
+        assertTrue(report.getAsJsonObject("reachCondition")
+                .get("degeneracyCheck").getAsString()
+                .startsWith("UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS"));
+    }
+
+    /** A rejection the formula itself makes, inside the window, still counts. */
+    @Test
+    public void inWindowPerturbationStillProvesSensitivity()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        long recorded = 1789234993718L;
+        JsonObject manifest = clockRootManifest(recorded, 300000L);
+        String smt = "(set-logic ALL)\n"
+                + "(declare-const " + CLOCK_TERM + " Int)\n"
+                + "(assert (and (>= " + CLOCK_TERM + " " + (recorded - 300000L)
+                + ") (<= " + CLOCK_TERM + " " + (recorded + 300000L) + ")))\n"
+                + "(assert (= " + CLOCK_TERM + " " + recorded + "))\n"
+                + "(check-sat)\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(smt,
+                manifest, new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+
+        JsonObject probe = report.getAsJsonObject("existentialRootProbe");
+        assertTrue("an in-window rejection is the formula's own",
+                probe.get("constrainsRootSpace").getAsBoolean());
+        assertEquals("CONSTRAINED_ROOT_SPACE",
+                report.getAsJsonObject("reachCondition")
+                        .get("degeneracyCheck").getAsString());
+    }
+
+    /**
+     * The fatal predicate's value comes from one guarded read, and which of
+     * that read's arms supplied it is what tells an initial-state hole from a
+     * reconstructed write.
+     */
+    @Test
+    public void fatalReadArmsResolveThroughTheBoundaryBinding() {
+        String value = "rf_value__RFC_a1__b2";
+        JsonObject manifest = candidateManifest();
+        JsonObject read = new JsonObject();
+        read.addProperty("readIdentity", "RFC.a1");
+        JsonArray arms = new JsonArray();
+        arms.add(readArm(value, "INITIAL_SOURCE.deadbeef", "MAP_STATE/7#-3",
+                "read_selector__initial"));
+        arms.add(readArm(value, "region:REGION.writer", "MAP_STATE/7#-3",
+                "read_selector__writer"));
+        arms.add(readArm("rf_value__RFC_other__c3", "region:REGION.other",
+                "MAP_STATE/9#-3", "read_selector__unrelated"));
+        read.add("arms", arms);
+        JsonArray reads = new JsonArray();
+        reads.add(read);
+        manifest.getAsJsonObject("guardedReadModel").add("reads", reads);
+        String smt = "(declare-const merged_boundary__f0 Ref)\n"
+                + "(assert (= merged_boundary__f0 " + value + "))\n"
+                + "(assert (! (= merged_boundary__f0 nullRef)"
+                + " :named fatal_path))\n";
+
+        java.util.List<JsonObject> resolved = BooleanReachConditionExtractor
+                .fatalReadArms(smt, manifest);
+
+        assertEquals(2, resolved.size());
+        assertEquals("read_selector__initial",
+                resolved.get(0).get("selector").getAsString());
+        assertTrue(resolved.get(0).get("initialState").getAsBoolean());
+        assertFalse(resolved.get(1).get("initialState").getAsBoolean());
+        assertEquals("MAP_STATE/7#-3",
+                resolved.get(0).get("sessionLocationKey").getAsString());
+    }
+
+    private static JsonObject readArm(String valueTerm, String owner,
+                                      String carrier, String selector) {
+        JsonObject arm = new JsonObject();
+        arm.addProperty("selector", selector);
+        arm.addProperty("valueTerm", valueTerm);
+        arm.addProperty("writerCaseOwner", owner);
+        arm.addProperty("sessionLocationKey", carrier);
+        arm.addProperty("locationKey", carrier + "/full");
+        arm.addProperty("readIdentity", "RFC.a1");
+        arm.addProperty("candidateIdentity", "RFC_ARM." + selector);
+        return arm;
+    }
+
+    private static final String CLOCK_TERM = "manual__clock";
+
+    /** A manifest with one symbolized wall clock and its declared window. */
+    private static JsonObject clockRootManifest(long recorded,
+                                                long skewMillis) {
+        JsonObject manifest = candidateManifest();
+        JsonObject root = new JsonObject();
+        root.addProperty("schemaVersion", 1);
+        root.addProperty("kind", ConcolicSmtComposer
+                .MANUAL_SOURCE_MATERIALIZATION_KIND);
+        root.addProperty("authority", ConcolicSmtComposer
+                .MANUAL_SOURCE_MATERIALIZATION_AUTHORITY);
+        root.addProperty("portId", "REGION.clock.in.now");
+        root.addProperty("occurrenceId",
+                "hdfs/nn0#epoch0/region/REGION.clock#1");
+        root.addProperty("javaTypeDescriptor", "J");
+        root.addProperty("sort", "INT");
+        root.addProperty("smtSort", "Int");
+        root.addProperty("solverTerm", CLOCK_TERM);
+        root.addProperty("sourceIdentity", "MANUAL.clock");
+        root.addProperty("sourceIdentityAuthority",
+                "PLANNED_MANUAL_SYMBOLIZATION_V1");
+        JsonArray roots = new JsonArray();
+        roots.add(root);
+        manifest.add(ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_FIELD,
+                roots);
+
+        JsonObject clockRead = new JsonObject();
+        clockRead.addProperty("sourceKey", "hdfs/nn0#epoch0");
+        clockRead.addProperty("portId", "REGION.clock.in.now");
+        clockRead.addProperty("recordedValue", recorded);
+        clockRead.addProperty("solverTerm", CLOCK_TERM);
+        JsonArray clockReads = new JsonArray();
+        clockReads.add(clockRead);
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD,
+                ClockRootPhysics.manifest(skewMillis,
+                        java.util.Collections.singletonList(clockRead)));
+        return manifest;
+    }
+
 }
