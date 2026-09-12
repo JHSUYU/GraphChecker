@@ -42,6 +42,24 @@ namespace {
 // unbounded native StringBuffer.
 static const size_t MAX_VERSION_ENVELOPE_BYTES = 32u * 1024u * 1024u;
 
+/**
+ * What this envelope actually costs so far.
+ *
+ * Inside an artifact scope a serialized root leaves a short reference in the
+ * buffer and puts its whole DAG in the expression table, so the buffer size
+ * alone is not the envelope size -- it is the small part of it.  Every budget
+ * question below asks this instead.
+ *
+ * The budget is a stopping rule rather than a hard ceiling: a root already
+ * serialized keeps its definitions, because dropping them would leave a
+ * dangling reference in `versions`.  Overshoot is therefore bounded by the
+ * last root admitted, and the envelope says it truncated.
+ */
+size_t envelope_bytes(const rapidjson::StringBuffer &buffer,
+                      VmExpressionArtifactScope &artifact) {
+  return buffer.GetSize() + artifact.pending_table_size();
+}
+
 class VersionLock {
 public:
   VersionLock(pthread_mutex_t *mutex) : _mutex(mutex) {
@@ -467,7 +485,8 @@ std::string SharedFieldVersions::describe(const Location &location) {
   writer.StartArray();
   bool serialization_truncated = false;
   for (size_t index = 0; index < versions.size(); ++index) {
-    if (buffer.GetSize() >= MAX_VERSION_ENVELOPE_BYTES) {
+    if (envelope_bytes(buffer, expression_artifact)
+        >= MAX_VERSION_ENVELOPE_BYTES) {
       serialization_truncated = true;
       break;
     }
@@ -492,7 +511,8 @@ std::string SharedFieldVersions::describe(const Location &location) {
       version.value->serialize(writer);
     }
     writer.Key("pathGuard");
-    if (buffer.GetSize() >= MAX_VERSION_ENVELOPE_BYTES) {
+    if (envelope_bytes(buffer, expression_artifact)
+        >= MAX_VERSION_ENVELOPE_BYTES) {
       // Keep the current version structurally valid.  The explicit envelope
       // flag below makes this null unusable as an allegedly empty guard.
       writer.Null();
@@ -508,13 +528,19 @@ std::string SharedFieldVersions::describe(const Location &location) {
     if (serialization_truncated) break;
   }
   writer.EndArray();
-  writer.Key("serializationTruncated");
-  writer.Bool(serialization_truncated);
   writer.Key("readLogTruncated");
   writer.Bool(!read_log_complete);
   writer.Key("reads");
   writer.StartArray();
   for (size_t index = 0; index < reads.size(); ++index) {
+    // The read log is bounded by the same budget as the versions.  It used to
+    // be unbounded: a location with a full read log appended its rows after
+    // the versions loop had already decided the envelope was full.
+    if (envelope_bytes(buffer, expression_artifact)
+        >= MAX_VERSION_ENVELOPE_BYTES) {
+      serialization_truncated = true;
+      break;
+    }
     const ReadRecord &read = reads[index];
     writer.StartObject();
     writer.Key("readEventId");
@@ -532,6 +558,12 @@ std::string SharedFieldVersions::describe(const Location &location) {
     writer.EndObject();
   }
   writer.EndArray();
+  // Written after both arrays because it now reports either of them being
+  // cut short, and after the artifact table has been accounted for.  This is
+  // the flag Java triages as EXPRESSION_SERIALIZATION_TRUNCATED; member order
+  // in a JSON object carries no meaning to its reader.
+  writer.Key("serializationTruncated");
+  writer.Bool(serialization_truncated);
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());

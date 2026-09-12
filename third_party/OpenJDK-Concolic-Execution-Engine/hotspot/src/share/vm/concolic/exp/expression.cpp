@@ -411,10 +411,21 @@ void SerializationScope::render(Expression *root,
 
 __thread VmExpressionArtifactScope *VmExpressionArtifactScope::_active = NULL;
 
+namespace {
+
+// The fixed JSON around one definition ("_type", "sessionId", "expressionId",
+// "expression" and their punctuation) and around the table itself.  Both are
+// deliberate over-estimates: a size budget that under-counts its own envelope
+// is the bug this accounting exists to close.
+static const size_t DEFINITION_ENVELOPE_BYTES = 128;
+static const size_t TABLE_ENVELOPE_BYTES = 256;
+
+} // anonymous namespace
+
 VmExpressionArtifactScope::VmExpressionArtifactScope()
     : _previous(_active),
       _session_id(GlobalSymbolicSession::session_id()),
-      _next_pending(0), _table_written(false) {
+      _next_pending(0), _definition_bytes(0), _table_written(false) {
   _active = this;
 }
 
@@ -494,6 +505,17 @@ void VmExpressionArtifactScope::render_definition(Expression *expression) {
           std::string(buffer.GetString(), buffer.GetSize())));
   guarantee(inserted.second,
             "a VM expression node was defined more than once");
+  _definition_bytes += buffer.GetSize() + DEFINITION_ENVELOPE_BYTES;
+}
+
+size_t VmExpressionArtifactScope::pending_table_size() {
+  if (_table_written) return 0;
+  // The same drain write_table() performs.  Rendering one node may discover
+  // children, so the vector grows during the loop.
+  while (_next_pending < _pending.size()) {
+    render_definition(_pending[_next_pending++]);
+  }
+  return _definition_bytes + TABLE_ENVELOPE_BYTES;
 }
 
 void VmExpressionArtifactScope::write_table(

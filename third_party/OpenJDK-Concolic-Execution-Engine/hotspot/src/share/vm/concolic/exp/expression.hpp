@@ -167,6 +167,9 @@ private:
   std::vector<Expression *> _pending;
   definition_map_t _definitions;
   size_t _next_pending;
+  // Running total of rendered definition bytes, so the size question above is
+  // answered without re-walking the map on every call.
+  size_t _definition_bytes;
   bool _table_written;
 
   void record(Expression *expression);
@@ -188,6 +191,21 @@ public:
 
   /** Exact JSON byte length of one reference, without retaining its node. */
   size_t reference_size(Expression *expression);
+
+  /**
+   * Bytes the table will add to the envelope for everything recorded so far.
+   *
+   * While a scope is active, serialize() leaves only a short reference in the
+   * caller's buffer and the whole DAG goes to the table, so a caller that
+   * bounds its envelope by buffer size alone bounds almost nothing.  This
+   * renders every definition discovered so far -- exactly the work write_table
+   * would do at the end -- and reports the total, so a byte budget can be
+   * checked against what has actually been committed to.
+   *
+   * Rendering is done once per node: write_table() resumes where this left
+   * off and still emits each definition exactly once.
+   */
+  size_t pending_table_size();
 
   /** Writes the `vmExpressionTable` member of the currently open object. */
   void write_table(rapidjson::Writer<rapidjson::StringBuffer> &writer);
