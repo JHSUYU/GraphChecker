@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -116,6 +117,10 @@ public final class ConcolicPathFlipPlanner {
          *  Expanded, so the transitive family walk below sees every nested
          *  family name instead of a Merkle reference to one. */
         private final Map<String, JsonObject> dependenciesByFamily;
+        /** The families each dependency row names, walked once per wave
+         *  rather than once per flip row that reaches it. */
+        private final Map<String, Set<String>> nestedFamilies =
+                new LinkedHashMap<>();
         private final String familyDigest;
         private final String topologyEpoch;
         private final RegionPathWorklist.Bounds bounds;
@@ -270,7 +275,12 @@ public final class ConcolicPathFlipPlanner {
                 // A family with no row is the solver's gap to name
                 // (CONSUMER_FAMILY_DEPENDENCY_MISSING), not one to invent.
                 if (dependency == null) continue;
-                for (String next : familyKeys(dependency)) {
+                Set<String> nested = nestedFamilies.get(family);
+                if (nested == null) {
+                    nested = familyKeys(dependency);
+                    nestedFamilies.put(family, nested);
+                }
+                for (String next : nested) {
                     if (!reached.contains(next)) pending.push(next);
                 }
             }
@@ -309,18 +319,29 @@ public final class ConcolicPathFlipPlanner {
      */
     private static Set<String> familyKeys(JsonElement root) {
         Set<String> families = new LinkedHashSet<>();
+        // The payload is a DAG, not a tree: SharedExpressionTable.expandAll
+        // interns equal definitions, so one shared node is reached by many
+        // paths.  Walking it without marking visited nodes re-expands every
+        // shared node once per path that reaches it, which is exponential in
+        // the sharing depth -- it planned a 2,218-node bug3 DAG in seconds
+        // and then wedged hdfs-11741 for twenty minutes on one member.
+        // Identity is the right test precisely because the interning gives
+        // one shared node one object.
+        Set<JsonElement> visited = Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
         Deque<JsonElement> pending = new ArrayDeque<>();
         pending.push(root);
         while (!pending.isEmpty()) {
             JsonElement node = pending.pop();
             if (node == null || node.isJsonNull()) continue;
+            if (!node.isJsonObject() && !node.isJsonArray()) continue;
+            if (!visited.add(node)) continue;
             if (node.isJsonArray()) {
                 for (JsonElement item : node.getAsJsonArray()) {
                     pending.push(item);
                 }
                 continue;
             }
-            if (!node.isJsonObject()) continue;
             JsonObject object = node.getAsJsonObject();
             for (Map.Entry<String, JsonElement> field : object.entrySet()) {
                 String name = field.getKey();
