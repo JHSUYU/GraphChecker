@@ -84,6 +84,35 @@ public class GuardedChoiceActivationTest {
                 + assertion("(not writer_two)")));
     }
 
+    /**
+     * A container read's arms must differ where the mutations between their
+     * versions differ.  A writer arm that lowers to the untouched INITIAL
+     * state's own expression has lost its PUT/REMOVE chain, and the container
+     * is then constrained by nothing but its size domain.
+     */
+    @Test
+    public void aCollapsedContainerArmIsNamed() {
+        // The real shape: each version lowers its own mutation walk.
+        assertEquals(-1, ConcolicSmtComposer.collapsedContainerArm(
+                Arrays.asList("(assoc_has s k)", "(or (= k k1) base)",
+                        "(or (= k k2) (or (= k k1) base))"),
+                Arrays.asList(true, false, false)));
+        // One arm for a read nothing had written yet is not a collapse.
+        assertEquals(-1, ConcolicSmtComposer.collapsedContainerArm(
+                Collections.singletonList("(assoc_has s k)"),
+                Collections.singletonList(true)));
+        // Every arm reducing to one expression: the choice decides nothing.
+        assertEquals(0, ConcolicSmtComposer.collapsedContainerArm(
+                Arrays.asList("(assoc_has s k)", "(assoc_has s k)",
+                        "(assoc_has s k)"),
+                Arrays.asList(true, false, false)));
+        // A writer arm that reads the untouched initial state.
+        assertEquals(2, ConcolicSmtComposer.collapsedContainerArm(
+                Arrays.asList("(assoc_has s k)", "(or (= k k1) base)",
+                        "(assoc_has s k)"),
+                Arrays.asList(true, false, false)));
+    }
+
     @Test
     public void guardedReadSortUsesAnchorAndRejectsMixedArms() {
         JsonObject anchored = new JsonObject();

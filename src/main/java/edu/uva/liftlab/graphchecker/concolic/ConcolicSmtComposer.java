@@ -1095,6 +1095,44 @@ public final class ConcolicSmtComposer {
         return axioms;
     }
 
+    /**
+     * The first container arm that says nothing about its container, or -1.
+     *
+     * <p>{@code values} are one container read's lowered arm value
+     * expressions in candidate order and {@code initial} says which of them
+     * name the location's INITIAL version.  A read over a selected
+     * container's whole state lowers each arm through that version's own
+     * mutation chain, so two arms agree only where the mutations between them
+     * cannot change the value.  Two shapes mean the chain was lost rather
+     * than lowered: every arm reducing to one expression, which makes the
+     * read-from choice vacuous, and a writer arm reducing to an INITIAL arm's
+     * expression, which claims a write ran and then reads the untouched
+     * state.  Either way the container's size domain is all that is left
+     * constraining it.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static int collapsedContainerArm(List<String> values,
+                                     List<Boolean> initial) {
+        if (values.size() != initial.size()) {
+            throw new IllegalArgumentException(
+                    "one INITIAL flag per container arm value");
+        }
+        if (values.size() < 2) return -1;
+        if (new LinkedHashSet<>(values).size() == 1) return 0;
+        Set<String> initialValues = new LinkedHashSet<>();
+        for (int index = 0; index < values.size(); index++) {
+            if (initial.get(index)) initialValues.add(values.get(index));
+        }
+        for (int index = 0; index < values.size(); index++) {
+            if (!initial.get(index)
+                    && initialValues.contains(values.get(index))) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
     /** One target-local predicate qualified by its exact causal case. */
 
     private static String or(List<String> terms) {
@@ -2402,9 +2440,54 @@ public final class ConcolicSmtComposer {
                         result.text, activation, arm);
             }
             recordGuardedReadOrder(node, readIdentity, arms);
+            requireDistinguishedContainerArms(node, readIdentity, arms);
             recordGuardedReadUse(readIdentity, projectionIdentity, activation,
                     useSelectors);
             return result;
+        }
+
+        /**
+         * Refuses a container read whose arms say nothing about the container.
+         *
+         * <p>A read over a selected container's whole state lowers each arm
+         * through that version's own mutation chain, so two arms agree on a
+         * value only where the mutations between them cannot change it.  Two
+         * shapes mean the chain was lost rather than lowered: every arm
+         * reducing to one value expression, which makes the read-from choice
+         * vacuous, and a writer arm reducing to the same expression as an
+         * INITIAL arm, which claims a write ran and then reads the untouched
+         * state.  Either way the only thing left constraining the container is
+         * its size domain, and a fail-closed refusal is the honest answer.</p>
+         */
+        private void requireDistinguishedContainerArms(
+                JsonObject node, String readIdentity,
+                List<DirectReadArm> arms) {
+            String location = SharedStateEvidence.locationKey(node);
+            String kind = SharedStateEvidence.locationKindOf(location);
+            boolean container = SharedStateEvidence.LOCATION_KIND_MAP_STATE
+                    .equals(kind) || "ARRAY_ELEMENT".equals(kind);
+            if (!container) return;
+            List<String> values = new ArrayList<>(arms.size());
+            List<Boolean> initial = new ArrayList<>(arms.size());
+            for (DirectReadArm arm : arms) {
+                values.add(arm.term.text);
+                initial.add(optionalString(arm.candidate,
+                        SymbolicPropagationClosure.WRITER_CASE_OWNER)
+                        .startsWith(SymbolicPropagationClosure
+                                .INITIAL_SOURCE_CASE_PREFIX));
+            }
+            int collapsed = collapsedContainerArm(values, initial);
+            if (collapsed >= 0) {
+                refuseGuardedRead("UnconstrainedContainerRead:"
+                                + readIdentity + ":"
+                                + arms.get(collapsed).candidateIdentity,
+                        initial.get(collapsed)
+                                ? "every candidate arm of one container read"
+                                + " lowers to the same value expression"
+                                : "a container writer arm lowers to the same"
+                                + " value expression as the untouched"
+                                + " initial state");
+            }
         }
 
         /**
