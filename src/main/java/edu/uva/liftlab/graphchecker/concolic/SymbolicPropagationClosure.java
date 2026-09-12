@@ -94,6 +94,19 @@ public final class SymbolicPropagationClosure {
      */
     public static final String INITIAL_CONTAINER_SNAPSHOT_TRUNCATED =
             "INITIAL_CONTAINER_SNAPSHOT_TRUNCATED";
+    /**
+     * One RPC attach whose sender-side expression did not reach the join.
+     *
+     * <p>Raised where a referenced attach family carries no usable payload
+     * arm at all, and where its only payload observation was truncated.
+     * Named apart from the field-read cases because the two have different
+     * causes and different fixes: a field read with no writer case is an
+     * incomplete read-from snapshot, while an attach with no payload means
+     * the value the wire carried never reached the join, so the receiver's
+     * leaf is left equal to nothing.</p>
+     */
+    public static final String RPC_ATTACH_SENDER_EXPRESSION_MISSING =
+            "RPC_ATTACH_SENDER_EXPRESSION_MISSING";
     public static final String INITIAL_SOURCE_CASE_PREFIX =
             "INITIAL_SOURCE.";
     public static final String GAP_KIND = "SYMBOLIC_PROPAGATION_GAP";
@@ -222,6 +235,9 @@ public final class SymbolicPropagationClosure {
         private final Map<String, List<CaseInfo>> casesByExecution =
                 new LinkedHashMap<>();
         private final Map<DynamicKey, String> dynamicFamilies =
+                new LinkedHashMap<>();
+        /** Boundary kind of every family the evidence named. */
+        private final Map<String, String> familyKinds =
                 new LinkedHashMap<>();
         /** One immutable payload observation per VM boundary event. */
         private final Map<DynamicKey, ArmLineage> dynamicArmLineages =
@@ -543,6 +559,10 @@ public final class SymbolicPropagationClosure {
                 return;
             }
             if (!addDynamic(scope, eventId, familyKey)) return;
+            // The kind is known from the evidence even when no arm lands, and
+            // a family that never gets one is exactly the case whose gap has
+            // to say which kind of boundary was left open.
+            familyKinds.putIfAbsent(familyKey, VmExpressionIr.RPC_ATTACH);
             DynamicKey dynamic = new DynamicKey(scope, eventId);
             indexBoundaryOwner(dynamic, receiverCase, familyKey);
             CaseInfo producer = uniqueProducerCase(scope, optionalString(event,
@@ -1061,7 +1081,10 @@ public final class SymbolicPropagationClosure {
             for (Map.Entry<DynamicKey, String> observation
                     : truncatedDynamicArms.entrySet()) {
                 if (dynamicArms.containsKey(observation.getKey())) continue;
-                gap("CONSUMER_BOUNDARY_PAYLOAD_TRUNCATED",
+                gap(VmExpressionIr.RPC_ATTACH.equals(
+                                familyKinds.get(observation.getValue()))
+                                ? RPC_ATTACH_SENDER_EXPRESSION_MISSING
+                                : "CONSUMER_BOUNDARY_PAYLOAD_TRUNCATED",
                         observation.getValue(), "dynamic boundary "
                                 + observation.getKey()
                                 + " has no complete payload observation");
@@ -1568,8 +1591,15 @@ public final class SymbolicPropagationClosure {
             if (held != null) return held;
             Family family = families.get(key);
             if (family == null || family.arms.isEmpty()) {
-                gap("CONSUMER_BOUNDARY_FAMILY_UNOBSERVED", key,
-                        "stable family has no receiver-owned payload arms");
+                // A referenced family with no arm leaves the consumer's leaf
+                // equal to nothing.  For a wire that is the sender's
+                // expression having failed to reach the join, which is a
+                // different fact from a field read with no writer case.
+                gap(VmExpressionIr.RPC_ATTACH.equals(familyKinds.get(key))
+                                ? RPC_ATTACH_SENDER_EXPRESSION_MISSING
+                                : "CONSUMER_BOUNDARY_FAMILY_UNOBSERVED",
+                        key, "stable family has no receiver-owned payload"
+                                + " arms");
                 return missingReference(key);
             }
             if (!active.add(key)) {
