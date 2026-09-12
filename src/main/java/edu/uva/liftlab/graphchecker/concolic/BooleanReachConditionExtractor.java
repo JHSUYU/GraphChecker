@@ -58,6 +58,15 @@ public final class BooleanReachConditionExtractor {
     private static final Pattern BOUNDARY_VALUE_BINDING = Pattern.compile(
             "^\\(assert \\(= (merged_boundary__[A-Za-z0-9_]+)"
             + " (rf_value__[A-Za-z0-9_]+)\\)\\)$");
+    /**
+     * An unsat every probed attempt owed to the driver's own frontier.
+     *
+     * <p>Not a solver status: z3 said {@code unsat} to each attempt, but
+     * each refutation used a case selector this driver pinned, so the
+     * valuation is undecided rather than refuted.</p>
+     */
+    static final String FRONTIER_PINNED_UNSAT = "FRONTIER_PINNED_UNSAT";
+
     /** A perturbation the root's own declared physics forbids. */
     static final String WINDOW_BOUNDARY = "WINDOW_BOUNDARY";
     /** Whether a witness's named mechanism is needed, or only decoration. */
@@ -86,6 +95,8 @@ public final class BooleanReachConditionExtractor {
         Z3Solver solver = new Z3Solver(arguments.z3,
                 arguments.timeoutMillis,
                 array(manifest, "caseSelectorPartitions"),
+                array(manifest,
+                        ConcolicSmtComposer.CONDITIONAL_CASE_PARTITIONS),
                 arguments.workers);
         JsonObject report = extract(smt, manifest, solver,
                 arguments.maxInputs, arguments.maxValuations,
@@ -234,7 +245,7 @@ public final class BooleanReachConditionExtractor {
                     fatalArmSelectors);
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
-            String status = result.status();
+            String status = solver.lastStatus();
             JsonObject row = asEvidence(valuationRow(values, status),
                     evidenceOnly);
             // A reader has to be able to tell a causal verdict from one the
@@ -242,6 +253,11 @@ public final class BooleanReachConditionExtractor {
             // was solved under.
             row.add("pinnedCaseSelectors",
                     GSON.toJsonTree(solver.lastPinnedSelectors()));
+            List<String> frontierPins = solver.lastFrontierPins();
+            if (!frontierPins.isEmpty()) {
+                row.add("frontierPinnedCore",
+                        GSON.toJsonTree(frontierPins));
+            }
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
                 if (!fatalArms.isEmpty() && satisfyingValuations.size() == 1) {
@@ -921,11 +937,41 @@ public final class BooleanReachConditionExtractor {
         private final long timeoutMillis;
         private final JsonArray attempts = new JsonArray();
         private final List<List<String>> casePartitions = new ArrayList<>();
+        /**
+         * Selectors whose partition the formula only asserts conditionally.
+         *
+         * <p>An exactly-one the formula states unconditionally is already
+         * true in every model, so fixing one of its members and enumerating
+         * the alternatives decides nothing the formula had left open: an
+         * unsat over that enumeration is the program's.  A conditional
+         * partition is the opposite -- the formula leaves it to a marker, and
+         * pinning a member answers for the marker.</p>
+         */
+        private final Set<String> conditionalSelectors =
+                new LinkedHashSet<>();
+        /** Whether any pinned partition is one the formula leaves open. */
+        private final boolean frontierUnderReview;
         private final int workers;
         private int queryOrdinal;
 
         Z3Solver(String executable, long timeoutMillis,
                  JsonArray partitions, int workers) throws IOException {
+            this(executable, timeoutMillis, partitions, new JsonArray(),
+                    workers);
+        }
+
+        /**
+         * @param conditional the partitions the formula does <em>not</em>
+         *                    assert unconditionally.  Pinning a member of one
+         *                    of those decides the condition that governs it,
+         *                    so an unsat reached under such a pin is this
+         *                    driver's and not the program's.  They are passed
+         *                    in only so that an unsat can be checked against
+         *                    them; they are never pinned.
+         */
+        Z3Solver(String executable, long timeoutMillis,
+                 JsonArray partitions, JsonArray conditional, int workers)
+                throws IOException {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
             this.executable = resolveExecutable(firstNonBlank(executable,
                     "z3"));
@@ -943,9 +989,33 @@ public final class BooleanReachConditionExtractor {
                     casePartitions.add(partition);
                 }
             }
+            for (JsonElement element : conditional) {
+                if (!element.isJsonArray()) continue;
+                for (JsonElement selector : element.getAsJsonArray()) {
+                    if (selector.isJsonPrimitive()) {
+                        conditionalSelectors.add(selector.getAsString());
+                    }
+                }
+            }
+            boolean pinsCondition = false;
+            for (List<String> partition : casePartitions) {
+                for (String selector : partition) {
+                    if (conditionalSelectors.contains(selector)) {
+                        pinsCondition = true;
+                        break;
+                    }
+                }
+                if (pinsCondition) break;
+            }
+            this.frontierUnderReview = pinsCondition;
         }
 
         private volatile List<String> lastPinned = Collections.emptyList();
+        /** The status of the last {@link #check}, frontier probes included. */
+        private volatile String lastStatus = "";
+        /** Pins the last all-unsat fan-out could not be exonerated from. */
+        private volatile List<String> lastFrontierPins =
+                Collections.emptyList();
 
         synchronized JsonArray attempts() {
             return attempts.deepCopy();
@@ -956,15 +1026,34 @@ public final class BooleanReachConditionExtractor {
             return new ArrayList<>(lastPinned);
         }
 
+        /**
+         * The verdict of the last {@link #check}, which is not the raw
+         * solver status: an all-unsat fan-out whose every probed core rests
+         * on this driver's own pins reports {@link #FRONTIER_PINNED_UNSAT}.
+         */
+        String lastStatus() {
+            return lastStatus;
+        }
+
+        /** The pins a {@link #FRONTIER_PINNED_UNSAT} verdict rests on. */
+        List<String> lastFrontierPins() {
+            return new ArrayList<>(lastFrontierPins);
+        }
+
         ConcolicConstraintSolver.SolverOutput check(String smt)
                 throws IOException,
                 InterruptedException {
             int currentQuery = queryOrdinal++;
             PartitionPlan plan = splitPartitions();
+            lastStatus = "";
+            lastFrontierPins = Collections.emptyList();
             if (plan.primary.isEmpty()) {
                 lastPinned = Collections.emptyList();
-                return attempt(currentQuery, 0, "Z3", smt,
-                        timeoutMillis, Collections.emptyList());
+                ConcolicConstraintSolver.SolverOutput single = attempt(
+                        currentQuery, 0, "Z3", smt, timeoutMillis,
+                        Collections.emptyList());
+                lastStatus = single.status();
+                return single;
             }
             lastPinned = Collections.emptyList();
             List<PartitionQuery> queries = conditionedQueries(smt,
@@ -990,6 +1079,7 @@ public final class BooleanReachConditionExtractor {
             }
             ConcolicConstraintSolver.SolverOutput unsat = null;
             ConcolicConstraintSolver.SolverOutput undecided = null;
+            ConcolicConstraintSolver.SolverOutput any = null;
             try {
                 for (int index = 0; index < queries.size(); index++) {
                     ConcolicConstraintSolver.SolverOutput result;
@@ -1005,15 +1095,109 @@ public final class BooleanReachConditionExtractor {
                         }
                         throw new IOException("partition solver failed", cause);
                     }
-                    if ("sat".equals(result.status())) return result;
+                    any = result;
+                    if ("sat".equals(result.status())) {
+                        lastStatus = "sat";
+                        return result;
+                    }
                     if ("unsat".equals(result.status())) unsat = result;
                     else undecided = result;
                 }
-                return undecided == null ? unsat : undecided;
             } finally {
                 pool.shutdownNow();
                 pool.awaitTermination(10, TimeUnit.SECONDS);
             }
+            if (undecided != null) {
+                lastStatus = undecided.status();
+                return undecided;
+            }
+            if (unsat == null) {
+                lastStatus = any == null ? "unknown" : any.status();
+                return any;
+            }
+            // Every attempt refused this valuation.  An attempt that
+            // refused it only because of the selectors this driver pinned
+            // has said nothing about the program, so an unsat is published
+            // only once one attempt's core is shown to be independent of
+            // its own frontier.
+            lastStatus = !frontierUnderReview ? "unsat"
+                    : frontierVerdict(currentQuery, smt, queries,
+                    attemptTimeout);
+            return unsat;
+        }
+
+        /**
+         * {@code unsat}, or {@code FRONTIER_PINNED_UNSAT} and the pins.
+         *
+         * <p>Probing stops at the first attempt whose core names none of its
+         * pins: that one attempt already proves the refutation is the
+         * program's.  Probes are bounded because the pinned case is the one
+         * this exists to catch and it is also the one where no probe will
+         * ever exonerate; an unexonerated valuation is reported undecided,
+         * never unsat, so the bound can only withhold a verdict and never
+         * manufacture one.</p>
+         */
+        private String frontierVerdict(int currentQuery, String smt,
+                                       List<PartitionQuery> queries,
+                                       long attemptTimeout)
+                throws IOException, InterruptedException {
+            List<String> pins = new ArrayList<>();
+            int probes = 0;
+            for (PartitionQuery query : queries) {
+                if (query.pinLiterals.isEmpty()) return "unsat";
+                if (probes >= frontierProbeLimit()) break;
+                probes++;
+                FrontierProbe probe = probeFrontier(currentQuery, probes - 1,
+                        smt, query, attemptTimeout);
+                List<String> decided = new ArrayList<>();
+                for (String pin : probe.pins) {
+                    if (conditionalSelectors.contains(pin)) decided.add(pin);
+                }
+                if (probe.decided && decided.isEmpty()) return "unsat";
+                for (String pin : decided) {
+                    if (!pins.contains(pin)) pins.add(pin);
+                }
+            }
+            lastFrontierPins = pins;
+            return FRONTIER_PINNED_UNSAT;
+        }
+
+        private int frontierProbeLimit() {
+            return Math.max(4, workers);
+        }
+
+        private FrontierProbe probeFrontier(int currentQuery, int ordinal,
+                                            String smt, PartitionQuery query,
+                                            long attemptTimeout)
+                throws IOException, InterruptedException {
+            // The probe is built from the query before its pins were
+            // asserted: an assumption competes with an identical assertion
+            // for a place in the core, and only the assumption is named.
+            String core = pinCoreQuery(smt, query.pinLiterals);
+            long started = System.nanoTime();
+            ConcolicConstraintSolver.SolverOutput result =
+                    ConcolicConstraintSolver.run(executable, core,
+                            attemptTimeout);
+            long elapsedMillis = Math.max(0L,
+                    (System.nanoTime() - started) / 1_000_000L);
+            List<String> pins = "unsat".equals(result.status())
+                    ? pinnedCoreSelectors(result.stdout, query.pinLiterals)
+                    : Collections.<String>emptyList();
+            JsonObject row = new JsonObject();
+            row.addProperty("queryOrdinal", currentQuery);
+            row.addProperty("attemptOrdinal", ordinal);
+            row.addProperty("strategy", "FRONTIER_CORE_" + ordinal);
+            row.addProperty("solverQuerySha256", ArtifactIO.sha256(core));
+            row.add("selectedCaseSelectors",
+                    GSON.toJsonTree(query.selectors));
+            row.addProperty("timeoutMillis", attemptTimeout);
+            row.addProperty("elapsedMillis", elapsedMillis);
+            row.addProperty("status", result.status());
+            row.add("unsatCorePinnedSelectors", GSON.toJsonTree(pins));
+            synchronized (this) {
+                attempts.add(row);
+            }
+            return new FrontierProbe("unsat".equals(result.status()), pins);
         }
 
         private ConcolicConstraintSolver.SolverOutput attempt(
@@ -1105,6 +1289,73 @@ public final class BooleanReachConditionExtractor {
                     .toString();
         }
 
+        /** The pin literals one assignment fixes, in partition order. */
+        private static List<String> pinLiterals(
+                List<List<String>> partitions, List<Integer> chosen) {
+            List<String> literals = new ArrayList<>();
+            for (int partitionIndex = 0;
+                 partitionIndex < partitions.size(); partitionIndex++) {
+                List<String> partition = partitions.get(partitionIndex);
+                int selected = chosen.get(partitionIndex);
+                for (int index = 0; index < partition.size(); index++) {
+                    literals.add(index == selected ? partition.get(index)
+                            : "(not " + partition.get(index) + ")");
+                }
+            }
+            return literals;
+        }
+
+        /**
+         * The same query, with the pins assumed instead of asserted.
+         *
+         * <p>Everything from the composed formula onwards is unchanged; only
+         * the frontier moves from {@code assert} into the {@code check-sat}
+         * assumption list, where z3 will name in the core exactly those
+         * assumptions the refutation used.  A core that names none of them is
+         * the only evidence that an unsat is the program's and not the
+         * driver's.</p>
+         */
+        private static String pinCoreQuery(String smt,
+                                           List<String> literals) {
+            int solverCommand = smt.indexOf("(check-sat");
+            if (solverCommand < 0) solverCommand = smt.length();
+            StringBuilder query = new StringBuilder(smt.length() + 256);
+            query.append("(set-option :produce-unsat-cores true)")
+                    .append(System.lineSeparator());
+            query.append(smt, 0, solverCommand);
+            query.append("(check-sat");
+            for (String literal : literals) {
+                query.append(' ').append(literal);
+            }
+            query.append(')').append(System.lineSeparator());
+            query.append("(get-unsat-core)").append(System.lineSeparator());
+            return query.toString();
+        }
+
+        /** The pinned selectors an unsat core named, in pin order. */
+        static List<String> pinnedCoreSelectors(String stdout,
+                                                List<String> literals) {
+            Set<String> names = new LinkedHashSet<>();
+            for (String literal : literals) {
+                String trimmed = literal.trim();
+                if (trimmed.startsWith("(not ") && trimmed.endsWith(")")) {
+                    trimmed = trimmed.substring(5, trimmed.length() - 1)
+                            .trim();
+                }
+                if (!trimmed.isEmpty()) names.add(trimmed);
+            }
+            List<String> found = new ArrayList<>();
+            if (stdout == null) return found;
+            int newline = stdout.indexOf('\n');
+            String body = newline < 0 ? "" : stdout.substring(newline + 1);
+            for (String token : body.split("[^A-Za-z0-9_.$~^?/+=<>*&%!@-]+")) {
+                if (names.contains(token) && !found.contains(token)) {
+                    found.add(token);
+                }
+            }
+            return found;
+        }
+
         private static List<PartitionQuery> conditionedQueries(
                 String smt, List<List<String>> partitions) {
             List<List<Integer>> assignments = new ArrayList<>();
@@ -1129,7 +1380,8 @@ public final class BooleanReachConditionExtractor {
                     selectors.add(partition.get(chosen));
                 }
                 result.add(new PartitionQuery(constrainSelectors(
-                        smt, partitions, assignment), selectors));
+                        smt, partitions, assignment), selectors,
+                        pinLiterals(partitions, assignment)));
             }
             result.sort(Comparator.comparingInt(query -> query.smt.length()));
             return result;
@@ -1146,9 +1398,14 @@ public final class BooleanReachConditionExtractor {
                     List<String> selectors = new ArrayList<>(
                             parent.selectors);
                     selectors.add(partition.get(chosen));
+                    List<String> literals = new ArrayList<>(
+                            parent.pinLiterals);
+                    literals.addAll(pinLiterals(
+                            Collections.singletonList(partition),
+                            Collections.singletonList(chosen)));
                     result.add(new PartitionQuery(
                             condition(parent.smt, partition, chosen),
-                            selectors));
+                            selectors, literals));
                 }
             }
             return result;
@@ -1168,10 +1425,33 @@ public final class BooleanReachConditionExtractor {
         private static final class PartitionQuery {
             private final String smt;
             private final List<String> selectors;
+            /**
+             * The same pins as {@code check-sat} assumptions.
+             *
+             * <p>Asserting a pin and assuming it constrain the same models,
+             * but only an assumption comes back named in the unsat core.
+             * That is the whole question this class has to be able to answer:
+             * whether an unsat rests on the program or on the frontier this
+             * driver chose.</p>
+             */
+            private final List<String> pinLiterals;
 
-            private PartitionQuery(String smt, List<String> selectors) {
+            private PartitionQuery(String smt, List<String> selectors,
+                                   List<String> pinLiterals) {
                 this.smt = smt;
                 this.selectors = selectors;
+                this.pinLiterals = pinLiterals;
+            }
+        }
+
+        /** One unsat attempt, and what its core says the unsat rests on. */
+        private static final class FrontierProbe {
+            private final boolean decided;
+            private final List<String> pins;
+
+            private FrontierProbe(boolean decided, List<String> pins) {
+                this.decided = decided;
+                this.pins = pins;
             }
         }
 
@@ -1624,10 +1904,12 @@ public final class BooleanReachConditionExtractor {
                             .append("))").append(System.lineSeparator());
                 }
                 query.append("(check-sat)").append(System.lineSeparator());
-                ConcolicConstraintSolver.SolverOutput answer =
-                        solver.check(query.toString());
-                row.addProperty("status", answer.status());
-                row.addProperty("necessary", "unsat".equals(answer.status()));
+                solver.check(query.toString());
+                String answerStatus = solver.lastStatus();
+                row.addProperty("status", answerStatus);
+                // Necessity rests on a refutation, and an unsat this
+                // driver's own frontier decided is not one.
+                row.addProperty("necessary", "unsat".equals(answerStatus));
                 rows.add(row);
             }
         }
@@ -1888,12 +2170,14 @@ public final class BooleanReachConditionExtractor {
                 try {
                     ConcolicConstraintSolver.SolverOutput answer =
                             solver.check(candidate.toString());
-                    row.addProperty("status", answer.status());
-                    rejected = "unsat".equals(answer.status());
-                    if (!"sat".equals(answer.status())
-                            && !"unsat".equals(answer.status())) {
+                    String answerStatus = solver.lastStatus();
+                    row.addProperty("status", answerStatus);
+                    rejected = "unsat".equals(answerStatus);
+                    if (!"sat".equals(answerStatus)
+                            && !"unsat".equals(answerStatus)) {
                         row.addProperty("solverOutput",
-                                answer.diagnostic());
+                                answer == null ? answerStatus
+                                        : answer.diagnostic());
                     }
                 } catch (IOException | InterruptedException unanswered) {
                     if (unanswered instanceof InterruptedException) {

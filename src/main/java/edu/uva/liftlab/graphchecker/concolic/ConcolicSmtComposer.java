@@ -150,6 +150,27 @@ public final class ConcolicSmtComposer {
      */
     public static final String CONDITIONAL_CASE_PARTITIONS =
             "conditionalCaseSelectorPartitions";
+    /** What each fault marker idles, and what that leaves without a value. */
+    public static final String FAULT_CONTROL_CLOSURE_FIELD =
+            "faultControlClosure";
+    /** Advisory rows from the fault-control closure, for gaps.json. */
+    public static final String FAULT_CONTROL_GAPS_FIELD = "faultControlGaps";
+    static final String FAULT_CONTROL_CLOSURE_KIND = "FAULT_CONTROL_CLOSURE";
+    static final String FAULT_CONTROL_GAP_KIND = "FAULT_CONTROL_GAP";
+    static final String FAULT_CONTROL_CLOSURE_AUTHORITY =
+            "COMPOSER_REQUEST_FAULT_IDLE_CLOSURE_V1";
+    /**
+     * A read every one of whose candidate writers the fault idles.
+     *
+     * <p>The location published no retained prior version and no INITIAL
+     * arm, so with the marker true the reading case has nothing to observe.
+     * The closure idles that case too rather than leaving the formula
+     * contradictory, and this row says which location lost its value.</p>
+     */
+    static final String FAULT_IDLE_NO_RETAINED_ARM =
+            "FAULT_IDLE_NO_RETAINED_ARM";
+    /** A fault-controlled selector the manifest still offers for pinning. */
+    static final String FAULT_PARTITION_UNSPLIT = "FAULT_PARTITION_UNSPLIT";
     public static final String PATH_SET_COMPLETE = "pathSetComplete";
     public static final String FINAL_READY = "FINAL_READY";
     /**
@@ -287,6 +308,9 @@ public final class ConcolicSmtComposer {
                 GSON.toJsonTree(emitter.unconditionalCasePartitions()));
         manifest.add(CONDITIONAL_CASE_PARTITIONS,
                 GSON.toJsonTree(emitter.conditionalCasePartitions()));
+        manifest.add(FAULT_CONTROL_CLOSURE_FIELD,
+                emitter.faultControlClosureLedger());
+        manifest.add(FAULT_CONTROL_GAPS_FIELD, emitter.faultControlGaps());
         manifest.add(CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
                 emitter.configuredSourceMaterializationLedger());
         manifest.add(MANUAL_SOURCE_MATERIALIZATION_FIELD,
@@ -1271,6 +1295,169 @@ public final class ConcolicSmtComposer {
     }
 
     /**
+     * One region occurrence's case partition when a fault can idle it.
+     *
+     * <p>The marker true says the request never completed, so none of the
+     * occurrence's cases ran; the marker false leaves the ordinary
+     * exactly-one partition in place.  Idling is deliberately not the same
+     * as writing a bottom value: a case that never ran publishes nothing, so
+     * every read of a location it would have written falls back to that
+     * location's previous version through last-writer-wins.</p>
+     *
+     * <p>{@code marker} may be a disjunction when several faults can idle the
+     * same occurrence.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static String faultControlledPartition(String marker,
+                                           Collection<String> selectors) {
+        List<String> ordered = new ArrayList<>(selectors);
+        Collections.sort(ordered);
+        if (ordered.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "a fault-controlled partition needs a case");
+        }
+        List<String> idle = new ArrayList<>(ordered.size());
+        for (String selector : ordered) {
+            idle.add("(not " + selector + ")");
+        }
+        return "(and (=> " + marker + " " + and(idle) + ") (=> (not "
+                + marker + ") " + conditionalExactlyOne("true", ordered)
+                + "))";
+    }
+
+    /** Every case selector a request-fault control assertion names. */
+    private static final Pattern CASE_SELECTOR_SYMBOL =
+            Pattern.compile("case_selector__[A-Za-z0-9_]+");
+
+    /**
+     * The case selectors this formula lets a fault marker decide.
+     *
+     * <p>Reads the emitted artifact rather than the emitter's own state, so
+     * the same check can be run against a composed formula from any build.
+     * </p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static Set<String> faultControlledSelectorsIn(String composedSmt) {
+        Set<String> selectors = new LinkedHashSet<>();
+        for (String line : firstNonBlank(composedSmt).split("\\R")) {
+            if (!line.contains(":named request_fault_control")) continue;
+            Matcher matcher = CASE_SELECTOR_SYMBOL.matcher(line);
+            while (matcher.find()) {
+                selectors.add(matcher.group());
+            }
+        }
+        return selectors;
+    }
+
+    /**
+     * Fault-controlled selectors a manifest still offers for pinning.
+     *
+     * <p>The contract is one sentence: a selector a fault marker decides
+     * belongs in the conditional partitions and nowhere else.  A consumer
+     * pinning an unconditional partition restates what the formula already
+     * asserts; pinning one of these answers for the marker instead, and the
+     * fault-true half of the root space then comes back unsat for a reason
+     * about the driver rather than the program.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static List<String> unsplitFaultControlledSelectors(
+            Collection<String> asserted,
+            Collection<? extends Collection<String>> unconditional,
+            Collection<? extends Collection<String>> conditional) {
+        Set<String> open = new LinkedHashSet<>();
+        for (Collection<String> partition : unconditional) {
+            open.addAll(partition);
+        }
+        Set<String> decided = new LinkedHashSet<>();
+        for (Collection<String> partition : conditional) {
+            decided.addAll(partition);
+        }
+        List<String> violations = new ArrayList<>();
+        for (String selector : asserted) {
+            if (decided.contains(selector) && !open.contains(selector)) {
+                continue;
+            }
+            violations.add(selector);
+        }
+        return violations;
+    }
+
+    /** What one fault marker idles, once the consequences are followed. */
+    static final class FaultIdleClosure {
+        /** Region cases the marker forces false. */
+        final Set<String> idledCaseSelectors;
+        /** Reads the marker leaves with no surviving candidate writer. */
+        final Set<String> starvedReads;
+
+        FaultIdleClosure(Set<String> idledCaseSelectors,
+                         Set<String> starvedReads) {
+            this.idledCaseSelectors = Collections.unmodifiableSet(
+                    new LinkedHashSet<>(idledCaseSelectors));
+            this.starvedReads = Collections.unmodifiableSet(
+                    new LinkedHashSet<>(starvedReads));
+        }
+    }
+
+    /**
+     * Everything one fault marker idles, not only its own consumer.
+     *
+     * <p>The control edge names the occurrence that consumed the response,
+     * but idling that occurrence alone leaves the regions downstream of it
+     * still carrying an unconditional exactly-one partition.  Those cases
+     * read locations only the idled occurrence writes, so with the marker
+     * true they are forced to run and cannot: the formula is then
+     * contradictory by construction and every fault-true valuation comes
+     * back unsat for a reason that is about the model rather than the
+     * program.</p>
+     *
+     * <p>The fixpoint follows the same two facts the formula already
+     * encodes.  An arm of a guarded read carries its writer's case closure,
+     * so an arm whose closure meets an idled case cannot be selected.  A
+     * read all of whose arms are unselectable starves, and a case that
+     * demanded a starved read cannot run either -- which can idle further
+     * arms, so the two steps repeat until nothing changes.  An INITIAL arm
+     * is owned by no region case, so it never meets the idled set: a
+     * location with a retained prior version keeps its reads alive, which is
+     * exactly the retention a caught transport failure implements.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static FaultIdleClosure faultIdleClosure(
+            Collection<String> seedCaseSelectors,
+            Map<String, ? extends Map<String, ? extends Collection<String>>>
+                    readArmWriterCases,
+            Map<String, ? extends Collection<String>> readOwnerCases) {
+        Set<String> idled = new LinkedHashSet<>(seedCaseSelectors);
+        Set<String> starved = new LinkedHashSet<>();
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (Map.Entry<String,
+                    ? extends Map<String, ? extends Collection<String>>> read
+                    : readArmWriterCases.entrySet()) {
+                if (read.getValue().isEmpty()) continue;
+                if (starved.contains(read.getKey())) continue;
+                boolean alive = false;
+                for (Collection<String> closure : read.getValue().values()) {
+                    if (Collections.disjoint(closure, idled)) {
+                        alive = true;
+                        break;
+                    }
+                }
+                if (alive) continue;
+                starved.add(read.getKey());
+                changed = true;
+                Collection<String> owners = readOwnerCases.get(read.getKey());
+                if (owners != null) idled.addAll(owners);
+            }
+        }
+        return new FaultIdleClosure(idled, starved);
+    }
+
+    /**
      * The first container arm that says nothing about its container, or -1.
      *
      * <p>{@code values} are one container read's lowered arm value
@@ -1471,6 +1658,12 @@ public final class ConcolicSmtComposer {
         /** {@code active(w)} per arm: its writer obligation's conjunction. */
         private final Map<String, String> guardedReadArmActivity =
                 new LinkedHashMap<>();
+        /** Per read: each arm selector's writer case closure. */
+        private final Map<String, Map<String, List<String>>>
+                guardedReadArmWriterCases = new LinkedHashMap<>();
+        /** Per read: the region cases whose lowering demanded it. */
+        private final Map<String, Set<String>> guardedReadOwnerCases =
+                new LinkedHashMap<>();
         private final Map<String, String> guardedOrderAssertions =
                 new LinkedHashMap<>();
         private final Set<String> emittedGuardedReadArms =
@@ -1578,6 +1771,14 @@ public final class ConcolicSmtComposer {
         private final Map<String, RecordedConfiguredSource>
                 configuredSourceRecordedByEvent = new LinkedHashMap<>();
         private InvocationKey currentInvocation;
+        /**
+         * The base case selector currently being lowered.
+         *
+         * <p>A guarded read belongs to the case that demanded it, which is
+         * what makes "this case cannot run because that read has no surviving
+         * writer" a statement the closure can make.</p>
+         */
+        private String currentCaseSelector = "";
 
         // The shared lowering's policies.
         @Override
@@ -1796,6 +1997,14 @@ public final class ConcolicSmtComposer {
         /** Region instances whose partition the fault control edge owns. */
         private final Set<InvocationKey> faultControlledInstances =
                 new LinkedHashSet<>();
+        /** Every case selector a request-fault control assertion names. */
+        private final Set<String> faultControlAssertedSelectors =
+                new LinkedHashSet<>();
+        /** One row per marker: what it idles and what it starves. */
+        private final JsonArray faultControlClosureRows = new JsonArray();
+        /** Advisory rows: starved reads and any unsplit partition. */
+        private final JsonArray faultControlTelemetry = new JsonArray();
+        private final Set<String> faultControlGapKeys = new LinkedHashSet<>();
 
         private String recordManualRootName(String raw, String name) {
             manualRootNames.put(raw, name);
@@ -2109,6 +2318,9 @@ public final class ConcolicSmtComposer {
          * refuses, rather than weakening the partition for nothing.</p>
          */
         private void emitRequestFaultControl() {
+            Map<InvocationKey, String> directMarker = new LinkedHashMap<>();
+            Map<InvocationKey, String> directEdge = new LinkedHashMap<>();
+            Map<String, Integer> edgeInstanceCount = new LinkedHashMap<>();
             for (Map.Entry<String, JsonObject> entry
                     : requestFaultControlEdges.entrySet()) {
                 JsonObject edge = entry.getValue();
@@ -2116,7 +2328,6 @@ public final class ConcolicSmtComposer {
                 String raw = manualRawByPort.get(optionalString(edge,
                         "faultPortId"));
                 String fault = raw == null ? null : manualRootNames.get(raw);
-                List<String> selectors = new ArrayList<>();
                 List<InvocationKey> instances = new ArrayList<>();
                 for (Map.Entry<InvocationKey, Set<String>> partition
                         : casePartitions.entrySet()) {
@@ -2126,27 +2337,166 @@ public final class ConcolicSmtComposer {
                         continue;
                     }
                     instances.add(partition.getKey());
-                    selectors.addAll(partition.getValue());
                 }
-                if (selectors.isEmpty()) continue;
+                if (instances.isEmpty()) continue;
                 if (fault == null || fault.isEmpty()) {
                     refuse("RequestFaultControlMarkerMissing:" + edgeId,
                             "controlled occurrence has no lowered fault"
                                     + " marker to depend on");
                     continue;
                 }
-                Collections.sort(selectors);
-                List<String> idle = new ArrayList<>(selectors.size());
-                for (String selector : selectors) {
-                    idle.add("(not " + selector + ")");
+                edgeInstanceCount.put(edgeId, instances.size());
+                for (InvocationKey instance : instances) {
+                    directMarker.put(instance, fault);
+                    directEdge.put(instance, edgeId);
                 }
-                assertNamed("request_fault_control__" + smtName(edgeId),
-                        "(and (=> " + fault + " " + and(idle) + ") (=> (not "
-                                + fault + ") "
-                                + conditionalExactlyOne("true", selectors)
-                                + "))");
-                faultControlledInstances.addAll(instances);
             }
+            if (directMarker.isEmpty()) return;
+
+            Map<InvocationKey, Set<String>> markersByInstance =
+                    new LinkedHashMap<>();
+            List<String> markers = new ArrayList<>(
+                    new LinkedHashSet<>(directMarker.values()));
+            Collections.sort(markers);
+            for (String marker : markers) {
+                Set<String> seed = new LinkedHashSet<>();
+                for (Map.Entry<InvocationKey, String> entry
+                        : directMarker.entrySet()) {
+                    if (!marker.equals(entry.getValue())) continue;
+                    Set<String> cases = casePartitions.get(entry.getKey());
+                    if (cases != null) seed.addAll(cases);
+                }
+                FaultIdleClosure closure = faultIdleClosure(seed,
+                        guardedReadArmWriterCases, guardedReadOwnerCases);
+                for (Map.Entry<InvocationKey, Set<String>> partition
+                        : casePartitions.entrySet()) {
+                    if (partition.getValue().isEmpty()) continue;
+                    if (!closure.idledCaseSelectors.containsAll(
+                            partition.getValue())) {
+                        continue;
+                    }
+                    markersByInstance.computeIfAbsent(partition.getKey(),
+                            ignored -> new LinkedHashSet<>()).add(marker);
+                }
+                recordFaultControlClosure(marker, seed, closure);
+            }
+
+            for (Map.Entry<InvocationKey, Set<String>> entry
+                    : markersByInstance.entrySet()) {
+                InvocationKey instance = entry.getKey();
+                Set<String> selectors = casePartitions.get(instance);
+                if (selectors == null || selectors.isEmpty()) continue;
+                List<String> instanceMarkers =
+                        new ArrayList<>(entry.getValue());
+                Collections.sort(instanceMarkers);
+                String marker = instanceMarkers.size() == 1
+                        ? instanceMarkers.get(0) : or(instanceMarkers);
+                String edgeId = directEdge.get(instance);
+                String name;
+                if (edgeId == null || edgeId.isEmpty()) {
+                    name = "request_fault_control_closure__"
+                            + smtName(instance.regionId) + "_"
+                            + smtName(instance.instanceId);
+                } else if (edgeInstanceCount.getOrDefault(edgeId, 1) > 1) {
+                    name = "request_fault_control__" + smtName(edgeId) + "_"
+                            + smtName(instance.instanceId);
+                } else {
+                    name = "request_fault_control__" + smtName(edgeId);
+                }
+                assertNamed(name,
+                        faultControlledPartition(marker, selectors));
+                faultControlAssertedSelectors.addAll(selectors);
+                faultControlledInstances.add(instance);
+            }
+        }
+
+        /** One auditable row per marker, plus a row per starved read. */
+        private void recordFaultControlClosure(String marker,
+                                               Set<String> seed,
+                                               FaultIdleClosure closure) {
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", FAULT_CONTROL_CLOSURE_KIND);
+            row.addProperty("authority", FAULT_CONTROL_CLOSURE_AUTHORITY);
+            row.addProperty("marker", marker);
+            row.add("directlyIdledCaseSelectors", GSON.toJsonTree(seed));
+            row.add("idledCaseSelectors",
+                    GSON.toJsonTree(closure.idledCaseSelectors));
+            row.add("starvedReads",
+                    GSON.toJsonTree(closure.starvedReads));
+            faultControlClosureRows.add(row);
+            for (String read : closure.starvedReads) {
+                faultControlGap(FAULT_IDLE_NO_RETAINED_ARM, read,
+                        "the fault idles every candidate writer of this read"
+                                + " and the location published no retained"
+                                + " prior version, so the marker true leaves"
+                                + " the reading case with nothing to observe"
+                                + " (marker " + marker + ")");
+            }
+        }
+
+        private void faultControlGap(String reason, String subject,
+                                     String detail) {
+            if (!faultControlGapKeys.add(reason + "\n" + subject)) return;
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", FAULT_CONTROL_GAP_KIND);
+            row.addProperty("authority", FAULT_CONTROL_CLOSURE_AUTHORITY);
+            row.addProperty("reason", reason);
+            row.addProperty("subject", subject);
+            row.addProperty("detail", detail);
+            faultControlTelemetry.add(row);
+        }
+
+        /**
+         * The contract the frontier driver depends on, checked here.
+         *
+         * <p>Every case selector a request-fault control assertion names is
+         * decided by that marker, so it must be advertised as a conditional
+         * partition and must not appear among the unconditional ones.  A
+         * consumer that pins an unconditional partition is restating what the
+         * formula already says; pinning one of these would silently decide the
+         * marker, which is how a fault-true valuation came back unsat for a
+         * reason about the driver rather than the program.</p>
+         */
+        private void checkFaultPartitionSplit() {
+            if (faultControlAssertedSelectors.isEmpty()) return;
+            Set<String> unconditional = new LinkedHashSet<>();
+            for (Collection<String> partition
+                    : unconditionalCasePartitions()) {
+                unconditional.addAll(partition);
+            }
+            Set<String> conditional = new LinkedHashSet<>();
+            for (Collection<String> partition : conditionalCasePartitions()) {
+                conditional.addAll(partition);
+            }
+            for (String selector : unsplitFaultControlledSelectors(
+                    faultControlAssertedSelectors,
+                    Collections.singletonList(unconditional),
+                    Collections.singletonList(conditional))) {
+                faultControlGap(FAULT_PARTITION_UNSPLIT, selector,
+                        "a fault-controlled case selector is "
+                                + (unconditional.contains(selector)
+                                ? "advertised as an unconditional partition"
+                                : "advertised in no conditional partition")
+                                + ", so the reach driver may pin it and"
+                                + " freeze the marker it decides");
+            }
+        }
+
+        JsonObject faultControlClosureLedger() {
+            checkFaultPartitionSplit();
+            JsonObject ledger = new JsonObject();
+            ledger.addProperty("schemaVersion", 1);
+            ledger.addProperty("kind", FAULT_CONTROL_CLOSURE_KIND);
+            ledger.addProperty("authority", FAULT_CONTROL_CLOSURE_AUTHORITY);
+            ledger.add("markers", faultControlClosureRows.deepCopy());
+            ledger.add("gaps", faultControlTelemetry.deepCopy());
+            return ledger;
+        }
+
+        JsonArray faultControlGaps() {
+            return faultControlTelemetry.deepCopy();
         }
 
         private void registerSymbolicSources(List<JsonObject> owners) {
@@ -3006,9 +3356,19 @@ public final class ConcolicSmtComposer {
                     guardedSelectorActivations.computeIfAbsent(readIdentity,
                             ignored -> new LinkedHashMap<>());
             Set<String> useSelectors = new LinkedHashSet<>();
+            Map<String, List<String>> armWriterCases =
+                    guardedReadArmWriterCases.computeIfAbsent(readIdentity,
+                            ignored -> new LinkedHashMap<>());
+            if (!currentCaseSelector.isEmpty()) {
+                guardedReadOwnerCases.computeIfAbsent(readIdentity,
+                        ignored -> new LinkedHashSet<>())
+                        .add(currentCaseSelector);
+            }
             for (DirectReadArm arm : arms) {
                 selectors.add(arm.selector);
                 useSelectors.add(arm.selector);
+                armWriterCases.put(arm.selector,
+                        new ArrayList<>(arm.writerCaseClosure));
                 selectorGuards.computeIfAbsent(arm.selector,
                         ignored -> new LinkedHashSet<>()).add(activation);
                 emitDirectReadArm(node, readIdentity, projectionIdentity,
@@ -3266,6 +3626,12 @@ public final class ConcolicSmtComposer {
                     SymbolicPropagationClosure.WRITER_CASE_OCCURRENCE_ID);
             InvocationKey previousInvocation = currentInvocation;
             String previousSymbolScope = currentSymbolScope;
+            String previousCaseSelector = currentCaseSelector;
+            if (!owner.isEmpty()) {
+                // A read reached through a writer arm belongs to that
+                // writer's case, not to the case that opened the arm.
+                currentCaseSelector = LocalCaseIdentity.selector(owner);
+            }
             if (!region.isEmpty() && !occurrence.isEmpty()) {
                 enterInvocation(new InvocationKey(region, occurrence));
             }
@@ -3280,6 +3646,7 @@ public final class ConcolicSmtComposer {
             try {
                 return body.get();
             } finally {
+                currentCaseSelector = previousCaseSelector;
                 restoreSymbolScope(previousSymbolScope);
                 restoreInvocation(previousInvocation);
             }
@@ -5274,6 +5641,8 @@ public final class ConcolicSmtComposer {
             InvocationKey previousInvocation = enterInvocation(invocation);
             String previousScope = enterSymbolScope(loweredIdentity);
             String previousGuard = enterGuard(selector);
+            String previousCaseSelector = currentCaseSelector;
+            currentCaseSelector = baseSelector;
             try {
                 declare(baseSelector, Sort.BOOL);
                 declare(selector, Sort.BOOL);
@@ -5293,6 +5662,7 @@ public final class ConcolicSmtComposer {
                             observationSelector);
                 }
             } finally {
+                currentCaseSelector = previousCaseSelector;
                 restoreGuard(previousGuard);
                 restoreSymbolScope(previousScope);
                 restoreInvocation(previousInvocation);

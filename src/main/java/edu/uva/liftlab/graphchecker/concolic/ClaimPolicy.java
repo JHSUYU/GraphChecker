@@ -1148,6 +1148,9 @@ public final class ClaimPolicy {
                 if (second == null) {
                     continue;
                 }
+                if (!decided(first) || !decided(second)) {
+                    continue;
+                }
                 if (satisfied(first) == satisfied(second)) {
                     continue;
                 }
@@ -1263,6 +1266,22 @@ public final class ClaimPolicy {
 
     private static boolean satisfied(JsonObject valuation) {
         return "sat".equals(optionalString(valuation, "status"));
+    }
+
+    /**
+     * Whether the solver answered this valuation at all.
+     *
+     * <p>{@code satisfied} is false for {@code unsat}, for a timeout and for
+     * {@link BooleanReachConditionExtractor#FRONTIER_PINNED_UNSAT} alike, so
+     * on its own it cannot tell a refutation from a missing answer.  Every
+     * reading that treats "not satisfied" as evidence -- fault sensitivity
+     * above all, which reads a sat/not-sat pair one root apart as proof that
+     * the root decides the target -- has to ask this first, or an unanswered
+     * valuation becomes a finding.</p>
+     */
+    private static boolean decided(JsonObject valuation) {
+        String status = optionalString(valuation, "status");
+        return "sat".equals(status) || "unsat".equals(status);
     }
 
     private static String claimReason(String claim, String reachability,
