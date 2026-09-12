@@ -58,6 +58,15 @@ public final class VmExpressionTable {
         return false;
     }
 
+    /** Converts every native table/reference nested in one artifact. */
+    public static JsonObject portable(JsonObject artifact) {
+        if (artifact == null) return new JsonObject();
+        if (!usesNativeDag(artifact)) return artifact;
+        Store store = new Store();
+        JsonObject expanded = store.importEnvelope(artifact);
+        return store.compact(expanded);
+    }
+
     /**
      * Decodes several VM envelopes for one region while interning equal
      * content-addressed nodes.  Runtime analysis receives the real expression
@@ -65,22 +74,10 @@ public final class VmExpressionTable {
      * completed result is compacted once at publication.
      */
     public static final class Store {
-        private final SharedExpressionTable.Decoder decoder;
+        private final SharedExpressionTable.Decoder decoder =
+                new SharedExpressionTable.Decoder();
         /** Stable native ids are retained for the lifetime of this activation. */
         private final RawResolver rawResolver = new RawResolver();
-
-        public Store() {
-            this(new SharedExpressionTable.Decoder());
-        }
-
-        /**
-         * Interns into a decoder the caller already owns, so a reader that
-         * mixes native and portable rows hashes each expression once for
-         * both and can compact the result through the same anchor map.
-         */
-        public Store(SharedExpressionTable.Decoder decoder) {
-            this.decoder = decoder;
-        }
 
         public synchronized JsonObject importEnvelope(String serialized) {
             JsonElement parsed;

@@ -20,7 +20,7 @@ public class VmExpressionTableTest {
     public void nativeDagBecomesPortableMerkleDag() {
         JsonObject nativeEnvelope = envelope(7, 30);
 
-        JsonObject portable = compacted(nativeEnvelope);
+        JsonObject portable = VmExpressionTable.portable(nativeEnvelope);
         assertTrue(SharedExpressionTable.isReference(
                 portable.get("expression")));
         assertFalse(portable.has(VmExpressionTable.FIELD));
@@ -37,17 +37,11 @@ public class VmExpressionTableTest {
         artifact = SharedExpressionTable.compact(artifact);
         artifact.add("runtimeMetadata", envelope(0, 0));
 
-        JsonObject portable = compacted(artifact);
+        JsonObject portable = VmExpressionTable.portable(artifact);
         JsonObject expanded = SharedExpressionTable.expand(portable);
 
         assertEquals(symbol("upstream"), expanded.get("propagated"));
         assertFalse(VmExpressionTable.usesNativeDag(portable));
-    }
-
-    /** One store's view of one artifact, expressions stored once. */
-    private static JsonObject compacted(JsonObject artifact) {
-        VmExpressionTable.Store store = new VmExpressionTable.Store();
-        return store.compact(store.importEnvelope(artifact));
     }
 
     @Test

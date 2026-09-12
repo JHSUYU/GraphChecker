@@ -427,43 +427,27 @@ public final class ConcolicSummaryImporter {
                 diagnostics.size());
     }
 
-    /**
-     * Expands every result row's expression DAG into this import's one
-     * anchor table.
-     *
-     * <p>A row arrives either as a native VM DAG or as a portable
-     * content-addressed one; both are interned by the same decoder, so a
-     * native expression is hashed once here and the anchor is reused when
-     * the finished summary is compacted.  Encoding a native row to
-     * {@code EXPR.v1.<sha>} only to decode it again produced exactly those
-     * anchors and nothing else.</p>
-     */
+    /** Converts the VM transport DAG, then interns portable content anchors. */
     private static List<JsonObject> decodeVmExpressionArtifacts(
             List<JsonObject> rows,
             SharedExpressionTable.Decoder expressions) throws IOException {
-        // Every portable table is known before the first expansion, so one
-        // row may still reference a definition another row carries.
-        for (JsonObject row : rows) {
-            if (!VmExpressionTable.usesNativeDag(row)) {
-                expressions.collectTables(row);
-            }
-        }
-        VmExpressionTable.Store store =
-                new VmExpressionTable.Store(expressions);
-        List<JsonObject> expanded = new ArrayList<>(rows.size());
+        List<JsonObject> portable = new ArrayList<>(rows.size());
         for (int index = 0; index < rows.size(); index++) {
             JsonObject row = rows.get(index);
             try {
-                expanded.add(store.importEnvelope(row));
+                portable.add(VmExpressionTable.usesNativeDag(row)
+                        ? VmExpressionTable.portable(row) : row);
             } catch (RuntimeException malformed) {
-                throw new IOException(VmExpressionTable.usesNativeDag(row)
-                        ? "malformed VM expression DAG at result row "
-                                + (index + 1)
-                        : "malformed content-addressed expression table in "
-                                + "concolic results", malformed);
+                throw new IOException("malformed VM expression DAG at result "
+                        + "row " + (index + 1), malformed);
             }
         }
-        return expanded;
+        try {
+            return expressions.expandAll(portable);
+        } catch (RuntimeException malformed) {
+            throw new IOException("malformed content-addressed expression "
+                    + "table in concolic results", malformed);
+        }
     }
 
     /** One mutable record shell around an otherwise immutable value DAG. */
