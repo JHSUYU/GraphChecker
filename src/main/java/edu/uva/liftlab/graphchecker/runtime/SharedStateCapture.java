@@ -644,9 +644,62 @@ final class SharedStateCapture {
             if (!requiresPlannedReceiver()) {
                 return;
             }
-            bindPlannedReceiver(task == null ? 0L
-                    : task.plannedReceiverObjectId(
-                    declaringClass, fieldName));
+            long planned = task == null ? 0L
+                    : task.plannedReceiverObjectId(declaringClass, fieldName,
+                    consumerAccesses);
+            // A per-instance receiver the plan never named still has one
+            // replay-stable identity of its own: the access anchor this
+            // carrier was selected on.  Naming it from that anchor keeps the
+            // location joinable across sessions instead of refusing it,
+            // while a map's content address stays on the frozen plan
+            // locator alone.
+            bindPlannedReceiver(planned > 0L || mapState() ? planned
+                    : accessAnchorReceiverObjectId());
+        }
+
+        /**
+         * Tag distinguishing an anchor-derived receiver identity from the
+         * plan's frozen locators, which are recorded trace object ids and so
+         * never reach the high bits of a {@code long}.
+         */
+        private static final long ACCESS_ANCHOR_RECEIVER_TAG =
+                1L << 62;
+
+        /**
+         * A replay-stable receiver identity built from this carrier's own
+         * access anchor.
+         *
+         * <p>The smallest anchor is used rather than the first observed one
+         * so that two sessions which read the same receiver at the same set
+         * of sites name it alike whatever order the reads ran in.</p>
+         */
+        private long accessAnchorReceiverObjectId() {
+            String canonical = "";
+            for (ConsumerAccessAnchor access : consumerAccesses) {
+                if (access == null || access.siteId.isEmpty()
+                        || access.occurrence < 1) {
+                    continue;
+                }
+                String anchor = access.siteId + "\n" + access.occurrence;
+                if (canonical.isEmpty() || anchor.compareTo(canonical) < 0) {
+                    canonical = anchor;
+                }
+            }
+            if (canonical.isEmpty()) return 0L;
+            return ACCESS_ANCHOR_RECEIVER_TAG
+                    | (stableHash(declaringClass + "#" + fieldName + ":"
+                    + descriptor + "\n" + canonical)
+                    & (ACCESS_ANCHOR_RECEIVER_TAG - 1L));
+        }
+
+        /** FNV-1a over UTF-16 units: identical in every JVM and session. */
+        private static long stableHash(String value) {
+            long hash = 0xcbf29ce484222325L;
+            for (int index = 0; index < value.length(); index++) {
+                hash ^= value.charAt(index);
+                hash *= 0x100000001b3L;
+            }
+            return hash;
         }
 
         void bindPlannedReceiver(long receiverObjectId) {
@@ -813,17 +866,20 @@ final class SharedStateCapture {
         for (SharedCarrier carrier
                 : new ArrayList<>(active.sharedCarriers.values())) {
             carrier.bindPlannedReceiver(active.activation);
-            // A map-state expression itself needs one stable map identity.
-            // Scalar field reads instead carry a stable consumer-site anchor
-            // on each read, so a loop-created receiver need not have one
-            // trace-wide object id before its exact VM versions are read.
-            if (carrier.mapState()
+            // Every field carrier needs one receiver identity: a map-state
+            // expression to address its own content and a scalar read to be
+            // named across replay sessions at all.  A carrier that has
+            // neither a frozen plan locator nor an access anchor to build
+            // one from cannot be named, and publishing it with a receiver of
+            // 0 would silently drop it out of every cross-session family.
+            if ((carrier.mapState() || carrier.requiresPlannedReceiver())
                     && carrier.plannedReceiverObjectId() <= 0L) {
                 carriers.add(RawSharedCarrierReadOut.failure(carrier,
                         failedShared(SharedStateEvidence.STAGE_VERSIONS,
                                 SharedStateEvidence.MISSING_METADATA, "",
-                                "selected task has no unique frozen receiver"
-                                        + " locator for "
+                                "selected task has no frozen receiver"
+                                        + " locator and no replay access"
+                                        + " anchor for "
                                         + carrier.describe())));
                 continue;
             }

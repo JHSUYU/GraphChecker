@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
@@ -1085,6 +1086,13 @@ final class ConcolicTaskPlan {
         final Map<String, Long> plannedReceiverObjectIdByField =
                 new LinkedHashMap<>();
         /**
+         * Declared field and access anchor -> frozen receiver locator.  This
+         * is what names a per-instance field whose declaring class has
+         * several live receivers inside one activation.
+         */
+        final Map<String, Long> plannedReceiverObjectIdByFieldAccess =
+                new LinkedHashMap<>();
+        /**
          * Activations that ran as candidates for this address and were not the
          * addressed occurrence, and every distinct reason they were not.
          */
@@ -1487,8 +1495,24 @@ final class ConcolicTaskPlan {
             return ports;
         }
 
+        /**
+         * Indexes the frozen receiver locator of every planned field access.
+         *
+         * <p>A per-instance field (one object per key, several receivers of
+         * the same declared field inside one activation) has no unique
+         * locator for the field alone.  The plan does distinguish those
+         * receivers: every action names the exact static access site and the
+         * activation-local occurrence of that site which read it.  That pair
+         * is the same replay-stable access anchor the runtime builds at each
+         * read ({@link ConsumerAccessAnchor}) and the composer already uses
+         * to name a read independently of any object id, so it is what binds
+         * one live receiver to one planned locator.  The by-field index
+         * stays as the answer for a field with a single receiver, including
+         * every carrier selected without ever being read.</p>
+         */
         void indexPlannedReceiverObjectIds(JsonArray inputActions) {
             Map<String, Set<Long>> candidates = new LinkedHashMap<>();
+            Map<String, Set<Long>> accessCandidates = new LinkedHashMap<>();
             for (JsonElement element : inputActions) {
                 if (!element.isJsonObject()) continue;
                 JsonObject action = element.getAsJsonObject();
@@ -1498,21 +1522,109 @@ final class ConcolicTaskPlan {
                         firstNonBlank(optionalString(action, "leafFieldSignature"),
                                 optionalString(action, "accessFieldSignature")));
                 if (field == null || receiver <= 0L) continue;
-                candidates.computeIfAbsent(field.owner() + "#" + field.name(),
+                String fieldKey = field.owner() + "#" + field.name();
+                candidates.computeIfAbsent(fieldKey,
                         ignored -> new LinkedHashSet<>()).add(receiver);
+                for (String site : plannedAccessSites(action)) {
+                    for (int occurrence : plannedAccessOccurrences(action)) {
+                        accessCandidates.computeIfAbsent(
+                                fieldAccessKey(fieldKey, site, occurrence),
+                                ignored -> new LinkedHashSet<>()).add(receiver);
+                    }
+                }
             }
+            indexUniqueReceivers(candidates,
+                    plannedReceiverObjectIdByField);
+            indexUniqueReceivers(accessCandidates,
+                    plannedReceiverObjectIdByFieldAccess);
+        }
+
+        /** Keeps only the locators one key names without contradiction. */
+        private static void indexUniqueReceivers(
+                Map<String, Set<Long>> candidates, Map<String, Long> index) {
             for (Map.Entry<String, Set<Long>> entry : candidates.entrySet()) {
                 if (entry.getValue().size() == 1) {
-                    plannedReceiverObjectIdByField.put(entry.getKey(),
+                    index.put(entry.getKey(),
                             entry.getValue().iterator().next());
                 }
             }
+        }
+
+        /** Every static access site one planned action was observed at. */
+        private static Set<String> plannedAccessSites(JsonObject action) {
+            Set<String> sites = new LinkedHashSet<>();
+            for (String member : new String[]{"staticAccessSiteId", "siteId"}) {
+                String site = optionalString(action, member);
+                if (!site.isEmpty()) sites.add(site);
+            }
+            for (JsonElement element : array(action, "accessSites")) {
+                if (!element.isJsonPrimitive()) continue;
+                String site = safe(element.getAsString());
+                if (!site.isEmpty()) sites.add(site);
+            }
+            return sites;
+        }
+
+        /**
+         * Every activation-local occurrence the plan states for one access.
+         *
+         * <p>An accessor-mediated read counts calls of the accessor's call
+         * site and a direct read counts executions of the getfield site.  The
+         * plan names both under its own member, so every stated count is
+         * indexed and {@link #indexUniqueReceivers} drops a key two actions
+         * disagree on rather than guessing which counter was meant.</p>
+         */
+        private static Set<Integer> plannedAccessOccurrences(
+                JsonObject action) {
+            Set<Integer> occurrences = new LinkedHashSet<>();
+            for (String member : new String[]{"accessorOccurrence",
+                    "activationLocalStaticSiteOccurrence",
+                    "replayOccurrence"}) {
+                int occurrence = optionalInteger(action, member, 0);
+                if (occurrence > 0) occurrences.add(occurrence);
+            }
+            return occurrences;
+        }
+
+        private static String fieldAccessKey(String fieldKey, String site,
+                                             int occurrence) {
+            return fieldKey + "\n" + site + "\n" + occurrence;
         }
 
         long plannedReceiverObjectId(String declaringClass,
                                              String fieldName) {
             return plannedReceiverObjectIdByField.getOrDefault(
                     safe(declaringClass) + "#" + safe(fieldName), 0L);
+        }
+
+        /**
+         * The frozen locator of the one receiver read at {@code accesses}.
+         *
+         * <p>Returns 0 when the plan names no receiver, and also when the
+         * anchors of one live carrier resolve to different planned
+         * receivers: that contradicts this carrier being one object, and a
+         * guessed locator would name two receivers alike across sessions.</p>
+         */
+        long plannedReceiverObjectId(String declaringClass, String fieldName,
+                                     List<ConsumerAccessAnchor> accesses) {
+            String fieldKey = safe(declaringClass) + "#" + safe(fieldName);
+            Set<Long> resolved = new LinkedHashSet<>();
+            for (ConsumerAccessAnchor access : accesses == null
+                    ? Collections.<ConsumerAccessAnchor>emptyList()
+                    : accesses) {
+                if (access == null || access.siteId.isEmpty()
+                        || access.occurrence < 1) {
+                    continue;
+                }
+                Long planned = plannedReceiverObjectIdByFieldAccess.get(
+                        fieldAccessKey(fieldKey, access.siteId,
+                                access.occurrence));
+                if (planned != null) resolved.add(planned);
+            }
+            if (resolved.size() == 1) return resolved.iterator().next();
+            return resolved.isEmpty()
+                    ? plannedReceiverObjectIdByField.getOrDefault(fieldKey, 0L)
+                    : 0L;
         }
 
         static String handoffKey(String portId, boolean exporting) {

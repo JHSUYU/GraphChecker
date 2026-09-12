@@ -374,12 +374,7 @@ public final class SharedStateEvidence {
                     // Name the Java field too: a bare session-local rid does
                     // not tell a reader which location went unnamed.
                     if (!key.isEmpty()) {
-                        JsonObject carrier = object(row, "carrier");
-                        String field = optionalString(carrier,
-                                "declaringClass") + "#"
-                                + optionalString(carrier, "fieldName");
-                        unresolved.add("#".equals(field) ? key
-                                : key + " field=" + field);
+                        unresolved.add(key + " " + unnamedCarrierDetail(row));
                     }
                     continue;
                 }
@@ -445,6 +440,23 @@ public final class SharedStateEvidence {
             }
         }
         return index;
+    }
+
+    /**
+     * Names which part of a carrier left one location unnamed, so that the
+     * diagnostic says what is missing instead of only which slot it was.
+     */
+    private static String unnamedCarrierDetail(JsonObject row) {
+        JsonObject carrier = object(row, "carrier");
+        if (carrier.size() == 0) return "(no carrier)";
+        String declaringClass = optionalString(carrier, "declaringClass");
+        String fieldName = optionalString(carrier, "fieldName");
+        String declared = declaringClass.isEmpty() || fieldName.isEmpty()
+                ? "(undeclared field)"
+                : declaringClass + "#" + fieldName;
+        return optionalLongInteger(carrier, "receiverObjectId", 0L) <= 0L
+                ? declared + " (no receiver identity)"
+                : declared + " (no occurrence)";
     }
 
     /** Prefix of a content-addressed runtime map-state witness. */
