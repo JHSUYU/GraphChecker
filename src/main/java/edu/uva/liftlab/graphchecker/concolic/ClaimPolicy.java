@@ -707,6 +707,15 @@ public final class ClaimPolicy {
                     && atRecorded != null && !satisfied(atRecorded);
             JsonArray unsaturated = unsaturatedMechanisms(atRecorded, window);
             row.addProperty("polarityDecides", flips);
+            // A reader deciding whether to trust the mechanism needs to see
+            // how much of it is pressed against the window: six interior rows
+            // out of ten is a different claim from six out of six.
+            row.addProperty("otherPolarityMechanismCount",
+                    atRecorded == null ? 0
+                            : array(atRecorded, "witnessMechanisms").size());
+            row.addProperty("otherPolarityUnsaturatedCount",
+                    unsaturated.size());
+            row.addProperty("clockWindowMillis", window);
             row.add("otherPolarityMechanisms", unsaturated);
             row.addProperty("determining", flips || unsaturated.size() > 0);
             rows.add(row);
