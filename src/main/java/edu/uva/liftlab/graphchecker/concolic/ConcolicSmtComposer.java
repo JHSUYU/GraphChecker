@@ -120,6 +120,23 @@ public final class ConcolicSmtComposer {
     /** Whether this artifact may be accepted as the milestone result. */
     public static final String FINAL_STATUS = "finalStatus";
     /** Whether all selected producer and target path sets were explored. */
+    /** Per lowered root: what it returned when it was recorded. */
+    public static final String RECORDED_ROOT_VALUES = "recordedRootValues";
+    /** Per declared value handoff: whether its family reached a term. */
+    public static final String WIRE_FLOW_BINDINGS = "wireFlowBindings";
+    /**
+     * One declared value handoff whose consumer boundary family the closure
+     * built and this composition never lowered, so the value the wire carried
+     * constrains nothing in the emitted formula.
+     */
+    public static final String WIRE_FLOW_VALUE_UNBOUND =
+            "WIRE_FLOW_VALUE_UNBOUND";
+    /**
+     * Case partitions the formula asserts only under a condition, so a
+     * consumer must not pin them: doing so decides the condition silently.
+     */
+    public static final String CONDITIONAL_CASE_PARTITIONS =
+            "conditionalCaseSelectorPartitions";
     public static final String PATH_SET_COMPLETE = "pathSetComplete";
     public static final String FINAL_READY = "FINAL_READY";
     /**
@@ -219,7 +236,13 @@ public final class ConcolicSmtComposer {
             emitter.lowerRelation(selection);
         }
         lowerFatalTargetPaths(emitter, fatal, fatalSite);
+        JsonObject clockPhysics = emitter.lowerClockRoots(
+                runtimePlan.plans(), arguments.clockSkewMillis);
         emitter.finishGuardedReadSelections();
+        // Before finish(): an unbound handoff is a refusal, and a refusal has
+        // to reach the emitted formula's fail-closed marker too.
+        JsonArray wireFlowBindings = emitter.wireFlowBindings(
+                propagation.caseDependencies());
         emitter.finish();
         String composedSmt = emitter.render();
 
@@ -233,8 +256,15 @@ public final class ConcolicSmtComposer {
         manifest.add("casePathConditionDependencies",
                 propagation.caseDependencies());
         manifest.add("targetReachLedger", emitter.targetReachLedger());
+        // Only the partitions the formula asserts unconditionally.  A
+        // consumer that pins one of these is restating something the formula
+        // already says; pinning a conditional one silently decides the
+        // condition, which is how a fault marker got frozen to its recorded
+        // value during root-polarity evaluation.
         manifest.add("caseSelectorPartitions",
-                GSON.toJsonTree(emitter.casePartitions.values()));
+                GSON.toJsonTree(emitter.unconditionalCasePartitions()));
+        manifest.add(CONDITIONAL_CASE_PARTITIONS,
+                GSON.toJsonTree(emitter.conditionalCasePartitions()));
         manifest.add(CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
                 emitter.configuredSourceMaterializationLedger());
         manifest.add(MANUAL_SOURCE_MATERIALIZATION_FIELD,
@@ -242,6 +272,10 @@ public final class ConcolicSmtComposer {
         manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
                 loops.manifest());
         manifest.add("guardedReadModel", emitter.guardedReadModel());
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
+        manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
+        manifest.add(RECORDED_ROOT_VALUES,
+                emitter.recordedRootLedger(runtimePlan.plans()));
         JsonArray gaps = new JsonArray();
         appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported,
                 emitter.unsupportedDetail);
@@ -1302,6 +1336,12 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         private boolean guardedReadComplete = true;
         /** One SMT definition per propagated guarded output. */
+        /** Wire port each boundary family carries, for naming a gap. */
+        private final Map<String, String> boundaryPortsByFamily =
+                new LinkedHashMap<>();
+        /** Boundary families this composition lowered, and to what term. */
+        private final Map<String, String> loweredBoundaryFamilies =
+                new LinkedHashMap<>();
         private final Map<String, Term> guardedMergeTerms =
                 new LinkedHashMap<>();
         /**
@@ -1619,6 +1659,203 @@ public final class ConcolicSmtComposer {
         }
 
         /**
+         * What each lowered root actually returned when it was recorded.
+         *
+         * <p>A witness is only readable next to this: a Boolean marker that
+         * came back {@code true} where the recording says {@code false} is an
+         * injected fault, and a clock 90 seconds off its recorded value is
+         * clock skew.  Without the recorded value a reader cannot tell either
+         * from an ordinary free choice, which is how {@code Long.MIN_VALUE}
+         * clocks were reported as mechanisms.</p>
+         */
+        private JsonArray recordedRootLedger(List<JsonObject> planRows) {
+            JsonArray rows = new JsonArray();
+            Set<String> seen = new LinkedHashSet<>();
+            for (JsonObject plan : planRows == null
+                    ? Collections.<JsonObject>emptyList() : planRows) {
+                if (plan == null) continue;
+                for (JsonElement goal : array(plan, "closureGoals")) {
+                    if (!goal.isJsonObject()) continue;
+                    for (JsonElement encoded
+                            : array(goal.getAsJsonObject(), "symbolize")) {
+                        if (!encoded.isJsonObject()) continue;
+                        JsonObject row = encoded.getAsJsonObject();
+                        String port = optionalString(row, "portId");
+                        String recorded = optionalString(row,
+                                "primitiveValue");
+                        if (port.isEmpty() || recorded.isEmpty()
+                                || !seen.add(port)) {
+                            continue;
+                        }
+                        String raw = manualRawByPort.get(port);
+                        String term = raw == null ? ""
+                                : firstNonBlank(manualRootNames.get(raw));
+                        if (term.isEmpty()) continue;
+                        JsonObject out = new JsonObject();
+                        out.addProperty("portId", port);
+                        out.addProperty("sourceKey",
+                                optionalString(row, "sourceKey"));
+                        out.addProperty("siteId",
+                                optionalString(row, "siteId"));
+                        out.addProperty("javaType",
+                                optionalString(row, "javaType"));
+                        out.addProperty("eventSeq",
+                                optionalLongInteger(row, "eventSeq", -1L));
+                        out.addProperty("recordedValue", recorded);
+                        out.addProperty("solverTerm", term);
+                        out.addProperty("wallClock",
+                                ClockRootPhysics.clockCallee(optionalString(
+                                        row, "declaredCallee")));
+                        rows.add(out);
+                    }
+                }
+            }
+            return rows;
+        }
+
+        /**
+         * Which declared value handoffs actually constrain this formula.
+         *
+         * <p>A value crossing a wire is not lowered as an equality between
+         * two port symbols -- the VM propagated the producer's expression
+         * into the consumer's own storage, so the consumer's reference *is*
+         * the producer's expression and the closure substitutes it.  The
+         * observable form is one boundary family per handoff, lowered by
+         * {@link #caseMergeTerm} into a {@code merged_boundary__} constant.
+         * The failure mode this ledger catches is a family the closure built
+         * from the recorded handoff and no lowered expression ever referred
+         * to: the wire's value then constrains nothing, silently, and the
+         * consumer's own read is free.</p>
+         */
+        private JsonArray wireFlowBindings(JsonArray dependencies) {
+            JsonArray rows = new JsonArray();
+            Set<String> seen = new LinkedHashSet<>();
+            for (JsonElement element : dependencies) {
+                if (!element.isJsonObject()) continue;
+                JsonObject dependency = element.getAsJsonObject();
+                if (!VmExpressionIr.RPC_ATTACH.equals(optionalString(
+                        dependency, "boundaryKind"))) {
+                    continue;
+                }
+                String familyKey = optionalString(dependency, "familyKey");
+                if (familyKey.isEmpty() || !seen.add(familyKey)) continue;
+                boolean bound = loweredBoundaryFamilies.containsKey(
+                        familyKey);
+                JsonObject row = new JsonObject();
+                row.addProperty("familyKey", familyKey);
+                row.addProperty("boundaryKind", VmExpressionIr.RPC_ATTACH);
+                row.addProperty("portId", boundaryPortsByFamily
+                        .getOrDefault(familyKey, ""));
+                row.addProperty("armCount",
+                        array(dependency, "arms").size());
+                row.addProperty("valueBound", bound);
+                row.addProperty("solverTerm",
+                        loweredBoundaryFamilies.getOrDefault(familyKey, ""));
+                rows.add(row);
+                if (!bound) {
+                    refuse(WIRE_FLOW_VALUE_UNBOUND + "["
+                                    + firstNonBlank(boundaryPortsByFamily
+                                    .get(familyKey), familyKey) + "]",
+                            "a declared value handoff reached the composition"
+                                    + " with a consumer boundary family no"
+                                    + " lowered expression refers to, so the"
+                                    + " value the wire carried constrains"
+                                    + " nothing");
+                }
+            }
+            return rows;
+        }
+
+        /**
+         * The case partitions this formula asserts unconditionally.
+         *
+         * <p>A fault-controlled occurrence keeps no unconditional
+         * exactly-one partition -- its predecessor's marker decides whether
+         * any of its cases runs -- so advertising one would invite a consumer
+         * to pin it and freeze the marker.</p>
+         */
+        private List<Collection<String>> unconditionalCasePartitions() {
+            return casePartitionsBy(false);
+        }
+
+        private List<Collection<String>> conditionalCasePartitions() {
+            return casePartitionsBy(true);
+        }
+
+        private List<Collection<String>> casePartitionsBy(boolean conditional) {
+            List<Collection<String>> rows = new ArrayList<>();
+            for (Map.Entry<InvocationKey, Set<String>> entry
+                    : casePartitions.entrySet()) {
+                if (faultControlledInstances.contains(entry.getKey())
+                        == conditional) {
+                    rows.add(entry.getValue());
+                }
+            }
+            return rows;
+        }
+
+        /**
+         * Constrains each symbolized wall-clock read to what a clock can have
+         * returned: within a configured skew of the value that read actually
+         * returned, and non-decreasing across one node's recorded order.
+         *
+         * <p>Without this a {@code Timer.now()} root carried only the 64-bit
+         * integral domain, so a witness could answer {@code Long.MIN_VALUE}
+         * at one read and a negative millisecond count at the next.  Nothing
+         * is pinned to its recorded value: cross-node clock skew is a real
+         * failure mechanism for these workloads, so each node's window is
+         * anchored on its own reads and two nodes may sit up to twice the
+         * skew apart.</p>
+         *
+         * <p>A clock read the plan declares but this composition never
+         * lowered as a root contributes no constraint and is recorded with an
+         * empty solver term, so the ledger says which reads are governed.</p>
+         */
+        private JsonObject lowerClockRoots(List<JsonObject> planRows,
+                                           long skewMillis) {
+            Map<String, List<ClockRootPhysics.ClockRead>> byNode =
+                    ClockRootPhysics.readsByNode(planRows);
+            List<JsonObject> ledger = new ArrayList<>();
+            String previousGuard = enterGuard("");
+            try {
+                for (Map.Entry<String, List<ClockRootPhysics.ClockRead>> node
+                        : byNode.entrySet()) {
+                    String previousTerm = "";
+                    for (ClockRootPhysics.ClockRead read : node.getValue()) {
+                        String raw = manualRawByPort.get(read.portId);
+                        String term = raw == null ? null
+                                : manualRootNames.get(raw);
+                        if (term == null || term.isEmpty()) {
+                            ledger.add(ClockRootPhysics.ledgerRow(read, "",
+                                    "", ""));
+                            continue;
+                        }
+                        String windowAssertion = assertNamed(
+                                smtSymbols.mint("clock_window__",
+                                        read.portId, 16),
+                                ClockRootPhysics.window(term,
+                                        read.recordedValue, skewMillis));
+                        String orderAssertion = "";
+                        if (!previousTerm.isEmpty()
+                                && !previousTerm.equals(term)) {
+                            orderAssertion = assertNamed(
+                                    smtSymbols.mint("clock_monotonic__",
+                                            node.getKey() + "\n"
+                                                    + read.portId, 16),
+                                    "(<= " + previousTerm + " " + term + ")");
+                        }
+                        previousTerm = term;
+                        ledger.add(ClockRootPhysics.ledgerRow(read, term,
+                                windowAssertion, orderAssertion));
+                    }
+                }
+            } finally {
+                restoreGuard(previousGuard);
+            }
+            return ClockRootPhysics.manifest(skewMillis, ledger);
+        }
+
+        /**
          * Indexes each confirmed request-fault control edge and the manual
          * root its fault port mints.
          *
@@ -1730,6 +1967,17 @@ public final class ConcolicSmtComposer {
             locationProvenance = SharedStateEvidence.locationProvenance(
                     owners);
             indexRequestFaultControl(owners);
+            for (JsonObject owner : owners == null
+                    ? Collections.<JsonObject>emptyList() : owners) {
+                for (JsonObject event : VmHandoffEvidence.eventsOf(owner)) {
+                    String family = optionalString(event,
+                            VmHandoffEvidence.BOUNDARY_FAMILY_KEY);
+                    String port = optionalString(event, "portId");
+                    if (!family.isEmpty() && !port.isEmpty()) {
+                        boundaryPortsByFamily.putIfAbsent(family, port);
+                    }
+                }
+            }
             try {
                 symbolicSourceIdentities =
                         SymbolicSourceEvidence.rawSymbolIdentities(owners,
@@ -3140,6 +3388,11 @@ public final class ConcolicSmtComposer {
             String projectionIdentity = projectionTermIdentity(
                     "MERGE", mergeId,
                     expected == null ? "" : expected.name(), "");
+            String familyKey = optionalString(node,
+                    VmExpressionIr.FAMILY_KEY);
+            if (!familyKey.isEmpty()) {
+                loweredBoundaryFamilies.putIfAbsent(familyKey, "");
+            }
             Term held = guardedMergeTerms.get(projectionIdentity);
             if (held != null) return held;
             if (!activeGuardedMerges.add(mergeId)) {
@@ -3228,6 +3481,9 @@ public final class ConcolicSmtComposer {
                 }
                 String name = smtSymbols.mint("merged_boundary__",
                         projectionIdentity, 20);
+                if (!familyKey.isEmpty()) {
+                    loweredBoundaryFamilies.put(familyKey, name);
+                }
                 defineConstant(name, sort, value);
                 if (sort == Sort.STRING) {
                     defineConstant(name + "__is_null", Sort.BOOL, nullness);
@@ -5171,6 +5427,8 @@ public final class ConcolicSmtComposer {
         private Path runtimePlan;
         private String fatalRegion = "";
         private String occurrenceId = "";
+        private long clockSkewMillis =
+                ClockRootPhysics.DEFAULT_SKEW_MILLIS;
 
         public static Arguments parse(String[] argv) {
             Arguments result = new Arguments();
@@ -5197,6 +5455,12 @@ public final class ConcolicSmtComposer {
                     result.fatalRegion = firstNonBlank(value);
                 } else if ("occurrence-id".equals(key)) {
                     result.occurrenceId = firstNonBlank(value);
+                } else if ("clock-skew-ms".equals(key)) {
+                    result.clockSkewMillis = Long.parseLong(value);
+                    if (result.clockSkewMillis < 0L) {
+                        throw new IllegalArgumentException(
+                                "--clock-skew-ms may not be negative");
+                    }
                 } else {
                     throw new IllegalArgumentException(
                             "Unknown composer option: --" + key);

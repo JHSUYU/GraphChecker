@@ -91,6 +91,10 @@ workflow_config_keys=(
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
   "reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS krp -"
   "reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS krp -"
+  # How far a witness may move a wall clock from the value that read
+  # returned.  Cross-node skew is a failure mechanism the checker explores,
+  # so this bounds it rather than pinning a clock to its recording.
+  "clock_skew_ms CAUSYNTH_CLOCK_SKEW_MS krp 300000"
 )
 
 # Reads one row of workflow_config_keys into config_key/config_env/
@@ -399,6 +403,10 @@ validate_config() {
       region_path_max_waves; do
     require_positive_integer "${key}"
   done
+  # A zero skew is meaningful -- it pins every clock to its recording -- so
+  # this one is validated as non-negative rather than positive.
+  [[ "${clock_skew_ms}" =~ ^[0-9]+$ ]] \
+    || die "clock_skew_ms must be a non-negative integer: ${clock_skew_ms}"
   local bound
   for bound in "${region_path_max_paths_per_region}" \
       "${region_path_max_flips_per_path}" "${region_path_max_tasks}"; do
@@ -588,6 +596,7 @@ do_compose() {
     --runtime-plan "${runtime_region_plan}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
+    --clock-skew-ms "${clock_skew_ms}" \
     "${selection[@]}"
 }
 

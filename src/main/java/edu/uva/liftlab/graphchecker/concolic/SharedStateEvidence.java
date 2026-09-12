@@ -868,6 +868,39 @@ public final class SharedStateEvidence {
         row.addProperty("locationKey", canonical);
     }
 
+    /** An INITIAL version's declaration of the content it snapshotted. */
+    public static final String INITIAL_SNAPSHOT_FIELD = "initialSnapshot";
+
+    /**
+     * Whether a whole-state carrier's INITIAL version snapshotted its content
+     * or gave up and stayed opaque.
+     *
+     * <p>A carrier's INITIAL version used to be one symbol standing for
+     * "whatever was in there", which lowers to a free container const and
+     * leaves membership undecidable.  When the VM can walk the container at
+     * selection it publishes the content instead, as a mutation chain over an
+     * explicit empty base, and says how many entries that was.  Past its
+     * budget it retains the opaque form and says so, and the free const stays
+     * the honest lowering for that case.</p>
+     */
+    public static boolean initialSnapshotTruncated(JsonObject version) {
+        JsonObject snapshot = object(version, INITIAL_SNAPSHOT_FIELD);
+        return snapshot.size() == 0
+                || optionalBool(snapshot, "truncated", true);
+    }
+
+    /** Whether this version declares a concrete initial content snapshot. */
+    public static boolean declaresInitialSnapshot(JsonObject version) {
+        return object(version, INITIAL_SNAPSHOT_FIELD).size() > 0;
+    }
+
+    /** Entries the INITIAL snapshot names, or -1 when it declares none. */
+    public static long initialSnapshotEntries(JsonObject version) {
+        JsonObject snapshot = object(version, INITIAL_SNAPSHOT_FIELD);
+        return snapshot.size() == 0 ? -1L
+                : optionalLongInteger(snapshot, "entries", -1L);
+    }
+
     /** Whether {@code versionKind} publishes one immutable whole state. */
     public static boolean stateVersionKind(String versionKind) {
         return versionKind != null && (versionKind.equals("STATE")
