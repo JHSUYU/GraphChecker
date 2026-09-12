@@ -54,12 +54,12 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosi
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageAddressMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageSourceEvidence;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.outgoingProducerMayDeferMissingContext;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registerRunTotalsHook;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registeredSourceAnchorMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootInvocationAddressMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameRootMethod;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.writeSkipped;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
 
 /** The bounded campaign this JVM executes. */
 final class ConcolicTaskPlan {

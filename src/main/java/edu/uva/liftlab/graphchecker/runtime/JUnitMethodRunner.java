@@ -50,7 +50,7 @@ public final class JUnitMethodRunner {
         // Publications first: a result still being appended belongs to a
         // region that is still a session member, and closing under it would
         // be refused anyway.
-        ConcolicRegionRuntime.awaitSelectedResultPublications();
+        ConcolicResultPublisher.awaitSelectedResultPublications();
         reportWorkloadSessionClose();
         System.exit(status);
     }
