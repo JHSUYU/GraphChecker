@@ -102,6 +102,41 @@ public final class VmExpressionIr {
         return false;
     }
 
+    /**
+     * True only when the tree names at least one VM symbol root.
+     *
+     * <p>The difference from {@link #carriesPropagatedValue} is the one a
+     * declared source needs.  A field that is only ever written from
+     * constants still reaches its reader wrapped in a {@code ReadFrom} or a
+     * {@code ConsumerBoundary} once a shared-state carrier is installed, so
+     * the looser predicate answers "already propagated" and the mint is
+     * skipped -- which is why an experiment could declare a field symbolic
+     * and still get no root for it.  This one looks through those wrappers
+     * and asks whether anything symbolic is actually inside.  It is the same
+     * rule the {@code CausynthSymbolicSource} hook path applies to its own
+     * pre-carrier read.</p>
+     */
+    public static boolean carriesSymbolicValue(JsonElement expression) {
+        if (expression == null || expression.isJsonNull()) return false;
+        if (expression.isJsonArray()) {
+            for (JsonElement child : expression.getAsJsonArray()) {
+                if (carriesSymbolicValue(child)) return true;
+            }
+            return false;
+        }
+        if (!expression.isJsonObject()) return false;
+        JsonObject node = expression.getAsJsonObject();
+        if (SYMBOL_TYPE.equals(optionalString(node, "_type"))) return true;
+        for (java.util.Map.Entry<String, JsonElement> member
+                : node.entrySet()) {
+            if (!"_type".equals(member.getKey())
+                    && carriesSymbolicValue(member.getValue())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The expression, only when the VM stated one exact, complete root. */
     public static JsonObject exactSymbolRoot(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;

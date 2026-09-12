@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
@@ -4033,7 +4034,7 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, SymbolizeAction action, Object value,
             JsonElement expression, String requestedSymbol,
             List<String> fieldPath, String fieldSignature) {
-        if (!VmExpressionIr.carriesPropagatedValue(expression)) return false;
+        if (!carriesInputAuthority(action, expression)) return false;
         ensurePathRecordingStarted(active);
         if (value != null && !value.getClass().isArray()) {
             active.recordSymbolizedInputPort(action.symbol, value);
@@ -4084,6 +4085,30 @@ public final class ConcolicRegionRuntime {
         }
         return requested + ".occ."
                 + CanonicalJson.sha256(occurrence);
+    }
+
+    /**
+     * Whether the value that arrived is already this input's authority.
+     *
+     * <p>For an automatic input the answer is any propagated expression: a
+     * consumer boundary around a constant still records which producer case
+     * delivered it.  A <em>declared</em> primitive source is the one case
+     * where that is the wrong answer.  The experiment named the field to say
+     * "the search starts here"; by the time the read fires, a shared-state
+     * carrier has wrapped it in a {@code ReadFrom} whose every candidate is a
+     * constant, so the loose rule reports "already propagated" and no root is
+     * ever minted -- the field is declared symbolic and stays concrete.  Ask
+     * the strict question there instead: is anything symbolic actually inside?
+     * Non-primitives keep the loose rule, because a container or reference
+     * has no root to mint in the first place.</p>
+     */
+    /** Package-visible for the declared-mint contract test. */
+    static boolean carriesInputAuthority(
+            SymbolizeAction action, JsonElement expression) {
+        return action != null && action.declaredSymbolicRoot
+                && primitiveDescriptor(action.javaType)
+                ? VmExpressionIr.carriesSymbolicValue(expression)
+                : VmExpressionIr.carriesPropagatedValue(expression);
     }
 
     private static boolean primitiveDescriptor(String javaType) {
@@ -5963,6 +5988,8 @@ public final class ConcolicRegionRuntime {
         final String accessorDeclaredCallee;
         final String accessorImplementationMethod;
         final String symbolicDemand;
+        /** The selection file named this input by hand: mint, do not reuse. */
+        final boolean declaredSymbolicRoot;
         final String rootKind;
         final List<String> fieldPath;
         final String javaType;
@@ -6017,6 +6044,8 @@ public final class ConcolicRegionRuntime {
             this.accessorImplementationMethod = optionalString(json,
                     "accessorImplementationMethod");
             this.symbolicDemand = optionalString(json, "symbolicDemand");
+            this.declaredSymbolicRoot = optionalBool(json,
+                    InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
             this.rootKind = optionalString(json, "rootKind");
             String explicitLeafSignature = firstNonBlank(
                     optionalString(json, "leafFieldSignature"),
