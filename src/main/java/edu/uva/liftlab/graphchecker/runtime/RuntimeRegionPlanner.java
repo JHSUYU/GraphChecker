@@ -73,16 +73,6 @@ final class RuntimeRegionPlanner {
     /** Authority of one recorded exchange link between two occurrences. */
     static final String DELIVERY_LINK_AUTHORITY =
             "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1";
-    /** A recorded activation this stage could not attribute to a source. */
-    static final String GAP_RUNTIME_SOURCE_UNSTAMPED =
-            "RUNTIME_ACTIVATION_SOURCE_UNSTAMPED";
-    /** Skeleton field naming why the admission half selected this region. */
-    static final String ADMISSION_BASIS = "admissionBasis";
-    /** Skeleton field: the region whose demand admitted this one. */
-    static final String DEMANDED_BY_REGIONS = "demandedByRegionIds";
-    /** Skeleton field: the enumerated locations that demand covers. */
-    static final String DEMANDED_SHARED_LOCATIONS =
-            "demandedSharedLocations";
     /** The protocol server stub a run entered as its own region root. */
     static final String COMMUNICATION_ENTRY = "COMMUNICATION_ENTRY";
     private RuntimeRegionPlanner() {
@@ -535,12 +525,6 @@ final class RuntimeRegionPlanner {
         activation.put("anchorMethod", observedAnchors.get(0));
         activation.put("anchorMethods", observedAnchors);
         activation.put("selection", skeleton.selection);
-        // Present only when the admission half declared one, so a region
-        // admitted by target reachability - every region this tree plans
-        // today - produces exactly the seed it produced before.
-        copyIfPresent(activation, skeleton.json, ADMISSION_BASIS);
-        copyIfPresent(activation, skeleton.json, DEMANDED_BY_REGIONS);
-        copyIfPresent(activation, skeleton.json, DEMANDED_SHARED_LOCATIONS);
         activation.put("test", root.test);
         activation.put("thread", root.threadName);
         activation.put("threadId", root.tid);
@@ -1064,8 +1048,8 @@ final class RuntimeRegionPlanner {
                     : root;
             // The same upgrade the activation seed was stamped with,
             // applied to the same call set.
-            List<SourceRef> stamped = stampedSources(calls, trace);
-            SourceRef rootSource = activationSource(root, stamped);
+            SourceRef rootSource = activationSource(root,
+                    stampedSources(calls, trace));
             SourceRef source = semanticContext.source != null
                     ? semanticContext.source : rootSource;
             int replayInvocationOrdinal = replayInvocationOrdinals.merge(
@@ -1124,12 +1108,6 @@ final class RuntimeRegionPlanner {
             activation.put("observedMethods",
                     new ArrayList<>(observedMethods));
             result.runtimeInstances.add(activation);
-            // A run that registered no source is a named gap, not an
-            // authority.
-            String stampedAuthority = semanticContext.source != null
-                    ? "EXPLICIT_TRACE_SOURCE"
-                    : stamped.size() == 1 ? UPGRADED_SOURCE_AUTHORITY
-                    : GAP_RUNTIME_SOURCE_UNSTAMPED;
             OccurrenceMinter.bindOccurrence(region.json, rootCallId,
                     occurrenceId);
             OccurrenceMinter.bindEdges(regionEdges, regionId, rootCallId,
@@ -1138,13 +1116,11 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> occurrenceSymbolize = symbolize(
                     region.symbolicInputs, occurrenceId, trace);
             List<Map<String, Object>> occurrenceBranches = branches;
-            Set<String> occurrenceObserved =
-                    new LinkedHashSet<>(observedMethods);
             // Static discovery supplies the candidate region; this concrete
             // activation supplies the methods worth slicing in the current
             // wave.
             Set<String> occurrenceMethods =
-                    new LinkedHashSet<>(occurrenceObserved);
+                    new LinkedHashSet<>(observedMethods);
             if (allowedMethods.contains(root.method)) {
                 occurrenceMethods.add(root.method);
             }
@@ -1163,7 +1139,6 @@ final class RuntimeRegionPlanner {
                         "siteId", targetSlice.branchSites);
                 addMaterializationMethods(targetSlice.methods,
                         occurrenceSymbolize, occurrenceMethods);
-                occurrenceObserved.retainAll(targetSlice.methods);
                 occurrenceMethods = new LinkedHashSet<>(targetSlice.methods);
             }
             List<String> targetPathBlockers =
@@ -1180,8 +1155,6 @@ final class RuntimeRegionPlanner {
                     : "REGION_PATH_CLOSURE");
             goal.put("runtimeDefinitionMethods",
                     new ArrayList<>(occurrenceMethods));
-            goal.put("baselineObservedMethods",
-                    new ArrayList<>(occurrenceObserved));
             goal.put("admission", object("state", occurrenceTarget
                             && !targetPathBlockers.isEmpty()
                             ? "BLOCKED" : "READY",
@@ -1195,19 +1168,9 @@ final class RuntimeRegionPlanner {
             Map<String, Object> plan = new LinkedHashMap<>();
             plan.put("schemaVersion", 3);
             plan.put("kind", "CONCOLIC_REGION_PLAN");
-            plan.put("sourceKey", source.key());
-            plan.put("sourceKind", source.kind());
-            plan.put("sourceRole", source.role());
-            plan.put("sourceId", source.id());
-            plan.put("sourceEpoch", source.epoch());
-            // An unstamped activation never passes as attributed evidence: it
-            // is either directly stamped or published as the explicit gap
-            // above.
-            plan.put("sourceAuthority",
-                    occurrenceTarget && semanticContext != root
-                            && semanticContext.source != null
-                            ? "SELECTED_TARGET_EVENT_SOURCE"
-                            : stampedAuthority);
+            // The semantic source of this activation - sourceKey, sourceKind,
+            // sourceRole, sourceId and sourceEpoch - is published once, by
+            // putTraceContext below.
             plan.put("occurrenceId", occurrenceId);
             plan.put("regionId", region.regionId);
             // The once-only-root rule (README "Loops"): a region rooted on a
@@ -1249,8 +1212,6 @@ final class RuntimeRegionPlanner {
             String plannedRelationKey = relationKey(source, regionId);
             plan.put("relationKey", plannedRelationKey);
             putTraceContext(plan, semanticContext, source);
-            plan.put("traceEvidence", object("rootCallId", root.callId,
-                    "activationId", activation.get("activationId")));
             plan.put("rootSelector", rootSelector(root, rootSource,
                     semanticContext.requestKey,
                     semanticContext.requestApi,
@@ -1259,13 +1220,6 @@ final class RuntimeRegionPlanner {
             // an empty one.
             if (!region.anchorMethod.isEmpty()) {
                 plan.put("targetMethod", region.anchorMethod);
-            }
-            // Why this activation was admitted, when it was admitted by
-            // anything other than reaching the target.
-            if (seed.containsKey(ADMISSION_BASIS)) {
-                plan.put(ADMISSION_BASIS, seed.get(ADMISSION_BASIS));
-                copyIfPresent(plan, seed, DEMANDED_BY_REGIONS);
-                copyIfPresent(plan, seed, DEMANDED_SHARED_LOCATIONS);
             }
             plan.put("closureGoals", Collections.singletonList(goal));
             result.regionPlans.add(plan);
@@ -1633,12 +1587,6 @@ final class RuntimeRegionPlanner {
     private static MaterializationSpec accessor(Map<String, Object> port) {
         return MaterializationSpec.decode(
                 toJsonTreeFast(port).getAsJsonObject());
-    }
-
-    private static void copyIfPresent(Map<String, Object> target,
-                                      Map<String, Object> source,
-                                      String field) {
-        if (source.containsKey(field)) target.put(field, source.get(field));
     }
 
     /** Adds one statically admitted method to the selected dependency scope. */
@@ -2472,10 +2420,6 @@ final class RuntimeRegionPlanner {
         return sourceOf(event.source);
     }
 
-    /** Authority of a source taken from the first stamped frame inside the
-     * activation rather than from its root frame. */
-    static final String UPGRADED_SOURCE_AUTHORITY =
-            "FIRST_STAMPED_FRAME_INSIDE_ACTIVATION";
     /** Every distinct logical source the frames of one activation carry, in
      * recorded order.
      *
