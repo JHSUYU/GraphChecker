@@ -269,6 +269,35 @@ public:
   /** Positive iff consumed; zero cancels an armed but unconsumed receipt. */
   static jlong confirm_primitive_read(jlong context_id, jlong token);
 
+  /**
+   * Drops the arms one context left behind when its region ended.
+   *
+   * An arm is a one-shot override of *the read that the arming code is about
+   * to perform*.  If that read never happens -- the branch was not taken, the
+   * frame threw, the replay decided otherwise -- the entry used to survive
+   * keyed only by (context, location), so the next read of the same field,
+   * arbitrarily later and in a different region of the same thread, silently
+   * consumed a value that was never meant for it.  A region boundary is the
+   * point at which such an arm is provably abandoned, so it is dropped there.
+   *
+   * Receipts for arms that *were* consumed are deliberately kept: they are
+   * evidence the caller still has to confirm, and confirmation happens during
+   * region close.  forget_context() below is what retires those, at the point
+   * where no caller can reach them any more.
+   */
+  static void discard_armed_reads(jlong context_id);
+
+  /**
+   * Retires every replay-read record owned by one thread context.
+   *
+   * Called when the context itself goes away (detach, or an owner thread that
+   * exited).  Both stores are keyed by context id and were previously purged
+   * only in close_session(), so a workload session that outlived many thread
+   * contexts accumulated their records and let a later context with a
+   * recycled id observe them.
+   */
+  static void forget_context(jlong context_id);
+
   static void open_session();
   static void close_session();
 
@@ -400,11 +429,14 @@ private:
   };
 
   typedef std::map<PendingReadKey, PendingPrimitiveRead> PendingReadStore;
+  /** receipt token -> the armed entry it names, so confirm is a lookup. */
+  typedef std::map<jlong, PendingReadKey> ArmedTokenIndex;
   typedef std::map<jlong, jlong> ConsumedReadStore;
 
   static bool _open;
   static SlotStore _slots;
   static PendingReadStore _pending_primitive_reads;
+  static ArmedTokenIndex _armed_read_tokens;
   /** receipt token -> consuming context */
   static ConsumedReadStore _consumed_primitive_reads;
   // Relaxed reader, mutex-guarded writer.  Deliberately not the map's size:

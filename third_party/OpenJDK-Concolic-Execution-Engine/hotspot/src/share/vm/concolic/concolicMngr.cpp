@@ -6,6 +6,7 @@
 #include "concolic/globalSymbolicSession.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 #include "concolic/threadContext.hpp"
 #include "concolic/utils.hpp"
 #include "memory/resourceArea.hpp"
@@ -331,6 +332,11 @@ jlong ConcolicMngr::attach(JavaThread *thread) {
 void ConcolicMngr::detach() {
   if (ctx == NULL) return;
 
+  // The replay-read records are keyed by this context id and live in a
+  // session-scoped store, so they have to be retired with the context rather
+  // than left for close_session() to sweep.
+  SharedFieldVersions::forget_context(ctx->get_context_id());
+
   // Only this thread's execution state.  Object shadows, container states and
   // published expressions belong to the session and survive for the other
   // members.
@@ -421,6 +427,7 @@ void ConcolicMngr::cleanupAbandonedContext(JavaThread *thread) {
     return;
   }
   ctx->abort_symbolic_execution("OWNER_JAVA_THREAD_EXIT");
+  SharedFieldVersions::forget_context(ctx->get_context_id());
   // This is a safe owner-thread boundary: no concolic Java frame remains and
   // uncaught-exception callbacks have already completed.  The thread is about
   // to be destroyed, so drop every region it still owns at once and release
@@ -878,6 +885,13 @@ jlong ConcolicMngr::endConcolic() {
     tty->print_cr("Warning: corrupted concolic execution thread state, is startConcolicRegion() invoked properly?");
     return 1;
   }
+
+  // An armed replay read is an override of the read the arming code was about
+  // to perform.  A region boundary proves that read did not happen, so the
+  // arm is abandoned here rather than left for an unrelated later read of the
+  // same field to consume.  Consumed receipts survive: the caller confirms
+  // them as part of closing this region.
+  SharedFieldVersions::discard_armed_reads(ctx->get_context_id());
 
   // Closing an inner region restores the enclosing frame.  The full indexed
   // path remains thread-owned, while the inner frame's local branch/auxiliary

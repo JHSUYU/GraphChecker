@@ -28,6 +28,7 @@ bool SharedFieldVersions::_open = false;
 SharedFieldVersions::SlotStore SharedFieldVersions::_slots;
 SharedFieldVersions::PendingReadStore
     SharedFieldVersions::_pending_primitive_reads;
+SharedFieldVersions::ArmedTokenIndex SharedFieldVersions::_armed_read_tokens;
 SharedFieldVersions::ConsumedReadStore
     SharedFieldVersions::_consumed_primitive_reads;
 volatile int SharedFieldVersions::_carrier_count = 0;
@@ -60,6 +61,8 @@ void SharedFieldVersions::open_session() {
   guarantee(_slots.empty(), "versions outlived the previous session");
   guarantee(_pending_primitive_reads.empty(),
             "pending replay reads outlived the previous session");
+  guarantee(_armed_read_tokens.empty(),
+            "replay read receipts outlived the previous session");
   guarantee(_consumed_primitive_reads.empty(),
             "replay read receipts outlived the previous session");
   _carrier_count = 0;
@@ -72,6 +75,7 @@ void SharedFieldVersions::close_session() {
   // it.  Dropping the records is exactly a decision to stop naming them.
   _slots.clear();
   _pending_primitive_reads.clear();
+  _armed_read_tokens.clear();
   _consumed_primitive_reads.clear();
   _carrier_count = 0;
   _open = false;
@@ -279,6 +283,7 @@ jlong SharedFieldVersions::arm_primitive_read(
   read.type = type;
   read.value_bits = value_bits;
   _pending_primitive_reads[key] = read;
+  _armed_read_tokens[token] = key;
   return token;
 }
 
@@ -297,6 +302,7 @@ bool SharedFieldVersions::consume_primitive_read(
   }
   *value_bits = found->second.value_bits;
   _consumed_primitive_reads[found->second.token] = context_id;
+  _armed_read_tokens.erase(found->second.token);
   _pending_primitive_reads.erase(found);
   return true;
 }
@@ -313,19 +319,46 @@ jlong SharedFieldVersions::confirm_primitive_read(jlong context_id,
     _consumed_primitive_reads.erase(consumed);
     return 1;
   }
-  for (PendingReadStore::iterator pending =
-           _pending_primitive_reads.begin();
-       pending != _pending_primitive_reads.end(); ++pending) {
-    if (pending->second.token != token) continue;
-    if (pending->first.context_id != context_id) {
-      return REPLAY_READ_WRONG_CONTEXT;
-    }
-    // Confirmation is the lifetime boundary for this one-shot request.  A
-    // read that never consumed it must not affect a later access.
-    _pending_primitive_reads.erase(pending);
-    return REPLAY_READ_PENDING;
+  ArmedTokenIndex::iterator armed = _armed_read_tokens.find(token);
+  if (armed == _armed_read_tokens.end()) return REPLAY_READ_UNKNOWN_TOKEN;
+  if (armed->second.context_id != context_id) {
+    return REPLAY_READ_WRONG_CONTEXT;
   }
-  return REPLAY_READ_UNKNOWN_TOKEN;
+  // Confirmation is the lifetime boundary for this one-shot request.  A
+  // read that never consumed it must not affect a later access.
+  _pending_primitive_reads.erase(armed->second);
+  _armed_read_tokens.erase(armed);
+  return REPLAY_READ_PENDING;
+}
+
+void SharedFieldVersions::discard_armed_reads(jlong context_id) {
+  if (context_id <= 0) return;
+  VERSION_LOCK;
+  PendingReadStore::iterator pending = _pending_primitive_reads.begin();
+  while (pending != _pending_primitive_reads.end()) {
+    if (pending->first.context_id != context_id) {
+      ++pending;
+      continue;
+    }
+    _armed_read_tokens.erase(pending->second.token);
+    PendingReadStore::iterator abandoned = pending++;
+    _pending_primitive_reads.erase(abandoned);
+  }
+}
+
+void SharedFieldVersions::forget_context(jlong context_id) {
+  if (context_id <= 0) return;
+  discard_armed_reads(context_id);
+  VERSION_LOCK;
+  ConsumedReadStore::iterator consumed = _consumed_primitive_reads.begin();
+  while (consumed != _consumed_primitive_reads.end()) {
+    if (consumed->second != context_id) {
+      ++consumed;
+      continue;
+    }
+    ConsumedReadStore::iterator retired = consumed++;
+    _consumed_primitive_reads.erase(retired);
+  }
 }
 
 Expression *SharedFieldVersions::primitive_expression(BasicType type,
