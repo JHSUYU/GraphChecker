@@ -515,7 +515,7 @@ final class RuntimeRegionPlanner {
         activation = new LinkedHashMap<>();
         activation.put("schemaVersion", 3);
         activation.put("kind", "RUNTIME_REGION_ACTIVATION");
-        activation.put("activationId", activationId(root));
+        activation.put("activationId", recordedActivationKey(root));
         activation.put("regionId", skeleton.regionId);
         activation.put("rootCallId", root.callId);
         activation.put("rootMethod", root.method);
@@ -772,6 +772,42 @@ final class RuntimeRegionPlanner {
                 "branches", true);
     }
 
+    /**
+     * Re-spells every row's {@code enclosingActivationIds} in the published
+     * namespace.
+     *
+     * <p>Containment is stamped over the recorded activations, before any
+     * retention decision, so it is carried through planning as the recorded
+     * correlation key.  The published name of an activation is a function of
+     * its own planned occurrence, which only exists for an activation this
+     * wave retained: an enclosing activation the wave dropped has no
+     * published name at all, and is dropped from the list rather than named
+     * in a namespace no other row uses.  That loses nothing -- the only
+     * reader, {@link #retainInnermostExactGoalEventOwners}, matches these
+     * names against the {@code activationId} of other plan rows, which an
+     * unretained activation never has.</p>
+     */
+    private static void republishEnclosingActivationIds(
+            List<Map<String, Object>> plans,
+            Map<String, String> publishedActivationIds) {
+        for (Map<String, Object> plan : plans) {
+            if (!plan.containsKey("enclosingActivationIds")) continue;
+            List<String> published = new ArrayList<>();
+            for (String recorded : strings(
+                    plan.get("enclosingActivationIds"))) {
+                String name = publishedActivationIds.get(recorded);
+                if (name != null && !published.contains(name)) {
+                    published.add(name);
+                }
+            }
+            if (published.isEmpty()) {
+                plan.remove("enclosingActivationIds");
+            } else {
+                plan.put("enclosingActivationIds", published);
+            }
+        }
+    }
+
     private static void retainInnermostExactGoalEventOwners(
             List<Map<String, Object>> plans, TraceIndex trace,
             String goalField, boolean branch) {
@@ -987,6 +1023,14 @@ final class RuntimeRegionPlanner {
         Map<String, Integer> replayInvocationOrdinals =
                 new LinkedHashMap<>();
         Map<String, String> exactPorts = new LinkedHashMap<>();
+        // The recorded correlation key of every planned activation, against
+        // the content-addressed name the plan publishes for it.  An
+        // activation's own name is spelled from its own occurrence, so the
+        // enclosing names a row carries can only be re-spelled once every
+        // planned activation has been named -- see
+        // republishEnclosingActivationIds below.
+        Map<String, String> publishedActivationIds = new LinkedHashMap<>();
+        Set<String> publishedActivationNames = new LinkedHashSet<>();
         for (Map<String, Object> seed : runtimeSeeds == null
                 ? Collections.<Map<String, Object>>emptyList()
                 : runtimeSeeds) {
@@ -1035,7 +1079,7 @@ final class RuntimeRegionPlanner {
             // did not retain carries none.
             String occurrenceId = stringValue(seed.get("occurrenceId"));
             if (occurrenceId.isEmpty()) continue;
-            String recordedActivationId = activationId(root);
+            String recordedActivationId = recordedActivationKey(root);
             String seededActivationId = stringValue(seed.get(
                     "activationId"));
             if (!seededActivationId.isEmpty()
@@ -1169,7 +1213,27 @@ final class RuntimeRegionPlanner {
             if (region.rootLoop != null) {
                 plan.put(LoopBoundPolicy.ROOT_LOOP, region.rootLoop);
             }
-            plan.put("activationId", activation.get("activationId"));
+            // The selector is minted once: it is both this row's replay
+            // address and half of the content the published activation name
+            // is taken over.
+            Map<String, Object> plannedRootSelector = rootSelector(root,
+                    rootSource, semanticContext.requestKey,
+                    semanticContext.requestApi, replayInvocationOrdinal);
+            String plannedActivationId = activationId(occurrenceId,
+                    plannedRootSelector);
+            // One occurrence is one activation, so one published name is
+            // too.  Two activations answering to one name would silently
+            // merge two occurrences downstream, which fails closed here.
+            if (!publishedActivationNames.add(plannedActivationId)) {
+                throw new IllegalStateException("two planned activations "
+                        + "claimed one published activation identity: "
+                        + plannedActivationId + " at " + occurrenceId);
+            }
+            publishedActivationIds.put(exactActivationId,
+                    plannedActivationId);
+            plan.put("activationId", plannedActivationId);
+            // Still the recorded keys; re-spelled after the loop, once every
+            // enclosing activation has a published name of its own.
             if (!enclosingActivationIds.isEmpty()) {
                 plan.put("enclosingActivationIds",
                         new ArrayList<>(enclosingActivationIds));
@@ -1197,10 +1261,7 @@ final class RuntimeRegionPlanner {
             String plannedRelationKey = relationKey(source, regionId);
             plan.put("relationKey", plannedRelationKey);
             putTraceContext(plan, semanticContext, source);
-            plan.put("rootSelector", rootSelector(root, rootSource,
-                    semanticContext.requestKey,
-                    semanticContext.requestApi,
-                    replayInvocationOrdinal));
+            plan.put("rootSelector", plannedRootSelector);
             // A region with no anchor states no target method rather than
             // an empty one.
             if (!region.anchorMethod.isEmpty()) {
@@ -1223,6 +1284,8 @@ final class RuntimeRegionPlanner {
             goalByOccurrence.put(occurrenceId, goal);
             planByOccurrence.put(occurrenceId, plan);
         }
+        republishEnclosingActivationIds(result.regionPlans,
+                publishedActivationIds);
         retainInnermostExactGoalEventOwners(result.regionPlans, trace);
         for (Map<String, Object> edge : regionEdges) {
             String edgeKind = stringValue(edge.get("kind"));
@@ -2318,7 +2381,7 @@ final class RuntimeRegionPlanner {
     /** The replay address of one activation: its stable selected source and
      * region root, plus the causal anchor that activation was entered under.
      */
-    private static Map<String, Object> rootSelector(
+    static Map<String, Object> rootSelector(
             MethodEvent root, SourceRef source, String requestKey,
             String requestApi, int invocationOrdinal) {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -2958,10 +3021,87 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static String activationId(MethodEvent root) {
+    /**
+     * The recorded call one activation seed names.
+     *
+     * <p>This is an aggregation-internal key, not published identity: {@code
+     * tid} is the recording JVM's thread id and {@code callId} the recorder's
+     * global event counter, so both address one frame of one recording and
+     * neither means anything in the next.  It is the correlation key the
+     * activation seeds, their {@code enclosingActivationIds} and the recorded
+     * occurrence links share inside a single aggregation, and it never leaves
+     * it; the name the plan publishes is spelled from content by {@link
+     * #activationId(String, Map)}.</p>
+     */
+    static String recordedActivationKey(MethodEvent root) {
         return "ACT." + UUID.nameUUIDFromBytes((root.test + "\n"
                 + root.sourceKey + "\n" + root.tid + "\n" + root.callId)
                 .getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The published identity of one planned activation, spelled from the
+     * content that names it.
+     *
+     * <p>Both inputs are already content-addressed.  {@code occurrenceId} is
+     * {@code <semantic source>/region/<regionId>#<ordinal>}, whose ordinal
+     * counts the observed activations of that source and region in recorded
+     * order ({@link OccurrenceMinter}).  {@code rootSelector} is the address
+     * replay itself uses: the root method, its receiver context, the causal
+     * anchor and the invocation ordinal inside that anchor's scope.  Neither
+     * carries a per-run address, so two independent recordings of one
+     * workload publish the same name for the same activation.</p>
+     *
+     * <p>The {@code ACT.} prefix and the UUID shape are the ones consumers
+     * already parse; only what the UUID is taken over changes.</p>
+     */
+    static String activationId(String occurrenceId,
+                               Map<String, Object> rootSelector) {
+        return "ACT." + UUID.nameUUIDFromBytes((safe(occurrenceId) + "\n"
+                + canonicalIdentity(rootSelector))
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Order-independent spelling of one identity-bearing plan value.
+     *
+     * <p>A selector is a map of maps and lists whose emission order is a
+     * presentation choice.  Sorting the members here keeps the published name
+     * a function of what the selector says rather than of the order a later
+     * refactor happens to write it in.</p>
+     */
+    private static String canonicalIdentity(Object value) {
+        StringBuilder text = new StringBuilder();
+        appendCanonicalIdentity(text, value);
+        return text.toString();
+    }
+
+    private static void appendCanonicalIdentity(StringBuilder text,
+                                                Object value) {
+        if (value instanceof Map<?, ?>) {
+            Map<String, Object> members = new TreeMap<>();
+            for (Map.Entry<?, ?> member
+                    : ((Map<?, ?>) value).entrySet()) {
+                members.put(String.valueOf(member.getKey()),
+                        member.getValue());
+            }
+            text.append('{');
+            for (Map.Entry<String, Object> member : members.entrySet()) {
+                text.append(member.getKey()).append('=');
+                appendCanonicalIdentity(text, member.getValue());
+                text.append(';');
+            }
+            text.append('}');
+        } else if (value instanceof Collection<?>) {
+            text.append('[');
+            for (Object item : (Collection<?>) value) {
+                appendCanonicalIdentity(text, item);
+                text.append(';');
+            }
+            text.append(']');
+        } else {
+            text.append(value);
+        }
     }
 
     private static String leafType(List<String> declarations) {
