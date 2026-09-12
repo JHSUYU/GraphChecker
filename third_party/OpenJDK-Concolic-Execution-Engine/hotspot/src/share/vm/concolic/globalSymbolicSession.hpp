@@ -116,13 +116,17 @@ public:
    * issued?" -- used to compare against a fixed MAX_SYM_RID cap, which both
    * aborted legitimate long sessions and accepted every garbage value below
    * the cap.  The high-water mark answers the same question exactly and needs
-   * no cap.  Read without the arena lock on purpose: it is monotonic, so a
-   * stale read can only make the check more permissive, never reject a real
-   * id.
+   * no cap.
+   *
+   * Read without the arena lock on purpose, but NOT without ordering: the
+   * only caller aborts the VM when the header it read exceeds this bound, so
+   * a bound that is stale relative to the header is STRICTER, not more
+   * permissive -- it rejects an id this session really did mint.  The counter
+   * is therefore published with a release when it is bumped and read here
+   * with an acquire, so a weakly ordered target cannot observe a header word
+   * ahead of the counter that authorized it.
    */
-  static sym_rid_t minted_sym_rid_bound() {
-    return (sym_rid_t) _next_sym_rid;
-  }
+  static sym_rid_t minted_sym_rid_bound();
 
   /**
    * The session's monotonic identity space for region occurrences, shared

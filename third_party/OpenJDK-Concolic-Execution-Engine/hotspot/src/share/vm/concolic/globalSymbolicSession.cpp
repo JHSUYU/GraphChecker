@@ -8,6 +8,7 @@
 #include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/atomic.inline.hpp"
+#include "runtime/orderAccess.inline.hpp"
 #include "runtime/safepoint.hpp"
 #include "runtime/vm_operations.hpp"
 #include "runtime/vmThread.hpp"
@@ -136,7 +137,15 @@ sym_rid_t GlobalSymbolicSession::next_sym_rid() {
   // wrap would hand two live objects the same shadow identity, which no later
   // stage can detect, so it is the one thing worth refusing.
   guarantee(next > 0, "sym_rid counter wrapped");
+  // The caller writes this id into an object header next.  Publish the
+  // counter before that store, so a thread that sees the header also sees a
+  // bound that covers it; see minted_sym_rid_bound().
+  OrderAccess::release();
   return (sym_rid_t) next;
+}
+
+sym_rid_t GlobalSymbolicSession::minted_sym_rid_bound() {
+  return (sym_rid_t) OrderAccess::load_ptr_acquire(&_next_sym_rid);
 }
 
 void GlobalSymbolicSession::restore_object_symbolic_ids() {
