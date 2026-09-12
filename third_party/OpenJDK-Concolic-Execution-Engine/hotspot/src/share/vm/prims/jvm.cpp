@@ -753,16 +753,16 @@ JVM_ENTRY(jstring, JVM_GetConcolicPathConditionRange(
       serialized.c_str(), THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #else
+  // Concolic is compiled out: this literal is the only place the shape can
+  // come from, so it names exactly the members the live writer emits without
+  // a context.
   Handle str = java_lang_String::create_from_str(
       "{\"schemaVersion\":1,\"kind\":\"CONCOLIC_PATH_CONDITION_RANGE\","
-      "\"active\":false,\"startIndex\":0,\"endIndex\":0,"
+      "\"sessionId\":0,\"active\":false,\"aborted\":false,"
+      "\"abortReason\":\"\",\"contextId\":0,\"ownerJavaThreadId\":0,"
+      "\"startIndex\":0,\"endIndex\":0,"
       "\"pathConditionWatermark\":0,\"conditionCount\":0,"
       "\"conditions\":[],\"emittedConditionCount\":0,"
-      "\"conjunctionInline\":false,"
-      "\"conjunctionSource\":"
-      "\"conditions[0,conditionCount) folded left with &&\","
-      "\"conjunctionAuthority\":"
-      "\"VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1\","
       "\"authority\":\"VM_THREAD_PATH_CONDITION_RANGE_V1\"}", THREAD);
   return (jstring) JNIHandles::make_local(env, str());
 #endif

@@ -162,17 +162,24 @@ public:
 
   /**
    * One half-open index range of this thread's path condition, as its
-   * conditions.
+   * conditions -- the CONCOLIC_PATH_CONDITION_RANGE envelope.
    *
    * The window's conjunction is not inlined beside them.  It is the left fold
    * of `conditions` in index order and nothing else, so a second copy of it in
-   * the same document restated every condition of the window twice.  The
-   * envelope says so explicitly (`conjunctionInline`, `conjunctionSource`,
-   * `conjunctionAuthority`) rather than silently omitting it, and
-   * `conditionCount` still gives the window's exact length, so an empty window
-   * is distinguishable from an omitted one without fetching anything.
+   * the same document restated every condition of the window twice.
+   * `conditionCount` gives the window's exact length, so an empty window is
+   * distinguishable from an omitted one without fetching anything.
+   *
+   * A NULL context is the "nothing is attached to this thread" answer and is
+   * written by this same function rather than by a hand-kept literal
+   * elsewhere: the two used to disagree about which members exist, so a
+   * reader had to special-case the shape it got.
    */
-  std::string get_path_condition_range(int start, int end);
+  static std::string serialize_path_condition_range(ThreadContext *context,
+                                                    int start, int end);
+  std::string get_path_condition_range(int start, int end) {
+    return serialize_path_condition_range(this, start, end);
+  }
 
   /**
    * Every admitted non-branch solver constraint of the current region frame,
@@ -207,7 +214,11 @@ public:
                                int opcode);
   void record_branch_conditions(const exp_list_t &expressions, bool outcome,
                                 int opcode);
-  std::string get_branch_events() const;
+  /** The CONCOLIC_THREAD_BRANCH_EVENTS envelope; NULL means no context. */
+  static std::string serialize_branch_events(const ThreadContext *context);
+  std::string get_branch_events() const {
+    return serialize_branch_events(this);
+  }
 
   void set_pc_admitted(bool pathConditionAdmitted);
   int pause_path_condition_recording();

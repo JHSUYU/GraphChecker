@@ -803,22 +803,11 @@ std::string ConcolicMngr::getRegionSummary() {
     writer.EndObject();
   }
   writer.Key("branchEvents");
-  if (ctx != NULL) {
-    std::string branch_events = ctx->get_branch_events();
+  {
+    // One writer for both shapes; a null context is the no-context answer.
+    std::string branch_events = ThreadContext::serialize_branch_events(ctx);
     writer.RawValue(branch_events.c_str(), branch_events.length(),
                     kObjectType);
-  } else {
-    writer.StartObject();
-    writer.Key("schemaVersion");
-    writer.Int(1);
-    writer.Key("kind");
-    writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
-    writer.Key("active");
-    writer.Bool(false);
-    writer.Key("events");
-    writer.StartArray();
-    writer.EndArray();
-    writer.EndObject();
   }
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
@@ -832,19 +821,7 @@ std::string ConcolicMngr::getRegionSummary() {
 // ---------------------------------------------------------------------------
 
 std::string ConcolicMngr::getPathConditionRange(jint start, jint end) {
-  if (ctx != NULL) {
-    return ctx->get_path_condition_range(start, end);
-  }
-  return std::string("{\"schemaVersion\":1,\"kind\":"
-                     "\"CONCOLIC_PATH_CONDITION_RANGE\",\"active\":false,"
-                     "\"startIndex\":0,\"endIndex\":0,"
-                     "\"pathConditionWatermark\":0,\"conditionCount\":0,"
-                     "\"conditions\":[],\"conjunctionInline\":false,"
-                     "\"conjunctionSource\":"
-                     "\"conditions[0,conditionCount) folded left with &&\","
-                     "\"conjunctionAuthority\":"
-                     "\"VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1\","
-                     "\"authority\":\"VM_THREAD_PATH_CONDITION_RANGE_V1\"}");
+  return ThreadContext::serialize_path_condition_range(ctx, start, end);
 }
 
 jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
@@ -860,12 +837,7 @@ jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
 }
 
 std::string ConcolicMngr::getBranchEvents() {
-  if (ctx != NULL) {
-    return ctx->get_branch_events();
-  }
-  return std::string("{\"schemaVersion\":1,\"kind\":"
-                     "\"CONCOLIC_THREAD_BRANCH_EVENTS\","
-                     "\"active\":false,\"events\":[]}");
+  return ThreadContext::serialize_branch_events(ctx);
 }
 
 void ConcolicMngr::pausePathConditionRecording() {

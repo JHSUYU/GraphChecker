@@ -16,6 +16,47 @@
 #include "classfile/javaClasses.hpp"
 #include "runtime/osThread.hpp"
 
+namespace {
+
+/**
+ * Opens one concolic envelope.
+ *
+ * Every envelope this file publishes starts with the same five members: the
+ * schema it conforms to, its kind, the session whose ids it names, and
+ * whether the context that produced it is still recording.  A NULL context is
+ * a legitimate producer -- "no context is attached" -- and answers all of
+ * them, which is what lets the live and the no-context shapes be one writer
+ * rather than two that drift.
+ */
+void begin_envelope(rapidjson::Writer<rapidjson::StringBuffer> &writer,
+                    const char *kind, const ThreadContext *context) {
+  writer.StartObject();
+  writer.Key("schemaVersion");
+  writer.Int(1);
+  writer.Key("kind");
+  writer.String(kind);
+  // The symbolic universe these ids belong to.  An id is only comparable
+  // against another id minted by the same session, so every envelope that
+  // carries ids names the session that minted them.
+  writer.Key("sessionId");
+  writer.Int64(GlobalSymbolicSession::session_id());
+  writer.Key("active");
+  writer.Bool(context != NULL && !context->is_aborted());
+  writer.Key("aborted");
+  writer.Bool(context != NULL && context->is_aborted());
+  writer.Key("abortReason");
+  writer.String(context == NULL ? "" : context->get_abort_reason().c_str());
+}
+
+/** Closes one envelope, emitting its expression table when it has one. */
+void end_envelope(rapidjson::Writer<rapidjson::StringBuffer> &writer,
+                  VmExpressionArtifactScope *artifact) {
+  if (artifact != NULL) artifact->write_table(writer);
+  writer.EndObject();
+}
+
+} // anonymous namespace
+
 ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
     : _thread(jt), _s_stack(jt),
       _path_condition_enabled(true), _path_condition_admitted(true),
@@ -76,9 +117,11 @@ jlong ThreadContext::region_enter_event() const {
   return _region_stack.empty() ? 0 : _region_stack.back()->enter_event_id;
 }
 
-std::string ThreadContext::get_path_condition_range(int start, int end) {
+std::string ThreadContext::serialize_path_condition_range(
+    ThreadContext *context, int start, int end) {
   using namespace rapidjson;
-  const int watermark = _path_condition.size();
+  const int watermark =
+      context == NULL ? 0 : context->_path_condition.size();
   if (start < 0) start = 0;
   if (end > watermark) end = watermark;
   if (end < start) end = start;
@@ -86,26 +129,11 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
   VmExpressionArtifactScope expression_artifact;
-  writer.StartObject();
-  writer.Key("schemaVersion");
-  writer.Int(1);
-  writer.Key("kind");
-  writer.String("CONCOLIC_PATH_CONDITION_RANGE");
-  // The symbolic universe these ids belong to.  An id is only comparable
-  // against another id minted by the same session, so every envelope that
-  // carries ids names the session that minted them.
-  writer.Key("sessionId");
-  writer.Int64(GlobalSymbolicSession::session_id());
-  writer.Key("active");
-  writer.Bool(!_aborted);
-  writer.Key("aborted");
-  writer.Bool(_aborted);
-  writer.Key("abortReason");
-  writer.String(_abort_reason.c_str());
+  begin_envelope(writer, "CONCOLIC_PATH_CONDITION_RANGE", context);
   writer.Key("contextId");
-  writer.Int64(_context_id);
+  writer.Int64(context == NULL ? 0 : context->_context_id);
   writer.Key("ownerJavaThreadId");
-  writer.Int64(_owner_java_thread_id);
+  writer.Int64(context == NULL ? 0 : context->_owner_java_thread_id);
   writer.Key("startIndex");
   writer.Int(start);
   writer.Key("endIndex");
@@ -114,9 +142,23 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
   writer.Int(watermark);
   writer.Key("conditionCount");
   writer.Int(end - start);
+  // This window's conjunction is not restated here.  It is by construction the
+  // left fold of `conditions` in the order they appear, so inlining it copied
+  // every condition of the window a second time into the same document --
+  // measured at 3,291,838 of 6,591,143 characters for one whole-thread window
+  // -- and built one op_land node per condition to do it.  Nothing is dropped
+  // and nothing is sampled: `conditions` is the complete window and
+  // `conditionCount` its exact length, so a reader that wants the guard folds
+  // what it already has, and an empty window folds to `true`.
   writer.Key("conditions");
-  const int emitted_range_conditions =
-      _path_condition.serialize_range(writer, start, end);
+  int emitted_range_conditions = 0;
+  if (context == NULL) {
+    writer.StartArray();
+    writer.EndArray();
+  } else {
+    emitted_range_conditions =
+        context->_path_condition.serialize_range(writer, start, end);
+  }
   // What `conditions` actually holds.  serialize_range() emits one entry per
   // index it visits -- a truncated or absent expression becomes a named
   // TruncatedExpression rather than a hole -- so this equals conditionCount
@@ -126,31 +168,9 @@ std::string ThreadContext::get_path_condition_range(int start, int end) {
   // truncation from a length.
   writer.Key("emittedConditionCount");
   writer.Int(emitted_range_conditions);
-  // Where this window's conjunction is, rather than a second copy of it.
-  //
-  // The fold used to be inlined here as `conjunction`, and it is by
-  // construction the left fold of `conditions` in the order they appear:
-  // both walk exactly the recorded conditions of [startIndex, endIndex), in
-  // index order, and the fold combines them with `&&` associating to the
-  // left.  Inlining it therefore restated every condition of the window a
-  // second time in the same document -- measured at 3,291,838 of 6,591,143
-  // characters for one whole-thread window, with 277 `&&` nodes -- and built
-  // one op_land node per condition to do it.
-  //
-  // Nothing is dropped and nothing is sampled: `conditions` is the complete
-  // window and `conditionCount` its exact length, so a reader that wants the
-  // guard folds what it already has, and an empty window folds to the empty
-  // conjunction -- which denotes `true` and needs no node.
-  writer.Key("conjunctionInline");
-  writer.Bool(false);
-  writer.Key("conjunctionSource");
-  writer.String("conditions[0,conditionCount) folded left with &&");
-  writer.Key("conjunctionAuthority");
-  writer.String("VM_THREAD_PATH_CONDITION_RANGE_FOLD_V1");
   writer.Key("authority");
   writer.String("VM_THREAD_PATH_CONDITION_RANGE_V1");
-  expression_artifact.write_table(writer);
-  writer.EndObject();
+  end_envelope(writer, &expression_artifact);
   return std::string(buffer.GetString(), buffer.GetLength());
 }
 
@@ -321,40 +341,27 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
 
 }
 
-std::string ThreadContext::get_branch_events() const {
+std::string ThreadContext::serialize_branch_events(
+    const ThreadContext *context) {
   using namespace rapidjson;
   const RegionFrame *frame =
-      _region_stack.empty() ? NULL : _region_stack.back();
+      (context == NULL || context->_region_stack.empty())
+          ? NULL : context->_region_stack.back();
   StringBuffer buffer;
   Writer<StringBuffer> writer(buffer);
-  writer.StartObject();
-  writer.Key("schemaVersion");
-  writer.Int(1);
-  writer.Key("kind");
-  writer.String("CONCOLIC_THREAD_BRANCH_EVENTS");
-  // The symbolic universe these ids belong to.  An id is only comparable
-  // against another id minted by the same session, so every envelope that
-  // carries ids names the session that minted them.
-  writer.Key("sessionId");
-  writer.Int64(GlobalSymbolicSession::session_id());
-  writer.Key("active");
-  writer.Bool(!_aborted);
-  writer.Key("aborted");
-  writer.Bool(_aborted);
-  writer.Key("abortReason");
-  writer.String(_abort_reason.c_str());
+  begin_envelope(writer, "CONCOLIC_THREAD_BRANCH_EVENTS", context);
   writer.Key("contextId");
-  writer.Int64(_context_id);
+  writer.Int64(context == NULL ? 0 : context->_context_id);
   writer.Key("ownerJavaThreadId");
-  writer.Int64(_owner_java_thread_id);
+  writer.Int64(context == NULL ? 0 : context->_owner_java_thread_id);
   writer.Key("ownerOsThreadId");
-  writer.Int64(_owner_os_thread_id);
+  writer.Int64(context == NULL ? 0 : context->_owner_os_thread_id);
   writer.Key("regionId");
-  writer.String(get_region_id().c_str());
+  writer.String(context == NULL ? "" : context->get_region_id().c_str());
   writer.Key("taskId");
-  writer.String(get_task_id().c_str());
+  writer.String(context == NULL ? "" : context->get_task_id().c_str());
   writer.Key("regionDepth");
-  writer.Int(region_depth());
+  writer.Int(context == NULL ? 0 : context->region_depth());
   writer.Key("events");
   writer.StartArray();
   const size_t event_count = frame == NULL ? 0 : frame->branch_events.size();
@@ -387,7 +394,9 @@ std::string ThreadContext::get_branch_events() const {
     writer.EndObject();
   }
   writer.EndArray();
-  writer.EndObject();
+  // No expressions are serialized here: an event names path-condition indices
+  // rather than nodes, so this envelope carries no expression table.
+  end_envelope(writer, NULL);
   return std::string(buffer.GetString(), buffer.GetLength());
 }
 
