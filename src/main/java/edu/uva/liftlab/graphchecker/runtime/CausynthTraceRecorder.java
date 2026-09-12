@@ -322,10 +322,11 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
     }
 
-    public static void exitMethod(long callId, Object returnValue,
-                                  String primitiveValue) {
-        ActiveCall call = activeCall(callId);
-        long resolvedCallId = call == null ? callId : call.callId;
+    /** Normal exit resolved from the current thread-local call stack. */
+    public static void exitActiveMethod(Object returnValue,
+                                        String primitiveValue) {
+        ActiveCall call = activeCall(0L);
+        long resolvedCallId = call == null ? 0L : call.callId;
         closeCallSites(resolvedCallId, "CALL_SITE_INCOMPLETE");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_NORMAL",
                 call == null ? "" : call.method, resolvedCallId);
@@ -339,15 +340,15 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Normal exit resolved from the current thread-local call stack. */
-    public static void exitActiveMethod(Object returnValue,
-                                        String primitiveValue) {
-        exitMethod(0L, returnValue, primitiveValue);
-    }
-
-    public static void throwMethod(long callId, Throwable throwable) {
-        ActiveCall call = activeCall(callId);
-        long resolvedCallId = call == null ? callId : call.callId;
+    /**
+     * Exceptional-exit hook that resolves the call id from the thread-local
+     * call stack.  The injected catch-all handler deliberately does not read
+     * the synthetic long local: some JVM/Soot stack-map combinations do not
+     * keep that local live at an exceptional handler entry.
+     */
+    public static void throwActiveMethod(Throwable throwable) {
+        ActiveCall call = activeCall(0L);
+        long resolvedCallId = call == null ? 0L : call.callId;
         String exceptionType = throwable == null ? "" : throwable.getClass().getName();
         closeCallSites(resolvedCallId, "CALL_SITE_THROW");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_THROW",
@@ -365,16 +366,6 @@ public final class CausynthTraceRecorder {
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
         }
-    }
-
-    /**
-     * Exceptional-exit hook that resolves the call id from the thread-local
-     * call stack.  The injected catch-all handler deliberately does not read
-     * the synthetic long local: some JVM/Soot stack-map combinations do not
-     * keep that local live at an exceptional handler entry.
-     */
-    public static void throwActiveMethod(Throwable throwable) {
-        throwMethod(0L, throwable);
     }
 
     /** Removes the current lite activation without emitting an exit row. */

@@ -18,8 +18,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
 
 /** Scheduled work for one causal-skeleton region occurrence. */
 public final class ExecutionTask extends PlanRow {
-    /** Planner-selected function entry for one concrete interaction corridor. */
-    public static final String REPLAY_ENTRY = "replayEntry";
     /** Member a scheduler declares this task's symbolic carriers in. */
     public static final String SHARED_CARRIERS = "sharedCarriers";
     /** Solver-selected concrete values for exact guarded primitive reads. */
@@ -212,10 +210,7 @@ public final class ExecutionTask extends PlanRow {
     }
 
     public String rootMethod() {
-        String replay = string(object(encoded, REPLAY_ENTRY), "method");
-        return replay.isEmpty()
-                ? string(object(encoded, "rootSelector"), "method")
-                : replay;
+        return string(object(encoded, "rootSelector"), "method");
     }
 
     public String targetMethod() { return string(encoded, "targetMethod"); }
@@ -304,17 +299,7 @@ public final class ExecutionTask extends PlanRow {
     }
 
     public JsonObject rootSelector() {
-        JsonObject selector = object(encoded, "rootSelector").deepCopy();
-        JsonObject replay = object(encoded, REPLAY_ENTRY);
-        if (replay.size() > 0) {
-            String method = require(string(replay, "method"),
-                    REPLAY_ENTRY + ".method");
-            String receiverClass = require(string(replay, "receiverClass"),
-                    REPLAY_ENTRY + ".receiverClass");
-            selector.addProperty("method", method);
-            selector.addProperty("receiverClass", receiverClass);
-        }
-        return selector;
+        return object(encoded, "rootSelector").deepCopy();
     }
 
     public InputActionCatalog inputActions() { return inputActions; }

@@ -143,7 +143,6 @@ public final class RegionInstancePlan extends PlanRow {
 
         void writeTaskPayloadTo(JsonObject target) {
             target.addProperty("goalId", goalId());
-            copyIfPresent(encoded, target, ExecutionTask.REPLAY_ENTRY);
             // Carrier declarations are the planner's and only the replay can
             // act on them.  An absent member stays absent: inventing one would
             // version a location the target slice never asked about.
