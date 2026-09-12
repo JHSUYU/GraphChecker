@@ -664,7 +664,7 @@ public final class ClaimPolicy {
                 String value = element.isJsonObject()
                         ? optionalString(element.getAsJsonObject(), "value")
                         : "";
-                vector.append(value).append(' ');
+                vector.append(value).append('\0');
                 if (!isZero(value)) {
                     allZero = false;
                 }
