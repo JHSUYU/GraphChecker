@@ -1020,7 +1020,6 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         Map<String, Map<String, Object>> planByOccurrence =
                 new LinkedHashMap<>();
-        OccurrenceMinter minter = new OccurrenceMinter();
         // occurrenceId is frozen evidence identity, not a replay address.
         // Replay therefore carries its own ordinal inside the exact stable
         // root/request scope.  Reserve ordinals for every observed activation
@@ -1062,9 +1061,8 @@ final class RuntimeRegionPlanner {
             MethodEvent semanticContext = target
                     ? trace.selectedTargetContext(root, calls, branches)
                     : root;
-            // The same upgrade the activation seed was stamped with, applied
-            // to the same call set, so the identity this stage mints and the
-            // one the finalizer minted are one answer and not two.
+            // The same upgrade the activation seed was stamped with,
+            // applied to the same call set.
             List<SourceRef> stamped = stampedSources(calls, trace);
             SourceRef rootSource = activationSource(root, stamped);
             SourceRef source = semanticContext.source != null
@@ -1072,13 +1070,11 @@ final class RuntimeRegionPlanner {
             int replayInvocationOrdinal = replayInvocationOrdinals.merge(
                     replayInvocationScope(regionId, root, rootSource,
                             semanticContext), 1, Integer::sum);
-            // Activation identity is minted before any port, edge, demand or
-            // retention decision of this activation is read.
-            int occurrenceIndex = minter.reserveOrdinal(source.key(),
-                    regionId);
-            String occurrenceId = minter.mint(regionId, rootCallId,
-                    source.key(), occurrenceIndex);
-            requireFinalizedOccurrence(seed, occurrenceId);
+            // The region finalizer mints the one activation identity of
+            // the pipeline and stamps it onto this seed; an activation it
+            // did not retain carries none.
+            String occurrenceId = stringValue(seed.get("occurrenceId"));
+            if (occurrenceId.isEmpty()) continue;
             String recordedActivationId = activationId(root);
             String seededActivationId = stringValue(seed.get(
                     "activationId"));
@@ -1813,18 +1809,6 @@ final class RuntimeRegionPlanner {
                 && Boolean.TRUE.equals(branch.get("observed"))
                 && branch.get("requiredOutcome") instanceof Boolean
                 && !stringValue(branch.get("siteId")).isEmpty();
-    }
-
-    /** Fails closed when the identity this planner minted disagrees with the
-     * one the region finalizer already minted for the same activation. */
-    private static void requireFinalizedOccurrence(Map<String, Object> seed,
-                                                   String occurrenceId) {
-        String finalized = stringValue(seed.get("occurrenceId"));
-        if (!finalized.isEmpty() && !finalized.equals(occurrenceId)) {
-            throw new IllegalArgumentException("runtime activation occurrence "
-                    + "disagrees with the finalized identity: " + finalized
-                    + " != " + occurrenceId);
-        }
     }
 
     /** True when this row is bound to the occurrence, comparing occurrence

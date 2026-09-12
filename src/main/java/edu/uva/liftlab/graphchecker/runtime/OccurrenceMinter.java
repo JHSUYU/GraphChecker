@@ -19,8 +19,7 @@ import java.util.Set;
  * identity inside one frozen plan and never a replay address: replay addresses
  * an occurrence by the stable source, region root and causal anchor its plan
  * row carries.  An ordinal is reserved for every observed activation, retained
- * or not, so the finalizer and the planner mint the same identity from the
- * same seed list at two stages.</p>
+ * or not, so retention never renumbers the activations that survive it.</p>
  */
 public final class OccurrenceMinter {
     /** Declared source of a workload whose tracing registered none. */
@@ -33,8 +32,8 @@ public final class OccurrenceMinter {
 
     /**
      * Reserves this activation's ordinal, once per observed activation, in
-     * recorded seed order and before any retention decision.  The counter is
-     * scoped by source and region and by nothing else - the same pair
+     * recorded activation order and before any retention decision.  The
+     * counter is scoped by source and region and by nothing else - the same pair
      * {@link #occurrenceId} names - because a narrower scope would restart the
      * count inside one source and mint one identity twice.
      */
@@ -45,7 +44,7 @@ public final class OccurrenceMinter {
     }
 
     /**
-     * Mints the activation identity.  Two seeds naming one observed
+     * Mints the activation identity.  Two records naming one observed
      * activation, or two activations minting one occurrence, would corrupt
      * identity at the boundary where trace evidence is consumed; both fail
      * closed here.
