@@ -75,10 +75,19 @@ emit_fixture() {
       authority: "VM_READ_TIME_CANDIDATE_SNAPSHOT_V1",
       complete: true, reads: []}, gaps: []}' \
     >"${composition_manifest}"
-  jq -n '{schemaVersion: 3, kind: "BOOLEAN_REACH_CONDITION_REPORT",
+  # The reach report carries the ClaimPolicy decision the solver stage made
+  # from it. EMIT publishes that decision; it does not re-derive one, so the
+  # fixture states the claim exactly as ClaimPolicy states it.
+  jq -n '{schemaVersion: 4, kind: "BOOLEAN_REACH_CONDITION_REPORT",
     state: "sat", reachCondition: {reachability: "REACHABLE",
       degeneracyCheck: "CONSTRAINED_ROOT_SPACE"},
-    unsatClosureComplete: false, gaps: [], valuations: []}' \
+    unsatClosureComplete: false, gaps: [],
+    valuations: [{values: [false], status: "sat"},
+                 {values: [true], status: "unsat"}],
+    campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
+      claim: "SAT_CANDIDATE",
+      claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
+      blockers: [], blockerCount: 0, whyNotAccepted: ""}}' \
     >"${reach_report}"
   printf '%s\n' \
     '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
@@ -94,6 +103,34 @@ emit_fixture() {
     members: [{role: "TARGET", taskId: "task-target",
                obligationDigests: []}]}' \
     >"${emit_iteration}/iteration_manifest.json"
+}
+
+# The same fixture as the solver stage published it for hdfs-17899-bug3: a
+# REACHABLE formula whose degeneracy question ClaimPolicy could not decide,
+# whose Boolean root never flips satisfiability, and whose experiment declares
+# wire flows the composition never realized.
+emit_fixture_undecided_roots() {
+  emit_fixture
+  jq -n '{schemaVersion: 4, kind: "BOOLEAN_REACH_CONDITION_REPORT",
+    state: "CANDIDATE_READY", reachCondition: {reachability: "REACHABLE",
+      degeneracyCheck: "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9"},
+    unsatClosureComplete: false, gaps: [],
+    valuations: [{values: [false], status: "sat"},
+                 {values: [true], status: "sat"}],
+    campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
+      claim: "INCONCLUSIVE_PARTIAL",
+      claimReason: "3 blocker(s) withhold an accepted claim from a REACHABLE solver result: UNDECIDED_ROOT_SPACE,TARGET_UNCONSTRAINED_BY_ROOTS,DECLARED_WIRE_FLOWS_UNREALIZED",
+      blockerCount: 3,
+      blockers: [
+        {code: "UNDECIDED_ROOT_SPACE",
+         subject: "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9",
+         detail: "the degeneracy question was not decided"},
+        {code: "TARGET_UNCONSTRAINED_BY_ROOTS", subject: "",
+         detail: "no symbolic root flips the target predicate"},
+        {code: "DECLARED_WIRE_FLOWS_UNREALIZED", subject: "2",
+         detail: "the experiment declares 2 WIRE_FLOW(s) and the composition realized no consumer boundary family"}],
+      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 3 blocker(s) withhold acceptance\n  UNDECIDED_ROOT_SPACE [UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9]: the degeneracy question was not decided\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  DECLARED_WIRE_FLOWS_UNREALIZED [2]: the experiment declares 2 WIRE_FLOW(s) and the composition realized no consumer boundary family")}}' \
+    >"${reach_report}"
 }
 
 run_emit() {
@@ -137,6 +174,53 @@ jq -e '[.telemetryGaps[]
 jq -e '[.gaps[] | select(.code == "PATH_FLIP_SOLVER_TIMEOUT")] | length == 0' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "the solver-timeout path gap blocked an accepted SAT candidate"
+# An accepted claim has nothing to explain, and says so with an empty string
+# rather than by omitting the field the owner reads.
+jq -e '.blockers == [] and .blockerCount == 0 and .whyNotAccepted == ""' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an accepted claim published blockers"
+
+# An undecided root space is no longer a witness. The claim ClaimPolicy
+# decided is published with every named blocker and one readable summary, and
+# the run exits 2 because it named no accepted candidate.
+emit_fixture_undecided_roots
+run_emit
+[[ "${emit_status}" -eq 2 ]] \
+  || fail "an undecided root space was accepted (exit ${emit_status}): \
+$(<"${emit_root}/emit.log")"
+[[ $(jq -r '.claim' "${campaign_final}/result.json") \
+    == INCONCLUSIVE_PARTIAL ]] \
+  || fail "the undecided root space did not publish INCONCLUSIVE_PARTIAL"
+jq -e '[.blockers[].code] == ["UNDECIDED_ROOT_SPACE",
+    "TARGET_UNCONSTRAINED_BY_ROOTS", "DECLARED_WIRE_FLOWS_UNREALIZED"]
+  and .blockerCount == 3' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the result did not publish the named blockers: \
+$(jq -c '.blockers' "${campaign_final}/result.json")"
+# The one view: a header plus one line per blocker, printed and recorded.
+[[ $(jq -r '.whyNotAccepted' "${campaign_final}/result.json" \
+      | wc -l) -eq 4 ]] \
+  || fail "whyNotAccepted does not name one blocker per line"
+grep -q 'DECLARED_WIRE_FLOWS_UNREALIZED' "${emit_root}/emit.log" \
+  || fail "EMIT did not print the blocker summary"
+# A stage-local FINAL_READY with zero aggregate gaps is exactly the state the
+# jq gate accepted. EMIT publishes the policy's claim over it.
+jq -e '.finalStatus == "FINAL_READY" and .gapCount == 0' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the withheld fixture no longer reproduces the accepted state"
+
+# The claim has one home. A reach report without the policy's decision is a
+# report EMIT may not publish a result from.
+emit_fixture
+jq 'del(.campaignClaim)' "${reach_report}" >"${reach_report}.tmp"
+mv "${reach_report}.tmp" "${reach_report}"
+run_emit
+[[ "${emit_status}" -ne 0 ]] \
+  || fail "a reach report with no ClaimPolicy decision was published"
+grep -q 'no ClaimPolicy decision' "${emit_root}/emit.log" \
+  || fail "the missing claim was not named: $(<"${emit_root}/emit.log")"
+[[ ! -e "${campaign_final}/result.json" ]] \
+  || fail "a result was published without a claim"
 
 # A published obligation wave records a solver timeout instead of failing the
 # campaign, and contributes only its exploration record: no new path case.

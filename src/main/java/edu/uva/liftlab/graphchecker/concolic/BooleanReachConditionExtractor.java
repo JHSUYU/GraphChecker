@@ -65,7 +65,8 @@ public final class BooleanReachConditionExtractor {
                 array(manifest, "caseSelectorPartitions"),
                 arguments.workers);
         JsonObject report = extract(smt, manifest, solver,
-                arguments.maxInputs, arguments.maxValuations);
+                arguments.maxInputs, arguments.maxValuations,
+                ClaimPolicy.declaredWireFlows(arguments.mappings));
         report.add("solverAttempts", solver.attempts());
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
@@ -79,8 +80,35 @@ public final class BooleanReachConditionExtractor {
                               Z3Solver solver,
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
+        return extract(composedSmt, manifest, solver, maxInputs,
+                maxValuations, 0);
+    }
+
+    /**
+     * The report, with the campaign claim decided from it.  Every exit from
+     * {@link #reachReport} publishes a reach condition, so the one gate that
+     * reads one runs here rather than in each caller: the report and the
+     * claim it justifies are published together or not at all.
+     */
+    static JsonObject extract(String composedSmt, JsonObject manifest,
+                              Z3Solver solver,
+                              int maxInputs, int maxValuations,
+                              int declaredWireFlows)
+            throws IOException, InterruptedException {
+        JsonObject report = reachReport(composedSmt, manifest, solver,
+                maxInputs, maxValuations);
+        report.add(ClaimPolicy.CLAIM,
+                ClaimPolicy.decide(manifest, report, declaredWireFlows));
+        return report;
+    }
+
+    private static JsonObject reachReport(String composedSmt,
+                                          JsonObject manifest,
+                                          Z3Solver solver,
+                                          int maxInputs, int maxValuations)
+            throws IOException, InterruptedException {
         JsonObject report = new JsonObject();
-        report.addProperty("schemaVersion", 3);
+        report.addProperty("schemaVersion", 4);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
         boolean guardedReadModelComplete =
                 optionalBool(manifest, "guardedReadModelComplete", false);
@@ -1730,6 +1758,7 @@ public final class BooleanReachConditionExtractor {
         private int maxInputs = 12;
         private int maxValuations = 4096;
         private int workers = 8;
+        private String mappings = "";
 
         private static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<>();
@@ -1764,6 +1793,7 @@ public final class BooleanReachConditionExtractor {
             result.maxValuations = positiveInt(values.get(
                     "max-valuations"), 4096);
             result.workers = positiveInt(values.get("workers"), 8);
+            result.mappings = firstNonBlank(values.get("mappings"));
             return result;
         }
 
@@ -1774,7 +1804,8 @@ public final class BooleanReachConditionExtractor {
                     || "timeout-ms".equals(key)
                     || "max-inputs".equals(key)
                     || "max-valuations".equals(key)
-                    || "workers".equals(key);
+                    || "workers".equals(key)
+                    || "mappings".equals(key);
         }
 
         private static Path required(Map<String, String> values,

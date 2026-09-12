@@ -225,7 +225,54 @@ manifest reports consumer-boundary families, case-to-PC dependencies,
 GuardedRead choices, field versions and reads, propagation gaps, and
 final-status refusals. `FINAL_READY` means the emitted formula has all
 selectors, path conditions, and propagated values needed for a sound SAT
-witness. Open path, propagation, and bounded-candidate coverage remains
-telemetry and prevents only a closed UNSAT conclusion. The generated SMT
-therefore follows the recorded causal chain directly from explicit roots
-through propagated consumer expressions to the target condition.
+witness. `FINAL_READY` is stage-local: it states that the formula is complete,
+not that the campaign proved anything. Open path, propagation, and
+bounded-candidate coverage remains telemetry and prevents only a closed UNSAT
+conclusion. The generated SMT therefore follows the recorded causal chain
+directly from explicit roots through propagated consumer expressions to the
+target condition.
+
+## The claim
+
+`ClaimPolicy` decides what a campaign proved, once, and publishes that
+decision inside the reach-condition report as `campaignClaim`. The EMIT stage
+of `run_engine.sh` copies `claim`, `claimReason`, `blockers` and
+`whyNotAccepted` from it into `result.json` and refuses to publish a result
+from a reach report that carries no decision; it derives no verdict of its
+own. `ClaimPolicy` can be replayed on any published pair of artifacts:
+
+```bash
+java -cp GraphChecker.jar edu.uva.liftlab.graphchecker.concolic.ClaimPolicy \
+  --manifest schedule/final/candidate_composition_manifest.json \
+  --reach schedule/final/z3-result.json \
+  --mappings experiments/hadoop/<case>/communication-mappings.jsonl
+```
+
+A claim is accepted only when no blocker is named. `SAT_CANDIDATE` needs a
+`REACHABLE` solver result, `UNSAT_CLOSED` an `UNREACHABLE` one; everything
+else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
+(`code`, `subject`, `detail`) and one line of `whyNotAccepted`.
+
+| Blocker | Named when |
+| --- | --- |
+| `COMPOSER_NOT_FINAL_READY` | the manifest's `finalStatus` is not `FINAL_READY` |
+| `COMPOSITION_GAPS_UNRESOLVED` | a Composer refusal or a solver gap is open -- the same rows EMIT counts in `gaps.json` |
+| `DEGENERATE_ROOT_SPACE` | `degeneracyCheck` is `DEGENERATE_*`: the target provably ignores every root |
+| `UNDECIDED_ROOT_SPACE` | `degeneracyCheck` is `UNDECIDED_*`: the question was never decided, so it is not answered |
+| `TARGET_UNCONSTRAINED_BY_ROOTS` | a `REACHABLE` result where no single root flip changes satisfiability and no existential perturbation was rejected |
+| `DECLARED_WIRE_FLOWS_UNREALIZED` | `communication-mappings.jsonl` declares `WIRE_FLOW`s and the manifest realized no consumer boundary family |
+| `WITNESS_UNINFORMATIVE` | the existential witness is every-zero, or identical under every satisfying valuation, while no perturbation of it was rejected |
+| `SOLVER_UNDECIDED_VALUATIONS` | the solver returned neither sat nor unsat on an enumerated valuation |
+| `UNSAT_CLOSURE_INCOMPLETE` | an `UNREACHABLE` result without closed selected-path authority |
+| `NO_EXACT_REACHABILITY` | the solver stage reached no exact reachability decision |
+
+The root-space rule is the one the previous jq gate did not have. A witness is
+evidence only if the target predicate depends on a symbolic root: two
+enumerated valuations that differ in exactly one Boolean root and disagree on
+satisfiability show that dependence, and so does a rejected existential
+perturbation. Without either, the formula and the roots are disconnected and
+the witness names nothing, whatever the formula satisfies. That check does not
+apply to an `UNREACHABLE` result, which has no witness to tie to a root.
+
+`UNSAT_CLOSURE_INCOMPLETE` is required for `UNSAT_CLOSED` and for nothing
+else: one connected SAT witness stays valid while sibling paths are open.

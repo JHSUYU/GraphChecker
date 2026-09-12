@@ -82,6 +82,11 @@ public class BooleanReachConditionExtractorSolverTest {
 
         assertEquals("CANDIDATE_READY", report.get("state").getAsString());
         assertEquals(0, report.getAsJsonArray("gaps").size());
+        // Every report carries the one claim decided from it, so no caller
+        // can read a reach condition without the verdict it justifies.
+        assertEquals("CAMPAIGN_CLAIM",
+                report.getAsJsonObject(ClaimPolicy.CLAIM).get("kind")
+                        .getAsString());
     }
 
     @Test

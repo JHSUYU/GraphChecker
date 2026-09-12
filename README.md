@@ -170,12 +170,22 @@ published artifact. The frozen inputs themselves are not in `final/`: the
 private read-only copy of the tool the run executed is the `GraphChecker.jar`
 in `schedule/frozen-inputs/`. Accepted outcomes are:
 
-- `SAT_CANDIDATE`: a bounded witness was found.
+- `SAT_CANDIDATE`: a bounded witness was found and a symbolic root flips the
+  target predicate.
 - `UNSAT_CLOSED`: the composed bounded model is closed and unsatisfiable.
-- `INCONCLUSIVE_PARTIAL`: no accepted claim; inspect named gaps.
+- `INCONCLUSIVE_PARTIAL`: no accepted claim; read `whyNotAccepted`.
 
-A successful claim also requires zero aggregate gaps and matching fresh
-provenance. A zero process exit or an old SMT file is not sufficient.
+`ClaimPolicy` decides the claim and names every reason it is not accepted in
+`result.json`: one `blockers` row per reason and one `whyNotAccepted` line,
+which EMIT also prints. A claim is accepted only when that list is empty, so a
+run needs zero aggregate gaps, a root space the solver decided is constrained,
+every declared `WIRE_FLOW` realized as a consumer boundary family, a witness
+some root flips, and matching fresh provenance. Closed selected-path authority
+is required for `UNSAT_CLOSED` alone; open sibling paths leave a SAT candidate
+accepted. The Composer's `finalStatus: FINAL_READY` states that the formula is
+complete, not that the run was accepted. A zero process exit or an old SMT
+file is not sufficient. `docs/CONCOLIC_INTEGRATION.md` holds the whole blocker
+table, and the policy replays offline on any published `schedule/final/`.
 
 ## Development checks
 

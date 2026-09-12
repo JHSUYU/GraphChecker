@@ -605,7 +605,8 @@ do_reach() {
     --timeout-ms "${solver_timeout_ms}" \
     --workers "${concolic_worker_count}" \
     --max-inputs "${reach_max_inputs}" \
-    --max-valuations "${reach_max_valuations}"
+    --max-valuations "${reach_max_valuations}" \
+    --mappings "${causynth_communication_mappings}"
 }
 
 run_configured_workload() {
@@ -771,6 +772,22 @@ campaign_require_json() {
   }
   jq -e -s 'length == 1 and (.[0] | type) == "object"' \
     "${path}" >/dev/null
+}
+
+# The claim belongs to ClaimPolicy, so a reach report without one is a report
+# this stage may not publish a result from: falling back to a shell verdict
+# here is exactly the second gate this change removed.
+campaign_require_claim() {
+  local path=$1
+  jq -e '(.campaignClaim | type) == "object"
+    and ((.campaignClaim.claim // "")
+      | IN("SAT_CANDIDATE", "UNSAT_CLOSED", "INCONCLUSIVE_PARTIAL"))
+    and (.campaignClaim.blockers | type) == "array"
+    and (.campaignClaim.claimReason | type) == "string"
+    and (.campaignClaim.whyNotAccepted | type) == "string"' \
+    "${path}" >/dev/null \
+    || campaign_fail EMIT ClaimPolicy "${path}" \
+      "the reach report published no ClaimPolicy decision"
 }
 
 # Prints every explicit symbolic root without exposing internal SMT terms.
@@ -2874,7 +2891,11 @@ campaign_emit() {
     || campaign_fail EMIT CAMPAIGN "${campaign_final}/gaps.json" \
       "the generated gaps JSON is malformed"
 
-  # The claim is copied from the Composer and solver decisions.
+  # The claim is the ClaimPolicy decision the solver stage published with its
+  # own report.  Nothing here recomputes it: this stage copies the claim, its
+  # reason, and every named blocker, so one Java policy decides acceptance and
+  # the shell only publishes what it decided.
+  campaign_require_claim "${reach_report}"
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition_manifest}" \
@@ -2882,40 +2903,21 @@ campaign_emit() {
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | $reachDocuments[0] as $r |
     $gapDocuments[0] as $gaps |
+    ($r.campaignClaim) as $decided |
     ($r.reachCondition.reachability // "UNKNOWN") as $reachability |
     ($r.reachCondition.degeneracyCheck // "UNDECIDED") as $degeneracy |
     ($r.unsatClosureComplete // false) as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
-    ($c.finalStatus == "FINAL_READY"
-      and $gapCount == 0
-      and $degeneracy != "DEGENERATE_UNCONSTRAINED_ROOT_SPACE") as $accepted |
     {schemaVersion: 1,
      kind: "CAMPAIGN_RESULT",
      provenance: $provenance,
-     claim: (
-       if $accepted and $reachability == "REACHABLE" then "SAT_CANDIDATE"
-       elif $accepted and $reachability == "UNREACHABLE"
-            and $unsatClosureComplete then "UNSAT_CLOSED"
-       else "INCONCLUSIVE_PARTIAL" end),
-     claimReason: (
-       if ($c.finalStatus != "FINAL_READY") then
-         ("the Composer published finalStatus=" + ($c.finalStatus // "none")
-           + " with " + ($blockers | tostring) + " selected blocker(s): "
-           + (([$c.finalStatusRefusals[]? | .code] | unique | join(","))))
-       elif $degeneracy == "DEGENERATE_UNCONSTRAINED_ROOT_SPACE" then
-         "the target predicate is unconstrained by every symbolic root"
-       elif $gapCount != 0 then
-         ("the selected causal path set has " + ($gapCount | tostring)
-           + " unresolved gap(s)")
-       elif $reachability == "REACHABLE" then
-         "a valuation satisfies the target predicate inside the recorded model"
-       elif $reachability == "UNREACHABLE" and $unsatClosureComplete then
-         "no valuation satisfies the target predicate and the selected model is closed"
-       elif $reachability == "UNREACHABLE" then
-         "the solver reported no valuation but did not publish closed selected-path authority"
-       else "the solver stage reached no exact reachability decision" end),
+     claim: $decided.claim,
+     claimReason: $decided.claimReason,
+     blockers: $decided.blockers,
+     blockerCount: ($decided.blockers | length),
+     whyNotAccepted: $decided.whyNotAccepted,
      reachability: $reachability,
      degeneracyCheck: $degeneracy,
      solverState: ($r.state // ""),
@@ -2990,7 +2992,12 @@ campaign_emit() {
 
   gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
   campaign_log "artifacts in ${campaign_final}"
-  jq -r '"  claim=\(.claim) reachability=\(.reachability) gaps=\(.gapCount) telemetry=\(.telemetryCount) finalStatus=\(.finalStatus)"' \
+  jq -r '"  claim=\(.claim) reachability=\(.reachability) blockers=\(.blockerCount) gaps=\(.gapCount) telemetry=\(.telemetryCount) finalStatus=\(.finalStatus)"' \
+    "${campaign_final}/result.json"
+  # One view of why a run was not accepted, with a line per named blocker.
+  # finalStatus stays printed above as the stage-local state it is; this is
+  # the acceptance answer.
+  jq -r 'select((.whyNotAccepted // "") != "") | .whyNotAccepted' \
     "${campaign_final}/result.json"
   # A published artifact set is not an accepted candidate. A run that reached
   # no witness and no closed refutation exits nonzero with its own named
@@ -2999,6 +3006,8 @@ campaign_emit() {
     SAT_CANDIDATE|UNSAT_CLOSED) ;;
     *)
       jq -r '"[campaign] no accepted candidate: claim=\(.claim) reason=\(.claimReason)"' \
+        "${campaign_final}/result.json" >&2
+      jq -r 'select((.whyNotAccepted // "") != "") | .whyNotAccepted' \
         "${campaign_final}/result.json" >&2
       exit 2
       ;;
