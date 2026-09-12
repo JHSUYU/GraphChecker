@@ -163,6 +163,19 @@ apply_environment_overrides() {
   done
 }
 
+# Runs one command whose non-zero exit is an outcome the caller reads rather
+# than a failure, leaving that exit in the caller's `status`.  errexit is put
+# back the way it was, so a caller that is itself inside such a block stays
+# inside it.
+run_capturing_status() {
+  local errexit_was_set=0
+  [[ $- == *e* ]] && errexit_was_set=1
+  set +e
+  "$@"
+  status=$?
+  [[ "${errexit_was_set}" -eq 0 ]] || set -e
+}
+
 canonical_path() {
   realpath -m -- "$1"
 }
@@ -341,6 +354,15 @@ print_normalized_config() {
   done
 }
 
+# One workflow key whose value is a count: stated, numeric and above zero.
+require_positive_integer() {
+  local key=$1
+  case "${!key}" in
+    ''|*[!0-9]*) die "${key} must be a positive integer" ;;
+    0) die "${key} must be greater than zero" ;;
+  esac
+}
+
 validate_config() {
   local key
   local missing=0
@@ -366,30 +388,15 @@ validate_config() {
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
   fi
-  case "${solver_timeout_ms}" in
-    ''|*[!0-9]*) die "solver_timeout_ms must be a positive integer" ;;
-    0) die "solver_timeout_ms must be greater than zero" ;;
-  esac
-  case "${schedule_max_jobs}" in
-    ''|*[!0-9]*) die "schedule_max_jobs must be a positive integer" ;;
-    0) die "schedule_max_jobs must be greater than zero" ;;
-  esac
-  case "${reach_max_inputs}" in
-    ''|*[!0-9]*) die "reach_max_inputs must be a positive integer" ;;
-    0) die "reach_max_inputs must be greater than zero" ;;
-  esac
-  case "${reach_max_valuations}" in
-    ''|*[!0-9]*) die "reach_max_valuations must be a positive integer" ;;
-    0) die "reach_max_valuations must be greater than zero" ;;
-  esac
-  case "${concolic_worker_count}" in
-    ''|*[!0-9]*) die "concolic_worker_count must be a positive integer" ;;
-    0) die "concolic_worker_count must be greater than zero" ;;
-  esac
-  case "${campaign_max_iterations}" in
-    ''|*[!0-9]*) die "campaign_max_iterations must be a positive integer" ;;
-    0) die "campaign_max_iterations must be greater than zero" ;;
-  esac
+  # The bounds a campaign may not inherit. Left unstated, each would reach its
+  # stage as a bare flag and be read back as some default the artifacts never
+  # name -- a truncated schedule, an unbounded solve -- so a run without them
+  # does not start.
+  local key
+  for key in solver_timeout_ms schedule_max_jobs reach_max_inputs \
+      reach_max_valuations concolic_worker_count campaign_max_iterations; do
+    require_positive_integer "${key}"
+  done
   local bound
   for bound in "${region_path_max_paths_per_region}" \
       "${region_path_max_flips_per_path}" "${region_path_max_tasks}"; do
@@ -497,18 +504,10 @@ do_schedule() {
   )
   require_file "runtime-refined graph" "${refined_graph}"
   args+=(--refined-graph "${refined_graph}")
-  # The cap on how many candidates become replay jobs is stated, never
-  # inherited. Left unstated the scheduler falls back to one job, which keeps
-  # the first candidate of the plan and drops the rest; a schedule of one task
-  # is not an empty schedule, so the stage exits 0 and the truncation is
-  # invisible until a downstream stage refuses an artifact nobody wrote. An
-  # empty or non-numeric value would reach the parser as a bare flag and be
-  # read back as that same one, so it dies here instead.
-  case "${schedule_max_jobs}" in
-    ''|*[!0-9]*)
-      die "schedule_max_jobs must be a positive integer: '${schedule_max_jobs}'" ;;
-    0) die "schedule_max_jobs must be greater than zero" ;;
-  esac
+  # validate_config refuses an unstated cap: left to the scheduler's own
+  # fallback of one job it would keep the first candidate of the plan and drop
+  # the rest, and a schedule of one task is not an empty schedule, so the
+  # stage would exit 0 with the truncation invisible.
   args+=(--max-jobs "${schedule_max_jobs}")
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
@@ -524,7 +523,7 @@ do_schedule() {
 }
 
 do_import() {
-  local iteration_id=${1:-} key status=0 restore_errexit=0
+  local iteration_id=${1:-} key status=0
   [[ -n "${iteration_id//[[:space:]]/}" ]] \
     || die "import iteration id is required"
   require_file "raw concolic results" "${raw_concolic_results}"
@@ -538,9 +537,8 @@ do_import() {
     return "${campaign_cached_import_status}"
   fi
   campaign_log "cache miss IMPORT key=${key}"
-  [[ $- == *e* ]] && restore_errexit=1
-  set +e
-  run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
     --results "${raw_concolic_results}" \
     --task-plan "${import_task_plan}" \
     --runtime-plan "${runtime_region_plan}" \
@@ -548,8 +546,6 @@ do_import() {
     --diagnostics "${import_diagnostics}" \
     --topology-delta "${import_topology_delta}" \
     --iteration-id "${iteration_id}"
-  status=$?
-  [[ "${restore_errexit}" -eq 0 ]] || set -e
   campaign_store_import_cache "${key}" "${status}"
   return "${status}"
 }
@@ -1926,8 +1922,8 @@ campaign_replay() {
       | sha256sum | awk '{print $1}')
     replay_group="REPLAY.GROUP.${replay_group_seed}"
   fi
-  set +e
-  campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
+  run_capturing_status \
+    campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
     "CAUSYNTH_CONCOLIC_ROLE=${role}" \
     "CAUSYNTH_CONCOLIC_TASK_PLAN=${plan}" \
     "CAUSYNTH_CONCOLIC_TASK_ID=${ids}" \
@@ -1937,8 +1933,6 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_REPLAY_GROUP_ID=${replay_group}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" >"${worker}/replay.log" 2>&1
-  status=$?
-  set -e
   # A workload whose target branch throws exits nonzero by design, so the gate
   # is the evidence it published and not its exit code. An empty result is
   # always a failure, and it is reported with the path that is empty.
@@ -1971,10 +1965,7 @@ campaign_import_session() {
   imported_summaries="${summaries}"
   import_diagnostics="${seed}/import_diagnostics.jsonl"
   import_topology_delta="${seed}/topology_delta.jsonl"
-  set +e
-  do_import "${iteration_id}"
-  status=$?
-  set -e
+  run_capturing_status do_import "${iteration_id}"
   if [[ "${status}" -ne 0 ]]; then
     [[ ! -s "${import_diagnostics}" ]] \
       || jq -c . "${import_diagnostics}" >&2 || true
@@ -2069,6 +2060,21 @@ campaign_report_wave() {
     | LC_ALL=C sort)
 }
 
+# One terminal exploration record: the solver's own result for this query,
+# stamped with the query it answers, the tasks it linked and why this is the
+# end of it.  Three call sites used to spell the same object literal.
+campaign_record_exploration() {
+  local worker=$1 key=$2 tasks=$3 record_status=$4 reason=$5
+  jq -c --arg key "${key}" --arg tasks "${tasks}" \
+    --arg status "${record_status}" --arg reason "${reason}" \
+    '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
+      linkedTaskIds: ($tasks | split(",")), status: $status, reason: $reason}' \
+    "${worker}/path_flip_solver_result.json" \
+    >"${worker}/exploration_record.jsonl"
+  require_nonempty "path exploration record" \
+    "${worker}/exploration_record.jsonl"
+}
+
 # One obligation: solve the flip, replay it in its own fresh workload instance,
 # strictly import the result, and admit it only against its own planned task.
 campaign_worker_task() {
@@ -2076,16 +2082,14 @@ campaign_worker_task() {
   local outcome replay_tasks primary_replay_task reason status=0
   local raw="${worker}/concolic_region_results.jsonl"
   local imported="${worker}/concolic_region_summaries.jsonl"
-  set +e
-  run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
     --worklist "${worklist}" \
     --task-plan "${tasks}" \
     --query-key "${query_key}" \
     --output-dir "${worker}" \
     --z3 "${z3_bin}" \
     --solver-timeout-ms "${solver_timeout_ms}"
-  status=$?
-  set -e
   require_nonempty "path solver result" \
     "${worker}/path_flip_solver_result.json"
   [[ "${status}" -eq 0 ]] || die "the path solver failed with exit ${status}"
@@ -2120,10 +2124,7 @@ campaign_worker_task() {
   imported_summaries="${imported}"
   import_diagnostics="${worker}/import_diagnostics.jsonl"
   import_topology_delta="${worker}/topology_delta.jsonl"
-  set +e
-  do_import "${iteration_id}"
-  status=$?
-  set -e
+  run_capturing_status do_import "${iteration_id}"
   if [[ "${status}" -ne 0 && ! -s "${import_diagnostics}" ]]; then
     die "the importer failed without a semantic diagnostic for ${query_key} (exit ${status})"
   fi
@@ -2133,13 +2134,9 @@ campaign_worker_task() {
     [[ ! -s "${imported}" ]] || mv "${imported}" \
       "${worker}/quarantined_concolic_region_summaries.jsonl"
     : >"${imported}"
-    jq -c --arg key "${query_key}" --arg tasks "${replay_tasks}" \
-      '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-        linkedTaskIds: ($tasks | split(",")),
-        status: "BUNDLE_TOPOLOGY_DIVERGENCE",
-        reason: "linked replay left the frozen topology epoch"}' \
-      "${worker}/path_flip_solver_result.json" \
-      >"${worker}/exploration_record.jsonl"
+    campaign_record_exploration "${worker}" "${query_key}" \
+      "${replay_tasks}" BUNDLE_TOPOLOGY_DIVERGENCE \
+      "linked replay left the frozen topology epoch"
     : >"${worker}/../../../../.linked-topology-divergence"
     return 0
   fi
@@ -2151,15 +2148,8 @@ campaign_worker_task() {
           | map(select(length > 0)) | join(": "))
       | map(select(length > 0)) | unique | join(" | ")
     ' "${import_diagnostics}")
-    jq -c --arg key "${query_key}" --arg tasks "${replay_tasks}" \
-      --arg reason "${reason}" \
-      '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-        linkedTaskIds: ($tasks | split(",")),
-        status: "REPLAY_NOT_ADMITTED", reason: $reason}' \
-      "${worker}/path_flip_solver_result.json" \
-      >"${worker}/exploration_record.jsonl"
-    require_nonempty "path exploration record" \
-      "${worker}/exploration_record.jsonl"
+    campaign_record_exploration "${worker}" "${query_key}" \
+      "${replay_tasks}" REPLAY_NOT_ADMITTED "${reason}"
     campaign_log "flip ${query_key}: replay admitted no case; recorded REPLAY_NOT_ADMITTED"
     return 0
   fi
@@ -2171,12 +2161,9 @@ campaign_worker_task() {
     ' "${worker}/execution_task_plan.jsonl")
   if ! jq -e -s --arg task "${primary_replay_task}" \
       'any(.[]; .taskId == $task)' "${imported}" >/dev/null; then
-    jq -c --arg key "${query_key}" --arg tasks "${replay_tasks}" \
-      '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-        linkedTaskIds: ($tasks | split(",")), status: "REPLAY_NOT_ADMITTED",
-        reason: "linked replay admitted companion cases but no primary flip case"}' \
-      "${worker}/path_flip_solver_result.json" \
-      >"${worker}/exploration_record.jsonl"
+    campaign_record_exploration "${worker}" "${query_key}" \
+      "${replay_tasks}" REPLAY_NOT_ADMITTED \
+      "linked replay admitted companion cases but no primary flip case"
     campaign_log "flip ${query_key}: primary case was not admitted"
     return 0
   fi
@@ -2270,15 +2257,12 @@ campaign_target_reach_query() {
     campaign_fail EXPLORE TargetReachPathQueryBuilder "${resolved}" \
       "no target attestation names the selected exception"
   fi
-  set +e
-  run_java_main \
+  run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.concolic.TargetReachPathQueryBuilder \
     --summaries "${member}/observed_path_summaries.jsonl" \
     --path-manifest "${member}/path_closure.json" \
     --seed-query "${iteration_dir}/seed-query/branch_queries.jsonl" \
     --output "${member}/reach_query.jsonl" >/dev/null
-  status=$?
-  set -e
   if [[ "${status}" -ne 0 || ! -s "${member}/reach_query.jsonl" ]]; then
     campaign_fail EXPLORE TargetReachPathQueryBuilder "${member}" \
       "TargetReachPathQueryBuilder published no exact reach query (exit ${status})"
@@ -2634,10 +2618,7 @@ campaign_compose() {
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
   fatal_region="${target_region}"
   fatal_occurrence_id="${target_occurrence}"
-  set +e
-  do_compose >/dev/null
-  status=$?
-  set -e
+  run_capturing_status do_compose >/dev/null
   [[ "${status}" -eq 0 ]] || campaign_fail COMPOSE ConcolicSmtComposer \
     "${composition_manifest}" \
     "the Composer failed with exit ${status} on inputs it was given"
@@ -2650,10 +2631,7 @@ campaign_compose() {
 campaign_solve() {
   local status=0
   reach_report="${campaign_final}/z3-result.json"
-  set +e
-  do_reach >/dev/null
-  status=$?
-  set -e
+  run_capturing_status do_reach >/dev/null
   require_nonempty "Z3 result" "${reach_report}"
   [[ "${status}" -eq 0 || "${status}" -eq 2 ]] \
     || die "the solver stage failed with exit ${status}: ${reach_report}"

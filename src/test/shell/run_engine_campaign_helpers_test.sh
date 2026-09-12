@@ -222,4 +222,39 @@ printf 'one\n' >"${digest_root}/tree/a.txt"
 campaign_kind_digest bogus x >/dev/null 2>&1 \
   && fail "an unknown frozen input kind produced a digest"
 
+# A non-zero exit that is data leaves errexit exactly as it found it.
+status=0
+run_capturing_status bash -c 'exit 7'
+[[ "${status}" -eq 7 ]] || fail "run_capturing_status lost the exit status"
+[[ $- == *e* ]] || fail "run_capturing_status did not restore errexit"
+set +e
+run_capturing_status bash -c 'exit 0'
+[[ $- != *e* ]] || fail "run_capturing_status turned errexit on"
+set -e
+capture_out="${test_tmp}/capture.log"
+run_capturing_status bash -c 'echo captured; exit 3' >"${capture_out}"
+[[ "${status}" -eq 3 && "$(cat "${capture_out}")" == "captured" ]] \
+  || fail "run_capturing_status dropped the command's redirection"
+
+# A stated count is numeric and above zero, named by its own key.
+positive_key=4
+require_positive_integer positive_key \
+  || fail "a positive count was refused"
+for positive_key in "" abc 0 -1 "3 4"; do
+  ( require_positive_integer positive_key ) 2>/dev/null \
+    && fail "an invalid count was accepted: '${positive_key}'"
+done
+
+# One terminal exploration record, written from the solver's own result.
+record_worker="${test_tmp}/record-worker"
+mkdir -p "${record_worker}"
+printf '%s\n' '{"queryKey":"k","status":"SAT_MODEL_READY","reason":"x"}' \
+  >"${record_worker}/path_flip_solver_result.json"
+campaign_record_exploration "${record_worker}" k "t1,t2" \
+  REPLAY_NOT_ADMITTED "no primary"
+[[ "$(cat "${record_worker}/exploration_record.jsonl")" == \
+    '{"queryKey":"k","status":"REPLAY_NOT_ADMITTED","reason":"no primary","schemaVersion":1,"kind":"PATH_EXPLORATION_RECORD","linkedTaskIds":["t1","t2"]}' ]] \
+  || fail "the exploration record is not the bytes it used to be: \
+$(cat "${record_worker}/exploration_record.jsonl")"
+
 echo "run_engine campaign helper tests passed"
