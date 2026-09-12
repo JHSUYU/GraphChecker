@@ -40,27 +40,23 @@ public final class RegionPathWorklist {
     /** Plans the next obligations from the admitted local cases of one
      * topology.
      *
-     * <p>README "Delta ownership is also singular" makes this the consumer of
-     * the importer's admitted cases: a path whose own occurrence the delta
-     * classified as {@code TOPOLOGY_DIVERGENCE} belongs to the next
-     * iteration's plan, so no branch-flip obligation may be built across
-     * it.</p> */
+     * <p>README "Delta ownership is also singular": divergence is the
+     * campaign's decision, not this planner's.  The driver quarantines a
+     * diverged worker's summaries and defers a whole wave whose seed replay
+     * left the epoch, so every path this planner sees belongs to the frozen
+     * topology.</p> */
     static Result plan(List<JsonObject> summaries,
                        List<JsonObject> executionTasks,
                        List<JsonObject> explorationRecords,
                        Bounds bounds,
-                       List<JsonObject> topologyDelta,
                        String familySnapshotDigest) {
         return new Planner(summaries, executionTasks, explorationRecords,
-                bounds, topologyDelta, familySnapshotDigest).run();
+                bounds, familySnapshotDigest).run();
     }
 
     private static final class Planner {
         private final Bounds bounds;
         private final String familySnapshotDigest;
-        private final Set<String> divergentTasks = new LinkedHashSet<>();
-        private final Set<String> divergentOccurrences =
-                new LinkedHashSet<>();
         private final Map<String, JsonObject> taskById =
                 new LinkedHashMap<>();
         private final Map<String, JsonObject> records = new LinkedHashMap<>();
@@ -81,21 +77,9 @@ public final class RegionPathWorklist {
                         List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
                         Bounds bounds,
-                        List<JsonObject> topologyDelta,
                         String familySnapshotDigest) {
             this.bounds = bounds;
             this.familySnapshotDigest = familySnapshotDigest;
-            for (JsonObject row : topologyDelta) {
-                if (!TopologyDelta.TOPOLOGY_DIVERGENCE.equals(
-                        string(row, "deltaKind"))) {
-                    continue;
-                }
-                String taskId = string(row, "taskId");
-                if (!taskId.isEmpty()) divergentTasks.add(taskId);
-                divergentOccurrences.add(occurrenceKey(
-                        string(row, "sourceKey"),
-                        string(row, "occurrenceId")));
-            }
             for (JsonObject task : executionTasks) {
                 String id = string(task, "taskId");
                 if (!id.isEmpty()) this.taskById.put(id, task);
@@ -133,12 +117,6 @@ public final class RegionPathWorklist {
                 if (!seenPaths.add(region + "\n" + pathKey)) continue;
                 observedRegions.add(region);
                 observedScopes.put(path.scope().identity(), path.scope());
-                if (divergedTopology(path)) {
-                    coverageGap(TopologyDelta.TOPOLOGY_DIVERGENCE,
-                            "OBLIGATION_BELONGS_TO_THE_NEXT_ITERATION",
-                            region, pathKey, "", -1);
-                    continue;
-                }
                 if (!path.branchMappingIssue().isEmpty()) {
                     gap("INVALID_BRANCH_MAPPING_SCHEMA",
                             path.branchMappingIssue(), region, pathKey, "", -1);
@@ -209,21 +187,6 @@ public final class RegionPathWorklist {
                 coverageGap("BOUND_REACHED", "MAX_PATHS_PER_REGION",
                         region, "", "", -1);
             }
-        }
-
-        /** Whether the delta classified this path's own occurrence changed.
-         *
-         * <p>OCC-1: the delta names the planned address of the task it
-         * classified, because that is the only occurrence identity a frozen
-         * plan states; a summary names the activation that ran.  The two are
-         * matched on the address, exactly as the target reach query and the
-         * scheduler match them.  Comparing the activation string instead
-         * left this half of the rule unable to fire at all, so a diverged
-         * occurrence was excluded only when its whole task was.</p> */
-        private boolean divergedTopology(PathObservation path) {
-            return divergentTasks.contains(path.sourceTaskId())
-                    || divergentOccurrences.contains(occurrenceKey(
-                    path.sourceKey(), path.plannedOccurrenceId()));
         }
 
         private void planSummary(PathObservation path) {
@@ -773,12 +736,6 @@ public final class RegionPathWorklist {
 
     }
 
-    /** The canonical region occurrence, as both stages key it. */
-    private static String occurrenceKey(String sourceKey,
-                                        String occurrenceId) {
-        return sourceKey + "\n" + occurrenceId;
-    }
-
     public static final class Bounds {
         public final int maxPathsPerRegion;
         public final int maxFlipsPerPath;
@@ -819,17 +776,6 @@ public final class RegionPathWorklist {
         if ("UNSUPPORTED".equals(status)) return "UNSUPPORTED_PATH_FLIP";
         if ("REPLAY_NOT_ADMITTED".equals(status)) {
             return "PATH_FLIP_REPLAY_NOT_ADMITTED";
-        }
-        // A flip whose replay never obtained the single symbolic engine was
-        // not refuted; it was never explored.
-        if ("REPLAY_ENGINE_UNAVAILABLE".equals(status)) {
-            return "PATH_FLIP_REPLAY_ENGINE_UNAVAILABLE";
-        }
-        // A replay is bounded in the paths it may walk, not in what those
-        // paths cost to keep resident, so one can end before publishing a
-        // result.  That flip is abandoned like any other, and the gap says so.
-        if ("REPLAY_PRODUCED_NO_RESULT".equals(status)) {
-            return "PATH_FLIP_REPLAY_PRODUCED_NO_RESULT";
         }
         // The solver reached a verdict and it was "this flip cannot be
         // materialized".

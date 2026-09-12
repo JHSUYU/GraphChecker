@@ -42,7 +42,6 @@ public class RegionPathWorklistTest {
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults(),
-                Collections.<JsonObject>emptyList(),
                 CanonicalJson.sha256("same-family-snapshot"));
 
         assertTrue(result.tasks.isEmpty());
@@ -211,36 +210,6 @@ public class RegionPathWorklistTest {
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage().contains("has 2 owners"));
         }
-    }
-
-    @Test
-    public void topologyDivergenceQuarantinesTheWholeEpoch() {
-        JsonObject task = task("B", "REGION.B", "REGION.B/occurrence-1");
-        JsonObject summary = summary(task, 1);
-        JsonObject delta = new JsonObject();
-        delta.addProperty("deltaKind", TopologyDelta.TOPOLOGY_DIVERGENCE);
-        delta.addProperty("taskId", "TASK.B");
-        delta.addProperty("sourceKey", "SOURCE.B");
-        delta.addProperty("occurrenceId", "REGION.B/occurrence-1");
-
-        RegionPathWorklist.Result result = plan(summary, task,
-                Collections.<JsonObject>emptyList(),
-                CanonicalJson.sha256("epoch-family"),
-                Collections.singletonList(delta));
-
-        assertTrue(result.tasks.isEmpty());
-        assertTrue(result.manifest.getAsJsonArray("coverageGaps")
-                .toString().contains(TopologyDelta.TOPOLOGY_DIVERGENCE));
-    }
-
-    private static RegionPathWorklist.Result plan(
-            JsonObject summary, JsonObject task, List<JsonObject> records,
-            String familyDigest, List<JsonObject> topologyDelta) {
-        refreshLocalCaseId(summary);
-        return RegionPathWorklist.plan(Collections.singletonList(summary),
-                Collections.singletonList(task), records,
-                RegionPathWorklist.Bounds.defaults(), topologyDelta,
-                familyDigest);
     }
 
     private static JsonObject task(String id, String region,

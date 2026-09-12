@@ -86,10 +86,7 @@ public final class ConcolicPathFlipPlanner {
                         count(options, "max-flips-per-path",
                                 defaults.maxFlipsPerPath),
                         count(options, "max-tasks", defaults.maxTasks)),
-                // The importer's own delta.  Absent means "no classification
-                // was supplied"; an empty file means "classified, nothing
-                // changed".
-                rows(options, "topology-delta"), familyDigest);
+                familyDigest);
         String topologyEpoch = optional(options, "topology-epoch");
         JsonObject sharedPropagation = new JsonObject();
         sharedPropagation.add(LinkedReplayBundle.CASE_DEPENDENCIES_FIELD,
