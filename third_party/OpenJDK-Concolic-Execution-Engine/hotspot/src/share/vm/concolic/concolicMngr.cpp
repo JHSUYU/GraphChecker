@@ -325,7 +325,6 @@ jlong ConcolicMngr::attach(JavaThread *thread) {
   }
 
   ctx = new ThreadContext(thread, context_id);
-  tty->print_cr("Starting concolic execution");
   return 0;
 }
 
@@ -893,7 +892,6 @@ jlong ConcolicMngr::endConcolic() {
 
 void ConcolicMngr::symbolize(Handle handle) {
   if (can_explicitly_symbolize()) {
-    tty->print("Symbolize!\n");
     ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
@@ -911,7 +909,6 @@ void ConcolicMngr::symbolize(Handle handle) {
 
 void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
   if (can_explicitly_symbolize()) {
-    tty->print("Symbolize!\n");
     ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
@@ -930,7 +927,6 @@ void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
 void ConcolicMngr::symbolizeField(Handle handle, const char* field_name,
                                   const char* prefix) {
   if (can_explicitly_symbolize()) {
-    tty->print("Symbolize field!\n");
     ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
@@ -956,7 +952,6 @@ void ConcolicMngr::symbolizeExactField(
       && field_name != NULL && field_name[0] != '\0'
       && descriptor != NULL && descriptor[0] != '\0'
       && prefix != NULL && prefix[0] != '\0') {
-    tty->print("Symbolize exact field!\n");
     ctx->set_pc_admitted(true);
     int pause_depth = ctx->path_condition_pause_depth();
     while (ctx->path_condition_pause_depth() > 0) {
@@ -1018,13 +1013,11 @@ void ConcolicMngr::symbolizeMethod(Handle holder_name_handle,
 
   ctx->symbolize_method(holder_name, callee_name);
 
-  tty->print_cr("added symbolic method: %s.%s", holder_name, callee_name);
 }
 
 #else
 
 jlong ConcolicMngr::endConcolic() {
-  tty->print("End concolic!\n");
   return 0;
 }
 

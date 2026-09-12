@@ -80,9 +80,6 @@ public:
         _selected_descriptor(selected_descriptor) {
     _prefix_lst.push_back(prefix);
   }
-  bool print_field(fieldDescriptor *fd, oop obj);
-  bool print_element(int index, arrayOop array_obj);
-
 protected:
   bool do_field_helper(fieldDescriptor *fd, oop obj);
   bool do_element_helper(int index, arrayOop array_obj);

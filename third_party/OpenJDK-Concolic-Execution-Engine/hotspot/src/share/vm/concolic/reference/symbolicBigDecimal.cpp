@@ -211,7 +211,6 @@ Expression *SymBigDecimal::finish_method_helper(MethodSymbolizerHandle &handle) 
         scaleFldOffset,
         newScaleExp
     );
-    tty->print_cr("newScale:%d, curScale:%d", newScale, curScale);
     if (newScale > curScale) {
       long num = std::pow(10, newScale - curScale);
       symResDecimal->set_sym_exp(

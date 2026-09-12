@@ -159,7 +159,6 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
   BasicType type = fd->field_type();
   std::string symbolic_name = _selected_field.empty()
       ? concatCurrentSymbolicName(fd) : _prefix_lst.back();
-  this->print_field(fd,obj);
   switch (type) {
   case T_OBJECT: {
     oop fld_oop = obj->obj_field(fd->offset());
@@ -351,13 +350,11 @@ bool FieldSymbolizer::do_element_helper(int index, arrayOop array_obj) {
     // element won't be array(it will be object)
     ShouldNotCallThis();
   case T_OBJECT:
-    this->print_element(index,array_obj);
     return true;
   default:
     // the element_type is primitives
     sym_arr = this->_ctx.get_sym_array(array_obj);
     assert(sym_arr == (SymArr *)this->_sym_refs.back(), "should be equal");
-    this->print_element(index,array_obj);
     return false;
   }
 }
@@ -383,7 +380,6 @@ bool FieldSymbolizer::before_array_helper() {
 
   _sym_refs.push_back(sym_arr);
   ResourceMark rm;
-  tty->indent().print_cr("symbolize array rid:%lu type:%c length:%d",array_obj->get_sym_rid(),type2char(type),array_obj->length());
   char * arr_clz_name = array_obj->klass()->name()->as_C_string();
   if (!_prefix_lst.empty()) {
     _prefix_lst.push_back(_prefix_lst.back() + arr_clz_name);
@@ -498,22 +494,5 @@ bool CompositeKeyGenerator::do_field_helper(fieldDescriptor *fd, oop obj) {
 
   return false;
 }
-
-bool FieldSymbolizer::print_field(fieldDescriptor *fd, oop obj)  {
-  ResourceMark rm;
-  tty->indent().print("symbolize field %s rid:%lu index:%d type:%s offset:%d\n",
-              fd->name()->as_C_string(), obj->get_sym_rid(), fd->index(),
-                      fd->signature()->as_C_string(), fd->offset());
-  return false;
-}
-
-bool FieldSymbolizer::print_element(int index, arrayOop array_obj)  {
-    ArrayKlass *ak = (ArrayKlass *)array_obj->klass();
-    BasicType T = ak->element_type();
-    tty->indent().print("symbolize element rid:%lu index:%d type:%c\n",
-                         array_obj->get_sym_rid(), index,type2char(T));
-  return false;
-}
-
 
 #endif
