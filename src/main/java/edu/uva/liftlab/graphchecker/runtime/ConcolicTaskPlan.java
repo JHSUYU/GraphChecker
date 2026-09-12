@@ -1,0 +1,1979 @@
+package edu.uva.liftlab.graphchecker.runtime;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ConsumerAccessAnchor;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.GuardedReadAssignment;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ModelAssignment;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SharedCarrierRequest;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
+
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_EXECUTOR_THREAD_NAME;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_OBJECT_IDENTITY_THREAD_NAME;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.REPLAY_GROUP_ENV;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ANCHOR_SOURCE_NEVER_EXISTED;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_CAUSAL_ANCHOR_NOT_OBSERVED;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_OCCURRENCE_ANCHOR_UNMATCHED;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageAddressMatches;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageSourceEvidence;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.outgoingProducerMayDeferMissingContext;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registerRunTotalsHook;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registeredSourceAnchorMatches;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootInvocationAddressMatches;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameRootMethod;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.writeSkipped;
+
+/** The bounded campaign this JVM executes. */
+final class ConcolicTaskPlan {
+    private static final Object LOCK = new Object();
+    private static volatile ConcolicTaskPlan plan;
+
+    /** The plan this JVM executes, loaded on first use. */
+    static ConcolicTaskPlan configuration() {
+        ConcolicTaskPlan current = plan;
+        if (current != null) {
+            return current;
+        }
+        synchronized (LOCK) {
+            if (plan == null) {
+                plan = ConcolicTaskPlan.load();
+            }
+            return plan;
+        }
+    }
+
+    /**
+     * How many tasks one campaign may contain.  A campaign has to be
+     * bounded to be a campaign: the runtime instruments and admits every
+     * row, so an unbounded plan is a runaway workload rather than an
+     * experiment, and it is refused by name instead of being started.
+     */
+    static final String MAX_TASKS_PROPERTY =
+            "causynth.concolic.campaign.max.tasks";
+    static final int DEFAULT_MAX_TASKS = 64;
+
+    final Path resultFile;
+    final List<RuntimeTask> tasks;
+    /**
+     * Tasks whose occurrence is running as a candidate right now, and
+     * tasks whose candidate confirmed its anchor and published.
+     *
+     * <p>Together they turn admission into what README {@code OCC-1} asks
+     * for: every compatible root invocation is a candidate for the
+     * address, one at a time, until one of them is the addressed
+     * occurrence.</p>
+     */
+    final boolean[] candidateLive;
+    final boolean[] occurrenceClaimed;
+    /** Next observed physical entry in each planner-authored scope. */
+    final Map<String, Integer> invocationOrdinals =
+            new LinkedHashMap<>();
+    /** Halt-status contribution of each task that has settled. */
+    final Map<String, Integer> settled = new LinkedHashMap<>();
+    boolean unansweredAddressesPublished;
+
+    ConcolicTaskPlan(Path resultFile, List<RuntimeTask> tasks) {
+        this.resultFile = resultFile;
+        this.tasks = Collections.unmodifiableList(tasks);
+        this.candidateLive = new boolean[tasks.size()];
+        this.occurrenceClaimed = new boolean[tasks.size()];
+        indexDeferredOutgoingSourceAnchors(tasks);
+    }
+
+    /**
+     * Admits an OUT site as source evidence only when the frozen runtime
+     * edges give that exact root/request/port scope one producer source.
+     */
+    static void indexDeferredOutgoingSourceAnchors(
+            List<RuntimeTask> tasks) {
+        Map<String, Set<String>> sourcesByScope = new LinkedHashMap<>();
+        for (RuntimeTask task : tasks) {
+            // Include even malformed/unbound declarations in the
+            // uniqueness denominator; they must make admission less
+            // permissive, never disappear from the proof.
+            for (String portId : task.declaredOutgoingPorts()) {
+                sourcesByScope.computeIfAbsent(
+                        task.outgoingSourceScope(portId),
+                        ignored -> new LinkedHashSet<>()).add(
+                        task.sourceKey);
+            }
+        }
+        for (RuntimeTask task : tasks) {
+            Set<String> candidates =
+                    task.exactOutgoingSourceCandidatePorts;
+            if (candidates.isEmpty()
+                    || !candidates.equals(task.declaredOutgoingPorts())
+                    || !candidates.equals(
+                    task.exportConsumerOccurrenceByPort.keySet())) {
+                continue;
+            }
+            boolean unique = true;
+            for (String portId : candidates) {
+                Set<String> sources = sourcesByScope.get(
+                        task.outgoingSourceScope(portId));
+                if (sources == null || sources.size() != 1
+                        || !sources.contains(task.sourceKey)) {
+                    unique = false;
+                    break;
+                }
+            }
+            if (unique) {
+                task.deferredOutgoingSourcePorts.addAll(candidates);
+            }
+        }
+    }
+
+    /**
+     * Releases the address of a candidate that ended without being the
+     * occurrence, so the next compatible invocation may try for it.
+     */
+    synchronized void releaseCandidate(RuntimeTask task) {
+        int index = tasks.indexOf(task);
+        if (index >= 0) candidateLive[index] = false;
+    }
+
+    /**
+     * States every selected address this run could not answer with exactly
+     * one occurrence, once each, now that the run is over and both "never
+     * registered in this run" and "several activations fit" are decidable
+     * rather than snapshots the same run can contradict.
+     *
+     * <p>An address nothing answered is a coverage statement about the
+     * replay; an address several activations answered is README {@code
+     * OCC-1}'s ambiguity, a statement about the address itself.</p>
+     */
+    synchronized void publishUnansweredAddresses() {
+        if (unansweredAddressesPublished) return;
+        unansweredAddressesPublished = true;
+        for (int index = 0; index < tasks.size(); index++) {
+            RuntimeTask task = tasks.get(index);
+            if (task.missedCausalAnchor()) {
+                writeSkipped(task, SKIP_CAUSAL_ANCHOR_NOT_OBSERVED,
+                        "selected semantic anchor identities "
+                                + task.missingSemanticAnchorIds()
+                                + " were not observed before workload "
+                                + "termination; K_L bounded published "
+                                + "cases, not polling turns",
+                        task.missedCausalAnchorEvidence());
+                continue;
+            }
+            // An address that published at least one occurrence has been
+            // answered for end-of-run diagnostics. Goal completion owns
+            // the separate decision to admit another activation.
+            if (occurrenceClaimed[index]) continue;
+            if (task.unaddressedCandidates == 0) continue;
+            writeSkipped(task, task.rootContextSelector
+                            .anchorSourceNeverExisted()
+                            ? SKIP_ANCHOR_SOURCE_NEVER_EXISTED
+                            : SKIP_OCCURRENCE_ANCHOR_UNMATCHED,
+                    task.unansweredAddress(), null);
+        }
+    }
+
+    /** Marks durable evidence without clearing a newer live candidate. */
+    synchronized void markOccurrenceClaimed(RuntimeTask task) {
+        int index = tasks.indexOf(task);
+        if (index >= 0) occurrenceClaimed[index] = true;
+    }
+
+    /** The campaign task with this id, or {@code null}. */
+    RuntimeTask taskById(String taskId) {
+        if (taskId == null || taskId.isEmpty()) return null;
+        for (RuntimeTask task : tasks) {
+            if (taskId.equals(task.taskId)) return task;
+        }
+        return null;
+    }
+
+    /**
+     * Resolves an occurrence-specific instrumentation hook to the stable
+     * region entry shared by every sibling hook at that Java method.
+     */
+    synchronized RootHookGroup rootHookGroup(
+            String instrumentationSelector, String rootMethod) {
+        RuntimeTask selected = null;
+        for (RuntimeTask task : tasks) {
+            if (!task.instrumentationSelector.equals(
+                    safe(instrumentationSelector))
+                    || !sameRootMethod(task.rootMethod, rootMethod)) {
+                continue;
+            }
+            if (selected != null && !selected.rootHookGroupKey().equals(
+                    task.rootHookGroupKey())) {
+                throw new IllegalStateException(
+                        "instrumentation selector addresses multiple "
+                                + "root hook groups: "
+                                + safe(instrumentationSelector));
+            }
+            selected = task;
+        }
+        if (selected == null) {
+            return new RootHookGroup("UNPLANNED\n"
+                    + safe(instrumentationSelector) + "\n"
+                    + safe(rootMethod), 1);
+        }
+        String key = selected.rootHookGroupKey();
+        int hooks = 0;
+        for (RuntimeTask task : tasks) {
+            if (key.equals(task.rootHookGroupKey())) hooks++;
+        }
+        return new RootHookGroup(key, hooks);
+    }
+
+    /** Resolves one lightweight outer hook shared by loop-body tasks. */
+    synchronized RootHookGroup loopRootHookGroup(
+            String instrumentationSelector, String rootMethod) {
+        RuntimeTask selected = null;
+        for (RuntimeTask task : tasks) {
+            if (!task.loopBodyRoot
+                    || !task.instrumentationSelector.equals(
+                    safe(instrumentationSelector))
+                    || !sameRootMethod(task.rootMethod, rootMethod)) {
+                continue;
+            }
+            selected = task;
+            break;
+        }
+        if (selected == null) {
+            return new RootHookGroup("UNPLANNED_LOOP_ROOT\n"
+                    + safe(rootMethod), 1);
+        }
+        String key = selected.loopRootHookGroupKey();
+        int hooks = 0;
+        for (RuntimeTask task : tasks) {
+            if (task.loopBodyRoot
+                    && key.equals(task.loopRootHookGroupKey())) hooks++;
+        }
+        return new RootHookGroup(key, hooks);
+    }
+
+    /**
+     * Counts one real enclosing method entry and freezes which loop task
+     * owns all body iterations executed by that invocation.
+     */
+    synchronized Set<String> addressLoopRootInvocation(
+            String loopRootHookGroupKey, String rootMethod,
+            Object receiver, Object[] rootArguments) {
+        String threadName = Thread.currentThread().getName();
+        SourceRef registeredReceiverSource =
+                RuntimeTraceContext.sourceFor(receiver);
+        RuntimeTraceContext.View context = RuntimeTraceContext.current();
+        Map<String, Integer> actualOrdinalByScope =
+                new LinkedHashMap<>();
+        for (RuntimeTask task : tasks) {
+            if (!task.loopBodyRoot
+                    || !task.loopRootHookGroupKey().equals(
+                    safe(loopRootHookGroupKey))
+                    || !compatibleRoot(task.rootMethod, rootMethod,
+                    task.rootContextSelector,
+                    task.enclosingRootArgumentSelector,
+                    receiver, rootArguments, threadName)) {
+                continue;
+            }
+            String sourceMismatch = sourceAdmissionMismatch(task,
+                    registeredReceiverSource, context);
+            if (!sourceMismatch.isEmpty()) {
+                task.noteUnaddressedCandidate(sourceMismatch);
+                continue;
+            }
+            String requestMismatch = requestMismatch(task,
+                    registeredReceiverSource, context);
+            if (!requestMismatch.isEmpty()) {
+                task.noteUnaddressedCandidate(requestMismatch);
+                continue;
+            }
+            if (mayDeferMissingContextToOutgoingAnchor(task,
+                    registeredReceiverSource, context)) {
+                continue;
+            }
+            String scope = task.invocationCounterKey();
+            if (!actualOrdinalByScope.containsKey(scope)) {
+                int ordinal = invocationOrdinals.getOrDefault(scope, 0)
+                        + 1;
+                invocationOrdinals.put(scope, ordinal);
+                actualOrdinalByScope.put(scope, ordinal);
+            }
+        }
+        Set<String> admitted = new LinkedHashSet<>();
+        for (RuntimeTask task : tasks) {
+            if (!task.loopBodyRoot
+                    || !task.loopRootHookGroupKey().equals(
+                    safe(loopRootHookGroupKey))
+                    || !compatibleRoot(task.rootMethod, rootMethod,
+                    task.rootContextSelector,
+                    task.enclosingRootArgumentSelector,
+                    receiver, rootArguments, threadName)
+                    || !sourceAdmissionMismatch(task,
+                    registeredReceiverSource,
+                    context).isEmpty()
+                    || !requestMismatch(task, registeredReceiverSource,
+                    context).isEmpty()) {
+                continue;
+            }
+            Integer ordinal = actualOrdinalByScope.get(
+                    task.invocationCounterKey());
+            boolean exactOutgoingAddress =
+                    mayDeferMissingContextToOutgoingAnchor(task,
+                            registeredReceiverSource, context);
+            if (!task.acceptsRootInvocation(ordinal,
+                    exactOutgoingAddress)) {
+                if (task.attachProducerOccurrenceByPort.isEmpty()) {
+                    task.noteUnaddressedCandidate(
+                            "matching enclosing root was invocation "
+                                    + ordinal + " instead of "
+                                    + task.rootContextSelector
+                                    .invocationOrdinal);
+                } else {
+                    task.noteUnaddressedCandidate(
+                            "matching enclosing root carried no selected "
+                                    + "communication producer");
+                }
+                continue;
+            }
+            admitted.add(task.taskId);
+        }
+        return admitted;
+    }
+
+    /** Claims at most one open task for this root invocation. */
+    synchronized RuntimeTask select(String rootHookGroupKey,
+                                            String rootMethod,
+                                            Object receiver,
+                                            Object[] rootArguments) {
+        String threadName = Thread.currentThread().getName();
+        // A short-lived Runnable need not be registered as an alias
+        // itself: an exact inherited async/request/RPC context can still
+        // attribute its entry.
+        SourceRef registeredReceiverSource =
+                RuntimeTraceContext.sourceFor(receiver);
+        RuntimeTraceContext.View context = RuntimeTraceContext.current();
+        Map<String, Integer> actualOrdinalByScope =
+                new LinkedHashMap<>();
+
+        // Count this physical entry once in every matching stable scope.
+        // This pass deliberately ignores task completion and candidate
+        // ownership: later planned ordinals must still see entries that
+        // an earlier task already consumed.
+        for (RuntimeTask task : tasks) {
+            if (task.loopBodyRoot
+                    || !task.rootHookGroupKey().equals(
+                    safe(rootHookGroupKey))
+                    || !compatibleRoot(task.rootMethod, rootMethod,
+                    task.rootContextSelector, task.rootArgumentSelector,
+                    receiver, rootArguments, threadName)) {
+                continue;
+            }
+            String sourceMismatch = sourceAdmissionMismatch(task,
+                    registeredReceiverSource, context);
+            if (!sourceMismatch.isEmpty()) {
+                task.noteUnaddressedCandidate(sourceMismatch);
+                continue;
+            }
+            String requestMismatch = requestMismatch(task,
+                    registeredReceiverSource, context);
+            if (!requestMismatch.isEmpty()) {
+                task.noteUnaddressedCandidate(requestMismatch);
+                continue;
+            }
+            if (mayDeferMissingContextToOutgoingAnchor(task,
+                    registeredReceiverSource, context)) {
+                continue;
+            }
+            String scope = task.invocationCounterKey();
+            if (!actualOrdinalByScope.containsKey(scope)) {
+                int ordinal = invocationOrdinals.getOrDefault(scope, 0)
+                        + 1;
+                invocationOrdinals.put(scope, ordinal);
+                actualOrdinalByScope.put(scope, ordinal);
+            }
+        }
+
+        for (int index = 0; index < tasks.size(); index++) {
+            RuntimeTask task = tasks.get(index);
+            if (!task.rootHookGroupKey().equals(
+                    safe(rootHookGroupKey))) continue;
+            if (task.blocksAdmissionAfterCompletedGoal()) continue;
+            if (task.loopBodyRoot) {
+                if (!enclosingLoopRootAdmits(task)
+                        || candidateLive[index]) {
+                    continue;
+                }
+                candidateLive[index] = true;
+                return task;
+            }
+            if (!compatibleRoot(task.rootMethod, rootMethod,
+                    task.rootContextSelector, task.rootArgumentSelector,
+                    receiver, rootArguments, threadName)) {
+                continue;
+            }
+            if (!sourceAdmissionMismatch(task, registeredReceiverSource,
+                    context).isEmpty()
+                    || !requestMismatch(task, registeredReceiverSource,
+                    context).isEmpty()) continue;
+            Integer actualOrdinal = actualOrdinalByScope.get(
+                    task.invocationCounterKey());
+            boolean exactOutgoingAddress =
+                    mayDeferMissingContextToOutgoingAnchor(task,
+                            registeredReceiverSource, context);
+            if (!task.acceptsRootInvocation(actualOrdinal,
+                    exactOutgoingAddress)) {
+                continue;
+            }
+            if (candidateLive[index]) continue;
+            candidateLive[index] = true;
+            return task;
+        }
+        return null;
+    }
+
+    static String requestMismatch(
+            RuntimeTask task, SourceRef registeredReceiverSource,
+            RuntimeTraceContext.View context) {
+        RootContextSelector selector = task.rootContextSelector;
+        if (!selector.requestKey.equals(safe(context.requestKey))) {
+            return "matching root entered request "
+                    + safe(context.requestKey) + " instead of "
+                    + selector.requestKey;
+        }
+        if (!selector.requestApi.equals(safe(context.requestApi))) {
+            return "matching root entered request API "
+                    + safe(context.requestApi) + " instead of "
+                    + selector.requestApi;
+        }
+        return "";
+    }
+
+    /** Entry admission may defer only missing producer context to OUT. */
+    static String sourceAdmissionMismatch(
+            RuntimeTask task, SourceRef registeredReceiverSource,
+            RuntimeTraceContext.View context) {
+        String mismatch = sourceMismatch(task, registeredReceiverSource,
+                context);
+        return mismatch.isEmpty()
+                || mayDeferMissingContextToOutgoingAnchor(
+                task, registeredReceiverSource, context) ? "" : mismatch;
+    }
+
+    static boolean mayDeferMissingContextToOutgoingAnchor(
+            RuntimeTask task, SourceRef registeredReceiverSource,
+            RuntimeTraceContext.View context) {
+        RootContextSelector selector = task.rootContextSelector;
+        return outgoingProducerMayDeferMissingContext(
+                !task.deferredOutgoingSourcePorts.isEmpty(),
+                registeredReceiverSource, context.source, task.sourceKey,
+                selector.requestKey, selector.requestApi,
+                context.requestKey, context.requestApi);
+    }
+
+    /** Empty only when entry-time runtime evidence names this source. */
+    static String sourceMismatch(
+            RuntimeTask task, SourceRef registeredReceiverSource,
+            RuntimeTraceContext.View context) {
+        RootContextSelector selector = task.rootContextSelector;
+        SourceRef inherited = context.source;
+        boolean receiverMatches = registeredReceiverSource != null
+                && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
+                registeredReceiverSource.key());
+        boolean inheritedMatches = inherited != null
+                && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
+                inherited.key());
+        boolean messageAddressed = inboundMessageAddressMatches(
+                task.attachProducerOccurrenceByPort,
+                task.occurrenceId);
+        if (messageAddressed) {
+            if (!inboundMessageSourceEvidence(task.sourceKey,
+                    registeredReceiverSource, true).isEmpty()) {
+                return "";
+            }
+            return "matching root receiver belonged to "
+                    + registeredReceiverSource.key() + " instead of "
+                    + task.sourceKey;
+        }
+        if (OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                task.sourceKey)) {
+            return registeredReceiverSource == null && inherited == null
+                    ? "" : "matching root carried a registered source "
+                    + (registeredReceiverSource == null
+                    ? inherited.key() : registeredReceiverSource.key())
+                    + " instead of the unregistered source";
+        }
+        if (selector.inheritedContextAnchor) {
+            if (!inheritedMatches) {
+                return inherited == null
+                        ? "matching root inherited no source; its anchor "
+                        + "names " + task.sourceKey
+                        : "matching root inherited " + inherited.key()
+                        + " instead of " + task.sourceKey;
+            }
+            if (registeredReceiverSource != null && !receiverMatches) {
+                return "matching root receiver belonged to "
+                        + registeredReceiverSource.key() + " instead of "
+                        + task.sourceKey;
+            }
+            return "";
+        }
+        if (selector.registeredSourceAnchor) {
+            // A replay can reconstruct the logical receiver without
+            // repeating its identity-map alias registration.  In that
+            // case the exact inherited request context is still positive
+            // source evidence.  Never let it override an explicit,
+            // conflicting receiver registration.
+            if (registeredSourceAnchorMatches(task.sourceKey,
+                    registeredReceiverSource, inherited)) {
+                return "";
+            }
+            if (registeredReceiverSource != null) {
+                return "matching root receiver belonged to "
+                    + registeredReceiverSource.key() + " instead of "
+                    + task.sourceKey;
+            }
+            return inherited == null
+                    ? "matching root receiver had no registered source "
+                    + "and inherited no source; its anchor names "
+                    + task.sourceKey
+                    : "matching root receiver had no registered source "
+                    + "and inherited " + inherited.key()
+                    + " instead of " + task.sourceKey;
+        }
+        return receiverMatches || inheritedMatches ? ""
+                : "matching root carried no evidence for source "
+                + task.sourceKey;
+    }
+
+    /**
+     * Records one task's terminal outcome and returns the campaign's halt
+     * status once every task has settled, or {@code -1} while any task can
+     * still produce evidence.
+     */
+    synchronized int settle(String taskId, int status) {
+        if (tasks.isEmpty()) return -1;
+        Integer previous = settled.get(safe(taskId));
+        if (previous == null) settled.put(safe(taskId), status);
+        if (settled.size() < tasks.size()) return -1;
+        int worst = 0;
+        for (Integer contribution : settled.values()) {
+            worst = Math.max(worst, contribution);
+        }
+        return worst;
+    }
+
+    static ConcolicTaskPlan load() {
+        String planValue = safe(System.getProperty(
+                "causynth.concolic.task.plan")).trim();
+        String selectedTasks = safe(System.getProperty(
+                "causynth.concolic.task.id")).trim();
+        if (planValue.isEmpty()) {
+            return new ConcolicTaskPlan(null,
+                    Collections.<RuntimeTask>emptyList());
+        }
+        String resultValue = safe(System.getProperty(
+                "causynth.concolic.results")).trim();
+        if (selectedTasks.isEmpty() || resultValue.isEmpty()) {
+            throw new IllegalStateException("Concolic runtime requires "
+                    + "task id and result path with a task plan");
+        }
+        Path result = Paths.get(resultValue);
+        Path plan = Paths.get(planValue);
+        if (!Files.isRegularFile(plan)) {
+            throw new IllegalStateException(
+                    "Concolic task plan not found: " + plan);
+        }
+        Set<String> selected = campaignTaskIds(selectedTasks);
+        List<RuntimeTask> tasks = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(plan,
+                StandardCharsets.UTF_8)) {
+            Set<String> taskIds = new LinkedHashSet<>();
+            int maxTasks = maxCampaignTasks();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty()) continue;
+                JsonElement parsed = new JsonParser().parse(line);
+                if (!parsed.isJsonObject()) {
+                    throw new IllegalStateException("malformed plan: "
+                            + "every task plan row must be an object");
+                }
+                if (tasks.size() == maxTasks) {
+                    throw new IllegalStateException("malformed plan: "
+                            + "campaign exceeds its bound of " + maxTasks
+                            + " tasks");
+                }
+                ExecutionTask encoded = ExecutionTask.decode(
+                        parsed.getAsJsonObject());
+                RuntimeTask task = new RuntimeTask(encoded);
+                if (!taskIds.add(task.taskId)) {
+                    throw new IllegalStateException("malformed plan: "
+                            + "duplicate execution task " + task.taskId);
+                }
+                tasks.add(task);
+            }
+        } catch (IOException | RuntimeException exception) {
+            throw new IllegalStateException("Causynth rejected "
+                    + "task plan " + plan + ": "
+                    + exception.getMessage(), exception);
+        }
+        for (String taskId : selected) {
+            boolean present = false;
+            for (RuntimeTask task : tasks) {
+                present |= task.taskId.equals(taskId);
+            }
+            if (!present) {
+                throw new IllegalStateException("Selected execution task "
+                        + taskId + " is absent in " + plan);
+            }
+        }
+        return new ConcolicTaskPlan(result, tasks);
+    }
+
+    /** The selected campaign, in plan order. */
+    static Set<String> campaignTaskIds(String property) {
+        Set<String> ids = new LinkedHashSet<>();
+        for (String value : property.split(",")) {
+            String taskId = safe(value).trim();
+            if (taskId.isEmpty()) continue;
+            if (!ids.add(taskId)) {
+                throw new IllegalStateException("malformed plan: "
+                        + "duplicate selected execution task " + taskId);
+            }
+        }
+        if (ids.isEmpty()) {
+            throw new IllegalStateException("malformed plan: "
+                    + "no execution task is selected");
+        }
+        return ids;
+    }
+
+    static int maxCampaignTasks() {
+        String configured = safe(System.getProperty(
+                MAX_TASKS_PROPERTY)).trim();
+        if (configured.isEmpty()) return DEFAULT_MAX_TASKS;
+        try {
+            int value = Integer.parseInt(configured);
+            if (value <= 0) {
+                throw new IllegalStateException("malformed plan: "
+                        + MAX_TASKS_PROPERTY + " must be positive");
+            }
+            return value;
+        } catch (NumberFormatException malformed) {
+            throw new IllegalStateException("malformed plan: "
+                    + MAX_TASKS_PROPERTY + " must be a number");
+        }
+    }
+    static boolean compatibleRoot(
+            String selectedMethod, String actualMethod,
+            RootContextSelector context, RootArgumentSelector arguments,
+            Object receiver, Object[] rootArguments, String threadName) {
+        if (!safe(selectedMethod).equals(safe(actualMethod))) return false;
+        if (!context.matches(receiver, threadName)) {
+            return false;
+        }
+        return !arguments.present || arguments.matches(rootArguments);
+    }
+
+    /**
+     * The replay address of one planned occurrence.
+     *
+     * <p>Two halves, decided at two different moments because that is when
+     * each becomes knowable.</p>
+     */
+    static final class RootContextSelector {
+        private final boolean receiverScoped;
+        private final String receiverRuntimeClass;
+        private final String threadName;
+        private final String sourceKey;
+        private final String requestKey;
+        private final String requestApi;
+        /**
+         * One-based invocation ordinal in this selector's stable runtime
+         * scope.  This is planner evidence and is deliberately independent
+         * of the trace occurrence id, which names evidence rather than a
+         * replay counter.
+         */
+        private final int invocationOrdinal;
+        /**
+         * The baseline receiver was registered to the planned source.  A
+         * replay receiver registration, when present, remains authoritative;
+         * an unregistered reconstructed receiver may instead be attributed
+         * by the exact inherited request context.
+         */
+        private final boolean registeredSourceAnchor;
+        /**
+         * The planned source was the thread's inherited context, not the
+         * receiver's own registration, so replay must re-check it the same
+         * way.
+         */
+        private final boolean inheritedContextAnchor;
+
+        private RootContextSelector(boolean receiverScoped,
+                                    String receiverRuntimeClass,
+                                    String threadName, String sourceKey,
+                                    String requestKey, String requestApi,
+                                    int invocationOrdinal,
+                                    boolean registeredSourceAnchor,
+                                    boolean inheritedContextAnchor) {
+            this.receiverScoped = receiverScoped;
+            this.receiverRuntimeClass = safe(receiverRuntimeClass);
+            this.threadName = stableReplayThreadContext(threadName);
+            this.sourceKey = safe(sourceKey);
+            this.requestKey = safe(requestKey);
+            this.requestApi = safe(requestApi);
+            this.invocationOrdinal = invocationOrdinal;
+            this.registeredSourceAnchor = registeredSourceAnchor;
+            this.inheritedContextAnchor = inheritedContextAnchor;
+        }
+
+        private static RootContextSelector from(JsonObject selector) {
+            String kind = optionalString(selector, "kind");
+            boolean global = "GLOBAL_INVOCATION".equals(kind);
+            String receiverClass = optionalString(selector, "receiverClass");
+            String thread = selector.has("thread")
+                    ? optionalString(selector, "thread") : "";
+            JsonObject anchor = object(selector, "causalAnchor");
+            String sourceKey = optionalString(anchor, "sourceKey");
+            String requestKey = optionalString(anchor, "requestKey");
+            String requestApi = optionalString(anchor, "requestApi");
+            int invocationOrdinal = optionalInteger(selector,
+                    "invocationOrdinal", -1);
+            String anchorKind = optionalString(anchor, "kind");
+            boolean registeredSource = RuntimeRegionPlanner
+                    .ANCHOR_REGISTERED_SOURCE.equals(anchorKind);
+            boolean unregisteredSource = RuntimeRegionPlanner
+                    .ANCHOR_UNREGISTERED_SOURCE.equals(anchorKind);
+            boolean inheritedContext = RuntimeRegionPlanner
+                    .ANCHOR_INHERITED_CONTEXT.equals(anchorKind);
+            boolean sentinelSource = RuntimeRegionPlanner.UNREGISTERED_SOURCE
+                    .key().equals(sourceKey);
+            if (!global && (receiverClass.isEmpty()
+                    || !receiverClass.equals(receiverClass.trim())
+                    || !"RECEIVER_CONTEXT".equals(kind)
+                    || selector.has("thread") && (thread.isEmpty()
+                    || !thread.equals(thread.trim())))
+                    || sourceKey.isEmpty()
+                    || !sourceKey.equals(sourceKey.trim())
+                    || invocationOrdinal < 1) {
+                throw new IllegalArgumentException(
+                        "rootSelector requires an exact receiver context and "
+                                + "a causal anchor naming its source and a "
+                                + "positive invocationOrdinal");
+            }
+            if (!registeredSource && !unregisteredSource && !inheritedContext
+                    || unregisteredSource != sentinelSource) {
+                throw new IllegalArgumentException(
+                        "rootSelector causalAnchor.kind must be exactly "
+                                + RuntimeRegionPlanner
+                                .ANCHOR_REGISTERED_SOURCE + " or "
+                                + RuntimeRegionPlanner
+                                .ANCHOR_INHERITED_CONTEXT + " for a named "
+                                + "source or " + RuntimeRegionPlanner
+                                .ANCHOR_UNREGISTERED_SOURCE + " for "
+                                + RuntimeRegionPlanner.UNREGISTERED_SOURCE
+                                .key());
+            }
+            return new RootContextSelector(!global, receiverClass, thread,
+                    sourceKey, requestKey, requestApi, invocationOrdinal,
+                    registeredSource,
+                    inheritedContext);
+        }
+
+        /** Whether this root invocation is a candidate for the occurrence. */
+        private boolean matches(Object receiver, String actualThreadName) {
+            if (!receiverScoped) return true;
+            return receiver != null
+                    && receiverRuntimeClass.equals(receiver.getClass().getName())
+                    && (threadName.isEmpty()
+                    || threadName.equals(stableReplayThreadContext(
+                    actualThreadName)));
+        }
+
+        /**
+         * Why the candidate that just ran is not the addressed occurrence, or
+         * {@code ""} when it is.
+         */
+        String unconfirmed(Set<String> attributedSourceKeys) {
+            if (attributedSourceKeys.isEmpty()) {
+                if (!OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                        sourceKey)) {
+                    return "occurrence is attributed to no registered trace "
+                            + "source, but its anchor names " + sourceKey;
+                }
+                return "";
+            }
+            boolean sameSource = false;
+            for (String attributed : attributedSourceKeys) {
+                if (RuntimeTraceContext.sameSourceIdentity(
+                        sourceKey, attributed)) {
+                    sameSource = true;
+                    break;
+                }
+            }
+            if (!sameSource) {
+                return "occurrence ran on " + attributedSourceKeys
+                        + ", but its anchor names " + sourceKey;
+            }
+            return "";
+        }
+
+        /** This address on one line, for a named gap. */
+        private String describe() {
+            StringBuilder description = new StringBuilder(sourceKey);
+            if (!requestKey.isEmpty()) {
+                description.append("/requestKey=").append(requestKey);
+            }
+            if (!requestApi.isEmpty()) {
+                description.append("/requestApi=").append(requestApi);
+            }
+            description.append("/invocation=").append(invocationOrdinal);
+            return description.toString();
+        }
+
+        /**
+         * Whether the anchored source was never registered in this run, which
+         * makes the address unsatisfiable here rather than merely unmatched.
+         */
+        private boolean anchorSourceNeverExisted() {
+            return !OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(sourceKey)
+                    && !RuntimeTraceContext.sourceIdentityRegistered(sourceKey);
+        }
+
+        private static String stableReplayThreadContext(String value) {
+            String thread = safe(value);
+            Matcher executor = DEFAULT_EXECUTOR_THREAD_NAME.matcher(thread);
+            if (executor.matches()) {
+                return "pool-*-thread-" + executor.group(1);
+            }
+            Matcher objectIdentity =
+                    DEFAULT_OBJECT_IDENTITY_THREAD_NAME.matcher(thread);
+            return objectIdentity.matches()
+                    ? objectIdentity.group(1) + "@*" : thread;
+        }
+
+    }
+
+    private static final class RootArgumentSelector {
+        private final boolean present;
+        private final List<RootArgumentTypePredicate> predicates;
+
+        private RootArgumentSelector(boolean present,
+                                     List<RootArgumentTypePredicate> predicates) {
+            this.present = present;
+            this.predicates = predicates;
+        }
+
+        private static RootArgumentSelector from(JsonObject rootSelector) {
+            if (!rootSelector.has("arguments")) {
+                return new RootArgumentSelector(false,
+                        Collections.emptyList());
+            }
+            JsonElement raw = rootSelector.get("arguments");
+            if (raw == null || !raw.isJsonObject()) {
+                return invalid("rootSelector.arguments must be an object");
+            }
+            JsonObject json = raw.getAsJsonObject();
+            JsonElement rawPredicates = json.get("predicates");
+            if (rawPredicates == null || !rawPredicates.isJsonArray()
+                    || rawPredicates.getAsJsonArray().size() == 0) {
+                return invalid("predicates must be a non-empty array");
+            }
+            List<RootArgumentTypePredicate> predicates = new ArrayList<>();
+            Set<Integer> indices = new LinkedHashSet<>();
+            for (JsonElement rawPredicate
+                    : rawPredicates.getAsJsonArray()) {
+                if (rawPredicate == null || !rawPredicate.isJsonObject()) {
+                    return invalid("each predicate must be an object");
+                }
+                JsonObject predicate = rawPredicate.getAsJsonObject();
+                if (!ROOT_ARGUMENT_PREDICATE_KIND.equals(
+                        optionalString(predicate, "kind"))) {
+                    return invalid("predicate kind must be exact runtime type");
+                }
+                int index = optionalInteger(predicate, "argumentIndex", -1);
+                String runtimeType = optionalString(predicate, "runtimeType");
+                if (index < 0 || runtimeType.isEmpty()
+                        || !runtimeType.equals(runtimeType.trim())
+                        || !indices.add(index)) {
+                    return invalid("predicate index/type is malformed or duplicate");
+                }
+                predicates.add(new RootArgumentTypePredicate(index,
+                        runtimeType));
+            }
+            predicates.sort((left, right) -> Integer.compare(
+                    left.argumentIndex, right.argumentIndex));
+            return new RootArgumentSelector(true,
+                    Collections.unmodifiableList(predicates));
+        }
+
+        private static RootArgumentSelector invalid(String error) {
+            throw new IllegalArgumentException(error);
+        }
+
+        /** No argument predicate: every activation of the root is admitted. */
+        private boolean matches(Object[] rootArguments) {
+            if (!present || rootArguments == null) return false;
+            for (RootArgumentTypePredicate predicate : predicates) {
+                if (predicate.argumentIndex >= rootArguments.length) {
+                    return false;
+                }
+                Object value = rootArguments[predicate.argumentIndex];
+                if (value == null || !predicate.runtimeType.equals(
+                        value.getClass().getName())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+    }
+
+    private static final class RootArgumentTypePredicate {
+        private final int argumentIndex;
+        private final String runtimeType;
+
+        private RootArgumentTypePredicate(int argumentIndex,
+                                          String runtimeType) {
+            this.argumentIndex = argumentIndex;
+            this.runtimeType = runtimeType;
+        }
+    }
+
+    static final class RuntimeTask {
+        final String taskId;
+        final String instrumentationSelector;
+        final String regionId;
+        /** The activation this task is. */
+        final String sourceKey;
+        final String occurrenceId;
+        final String rootMethod;
+        final RootContextSelector rootContextSelector;
+        /** Argument predicates evaluated at the enclosing method entry. */
+        final RootArgumentSelector enclosingRootArgumentSelector;
+        final RootArgumentSelector rootArgumentSelector;
+        /** Actions that execute directly at ordinary instrumentation hooks. */
+        final List<SymbolizeAction> symbolize;
+        final Map<String, String> branchPolicies;
+        final Set<String> replayLoopExitSites;
+        final LoopBoundPolicy loopBound;
+        final List<ModelAssignment> modelAssignments;
+        final List<GuardedReadAssignment> guardedReadAssignments;
+        final boolean capturesTargetReach;
+        /** Whether this non-loop address has already completed its goal. */
+        volatile boolean completedGoalReserved;
+        /**
+         * Result rows this address has published in this replay.
+         *
+         * <p>Every admitted activation that reaches a terminal is its own
+         * occurrence. This counts them so each row can name which one it is;
+         * non-loop admission stops after its goal has completed.</p>
+         */
+        int publishedActivations;
+        /**
+         * Whether this region is rooted on a bounded loop body.  Its published
+         * occurrence set is unrolled at most {@code loopBound
+         * .maxBackedgeTraversals()} (K_L) times, exactly as an inner bounded
+         * loop is: the iterations past K_L run concretely and capture nothing.
+         */
+        final boolean loopBodyRoot;
+        final String rootLoopMethod;
+        final int rootLoopHeaderUnitIndex;
+        /**
+         * The occurrence budget of a loop-body region: its ROOT loop's own
+         * K_L, not the region's global max.  The root loop is what generates
+         * one occurrence per iteration; the region's inner loops (the {@code
+         * allKeys} walks) are unrolled WITHIN one occurrence and their larger
+         * bounds must not inflate the occurrence count.  Using the region max
+         * here published up to the inner-loop bound of occurrences, each
+         * re-snapshotting the growing {@code allKeys} map, which under a
+         * 600-min token lifetime (no physical expiry) explodes the symbolic
+         * session.
+         */
+        final int loopOccurrenceBudget;
+        /** Whether the one bounded-cut marker for this region was written. */
+        boolean loopBoundCutRecorded;
+        /** Turns of the root loop examined for this bounded address. */
+        int admittedTurns;
+        /** Kept occurrences that carried the selected causal anchor. */
+        int anchoredOccurrences;
+        /** Exact phase/exchange identities committed by published turns. */
+        final Set<String> observedSemanticAnchorIds =
+                new LinkedHashSet<>();
+        /** Turns run and given back for carrying no selected anchor. */
+        int unanchoredTurnsReleased;
+        /** Stable identity shared by every task in one linked replay. */
+        final String replayGroupId;
+        final String linkedReplayRole;
+        final String familySnapshotDigest;
+        final String topologyEpoch;
+        final BranchReplayContract.RuntimeSchedule replayContract;
+        /** The declared target branch event of a target-reach task. */
+        final String targetBranchSite;
+        final int targetBranchOccurrence;
+        /** Solver-selected outcome that reaches the annotated failure. */
+        final boolean targetBranchRequiredOutcome;
+        /**
+         * Declared communication ports this occurrence hands to the VM, by
+         * port id.
+         */
+        final Map<String, CommunicationHandoffSpec>
+                communicationHandoffs = new LinkedHashMap<>();
+        /** Exact baseline hook executions, in recorded event order. */
+        final List<ConfiguredSourcePhaseContract.Occurrence>
+                configuredSourcePhases;
+        /** Reserved source-hook ordinal across one LOOP_BODY_ROOT address. */
+        final Map<String, Integer> configuredSourcePhaseOrdinals =
+                new LinkedHashMap<>();
+        /** Strict phase lookup; phase ids never alias source ids. */
+        final Map<String, ConfiguredSourcePhaseContract.Occurrence>
+                configuredSourcePhasesById = new LinkedHashMap<>();
+        /** Every protocol input this occurrence attaches from the VM. */
+        final Set<String> attachPortIds = new LinkedHashSet<>();
+        /**
+         * Planner-selected producer occurrence of each response attach port.
+         */
+        final Map<String, String> attachProducerOccurrenceByPort =
+                new LinkedHashMap<>();
+        /** Exact consumer occurrence of each protocol value this task sends. */
+        final Map<String, String> exportConsumerOccurrenceByPort =
+                new LinkedHashMap<>();
+        /** OUT ports allowed to establish an otherwise absent producer source. */
+        final Set<String> deferredOutgoingSourcePorts =
+                new LinkedHashSet<>();
+        /** OUT ports backed by one exact traced exchange in this task row. */
+        final Set<String> exactOutgoingSourceCandidatePorts =
+                new LinkedHashSet<>();
+        /** Shared locations this task selects as carriers at region entry. */
+        final List<SharedCarrierRequest> sharedCarriers =
+                new ArrayList<>();
+        /** Frozen runtime bindings used to resolve exact Map producers. */
+        final JsonArray edgeBindings;
+        /** Declared field -> unique frozen receiver locator for this task. */
+        final Map<String, Long> plannedReceiverObjectIdByField =
+                new LinkedHashMap<>();
+        /**
+         * Activations that ran as candidates for this address and were not the
+         * addressed occurrence, and every distinct reason they were not.
+         */
+        int unaddressedCandidates;
+        final Set<String> unaddressedReasons = new LinkedHashSet<>();
+
+        RuntimeTask(ExecutionTask task) {
+            if (!task.executable()) {
+                throw new IllegalArgumentException(
+                        "runtime task must be executable");
+            }
+            JsonObject rootSelector = task.rootSelector();
+            this.taskId = task.taskId();
+            this.instrumentationSelector = task.instrumentationSelector();
+            this.regionId = task.regionId();
+            this.sourceKey = task.sourceKey();
+            this.occurrenceId = task.occurrenceId();
+            this.rootMethod = task.rootMethod();
+            this.rootContextSelector = RootContextSelector.from(rootSelector);
+            this.enclosingRootArgumentSelector =
+                    RootArgumentSelector.from(rootSelector);
+            if (!this.sourceKey.equals(rootContextSelector.sourceKey)) {
+                throw new IllegalArgumentException(
+                        "rootSelector causal anchor names "
+                                + rootContextSelector.sourceKey
+                                + " instead of task source " + this.sourceKey);
+            }
+            // A region rooted at a loop body binds no arguments at its
+            // frame: the method's parameters were bound once, at the entry
+            // above the loop.  Its activation therefore carries an empty
+            // argument array, and a type predicate over arguments that do not
+            // exist there would refuse every iteration without saying so.
+            this.rootArgumentSelector =
+                    LoopBoundPolicy.LOOP_BODY_ROOT.equals(task.rootAuthority())
+                            ? new RootArgumentSelector(false,
+                            Collections.<RootArgumentTypePredicate>emptyList())
+                            : RootArgumentSelector.from(rootSelector);
+            this.symbolize = new ArrayList<>();
+            this.branchPolicies = new LinkedHashMap<>();
+            this.replayLoopExitSites = task.loopExitSites();
+            this.loopBound = task.loopBound();
+            this.loopBodyRoot = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
+                    task.rootAuthority());
+            this.rootLoopMethod = task.rootLoopMethod();
+            this.rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
+            // The root loop's declared K_L (its loopSiteId is the key its
+            // bound is under); an undeclared site inherits the default.
+            this.loopOccurrenceBudget = this.loopBound
+                    .maxBackedgeTraversals(task.rootLoopSiteId());
+            this.modelAssignments = new ArrayList<>();
+            this.guardedReadAssignments = new ArrayList<>();
+            this.capturesTargetReach =
+                    task.goalKind().capturesTargetReach();
+            // The driver refuses a plan whose members name different
+            // groups and then exports that same one id, so the two can only
+            // disagree when the task states none: a seed plan, whose group
+            // the invocation names.
+            String plannedReplayGroup = optionalString(task.json(),
+                    "linkedReplayGroupId");
+            this.replayGroupId = plannedReplayGroup.isEmpty()
+                    ? safe(System.getenv(REPLAY_GROUP_ENV))
+                    : plannedReplayGroup;
+            this.linkedReplayRole = optionalString(task.json(),
+                    "linkedReplayRole");
+            this.familySnapshotDigest = optionalString(task.json(),
+                    "familySnapshotDigest");
+            this.topologyEpoch = optionalString(task.json(), "topologyEpoch");
+            this.edgeBindings = task.edgeBindings();
+            indexPlannedReceiverObjectIds(task.inputActions().all());
+            // The plan row decoded this catalog once; phase ids are already
+            // one strict ordered ledger by then, so this is an index, not a
+            // second admission.
+            this.configuredSourcePhases = task.configuredSourcePhases();
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : configuredSourcePhases) {
+                configuredSourcePhasesById.put(phase.phaseId(), phase);
+            }
+            this.replayContract = task.replaySchedule();
+            JsonObject targetBranch = object(task.json(), "targetBranch");
+            this.targetBranchSite = optionalString(targetBranch, "siteId");
+            this.targetBranchOccurrence = optionalInteger(targetBranch,
+                    "occurrence", -1);
+            this.targetBranchRequiredOutcome = targetRequiredOutcome(
+                    task.branches(), targetBranchSite,
+                    targetBranchOccurrence);
+            for (JsonElement element : task.inputActions().all()) {
+                JsonObject encoded = element.getAsJsonObject();
+                SymbolizeAction action = new SymbolizeAction(encoded);
+                if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                        optionalString(encoded, "mode"))) {
+                    this.symbolize.add(action);
+                }
+            }
+            for (JsonElement element : task.branches()) {
+                JsonObject branch = element.getAsJsonObject();
+                String siteId = optionalString(branch, "siteId");
+                branchPolicies.put(siteId, optionalString(branch, "policy"));
+            }
+            JsonElement encodedAssignments = task.json().get(
+                    "modelAssignments");
+            if (encodedAssignments != null
+                    && !encodedAssignments.isJsonArray()) {
+                throw new IllegalArgumentException(
+                        "modelAssignments must be an array in " + taskId);
+            }
+            for (JsonElement element : task.modelAssignments()) {
+                modelAssignments.add(new ModelAssignment(
+                        element.getAsJsonObject()));
+            }
+            Set<String> assignmentKeys = new LinkedHashSet<>();
+            for (ModelAssignment assignment : modelAssignments) {
+                if (assignment.key.isEmpty()
+                        || !assignmentKeys.add(assignment.key)) {
+                    throw new IllegalArgumentException(
+                            "model assignment keys must be nonempty and "
+                                    + "unique in " + taskId);
+                }
+            }
+            Set<String> guardedReadIdentities = new LinkedHashSet<>();
+            Set<String> guardedReadAnchors = new LinkedHashSet<>();
+            for (JsonElement element : task.guardedReadAssignments()) {
+                if (!element.isJsonObject()) {
+                    throw new IllegalArgumentException(
+                            "guardedReadAssignments must contain objects in "
+                                    + taskId);
+                }
+                GuardedReadAssignment assignment =
+                        new GuardedReadAssignment(element.getAsJsonObject(),
+                                occurrenceId);
+                String anchor = assignment.consumerSiteId + "\n"
+                        + assignment.consumerSiteOccurrence + "\n"
+                        + assignment.declaringClass + "\n"
+                        + assignment.fieldName + "\n"
+                        + assignment.descriptor;
+                if (!guardedReadIdentities.add(assignment.readIdentity)
+                        || !guardedReadAnchors.add(anchor)) {
+                    throw new IllegalArgumentException(
+                            "guarded read assignments must have unique "
+                                    + "identities and exact anchors in "
+                                    + taskId);
+                }
+                guardedReadAssignments.add(assignment);
+            }
+            for (CommunicationHandoffSpec site
+                    : task.communicationHandoffs()) {
+                if (!site.outgoing()) {
+                    attachPortIds.add(site.portId());
+                }
+                // A region that holds both sides of a cut declares the same
+                // port twice, once per role, and each role has its own site.
+                if (communicationHandoffs.put(handoffKey(site.portId(),
+                        site.outgoing()), site) != null) {
+                    throw new IllegalArgumentException(
+                            "communication port declares two handoff sites "
+                            + "in " + taskId + ": " + site.portId());
+                }
+            }
+            // A configured-source model names one mint SITE of the frozen
+            // catalog.  There is no selected-source row to agree with any
+            // more: the site is the identity.
+            for (ModelAssignment assignment : modelAssignments) {
+                if (!assignment.configuredSourceAssignment()) continue;
+                ConfiguredSourcePhaseContract.Occurrence publish =
+                        configuredSourcePhasesById.get(
+                                assignment.configuredSourcePhaseId);
+                if (publish == null
+                        || publish.phase()
+                        != ConfiguredSourcePhaseContract.Phase.PUBLISH
+                        || !assignment.configuredSourceId.equals(
+                        publish.sourceId())
+                        || !assignment.configuredSourceFieldSignature.equals(
+                        publish.fieldSignature())
+                        || !assignment.matchesConfiguredSource(
+                        publish.phaseId(), publish.sourceId(),
+                        publish.fieldSignature())
+                        || assignment.hasContainerTarget()) {
+                    throw new IllegalArgumentException(
+                            "model assignment names an undeclared or "
+                                    + "unsupported configured source in "
+                                    + taskId + ": " + assignment.key);
+                }
+            }
+            indexAttachProducerOccurrences(edgeBindings);
+            indexExportConsumerOccurrences(edgeBindings);
+            for (JsonElement element : task.sharedCarriers()) {
+                if (element.isJsonObject()) {
+                    sharedCarriers.add(new SharedCarrierRequest(
+                            element.getAsJsonObject(), true));
+                }
+            }
+            declareSymbolicFieldCarriers();
+        }
+
+        /**
+         * Every SYMBOLIC field this region declares is a shared location.
+         *
+         * <p>Wave 3 concurrency: the manual input is WHICH FIELDS, and a
+         * declared field keeps every symbolic write of the session as a
+         * version.  Nothing selects a subset of the declared fields.</p>
+         *
+         * <p>These are added beside the planner's carrier list because
+         * explicit field declarations need not cover every planned carrier.
+         * The planner owns their reconciliation.</p>
+         */
+        void declareSymbolicFieldCarriers() {
+            Set<String> declared = new LinkedHashSet<>();
+            for (SharedCarrierRequest request : sharedCarriers) {
+                declared.add(request.declaringClass + "\n"
+                        + request.fieldName);
+            }
+            for (SymbolizeAction action : symbolize) {
+                DeclaredField field = FieldPathSpec.declaredField(
+                        firstNonBlank(action.exactLeafFieldSignature(),
+                                action.accessFieldSignature));
+                if (field == null
+                        || !declared.add(field.owner() + "\n"
+                        + field.name())) {
+                    continue;
+                }
+                JsonObject declaration = new JsonObject();
+                // A bounded-container demand on a Map field is a whole-state
+                // location, not a reference slot: declaring it as an
+                // instance field would version the reference and lose every
+                // entry transition the composer reads from.
+                boolean mapState = "BOUNDED_CONTAINER_STATE".equals(
+                        action.symbolicDemand)
+                        && javaTypeDescriptor(field.type()).startsWith("L")
+                        && isMapType(field.type());
+                declaration.addProperty("kind", mapState
+                        ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
+                        : "INSTANCE_FIELD");
+                declaration.addProperty("sourceKind",
+                        "ACTIVATION_FIELD_RECEIVER");
+                declaration.addProperty("declaringClass", field.owner());
+                declaration.addProperty("fieldName", field.name());
+                declaration.addProperty("descriptor",
+                        javaTypeDescriptor(field.type()));
+                sharedCarriers.add(new SharedCarrierRequest(
+                        declaration, false));
+            }
+        }
+
+        /** A selected shared read observes the VM carrier; it never mints. */
+        boolean observesSharedRead(String fieldSignature) {
+            for (SharedCarrierRequest request : sharedCarriers) {
+                if (request.observesSharedRead(fieldSignature)) return true;
+            }
+            return false;
+        }
+
+        /** Solver value for the one exact getfield this hook precedes. */
+        GuardedReadAssignment guardedReadAssignment(
+                ConsumerAccessAnchor consumer, String fieldSignature) {
+            DeclaredField field = FieldPathSpec.declaredField(fieldSignature);
+            GuardedReadAssignment selected = null;
+            for (GuardedReadAssignment candidate : guardedReadAssignments) {
+                if (!candidate.matches(consumer, field)) continue;
+                if (selected != null) {
+                    throw new IllegalStateException(
+                            "two guarded read assignments match "
+                                    + consumer.siteId + " occurrence "
+                                    + consumer.occurrence);
+                }
+                selected = candidate;
+            }
+            return selected;
+        }
+
+        /** Whether a declared field type is a Map the VM versions whole. */
+        static boolean isMapType(String javaType) {
+            try {
+                return Map.class.isAssignableFrom(Class.forName(
+                        safe(javaType).trim()));
+            } catch (Throwable notLoadable) {
+                // Judge by name when the type is not on this loader: the
+                // declaration is the authority, not the loaded class.
+                String value = safe(javaType);
+                return value.endsWith("Map") || value.contains("Map<");
+            }
+        }
+
+        /** The declared handoff site of one communication port role. */
+        CommunicationHandoffSpec communicationHandoff(
+                String portId, boolean exporting) {
+            return communicationHandoffs.get(handoffKey(portId, exporting));
+        }
+
+        /**
+         * Resolves each selected response input to its planner-authored
+         * producer occurrence.
+         */
+        void indexAttachProducerOccurrences(JsonArray bindings) {
+            for (String portId : attachPortIds) {
+                String producerOccurrence = "";
+                for (JsonElement element : bindings) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (!"RUNTIME_PROTOCOL_FLOW".equals(
+                            optionalString(binding, "kind"))
+                            || !portId.equals(optionalString(binding, "toInputPort"))) {
+                        continue;
+                    }
+                    String receiver = OccurrenceId.parse(optionalString(
+                            binding, "toOccurrenceId")).planned();
+                    if (!occurrenceId.equals(receiver)) {
+                        continue;
+                    }
+                    String candidate = OccurrenceId.parse(optionalString(
+                            binding, "fromOccurrenceId")).planned();
+                    if (candidate.isEmpty()) continue;
+                    if (!producerOccurrence.isEmpty()
+                            && !producerOccurrence.equals(candidate)) {
+                        throw new IllegalArgumentException(
+                                "communication attach port has two producer "
+                                        + "occurrences in " + taskId + ": "
+                                        + portId);
+                    }
+                    producerOccurrence = candidate;
+                }
+                if (!producerOccurrence.isEmpty()) {
+                    attachProducerOccurrenceByPort.put(portId,
+                            producerOccurrence);
+                }
+            }
+        }
+
+        String attachProducerOccurrence(String portId) {
+            return safe(attachProducerOccurrenceByPort.get(safe(portId)));
+        }
+
+        /** Indexes the exact consumer named by each outgoing protocol edge. */
+        void indexExportConsumerOccurrences(JsonArray bindings) {
+            for (CommunicationHandoffSpec site
+                    : communicationHandoffs.values()) {
+                if (!site.outgoing()) continue;
+                String portId = site.portId();
+                String consumerOccurrence = "";
+                boolean exactSourceCandidate = true;
+                boolean found = false;
+                for (JsonElement element : bindings) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject binding = element.getAsJsonObject();
+                    if (!"RUNTIME_PROTOCOL_FLOW".equals(
+                            optionalString(binding, "kind"))
+                            || !portId.equals(
+                            optionalString(binding, "fromOutputPort"))) {
+                        continue;
+                    }
+                    String producer = OccurrenceId.parse(optionalString(
+                            binding, "fromOccurrenceId")).planned();
+                    if (!occurrenceId.equals(producer)) {
+                        continue;
+                    }
+                    found = true;
+                    if (!"TRACED_RPC_EXCHANGE_CORRELATION_V1".equals(
+                            optionalString(binding, "correlationAuthority"))
+                            || !rootContextSelector.requestKey.equals(
+                            optionalString(binding, "requestKey"))
+                            || !rootContextSelector.requestApi.equals(
+                            optionalString(binding, "requestApi"))) {
+                        exactSourceCandidate = false;
+                    }
+                    String candidate = OccurrenceId.parse(optionalString(
+                            binding, "toOccurrenceId")).planned();
+                    if (candidate.isEmpty()) continue;
+                    if (!consumerOccurrence.isEmpty()
+                            && !consumerOccurrence.equals(candidate)) {
+                        throw new IllegalArgumentException(
+                                "communication export port has two consumer "
+                                        + "occurrences in " + taskId + ": "
+                                        + portId);
+                    }
+                    consumerOccurrence = candidate;
+                }
+                if (!consumerOccurrence.isEmpty()) {
+                    exportConsumerOccurrenceByPort.put(portId,
+                            consumerOccurrence);
+                    if (found && exactSourceCandidate) {
+                        exactOutgoingSourceCandidatePorts.add(portId);
+                    }
+                }
+            }
+        }
+
+        String exportConsumerOccurrence(String portId) {
+            return safe(exportConsumerOccurrenceByPort.get(safe(portId)));
+        }
+
+        String outgoingSourceScope(String portId) {
+            return rootMethod + '\n' + rootContextSelector.requestKey + '\n'
+                    + rootContextSelector.requestApi + '\n' + safe(portId);
+        }
+
+        Set<String> declaredOutgoingPorts() {
+            Set<String> ports = new LinkedHashSet<>();
+            for (CommunicationHandoffSpec handoff
+                    : communicationHandoffs.values()) {
+                if (handoff.outgoing()) ports.add(handoff.portId());
+            }
+            return ports;
+        }
+
+        void indexPlannedReceiverObjectIds(JsonArray inputActions) {
+            Map<String, Set<Long>> candidates = new LinkedHashMap<>();
+            for (JsonElement element : inputActions) {
+                if (!element.isJsonObject()) continue;
+                JsonObject action = element.getAsJsonObject();
+                long receiver = optionalLongInteger(action,
+                        "fieldReceiverObjectId", 0L);
+                DeclaredField field = FieldPathSpec.declaredField(
+                        firstNonBlank(optionalString(action, "leafFieldSignature"),
+                                optionalString(action, "accessFieldSignature")));
+                if (field == null || receiver <= 0L) continue;
+                candidates.computeIfAbsent(field.owner() + "#" + field.name(),
+                        ignored -> new LinkedHashSet<>()).add(receiver);
+            }
+            for (Map.Entry<String, Set<Long>> entry : candidates.entrySet()) {
+                if (entry.getValue().size() == 1) {
+                    plannedReceiverObjectIdByField.put(entry.getKey(),
+                            entry.getValue().iterator().next());
+                }
+            }
+        }
+
+        long plannedReceiverObjectId(String declaringClass,
+                                             String fieldName) {
+            return plannedReceiverObjectIdByField.getOrDefault(
+                    safe(declaringClass) + "#" + safe(fieldName), 0L);
+        }
+
+        static String handoffKey(String portId, boolean exporting) {
+            return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);
+        }
+
+        /**
+         * Records that one candidate ran and was not this address, keeping
+         * the last reason for the run's single statement about it.
+         */
+        synchronized void noteUnaddressedCandidate(String reason) {
+            unaddressedCandidates++;
+            unaddressedReasons.add(safe(reason));
+            registerRunTotalsHook();
+        }
+
+        /** The run's one statement about an address nothing answered. */
+        synchronized String unansweredAddress() {
+            boolean neverExisted = rootContextSelector
+                    .anchorSourceNeverExisted();
+            return unaddressedCandidates + " compatible activation(s) did "
+                    + "not answer the addressed occurrence; "
+                    + unaddressedReasons + (neverExisted
+                    ? "; " + rootContextSelector.describe()
+                    + " was never registered in this run" : "");
+        }
+
+        /** Body entries this loop may run before the replay is cut. */
+        int maxLoopBodies(String loopId) {
+            return LoopBoundPolicy.maxLoopBodies(false);
+        }
+
+        String policy(String siteId) {
+            String policy = branchPolicies.get(siteId);
+            return "EXPLORE".equals(policy)
+                    || "PATH_ASSUMPTION".equals(policy) ? policy : "EXPLORE";
+        }
+
+        /** Whether the frozen plan declares a policy for this branch site. */
+        boolean declaresBranch(String siteId) {
+            return branchPolicies.containsKey(safe(siteId));
+        }
+
+        /** Boundary-only loop controls advance replay invocation identity. */
+        boolean observesReplayBoundary(String siteId) {
+            return replayLoopExitSites.contains(safe(siteId));
+        }
+
+        /** The next activation ordinal of this address. */
+        synchronized int nextActivationOrdinal() {
+            return ++publishedActivations;
+        }
+
+        /**
+         * The planner numbers a source site inside one activation root.  An
+         * ordinary region activation is that root and therefore restarts at
+         * one.  LOOP_BODY_ROOT is different: several body activations are
+         * slices of one enclosing root-loop activation, so only that address
+         * carries a reserved ordinal across its retained turns.
+         */
+        synchronized int configuredSourcePhaseOrdinal(
+                String key, int localOrdinal) {
+            return (loopBodyRoot
+                    ? configuredSourcePhaseOrdinals.getOrDefault(
+                    safe(key), 0) : 0) + localOrdinal;
+        }
+
+        /** Reserves the phase prefix used by one retained loop-body turn. */
+        synchronized void reserveConfiguredSourcePhaseOrdinals(
+                Map<String, Integer> used) {
+            if (!loopBodyRoot) return;
+            for (Map.Entry<String, Integer> entry : used.entrySet()) {
+                configuredSourcePhaseOrdinals.merge(entry.getKey(),
+                        entry.getValue(), Integer::sum);
+            }
+        }
+
+        /**
+         * Settles the small occurrence ledger before asynchronous decoding.
+         * A later body turn is allowed to rely on this reservation; any
+         * publication failure is consequently terminal and never rolled back.
+         */
+        synchronized void reserveCompletedOccurrence(
+                Map<String, Integer> sourceOrdinals,
+                Set<String> semanticAnchorIds) {
+            reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
+            if (loopBodyRoot) commitSemanticAnchorIds(semanticAnchorIds);
+        }
+
+        /**
+         * Ports whose producer occurrence the frozen plan names: the
+         * exchanges this occurrence was selected for, and therefore the
+         * region's <em>selected causal anchor</em>.
+         *
+         * <p>Derived, never declared: incoming communication ports are the
+         * leaves this root may attach, and {@code edgeBindings} names a
+         * producer for exactly the ones an edge selected this region for.
+         * A region the plan bound to no exchange has no anchor here and is
+         * addressed exactly as it is today.</p>
+         */
+        Set<String> causalAnchorPorts() {
+            return attachProducerOccurrenceByPort.keySet();
+        }
+
+        /** Exact source phases that may address a semantic loop turn. */
+        Set<String> configuredSourceAnchorPhases() {
+            Set<String> phases = new LinkedHashSet<>();
+            for (ConfiguredSourcePhaseContract.Occurrence phase
+                    : configuredSourcePhases) {
+                phases.add(phase.phaseId());
+            }
+            return phases;
+        }
+
+        String sourcePhaseAnchorId(String phaseId) {
+            String phase = safe(phaseId);
+            return phase.isEmpty() ? "" : "SOURCE_PHASE\n" + phase;
+        }
+
+        /** Exact selected response exchange, not merely a reusable port name. */
+        String attachAnchorId(String portId) {
+            String port = safe(portId);
+            String producer = attachProducerOccurrenceByPort.get(port);
+            return port.isEmpty() || safe(producer).isEmpty() ? ""
+                    : "COMMUNICATION_EXCHANGE\n" + producer + "\n"
+                    + occurrenceId + "\n" + port;
+        }
+
+        Set<String> plannedSemanticAnchorIds() {
+            Set<String> planned = new LinkedHashSet<>();
+            for (String phaseId : configuredSourceAnchorPhases()) {
+                planned.add(sourcePhaseAnchorId(phaseId));
+            }
+            for (String portId : causalAnchorPorts()) {
+                planned.add(attachAnchorId(portId));
+            }
+            planned.remove("");
+            return planned;
+        }
+
+        synchronized Set<String> newSemanticAnchorIds(
+                Set<String> carried) {
+            Set<String> fresh = new LinkedHashSet<>();
+            Set<String> planned = plannedSemanticAnchorIds();
+            for (String identity : carried) {
+                if (planned.contains(identity)
+                        && !observedSemanticAnchorIds.contains(identity)) {
+                    fresh.add(identity);
+                }
+            }
+            return fresh;
+        }
+
+        synchronized Set<String> missingSemanticAnchorIds() {
+            Set<String> missing = plannedSemanticAnchorIds();
+            missing.removeAll(observedSemanticAnchorIds);
+            return missing;
+        }
+
+        /** Reserves identities of one retained loop turn before decode. */
+        synchronized void commitSemanticAnchorIds(Set<String> ids) {
+            boolean anchored = false;
+            Set<String> planned = plannedSemanticAnchorIds();
+            for (String identity : ids) {
+                if (planned.contains(identity)
+                        && observedSemanticAnchorIds.add(identity)) {
+                    anchored = true;
+                }
+            }
+            if (anchored) anchoredOccurrences++;
+        }
+
+        /**
+         * Occurrence slots this bounded set reserves for turns that carry the
+         * selected causal anchor.
+         *
+         * <p>A raw polling ordinal is not replay identity: an occurrence is
+         * addressed by its selected causal anchor, never by "the 48th turn".
+         * The declared budget K_L is unchanged -- these slots are carved out
+         * of it, so the kept set is still at most K_L rows; what changes is
+         * <em>which</em> K_L turns fill them.  Zero here means the address
+         * has no anchor to be addressed by and keeps the plain prefix.</p>
+         */
+        synchronized int anchoredOccurrenceSlots() {
+            // A replay must reproduce the recorded prefix exactly; re-keying
+            // its occurrence set on an anchor would answer a different one.
+            if (replayContract != null) return 0;
+            int anchors = plannedSemanticAnchorIds().size();
+            if (anchors <= 0) return 0;
+            return Math.min(anchors, loopOccurrenceBudget);
+        }
+
+        /** Whether this address addresses its occurrences by an anchor. */
+        synchronized boolean addressesOccurrencesByCausalAnchor() {
+            return loopBodyRoot && anchoredOccurrenceSlots() > 0;
+        }
+
+        /**
+         * Whether this loop-body region has already published its bounded
+         * occurrence set (K_L rows), so a further iteration is a bounded cut.
+         *
+         * <p>README: a bounded loop is unrolled K_L times, and OCC-1 must not
+         * defeat that -- one occurrence per iteration would publish one row
+         * per heartbeat (~128 for the DN {@code offerService} loop) and make
+         * every iteration pay for full symbolic capture.  {@code
+         * publishedActivations} is the net kept-ordinal count, so an iteration
+         * whose occurrence was abandoned frees its slot and does not spend the
+         * budget: the cap is on published occurrences, not admissions.</p>
+         *
+         * <p>While an anchored slot is still open the cut waits: the address
+         * has not yet seen the exchange it was selected for, and cutting on
+         * the raw ordinal would end the window before that exchange happens.
+         * The raw number of polling turns is deliberately not bounded by
+         * K_L: K_L bounds the <em>published symbolic cases</em>, not how many
+         * concrete workload turns may be inspected before the selected RPC
+         * exchange occurs.  Workload termination bounds that inspection.  If
+         * the exchange never occurs, shutdown publishes a named coverage gap
+         * instead of silently substituting an unrelated prefix turn.</p>
+         */
+        synchronized boolean cutsBoundedLoopOccurrence() {
+            if (!loopBodyRoot) return false;
+            int reserved = anchoredOccurrenceSlots();
+            if (reserved > 0 && !missingSemanticAnchorIds().isEmpty()
+                    && anchoredOccurrences < loopOccurrenceBudget) {
+                admittedTurns++;
+                return false;
+            }
+            if (publishedActivations >= loopOccurrenceBudget) return true;
+            admittedTurns++;
+            return false;
+        }
+
+        /** Whether a live bounded address ended without its selected anchor. */
+        synchronized boolean missedCausalAnchor() {
+            return admittedTurns > 0 && anchoredOccurrenceSlots() > 0
+                    && !missingSemanticAnchorIds().isEmpty();
+        }
+
+        /** Evidence for the fail-closed missing-anchor shutdown row. */
+        synchronized JsonObject missedCausalAnchorEvidence() {
+            JsonObject evidence = new JsonObject();
+            evidence.addProperty("plannedOccurrenceId", occurrenceId);
+            evidence.addProperty("regionId", regionId);
+            JsonArray ports = new JsonArray();
+            for (String portId : causalAnchorPorts()) {
+                ports.add(new JsonPrimitive(portId));
+            }
+            evidence.add("causalAnchorPorts", ports);
+            JsonArray phases = new JsonArray();
+            for (String phaseId : configuredSourceAnchorPhases()) {
+                phases.add(new JsonPrimitive(phaseId));
+            }
+            evidence.add("configuredSourceAnchorPhases", phases);
+            JsonArray missingPhases = new JsonArray();
+            for (String phaseId : configuredSourceAnchorPhases()) {
+                if (missingSemanticAnchorIds().contains(
+                        sourcePhaseAnchorId(phaseId))) {
+                    missingPhases.add(new JsonPrimitive(phaseId));
+                }
+            }
+            evidence.add("missingConfiguredSourcePhaseIds", missingPhases);
+            JsonArray missingResponses = new JsonArray();
+            for (String portId : causalAnchorPorts()) {
+                if (!missingSemanticAnchorIds().contains(
+                        attachAnchorId(portId))) {
+                    continue;
+                }
+                JsonObject exchange = new JsonObject();
+                exchange.addProperty("portId", portId);
+                exchange.addProperty("producerOccurrenceId",
+                        attachProducerOccurrenceByPort.get(portId));
+                exchange.addProperty("consumerOccurrenceId", occurrenceId);
+                missingResponses.add(exchange);
+            }
+            evidence.add("missingResponseExchanges", missingResponses);
+            evidence.addProperty("occurrenceBudget", loopOccurrenceBudget);
+            evidence.addProperty("anchoredOccurrences",
+                    anchoredOccurrences);
+            evidence.addProperty("unanchoredTurnsReleased",
+                    unanchoredTurnsReleased);
+            evidence.addProperty("turnsAdmitted", admittedTurns);
+            return evidence;
+        }
+
+        /**
+         * Settles one finished turn of a bounded loop body against the
+         * region's selected causal anchor.
+         *
+         * <p>A turn that carried the anchor takes a reserved slot.  A turn
+         * that carried none takes an ordinary slot while the prefix quota
+         * lasts -- which is what every turn does today -- and past that it
+         * gives its ordinal back, spending nothing, so the reserved slots
+         * stay open for the turns the plan actually selected this region
+         * for.  Nothing is fabricated: the anchor is the VM's own answer at
+         * the declared attach.</p>
+         *
+         * @return {@code true} when this turn published no occurrence
+         */
+        synchronized boolean releasesUnanchoredLoopTurn(
+                boolean carriedNewSemanticAnchor) {
+            if (!loopBodyRoot) return false;
+            int reserved = anchoredOccurrenceSlots();
+            if (reserved <= 0) return false;
+            if (carriedNewSemanticAnchor
+                    && anchoredOccurrences < loopOccurrenceBudget) {
+                return false;
+            }
+            int remainingAnchorSlots = Math.min(
+                    missingSemanticAnchorIds().size(),
+                    loopOccurrenceBudget - anchoredOccurrences);
+            int ordinaryActivations = publishedActivations
+                    - anchoredOccurrences;
+            if (ordinaryActivations <= loopOccurrenceBudget
+                    - anchoredOccurrences - remainingAnchorSlots) {
+                return false;
+            }
+            unanchoredTurnsReleased++;
+            return true;
+        }
+
+        /** Claims the one bounded-cut marker write for this region. */
+        synchronized boolean claimLoopBoundCutMarker() {
+            if (loopBoundCutRecorded) return false;
+            loopBoundCutRecorded = true;
+            return true;
+        }
+
+        /**
+         * Gives back an ordinal whose activation published nothing, so the
+         * ordinals of one address stay dense and gapless.  Only one
+         * activation of an address runs at a time, so the ordinal being
+         * returned is always the last one taken.
+         */
+        synchronized void releaseActivationOrdinal(int ordinal) {
+            if (ordinal > 0 && ordinal == publishedActivations) {
+                publishedActivations--;
+            }
+        }
+
+        boolean declaresTargetBranch() {
+            return !targetBranchSite.isEmpty();
+        }
+
+        /** Every injected hook that belongs to one physical Java entry. */
+        String rootHookGroupKey() {
+            // Source is resolved from runtime evidence by the dispatcher. If
+            // it were part of this static hook group, the first hook for one
+            // source could not dispatch a sibling task for another source at
+            // the same region root.
+            return (loopBodyRoot ? "LOOP\n" : "METHOD\n")
+                    + regionId + "\n" + rootMethod
+                    + (loopBodyRoot ? "\n" + rootLoopMethod + "\n"
+                    + rootLoopHeaderUnitIndex : "");
+        }
+
+        /** All lightweight enclosing hooks physically share this method. */
+        String loopRootHookGroupKey() {
+            return loopBodyRoot ? rootMethod : "";
+        }
+
+        /**
+         * Counter scope frozen by the planner. Request-scoped activations are
+         * counted inside their exact request; roots with no request anchor
+         * retain the source-and-region scope used during discovery.
+         */
+        String invocationCounterKey() {
+            StringBuilder key = new StringBuilder(sourceKey)
+                    .append('\n').append(regionId)
+                    .append('\n').append(rootMethod)
+                    .append('\n').append(rootContextSelector.requestKey)
+                    .append('\n').append(rootContextSelector.requestApi);
+            return key.toString();
+        }
+
+        /**
+         * Selects a communication consumer by the message that invoked it.
+         * Tasks with no planner-authored IN edge retain ordinal addressing.
+         */
+        boolean acceptsRootInvocation(Integer actualOrdinal,
+                                              boolean exactOutgoingAddress) {
+            return rootInvocationAddressMatches(actualOrdinal,
+                    rootContextSelector.invocationOrdinal,
+                    attachProducerOccurrenceByPort, occurrenceId,
+                    exactOutgoingAddress);
+        }
+
+        /**
+         * Reserves completed evidence before reopening task admission.
+         *
+         * <p>Loop-body roots remain governed exclusively by K_L. Every
+         * non-loop address denotes one dynamic occurrence and is complete
+         * after its first full terminal result; targetReached:false is that
+         * occurrence's seed case.</p>
+         */
+        void reserveCompletedEvidence(boolean targetReached) {
+            if (!loopBodyRoot) {
+                completedGoalReserved = true;
+            }
+        }
+
+        boolean blocksAdmissionAfterCompletedGoal() {
+            return completedGoalReserved;
+        }
+
+        /**
+         * Whether this occurrence directly witnessed the selected failure
+         * outcome, rather than merely deviating from its recorded seed path.
+         */
+        boolean reachedRequiredTargetOutcome(JsonObject reach) {
+            return declaresTargetBranch()
+                    && reach != null
+                    && targetBranchSite.equals(optionalString(reach, "siteId"))
+                    && targetBranchOccurrence == optionalInteger(reach,
+                    "occurrence", -1)
+                    && reach.has("outcome")
+                    && reach.get("outcome").isJsonPrimitive()
+                    && reach.getAsJsonPrimitive("outcome").isBoolean()
+                    && reach.get("outcome").getAsBoolean()
+                    == targetBranchRequiredOutcome;
+        }
+
+        /** The declared target branch event, for a named coverage gap. */
+        String targetBranchLabel() {
+            return targetBranchSite + "#" + targetBranchOccurrence;
+        }
+
+        static boolean targetRequiredOutcome(
+                JsonArray branches, String targetSite,
+                int targetOccurrence) {
+            if (safe(targetSite).isEmpty()) return false;
+            Boolean required = null;
+            for (JsonElement element : branches) {
+                if (!element.isJsonObject()) continue;
+                JsonObject branch = element.getAsJsonObject();
+                if (!targetSite.equals(optionalString(branch, "siteId"))
+                        || targetOccurrence != optionalInteger(branch,
+                        "selectedOccurrence", -1)) {
+                    continue;
+                }
+                JsonElement encoded = branch.get("requiredOutcome");
+                if (encoded == null || !encoded.isJsonPrimitive()
+                        || !encoded.getAsJsonPrimitive().isBoolean()) {
+                    throw new IllegalArgumentException(
+                            "target branch requires a boolean outcome: "
+                                    + targetSite + '#' + targetOccurrence);
+                }
+                boolean candidate = encoded.getAsBoolean();
+                if (required != null && required != candidate) {
+                    throw new IllegalArgumentException(
+                            "ambiguous target required outcome: "
+                                    + targetSite + '#' + targetOccurrence);
+                }
+                required = candidate;
+            }
+            if (required == null) {
+                throw new IllegalArgumentException(
+                        "target branch is absent from the branch catalog: "
+                                + targetSite + '#' + targetOccurrence);
+            }
+            return required;
+        }
+
+    }
+}
