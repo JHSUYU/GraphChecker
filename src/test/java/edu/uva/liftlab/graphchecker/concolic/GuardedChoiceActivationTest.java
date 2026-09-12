@@ -10,6 +10,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
@@ -32,6 +33,55 @@ public class GuardedChoiceActivationTest {
         assertEquals("unsat", solve(common + assertion("(not writer)")));
         assertEquals("unsat", solve(common
                 + assertion("(not (= value 7))")));
+    }
+
+    /**
+     * A read with an INITIAL arm and two writers may not observe a writer's
+     * value while no writer is active.  Before last-writer-wins the per-arm
+     * writer obligation said only "the selected arm's writer ran", so the
+     * INITIAL arm could be selected with both writers live and a read could
+     * take a value its own program order had already overwritten.
+     */
+    @Test
+    public void lastWriterWinsRejectsAnUnwrittenWriterValue() throws Exception {
+        Assume.assumeTrue(z3Available());
+        List<String> selectors = Arrays.asList("initial_arm", "writer_one_arm",
+                "writer_two_arm");
+        List<String> activity = Arrays.asList("initial_case", "writer_one",
+                "writer_two");
+        List<String> axioms = ConcolicSmtComposer.lastWriterWins(selectors,
+                activity);
+        assertEquals("", axioms.get(2));
+
+        StringBuilder model = new StringBuilder(declarations("initial_arm",
+                "writer_one_arm", "writer_two_arm", "initial_case",
+                "writer_one", "writer_two"));
+        model.append("(declare-const value Int)\n")
+                .append(assertion(ConcolicSmtComposer.conditionalExactlyOne(
+                        "true", selectors)))
+                // The VM's arm values: the location started at 0 and the two
+                // writers left 1 and 2 behind.
+                .append(assertion("(=> initial_arm (= value 0))"))
+                .append(assertion("(=> writer_one_arm (and writer_one"
+                        + " (= value 1)))"))
+                .append(assertion("(=> writer_two_arm (and writer_two"
+                        + " (= value 2)))"))
+                .append(assertion("(=> initial_arm initial_case)"));
+        for (String axiom : axioms) {
+            if (!axiom.isEmpty()) model.append(assertion(axiom));
+        }
+
+        // Observing writer one's value with neither writer active.
+        assertEquals("unsat", solve(model + assertion("(= value 1)")
+                + assertion("(not writer_one)")
+                + assertion("(not writer_two)")));
+        // Observing the INITIAL value while a later writer ran anyway.
+        assertEquals("unsat", solve(model + assertion("(= value 0)")
+                + assertion("writer_two")));
+        // Writer one's value is still reachable while writer two stayed out.
+        assertEquals("sat", solve(model + assertion("(= value 1)")
+                + assertion("writer_one")
+                + assertion("(not writer_two)")));
     }
 
     @Test

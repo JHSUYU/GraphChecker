@@ -58,6 +58,7 @@ import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.floatingKind;
 import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.numeric;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.arithmetic;
@@ -121,6 +122,12 @@ public final class ConcolicSmtComposer {
     /** Whether all selected producer and target path sets were explored. */
     public static final String PATH_SET_COMPLETE = "pathSetComplete";
     public static final String FINAL_READY = "FINAL_READY";
+    /**
+     * One guarded read whose candidate writers admit no single program order,
+     * and which therefore carries no last-writer-wins axiom.
+     */
+    public static final String GUARDED_READ_ORDER_UNKNOWN =
+            "GUARDED_READ_ORDER_UNKNOWN";
     public static final String FINAL_REFUSED = "FINAL_REFUSED";
 
     private static final Gson GSON = new GsonBuilder()
@@ -1036,6 +1043,41 @@ public final class ConcolicSmtComposer {
                 + count + ")";
     }
 
+    /**
+     * Last writer wins, as one formula per candidate arm.
+     *
+     * {@code selectors} is the read's candidate arms in program order,
+     * earliest first, and {@code activity} the condition under which each of
+     * those writers ran.  Selecting arm k asserts that its writer ran and that
+     * no writer published after it did, which is what makes the arm the *last*
+     * write the read could have seen.  The earliest arm is the location's
+     * INITIAL version, so selecting it forbids every tracked writer.
+     *
+     * The last arm's entry is empty: it has nothing later to forbid, and its
+     * positive obligation is already asserted by its writer obligation.
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static List<String> lastWriterWins(List<String> selectors,
+                                       List<String> activity) {
+        if (selectors.size() != activity.size()) {
+            throw new IllegalArgumentException(
+                    "one activity condition per ordered candidate arm");
+        }
+        List<String> axioms = new ArrayList<>(selectors.size());
+        for (int index = 0; index < selectors.size(); index++) {
+            List<String> obligation = new ArrayList<>();
+            obligation.add(activity.get(index));
+            for (int later = index + 1; later < selectors.size(); later++) {
+                obligation.add("(not " + activity.get(later) + ")");
+            }
+            axioms.add(obligation.size() == 1 ? ""
+                    : "(=> " + selectors.get(index) + " " + and(obligation)
+                    + ")");
+        }
+        return axioms;
+    }
+
     /** One target-local predicate qualified by its exact causal case. */
 
     private static String or(List<String> terms) {
@@ -1179,6 +1221,27 @@ public final class ConcolicSmtComposer {
         private final Map<String, String> guardedChoiceAssertions =
                 new LinkedHashMap<>();
         private final Map<String, String> guardedActivationAssertions =
+                new LinkedHashMap<>();
+        /**
+         * Program order of one read's candidate writers, earliest first.
+         *
+         * The VM appends one immutable version per store to a selected
+         * location and stamps it with a session-monotonic field version id,
+         * and {@code plan_read} hands a read the whole retained list under the
+         * version lock.  Every candidate was therefore published before the
+         * read, and the ids order them exactly.
+         */
+        private final Map<String, List<List<String>>> guardedReadChains =
+                new LinkedHashMap<>();
+        private final Map<String, List<String>> guardedReadOrders =
+                new LinkedHashMap<>();
+        /** Reads whose candidate writers admit no single program order. */
+        private final Map<String, String> guardedReadOrderGaps =
+                new LinkedHashMap<>();
+        /** {@code active(w)} per arm: its writer obligation's conjunction. */
+        private final Map<String, String> guardedReadArmActivity =
+                new LinkedHashMap<>();
+        private final Map<String, String> guardedOrderAssertions =
                 new LinkedHashMap<>();
         private final Set<String> emittedGuardedReadArms =
                 new LinkedHashSet<>();
@@ -2321,9 +2384,108 @@ public final class ConcolicSmtComposer {
                 emitDirectReadArm(node, readIdentity, projectionIdentity,
                         result.text, activation, arm);
             }
+            recordGuardedReadOrder(node, readIdentity, arms);
             recordGuardedReadUse(readIdentity, projectionIdentity, activation,
                     useSelectors);
             return result;
+        }
+
+        /**
+         * Records the program order of one read's candidate writers.
+         *
+         * The order is the VM's own: every candidate carries the
+         * session-monotonic {@code fieldVersionId} of the version it names, and
+         * a read's candidate list is the location's retained version list taken
+         * at the read, so each id is below the read's own event id.  Ids minted
+         * in different symbolic sessions do not compare, so one lowering
+         * contributes one chain and the chains are merged only where they
+         * agree; see {@link #mergeGuardedReadOrder}.
+         */
+        private void recordGuardedReadOrder(JsonObject node,
+                                            String readIdentity,
+                                            List<DirectReadArm> arms) {
+            if (guardedReadOrderGaps.containsKey(readIdentity)) return;
+            long readEvent = optionalLongInteger(node, "readEventId", -1L);
+            Set<Long> seen = new LinkedHashSet<>();
+            for (DirectReadArm arm : arms) {
+                long version = optionalLongInteger(arm.candidate,
+                        "fieldVersionId", -1L);
+                if (version <= 0L || readEvent <= 0L || version >= readEvent
+                        || !seen.add(version)) {
+                    orderUnknown(readIdentity,
+                            "candidate writers carry no distinct field version"
+                                    + " below this read's event id");
+                    return;
+                }
+            }
+            List<DirectReadArm> ordered = new ArrayList<>(arms);
+            ordered.sort(Comparator.comparingLong(arm -> optionalLongInteger(
+                    arm.candidate, "fieldVersionId", -1L)));
+            List<String> chain = new ArrayList<>(ordered.size());
+            for (DirectReadArm arm : ordered) chain.add(arm.selector);
+            guardedReadChains.computeIfAbsent(readIdentity,
+                    ignored -> new ArrayList<>()).add(chain);
+        }
+
+        /**
+         * Merges one read's per-lowering chains into a single program order.
+         *
+         * Two sessions may each see only part of the location's history -- one
+         * lowering's chain can be shorter than another's -- so the chains are
+         * merged rather than compared.  Each chain contributes the precedences
+         * it witnessed; the merge succeeds only when no two chains disagree
+         * about a pair and when every pair of arms is ordered by some chain,
+         * because an unordered pair is exactly the case where last-writer-wins
+         * cannot say which of the two overwrites the other.
+         */
+        private List<String> mergeGuardedReadOrder(String read,
+                                                   List<String> lowered) {
+            List<List<String>> chains = guardedReadChains.getOrDefault(read,
+                    Collections.emptyList());
+            if (chains.isEmpty()) return null;
+            Set<String> before = new LinkedHashSet<>();
+            Set<String> nodes = new LinkedHashSet<>();
+            for (List<String> chain : chains) {
+                nodes.addAll(chain);
+                for (int index = 0; index < chain.size(); index++) {
+                    for (int later = index + 1; later < chain.size();
+                         later++) {
+                        before.add(chain.get(index) + "\n"
+                                + chain.get(later));
+                    }
+                }
+            }
+            if (!nodes.equals(new LinkedHashSet<>(lowered))) {
+                orderUnknown(read, "the merged chains do not cover every"
+                        + " lowered candidate arm");
+                return null;
+            }
+            List<String> order = new ArrayList<>(nodes);
+            Collections.sort(order);
+            for (int left = 0; left < order.size(); left++) {
+                for (int right = left + 1; right < order.size(); right++) {
+                    boolean forward = before.contains(order.get(left) + "\n"
+                            + order.get(right));
+                    boolean backward = before.contains(order.get(right) + "\n"
+                            + order.get(left));
+                    if (forward == backward) {
+                        orderUnknown(read, forward
+                                ? "two lowerings order one pair of candidate"
+                                + " writers in opposite directions"
+                                : "two candidate writers are ordered by no"
+                                + " single session");
+                        return null;
+                    }
+                }
+            }
+            order.sort((left, right) -> before.contains(left + "\n" + right)
+                    ? -1 : 1);
+            return order;
+        }
+
+        private void orderUnknown(String readIdentity, String detail) {
+            guardedReadOrders.remove(readIdentity);
+            guardedReadOrderGaps.putIfAbsent(readIdentity, detail);
         }
 
         private void recordGuardedReadUse(String readIdentity,
@@ -2481,6 +2643,18 @@ public final class ConcolicSmtComposer {
                     restoreGuard(previousGuard);
                 }
             }
+            // One arm is active exactly when its writer case closure ran and
+            // the branches at the write itself were taken.  The order axiom
+            // negates this same condition for every later writer, so it is
+            // recorded before the emit-once guard below.
+            String activity = and(writerGuards);
+            String activityKey = readIdentity + "\n" + arm.selector;
+            String heldActivity = guardedReadArmActivity.putIfAbsent(
+                    activityKey, activity);
+            if (heldActivity != null && !heldActivity.equals(activity)) {
+                orderUnknown(readIdentity,
+                        "one candidate writer has two activity conditions");
+            }
             // Nested reads in the writer guard above must observe every use,
             // even though this stable arm's value semantics emit only once.
             if (!emittedGuardedReadArms.add(emittedKey)) return;
@@ -2557,6 +2731,48 @@ public final class ConcolicSmtComposer {
                     guardedActivationAssertions.put(key,
                             activationAssertion);
                 }
+                emitGuardedReadOrder(read, selectors);
+            }
+        }
+
+        /**
+         * Last writer wins, for one guarded read.
+         *
+         * The per-arm {@code guarded_read_writer} obligation says only that the
+         * selected arm's writer ran.  On its own that lets a *later* writer to
+         * the same location run as well, so a read could observe a value its
+         * own program order has already overwritten -- and the INITIAL arm
+         * could be selected with every tracked writer active, which detaches a
+         * read from the writes that must precede it.  Selecting arm k therefore
+         * also forbids every candidate published after k.
+         *
+         * Nothing is emitted for the last arm in the chain: it has no later
+         * writer to forbid, and its positive obligation is already asserted.
+         */
+        private void emitGuardedReadOrder(String read,
+                                          List<String> lowered) {
+            if (guardedReadOrderGaps.containsKey(read)) return;
+            List<String> chain = mergeGuardedReadOrder(read, lowered);
+            if (chain == null) return;
+            List<String> activity = new ArrayList<>(chain.size());
+            for (String selector : chain) {
+                String held = guardedReadArmActivity.get(read + "\n"
+                        + selector);
+                if (held == null) {
+                    orderUnknown(read, "one candidate writer has no recorded"
+                            + " activity condition");
+                    return;
+                }
+                activity.add(held);
+            }
+            guardedReadOrders.put(read, chain);
+            List<String> axioms = lastWriterWins(chain, activity);
+            for (int index = 0; index < chain.size(); index++) {
+                if (axioms.get(index).isEmpty()) continue;
+                String key = read + "\n" + chain.get(index);
+                guardedOrderAssertions.put(key, assertWithoutCurrentGuard(
+                        smtSymbols.mint("guarded_read_order__", key, 16),
+                        axioms.get(index)));
             }
         }
 
@@ -2585,6 +2801,17 @@ public final class ConcolicSmtComposer {
                 Collections.sort(guards);
                 for (String guard : guards) activations.add(guard);
                 read.add("activationGuards", activations);
+                JsonArray writerOrder = new JsonArray();
+                for (String selector : guardedReadOrders.getOrDefault(identity,
+                        Collections.emptyList())) {
+                    JsonObject row = new JsonObject();
+                    row.addProperty("selector", selector);
+                    row.addProperty("orderAssertion",
+                            guardedOrderAssertions.getOrDefault(
+                                    identity + "\n" + selector, ""));
+                    writerOrder.add(row);
+                }
+                read.add("writerOrder", writerOrder);
                 JsonArray uses = new JsonArray();
                 Map<String, GuardedReadUse> useRows = guardedReadUses
                         .getOrDefault(identity, Collections.emptyMap());
@@ -2622,6 +2849,22 @@ public final class ConcolicSmtComposer {
                 reads.add(read);
             }
             model.add("reads", reads);
+            // Telemetry, not a refusal: a read with no single writer order
+            // keeps the model it had before last-writer-wins, and says so.
+            JsonArray orderGaps = new JsonArray();
+            List<String> ungrouped = new ArrayList<>(
+                    guardedReadOrderGaps.keySet());
+            Collections.sort(ungrouped);
+            for (String identity : ungrouped) {
+                JsonObject row = new JsonObject();
+                row.addProperty("reason", GUARDED_READ_ORDER_UNKNOWN);
+                row.addProperty("readIdentity", identity);
+                row.addProperty("detail",
+                        guardedReadOrderGaps.get(identity));
+                orderGaps.add(row);
+            }
+            model.add("orderGaps", orderGaps);
+            model.addProperty("orderedReads", guardedReadOrders.size());
             return model;
         }
 
