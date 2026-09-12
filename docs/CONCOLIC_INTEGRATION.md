@@ -105,7 +105,7 @@ at every call site of that callee inside the region, so one entry declares
 `experiments/hadoop/hdfs-17899/symbolic-inputs.jsonl`:
 
 ```json
-{"regionId":"REGION.aaa1cfd7-...","fieldSignatures":["<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>"],"cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
+{"regionId":"REGION.aaa1cfd7-...","fieldSignatures":["<org.apache.hadoop.security.token.delegation.DelegationKey: long expiryDate>"],"cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
 ```
 
 A declared row does not only survive the narrowing: it **mints**. Once a
@@ -117,10 +117,22 @@ asks the strict question instead (is anything symbolic actually inside the
 tree?) and mints where the answer is no, recording the usual
 `PLANNED_MANUAL_SYMBOLIZATION_V1` evidence. A declared read that a symbol has
 already reached still flows, so declaring both a root and the values derived
-from it does not fork the chain: on the HDFS block-key experiments
-`BlockTokenSecretManager#serialNo` is the mint and `DelegationKey#keyId` /
-`#expiryDate` flow from it and from the clock. Non-primitive declarations keep
-the loose rule, since a container or reference has no root to mint.
+from it does not fork the chain: on the HDFS block-key experiments the clock
+is the mint and `DelegationKey#expiryDate` flows from it. Non-primitive
+declarations keep the loose rule, since a container or reference has no root
+to mint.
+
+Which makes the choice of what to declare a soundness question, not a budget
+one. **A value whose earlier members are baked into concrete state elsewhere
+in the recording cannot be declared a free root.** The block key id is the
+worked example: the NameNode rolls it from a counter, and the target
+DataNode's `allKeys` arrives in the composition as an initial snapshot of
+three recorded constants. Minting the NameNode-side id as a free symbol gives
+it no identity with those constants, so the solver answers with an id outside
+the recorded set and reaches the target's lookup miss whether or not the fault
+fired -- a world the recording does not admit. Declare the mechanism that is
+genuinely free (here the wall clock, and the expiry computed from it) and let
+the counter flow as the constants it was recorded as.
 
 Two things are exempt from the allowlist and stay symbolic without a row:
 
