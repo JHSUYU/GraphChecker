@@ -14,7 +14,8 @@ whole-program unreachability proof.
 ```text
 workload + target + wire flows + loop bounds
   -> static discovery
-  -> seed trace and causal graph
+  -> pass 1 skeleton trace
+  -> pass 2 state trace and causal graph
   -> immutable linked region-path plan
   -> concolic replay and import
   -> causal composition
@@ -25,6 +26,15 @@ The shell orchestrator freezes inputs and launches stages; it does not infer
 causal edges or symbolic expressions. Static discovery owns capture sites, the
 runtime owns observations, the custom VM owns symbolic expressions, and the
 Composer owns formula closure.
+
+Tracing runs the workload twice. Pass 1 instruments method activation
+envelopes only and selects the candidate region skeletons the run activated;
+each selected skeleton is the candidate's own row carrying the anchor names
+that run observed. Pass 2 re-instruments only the selected region methods and
+records calls, branches, arguments and direct declared-field accesses. The
+region finalizer mints each occurrence identity exactly once over the pass-2
+trace and stamps it onto the activation; the region planner and every later
+stage read that identity instead of deriving one.
 
 Communication uses one transport-neutral model:
 
@@ -131,8 +141,13 @@ case has installed the same Hadoop SNAPSHOT coordinates in Maven's cache.
 
 ## Results
 
-The final directory contains the composed SMT, composition/reachability reports,
-aggregate gaps, frozen provenance, and `result.json`. Accepted outcomes are:
+`schedule/final/` contains exactly seven files: `candidate.smt2`,
+`candidate_composition_manifest.json`, `z3-result.json`, `path-closures.json`,
+`gaps.json`, `result.json`, and `run-manifest.json`, which records the frozen
+provenance digests, the per-iteration manifests, and the digest of every other
+published artifact. The frozen inputs themselves are not in `final/`: the
+private read-only copy of the tool the run executed is the `GraphChecker.jar`
+in `schedule/frozen-inputs/`. Accepted outcomes are:
 
 - `SAT_CANDIDATE`: a bounded witness was found.
 - `UNSAT_CLOSED`: the composed bounded model is closed and unsatisfiable.
@@ -150,5 +165,7 @@ mvn -q test
 git diff --check
 ```
 
-Main code lives under `src/main/java/.../{causynth,runtime,concolic,contract}`;
-the custom VM is under `third_party/OpenJDK-Concolic-Execution-Engine`.
+Main code lives under `src/main/java/.../` in the packages `annotation`,
+`causynth`, `concolic`, `contract`, `option`, `runtime` and `transformer`; the
+identity and artifact contracts shared across stages live in `contract`. The
+custom VM is under `third_party/OpenJDK-Concolic-Execution-Engine`.

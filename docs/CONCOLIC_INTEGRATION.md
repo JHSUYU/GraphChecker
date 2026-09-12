@@ -18,20 +18,47 @@ A scheduled member names one region occurrence and one local path goal:
 
 ```json
 {
-  "taskId": "TASK.<query>",
-  "goalId": "GOAL.REGION_PATH.<occurrence>",
+  "taskId": "TASK.SEED.<sha256>",
+  "goalId": "GOAL.REGION_PATH.<uuid>",
   "goalKind": "REGION_PATH_CLOSURE",
-  "regionId": "REGION.3",
+  "regionId": "REGION.<uuid>",
   "sourceKey": "node#epoch0",
-  "occurrenceId": "node#epoch0/region/REGION.3#1",
-  "rootSelector": {"method": "<Worker: int compute()>", "ordinal": 1}
+  "occurrenceId": "node#epoch0/region/REGION.<uuid>#1",
+  "rootSelector": {
+    "method": "<Worker: int compute()>",
+    "kind": "RECEIVER_CONTEXT",
+    "causalAnchor": {"kind": "REGISTERED_SOURCE", "sourceKey": "node#epoch0"},
+    "invocationOrdinal": 1
+  }
 }
 ```
 
-`goalKind` is `REGION_PATH_CLOSURE` or `TARGET_REACH_CLOSURE`. All members in
-the selected causal closure form one linked replay bundle. They execute in one
-workload JVM so native expression handles, shared-state versions, and boundary
-identities remain valid across the whole causal chain.
+A scheduled task id is `TASK.SEED.<sha256>` over the member's source
+occurrence, relation content and exact port set; the replay task minted for a
+solved flip is `TASK.REPLAY.<sha256>`. `goalId` is `GOAL.REGION_PATH.` or
+`GOAL.TARGET_REACH.` followed by a UUID derived from the occurrence id, and
+`goalKind` is correspondingly `REGION_PATH_CLOSURE` or `TARGET_REACH_CLOSURE`.
+
+An occurrence id is a planned address,
+`<sourceKey>/region/<regionId>#<ordinal>`, optionally followed by
+`#a<ordinal>` naming the activation that ran it. One planned address may be
+entered several times in one replay, so every compatible activation is
+published as its own occurrence rather than one being answered and the rest
+reported as an ambiguous address. Plan rows, relations and
+target-reach queries carry the planned address; a summary row carries the
+activation form and repeats its planned address in `plannedOccurrenceId` beside
+`activationOrdinal`. A plan and a summary are matched on the planned address,
+never on the activation.
+
+A schedule is drawn from exactly one closure. `ConcolicScheduler
+--closure-mode` is `candidate` (every occurrence the frozen region plan
+declares), `seed-replay` (only the occurrences a seed activation can replay) or
+`active-observed` (only the occurrences this iteration's summaries observed),
+and the campaign states which one each stage uses.
+
+All members in the selected causal closure form one linked replay bundle. They
+execute in one workload JVM so native expression handles, shared-state
+versions, and boundary identities remain valid across the whole causal chain.
 
 ## Explicit symbolic roots
 
@@ -72,9 +99,15 @@ A declared wire flow identifies one exact producer endpoint and one exact
 consumer endpoint. Instrumentation invokes:
 
 ```text
-exportCommunicationLeaf(siteId, carrier, field, descriptor)
-attachCommunicationLeaf(siteId, carrier, field, descriptor)
+exportCommunicationLeaf(portId, carrier, field, descriptor)
+attachCommunicationLeaf(portId, carrier, field, descriptor)
 ```
+
+A port id names one declared endpoint of one exchange site --
+`<exchangeSiteKey>.req.<name>` or `<exchangeSiteKey>.resp.<name>` -- while a
+site id, `<method>#u<unitIndex>`, names the bytecode unit a capture was
+instrumented at. The plan's handoff row carries both, and the hook is addressed
+by the port.
 
 The export stores the live VM expression handle in the next message envelope.
 The matching receive attaches that expression to the real consumer value. A VM
@@ -129,11 +162,17 @@ downstream branches, RPC handoffs, and GuardedRead candidate snapshots are
 observed again. Different obligations run in separate workload JVMs and may
 execute in parallel.
 
-All planners in one global wave read the same immutable summary snapshot. The
-campaign waits for the wave, imports its new cases, then publishes one larger
-snapshot for the next wave. A region is closed only at this closure-wide fixed
-point. A topology change quarantines the complete replay bundle and starts a
-new topology epoch; cases from different epochs are never merged.
+One planner JVM runs per wave. It reads the same immutable summary snapshot
+and task plan for every member named on its `--members` roster, computes the
+propagation closure once, and writes each member's own path manifest and
+worklist into that member's own directory. The campaign waits for the wave,
+imports its new cases, then publishes one larger snapshot for the next wave. A
+region is closed only at this closure-wide fixed point. An obligation whose
+flip query exhausts the solver budget is recorded as the `SOLVER_TIMEOUT`
+exploration status and the `PATH_FLIP_SOLVER_TIMEOUT` path coverage gap: its
+sibling path stays unexplored, which blocks `UNSAT_CLOSED` and never a
+`SAT_CANDIDATE`. A topology change quarantines the complete replay bundle and
+starts a new topology epoch; cases from different epochs are never merged.
 
 Retained loops use their configured finite unroll as one region-local path.
 Repeated transfers and shared-state accesses keep their loop/boundary ordinal
@@ -142,11 +181,22 @@ symbolic-merge cases merely because they repeat.
 
 ## Result contract
 
-Each region result contains task and occurrence identity, exit kind, explicit
-symbolic-root evidence, its local path condition, consumer-boundary handoffs,
-shared-state GuardedRead candidate snapshots, retained-loop observations, and
-topology observations. The importer validates that evidence and publishes
-local cases or named gaps.
+Every imported region summary carries `schemaVersion`, `kind`, `goalId`,
+`taskId`, `sourceKey`, `topologyEpoch`, `boundarySessionScope`,
+`replayGroupId`, `regionId`, `occurrenceId`, `activationOrdinal`,
+`plannedOccurrenceId`, `relationKey`, `loopBound`, `goalKind`, `edgeBindings`,
+`pathCondition`, `branchMappings`, `normalExit`, `boundedExit`,
+`exceptionType`, `localCaseId`, `summaryId`, `sharedExpressionTable` and
+`pathSetClosed`. Evidence the replay did not produce is absent rather than
+empty: `symbolicSourceEvidence`, `manualSymbolicInputObservations`,
+`recordedSharedState`, `vmHandoffEvents`, `pathLoopCounts`,
+`pathLoopCountGaps`, `alignmentGaps`, `familySnapshotDigest`, and, for a
+target-reach goal, `targetReached` and `targetReach`. The importer validates
+that evidence and publishes local cases or named gaps; it writes every field
+above except `pathSetClosed`, which the campaign stamps on once the exploration
+waves settle, matching each worklist report on `plannedOccurrenceId`.
+`sharedExpressionTable` holds the hash-consed expression definitions the row's
+own payloads refer to.
 
 The composer consumes the closure-wide cases and the target predicate. Its
 manifest reports consumer-boundary families, case-to-PC dependencies,
