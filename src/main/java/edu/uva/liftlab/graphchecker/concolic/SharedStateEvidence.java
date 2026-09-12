@@ -561,6 +561,11 @@ public final class SharedStateEvidence {
 
         Map<RuntimeMapOwner, RuntimeMapIdentitySet> identities =
                 new LinkedHashMap<>();
+        // Owners a carrier record names, which is what "selected" means
+        // here.  A container the VM merely tracked is referenced by its
+        // state root without ever having been selected, and owes no
+        // identity at all.
+        Set<RuntimeMapOwner> selectedOwners = new LinkedHashSet<>();
         IdentityHashMap<JsonObject, Set<RuntimeMapOwner>> subjects =
                 new IdentityHashMap<>();
         List<MapRecordBinding> records = new ArrayList<>();
@@ -586,6 +591,7 @@ public final class SharedStateEvidence {
                 }
                 RuntimeMapOwner key = new RuntimeMapOwner(scope, session,
                         owner);
+                selectedOwners.add(key);
                 subjects.computeIfAbsent(summary,
                         ignored -> new LinkedHashSet<>()).add(key);
                 RuntimeMapIdentitySet set = identities.computeIfAbsent(key,
@@ -629,6 +635,17 @@ public final class SharedStateEvidence {
             for (RuntimeMapOwner owner : referenced) {
                 RuntimeMapIdentitySet set = identities.get(owner);
                 if (uniqueIdentity(set) != null) continue;
+                if (!selectedOwners.contains(owner)) {
+                    // Nothing selected this container, so no writer set was
+                    // ever claimed for it and there is no identity to be
+                    // missing.  Its state root stays the VM-local
+                    // structural witness it already is - an existential
+                    // witness of the recorded run, scoped per replay
+                    // session exactly like an allocated array's.  Demanding
+                    // a carrier identity of it held every worklist that
+                    // merely mentions an untracked container open.
+                    continue;
+                }
                 boolean ambiguous = set != null
                         && (set.identities.size() > 1
                         || !set.identities.isEmpty()
