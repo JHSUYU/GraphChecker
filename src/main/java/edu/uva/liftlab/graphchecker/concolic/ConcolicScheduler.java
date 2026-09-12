@@ -37,6 +37,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -358,16 +359,25 @@ public final class ConcolicScheduler {
         return result;
     }
 
+    /**
+     * The object rows of {@code source} that {@code keep} admits, each as
+     * its own copy.  A non-object element is not a row and is dropped.
+     */
+    private static JsonArray copyMatching(JsonArray source,
+                                          Predicate<JsonObject> keep) {
+        JsonArray result = new JsonArray();
+        for (JsonElement element : source == null ? new JsonArray() : source) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if (keep.test(row)) result.add(row.deepCopy());
+        }
+        return result;
+    }
+
     /** One causal edge can be represented by a refined runtime row and by a
      * compact closure row. */
     private static JsonArray objectRows(JsonArray source) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : source) {
-            if (element.isJsonObject()) {
-                result.add(element.deepCopy());
-            }
-        }
-        return result;
+        return copyMatching(source, row -> true);
     }
 
     private static JsonArray deduplicateTopologyEdges(JsonArray bindings)
@@ -617,17 +627,9 @@ public final class ConcolicScheduler {
     /** A target VM job has no reason to materialize a concrete owner merely
      * because the backward slice traversed through it. */
     private static JsonArray targetSymbolicFrontier(JsonArray actions) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : actions) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            if (!InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                    optionalString(action, "mode"))) {
-                continue;
-            }
-            result.add(action.deepCopy());
-        }
-        return result;
+        return copyMatching(actions,
+                action -> InputActionCatalog.Mode.SYMBOLIC.name().equals(
+                        optionalString(action, "mode")));
     }
 
     /** Adds every symbolic carrier needed by another guard of the same throw. */
@@ -658,18 +660,11 @@ public final class ConcolicScheduler {
     /** Package-visible for the focused target-component admission contract. */
     static JsonArray targetInputBindings(
             Goal goal, String queryInstance) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : goal.edgeBindings()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            if (queryInstance.equals(optionalString(binding,
-                    "toOccurrenceId"))
-                    && AutomaticRegionEdge
-                    .tracedExchangeCandidate(binding)) {
-                result.add(binding.deepCopy());
-            }
-        }
-        return result;
+        return copyMatching(goal.edgeBindings(),
+                binding -> queryInstance.equals(optionalString(binding,
+                        "toOccurrenceId"))
+                        && AutomaticRegionEdge.tracedExchangeCandidate(
+                        binding));
     }
 
     /** A target task solves one failure-directed branch. */
@@ -1586,18 +1581,13 @@ public final class ConcolicScheduler {
 
         private JsonArray filteredSites(
                 List<JsonObject> sites, Set<String> allowedMethods) {
-            JsonArray result = new JsonArray();
-            if (sites == null) {
-                return result;
+            JsonArray source = new JsonArray();
+            for (JsonObject site : sites == null
+                    ? Collections.<JsonObject>emptyList() : sites) {
+                source.add(site);
             }
-            for (JsonObject site : sites) {
-                String method = optionalString(site, "method");
-                if (!allowedMethods.contains(method)) {
-                    continue;
-                }
-                result.add(site.deepCopy());
-            }
-            return result;
+            return copyMatching(source, site -> allowedMethods.contains(
+                    optionalString(site, "method")));
         }
 
     }

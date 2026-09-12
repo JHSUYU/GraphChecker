@@ -984,15 +984,7 @@ public final class TargetReachPathQueryBuilder {
         }
 
         static Arguments parse(String[] argv) {
-            Map<String, String> values = new LinkedHashMap<>();
-            for (int index = 0; index < argv.length; index++) {
-                String option = argv[index];
-                if (!option.startsWith("--") || index + 1 >= argv.length) {
-                    throw new IllegalArgumentException(
-                            "Expected --name value, got " + option);
-                }
-                values.put(option.substring(2), argv[++index]);
-            }
+            Map<String, String> values = CliArgs.pairs(argv);
             return new Arguments(requiredPath(values, "summaries"),
                     requiredPath(values, "path-manifest"),
                     requiredPath(values, "seed-query"),

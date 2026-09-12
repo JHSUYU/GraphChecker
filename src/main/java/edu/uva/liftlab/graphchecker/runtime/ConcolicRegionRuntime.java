@@ -61,6 +61,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.integralRange;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
@@ -6509,26 +6510,9 @@ public final class ConcolicRegionRuntime {
                         "guarded read has malformed integer value " + value,
                         malformed);
             }
-            BigInteger minimum;
-            BigInteger maximum;
-            if ("B".equals(descriptor)) {
-                minimum = BigInteger.valueOf(Byte.MIN_VALUE);
-                maximum = BigInteger.valueOf(Byte.MAX_VALUE);
-            } else if ("C".equals(descriptor)) {
-                minimum = BigInteger.ZERO;
-                maximum = BigInteger.valueOf(Character.MAX_VALUE);
-            } else if ("S".equals(descriptor)) {
-                minimum = BigInteger.valueOf(Short.MIN_VALUE);
-                maximum = BigInteger.valueOf(Short.MAX_VALUE);
-            } else if ("I".equals(descriptor)) {
-                minimum = BigInteger.valueOf(Integer.MIN_VALUE);
-                maximum = BigInteger.valueOf(Integer.MAX_VALUE);
-            } else {
-                minimum = BigInteger.valueOf(Long.MIN_VALUE);
-                maximum = BigInteger.valueOf(Long.MAX_VALUE);
-            }
-            if (parsed.compareTo(minimum) < 0
-                    || parsed.compareTo(maximum) > 0) {
+            BigInteger[] range = integralRange(descriptor);
+            if (parsed.compareTo(range[0]) < 0
+                    || parsed.compareTo(range[1]) > 0) {
                 throw new IllegalArgumentException(
                         "guarded read value is outside " + descriptor
                                 + " range: " + value);

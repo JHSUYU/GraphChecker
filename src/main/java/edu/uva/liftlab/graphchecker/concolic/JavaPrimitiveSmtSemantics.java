@@ -78,6 +78,36 @@ public final class JavaPrimitiveSmtSemantics {
         return result.append(descriptor).toString();
     }
 
+    /**
+     * The closed value range of one integral Java type, as {@code {minimum,
+     * maximum}}, or null when the type names no integral range.  A boolean
+     * is not one: two named values are not a span of values.
+     */
+    public static BigInteger[] integralRange(String javaType) {
+        String descriptor = javaTypeDescriptor(javaType);
+        if ("B".equals(descriptor)) {
+            return range(Byte.MIN_VALUE, Byte.MAX_VALUE);
+        }
+        if ("C".equals(descriptor)) {
+            return range(0, Character.MAX_VALUE);
+        }
+        if ("S".equals(descriptor)) {
+            return range(Short.MIN_VALUE, Short.MAX_VALUE);
+        }
+        if ("I".equals(descriptor)) {
+            return range(Integer.MIN_VALUE, Integer.MAX_VALUE);
+        }
+        if ("J".equals(descriptor)) {
+            return range(Long.MIN_VALUE, Long.MAX_VALUE);
+        }
+        return null;
+    }
+
+    private static BigInteger[] range(long minimum, long maximum) {
+        return new BigInteger[] {BigInteger.valueOf(minimum),
+                BigInteger.valueOf(maximum)};
+    }
+
     static IntegralWidth widthOfJavaType(String javaType) {
         IntegralDomain domain = domainOfJavaType(javaType);
         return domain == null ? IntegralWidth.NONE : domain.width;

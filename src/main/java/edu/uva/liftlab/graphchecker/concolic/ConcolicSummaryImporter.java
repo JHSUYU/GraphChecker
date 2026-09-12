@@ -285,7 +285,7 @@ public final class ConcolicSummaryImporter {
     }
 
     public static void main(String[] args) throws Exception {
-        Map<String, String> options = parseArgs(args);
+        Map<String, String> options = CliArgs.pairs(args);
         Path results = required(options, "results");
         Path tasks = required(options, "task-plan");
         Path runtimePlan = required(options, "runtime-plan");
@@ -2442,25 +2442,6 @@ public final class ConcolicSummaryImporter {
         private int vmWatermark() {
             return vmWatermark;
         }
-    }
-
-    private static Map<String, String> parseArgs(String[] args) {
-        Map<String, String> result = new LinkedHashMap<>();
-        for (int index = 0; index < args.length; index++) {
-            String argument = args[index];
-            if (!argument.startsWith("--")) {
-                throw new IllegalArgumentException(
-                        "expected --name value, got " + argument);
-            }
-            String name = argument.substring(2);
-            if (index + 1 < args.length) {
-                result.put(name, args[++index]);
-            } else {
-                throw new IllegalArgumentException(
-                        "missing value for " + argument);
-            }
-        }
-        return result;
     }
 
     private static Path required(

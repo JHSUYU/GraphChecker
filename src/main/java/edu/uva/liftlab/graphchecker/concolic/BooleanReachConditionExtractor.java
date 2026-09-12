@@ -534,10 +534,22 @@ public final class BooleanReachConditionExtractor {
     /** Exact assertion shape emitted by the Composer's case-PC authority. */
     private static boolean casePcDefinitionDeclared(String smt,
                                                      String selector) {
+        return selectorDefinitionDeclared(smt, selector,
+                "case_selector_definition_");
+    }
+
+    /**
+     * Whether the composed SMT defines {@code selector} under the named
+     * authority: one assertion that both implies from the selector and
+     * carries that authority's {@code :named} prefix.
+     */
+    private static boolean selectorDefinitionDeclared(String smt,
+                                                      String selector,
+                                                      String namedPrefix) {
         String implication = "(=> " + selector + " ";
         for (String line : firstNonBlank(smt).split("\\R")) {
             if (line.contains(implication)
-                    && line.contains(":named case_selector_definition_")) {
+                    && line.contains(":named " + namedPrefix)) {
                 return true;
             }
         }
@@ -562,15 +574,8 @@ public final class BooleanReachConditionExtractor {
     /** Target cases are owned by the target ledger, not producer partitions. */
     private static boolean targetPathDefinitionDeclared(String smt,
                                                         String selector) {
-        String implication = "(=> " + selector + " ";
-        for (String line : firstNonBlank(smt).split("\\R")) {
-            if (line.contains(implication)
-                    && line.contains(
-                    ":named target_path_selector_definition_")) {
-                return true;
-            }
-        }
-        return false;
+        return selectorDefinitionDeclared(smt, selector,
+                "target_path_selector_definition_");
     }
 
     /** The Composer's single, internally consistent UNSAT closure claim. */
@@ -1161,22 +1166,25 @@ public final class BooleanReachConditionExtractor {
     }
 
     private enum ScalarEncoding {
-        BOOL("BOOL", "Bool"),
-        BYTE("INT", "Int"),
-        CHAR("INT", "Int"),
-        SHORT("INT", "Int"),
-        INT("INT", "Int"),
-        LONG("INT", "Int"),
-        FLOAT32("FLOAT32", "(_ FloatingPoint 8 24)"),
-        FLOAT64("FLOAT64", "(_ FloatingPoint 11 53)"),
-        STRING("STRING", "String");
+        BOOL("BOOL", "Bool", "Z"),
+        BYTE("INT", "Int", "B"),
+        CHAR("INT", "Int", "C"),
+        SHORT("INT", "Int", "S"),
+        INT("INT", "Int", "I"),
+        LONG("INT", "Int", "J"),
+        FLOAT32("FLOAT32", "(_ FloatingPoint 8 24)", "F"),
+        FLOAT64("FLOAT64", "(_ FloatingPoint 11 53)", "D"),
+        STRING("STRING", "String", "Ljava/lang/String;");
 
         private final String occurrenceSort;
         private final String solverSort;
+        private final String descriptor;
 
-        ScalarEncoding(String occurrenceSort, String solverSort) {
+        ScalarEncoding(String occurrenceSort, String solverSort,
+                       String descriptor) {
             this.occurrenceSort = occurrenceSort;
             this.solverSort = solverSort;
+            this.descriptor = descriptor;
         }
 
         private static ScalarEncoding of(String descriptor) {
@@ -1196,41 +1204,25 @@ public final class BooleanReachConditionExtractor {
             return null;
         }
 
+        /**
+         * The two integer values either side of this valuation, as SMT
+         * literals: what a perturbation may try next without leaving the
+         * type.  The range belongs to the Java type, so it is read from the
+         * primitive semantics rather than restated here.
+         */
         private List<String> neighboringLiterals(String literal) {
             BigInteger value = parseSmtInteger(literal);
-            if (value == null) return Collections.emptyList();
-            BigInteger minimum;
-            BigInteger maximum;
-            switch (this) {
-                case BYTE:
-                    minimum = BigInteger.valueOf(Byte.MIN_VALUE);
-                    maximum = BigInteger.valueOf(Byte.MAX_VALUE);
-                    break;
-                case CHAR:
-                    minimum = BigInteger.ZERO;
-                    maximum = BigInteger.valueOf(Character.MAX_VALUE);
-                    break;
-                case SHORT:
-                    minimum = BigInteger.valueOf(Short.MIN_VALUE);
-                    maximum = BigInteger.valueOf(Short.MAX_VALUE);
-                    break;
-                case INT:
-                    minimum = BigInteger.valueOf(Integer.MIN_VALUE);
-                    maximum = BigInteger.valueOf(Integer.MAX_VALUE);
-                    break;
-                case LONG:
-                    minimum = BigInteger.valueOf(Long.MIN_VALUE);
-                    maximum = BigInteger.valueOf(Long.MAX_VALUE);
-                    break;
-                default:
-                    return Collections.emptyList();
+            BigInteger[] range =
+                    JavaPrimitiveSmtSemantics.integralRange(descriptor);
+            if (value == null || range == null) {
+                return Collections.emptyList();
             }
             List<String> result = new ArrayList<>();
-            if (value.compareTo(minimum) > 0) {
+            if (value.compareTo(range[0]) > 0) {
                 result.add(formatSmtInteger(
                         value.subtract(BigInteger.ONE)));
             }
-            if (value.compareTo(maximum) < 0) {
+            if (value.compareTo(range[1]) < 0) {
                 result.add(formatSmtInteger(
                         value.add(BigInteger.ONE)));
             }

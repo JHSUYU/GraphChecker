@@ -258,16 +258,7 @@ public final class ConcolicPathFlipPlanner {
     /** The {@code --name value} pairs of one worker invocation; shared with
      *  {@link ConcolicPathFlipSolver}, which is launched the same way. */
     static Map<String, String> options(String[] argv) {
-        Map<String, String> values = new LinkedHashMap<>();
-        for (int index = 0; index < argv.length; index++) {
-            String option = argv[index];
-            if (!option.startsWith("--") || index + 1 >= argv.length) {
-                throw new IllegalArgumentException(
-                        "Expected --name value, got " + option);
-            }
-            values.put(option.substring(2), argv[++index]);
-        }
-        return values;
+        return CliArgs.pairs(argv);
     }
 
     static String optional(Map<String, String> options, String name) {
