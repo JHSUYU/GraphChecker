@@ -47,7 +47,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
-import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.GuardedReadUse;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
@@ -4844,10 +4843,6 @@ public final class ConcolicSmtComposer {
             return Sort.REF;
         }
         return Sort.VALUE;
-    }
-
-    private static String castDescriptor(String javaType) {
-        return JavaPrimitiveSmtSemantics.primitiveDescriptor(javaType);
     }
 
 
