@@ -53,6 +53,13 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 /** Builds graph-directed concolic jobs from static regions and concrete
  * runtime-selected region instance plans. */
 public final class ConcolicScheduler {
+    /** Telemetry artifact naming what the selection file refused. */
+    static final String ROOT_POLICY_ARTIFACT = "symbolic_root_policy.jsonl";
+    /** Row kind of {@link #ROOT_POLICY_ARTIFACT}. */
+    static final String SYMBOLIC_ROOT_POLICY = "SYMBOLIC_ROOT_POLICY";
+    /** Row kind of one refused automatic root candidate. */
+    static final String SUPPRESSED_ROOT_CANDIDATE =
+            "SUPPRESSED_ROOT_CANDIDATE";
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
     private ConcolicScheduler() {
@@ -276,6 +283,13 @@ public final class ConcolicScheduler {
         ArtifactIO.replaceJsonl(taskPlan, taskRows);
         ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
                 "branch_queries.jsonl"), result.queries);
+        // A root the selection file refused is invisible downstream: the
+        // task simply carries a CONCRETE action.  Publishing the refusals
+        // makes "why is there no clock root" answerable from one file.
+        ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
+                        ROOT_POLICY_ARTIFACT),
+                Collections.singletonList(rootPolicyTelemetry(
+                        arguments.symbolicInputs, loaded.symbolicInputs)));
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result.executionTasks,
                 loaded.regionPlanIdentity, taskPlanIdentity);
@@ -1882,6 +1896,20 @@ public final class ConcolicScheduler {
                 : path.toAbsolutePath().normalize().toString();
     }
 
+    /** One row: which file decided the root set and what it refused. */
+    static JsonObject rootPolicyTelemetry(
+            Path declarations, SymbolicInputSelection selection) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", SYMBOLIC_ROOT_POLICY);
+        row.addProperty("declarations",
+                declarations == null ? "" : declarations.toString());
+        JsonArray suppressed = selection.suppressedRootCandidates();
+        row.addProperty("suppressedRootCandidateCount", suppressed.size());
+        row.add("suppressedRootCandidates", suppressed);
+        return row;
+    }
+
     public static final class Result {
         public final List<ExecutionTask> executionTasks = new ArrayList<>();
         public final List<JsonObject> queries = new ArrayList<>();
@@ -1903,6 +1931,8 @@ public final class ConcolicScheduler {
         private final Map<String, Set<String>> admitted;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
+        /** Every automatic candidate this selection refused, first-seen order. */
+        private final Set<JsonObject> suppressed = new LinkedHashSet<>();
 
         private SymbolicInputSelection(
                 boolean configured, Map<String, Set<String>> admitted,
@@ -2023,15 +2053,79 @@ public final class ConcolicScheduler {
                         retained.addProperty("mode", "CONCRETE");
                         retained.addProperty("symbolicDemand",
                                 "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
+                    } else if (workloadOwnedSymbol(action)) {
+                        // The workload itself wrote this symbol into the
+                        // program text.  It is a declaration, in the same
+                        // sense a CausynthSymbolicSource hook is one, so an
+                        // allowlist that narrows the automatic candidates
+                        // must not silently delete it.
+                        retained.addProperty("symbolicDemand",
+                                "WORKLOAD_DECLARED_SYMBOLIC_FAULT");
+                    } else if (declaredCutPort(action)) {
+                        // A wire-flow cut port mints no root at all: it
+                        // attaches the producer's already-propagated
+                        // expression at the consumer.  Concretizing it would
+                        // cut the propagation this file exists to focus,
+                        // while removing no root from the solver.
+                        retained.addProperty("symbolicDemand",
+                                "DECLARED_COMMUNICATION_CUT_PORT");
                     } else if (!admits(regionId, action)) {
                         retained.addProperty("mode", "CONCRETE");
                         retained.addProperty("symbolicDemand",
                                 "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
+                        suppressed.add(suppressedCandidate(regionId, action));
                     }
                 }
                 selected.add(retained);
             }
             return selected;
+        }
+
+        /** An explicit {@code Debug.makeSymbolicBoolean} marker: the fault
+         *  symbol is written in the workload's own source, so it needs no
+         *  row in the selection file to survive it. */
+        private static boolean workloadOwnedSymbol(JsonObject action) {
+            return RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
+                    .equals(optionalString(action, "sourceKind"));
+        }
+
+        /** A port declared by {@code communication-mappings.jsonl}: it is a
+         *  handoff, not a mint, so the root allowlist does not govern it. */
+        private static boolean declaredCutPort(JsonObject action) {
+            return RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
+                    .equals(optionalString(action, "sourceKind"));
+        }
+
+        /** Names one automatic candidate the selection file refused, so a
+         *  root that is missing downstream can be traced to this decision
+         *  rather than to the mechanism that proposed it. */
+        private static JsonObject suppressedCandidate(
+                String regionId, JsonObject action) {
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", SUPPRESSED_ROOT_CANDIDATE);
+            row.addProperty("regionId", safe(regionId));
+            row.addProperty("sourceKind",
+                    optionalString(action, "sourceKind"));
+            row.addProperty("siteId", firstNonBlank(
+                    optionalString(action, "siteId"),
+                    optionalString(action, "staticAccessSiteId")));
+            row.addProperty("declaredCallee",
+                    optionalString(action, "declaredCallee"));
+            row.addProperty("fieldSignature", actionField(action));
+            row.addProperty("cell", optionalString(action, "cell"));
+            row.addProperty("portId", actionPort(action));
+            row.addProperty("reason",
+                    "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
+            return row;
+        }
+
+        /** The refused candidates of this run, deduplicated, in first-seen
+         *  order; empty when no selection file narrowed anything. */
+        JsonArray suppressedRootCandidates() {
+            JsonArray rows = new JsonArray();
+            for (JsonObject row : suppressed) rows.add(row.deepCopy());
+            return rows;
         }
 
         /** Whether a declaring hook site of this region mints the action's

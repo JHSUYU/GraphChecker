@@ -73,6 +73,53 @@ and solver term. A value with no explicit root or propagated expression is a
 coverage gap. The runtime and composer do not manufacture an unconstrained
 replacement symbol.
 
+### Declaring which roots an experiment wants
+
+Most roots are proposed automatically: any primitive return of a call the
+analysis does not hold, reached backwards from an explored branch, becomes an
+`EXTERNAL_CALL_RETURN` input port. For the HDFS block-key workloads that is
+every `<org.apache.hadoop.util.Timer: long now()>` return. An experiment that
+does not want the whole automatic set narrows it with
+`causynth_symbolic_inputs=@config/symbolic-inputs.jsonl`.
+
+The file is a **restrictive allowlist, not an addition**: with it present, any
+input action the file does not name is scheduled `CONCRETE` and keeps whatever
+expression the VM already propagated to it, so it mints nothing. A region the
+file does not mention has all of its symbolic actions concretized. Without the
+file every automatic candidate stays symbolic.
+
+One JSONL row per region. `regionId` is required and must name a region the
+runtime plan actually contains; the other three keys are optional sets of
+names, any of which admits an action:
+
+| key | matches the action's |
+|---|---|
+| `fieldSignatures` | `accessFieldSignature` or `declaredFieldSignature` |
+| `portIds` | `portId` or `symbol` |
+| `cells` | `cell` |
+
+`cells` is how a call return is named, since it carries no field signature: an
+`EXTERNAL_CALL_RETURN` action's cell is `<callee signature>.return`, identical
+at every call site of that callee inside the region, so one entry declares
+"this region's wall clock". Example, from
+`experiments/hadoop/hdfs-17899/symbolic-inputs.jsonl`:
+
+```json
+{"regionId":"REGION.aaa1cfd7-...","fieldSignatures":["<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>"],"cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
+```
+
+Two things are exempt from the allowlist and stay symbolic without a row:
+
+- a field owned by a `CausynthSymbolicSource.symbolize` hook site — the hook
+  call is itself the declaration;
+- an `EXPLICIT_SYMBOLIC_FAULT` port, i.e. a `Debug.makeSymbolicBoolean` marker
+  the workload wrote into its own source.
+
+Every candidate the file refuses is published, with its region, source kind,
+site and cell, as `suppressedRootCandidates` in the scheduler's
+`symbolic_root_policy.jsonl`, so a root that is missing downstream can be
+traced to the declaration rather than to the mechanism that proposed it.
+
 ## Trace context and topology
 
 The workload registers a stable node owner with `registerSource`, may bind
