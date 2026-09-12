@@ -449,7 +449,8 @@ public final class ContainerSmtCodec {
             Integer written = exactIndexLiteral(arguments.get(0));
             if (written == null) return null;
             if (written.intValue() == wanted) {
-                return arguments.get(1).deepCopy();
+                // The stored value is an immutable propagated graph.
+                return arguments.get(1);
             }
             cursor = node.get("receiver");
         }
@@ -458,13 +459,22 @@ public final class ContainerSmtCodec {
                 : storedIndexedWrite(cursor, wanted, selectedJavaType);
     }
 
-    /** Copies wrapper metadata without first cloning its large payload. */
+    /**
+     * A fresh wrapper over one node's metadata, minus the payload member the
+     * caller is about to replace.
+     *
+     * <p>The retained members are decoder-owned expression graphs and nobody
+     * writes through them -- the scalar leaf below already publishes its
+     * receiver by reference.  Cloning them restated each shared subtree once
+     * per projected arm and per path through the choice, which is the same
+     * defect {@link CanonicalJson#copy} used to have.</p>
+     */
     private static JsonObject copyWithout(JsonObject source, String omitted) {
         JsonObject result = new JsonObject();
         for (java.util.Map.Entry<String, JsonElement> entry
                 : source.entrySet()) {
             if (!omitted.equals(entry.getKey())) {
-                result.add(entry.getKey(), entry.getValue().deepCopy());
+                result.add(entry.getKey(), entry.getValue());
             }
         }
         return result;
@@ -1455,7 +1465,7 @@ public final class ContainerSmtCodec {
         projected.addProperty("viewKind", viewKind);
         projected.add("receiver", root);
         JsonArray positions = new JsonArray();
-        if (index != null) positions.add(index.deepCopy());
+        if (index != null) positions.add(index);
         projected.add("arguments", positions);
         return projected;
     }
