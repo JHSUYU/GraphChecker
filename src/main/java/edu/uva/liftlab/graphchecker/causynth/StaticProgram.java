@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -321,7 +322,7 @@ public final class StaticProgram {
                 for (String site : callSites.getOrDefault(callee,
                         Collections.<String>emptyList())) {
                     String caller = site.substring(0, site.lastIndexOf("#u"));
-                    int unitIndex = unitIndex(site, "#u");
+                    int unitIndex = SiteId.unitIndexOf(site);
                     for (Map<String, Object> loop
                             : loopsByMethod.getOrDefault(caller,
                             Collections.<Map<String, Object>>emptyList())) {
@@ -345,7 +346,8 @@ public final class StaticProgram {
         for (List<String> sites : callSites.values()) {
             for (String site : sites) {
                 if (site.startsWith(root + "#u")) {
-                    demanded = Math.min(demanded, unitIndex(site, "#u"));
+                    demanded = Math.min(demanded,
+                            SiteId.unitIndexOf(site));
                 }
             }
         }
@@ -415,7 +417,7 @@ public final class StaticProgram {
                 continue;
             }
             sites.computeIfAbsent(callee, ignored -> new TreeSet<String>())
-                    .add(caller + "#u" + unitIndex);
+                    .add(SiteId.of(caller, unitIndex));
         }
         Map<String, List<String>> result = new LinkedHashMap<>();
         for (Map.Entry<String, Set<String>> entry : sites.entrySet()) {
@@ -477,6 +479,17 @@ public final class StaticProgram {
      * publishes: from the loop's dominance-proved header to its last exiting
      * branch.
      */
+    /** The index after {@code marker} in a loop identity, or -1. */
+    private static int unitIndex(String site, String marker) {
+        int at = site.lastIndexOf(marker);
+        if (at < 0) return -1;
+        try {
+            return Integer.parseInt(site.substring(at + marker.length()));
+        } catch (NumberFormatException notAUnit) {
+            return -1;
+        }
+    }
+
     private static boolean loopContains(Map<String, Object> loop,
                                         int unitIndex) {
         int header = unitIndex(text(loop.get(
@@ -489,19 +502,9 @@ public final class StaticProgram {
                 header);
         for (String site : strings(loop.get(
                 LoopBoundPolicy.LOOP_CONTROL_SITE_IDS))) {
-            last = Math.max(last, unitIndex(site, "#u"));
+            last = Math.max(last, SiteId.unitIndexOf(site));
         }
         return unitIndex <= last;
-    }
-
-    private static int unitIndex(String site, String marker) {
-        int at = site.lastIndexOf(marker);
-        if (at < 0) return -1;
-        try {
-            return Integer.parseInt(site.substring(at + marker.length()));
-        } catch (NumberFormatException notAUnit) {
-            return -1;
-        }
     }
 
     // ------------------------------------------------------------------

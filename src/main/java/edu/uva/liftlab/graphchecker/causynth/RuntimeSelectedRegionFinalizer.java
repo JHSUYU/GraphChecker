@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 
 import java.io.File;
 import java.io.IOException;
@@ -2174,7 +2175,7 @@ public final class RuntimeSelectedRegionFinalizer {
         if (!site.isEmpty()) return site;
         String method = text(edge.get("method"));
         int unit = number(edge.get("unitIndex"), -1);
-        if (!method.isEmpty() && unit >= 0) return method + "#u" + unit;
+        if (!method.isEmpty() && unit >= 0) return SiteId.of(method, unit);
         return text(edge.get("id"));
     }
 
@@ -2227,7 +2228,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 // The root can be a long-lived service loop.
                 String stream = occurrenceId + "\n" + callId
                         + "\nACCESSOR_RETURN\n"
-                        + caller + "#u" + unitIndex + "\n" + field + "\n"
+                        + SiteId.of(caller, unitIndex) + "\n" + field + "\n"
                         + declaredCallee + "\n" + implementation;
                 int retained = retainedByActivationStream.getOrDefault(
                         stream, 0);
@@ -2502,8 +2503,9 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (occurrenceId == null || eventSeq < 0L || occurrence < 1) {
                     continue;
                 }
-                String key = occurrenceId + "\n" + caller + "#u"
-                        + unitIndex + "\n" + occurrence;
+                String key = occurrenceId + "\n"
+                        + SiteId.of(caller, unitIndex)
+                        + "\n" + occurrence;
                 Map<String, Object> port = new LinkedHashMap<>(binding);
                 port.put("occurrenceId", occurrenceId);
                 port.put("portId", portId(regionId, ".in.", key));
@@ -2520,7 +2522,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 port.put("javaType", "boolean");
                 port.put("callerMethod", caller);
                 port.put("unitIndex", unitIndex);
-                port.put("siteId", caller + "#u" + unitIndex);
+                port.put("siteId", SiteId.of(caller, unitIndex));
                 port.put("declaredCallee", edge.get("invoke"));
                 port.put("symbolicName", edge.get("symbolicName"));
                 port.put("dependencyCells",

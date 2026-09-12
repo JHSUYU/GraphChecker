@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -1546,8 +1547,9 @@ public final class ConcolicScheduler {
                 site.addProperty("local", localCell.group(2));
                 site.addProperty("unitIndex", unitIndex);
                 if (source.contains(">.return")) {
-                    String returnKey = source + "\n" + method + "#u"
-                            + unitIndex + "\n" + localCell.group(2);
+                    String returnKey = source + "\n"
+                            + SiteId.of(method, unitIndex)
+                            + "\n" + localCell.group(2);
                     if (seenCallReturns.add(returnKey)) {
                         result.byCallReturn.computeIfAbsent(source,
                                 ignored -> new ArrayList<>())

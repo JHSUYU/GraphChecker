@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.annotation.Debug;
 
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.Body;
@@ -1795,7 +1796,7 @@ final class SeedBackwardStaticAnalyzer {
         if (edge == null) return;
         edge.put("explicitSymbolicFault", true);
         edge.put("symbolicName", name.isEmpty()
-                ? callerMethod + "#u" + fact.unitIndex : name);
+                ? SiteId.of(callerMethod, fact.unitIndex) : name);
     }
 
     private static String explicitFaultName(Fact fact) {
@@ -2753,7 +2754,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private String factNode(Fact fact) {
-        return fact.method + "#u" + fact.unitIndex;
+        return SiteId.of(fact.method, fact.unitIndex);
     }
 
     /** Returns the canonical local bound to {@code @this}. */

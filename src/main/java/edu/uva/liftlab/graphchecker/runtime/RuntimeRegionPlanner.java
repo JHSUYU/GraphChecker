@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -3297,7 +3298,7 @@ final class RuntimeRegionPlanner {
             this.callId = callId;
             this.unitIndex = unitIndex;
             this.siteId = unitIndex >= 0 && !this.method.isEmpty()
-                    ? this.method + "#u" + unitIndex : safe(siteId);
+                    ? SiteId.of(this.method, unitIndex) : safe(siteId);
             this.field = safe(field);
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
@@ -3325,7 +3326,7 @@ final class RuntimeRegionPlanner {
             this.callId = callId;
             this.unitIndex = unitIndex;
             this.siteId = unitIndex >= 0 && !this.method.isEmpty()
-                    ? this.method + "#u" + unitIndex : safe(siteId);
+                    ? SiteId.of(this.method, unitIndex) : safe(siteId);
             this.arrayObjectId = arrayObjectId;
             this.index = index;
             this.elementObjectId = elementObjectId;
