@@ -80,7 +80,10 @@ public class IndexedStateCarrierTest {
                 JavaContainerTypes.wholeStateShape("java.util.HashSet"));
         assertEquals(JavaContainerTypes.Shape.NONE,
                 JavaContainerTypes.wholeStateShape("example.Snapshot"));
-        assertFalse(JavaContainerTypes.wholeStateCarrierType(""));
+        assertEquals(JavaContainerTypes.Shape.NONE,
+                JavaContainerTypes.wholeStateShape(""));
+        assertEquals(JavaContainerTypes.Shape.NONE,
+                JavaContainerTypes.wholeStateShape(null));
     }
 
     // -------------------------------------------------------- version kinds
@@ -236,6 +239,61 @@ public class IndexedStateCarrierTest {
         assertFalse(ContainerSmtCodec.evidencedContainerIdentity(null));
     }
 
+    // ------------------------------------------------- boxed cell arithmetic
+
+    @Test
+    public void aBoxedCellUnboxesByItsDeclaredElementType() {
+        // Java arithmetic on an element a container read produced is an
+        // ordinary operation on the element's declared type, so the cell is
+        // unboxed rather than refused for mixing Value with Int.
+        assertEquals("VInt", ContainerSmtCodec.unboxableCellKind("I"));
+        assertEquals("VInt", ContainerSmtCodec.unboxableCellKind("int"));
+        assertEquals("VLong", ContainerSmtCodec.unboxableCellKind("J"));
+        assertEquals("VShort", ContainerSmtCodec.unboxableCellKind("S"));
+        assertEquals("VByte", ContainerSmtCodec.unboxableCellKind("B"));
+        assertEquals("VChar", ContainerSmtCodec.unboxableCellKind("C"));
+        assertEquals("VBool", ContainerSmtCodec.unboxableCellKind("Z"));
+        assertEquals("VDouble", ContainerSmtCodec.unboxableCellKind("D"));
+        assertEquals("VString",
+                ContainerSmtCodec.unboxableCellKind("java.lang.String"));
+    }
+
+    @Test
+    public void aReferenceOrUnknownCellIsStillRefused() {
+        // (VRef nullRef) is also what a refused read leaves behind, so
+        // unboxing a reference cell would turn a visible refusal into a
+        // formula built on a term that means nothing.
+        assertEquals("", ContainerSmtCodec.unboxableCellKind(
+                "org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot"));
+        assertEquals("", ContainerSmtCodec.unboxableCellKind("L"));
+        assertEquals("", ContainerSmtCodec.unboxableCellKind("[I"));
+        assertEquals("", ContainerSmtCodec.unboxableCellKind(""));
+    }
+
+    @Test
+    public void anIntElementReadLowersToIntegerArithmetic() {
+        // The binarySearch midpoint shape: an int-element indexed read whose
+        // value takes part in (low + high) >>> 1.  The read must reach the
+        // formula as an Int, not as a tagged Value.
+        JsonObject state = relation("INDEXED", "STATE",
+                symbol("MAP_STATE.v1." + digest('f')));
+        JsonObject read = withArguments(
+                relation("INDEXED", "READ", state), integer(3));
+        read.addProperty("_java_type", "I");
+
+        RecordingHost host = new RecordingHost();
+        ContainerSmtCodec.Term term = ContainerSmtCodec.term(read, host);
+        assertNotNull(String.join(",", host.unsupported), term);
+        assertTrue(host.unsupported.isEmpty());
+        assertEquals(ContainerSmtCodec.Sort.INT, term.sort);
+        assertTrue(term.text, term.text.contains("valueInt"));
+        assertTrue(term.text, term.text.contains("indexed_read"));
+        // The cell's own tag and its position are both required.
+        String required = host.required.toString();
+        assertTrue(required, required.contains("(_ is VInt)"));
+        assertTrue(required, required.contains("indexed_size"));
+    }
+
     // --------------------------------------------------------------- helpers
 
     private static String digest(char fill) {
@@ -357,7 +415,9 @@ public class IndexedStateCarrierTest {
         @Override
         public ContainerSmtCodec.Term unbox(ContainerSmtCodec.Term value,
                                             String javaType) {
-            return value;
+            return ContainerSmtCodec.unboxValue(value, javaType,
+                    VmTermLowering.unboxedCellSort(
+                            VmTermLowering.Sort.INT), this);
         }
 
         @Override

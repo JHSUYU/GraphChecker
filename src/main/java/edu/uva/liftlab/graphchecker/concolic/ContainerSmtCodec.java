@@ -66,6 +66,22 @@ public final class ContainerSmtCodec {
                 + value + ")";
     }
 
+    /**
+     * The tag a boxed container cell of {@code javaType} may be unboxed by,
+     * or {@code ""} when it must stay boxed.
+     *
+     * <p>A cell whose declared type names a primitive sort is an ordinary
+     * Java value once unboxed, so arithmetic and ordering on it are exact.
+     * Two cases deliberately answer {@code ""}: a type that names no sort at
+     * all, and a reference cell.  {@code (VRef nullRef)} is also the value a
+     * refused read leaves behind, so unboxing a reference cell would turn a
+     * visible refusal into a formula built on a term that means nothing.</p>
+     */
+    public static String unboxableCellKind(String javaType) {
+        String kind = valueKind(javaType);
+        return "VRef".equals(kind) ? "" : kind;
+    }
+
     static String valueKind(String javaType) {
         String integral = integralValuePart(javaType, true);
         if (!integral.isEmpty()) return integral;

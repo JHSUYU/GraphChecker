@@ -4127,6 +4127,24 @@ public final class ConcolicSmtComposer {
                         + " " + left.text + " " + right.text + ")",
                         Sort.BOOL).withPrecondition(defined);
             }
+            if (left.sort != right.sort
+                    && (left.sort == Sort.VALUE) != (right.sort == Sort.VALUE)
+                    && !"==".equals(operator) && !"!=".equals(operator)) {
+                // Exactly one side is a boxed container cell.  Arithmetic and
+                // ordering on it are operations on the element's declared
+                // type, not on the tagged transport value, so unbox by that
+                // type rather than refusing the pair.  Reference cells and
+                // cells of unknown type come back unchanged and fall into the
+                // refusal below.
+                if (left.sort == Sort.VALUE) {
+                    left = fromValue(left, VmTermLowering.expressionJavaType(
+                            expression.get("_left")));
+                } else {
+                    right = fromValue(right,
+                            VmTermLowering.expressionJavaType(
+                                    expression.get("_right")));
+                }
+            }
             if (left.sort != right.sort) {
                 unsupported.add("BinarySortConflict:" + operator + ":"
                         + left.sort + "!=" + right.sort);
@@ -4803,6 +4821,56 @@ public final class ConcolicSmtComposer {
         /** Lowers one selected region occurrence's guarded relation. */
         private void lowerRelation(RelationSummary selection) {
             regionSummary(selection);
+        }
+
+        /**
+         * Unboxes one container cell back to the Java sort it holds.
+         *
+         * <p>A container read answers a tagged {@code Value}, and Java
+         * arithmetic or comparison on the element that read produced is an
+         * ordinary operation on the element's declared type -
+         * {@code Collections.binarySearch}'s {@code (low + high) >>> 1} over
+         * a selected list is the shape that reaches here.  Refusing the
+         * mixed sort drops the whole comparison, so the declared element
+         * type decides, and the cell's own tag is required alongside.</p>
+         *
+         * <p>A cell whose declared type names no primitive sort is returned
+         * untouched, so the caller still refuses it.  That deliberately
+         * includes a reference element: {@code (VRef nullRef)} is also what
+         * a refused guarded read leaves behind, and unboxing that would turn
+         * a visible refusal into a formula built on a term that means
+         * nothing.</p>
+         */
+        private Term fromValue(Term value, String javaType) {
+            if (value == null || value.sort != Sort.VALUE) return value;
+            String kind = ContainerSmtCodec.unboxableCellKind(javaType);
+            if (kind.isEmpty()) return value;
+            String defined = and(Arrays.asList(value.precondition,
+                    "((_ is " + kind + ") " + value.text + ")"));
+            String integral = ContainerSmtCodec.unboxIntegral(
+                    value.text, javaType);
+            if (!integral.isEmpty()) {
+                return Term.of(integral, Sort.INT,
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(javaType))
+                        .withPrecondition(defined);
+            }
+            if ("VBool".equals(kind)) {
+                return Term.of("(valueBool " + value.text + ")", Sort.BOOL)
+                        .withPrecondition(defined);
+            }
+            if ("VFloat".equals(kind)) {
+                return Term.of("(valueFloat " + value.text + ")",
+                        Sort.FLOAT32).withPrecondition(defined);
+            }
+            if ("VDouble".equals(kind)) {
+                return Term.of("(valueDouble " + value.text + ")",
+                        Sort.FLOAT64).withPrecondition(defined);
+            }
+            if ("VString".equals(kind)) {
+                return Term.nonNullString("(valueString " + value.text + ")",
+                        defined);
+            }
+            return value;
         }
 
         /** Boxes a primitive term for container and reference expressions. */
