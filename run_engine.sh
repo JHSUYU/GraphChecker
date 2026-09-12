@@ -40,60 +40,85 @@ trim() {
   printf '%s' "${value}"
 }
 
+# CONFIG-1: one declaration per workflow key, in the order `config` prints
+# them.  A row is `key  environment-override  flags  default`, where `-` is an
+# absent field and the flags are the three things a key can be: `k` a known
+# workflow key a config file may set, `r` reset at the start of every run, `p`
+# printed by `config`.  Four lists used to state this separately, so a new key
+# could be loadable but never reset, or overridable but never printed.
+workflow_config_keys=(
+  "campaign_setup_command CAUSYNTH_CAMPAIGN_SETUP_COMMAND krp -"
+  "concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND krp -"
+  "concolic_worker_count CAUSYNTH_CONCOLIC_JOBS krp -"
+  "campaign_max_iterations CAUSYNTH_CAMPAIGN_MAX_ITERATIONS krp -"
+  "region_path_max_paths_per_region CAUSYNTH_REGION_PATH_MAX_PATHS_PER_REGION krp -"
+  "region_path_max_flips_per_path CAUSYNTH_REGION_PATH_MAX_FLIPS_PER_PATH krp -"
+  "region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS krp -"
+  "config_file - p -"
+  "workflow_path_base GRAPH_CHECKER_PATH_BASE krp -"
+  "graphchecker_jar GRAPH_CHECKER_JAR krp -"
+  "java_bin GRAPH_CHECKER_JAVA krp -"
+  "graphchecker_work_dir GRAPH_CHECKER_WORK_DIR krp -"
+  "project_repo CAUSYNTH_REPO krp -"
+  "project_module_dir CAUSYNTH_MODULE_DIR krp -"
+  "project_classes_dir CAUSYNTH_CLASSES_DIR krp -"
+  "project_test_classes_dir CAUSYNTH_TEST_CLASSES_DIR krp -"
+  "project_classpath CAUSYNTH_CLASSPATH krp -"
+  "analysis_classes_dir CAUSYNTH_INSTRUMENTED_CLASSES_DIR krp -"
+  "causynth_output_dir CAUSYNTH_OUTPUT_DIR krp -"
+  "causynth_cache_dir CAUSYNTH_CACHE_DIR krp -"
+  "causynth_target_spec CAUSYNTH_TARGET_SPEC krp -"
+  "causynth_analysis_scope CAUSYNTH_ANALYSIS_SCOPE kr -"
+  "causynth_process_dirs CAUSYNTH_PROCESS_DIRS krp -"
+  "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
+  "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
+  "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
+  "custom_jdk_home CAUSYNTH_CUSTOM_JDK_HOME krp -"
+  "z3_bin CAUSYNTH_Z3 krp -"
+  "workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR krp -"
+  "workload_command CAUSYNTH_WORKLOAD_COMMAND krp -"
+  "trace_test CAUSYNTH_TRACE_TEST krp -"
+  "candidate_graph CAUSYNTH_CANDIDATE_GRAPH krp -"
+  "refined_graph CAUSYNTH_REFINED_GRAPH krp -"
+  "runtime_region_plan CAUSYNTH_REGION_PLAN krp -"
+  "schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR krp -"
+  # Internal campaign state, derived from the immutable iteration: neither a
+  # workflow key nor a CLI override point.
+  "schedule_summaries - r -"
+  "schedule_closure_mode - r candidate"
+  "schedule_max_jobs CAUSYNTH_SCHEDULE_MAX_JOBS krp -"
+  "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
+  "reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS krp -"
+  "reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS krp -"
+)
+
+# Reads one row of workflow_config_keys into config_key/config_env/
+# config_flags/config_default, with `-` decoded as the empty string.
+read_config_key_row() {
+  read -r config_key config_env config_flags config_default <<<"$1"
+  [[ "${config_env}" != "-" ]] || config_env=""
+  [[ "${config_default}" != "-" ]] || config_default=""
+}
+
 known_config_key() {
-  case "$1" in
-    workflow_path_base|graphchecker_jar|java_bin|graphchecker_work_dir|project_repo|project_module_dir|project_classes_dir|project_test_classes_dir|project_classpath|analysis_classes_dir|causynth_output_dir|causynth_cache_dir|causynth_target_spec|causynth_analysis_scope|causynth_process_dirs|causynth_communication_mappings|causynth_loop_bounds|causynth_symbolic_inputs|custom_jdk_home|z3_bin|workload_work_dir|workload_command|trace_test|candidate_graph|refined_graph|runtime_region_plan|schedule_output_dir|schedule_max_jobs|solver_timeout_ms|reach_max_inputs|reach_max_valuations|campaign_setup_command|concolic_replay_command|concolic_worker_count|campaign_max_iterations|region_path_max_paths_per_region|region_path_max_flips_per_path|region_path_max_tasks)
+  local row config_key config_env config_flags config_default
+  for row in "${workflow_config_keys[@]}"; do
+    read_config_key_row "${row}"
+    if [[ "${config_key}" == "$1" && "${config_flags}" == *k* ]]; then
       return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+    fi
+  done
+  return 1
 }
 
 reset_config() {
-  workflow_path_base=""
-  graphchecker_jar=""
-  java_bin=""
-  graphchecker_work_dir=""
-  project_repo=""
-  project_module_dir=""
-  project_classes_dir=""
-  project_test_classes_dir=""
-  project_classpath=""
-  analysis_classes_dir=""
-  causynth_output_dir=""
-  causynth_cache_dir=""
-  causynth_target_spec=""
-  causynth_analysis_scope=""
-  causynth_process_dirs=""
-  causynth_communication_mappings=""
-  causynth_loop_bounds=""
-  causynth_symbolic_inputs=""
-  custom_jdk_home=""
-  z3_bin=""
-  workload_work_dir=""
-  workload_command=""
-  trace_test=""
-  candidate_graph=""
-  refined_graph=""
-  runtime_region_plan=""
-  schedule_output_dir=""
-  # Internal campaign paths. They are derived from the immutable iteration and
-  # are not workflow/CLI override points.
-  schedule_summaries=""
-  schedule_closure_mode=candidate
-  schedule_max_jobs=""
-  solver_timeout_ms=""
-  reach_max_inputs=""
-  reach_max_valuations=""
-  campaign_setup_command=""
-  concolic_replay_command=""
-  concolic_worker_count=""
-  campaign_max_iterations=""
-  region_path_max_paths_per_region=""
-  region_path_max_flips_per_path=""
-  region_path_max_tasks=""
+  local row config_key config_env config_flags config_default
+  for row in "${workflow_config_keys[@]}"; do
+    read_config_key_row "${row}"
+    if [[ "${config_flags}" == *r* ]]; then
+      printf -v "${config_key}" '%s' "${config_default}"
+    fi
+  done
 }
 
 # Workflow configs deliberately use a small key=value grammar. Unknown
@@ -129,46 +154,13 @@ apply_env_override() {
 }
 
 apply_environment_overrides() {
-  apply_env_override workflow_path_base GRAPH_CHECKER_PATH_BASE
-  apply_env_override graphchecker_jar GRAPH_CHECKER_JAR
-  apply_env_override java_bin GRAPH_CHECKER_JAVA
-  apply_env_override graphchecker_work_dir GRAPH_CHECKER_WORK_DIR
-  apply_env_override project_repo CAUSYNTH_REPO
-  apply_env_override project_module_dir CAUSYNTH_MODULE_DIR
-  apply_env_override project_classes_dir CAUSYNTH_CLASSES_DIR
-  apply_env_override project_test_classes_dir CAUSYNTH_TEST_CLASSES_DIR
-  apply_env_override project_classpath CAUSYNTH_CLASSPATH
-  apply_env_override analysis_classes_dir CAUSYNTH_INSTRUMENTED_CLASSES_DIR
-  apply_env_override causynth_output_dir CAUSYNTH_OUTPUT_DIR
-  apply_env_override causynth_cache_dir CAUSYNTH_CACHE_DIR
-  apply_env_override causynth_target_spec CAUSYNTH_TARGET_SPEC
-  apply_env_override causynth_analysis_scope CAUSYNTH_ANALYSIS_SCOPE
-  apply_env_override causynth_process_dirs CAUSYNTH_PROCESS_DIRS
-  apply_env_override causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS
-  apply_env_override causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS
-  apply_env_override causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS
-  apply_env_override custom_jdk_home CAUSYNTH_CUSTOM_JDK_HOME
-  apply_env_override z3_bin CAUSYNTH_Z3
-  apply_env_override workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR
-  apply_env_override workload_command CAUSYNTH_WORKLOAD_COMMAND
-  apply_env_override trace_test CAUSYNTH_TRACE_TEST
-  apply_env_override candidate_graph CAUSYNTH_CANDIDATE_GRAPH
-  apply_env_override refined_graph CAUSYNTH_REFINED_GRAPH
-  apply_env_override runtime_region_plan CAUSYNTH_REGION_PLAN
-  apply_env_override schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR
-  apply_env_override schedule_max_jobs CAUSYNTH_SCHEDULE_MAX_JOBS
-  apply_env_override solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS
-  apply_env_override reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS
-  apply_env_override reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS
-  apply_env_override campaign_setup_command CAUSYNTH_CAMPAIGN_SETUP_COMMAND
-  apply_env_override concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND
-  apply_env_override concolic_worker_count CAUSYNTH_CONCOLIC_JOBS
-  apply_env_override campaign_max_iterations CAUSYNTH_CAMPAIGN_MAX_ITERATIONS
-  apply_env_override region_path_max_paths_per_region \
-    CAUSYNTH_REGION_PATH_MAX_PATHS_PER_REGION
-  apply_env_override region_path_max_flips_per_path \
-    CAUSYNTH_REGION_PATH_MAX_FLIPS_PER_PATH
-  apply_env_override region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS
+  local row config_key config_env config_flags config_default
+  for row in "${workflow_config_keys[@]}"; do
+    read_config_key_row "${row}"
+    if [[ -n "${config_env}" ]]; then
+      apply_env_override "${config_key}" "${config_env}"
+    fi
+  done
 }
 
 canonical_path() {
@@ -340,9 +332,12 @@ run_java_main() {
 }
 
 print_normalized_config() {
-  local key
-  for key in campaign_setup_command concolic_replay_command concolic_worker_count campaign_max_iterations region_path_max_paths_per_region region_path_max_flips_per_path region_path_max_tasks config_file workflow_path_base graphchecker_jar java_bin graphchecker_work_dir project_repo project_module_dir project_classes_dir project_test_classes_dir project_classpath analysis_classes_dir causynth_output_dir causynth_cache_dir causynth_target_spec causynth_process_dirs causynth_communication_mappings causynth_loop_bounds causynth_symbolic_inputs custom_jdk_home z3_bin workload_work_dir workload_command trace_test candidate_graph refined_graph runtime_region_plan schedule_output_dir schedule_max_jobs solver_timeout_ms reach_max_inputs reach_max_valuations; do
-    printf '%s=%s\n' "${key}" "${!key}"
+  local row config_key config_env config_flags config_default
+  for row in "${workflow_config_keys[@]}"; do
+    read_config_key_row "${row}"
+    if [[ "${config_flags}" == *p* ]]; then
+      printf '%s=%s\n' "${config_key}" "${!config_key}"
+    fi
   done
 }
 
@@ -854,6 +849,21 @@ campaign_tree_digest() {
   fi
   (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z \
     | xargs -0 -r sha256sum) | sha256sum | awk '{print $1}'
+}
+
+# FREEZE-1: the one place that knows how each kind of frozen input is
+# digested.  FREEZE stamps the twelve inputs of a generation and GATE-1
+# re-derives them hours later; a second spelling of "how a tree is hashed" is
+# a second answer to "did this input change".
+campaign_kind_digest() {
+  case "$1" in
+    file) campaign_digest "$2" ;;
+    optional) campaign_optional_digest "$2" ;;
+    tree) campaign_tree_digest "$2" ;;
+    # A classpath is a string the stages were handed, not a file on disk.
+    string) printf '%s' "$2" | sha256sum | awk '{print $1}' ;;
+    *) return 2 ;;
+  esac
 }
 
 # Content-addressed importer cache.  Import is a pure decode of four frozen
@@ -1475,6 +1485,17 @@ campaign_freeze_graphchecker_jar() {
 # classes the analysis rewrites, the runtime workload-test class/classpath, and
 # both source checkouts. Nothing re-derives a second stamp from an artifact
 # afterwards -- two provenance authorities disagree exactly when it matters.
+# Stamps one frozen input into the named variable, failing the campaign when
+# its digest cannot be taken.  The fourth argument names the input in that
+# failure when the input is not a path.
+campaign_freeze_digest() {
+  local name=$1 kind=$2 input=$3 subject=${4:-$3} value
+  if ! value=$(campaign_kind_digest "${kind}" "${input}"); then
+    campaign_fail FREEZE CAMPAIGN "${subject}" "digest failed"
+  fi
+  printf -v "${name}" '%s' "${value}"
+}
+
 campaign_freeze() {
   require_file "GraphChecker jar" "${graphchecker_jar}"
   local vm="${custom_jdk_home}/bin/java"
@@ -1492,55 +1513,28 @@ campaign_freeze() {
     "${project_classes_dir}" "production classes directory is absent"
   [[ -d "${project_test_classes_dir}" ]] || campaign_fail FREEZE CAMPAIGN \
     "${project_test_classes_dir}" "test classes directory is absent"
-  if ! jar_sha=$(campaign_digest "${graphchecker_jar}"); then
-    campaign_fail FREEZE CAMPAIGN "${graphchecker_jar}" "digest failed"
-  fi
-  if ! vm_sha=$(campaign_digest "${vm}"); then
-    campaign_fail FREEZE CAMPAIGN "${vm}" "digest failed"
-  fi
-  if ! rt_jar_sha=$(campaign_digest "${rt_jar}"); then
-    campaign_fail FREEZE CAMPAIGN "${rt_jar}" "digest failed"
-  fi
-  if ! libjava_sha=$(campaign_digest "${libjava}"); then
-    campaign_fail FREEZE CAMPAIGN "${libjava}" "digest failed"
-  fi
-  if ! libjvm_sha=$(campaign_digest "${libjvm}"); then
-    campaign_fail FREEZE CAMPAIGN "${libjvm}" "digest failed"
-  fi
-  if ! config_sha=$(campaign_digest "${config_file}"); then
-    campaign_fail FREEZE CAMPAIGN "${config_file}" "digest failed"
-  fi
-  if ! spec_sha=$(campaign_optional_digest "${causynth_target_spec}"); then
-    campaign_fail FREEZE CAMPAIGN "${causynth_target_spec}" "digest failed"
-  fi
-  if ! mappings_sha=$(campaign_optional_digest "${causynth_communication_mappings}"); then
-    campaign_fail FREEZE CAMPAIGN "${causynth_communication_mappings}" "digest failed"
-  fi
-  # Not campaign_optional_digest: that returns an empty digest for a file
-  # that is not there, and an empty loopBounds.sha256 in the frozen manifest
-  # is the one thing an accepted candidate must never be allowed to carry --
-  # it records "the bounds were whatever" as though it were provenance.
-  if ! bounds_sha=$(campaign_digest "${causynth_loop_bounds}"); then
-    campaign_fail FREEZE CAMPAIGN "${causynth_loop_bounds}" "digest failed"
-  fi
-  if ! symbolic_inputs_sha=$(campaign_optional_digest \
-      "${causynth_symbolic_inputs}"); then
-    campaign_fail FREEZE CAMPAIGN "${causynth_symbolic_inputs}" \
-      "digest failed"
-  fi
-  if ! classes_sha=$(campaign_tree_digest "${project_classes_dir}"); then
-    campaign_fail FREEZE CAMPAIGN "${project_classes_dir}" \
-      "tree digest failed"
-  fi
-  if ! test_classes_sha=$(campaign_tree_digest \
-      "${project_test_classes_dir}"); then
-    campaign_fail FREEZE CAMPAIGN "${project_test_classes_dir}" \
-      "tree digest failed"
-  fi
-  if ! classpath_sha=$(printf '%s' "${project_classpath}" | sha256sum \
-      | awk '{print $1}'); then
-    campaign_fail FREEZE CAMPAIGN "project_classpath" "digest failed"
-  fi
+  # The twelve inputs, each named once with the digest its kind takes.
+  # loopBounds is `file` rather than `optional` on purpose: an optional digest
+  # is empty for a file that is not there, and an empty loopBounds.sha256 in
+  # the frozen manifest is the one thing an accepted candidate must never
+  # carry -- it records "the bounds were whatever" as though it were
+  # provenance.
+  campaign_freeze_digest jar_sha file "${graphchecker_jar}"
+  campaign_freeze_digest vm_sha file "${vm}"
+  campaign_freeze_digest rt_jar_sha file "${rt_jar}"
+  campaign_freeze_digest libjava_sha file "${libjava}"
+  campaign_freeze_digest libjvm_sha file "${libjvm}"
+  campaign_freeze_digest config_sha file "${config_file}"
+  campaign_freeze_digest spec_sha optional "${causynth_target_spec}"
+  campaign_freeze_digest mappings_sha optional \
+    "${causynth_communication_mappings}"
+  campaign_freeze_digest bounds_sha file "${causynth_loop_bounds}"
+  campaign_freeze_digest symbolic_inputs_sha optional \
+    "${causynth_symbolic_inputs}"
+  campaign_freeze_digest classes_sha tree "${project_classes_dir}"
+  campaign_freeze_digest test_classes_sha tree "${project_test_classes_dir}"
+  campaign_freeze_digest classpath_sha string "${project_classpath}" \
+    project_classpath
   if ! tool_source=$(campaign_checkout_state "${graphchecker_dir}"); then
     campaign_fail FREEZE CAMPAIGN "${graphchecker_dir}" \
       "failed to capture GraphChecker checkout state"
@@ -1662,20 +1656,15 @@ campaign_verify_frozen_inputs() {
         [[ -f "${path}" ]] || campaign_fail "${failure_stage}" \
           "${failure_component}" "${path}" \
           "frozen input ${label} no longer exists"
-        if ! actual=$(campaign_digest "${path}"); then
-          campaign_fail "${failure_stage}" "${failure_component}" "${path}" \
-            "frozen input ${label} could not be re-digested"
-        fi
         ;;
-      tree)
-        if ! actual=$(campaign_tree_digest "${path}"); then
-          campaign_fail "${failure_stage}" "${failure_component}" "${path}" \
-            "frozen input ${label} could not be re-digested"
-        fi
-        ;;
+      tree) ;;
       *) campaign_fail "${failure_stage}" "${failure_component}" "${label}" \
           "unknown frozen provenance entry kind: ${kind}" ;;
     esac
+    if ! actual=$(campaign_kind_digest "${kind}" "${path}"); then
+      campaign_fail "${failure_stage}" "${failure_component}" "${path}" \
+        "frozen input ${label} could not be re-digested"
+    fi
     [[ "${actual}" == "${expected}" ]] || campaign_fail "${failure_stage}" \
       "${failure_component}" "${path}" \
       "frozen input ${label} changed after it was frozen: manifest sha256=${expected} current sha256=${actual}"
@@ -1685,8 +1674,7 @@ campaign_verify_frozen_inputs() {
   # the string the stages were actually handed. It cannot drift on disk, but it
   # can drift in this process: a stage that rewrote it would leave every replay
   # reading a classpath the manifest does not describe.
-  if ! classpath_sha=$(printf '%s' "${project_classpath}" | sha256sum \
-      | awk '{print $1}'); then
+  if ! classpath_sha=$(campaign_kind_digest string "${project_classpath}"); then
     campaign_fail "${failure_stage}" "${failure_component}" \
       "project_classpath" "digest failed"
   fi

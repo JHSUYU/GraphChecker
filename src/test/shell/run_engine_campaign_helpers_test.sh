@@ -170,4 +170,56 @@ run_emit
 grep -q 'changed after it was frozen' "${emit_root}/emit.log" \
   || fail "the drifted frozen input was not named"
 
+# CONFIG-1: the one workflow-key table answers all four questions about a key.
+config_table_keys=()
+for config_row in "${workflow_config_keys[@]}"; do
+  read_config_key_row "${config_row}"
+  [[ " ${config_table_keys[*]-} " != *" ${config_key} "* ]] \
+    || fail "workflow key declared twice: ${config_key}"
+  config_table_keys+=("${config_key}")
+  [[ "${config_flags}" =~ ^[krp]+$ ]] \
+    || fail "workflow key ${config_key} has unknown flags: ${config_flags}"
+  # A key a config file may set is a key a run resets: otherwise one
+  # campaign's value survives into the next.
+  [[ "${config_flags}" != *k* || "${config_flags}" == *r* ]] \
+    || fail "loadable workflow key ${config_key} is never reset"
+  # An environment override is only reachable for a loadable key.
+  [[ -z "${config_env}" || "${config_flags}" == *k* ]] \
+    || fail "internal key ${config_key} names an environment override"
+done
+reset_config
+for config_row in "${workflow_config_keys[@]}"; do
+  read_config_key_row "${config_row}"
+  [[ "${config_flags}" != *r* ]] \
+    || [[ "${!config_key}" == "${config_default}" ]] \
+    || fail "reset_config left ${config_key} at ${!config_key}"
+  if [[ "${config_flags}" == *k* ]]; then
+    known_config_key "${config_key}" \
+      || fail "table key ${config_key} is not a known config key"
+  else
+    ! known_config_key "${config_key}" \
+      || fail "internal key ${config_key} is loadable from a config file"
+  fi
+done
+[[ "$(print_normalized_config | wc -l)" -eq 38 ]] \
+  || fail "config prints a different number of keys than it used to"
+
+# FREEZE-1: one dispatch decides how each kind of frozen input is digested.
+digest_root="${test_tmp}/kind-digest"
+mkdir -p "${digest_root}/tree"
+printf 'one\n' >"${digest_root}/tree/a.txt"
+[[ "$(campaign_kind_digest file "${digest_root}/tree/a.txt")" \
+    == "$(campaign_digest "${digest_root}/tree/a.txt")" ]] \
+  || fail "the file kind does not digest as a file"
+[[ "$(campaign_kind_digest optional "${digest_root}/absent")" == "" ]] \
+  || fail "an unconfigured optional input digested to something"
+[[ "$(campaign_kind_digest tree "${digest_root}/tree")" \
+    == "$(campaign_tree_digest "${digest_root}/tree")" ]] \
+  || fail "the tree kind does not digest as a tree"
+[[ "$(campaign_kind_digest string 'a:b')" \
+    == "$(printf '%s' 'a:b' | sha256sum | awk '{print $1}')" ]] \
+  || fail "the string kind does not digest the string it was handed"
+campaign_kind_digest bogus x >/dev/null 2>&1 \
+  && fail "an unknown frozen input kind produced a digest"
+
 echo "run_engine campaign helper tests passed"
