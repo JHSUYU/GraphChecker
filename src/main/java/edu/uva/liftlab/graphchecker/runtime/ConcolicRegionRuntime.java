@@ -468,7 +468,7 @@ public final class ConcolicRegionRuntime {
             String callee = safe(declaredCallee);
             if (active == null || caller.isEmpty() || callUnitIndex < 0
                     || callee.isEmpty()
-                    || !site.equals(SiteId.of(caller, callUnitIndex))) {
+                    || !site.equals(SiteId.render(caller, callUnitIndex))) {
                 return 0L;
             }
             AccessorCallContext previous =
@@ -1340,7 +1340,7 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             if (selected != null && selected != action) {
-                active.addUnresolvedOnce(SiteId.of(method, unitIndex)
+                active.addUnresolvedOnce(SiteId.render(method, unitIndex)
                         + ": AMBIGUOUS_STATIC_FIELD_MATERIALIZATION");
                 return boxedValue;
             }
@@ -1353,7 +1353,7 @@ public final class ConcolicRegionRuntime {
         List<String> logicalPath = selected.exactStaticFieldPath(
                 fieldSignature, fieldName);
         if (logicalPath == null) {
-            active.addUnresolvedOnce(SiteId.of(method, unitIndex)
+            active.addUnresolvedOnce(SiteId.render(method, unitIndex)
                     + ": STATIC_FIELD_LOGICAL_PATH_OR_DECLARATION_MISMATCH");
             return boxedValue;
         }
@@ -1486,7 +1486,7 @@ public final class ConcolicRegionRuntime {
             } catch (Throwable throwable) {
                 active.addUnresolvedOnce(action.symbol
                         + ": field materialization "
-                        + SiteId.of(method, unitIndex) + " failed: "
+                        + SiteId.render(method, unitIndex) + " failed: "
                         + rootCause(throwable));
             }
         }
@@ -1798,7 +1798,7 @@ public final class ConcolicRegionRuntime {
         JsonObject witness = new JsonObject();
         witness.addProperty("kind", "CONCRETE_BRANCH_EXECUTION_WITNESS_V1");
         witness.addProperty("schemaVersion", 1);
-        witness.addProperty("siteId", SiteId.of(method, unitIndex));
+        witness.addProperty("siteId", SiteId.render(method, unitIndex));
         witness.addProperty("method", safe(method));
         witness.addProperty("unitIndex", unitIndex);
         witness.addProperty("sourceTakenOutcome", outcome);
@@ -2544,7 +2544,7 @@ public final class ConcolicRegionRuntime {
         } catch (IllegalArgumentException malformed) {
             ActiveRegion active = activeRegion();
             if (active != null) {
-                active.addUnresolvedOnce(SiteId.of(method, unitIndex)
+                active.addUnresolvedOnce(SiteId.render(method, unitIndex)
                         + ": invalid static switch contract: "
                         + rootCause(malformed));
             }
@@ -2566,7 +2566,7 @@ public final class ConcolicRegionRuntime {
             String method, int unitIndex, String expression) {
         ActiveRegion active = activeRegion();
         if (active == null) return;
-        String branchSite = SiteId.of(method, unitIndex);
+        String branchSite = SiteId.render(method, unitIndex);
         boolean declared = active.activation.declaresBranch(branchSite);
         boolean replayBoundary = active.activation
                 .observesReplayBoundary(branchSite);
@@ -2683,7 +2683,7 @@ public final class ConcolicRegionRuntime {
             // The VM emitted no symbolic branch event.
             return RecordedBranch.NONE;
         }
-        String siteId = SiteId.of(method, unitIndex);
+        String siteId = SiteId.render(method, unitIndex);
         int baseline = active.lastPathConditionSize;
         // One read of the event stream, used by both questions asked of it.
         JsonElement events = parseJson(api.branchEvents());
@@ -2783,7 +2783,7 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
             String expression, int occurrence, SwitchExpectation expected,
             long vmEventId) throws Exception {
-        String siteId = SiteId.of(method, unitIndex);
+        String siteId = SiteId.render(method, unitIndex);
         int baseline = active.lastPathConditionSize;
         JsonElement events = parseJson(api.branchEvents());
         List<Integer> eventConditionIndices =
@@ -2861,7 +2861,7 @@ public final class ConcolicRegionRuntime {
     private static JsonObject branchMapping(
             String method, int unitIndex, int occurrence) {
         JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", SiteId.of(method, unitIndex));
+        mapping.addProperty("siteId", SiteId.render(method, unitIndex));
         mapping.addProperty("method", safe(method));
         mapping.addProperty("unitIndex", unitIndex);
         mapping.addProperty("occurrence", occurrence);
@@ -4858,7 +4858,8 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
 
         int local(String method, int unitIndex, String local) {
-            return observe("LOCAL\u0000" + SiteId.of(method, unitIndex)
+            return observe("LOCAL\u0000"
+                    + SiteId.render(method, unitIndex)
                     + "::" + safe(local));
         }
 
@@ -4873,7 +4874,8 @@ public final class ConcolicRegionRuntime {
         }
 
         int field(String method, int unitIndex) {
-            return observe("FIELD\u0000" + SiteId.of(method, unitIndex));
+            return observe("FIELD\u0000"
+                    + SiteId.render(method, unitIndex));
         }
 
         private int observe(String key) {
@@ -5257,7 +5259,7 @@ public final class ConcolicRegionRuntime {
         private ExactConcreteBranchObservation recordConcreteDecision(
                 String method, int unitIndex, BranchDecision decision) {
             try {
-                String site = SiteId.of(method, unitIndex);
+                String site = SiteId.render(method, unitIndex);
                 boolean declared = activation.declaresBranch(site);
                 // An undeclared site publishes one witness per distinct
                 // decision rather than a row per execution, so it numbers no
@@ -5295,7 +5297,7 @@ public final class ConcolicRegionRuntime {
                 BranchDecision decision) {
             try {
                 ExactConcreteBranchObservation observation =
-                        decision.observationAt(SiteId.of(method, unitIndex),
+                        decision.observationAt(SiteId.render(method, unitIndex),
                                 safe(method), unitIndex, occurrence);
                 recordDecisionRow(method, unitIndex, occurrence, observation);
                 return observation;
@@ -5354,7 +5356,7 @@ public final class ConcolicRegionRuntime {
         private PreparedBranch prepareBranch(
                 String method, int unitIndex, String expression)
                 throws Exception {
-            String site = SiteId.of(method, unitIndex);
+            String site = SiteId.render(method, unitIndex);
             int occurrence = nextBranchOccurrence(site);
             long sequence = ++preparedBranchSequence;
             if (sequence > Integer.MAX_VALUE) {
@@ -6083,7 +6085,7 @@ public final class ConcolicRegionRuntime {
             if (accessSites.isEmpty()) {
                 return false;
             }
-            return accessSites.contains(SiteId.of(actualMethod,
+            return accessSites.contains(SiteId.render(actualMethod,
                     actualUnitIndex))
                     && (cell.contains(exactSignature)
                     || accessFieldSignature.equals(exactSignature));
@@ -6129,7 +6131,7 @@ public final class ConcolicRegionRuntime {
                     || !accessorImplementationMethod.isEmpty();
             String accessorSiteId = accessorCallerMethod.isEmpty()
                     || accessorCallUnitIndex < 0 ? ""
-                    : SiteId.of(accessorCallerMethod,
+                    : SiteId.render(accessorCallerMethod,
                             accessorCallUnitIndex);
             boolean accessSiteConstrained = !accessSites.isEmpty();
             // Accessor actions name their caller's invoke site in accessSites,
@@ -6137,7 +6139,7 @@ public final class ConcolicRegionRuntime {
             if (accessSiteConstrained) {
                 String constrainedSite = accessorConstrained
                         ? accessorSiteId
-                        : SiteId.of(actualMethod, actualUnitIndex);
+                        : SiteId.render(actualMethod, actualUnitIndex);
                 if (constrainedSite.isEmpty()
                         || !accessSites.contains(constrainedSite)) {
                     return false;

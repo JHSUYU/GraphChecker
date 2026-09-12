@@ -105,7 +105,17 @@ public class BranchDecisionRecordingTest {
         JsonArray branches = new JsonArray();
         branches.add(declaredBranch());
         encoded.add("branches", branches);
-        encoded.add("inputActions", new JsonArray());
+        JsonArray inputActions = new JsonArray();
+        JsonObject fieldAccess = new JsonObject();
+        fieldAccess.addProperty("symbol", "sym.f");
+        fieldAccess.addProperty("mode", "SYMBOLIC");
+        fieldAccess.addProperty("bindingMode", "FIELD_ACCESS");
+        fieldAccess.addProperty("accessFieldSignature", "<a.B: int f>");
+        JsonArray accessSites = new JsonArray();
+        accessSites.add(DECLARED);
+        fieldAccess.add("accessSites", accessSites);
+        inputActions.add(fieldAccess);
+        encoded.add("inputActions", inputActions);
         JsonObject loopBound = new JsonObject();
         loopBound.addProperty("schemaVersion", 1);
         encoded.add("loopBound", loopBound);
@@ -509,6 +519,32 @@ public class BranchDecisionRecordingTest {
                 + " branch kind BAD_SWITCH]\n"
                 + "targetReach=none\nreturned=0\n",
                 transcript(multiway, successor));
+    }
+
+    /**
+     * The accessor-implementation MATERIALIZE_FIELD hook carries unit index
+     * {@code -1}: its accessor body lives outside the application classes and
+     * has no unit of its own (CausynthPipeline emits {@code IntConstant.v(-1)}
+     * for it).  The activation-local occurrence key must render that sentinel
+     * instead of refusing it -- a refusal throws out of the instrumented
+     * workload method and aborts the whole replay.
+     */
+    @Test
+    public void aFieldMaterializedWithNoUnitOfItsOwnIsCountedNotRefused()
+            throws Exception {
+        ConcolicRegionRuntime.ActiveRegion active = region(false, false);
+        Object owner = new Object();
+        ConcolicRegionRuntime.materializeField(METHOD, -1, owner,
+                "<a.B: int f>", "f");
+        ConcolicRegionRuntime.materializeField(METHOD, -1, owner,
+                "<a.B: int f>", "f");
+        assertEquals("[]", field(active, "unresolved"));
+        ConcolicRegionRuntime.OccurrenceCounter counter =
+                new ConcolicRegionRuntime.OccurrenceCounter();
+        assertEquals(1, counter.field(METHOD, -1));
+        assertEquals(2, counter.field(METHOD, -1));
+        assertEquals(1, counter.field(METHOD, 0));
+        assertEquals(1, counter.local(METHOD, -1, "x"));
     }
 
     /** The transcript from {@code returned=} on: its rows are asserted by the

@@ -236,7 +236,7 @@ public final class CausynthTraceRecorder {
         closeStaleCallSite(ownerCallId);
         ExecutionEvent event = newExecutionEvent("CALL_SITE_ENTER",
                 firstNonBlank(caller, owner == null ? "" : owner.method), ownerCallId);
-        event.siteId = SiteId.of(event.method, unitIndex);
+        event.siteId = SiteId.render(event.method, unitIndex);
         event.declaredCallee = MapFields.safe(declaredCallee);
         event.runtimeType = runtimeType(receiver);
         event.objectId = identity(receiver);
@@ -298,7 +298,7 @@ public final class CausynthTraceRecorder {
                                               int unitIndex) {
         ExecutionEvent event = newExecutionEvent("BRANCH",
                 firstNonBlank(method, methodForCall(callId)), callId);
-        event.siteId = SiteId.of(event.method, unitIndex);
+        event.siteId = SiteId.render(event.method, unitIndex);
         return event;
     }
 
@@ -413,7 +413,7 @@ public final class CausynthTraceRecorder {
         RuntimeRegionPlanner.FieldAccessEvent event =
                 new RuntimeRegionPlanner.FieldAccessEvent(id, kind, method,
                         activeCall == null ? 0L : activeCall.callId,
-                        unitIndex, SiteId.of(method, unitIndex), field,
+                        unitIndex, SiteId.render(method, unitIndex), field,
                         receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
             writeFieldTraceLine(event);
@@ -440,7 +440,7 @@ public final class CausynthTraceRecorder {
         RuntimeRegionPlanner.ArrayAccessEvent event =
                 new RuntimeRegionPlanner.ArrayAccessEvent(id, kind, method,
                         activeCall == null ? 0L : activeCall.callId,
-                        unitIndex, SiteId.of(method, unitIndex),
+                        unitIndex, SiteId.render(method, unitIndex),
                         identity(array), index, identity(element));
         synchronized (LOCK) {
             writeArrayTraceLine(event);
@@ -662,7 +662,7 @@ public final class CausynthTraceRecorder {
             return false;
         }
         ActiveCallSite site = activeCallSite(call.parentSiteId);
-        String expectedSite = SiteId.of(callerMethod, callerUnitIndex);
+        String expectedSite = SiteId.render(callerMethod, callerUnitIndex);
         return site != null
                 && MapFields.safe(callerMethod).equals(site.caller)
                 && MapFields.safe(callerSiteId).equals(expectedSite)

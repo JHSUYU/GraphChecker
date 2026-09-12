@@ -34,6 +34,21 @@ public class SiteIdTest {
     }
 
     @Test
+    public void aRenderedKeyKeepsTheNoUnitSentinel() {
+        assertEquals(METHOD + "#u-1", SiteId.render(METHOD, -1));
+        assertEquals(METHOD + "#u0", SiteId.render(METHOD, 0));
+        assertEquals(METHOD + "#u137", SiteId.render(METHOD, 137));
+        for (String method : new String[] {null, "", "   "}) {
+            try {
+                SiteId.render(method, -1);
+                fail("expected a refusal for method " + method);
+            } catch (IllegalArgumentException expected) {
+                assertEquals("method is required", expected.getMessage());
+            }
+        }
+    }
+
+    @Test
     public void aBlankMethodOrNegativeUnitIsNotASite() {
         for (String method : new String[] {null, "", "   "}) {
             try {
