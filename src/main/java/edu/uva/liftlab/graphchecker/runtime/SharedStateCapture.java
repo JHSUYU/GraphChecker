@@ -98,14 +98,20 @@ final class SharedStateCapture {
         }
     }
 
-    /** Selects one map as a symbolic carrier of its own whole state. */
+    /**
+     * Selects one map as a symbolic carrier of its own whole state.
+     *
+     * <p>{@code contentMonitor} is the object whose monitor the workload
+     * guards the container with - normally the receiver that declares the
+     * field - so the initial content can be read without racing a writer.</p>
+     */
     static SharedStateResult selectSharedMapCarrier(
-            Object map, String declaringClass, String fieldName,
-            String descriptor) {
+            Object map, Object contentMonitor, String declaringClass,
+            String fieldName, String descriptor) {
         beginBookkeeping();
         try {
-            return selectedCarrier(SharedCarrier.map(map, declaringClass,
-                    fieldName, descriptor));
+            return selectedCarrier(SharedCarrier.map(map, contentMonitor,
+                    declaringClass, fieldName, descriptor));
         } finally {
             endBookkeeping();
         }
@@ -150,6 +156,10 @@ final class SharedStateCapture {
                     null, active);
         }
         ConcolicVmBroker api = engine();
+        // Before the selection, and so before this region's first write to
+        // it: the INITIAL version records whatever the container's state root
+        // already said, and only a chain installed now is in it.
+        stateInitialContent(api, carrier, active);
         long initial;
         try {
             initial = carrier.select(api);
@@ -173,6 +183,34 @@ final class SharedStateCapture {
                         SharedStateEvidence.STAGE_SELECT,
                         SharedStateEvidence.OK, "", new JsonObject()),
                 carrier, active);
+    }
+
+    /**
+     * Tells the recorder what this container held, so the carrier's INITIAL
+     * version states its content instead of an opaque root.
+     *
+     * <p>Declining is a first-class answer: an unrecognized class, a
+     * container past the VM's entry bound, or a walk that raced a writer all
+     * leave the opaque root in place and publish one
+     * {@code INITIAL_SNAPSHOT_SKIPPED} row naming which. A wrong snapshot is
+     * a false premise about the recorded execution, so this never guesses.</p>
+     */
+    private static void stateInitialContent(ConcolicVmBroker api,
+                                            SharedCarrier carrier,
+                                            ActiveRegion active) {
+        InitialContainerSnapshot.Outcome outcome;
+        try {
+            outcome = InitialContainerSnapshot.install(
+                    api::snapshotContainer, carrier.owner(),
+                    carrier.contentMonitor(), carrier.mapState());
+        } catch (Throwable unavailable) {
+            outcome = null;
+        }
+        if (outcome == null || !outcome.declined()) return;
+        JsonObject row = InitialContainerSnapshot.skipRow(outcome,
+                carrier.describe());
+        diag(InitialContainerSnapshot.SKIPPED_EVENT, row.toString());
+        if (active != null) active.initialSnapshotSkips.add(row);
     }
 
     /**
@@ -421,6 +459,17 @@ final class SharedStateCapture {
                     : resolveFieldPathLeafOwner(receiver, fieldPath);
         }
 
+        /**
+         * The object that declares this carrier's field, which is the one
+         * the workload's {@code synchronized} methods lock when they touch
+         * it. Null when this activation cannot name it.
+         */
+        Object resolveContentMonitor(Object receiver) {
+            Object monitor = fieldPath.isEmpty() ? receiver
+                    : resolveFieldPathLeafOwner(receiver, fieldPath);
+            return monitor == MissingValue.INSTANCE ? null : monitor;
+        }
+
         boolean accessOwnerBound() {
             return "ACTIVATION_FIELD_RECEIVER".equals(sourceKind);
         }
@@ -467,7 +516,7 @@ final class SharedStateCapture {
                                          ConsumerAccessAnchor consumer) {
             SharedCarrier carrier = mapState
                     ? SharedCarrier.map(
-                    readExactField(owner, fieldSignature),
+                    readExactField(owner, fieldSignature), owner,
                     declaringClass, fieldName, descriptor)
                     : SharedCarrier.field(owner, declaringClass,
                     fieldName, descriptor);
@@ -492,6 +541,7 @@ final class SharedStateCapture {
             }
             if (mapState) {
                 return selectCarrierForTask(SharedCarrier.map(owner,
+                        resolveContentMonitor(active.receiver),
                         declaringClass, fieldName, descriptor), task);
             }
             return selectCarrierForTask(SharedCarrier.field(owner,
@@ -633,6 +683,14 @@ final class SharedStateCapture {
         static final String SHAPE_MAP = "MAP";
 
         private final Object owner;
+        /**
+         * The lock the workload guards this carrier's content with, when the
+         * declaring receiver is known.  {@code BlockTokenSecretManager}
+         * reaches {@code allKeys} only from synchronized methods, so reading
+         * the content under the receiver's monitor is what makes the initial
+         * snapshot the content that was actually there.
+         */
+        private final Object contentMonitor;
         private final String declaringClass;
         private final String fieldName;
         private final String descriptor;
@@ -644,10 +702,12 @@ final class SharedStateCapture {
         private final List<ConsumerAccessAnchor> consumerAccesses =
                 new ArrayList<>();
 
-        private SharedCarrier(Object owner, String declaringClass,
+        private SharedCarrier(Object owner, Object contentMonitor,
+                              String declaringClass,
                               String fieldName, String descriptor, int index,
                               String shape) {
             this.owner = owner;
+            this.contentMonitor = contentMonitor;
             this.declaringClass = declaringClass;
             this.fieldName = fieldName;
             this.descriptor = descriptor;
@@ -657,23 +717,43 @@ final class SharedStateCapture {
 
         static SharedCarrier field(Object owner, String declaringClass,
                                    String fieldName, String descriptor) {
-            return new SharedCarrier(owner, safe(declaringClass),
+            return new SharedCarrier(owner, null, safe(declaringClass),
                     safe(fieldName), safe(descriptor), -1, SHAPE_FIELD);
         }
 
         static SharedCarrier element(Object array, int index) {
-            return new SharedCarrier(array, "", "", "", index, SHAPE_ELEMENT);
+            return new SharedCarrier(array, null, "", "", "", index,
+                    SHAPE_ELEMENT);
         }
 
         /** One map selected as the carrier of its own whole state. */
         static SharedCarrier map(Object map, String declaringClass,
                                  String fieldName, String descriptor) {
-            return new SharedCarrier(map, safe(declaringClass),
-                    safe(fieldName), safe(descriptor), -1, SHAPE_MAP);
+            return map(map, null, declaringClass, fieldName, descriptor);
+        }
+
+        /**
+         * The same carrier, naming the receiver whose monitor the workload
+         * guards the content with.
+         */
+        static SharedCarrier map(Object map, Object contentMonitor,
+                                 String declaringClass, String fieldName,
+                                 String descriptor) {
+            return new SharedCarrier(map, contentMonitor,
+                    safe(declaringClass), safe(fieldName), safe(descriptor),
+                    -1, SHAPE_MAP);
         }
 
         boolean mapState() {
             return SHAPE_MAP.equals(shape);
+        }
+
+        Object owner() {
+            return owner;
+        }
+
+        Object contentMonitor() {
+            return contentMonitor;
         }
 
         void bindPlannedReceiver(RuntimeTask task) {
