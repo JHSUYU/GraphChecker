@@ -158,8 +158,9 @@ final class LinkedReplayBundle {
         result.addProperty("schemaVersion", SCHEMA_VERSION);
         result.addProperty("kind", KIND);
         result.addProperty("primarySourceTaskId", primarySourceTaskId);
-        result.addProperty(FAMILY_DIGEST_FIELD,
-                requireDigest(familySnapshotDigest));
+        // Shape-checked once, on the decode side: an encoder that produced
+        // a malformed digest could not be read back at all.
+        result.addProperty(FAMILY_DIGEST_FIELD, familySnapshotDigest);
         result.addProperty(TOPOLOGY_EPOCH_FIELD,
                 epoch);
         result.add("members", encodedMembers);

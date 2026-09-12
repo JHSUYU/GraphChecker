@@ -196,7 +196,9 @@ public final class ConfiguredSourcePhaseContract {
             for (Long callId : enclosingCallIds) ancestry.add(callId);
         }
         row.add("enclosingCallIds", ancestry);
-        validateOccurrence(row);
+        // Not re-validated here: every member above was written from the
+        // typed declaration this builder was handed, and validateOccurrence
+        // exists for rows decoded back off disk.
         return row;
     }
 

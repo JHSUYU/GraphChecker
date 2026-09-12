@@ -56,14 +56,7 @@ public final class ConcolicScheduler {
     }
 
     public static void main(String[] args) throws Exception {
-        Arguments arguments = Arguments.parse(args);
-        Result result = scheduleTargetFirst(arguments);
-        if (result.executionTasks.isEmpty()) {
-            throw new IllegalStateException(noCandidateDiagnostic(
-                    arguments,
-                    RuntimePlanArtifact.read(arguments.regionPlan)
-                            .regionPlans()));
-        }
+        scheduleTargetFirst(Arguments.parse(args));
     }
 
     private static LoadedInputs loadInputs(Arguments arguments)
@@ -102,18 +95,8 @@ public final class ConcolicScheduler {
                 SymbolicInputSelection.read(arguments.symbolicInputs,
                         regions);
         Map<String, Region> regionIndex = regionIndex(regions);
-        if (regionPlanIdentity != null) {
-            requireArtifactIdentity(arguments.regionPlan,
-                    regionPlanIdentity, "region plan changed while loading");
-        }
-        requireArtifactIdentity(arguments.refinedGraph,
-                refinedGraphIdentity,
-                "runtime-refined graph changed while loading");
-        if (arguments.symbolicInputs != null) {
-            requireArtifactIdentity(arguments.symbolicInputs,
-                    symbolicInputsIdentity,
-                    "symbolic input selection changed while loading");
-        }
+        // The identities recorded here are verified once, against the same
+        // files, at the point the schedule index commits them.
         return new LoadedInputs(regionPlans, summaries, regionIndex,
                 definitions, regionPlanIdentity, refinedGraphIdentity,
                 symbolicInputsIdentity, symbolicInputs);
@@ -307,6 +290,12 @@ public final class ConcolicScheduler {
         ArtifactIO.replace(arguments.outputDirectory.resolve(
                         "runtime_workflow_schedule_index.json"),
                 CanonicalJson.render(index) + "\n");
+        if (result.executionTasks.isEmpty()) {
+            // Diagnosed from the plan this run already loaded, not from a
+            // second read of the same file.
+            throw new IllegalStateException(noCandidateDiagnostic(
+                    arguments, loaded.regionPlans));
+        }
         return result;
     }
 

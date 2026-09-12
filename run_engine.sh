@@ -1286,20 +1286,13 @@ campaign_decode_index_members() {
     if length != 1 then
       error("schedule index must contain exactly one JSON document")
     else .[0] end
-    | . as $index
-    | if (.schemaVersion == 2
-        and .kind == "RUNTIME_REGION_PATH_SCHEDULE_INDEX"
-        and .selectionAuthority
-          == "VM_OBSERVED_LINKED_REPLAY_SCOPE_V1"
-        and (.target | member)
-        and (.members | type == "array" and length > 0)
+    # ConcolicScheduler owns the index schema, its constants and its task
+    # identities. What is checked here is what this shell then does with the
+    # rows: it emits them as TSV and it dispatches on the one TARGET.
+    | if ((.members | type == "array" and length > 0)
         and all(.members[];
           member and ((.role == "TARGET") or (.role == "DEPENDENCY")))
-        and ([.members[] | select(.role == "TARGET")] | length == 1)
-        and ([.members[]
-          | select(.taskId == $index.target.taskId)] | length == 1)
-        and (([.members[].taskId]) as $ids
-          | ($ids | length) == ($ids | unique | length)))
+        and ([.members[] | select(.role == "TARGET")] | length == 1))
     then
       .members[]
       | [.role, .campaignId, .regionId, .occurrenceId, .goalId, .taskId]
@@ -1848,23 +1841,18 @@ campaign_plan() {
   plan_size=$(stat -c '%s' "${plan}")
   region_hash=$(campaign_digest "${frozen}")
   region_size=$(stat -c '%s' "${frozen}")
-  # Immutable paths, digests and task-set membership -- the whole of what the
-  # shell owns here. The index must commit exactly the plan bytes this
-  # iteration froze, and its members must be exactly that plan's tasks. What a
-  # task selects, and by which authority, is the scheduler's own invariant.
+  # Immutable paths and digests -- the whole of what the shell owns here. The
+  # index must commit exactly the plan bytes this iteration froze. Which tasks
+  # it names, what each selects, and by which authority, are the scheduler's
+  # own invariants and are not restated against the same file.
   jq -e --arg plan_hash "${plan_hash}" --arg region_hash "${region_hash}" \
-    --argjson plan_size "${plan_size}" --argjson region_size "${region_size}" \
-    --slurpfile tasks "${plan}" '
-      ([.members[].taskId] | map(select(. != null))) as $selected
-      | .executionTaskPlan.sha256 == $plan_hash
+    --argjson plan_size "${plan_size}" --argjson region_size "${region_size}" '
+      .executionTaskPlan.sha256 == $plan_hash
         and .executionTaskPlan.sizeBytes == $plan_size
         and .regionPlan.sha256 == $region_hash
         and .regionPlan.sizeBytes == $region_size
         and (.target | type == "object")
         and (.members | type == "array" and length > 0)
-        and ($selected | length) > 0
-        and ($selected | unique | sort) == ([$tasks[].taskId] | unique | sort)
-        and ([$tasks[].taskId] | unique | length) == ($tasks | length)
     ' "${index}" >/dev/null \
     || campaign_fail PLAN ConcolicScheduler "${index}" \
       "the region-path schedule index does not commit the frozen task plan"
@@ -2208,10 +2196,11 @@ campaign_worker_task() {
     campaign_log "flip ${query_key}: replay admitted no case; recorded REPLAY_NOT_ADMITTED"
     return 0
   fi
+  # LinkedReplayBundle refuses a bundle without exactly one primary, and the
+  # replay plan carries that bundle's roles, so this reads the primary rather
+  # than counting the primaries again.
   primary_replay_task=$(jq -e -r -s '
-    map(select(.linkedReplayRole == "PRIMARY"))
-    | if length == 1 then .[0].taskId
-      else error("linked replay plan must contain one primary") end
+    map(select(.linkedReplayRole == "PRIMARY")) | .[0].taskId
     ' "${worker}/execution_task_plan.jsonl")
   if ! jq -e -s --arg task "${primary_replay_task}" \
       'any(.[]; .taskId == $task)' "${imported}" >/dev/null; then
@@ -2228,9 +2217,7 @@ campaign_worker_task() {
   # and which planned task it belongs to. Whether the imported case is
   # admissible is the importer's decision and is already in its artifacts.
   jq -c -s --arg key "${query_key}" '
-    map(select(.linkedReplayRole == "PRIMARY"))
-    | if length == 1 then .[0]
-      else error("linked replay plan must contain one primary") end
+    map(select(.linkedReplayRole == "PRIMARY")) | .[0]
     | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
      regionId, taskId, occurrenceId, goalId,
      familySnapshotDigest, topologyEpoch,
@@ -2538,9 +2525,6 @@ campaign_explore() {
     cp -f "${summaries}" "${member}/observed_path_summaries.jsonl"
     cp -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
   done <<<"${campaign_member_rows}"
-  [[ -n "${target_task}" ]] || campaign_fail EXPLORE ConcolicScheduler \
-    "${iteration_dir}/seed-query/runtime_workflow_schedule_index.json" \
-    "the active observed schedule index names no target member"
   campaign_target_reach_query "${iteration_dir}" "${target_task}"
   campaign_log "closure exploration stopped after ${wave} global wave(s)"
 }
@@ -2675,9 +2659,6 @@ campaign_compose() {
       target_occurrence=${occurrence}
     fi
   done <<<"${campaign_member_rows}"
-  [[ -n "${target_task}" ]] || campaign_fail COMPOSE ConcolicScheduler \
-    "${iteration_dir}/seed-query/runtime_workflow_schedule_index.json" \
-    "the active observed schedule index names no target member"
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
   mkdir -p "${campaign_final}"

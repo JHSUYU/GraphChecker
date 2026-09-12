@@ -117,7 +117,7 @@ public class RegionPathWorklistTest {
                 "REGION.A/occurrence-1");
         guardedRead.addProperty("readIdentity", "RFC.fixture");
         guardedReads.add(guardedRead);
-        List<JsonObject> replay = PathReplayTaskFactory.createLinked(query,
+        List<JsonObject> replay = linkedReplay(query,
                 tasks, currentAssignments, guardedReads,
                 BranchReplayContract.fromSummary(
                         summaries.get(2), "SITE.B", 1));
@@ -186,7 +186,7 @@ public class RegionPathWorklistTest {
             JsonObject primarySummary = summaries.get(primaryIndex);
             JsonObject query = linkedQuery(primary, tasks, summaries,
                     primarySummary);
-            List<JsonObject> replay = PathReplayTaskFactory.createLinked(
+            List<JsonObject> replay = linkedReplay(
                     query, taskById, assignments, new JsonArray(),
                     BranchReplayContract.fromSummary(primarySummary,
                             "SITE." + (primaryIndex == 0
@@ -203,13 +203,25 @@ public class RegionPathWorklistTest {
         JsonObject query = linkedQuery(third, tasks, summaries,
                 summaries.get(2));
         try {
-            PathReplayTaskFactory.createLinked(query, taskById, assignments,
+            linkedReplay(query, taskById, assignments,
                     new JsonArray(), BranchReplayContract.fromSummary(
                             summaries.get(2), "SITE.THIRD", 1));
             throw new AssertionError("multiple companion owners accepted");
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage().contains("has 2 owners"));
         }
+    }
+
+    /** The solver decodes the bundle and its closure once and hands both to
+     *  the replay factory; these tests take the same route. */
+    private static List<JsonObject> linkedReplay(
+            JsonObject query, Map<String, JsonObject> taskById,
+            JsonArray assignments, JsonArray guardedReads,
+            BranchReplayContract contract) {
+        JsonObject bundle = LinkedReplayBundle.decode(query);
+        return PathReplayTaskFactory.createLinked(query, bundle,
+                LinkedReplayBundle.sourceTasks(bundle, taskById),
+                assignments, guardedReads, contract);
     }
 
     private static JsonObject task(String id, String region,

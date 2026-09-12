@@ -36,8 +36,8 @@ public class ConcolicConstraintSolverMaterializationTest {
         query.addProperty("regionId", "REGION.timer");
         query.addProperty("sourceActivationOccurrenceId",
                 "test/node#epoch0/region/REGION.timer#1#a1");
-        query.add("replayContract", BranchReplayContract.flip(
-                Collections.emptyList(), source).toJson());
+        query.add("replayContract",
+                BranchReplayContract.atSource(source).toJson());
         JsonObject context = new JsonObject();
         context.addProperty("schemaVersion", SolverPathContext.SCHEMA_VERSION);
         context.addProperty("kind", SolverPathContext.KIND);
@@ -253,8 +253,8 @@ public class ConcolicConstraintSolverMaterializationTest {
         query.addProperty("regionId", "REGION.map");
         query.addProperty("sourceActivationOccurrenceId",
                 "test/node#epoch0/region/REGION.map#1#a1");
-        query.add("replayContract", BranchReplayContract.flip(
-                Collections.emptyList(), source).toJson());
+        query.add("replayContract",
+                BranchReplayContract.atSource(source).toJson());
         JsonObject context = new JsonObject();
         context.addProperty("schemaVersion", SolverPathContext.SCHEMA_VERSION);
         context.addProperty("kind", SolverPathContext.KIND);

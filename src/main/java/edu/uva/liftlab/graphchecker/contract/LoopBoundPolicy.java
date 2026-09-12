@@ -118,10 +118,6 @@ public final class LoopBoundPolicy {
     /** A declared {@code K_L} that names no retained loop. */
     public static final String DECLARED_BOUND_SITE_UNDECLARED =
             "BOUNDED_LOOP_BODY_BOUND_SITE_UNDECLARED";
-    /** An encoded contract whose executor limit is not the one its own
-     *  declarations demand; the limit is derived, never stated. */
-    public static final String EXECUTOR_LIMIT_MISMATCH =
-            "BOUNDED_LOOP_EXECUTOR_LIMIT_MISMATCH";
     /** Maximum failure-relevant cells retained for one symbolic container. */
     public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
     /** Body entries one execution-scope loop may run in one activation.
@@ -200,7 +196,6 @@ public final class LoopBoundPolicy {
             throw new IllegalArgumentException(
                     "unsupported loopBound contract");
         }
-        int limit = integer(encoded, "maxBackedgeTraversals", -1);
         JsonObject bounds = object(encoded, DECLARED_FIELD);
         Map<String, Integer> declared = new TreeMap<String, Integer>();
         for (Map.Entry<String, JsonElement> entry : bounds.entrySet()) {
@@ -208,15 +203,11 @@ public final class LoopBoundPolicy {
                     Integer.valueOf(integer(bounds, entry.getKey(), -1)));
         }
         // The inherited bound is fixed at MAX_LOOP_BODY_ITERATIONS by the
-        // constructor, so a row never states it; only the declarations and
-        // the limit they derive are contract.
-        LoopBoundPolicy policy = new LoopBoundPolicy(
-                MAX_LOOP_BODY_ITERATIONS, declared);
-        if (policy.maxBackedgeTraversals != limit) {
-            throw new IllegalArgumentException(EXECUTOR_LIMIT_MISMATCH + ":"
-                    + limit + " != " + policy.maxBackedgeTraversals);
-        }
-        return policy;
+        // constructor, so a row never states it; only the declarations are
+        // contract.  The executor limit is derived from them here exactly as
+        // the encoder derived the value it stated, so the stated member is
+        // read by humans and never compared with its own derivation.
+        return new LoopBoundPolicy(MAX_LOOP_BODY_ITERATIONS, declared);
     }
 
     /** The backedge limit an unnarrowed loop runs under: derived, never

@@ -38,7 +38,6 @@ public final class RelationSummary {
             throw new IllegalArgumentException(
                     "relation summary has an unsupported schema");
         }
-        LocalCaseIdentity.require(expanded);
         return new RelationSummary(expanded);
     }
 

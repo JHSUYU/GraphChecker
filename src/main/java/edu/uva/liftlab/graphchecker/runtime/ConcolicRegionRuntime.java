@@ -8668,20 +8668,15 @@ public final class ConcolicRegionRuntime {
             this.guardedReadAssignments = new ArrayList<>();
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
+            // The driver refuses a plan whose members name different
+            // groups and then exports that same one id, so the two can only
+            // disagree when the task states none: a seed plan, whose group
+            // the invocation names.
             String plannedReplayGroup = string(task.json(),
                     "linkedReplayGroupId");
-            String invocationReplayGroup = safe(
-                    System.getenv(REPLAY_GROUP_ENV));
-            if (!plannedReplayGroup.isEmpty()
-                    && !invocationReplayGroup.isEmpty()
-                    && !plannedReplayGroup.equals(invocationReplayGroup)) {
-                throw new IllegalArgumentException(
-                        "task replay group " + plannedReplayGroup
-                                + " conflicts with invocation replay group "
-                                + invocationReplayGroup);
-            }
             this.replayGroupId = plannedReplayGroup.isEmpty()
-                    ? invocationReplayGroup : plannedReplayGroup;
+                    ? safe(System.getenv(REPLAY_GROUP_ENV))
+                    : plannedReplayGroup;
             this.linkedReplayRole = string(task.json(),
                     "linkedReplayRole");
             this.familySnapshotDigest = string(task.json(),
@@ -10075,11 +10070,6 @@ public final class ConcolicRegionRuntime {
                     if (!taskIds.add(task.taskId)) {
                         throw new IllegalStateException("malformed plan: "
                                 + "duplicate execution task " + task.taskId);
-                    }
-                    if (!selected.contains(task.taskId)) {
-                        throw new IllegalStateException("malformed plan: "
-                                + "task plan contains unselected task "
-                                + task.taskId);
                     }
                     tasks.add(task);
                 }

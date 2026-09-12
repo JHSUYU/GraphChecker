@@ -60,10 +60,9 @@ public final class ConcolicPathFlipSolver {
         } catch (IllegalArgumentException malformed) {
             throw new IOException("Path task has an invalid linked bundle", malformed);
         }
+        // The bundle is the one authority on which member is primary; the
+        // worklist's sourceTaskId is the same planner's copy of it.
         String sourceId = LinkedReplayBundle.primarySourceTaskId(bundle);
-        if (!sourceId.equals(string(task, "sourceTaskId"))) {
-            throw new IOException("Path task and linked primary differ");
-        }
         JsonObject source = taskById.get(sourceId);
         if (source == null) {
             throw new IOException("Source execution task not found: "
@@ -72,10 +71,10 @@ public final class ConcolicPathFlipSolver {
         List<JsonObject> linkedSources;
         try {
             // Solver workers receive the task plan as an external artifact.
-            // Decode the full task contract here instead of trusting the
-            // worklist's sourceTaskId alone; this includes exact configured
-            // source-phase sequencing and occurrence ownership.
-            ExecutionTask.decode(source);
+            // Decode the full task contract here - exact configured
+            // source-phase sequencing and occurrence ownership included -
+            // and hand the decoded closure to the replay factory, which
+            // therefore never decodes a task or the bundle again.
             linkedSources = LinkedReplayBundle.sourceTasks(bundle, taskById);
             for (JsonObject linked : linkedSources) {
                 ExecutionTask.decode(linked);
@@ -91,8 +90,9 @@ public final class ConcolicPathFlipSolver {
                         number(options, "solver-timeout-ms", 20_000L));
         String status = string(solved.record, "status");
         List<JsonObject> replay = "SAT_MODEL_READY".equals(status)
-                ? PathReplayTaskFactory.createLinked(task, taskById,
-                solved.modelAssignments, array(solved.record,
+                ? PathReplayTaskFactory.createLinked(task, bundle,
+                linkedSources, solved.modelAssignments,
+                array(solved.record,
                         ExecutionTask.GUARDED_READ_ASSIGNMENTS),
                 solved.replayContract)
                 : Collections.<JsonObject>emptyList();

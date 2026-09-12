@@ -254,7 +254,8 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
 
         BranchReplayContract contract = BranchReplayContract.fromSummary(
                 summary, "SITE.T", 1);
-        assertEquals(1, contract.runtimePrefix().size());
+        assertEquals(1, contract.toJson()
+                .getAsJsonArray("runtimePrefix").size());
         BranchReplayContract.RuntimeSchedule schedule =
                 BranchReplayContract.runtimeScheduleFromJson(
                         contract.toJson());

@@ -61,18 +61,26 @@ final class PathReplayTaskFactory {
     /**
      * Builds one fresh-JVM replay plan for the primary flip and every causal
      * companion in its target closure.
+     *
+     * <p>The caller owns the decode: it hands over the linked bundle and the
+     * closure's source task rows it already validated, so neither the bundle
+     * nor any {@link ExecutionTask} is decoded a second time here.</p>
      */
     static java.util.List<JsonObject> createLinked(
-            JsonObject query, Map<String, JsonObject> taskById,
+            JsonObject query, JsonObject bundle,
+            java.util.List<JsonObject> sources,
             JsonArray assignments, JsonArray guardedReads,
             BranchReplayContract contract) {
-        JsonObject bundle = LinkedReplayBundle.decode(query);
-        java.util.List<JsonObject> sources =
-                LinkedReplayBundle.sourceTasks(bundle, taskById);
         String primarySourceTaskId =
                 LinkedReplayBundle.primarySourceTaskId(bundle);
+        // One decode per closure member, shared by every ownership question
+        // below instead of one decode per member per assignment.
+        java.util.List<ExecutionTask> decodedSources = new ArrayList<>();
+        for (JsonObject source : sources) {
+            decodedSources.add(ExecutionTask.decode(source));
+        }
         Map<String, JsonArray> assignmentsByTask =
-                distributeAssignments(assignments, sources,
+                distributeAssignments(assignments, sources, decodedSources,
                         primarySourceTaskId);
         Map<String, JsonArray> readsByTask = distributeGuardedReads(
                 guardedReads, sources);
@@ -191,6 +199,7 @@ final class PathReplayTaskFactory {
     /** One materialized input has exactly one task owner in a linked plan. */
     private static Map<String, JsonArray> distributeAssignments(
             JsonArray assignments, java.util.List<JsonObject> sources,
+            java.util.List<ExecutionTask> decodedSources,
             String primarySourceTaskId) {
         Map<String, JsonArray> result = new LinkedHashMap<>();
         for (JsonObject source : sources) {
@@ -202,8 +211,8 @@ final class PathReplayTaskFactory {
             String phase = string(assignment,
                     "configuredSourcePhaseId");
             java.util.List<String> owners = phase.isEmpty()
-                    ? actionOwners(input, sources)
-                    : configuredPhaseOwners(phase, sources);
+                    ? actionOwners(input, decodedSources)
+                    : configuredPhaseOwners(phase, decodedSources);
             // A propagated input action can appear in several occurrences'
             // frozen catalogs.  The current exact flip owns that control at
             // its primary activation; companions re-evaluate it through the
@@ -224,10 +233,9 @@ final class PathReplayTaskFactory {
     }
 
     private static java.util.List<String> actionOwners(
-            String input, java.util.List<JsonObject> sources) {
+            String input, java.util.List<ExecutionTask> sources) {
         java.util.List<String> owners = new ArrayList<>();
-        for (JsonObject source : sources) {
-            ExecutionTask task = ExecutionTask.decode(source);
+        for (ExecutionTask task : sources) {
             for (JsonElement action : task.inputActions().all()) {
                 if (action.isJsonObject() && input.equals(string(
                         action.getAsJsonObject(), "symbol"))) {
@@ -242,11 +250,10 @@ final class PathReplayTaskFactory {
     /** A configured phase names its source occurrence. Prefer that exact
      * task address when several closure members carry the shared catalog. */
     private static java.util.List<String> configuredPhaseOwners(
-            String phaseId, java.util.List<JsonObject> sources) {
+            String phaseId, java.util.List<ExecutionTask> sources) {
         java.util.List<String> declared = new ArrayList<>();
         java.util.List<String> exact = new ArrayList<>();
-        for (JsonObject source : sources) {
-            ExecutionTask task = ExecutionTask.decode(source);
+        for (ExecutionTask task : sources) {
             for (ConfiguredSourcePhaseContract.Occurrence occurrence
                     : task.configuredSourcePhases()) {
                 if (!phaseId.equals(occurrence.phaseId())) continue;

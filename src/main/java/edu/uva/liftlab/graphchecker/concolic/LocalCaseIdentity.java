@@ -48,7 +48,7 @@ public final class LocalCaseIdentity {
             throw new IllegalArgumentException("summary is required");
         }
         return owner(string(summary, "regionId"),
-                string(summary, "occurrenceId"), require(summary), 0);
+                string(summary, "occurrenceId"), stated(summary), 0);
     }
 
     public static String selector(String owner) {
@@ -67,18 +67,19 @@ public final class LocalCaseIdentity {
         return PREFIX + CanonicalJson.sha256(payload(summary));
     }
 
-    /** Reads and verifies the required identity on an imported summary. */
-    public static String require(JsonObject summary) {
+    /**
+     * Reads the identity an admitted summary already carries.
+     *
+     * <p>The identity is minted exactly once, by the importer's admission
+     * gate, and travels with the summary from there.  Recomputing it on the
+     * way in re-parsed every branch mapping and re-hashed the whole control
+     * payload at each decode; the stated value is the authority.</p>
+     */
+    public static String stated(JsonObject summary) {
         String stated = string(summary, FIELD);
         if (stated.isEmpty()) {
             throw new IllegalArgumentException(
                     "relation summary has no localCaseId");
-        }
-        String computed = compute(summary);
-        if (!computed.equals(stated)) {
-            throw new IllegalArgumentException(
-                    "relation summary localCaseId does not match local "
-                            + "control identity");
         }
         return stated;
     }

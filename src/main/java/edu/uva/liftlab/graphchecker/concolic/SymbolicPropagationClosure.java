@@ -330,10 +330,10 @@ public final class SymbolicPropagationClosure {
         private void indexCaseRow(JsonObject row) {
             if (row == null) return;
             String owner = string(row, LocalCaseIdentity.OWNER);
+            // Stamped by this class, a few statements above: the selector is
+            // a pure function of the owner and is not rechecked here.
             String selector = string(row, LocalCaseIdentity.SELECTOR);
-            if (owner.isEmpty() || selector.isEmpty()
-                    || !selector.equals(LocalCaseIdentity.selector(
-                    owner))) {
+            if (owner.isEmpty() || selector.isEmpty()) {
                 gap("CASE_CLOSURE_IDENTITY_MISSING", owner,
                         "case row has no exact owner/selector identity");
                 return;

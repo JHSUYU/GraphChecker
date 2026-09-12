@@ -73,23 +73,9 @@ public final class BranchReplayContract {
         }
         for (BranchWitness witness : prefixCopy) {
             if (witness.isPcPredicateDecision()) continue;
-            boolean matched = false;
-            for (ExactConcreteBranchObservation observation : runtimeCopy) {
-                if (runtimeIdentity(observation).equals(
-                        sourceIdentity(witness))
-                        && !observation.isSwitchObservation()
-                        && observation.sourceTakenOutcome()
-                        == witness.sourceTakenOutcome()) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
-                throw new IllegalArgumentException(
-                        "runtime prefix omits witnessed event "
-                                + witness.siteId() + '#'
-                                + witness.occurrence());
-            }
+            requireWitnessedInRuntimePrefix(runtimeCopy,
+                    sourceIdentity(witness), witness.sourceTakenOutcome(),
+                    witness.siteId() + "#" + witness.occurrence());
         }
         this.orderedPrefix = Collections.unmodifiableList(prefixCopy);
         this.runtimePrefix = Collections.unmodifiableList(runtimeCopy);
@@ -97,21 +83,29 @@ public final class BranchReplayContract {
         this.solverPathContext = solverPathContext;
     }
 
-    /** The only operation in the protocol that derives opposite polarity. */
-    public static BranchReplayContract flip(List<BranchWitness> orderedPrefix,
-                                            BranchWitness source) {
-        List<ExactConcreteBranchObservation> runtimePrefix =
-                new ArrayList<>();
-        if (orderedPrefix != null) {
-            for (BranchWitness witness : orderedPrefix) {
-                if (witness != null && !witness.isPcPredicateDecision()) {
-                    runtimePrefix.add(binaryObservation(witness,
-                            witness.sourceTakenOutcome()));
-                }
+    /** A contract for one source event whose replay has no witnessed
+     *  prefix; {@link #fromSummary} builds every contract that has one. */
+    public static BranchReplayContract atSource(BranchWitness source) {
+        return new BranchReplayContract(
+                Collections.<BranchWitness>emptyList(),
+                Collections.<ExactConcreteBranchObservation>emptyList(),
+                source, null);
+    }
+
+    /** One witnessed source-level decision must appear in the runtime
+     *  prefix with the same identity and the same taken outcome. */
+    private static void requireWitnessedInRuntimePrefix(
+            List<ExactConcreteBranchObservation> runtimePrefix,
+            String identity, boolean takenOutcome, String label) {
+        for (ExactConcreteBranchObservation observation : runtimePrefix) {
+            if (identity.equals(runtimeIdentity(observation))
+                    && !observation.isSwitchObservation()
+                    && observation.sourceTakenOutcome() == takenOutcome) {
+                return;
             }
         }
-        return new BranchReplayContract(orderedPrefix, runtimePrefix, source,
-                null);
+        throw new IllegalArgumentException(
+                "runtime prefix omits witnessed event " + label);
     }
 
     public static BranchReplayContract fromSummary(
@@ -250,23 +244,9 @@ public final class BranchReplayContract {
         }
         for (RuntimeWitness witness : prefix) {
             if (witness.decisionOrdinal > 0) continue;
-            boolean matched = false;
-            for (ExactConcreteBranchObservation observation : runtimePrefix) {
-                if (witness.runtimeIdentity().equals(
-                        runtimeIdentity(observation))
-                        && !observation.isSwitchObservation()
-                        && observation.sourceTakenOutcome()
-                        == witness.sourceTakenOutcome) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
-                throw new IllegalArgumentException(
-                        "runtime prefix omits witnessed event "
-                                + witness.siteId + '#'
-                                + witness.occurrence);
-            }
+            requireWitnessedInRuntimePrefix(runtimePrefix,
+                    witness.runtimeIdentity(), witness.sourceTakenOutcome,
+                    witness.siteId + "#" + witness.occurrence);
         }
         Map<String, RuntimeWitness> witnessed = new TreeMap<>();
         for (RuntimeWitness witness : prefix) {
@@ -584,10 +564,6 @@ public final class BranchReplayContract {
     }
 
     /** Exact source-level decisions that must precede the flipped branch. */
-    public List<ExactConcreteBranchObservation> runtimePrefix() {
-        return runtimePrefix;
-    }
-
     /** Predicate-free projection consumed by the runtime replay matcher. */
     public static final class RuntimeSchedule {
         private final List<RuntimeDecision> decisions;

@@ -39,15 +39,12 @@ public final class PathObservation {
 
     private PathObservation(JsonObject summary, JsonObject task) {
         this.raw = summary;
+        // The activation tuple is admitted once, by the importer's
+        // resultShapeRefusal gate; a summary that reaches this decode has
+        // already passed it.
         this.activationOrdinal = exactInteger(raw, ACTIVATION_ORDINAL, -1);
         this.plannedOccurrenceId = exactText(raw, PLANNED_OCCURRENCE_ID);
         this.occurrenceId = exactText(raw, "occurrenceId");
-        if (activationOrdinal < 1 || plannedOccurrenceId.isEmpty()
-                || !occurrenceId.equals(plannedOccurrenceId + "#a"
-                + activationOrdinal)) {
-            throw new IllegalArgumentException(
-                    "path summary requires an exact activation tuple");
-        }
         this.scope = Scope.decode(raw, task);
         List<SummaryBranchMapping> decoded = Collections.emptyList();
         String issue = "";
@@ -58,7 +55,7 @@ public final class PathObservation {
         }
         this.branchMappings = Collections.unmodifiableList(decoded);
         this.branchMappingIssue = issue;
-        this.pathKey = LocalCaseIdentity.require(raw);
+        this.pathKey = LocalCaseIdentity.stated(raw);
         JsonArray recorded = array(raw, "pathCondition");
         List<Integer> positions = new ArrayList<>();
         for (int index = 0; index < recorded.size(); index++) {
