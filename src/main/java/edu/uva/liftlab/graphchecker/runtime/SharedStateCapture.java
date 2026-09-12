@@ -641,7 +641,12 @@ final class SharedStateCapture {
         }
 
         void bindPlannedReceiver(RuntimeTask task) {
-            if (!requiresPlannedReceiver()) {
+            if (!requiresPlannedReceiver()
+                    || plannedReceiverObjectId > 0L) {
+                // One activation reads a carrier out once per snapshot and
+                // holds more of its access anchors at each later one.  The
+                // receiver identity must be the same in every snapshot of
+                // one activation, so the first one that answers is kept.
                 return;
             }
             long planned = task == null ? 0L
