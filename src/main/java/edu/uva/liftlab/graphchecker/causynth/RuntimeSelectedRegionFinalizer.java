@@ -60,6 +60,32 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final String DEMANDED_BY_REGIONS = "demandedByRegionIds";
     private static final String DEMANDED_SHARED_LOCATIONS =
             "demandedSharedLocations";
+    /**
+     * How many shared-location demand hops separate this admission from the
+     * fatal target.  A writer the failure closure's own port demand asked for
+     * is one hop; a writer asked for only because an already admitted
+     * occurrence reads the location is one hop further out.
+     */
+    static final String DEMAND_DEPTH = "demandDepth";
+    /** The fatal target is the origin of every shared-location demand. */
+    private static final int TARGET_DEMAND_DEPTH = 0;
+    /**
+     * Bound on transitive shared-location demand, counted in hops from the
+     * fatal target: the rule refuses a hop that would land past it.  Unset
+     * means unbounded inside the retained skeleton, which is itself bounded
+     * -- only recorded activations of selected regions can be demanded at all
+     * -- so the fixed point is finite either way.
+     *
+     * <p>{@code 0} disables the transitive rule and leaves exactly the
+     * first-order admissions, which this bound never gates: those come from
+     * reads the failure closure demanded through a port, and the closure
+     * needs their writers whatever the bound says.  {@code 1} still admits
+     * one hop, off the fatal target's own undemanded shared reads.</p>
+     */
+    static final String DEMAND_DEPTH_PROPERTY =
+            "causynth.shared.location.demand.depth";
+    static final String DEMAND_DEPTH_ENVIRONMENT =
+            "CAUSYNTH_SHARED_LOCATION_DEMAND_DEPTH";
 
     /** Communication ports whose exact export/attach sites need hooks. */
     public static final String COMMUNICATION_PORTS = "communicationPorts";
@@ -996,9 +1022,17 @@ public final class RuntimeSelectedRegionFinalizer {
         for (String target : targets) {
             demands.targetInputs(instances.get(target));
         }
+        // Hop count per admitted occurrence, seeded on the fatal target(s).
+        // It is written by the two admission rules below and read by the
+        // transitive rule, which refuses a hop past the configured bound.
+        Map<String, Integer> demandDepths = new LinkedHashMap<>();
+        for (String target : targets) {
+            demandDepths.put(target, TARGET_DEMAND_DEPTH);
+        }
+        int demandDepthBound = configuredDemandDepthBound();
         Set<String> admittedStateWriters = new LinkedHashSet<>(
                 admitSharedLocationWriters(targets, instances, demands,
-                        program.regionEdges));
+                        program.regionEdges, demandDepths));
 
         Map<String, List<Map<String, Object>>> predecessors =
                 new LinkedHashMap<>();
@@ -1043,19 +1077,41 @@ public final class RuntimeSelectedRegionFinalizer {
                 requestFlowPrefixInputs(targets, instances,
                         program.regionEdges);
 
+        // Shared reads an admitted occurrence holds that no port demand asked
+        // for yet.  They are the second-order demand: the target demands one
+        // location, the occurrence admitted to write it reads a location of
+        // its own, and that read stays a single INITIAL arm pinned to its
+        // recorded constant until the writers on its own node are demanded
+        // too.  Seeding them into the walk is what makes the read a
+        // multi-writer GuardedRead, so the seeds and the admission below grow
+        // together to one fixed point.
+        Set<String> transitiveDemands = new LinkedHashSet<>();
         ClosureWalk union = walkFailureClosure(targets, instances,
                 demands, predecessors, targetInteractionInputs,
-                requestFlowPrefixInputs, admittedStateWriters);
+                requestFlowPrefixInputs, admittedStateWriters,
+                transitiveDemands);
         // Heap demand is transitive with port demand: each walk may reach a
         // producer that itself reads a written location, so admit the writers
         // of what this walk demanded and walk again.
         while (true) {
-            Set<String> grown = admitWritersOfDemands(union.reached,
-                    union.demandedInputs, instances, program.regionEdges);
-            if (!admittedStateWriters.addAll(grown)) break;
+            Map<String, Integer> depthsBefore =
+                    new LinkedHashMap<>(demandDepths);
+            boolean grown = admittedStateWriters.addAll(admitWritersOfDemands(
+                    union.reached, union.demandedInputs, instances,
+                    program.regionEdges, demandDepths));
+            grown |= transitiveDemands.addAll(transitiveSharedLocationDemand(
+                    union.reached, union.demandedInputs, instances,
+                    program.regionEdges, demandDepths, demandDepthBound));
+            // A hop the bound refused reads the consumer's depth, so a round
+            // that only shortened a demand chain can still open one.  Depths
+            // never rise and the occurrence set is finite, so answering that
+            // round terminates too.
+            grown |= !depthsBefore.equals(demandDepths);
+            if (!grown) break;
             union = walkFailureClosure(targets, instances, demands,
                     predecessors, targetInteractionInputs,
-                    requestFlowPrefixInputs, admittedStateWriters);
+                    requestFlowPrefixInputs, admittedStateWriters,
+                    transitiveDemands);
         }
         return union;
     }
@@ -1386,21 +1442,144 @@ public final class RuntimeSelectedRegionFinalizer {
             Set<String> targets,
             Map<String, Map<String, Object>> instances,
             RegionDemandIndex demands,
-            List<Map<String, Object>> regionEdges) throws IOException {
+            List<Map<String, Object>> regionEdges,
+            Map<String, Integer> demandDepths) throws IOException {
         Set<String> fatalInputs = new LinkedHashSet<>();
         for (String target : targets) {
             fatalInputs.addAll(demands.targetInputs(instances.get(target)));
         }
         return admitWritersOfDemands(targets, fatalInputs, instances,
-                regionEdges);
+                regionEdges, demandDepths);
+    }
+
+    /**
+     * The hop count of one admitted occurrence.  A target is the origin.  An
+     * occurrence the closure reached on its own authority -- a fault entry, a
+     * communication entry, a protocol producer -- is a demand origin of the
+     * same standing as the target's own reads, and counts as one hop rather
+     * than zero so that a bound keeps the chains off it short.
+     */
+    private static int demandDepth(Map<String, Integer> demandDepths,
+                                   String occurrenceId) {
+        Integer known = demandDepths.get(occurrenceId);
+        return known == null ? 1 : known;
+    }
+
+    /** Records the shortest demand chain that reached one admission. */
+    private static void recordDemandDepth(
+            Map<String, Integer> demandDepths, String occurrenceId,
+            int depth) {
+        Integer known = demandDepths.get(occurrenceId);
+        if (known == null || depth < known) {
+            demandDepths.put(occurrenceId, depth);
+        }
+    }
+
+    /**
+     * Reads the configured bound on transitive shared-location demand.
+     * Absent or blank leaves it unbounded within the retained skeleton;
+     * {@code 0} turns the rule off; a negative value is refused rather than
+     * read as one of those two.
+     */
+    private static int configuredDemandDepthBound() throws IOException {
+        return configuredDemandDepth(firstNonEmpty(
+                text(System.getProperty(DEMAND_DEPTH_PROPERTY)).trim(),
+                text(System.getenv(DEMAND_DEPTH_ENVIRONMENT)).trim()));
+    }
+
+    /** The bound one configured value states. */
+    static int configuredDemandDepth(String value) throws IOException {
+        String configured = text(value).trim();
+        if (configured.isEmpty()) return Integer.MAX_VALUE;
+        int bound;
+        try {
+            bound = Integer.parseInt(configured);
+        } catch (NumberFormatException malformed) {
+            throw new IOException("shared-location demand depth is not a "
+                    + "number: " + configured, malformed);
+        }
+        if (bound < 0) {
+            throw new IOException("shared-location demand depth cannot be "
+                    + "negative: " + bound);
+        }
+        return bound;
+    }
+
+    /**
+     * Second-order shared-location demand: the read ports an already admitted
+     * occurrence holds for a location some other recorded activation of the
+     * same node and epoch wrote.
+     *
+     * <p>The first-order rule only follows a read the failure closure had
+     * already demanded through a port, which is the read of a value the
+     * failure consumed directly.  A region admitted to supply that value
+     * reads shared state of its own, and such a read is ordinarily neither a
+     * target input nor an explored branch operand, so no port demand ever
+     * reaches it: replay then pins it to the one INITIAL arm its recording
+     * observed.  Returning the port here seeds it into the next closure walk,
+     * which retains the recorded field flows into it and therefore hands the
+     * first-order rule the writers to admit -- under
+     * {@code SHARED_LOCATION_DEMAND_V1}, with the hop count this demand
+     * travelled.</p>
+     *
+     * <p>Evidence is the same pass-2 field and accessor binding the
+     * first-order rule reads: one recorded {@code RUNTIME_FIELD_FLOW} per
+     * observed writer of the exact receiver and leaf.  A hop is opened only
+     * by a writer inside the reader's own semantic source, because a heap
+     * location is private to the node and epoch that holds the object; once
+     * the read is demanded, every recorded writer of that receiver and leaf
+     * is a replay arm of it, which is the first-order rule's standing
+     * contract and not this rule's to narrow.</p>
+     */
+    static Set<String> transitiveSharedLocationDemand(
+            Collection<String> admitted,
+            Set<String> demandedInputs,
+            Map<String, Map<String, Object>> instances,
+            List<Map<String, Object>> regionEdges,
+            Map<String, Integer> demandDepths,
+            int depthBound) {
+        Set<String> reached = new LinkedHashSet<>(admitted);
+        Set<String> seeds = new LinkedHashSet<>();
+        for (Map<String, Object> edge : regionEdges) {
+            if (!"RUNTIME_FIELD_FLOW".equals(text(edge.get("kind")))) {
+                continue;
+            }
+            String consumer = text(edge.get("toOccurrenceId"));
+            String writer = text(edge.get("fromOccurrenceId"));
+            String toPort = text(edge.get("toPort"));
+            if (!reached.contains(consumer) || writer.equals(consumer)
+                    || toPort.isEmpty()
+                    || text(edge.get(SharedFieldFlow.EDGE_LOCATION))
+                    .isEmpty()
+                    || !instances.containsKey(writer)
+                    || !instances.containsKey(consumer)) {
+                continue;
+            }
+            String demand = portDemandKey(consumer, toPort);
+            if (demandedInputs.contains(demand)) {
+                // Already first-order demand; its writers are admitted by
+                // the rule above and this hop would only recount them.
+                continue;
+            }
+            if (!activationSourceKey(instances.get(consumer)).equals(
+                    activationSourceKey(instances.get(writer)))) {
+                continue;
+            }
+            int hop = demandDepth(demandDepths, consumer) + 1;
+            if (hop > depthBound) continue;
+            recordDemandDepth(demandDepths, writer, hop);
+            seeds.add(demand);
+        }
+        return seeds;
     }
 
     /** Admits the observed writers of locations read by the demand set. */
-    private static Set<String> admitWritersOfDemands(
+    static Set<String> admitWritersOfDemands(
             Collection<String> demanding,
             Set<String> demandedInputs,
             Map<String, Map<String, Object>> instances,
-            List<Map<String, Object>> regionEdges) throws IOException {
+            List<Map<String, Object>> regionEdges,
+            Map<String, Integer> demandDepths) throws IOException {
         Set<String> targets = new LinkedHashSet<>(demanding);
         Set<String> fatalInputs = demandedInputs;
         Map<String, Set<String>> locationsByWriter = new LinkedHashMap<>();
@@ -1428,6 +1607,8 @@ public final class RuntimeSelectedRegionFinalizer {
             targetRegionsByWriter.computeIfAbsent(writer,
                     ignored -> new TreeSet<>()).add(text(
                     instances.get(consumer).get("regionId")));
+            recordDemandDepth(demandDepths, writer,
+                    demandDepth(demandDepths, consumer) + 1);
         }
 
         Set<String> admitted = new LinkedHashSet<>();
@@ -1460,6 +1641,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     new ArrayList<>(demandedBy));
             activation.put(DEMANDED_SHARED_LOCATIONS,
                     new ArrayList<>(locations));
+            activation.put(DEMAND_DEPTH,
+                    demandDepth(demandDepths, writer));
             admitted.add(writer);
         }
         return admitted;
@@ -1472,7 +1655,8 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, List<Map<String, Object>>> predecessors,
             Collection<String> targetInteractionInputs,
             Map<String, Long> requestFlowPrefixInputs,
-            Set<String> admittedStateWriters)
+            Set<String> admittedStateWriters,
+            Collection<String> transitiveSharedDemands)
             throws IOException {
         Set<String> reached = new LinkedHashSet<>(targets);
         Set<String> retainedEdges = new LinkedHashSet<>();
@@ -1489,6 +1673,12 @@ public final class RuntimeSelectedRegionFinalizer {
             seeds.add(input);
         }
         seeds.addAll(requestFlowPrefixInputs.keySet());
+        // Second-order shared-location demand, in the order the recorded
+        // field flows exposed it.  A read seeded here is demanded exactly the
+        // way a target input is, so the walk retains its recorded writers'
+        // flows and output versions and the read becomes a multi-writer
+        // GuardedRead instead of its one recorded INITIAL arm.
+        seeds.addAll(transitiveSharedDemands);
         // A selected writer is retained even when nothing demands one of its
         // outputs yet: the bounded NN heartbeat predecessors stay in the
         // closure without any of them becoming a read-from arm before replay

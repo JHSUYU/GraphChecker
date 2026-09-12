@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.Gson;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
+import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
 import org.junit.Test;
 
@@ -19,6 +20,7 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class RuntimeSelectedRegionFinalizerAccessorTest {
@@ -137,7 +139,7 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 .getDeclaredMethod("walkFailureClosure",
                         java.util.Collection.class, Map.class, indexType,
                         Map.class, java.util.Collection.class, Map.class,
-                        Set.class);
+                        Set.class, java.util.Collection.class);
         closure.setAccessible(true);
         Object result = closure.invoke(null,
                 Collections.emptySet(),
@@ -146,7 +148,8 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                         "occurrenceId", occurrence)),
                 index, Collections.emptyMap(), Collections.emptySet(),
                 Collections.emptyMap(),
-                Collections.singleton(occurrence));
+                Collections.singleton(occurrence),
+                Collections.emptySet());
         Field demanded = result.getClass().getDeclaredField(
                 "demandedInputs");
         demanded.setAccessible(true);
@@ -408,6 +411,204 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
 
         assertTrue(inputs.contains(occurrence + "\n" + keyPort));
         assertFalse(inputs.contains(occurrence + "\n" + carrierPort));
+    }
+
+    /**
+     * Two shared-location demand hops.  The fatal target reads a location the
+     * middle region wrote, and the middle region reads a location of its own
+     * that only the outer writer wrote.  The first hop is first-order demand;
+     * the second exists only because an admitted occurrence reads it, which is
+     * the demand the port-gated rule alone never reaches.
+     */
+    @Test
+    public void secondOrderSharedLocationDemandAdmitsTheWritersWriter()
+            throws Exception {
+        String source = "cluster/node#epoch0";
+        String target = source + "/region/REGION.fatal#1";
+        String middle = source + "/region/REGION.middle#1";
+        String outer = source + "/region/REGION.outer#1";
+        String farSide = "cluster/other#epoch0/region/REGION.outer#1";
+        String fatalPort = "REGION.fatal.in.consumed";
+        String middlePort = "REGION.middle.in.currentKey";
+        Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
+        instances.put(target, demandActivation(
+                "AT", "REGION.fatal", target, source));
+        instances.put(middle, demandActivation(
+                "AM", "REGION.middle", middle, source));
+        instances.put(outer, demandActivation(
+                "AO", "REGION.outer", outer, source));
+        instances.put(farSide, demandActivation(
+                "AF", "REGION.outer", farSide, "cluster/other#epoch0"));
+        List<Map<String, Object>> edges = Arrays.asList(
+                fieldFlow("SF.first", middle, target, fatalPort,
+                        "example.Owner#consumed"),
+                fieldFlow("SF.second", outer, middle, middlePort,
+                        "example.Owner#currentKey"),
+                fieldFlow("SF.cross", farSide, middle, middlePort,
+                        "example.Owner#currentKey"));
+        Set<String> fatalInputs = new LinkedHashSet<>(
+                Collections.singletonList(target + "\n" + fatalPort));
+        Map<String, Integer> depths = new LinkedHashMap<>();
+        depths.put(target, 0);
+
+        // Hop one: today's rule, unchanged.  Only the location the failure
+        // closure demanded through a port admits its writer.
+        assertEquals(Collections.singleton(middle),
+                RuntimeSelectedRegionFinalizer.admitWritersOfDemands(
+                        Collections.singletonList(target), fatalInputs,
+                        instances, edges, depths));
+        assertEquals("SHARED_LOCATION_DEMAND_V1",
+                instances.get(middle).get("admissionBasis"));
+        assertEquals(1, instances.get(middle).get(
+                RuntimeSelectedRegionFinalizer.DEMAND_DEPTH));
+        // The outer writer is invisible to it: nothing demands the middle
+        // region's own read yet.
+        assertNull(instances.get(outer).get("admissionBasis"));
+
+        // Hop two: the middle region's own shared read becomes demanded.
+        // Only the writer on its own node opens the hop -- the cross-node
+        // pairing on the same port does not.
+        Set<String> transitive = RuntimeSelectedRegionFinalizer
+                .transitiveSharedLocationDemand(
+                        Arrays.asList(target, middle), fatalInputs,
+                        instances, edges, depths, Integer.MAX_VALUE);
+        assertEquals(Collections.singleton(middle + "\n" + middlePort),
+                transitive);
+        Set<String> reDemanded = new LinkedHashSet<>(fatalInputs);
+        reDemanded.addAll(transitive);
+        // Once the read is demanded, every recorded writer of that exact
+        // receiver and leaf is one of its replay arms -- the first-order
+        // rule's standing contract, which this rule does not narrow.
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                        middle, outer, farSide)),
+                RuntimeSelectedRegionFinalizer.admitWritersOfDemands(
+                        Arrays.asList(target, middle), reDemanded,
+                        instances, edges, depths));
+        assertEquals("SHARED_LOCATION_DEMAND_V1",
+                instances.get(outer).get("admissionBasis"));
+        assertEquals(2, instances.get(outer).get(
+                RuntimeSelectedRegionFinalizer.DEMAND_DEPTH));
+        assertEquals(Collections.singletonList("example.Owner#currentKey"),
+                instances.get(outer).get("demandedSharedLocations"));
+        assertEquals(Collections.singletonList("REGION.middle"),
+                instances.get(outer).get("demandedByRegionIds"));
+        // The already-admitted first hop keeps the depth it was admitted at.
+        assertEquals(1, instances.get(middle).get(
+                RuntimeSelectedRegionFinalizer.DEMAND_DEPTH));
+    }
+
+    /**
+     * A read whose only recorded writer sits on another node opens no hop: a
+     * heap location is private to the node and epoch holding the object, so
+     * such a pairing is a receiver coincidence, not shared state.
+     */
+    @Test
+    public void crossNodeWriterAloneOpensNoSharedLocationHop() {
+        String source = "cluster/node#epoch0";
+        String target = source + "/region/REGION.fatal#1";
+        String middle = source + "/region/REGION.middle#1";
+        String farSide = "cluster/other#epoch0/region/REGION.outer#1";
+        String middlePort = "REGION.middle.in.currentKey";
+        Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
+        instances.put(target, demandActivation(
+                "AT", "REGION.fatal", target, source));
+        instances.put(middle, demandActivation(
+                "AM", "REGION.middle", middle, source));
+        instances.put(farSide, demandActivation(
+                "AF", "REGION.outer", farSide, "cluster/other#epoch0"));
+        List<Map<String, Object>> edges = Collections.singletonList(
+                fieldFlow("SF.cross", farSide, middle, middlePort,
+                        "example.Owner#currentKey"));
+        Map<String, Integer> depths = new LinkedHashMap<>();
+        depths.put(target, 0);
+        depths.put(middle, 1);
+
+        assertTrue(RuntimeSelectedRegionFinalizer
+                .transitiveSharedLocationDemand(
+                        Arrays.asList(target, middle),
+                        Collections.<String>emptySet(), instances, edges,
+                        depths, Integer.MAX_VALUE).isEmpty());
+    }
+
+    @Test
+    public void configuredDemandDepthStopsTheTransitiveHop()
+            throws Exception {
+        String source = "cluster/node#epoch0";
+        String target = source + "/region/REGION.fatal#1";
+        String middle = source + "/region/REGION.middle#1";
+        String outer = source + "/region/REGION.outer#1";
+        String middlePort = "REGION.middle.in.currentKey";
+        Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
+        instances.put(target, demandActivation(
+                "AT", "REGION.fatal", target, source));
+        instances.put(middle, demandActivation(
+                "AM", "REGION.middle", middle, source));
+        instances.put(outer, demandActivation(
+                "AO", "REGION.outer", outer, source));
+        List<Map<String, Object>> edges = Collections.singletonList(
+                fieldFlow("SF.second", outer, middle, middlePort,
+                        "example.Owner#currentKey"));
+        Map<String, Integer> depths = new LinkedHashMap<>();
+        depths.put(target, 0);
+        depths.put(middle, 1);
+
+        // The middle region sits one hop out, so its own read is a second
+        // hop and a bound of one refuses it.
+        assertTrue(RuntimeSelectedRegionFinalizer
+                .transitiveSharedLocationDemand(
+                        Arrays.asList(target, middle),
+                        Collections.<String>emptySet(), instances, edges,
+                        depths, 1).isEmpty());
+        // Zero turns the rule off outright, leaving the first-order
+        // admissions this bound never gates.
+        assertTrue(RuntimeSelectedRegionFinalizer
+                .transitiveSharedLocationDemand(
+                        Arrays.asList(target, middle),
+                        Collections.<String>emptySet(), instances, edges,
+                        depths, 0).isEmpty());
+        assertEquals(Collections.singleton(middle + "\n" + middlePort),
+                RuntimeSelectedRegionFinalizer
+                        .transitiveSharedLocationDemand(
+                                Arrays.asList(target, middle),
+                                Collections.<String>emptySet(), instances,
+                                edges, depths, 2));
+        assertEquals(0, RuntimeSelectedRegionFinalizer.configuredDemandDepth(
+                "0"));
+        assertEquals(Integer.MAX_VALUE, RuntimeSelectedRegionFinalizer
+                .configuredDemandDepth("  "));
+        assertEquals(3, RuntimeSelectedRegionFinalizer.configuredDemandDepth(
+                " 3 "));
+        for (String refused : new String[] {"-1", "two"}) {
+            try {
+                RuntimeSelectedRegionFinalizer.configuredDemandDepth(refused);
+                org.junit.Assert.fail("accepted " + refused);
+            } catch (java.io.IOException expected) {
+                assertTrue(expected.getMessage().contains(refused));
+            }
+        }
+    }
+
+    private static Map<String, Object> demandActivation(
+            String activationId, String regionId, String occurrenceId,
+            String sourceKey) {
+        return row(
+                "activationId", activationId,
+                "regionId", regionId,
+                "occurrenceId", occurrenceId,
+                "sourceKey", sourceKey);
+    }
+
+    private static Map<String, Object> fieldFlow(
+            String edgeId, String writer, String reader, String readPort,
+            String location) {
+        return row(
+                "schemaVersion", 3,
+                "kind", "RUNTIME_FIELD_FLOW",
+                "edgeId", edgeId,
+                "fromOccurrenceId", writer,
+                "toOccurrenceId", reader,
+                "toPort", readPort,
+                SharedFieldFlow.EDGE_LOCATION, location);
     }
 
     private static Map<String, Object> activation(
