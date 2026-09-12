@@ -221,8 +221,6 @@ public final class ConcolicSmtComposer {
         manifest.add("symbolicPropagationGaps", propagation.gaps());
         manifest.add("casePathConditionDependencies",
                 propagation.caseDependencies());
-        manifest.add("fatalPathAssertion",
-                emitter.fatalPathAssertion());
         manifest.add("targetReachLedger", emitter.targetReachLedger());
         manifest.add("caseSelectorPartitions",
                 GSON.toJsonTree(emitter.casePartitions.values()));
@@ -262,8 +260,8 @@ public final class ConcolicSmtComposer {
         JsonObject unsatClosure = unsatClosureEvidence(
                 guardedReadModelComplete, loweredRelations, fatal, finalReady,
                 0);
-        manifest.addProperty(UNSAT_CLOSURE_COMPLETE,
-                bool(unsatClosure, UNSAT_CLOSURE_COMPLETE, false));
+        manifest.addProperty(UNSAT_CLOSURE_COMPLETE, unsatClosureComplete(
+                guardedReadModelComplete, unsatClosure));
         manifest.add(UNSAT_CLOSURE_EVIDENCE, unsatClosure);
         manifest.add("composedSmtArtifact", artifact(arguments.output,
                 composedSmt.getBytes(StandardCharsets.UTF_8)));
@@ -425,30 +423,33 @@ public final class ConcolicSmtComposer {
             int compositionCoverageGapCount) {
         JsonArray partialRelations = partialProducerSummaryIds(selected);
         int targetCoverageGapCount = array(fatal, "coverageGaps").size();
-        boolean producerPathsClosed = partialRelations.size() == 0;
-        boolean targetPathsClosed = targetPathsClosed(fatal);
-        boolean compositionCoverageClosed = compositionCoverageGapCount == 0;
-        boolean complete = guardedReadModelComplete && producerPathsClosed
-                && targetPathsClosed && compositionCoverageClosed
-                && finalReady;
         JsonObject evidence = new JsonObject();
         evidence.addProperty("schemaVersion", 1);
         evidence.addProperty("kind", "UNSAT_CLOSURE_EVIDENCE");
         evidence.addProperty("authority", UNSAT_CLOSURE_AUTHORITY);
-        evidence.addProperty("guardedReadModelComplete",
-                guardedReadModelComplete);
-        evidence.addProperty("producerPathsClosed", producerPathsClosed);
-        evidence.addProperty("targetPathsClosed", targetPathsClosed);
-        evidence.addProperty("compositionCoverageClosed",
-                compositionCoverageClosed);
+        // The guarded-read verdict is stated once, at the top level of the
+        // manifest.  Closure of the producer paths and of the composition
+        // coverage is exactly "the counted list beside it is empty", and the
+        // whole closure verdict is the conjunction of the components below:
+        // none of the three is restated here.
+        evidence.addProperty("targetPathsClosed", targetPathsClosed(fatal));
         evidence.addProperty("finalStatusReady", finalReady);
         evidence.addProperty("targetCoverageGapCount",
                 targetCoverageGapCount);
         evidence.addProperty("compositionCoverageGapCount",
                 compositionCoverageGapCount);
         evidence.add("partialProducerSummaryIds", partialRelations);
-        evidence.addProperty(UNSAT_CLOSURE_COMPLETE, complete);
         return evidence;
+    }
+
+    /** The Composer's own UNSAT closure verdict over one evidence row. */
+    private static boolean unsatClosureComplete(
+            boolean guardedReadModelComplete, JsonObject evidence) {
+        return guardedReadModelComplete
+                && array(evidence, "partialProducerSummaryIds").size() == 0
+                && bool(evidence, "targetPathsClosed", false)
+                && integer(evidence, "compositionCoverageGapCount", -1) == 0
+                && bool(evidence, "finalStatusReady", false);
     }
 
     /** Producer summaries whose local path coverage remains open. */
@@ -598,7 +599,6 @@ public final class ConcolicSmtComposer {
                                 string(fatal,
                                         VmExpressionIr.TOPOLOGY_EPOCH)));
                 path.addProperty("sourceKey", string(fatal, "sourceKey"));
-                path.addProperty("_targetPathOrdinal", index);
                 path = retainCaseOwner(path, targetPathCaseOwner(fatal, path,
                         index));
                 rows.add(path);
@@ -1207,8 +1207,6 @@ public final class ConcolicSmtComposer {
         private final Map<String, Set<String>> observationsByBaseCase =
                 new LinkedHashMap<>();
 
-        private String fatalPathAssertionName = "";
-        private String fatalPathAssertionTerm = "";
         /** Exact runtime target events and the fatal case that owns each. */
         private final JsonArray targetReachEvents = new JsonArray();
         /** SMT root name -> the one raw VM symbol that owns it. */
@@ -1739,8 +1737,7 @@ public final class ConcolicSmtComposer {
         }
 
         private void bindFatalPathAssertion(String pathTerm) {
-            fatalPathAssertionTerm = pathTerm;
-            fatalPathAssertionName = assertNamed("fatal_path", pathTerm);
+            assertNamed("fatal_path", pathTerm);
         }
 
         /**
@@ -3163,13 +3160,6 @@ public final class ConcolicSmtComposer {
         }
 
         /** Canonical named assertion for the selected fatal path. */
-        private JsonObject fatalPathAssertion() {
-            JsonObject result = new JsonObject();
-            result.addProperty("name", fatalPathAssertionName);
-            result.addProperty("solverTerm", fatalPathAssertionTerm);
-            return result;
-        }
-
         private Term scopedSymbol(String raw, String prefix, Sort requested,
                                   String javaType, String domainLabel,
                                   String conflictLabel, String sourcePrefix) {

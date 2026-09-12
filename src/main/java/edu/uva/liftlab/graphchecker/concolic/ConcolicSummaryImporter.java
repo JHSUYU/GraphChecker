@@ -334,8 +334,7 @@ public final class ConcolicSummaryImporter {
         // README "Delta ownership is also singular": the frozen-plan
         // comparison happens here, while each raw row is imported, and not as
         // a later pass over a second store.
-        TopologyDelta delta = new TopologyDelta(iterationId,
-                tasks.values());
+        TopologyDelta delta = new TopologyDelta(iterationId);
         // Every re-plan receives a new iteration id. Unlike a digest of the
         // task rows, it stays stable while linked replays add case tasks for
         // the same topology epoch.

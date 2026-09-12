@@ -109,16 +109,6 @@ public final class ConcolicPathFlipSolver {
                 string(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
         solved.record.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
                 string(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
-        if (!replay.isEmpty()) {
-            for (JsonObject replayTask : replay) {
-                if (LinkedReplayBundle.PRIMARY.equals(string(replayTask,
-                        LinkedReplayBundle.ROLE_FIELD))) {
-                    solved.record.addProperty("primaryReplayTaskId",
-                            string(replayTask, "taskId"));
-                }
-            }
-        }
-
         Path directory = requiredPath(options, "output-dir");
         String record = PRETTY.toJson(solved.record);
         ArtifactIO.replace(directory.resolve("path_flip_solver_result.json"),

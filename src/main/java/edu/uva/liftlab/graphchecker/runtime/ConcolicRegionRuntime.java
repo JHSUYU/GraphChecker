@@ -4939,15 +4939,6 @@ public final class ConcolicRegionRuntime {
                     new ArrayList<>(active.sharedStateRecords.values()),
                     identity));
         }
-        JsonArray mapCarriers = new JsonArray();
-        for (SharedCarrier carrier : active.sharedCarriers.values()) {
-            if (carrier.mapState()) mapCarriers.add(carrier.toJson());
-        }
-        if (mapCarriers.size() > 0) {
-            // Which maps this activation selected, beside the evidence they
-            // produced.
-            result.add("sharedMapCarriers", mapCarriers);
-        }
         if (!active.sharedStateGaps.isEmpty()) {
             result.add("sharedStateGaps",
                     stamped(active.sharedStateGaps, identity));

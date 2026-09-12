@@ -1530,7 +1530,6 @@ public final class ConcolicScheduler {
             DefinitionIndex result = new DefinitionIndex();
             Set<String> seenCallReturns = new LinkedHashSet<>();
             for (JsonObject edge : edges) {
-                String edgeId = string(edge, "id");
                 String source = string(edge, "fromCell");
                 if (!"GUARD".equals(string(edge, "transferKind"))) {
                     String target = string(edge, "toCell");
@@ -1556,9 +1555,6 @@ public final class ConcolicScheduler {
                 site.addProperty("method", method);
                 site.addProperty("local", localCell.group(2));
                 site.addProperty("unitIndex", unitIndex);
-                if (!edgeId.isEmpty()) {
-                    site.addProperty("causalEdgeId", edgeId);
-                }
                 if (source.contains(">.return")) {
                     String returnKey = source + "\n" + method + "#u"
                             + unitIndex + "\n" + localCell.group(2);

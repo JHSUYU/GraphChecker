@@ -67,9 +67,6 @@ public final class BooleanReachConditionExtractor {
         JsonObject report = extract(smt, manifest, solver,
                 arguments.maxInputs, arguments.maxValuations);
         report.add("solverAttempts", solver.attempts());
-        report.add("compositionManifestArtifact",
-                artifact(arguments.manifest));
-        report.add("solverArtifact", solver.artifact());
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(report));
@@ -593,20 +590,17 @@ public final class BooleanReachConditionExtractor {
                 string(evidence, "kind"))
                 && ConcolicSmtComposer.UNSAT_CLOSURE_AUTHORITY.equals(
                 string(evidence, "authority"))
-                && bool(evidence, "guardedReadModelComplete", false)
-                == bool(manifest, "guardedReadModelComplete", false)
-                && bool(evidence, "guardedReadModelComplete", false)
-                && bool(evidence, "producerPathsClosed", false)
+                // The manifest states the guarded-read verdict once; the
+                // remaining components are the closure itself, and their
+                // conjunction is what the evidence used to restate.
+                && bool(manifest, "guardedReadModelComplete", false)
                 && bool(evidence, "targetPathsClosed", false)
-                && bool(evidence, "compositionCoverageClosed", false)
                 && bool(evidence, "finalStatusReady", false)
                 && integer(evidence, "targetCoverageGapCount", -1) == 0
                 && integer(evidence,
                 "compositionCoverageGapCount", -1) == 0
                 && partial != null && partial.isJsonArray()
-                && partial.getAsJsonArray().size() == 0
-                && bool(evidence,
-                ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false);
+                && partial.getAsJsonArray().size() == 0;
     }
 
     private static Discovery discover(String smt,
@@ -760,7 +754,6 @@ public final class BooleanReachConditionExtractor {
     static final class Z3Solver {
         private final Path executable;
         private final long timeoutMillis;
-        private final JsonObject artifact;
         private final JsonArray attempts = new JsonArray();
         private final List<List<String>> casePartitions = new ArrayList<>();
         private final int workers;
@@ -771,7 +764,6 @@ public final class BooleanReachConditionExtractor {
             this.timeoutMillis = Math.max(1L, timeoutMillis);
             this.executable = resolveExecutable(firstNonBlank(executable,
                     "z3"));
-            this.artifact = ArtifactIO.artifact(this.executable);
             this.workers = Math.max(1, workers);
             for (JsonElement element : partitions) {
                 if (!element.isJsonArray()) continue;
@@ -786,10 +778,6 @@ public final class BooleanReachConditionExtractor {
                     casePartitions.add(partition);
                 }
             }
-        }
-
-        JsonObject artifact() {
-            return artifact.deepCopy();
         }
 
         synchronized JsonArray attempts() {

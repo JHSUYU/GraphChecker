@@ -14,9 +14,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.SortedMap;
 import java.util.SortedSet;
-import java.util.TreeMap;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
@@ -110,34 +108,17 @@ public final class TopologyDelta {
     }
 
     private final String iterationId;
-    private final String planDigest;
     private final List<JsonObject> rows = new ArrayList<>();
     private final Set<String> casedOccurrences = new LinkedHashSet<>();
     private final Set<String> observedLocalCases = new LinkedHashSet<>();
     private final Set<String> namedTasks = new LinkedHashSet<>();
 
-    TopologyDelta(String iterationId, Collection<ExecutionTask> planned) {
+    TopologyDelta(String iterationId) {
         if (iterationId == null || iterationId.trim().isEmpty()) {
             throw new IllegalArgumentException(
                     "topology delta iteration id must be non-blank");
         }
-        if (planned == null) {
-            throw new IllegalArgumentException(
-                    "topology delta needs the frozen plan it compares against");
-        }
         this.iterationId = iterationId.trim();
-        this.planDigest = planDigest(planned);
-    }
-
-    /** The frozen plan digest, in taskId order and independent of file order. */
-    static String planDigest(Collection<ExecutionTask> tasks) {
-        SortedMap<String, JsonObject> ordered = new TreeMap<>();
-        for (ExecutionTask task : tasks) {
-            ordered.put(task.taskId(), task.json());
-        }
-        JsonArray canonical = new JsonArray();
-        for (JsonObject row : ordered.values()) canonical.add(row);
-        return CanonicalJson.sha256(canonical);
     }
 
     /**
@@ -166,21 +147,11 @@ public final class TopologyDelta {
         base.addProperty("schemaVersion", SCHEMA_VERSION);
         base.addProperty("kind", ROW_KIND);
         base.addProperty("iterationId", iterationId);
-        base.addProperty("planDigest", planDigest);
         base.addProperty("taskId", task == null
                 ? row.taskId : task.taskId());
         for (String field : IDENTITY_FIELDS) {
             base.add(field, plannedIdentity.get(field));
         }
-        base.addProperty("plannedIdentityDigest",
-                CanonicalJson.sha256(plannedIdentity));
-        base.addProperty("observedIdentityDigest",
-                CanonicalJson.sha256(observedIdentity));
-        base.addProperty("plannedSchemaDigest",
-                CanonicalJson.sha256(plannedSchema));
-        base.addProperty("observedSchemaDigest",
-                CanonicalJson.sha256(observedSchema));
-        base.addProperty("resultLine", row.line + 1);
         // Imported summaries receive this verified identity exactly once in
         // ConcolicSummaryImporter.  Recomputing it here used to re-parse and
         // compare every branch predicate three more times per row.
