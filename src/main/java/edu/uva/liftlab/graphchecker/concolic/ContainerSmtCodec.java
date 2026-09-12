@@ -301,6 +301,34 @@ public final class ContainerSmtCodec {
                 && owner.sort == Sort.INT;
     }
 
+    /**
+     * Whether one container receiver carries identity that runtime evidence,
+     * not this encoder, is the authority for.
+     *
+     * <p>Select-over-store and the size-preserving receiver skip are exact
+     * on a state term this encoder built itself.  Applied to an evidenced
+     * carrier they are still exact in value, but they drop the published
+     * version chain out of the formula: the selected read then stands alone,
+     * constrained by no writer and by none of the carrier's state axioms.
+     * A host answers true here to keep the carrier's own state term - and so
+     * its read-from arms - in the formula the solver sees.</p>
+     */
+    public static boolean evidencedContainerIdentity(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return false;
+        JsonObject node = expression.getAsJsonObject();
+        if (SharedStateEvidence.GUARDED_READ_TYPE.equals(
+                optionalString(node, "_type"))
+                || VmExpressionIr.isConsumerBoundary(node)
+                || VmExpressionIr.isConsumerBoundaryReference(node)
+                || VmExpressionIr.isCanonicalMapStateReference(
+                optionalString(node, "_exp"))) {
+            return true;
+        }
+        // A local mutation inherits the identity of the state it rests on.
+        return EXPRESSION_TYPE.equals(optionalString(node, "_type"))
+                && evidencedContainerIdentity(node.get("receiver"));
+    }
+
     /** Rewrites an indexed read to the element it provably selects. */
     static JsonElement selectedIndexedElement(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) {

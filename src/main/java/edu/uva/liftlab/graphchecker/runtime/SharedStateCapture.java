@@ -554,6 +554,20 @@ final class SharedStateCapture {
     static void selectAccessOwnerSharedCarriers(
             ActiveRegion active, RuntimeTask task, Object owner,
             String fieldSignature, ConsumerAccessAnchor consumer) {
+        if (wholeStateAndPointerCarrier(task.sharedCarriers,
+                fieldSignature)) {
+            // One field is one location.  Selecting it as both a whole
+            // container state and a reference slot publishes two independent
+            // version chains over the same storage - the selection keys carry
+            // the kind, so nothing downstream collapses them - and a reader
+            // would then choose its arm from one of two disjoint candidate
+            // sets.  Refuse rather than double-count.
+            recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
+                    SharedStateEvidence.MISSING_METADATA, "",
+                    fieldSignature + ": declared as both a whole container"
+                            + " state and a reference slot"), null, active);
+            return;
+        }
         Set<String> visited = new LinkedHashSet<>();
         for (SharedCarrierRequest request : task.sharedCarriers) {
             if (!request.matchesAccess(fieldSignature)) continue;
@@ -576,6 +590,28 @@ final class SharedStateCapture {
                         null, active);
             }
         }
+    }
+
+    /**
+     * Whether this task declares one field as both a whole container state
+     * and a reference slot.  An array element declaration is a third, genuinely
+     * separate location and never conflicts.
+     */
+    static boolean wholeStateAndPointerCarrier(
+            List<SharedCarrierRequest> requests, String fieldSignature) {
+        boolean wholeState = false;
+        boolean pointer = false;
+        for (SharedCarrierRequest request : requests) {
+            if (!request.matchesAccess(fieldSignature) || request.element) {
+                continue;
+            }
+            if (request.mapState) {
+                wholeState = true;
+            } else {
+                pointer = true;
+            }
+        }
+        return wholeState && pointer;
     }
 
     /** One stable region-local consumer access, independent of object ids. */

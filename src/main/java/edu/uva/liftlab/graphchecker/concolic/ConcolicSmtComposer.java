@@ -3328,6 +3328,14 @@ public final class ConcolicSmtComposer {
                 }
 
                 @Override
+                public boolean preserveContainerIdentity(
+                        JsonElement expression,
+                        ContainerSmtCodec.Sort expected) {
+                    return ContainerSmtCodec
+                            .evidencedContainerIdentity(expression);
+                }
+
+                @Override
                 public ContainerSmtCodec.Term operand(
                         JsonElement expression,
                         ContainerSmtCodec.Sort expected) {

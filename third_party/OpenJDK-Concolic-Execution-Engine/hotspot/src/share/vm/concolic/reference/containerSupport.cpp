@@ -10,6 +10,9 @@
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/reference/symbolicArray.hpp"
+#include "concolic/reference/symbolicList.hpp"
+#include "concolic/reference/symbolicMap.hpp"
+#include "concolic/reference/symbolicSet.hpp"
 #include "concolic/reference/symbolicString.hpp"
 
 #include <stdio.h>
@@ -131,6 +134,18 @@ std::string ContainerSupport::unsupported(const char *category,
 // ---------------------------------------------------------------------------
 // Selected whole-container state.
 // ---------------------------------------------------------------------------
+
+bool ContainerSupport::whole_state_selectable(oop container) {
+  if (container == NULL || container->is_array()) return false;
+  if (shape(container) == NULL) return false;
+  if (container->klass() == NULL || container->klass()->name() == NULL) {
+    return false;
+  }
+  ResourceMark rm;
+  const std::string name(container->klass()->name()->as_C_string());
+  return SymList::target(name) || SymMap::target(name)
+      || SymSet::target(name);
+}
 
 SharedFieldVersions::Location ContainerSupport::state_location(oop container) {
   SharedFieldVersions::Location location;

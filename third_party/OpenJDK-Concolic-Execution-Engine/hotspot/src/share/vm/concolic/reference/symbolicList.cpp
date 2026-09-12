@@ -71,6 +71,8 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
     }
     if ((callee_name == "add" || callee_name == "set")
         && !ContainerSupport::indexed(receiver)) {
+      ContainerSupport::mark_state_gap(
+          receiver, "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
       ConcolicMngr::ctx->abort_symbolic_execution(
           "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
       return false;
@@ -85,6 +87,12 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   if (ContainerSupport::claims_state(handle)
       && !ContainerSupport::follows_callee_body(callee_name)) {
+    // A selected list is shared, so this thread's abort is not the whole
+    // cost: an operation nobody modeled may have changed a state that other
+    // regions still read.  Mark the location before failing closed, so later
+    // queries cannot treat the retained writer set as complete.
+    ContainerSupport::mark_state_gap(
+        handle.get_param<oop>(0), "INDEXED_OPERATION_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
         "INDEXED_OPERATION_UNSUPPORTED", handle).c_str());
   }
@@ -184,6 +192,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     arguments.push_back(parameters[index]);
   }
   if (!root_container && (method == "add" || method == "set")) {
+    ContainerSupport::mark_state_gap(
+        receiver_object, "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(
         "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
     return NULL;
@@ -201,6 +211,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "INDEXED", operation, receiver, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, operation);
     return handle.get_result_type() == T_BOOLEAN
         ? (Expression *)new ConExpression((jboolean)true) : NULL;
   }
@@ -222,6 +233,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "INDEXED", "WRITE", receiver, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, "WRITE");
     return old;
   }
   if (method == "remove" && root_container && arguments.size() == 1) {
@@ -244,8 +256,15 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
       Expression *next = new ContainerExpression(
           "INDEXED", "REMOVE", receiver, arguments);
       ConcolicMngr::ctx->set_container_state(receiver_object, next);
+      ContainerSupport::publish_state(receiver_object, next, "REMOVE");
       return old;
     }
+    // remove(Object) has no indexed relation: the position it removed is not
+    // recoverable from the argument.  It ran concretely, so a selected list
+    // has a writer no later read can name - say so permanently before failing
+    // closed, since this thread's abort ends only this path condition.
+    ContainerSupport::mark_state_gap(
+        receiver_object, "INDEXED_REMOVE_OBJECT_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(
         "INDEXED_REMOVE_OBJECT_UNSUPPORTED");
     return NULL;
@@ -275,12 +294,14 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "INDEXED", "REMOVE", receiver, first);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, "REMOVE");
     return old;
   }
   if (method == "clear" && root_container) {
     Expression *next = new ContainerExpression(
         "INDEXED", "CLEAR", receiver, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    ContainerSupport::publish_state(receiver_object, next, "CLEAR");
     return NULL;
   }
   if (method == "remove" && !root_container && arguments.empty()) {
@@ -289,6 +310,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *root = ConcolicMngr::ctx->container_state(
         receiver_object, "INDEXED");
     if (root == NULL || position < 0) {
+      ContainerSupport::mark_state_gap(
+          receiver_object, "INDEXED_ITERATOR_REMOVE_WITHOUT_NEXT");
       ConcolicMngr::ctx->abort_symbolic_execution(
           "INDEXED_ITERATOR_REMOVE_WITHOUT_NEXT");
       return NULL;
@@ -298,6 +321,9 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *next = new ContainerExpression(
         "INDEXED", "REMOVE", root, remove_arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
+    // The receiver is the cursor, not the list; state_location canonicalizes
+    // it to the list it walks, so this is a version of that one location.
+    ContainerSupport::publish_state(receiver_object, next, "REMOVE");
     return NULL;
   }
 
@@ -315,6 +341,8 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
         "INDEXED", receiver, arguments[0]);
   }
   if (method == "remove" && !root_container) {
+    ContainerSupport::mark_state_gap(
+        receiver_object, "ITERATOR_REMOVE_UNSUPPORTED");
     ConcolicMngr::ctx->abort_symbolic_execution(
         "ITERATOR_REMOVE_UNSUPPORTED");
     return NULL;
@@ -360,11 +388,44 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
       ? handle.get_result<oop>(T_OBJECT) : NULL;
   BasicType result_type = ContainerSupport::result_type(
       result_object, handle.get_result_type());
-  Expression *result = new ContainerExpression(
-      "INDEXED", operation, receiver, arguments, result_type,
-      ContainerSupport::java_type(result_object,
-                                  handle.get_result_type()));
-  if (method != "iterator" && method != "listIterator") {
+  const std::string result_java_type = ContainerSupport::java_type(
+      result_object, handle.get_result_type());
+
+  Expression *result = NULL;
+  // Every observation of a selected root list binds to the state it may have
+  // observed rather than to whichever state happens to be installed when the
+  // helper finishes.  A cursor is an observation too: iterator() inherits the
+  // guarded writer choice made here, so the traversal that follows walks the
+  // chosen writer's state instead of an unversioned last state - which is the
+  // whole point for a size read that is really a traversal count.
+  bool observation_admitted = true;
+  bool selected_without_value = false;
+  bool root_observation = root_container
+      && (method == "get" || method == "contains"
+          || method == "size" || method == "isEmpty"
+          || method == "peek" || method == "element"
+          || method == "iterator" || method == "listIterator");
+  if (root_observation) {
+    ContainerSupport::StateQuery bound = ContainerSupport::query_state(
+        receiver_object, "INDEXED", operation, arguments,
+        result_type, result_java_type);
+    if (bound.expression != NULL) {
+      result = bound.expression;
+      // A guarded writer choice must not be constrained to the concrete value
+      // this replay happened to return; that would pin the read to one writer.
+      observation_admitted = false;
+    } else if (bound.selected) {
+      selected_without_value = true;
+    }
+  }
+  if (result == NULL && !selected_without_value) {
+    result = new ContainerExpression(
+        "INDEXED", operation, receiver, arguments, result_type,
+        result_java_type);
+  }
+  if (result == NULL) return NULL;
+  if (observation_admitted
+      && method != "iterator" && method != "listIterator") {
     ContainerSupport::constrain_result(handle, result);
   }
   if (result_object != NULL) {

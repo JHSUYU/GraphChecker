@@ -22,6 +22,7 @@ import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
@@ -1433,7 +1434,7 @@ final class RuntimeRegionPlanner {
                 .javaTypeDescriptor(field.type());
         if (descriptor.isEmpty()) return;
         Map<String, Object> carrier = object(
-                "kind", mapCarrierType(field.type())
+                "kind", JavaContainerTypes.wholeStateCarrierType(field.type())
                         ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
                         : "DECLARED_FIELD",
                 "declaringClass", field.owner(),
@@ -1451,13 +1452,6 @@ final class RuntimeRegionPlanner {
         if (field.isEmpty()) return "";
         return stringValue(carrier.get("kind")) + "\n" + field + ":"
                 + stringValue(carrier.get("descriptor"));
-    }
-
-    private static boolean mapCarrierType(String javaType) {
-        String type = stringValue(javaType);
-        return "java.util.Map".equals(type)
-                || "java.util.HashMap".equals(type)
-                || "java.util.LinkedHashMap".equals(type);
     }
 
     /** The refined protocol row as the composition gate reads it, before the

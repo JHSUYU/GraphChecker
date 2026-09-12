@@ -112,8 +112,21 @@ public final class InitialContainerObservation {
                     || "REMOVE_IF".equals(operation)
                     || "CLEAR".equals(operation)
                     || "REMOVE_AT".equals(operation));
+            // The indexed mutations, which are the exact vocabulary the
+            // container algebra publishes for an indexed whole-state carrier.
+            // Without them the first add or remove on a selected List ends
+            // the walk, so every traversal read of it stops being an initial
+            // observation and cannot be replayed.
+            boolean indexedMutation = "INDEXED".equals(shape)
+                    && ("APPEND".equals(operation)
+                    || "INSERT".equals(operation)
+                    || "REMOVE".equals(operation)
+                    || "WRITE".equals(operation)
+                    || "CLEAR".equals(operation));
             if (!"ITERATOR".equals(operation)
                     && !associativeMutation
+                    && !indexedMutation
+                    && !"SNAPSHOT_BASE".equals(operation)
                     && !(allowView && ("KEY_VIEW".equals(operation)
                     || "VALUE_VIEW".equals(operation)))) {
                 return new JsonObject();

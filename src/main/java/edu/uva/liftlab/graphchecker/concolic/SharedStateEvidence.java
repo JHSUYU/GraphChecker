@@ -141,17 +141,19 @@ public final class SharedStateEvidence {
      * the operations are the ones the container support publishes -
      * {@code PUT}, {@code REMOVE}, {@code REMOVE_IF}, {@code CLEAR},
      * {@code REMOVE_AT} and {@code CLEAR_VIEW} for a map, {@code ADD},
-     * {@code REMOVE} and {@code CLEAR} for a set.  An operation missing here
-     * is not a tolerated unknown: one unadmitted version fails the whole
-     * envelope, so the location loses every version it published and each
-     * read of it reaches the formula with no read-from arm.
+     * {@code REMOVE} and {@code CLEAR} for a set, and {@code APPEND},
+     * {@code INSERT}, {@code WRITE}, {@code REMOVE} and {@code CLEAR} for an
+     * indexed container.  An operation missing here is not a tolerated
+     * unknown: one unadmitted version fails the whole envelope, so the
+     * location loses every version it published and each read of it reaches
+     * the formula with no read-from arm.
      * {@code REMOVE_IF} represents an iterator removal controlled by a
      * recorded branch predicate.</p>
      */
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
             "RMW", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
             "STATE_CLEAR", "STATE_REMOVE_AT", "STATE_CLEAR_VIEW",
-            "STATE_ADD");
+            "STATE_ADD", "STATE_APPEND", "STATE_INSERT", "STATE_WRITE");
     /** The version kind every location may publish, whatever its shape. */
     private static final String INITIAL_VERSION_KIND = "INITIAL";
     private SharedStateEvidence() {
@@ -319,6 +321,23 @@ public final class SharedStateEvidence {
         } catch (NumberFormatException invalid) {
             return 0L;
         }
+    }
+
+    /**
+     * Whether one expression node is the STATE root of a container whose
+     * whole state a carrier versions.
+     *
+     * <p>Both whole-state shapes answer yes.  An indexed root that answered
+     * no would keep its session-local symbol instead of the content address
+     * runtime carrier evidence gives it, and one logical container would
+     * then be a different witness in every replay session.</p>
+     */
+    public static boolean isWholeStateRoot(JsonObject node) {
+        if (node == null) return false;
+        String shape = optionalString(node, "shape");
+        return "ContainerRelation".equals(optionalString(node, "_type"))
+                && "STATE".equals(optionalString(node, "operation"))
+                && ("ASSOCIATIVE".equals(shape) || "INDEXED".equals(shape));
     }
 
     /** Whether {@code locationKey} names one selected map's whole state. */
@@ -658,9 +677,7 @@ public final class SharedStateEvidence {
                 continue;
             }
             JsonObject node = current.getAsJsonObject();
-            if ("ContainerRelation".equals(optionalString(node, "_type"))
-                    && "ASSOCIATIVE".equals(optionalString(node, "shape"))
-                    && "STATE".equals(optionalString(node, "operation"))) {
+            if (isWholeStateRoot(node)) {
                 JsonObject receiver = object(node, "receiver");
                 if ("SymbolExpression".equals(
                         optionalString(receiver, "_type"))) {

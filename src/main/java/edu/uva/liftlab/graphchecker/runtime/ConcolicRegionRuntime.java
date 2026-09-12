@@ -1473,7 +1473,7 @@ public final class ConcolicRegionRuntime {
                 if ("OBSERVED_FIELD_RECEIVER".equals(action.rootKind)
                         && "BOUNDED_CONTAINER_STATE".equals(
                         action.symbolicDemand)
-                        && value instanceof Map<?, ?>) {
+                        && wholeStateContainerValue(value)) {
                     // The runtime trace selected this exact access site and
                     // supplied the actual declaring-field receiver.
                     selectSharedMapCarrier(value,
@@ -1587,6 +1587,7 @@ public final class ConcolicRegionRuntime {
      * same-named receiver - taken one bytecode earlier, so the store's own
      * {@code putfield} publishes the writer's expression as a {@code WRITE}
      * version over a pre-write initial.</p>
+     *
      */
     public static void selectFieldWriteCarrier(Object owner,
                                                String fieldSignature) {
@@ -4031,6 +4032,23 @@ public final class ConcolicRegionRuntime {
         return true;
     }
 
+    /**
+     * Whether a live value is a container whose whole state one carrier can
+     * select, rather than a reference slot.
+     *
+     * <p>An array is excluded: its elements already have their own element
+     * locations, and selecting the array whole would name the same storage
+     * twice.  A set is excluded because no carrier this build declares
+     * versions one whole.</p>
+     */
+    private static boolean wholeStateContainerValue(Object value) {
+        return value != null && !value.getClass().isArray()
+                && (value instanceof Map<?, ?>
+                || value instanceof List<?>
+                || value instanceof Deque<?>
+                || value instanceof java.util.Queue<?>);
+    }
+
     private static boolean containerValue(Object value) {
         return value != null && (value.getClass().isArray()
                 || value instanceof Map<?, ?>
@@ -4890,6 +4908,7 @@ public final class ConcolicRegionRuntime {
             return observe("FIELD\u0000"
                     + SiteId.render(method, unitIndex));
         }
+
 
         private int observe(String key) {
             int occurrence = observed(key) + 1;

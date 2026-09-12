@@ -871,19 +871,26 @@ jlong ConcolicMngr::selectSharedMapCarrier(Handle map) {
   }
   if (map.is_null()) return SharedFieldVersions::SELECT_MISSING_METADATA;
   oop target = map();
-  if (!ContainerSupport::associative(target)) {
-    // Only the associative shape has the whole-state algebra this location
-    // kind resolves over.  Anything else is refused by name rather than
-    // selected and silently never versioned.
+  // Either whole-state algebra this location kind resolves over will do: an
+  // indexed container's state answers APPEND/INSERT/WRITE/REMOVE/CLEAR
+  // exactly as an associative one answers PUT/REMOVE/CLEAR, and both address
+  // the one SLOT_WHOLE_STATE slot.  What is refused is a container whose
+  // mutations no model intercepts, which would be selected and then silently
+  // never versioned.
+  if (!ContainerSupport::whole_state_selectable(target)) {
     return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
   }
 
-  // Forcing the state root is what makes the map addressable at all: it mints
-  // the container shadow the location's owner id is taken from, and it is also
-  // the INITIAL version's value, so "the state this map started in" is an
-  // ordinary candidate rather than a hole.  Built here, outside every version
-  // lock, exactly as the scalar path builds its initial expression.
-  Expression *root = ctx->container_state(target, "ASSOCIATIVE");
+  // Forcing the state root is what makes the container addressable at all: it
+  // mints the container shadow the location's owner id is taken from, and it
+  // is also the INITIAL version's value, so "the state this container started
+  // in" is an ordinary candidate rather than a hole.  Built here, outside
+  // every version lock, exactly as the scalar path builds its initial
+  // expression.  The shape is the container's own, never a literal: rooting
+  // an indexed container under the associative algebra would give it a state
+  // no later mutation of it can extend.
+  Expression *root = ctx->container_state(
+      target, ContainerSupport::shape(target));
   if (root == NULL) return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
 
   SharedFieldVersions::Location location =
