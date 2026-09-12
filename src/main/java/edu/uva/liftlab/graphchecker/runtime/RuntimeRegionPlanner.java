@@ -528,6 +528,7 @@ final class RuntimeRegionPlanner {
         activation.put("threadId", root.tid);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
+        putRecordedTraceIds(activation, root);
         activation.put("callIds", new ArrayList<>(calls));
         activation.put("observedMethods", new ArrayList<>(observed));
         activation.put(
@@ -1944,8 +1945,10 @@ final class RuntimeRegionPlanner {
     private static void putTraceContext(Map<String, Object> target,
                                         MethodEvent event) {
         putTraceContext(target, event, source(event));
+        putRecordedTraceIds(target, event);
     }
 
+    /** The semantic source and request this row belongs to. */
     private static void putTraceContext(Map<String, Object> target,
                                         MethodEvent event,
                                         SourceRef resolved) {
@@ -1961,6 +1964,23 @@ final class RuntimeRegionPlanner {
         if (!event.requestApi.isEmpty()) {
             target.put("requestApi", event.requestApi);
         }
+    }
+
+    /**
+     * The recorded lane and span this frame ran in.
+     *
+     * <p>These are one recording's own trace ids: consecutive tickets from
+     * {@code RuntimeTraceContext}'s process-global counter, so their values
+     * depend on how many requests, spans and threads happened to be
+     * allocated first.  They address a row of {@code runtime_trace.jsonl} in
+     * the recording that minted them, which is exactly the scope the
+     * activation seeds need them in -- {@link
+     * #bindObservedCommunicationCaptures} pairs a protocol event with its
+     * activation by lane.  They say nothing outside it, so a frozen plan,
+     * which is compared across recordings, does not carry them.</p>
+     */
+    private static void putRecordedTraceIds(Map<String, Object> target,
+                                            MethodEvent event) {
         if (event.laneId > 0L) target.put("laneId", event.laneId);
         if (event.spanId > 0L) target.put("spanId", event.spanId);
         if (event.parentSpanId > 0L) {
