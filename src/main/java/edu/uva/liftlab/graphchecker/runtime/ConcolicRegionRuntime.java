@@ -1185,7 +1185,10 @@ public final class ConcolicRegionRuntime {
         return left == null ? right == null : left.equals(right);
     }
 
-    /** Called once per Java argument immediately after {@link #enterRegion}. */
+    /**
+     * Called once per Java argument immediately after
+     * {@link #enterRegionFrame}.
+     */
     public static void symbolizeArgument(long token, int argumentIndex,
                                          Object value, String primitiveValue) {
         ActiveRegion active = ownerRegion(token);
@@ -1784,6 +1787,10 @@ public final class ConcolicRegionRuntime {
      * propagated expression keeps it - {@code SymInstance::has_sym_exp} makes
      * the mint a no-op - and the published row says {@code reused}.  Manual
      * input is only WHICH FIELDS, never which occurrence of one.</p>
+     *
+     * <p>Called from outside this repository: the workload checkouts invoke it
+     * directly from {@code org.apache.hadoop.ipc.CausynthSymbolicSource}, and
+     * it is the only symbolic root of HDFS-17960.</p>
      */
     public static boolean symbolizeConfiguredSourceField(
             String sourceId, Object owner, String fieldSignature) {
