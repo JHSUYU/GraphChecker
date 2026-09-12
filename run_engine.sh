@@ -2077,6 +2077,23 @@ campaign_record_exploration() {
 
 # One obligation: solve the flip, replay it in its own fresh workload instance,
 # strictly import the result, and admit it only against its own planned task.
+# The terminal record for an obligation that was solved, replayed and
+# imported: which planned task it belongs to, stamped with the query it
+# answers.  Whether the imported case is admissible is the importer's
+# decision and is already in its artifacts.  An empty PRIMARY selection is
+# refused rather than published as a record of nulls.
+campaign_publish_primary_record() {
+  local task_plan=$1 key=$2 out=$3
+  jq -e -c -s --arg key "${key}" '
+    map(select(.linkedReplayRole == "PRIMARY")) | .[0]
+    | select(. != null)
+    | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
+     regionId, taskId, occurrenceId, goalId,
+     familySnapshotDigest, topologyEpoch,
+     status: "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"}
+    ' "${task_plan}" >"${out}"
+}
+
 campaign_worker_task() {
   local query_key=$1 worklist=$2 tasks=$3 classes=$4 worker=$5 iteration_id=$6
   local outcome replay_tasks primary_replay_task reason status=0
@@ -2158,7 +2175,8 @@ campaign_worker_task() {
   # than counting the primaries again.
   primary_replay_task=$(jq -e -r -s '
     map(select(.linkedReplayRole == "PRIMARY")) | .[0].taskId
-    ' "${worker}/execution_task_plan.jsonl")
+    ' "${worker}/execution_task_plan.jsonl") \
+    || die "the linked replay plan for ${query_key} names no PRIMARY task"
   if ! jq -e -s --arg task "${primary_replay_task}" \
       'any(.[]; .taskId == $task)' "${imported}" >/dev/null; then
     campaign_record_exploration "${worker}" "${query_key}" \
@@ -2167,17 +2185,9 @@ campaign_worker_task() {
     campaign_log "flip ${query_key}: primary case was not admitted"
     return 0
   fi
-  # The record states that this obligation was solved, replayed and imported,
-  # and which planned task it belongs to. Whether the imported case is
-  # admissible is the importer's decision and is already in its artifacts.
-  jq -c -s --arg key "${query_key}" '
-    map(select(.linkedReplayRole == "PRIMARY")) | .[0]
-    | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-     regionId, taskId, occurrenceId, goalId,
-     familySnapshotDigest, topologyEpoch,
-     status: "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"}
-    ' "${worker}/execution_task_plan.jsonl" \
-    >"${worker}/exploration_record.jsonl"
+  campaign_publish_primary_record "${worker}/execution_task_plan.jsonl" \
+    "${query_key}" "${worker}/exploration_record.jsonl" \
+    || die "the linked replay plan for ${query_key} names no PRIMARY task to record"
   require_nonempty "path exploration record" \
     "${worker}/exploration_record.jsonl"
 }

@@ -257,4 +257,28 @@ campaign_record_exploration "${record_worker}" k "t1,t2" \
   || fail "the exploration record is not the bytes it used to be: \
 $(cat "${record_worker}/exploration_record.jsonl")"
 
+# A replay plan with no PRIMARY row publishes no exploration record at all,
+# rather than a record whose every planned field is null.
+primary_root="${test_tmp}/primary-record"
+mkdir -p "${primary_root}"
+primary_plan="${primary_root}/execution_task_plan.jsonl"
+primary_record="${primary_root}/exploration_record.jsonl"
+printf '%s\n' '{"taskId":"t1","linkedReplayRole":"COMPANION"}' \
+  >"${primary_plan}"
+( campaign_publish_primary_record "${primary_plan}" k "${primary_record}" ) \
+  && fail "an exploration record was published without a PRIMARY task"
+[[ ! -s "${primary_record}" ]] \
+  || fail "a PRIMARY-less replay plan published a record: \
+$(cat "${primary_record}")"
+printf '%s\n' '{"taskId":"t2","linkedReplayRole":"PRIMARY","regionId":"R",
+  "occurrenceId":"R#a1","goalId":"g","familySnapshotDigest":"d",
+  "topologyEpoch":"e"}' >>"${primary_plan}"
+campaign_publish_primary_record "${primary_plan}" k "${primary_record}" \
+  || fail "the PRIMARY replay task published no exploration record"
+jq -e '.taskId == "t2" and .queryKey == "k"
+  and .status == "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"' \
+  "${primary_record}" >/dev/null \
+  || fail "the exploration record does not name the PRIMARY task: \
+$(cat "${primary_record}")"
+
 echo "run_engine campaign helper tests passed"
