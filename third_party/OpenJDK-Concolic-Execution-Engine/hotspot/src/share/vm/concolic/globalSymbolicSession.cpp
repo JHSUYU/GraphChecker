@@ -115,7 +115,14 @@ void GlobalSymbolicSession::record_expression(Expression *expression) {
 }
 
 uint GlobalSymbolicSession::next_expression_id() {
-  return (uint) Atomic::add_ptr((intptr_t) 1, &_next_expression_id);
+  intptr_t next = Atomic::add_ptr((intptr_t) 1, &_next_expression_id);
+  // Expression::_unique_id is a uint and the artifact table is keyed by it, so
+  // narrowing a wider counter here would silently alias two live nodes onto
+  // one id and every vmExpressionTable reference naming them would resolve to
+  // the wrong node.  Refuse rather than alias.
+  guarantee(next > 0 && (uintptr_t) next <= (uintptr_t) max_juint,
+            "expression id exceeded UINT_MAX");
+  return (uint) next;
 }
 
 jlong GlobalSymbolicSession::next_event_id() {
@@ -124,7 +131,11 @@ jlong GlobalSymbolicSession::next_event_id() {
 
 sym_rid_t GlobalSymbolicSession::next_sym_rid() {
   intptr_t next = Atomic::add_ptr((intptr_t) 1, &_next_sym_rid);
-  guarantee(next < MAX_SYM_RID, "sym_rid limitted");
+  // The id is stored in a full-width sym_rid_t header word, so the bound is
+  // the counter's own positive range rather than an arbitrary small cap.  A
+  // wrap would hand two live objects the same shadow identity, which no later
+  // stage can detect, so it is the one thing worth refusing.
+  guarantee(next > 0, "sym_rid counter wrapped");
   return (sym_rid_t) next;
 }
 

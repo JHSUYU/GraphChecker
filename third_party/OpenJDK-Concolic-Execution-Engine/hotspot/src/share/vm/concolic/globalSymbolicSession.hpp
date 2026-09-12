@@ -60,7 +60,7 @@ class SessionSymbolicHeap;
  * sym_rid values are minted from one session-wide atomic counter, so two
  * threads can allocate object shadows at the same time without aliasing each
  * other's ids in the shared oop header word.  The counter restarts per
- * session, which is what keeps MAX_SYM_RID meaningful across a long-running
+ * session, which is what keeps the minted range small across a long-running
  * JVM; close() therefore clears the header word on every surviving object so
  * no stale id from this session can be read as an id of the next one.
  *
