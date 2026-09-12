@@ -254,9 +254,17 @@ public final class ConcolicSmtComposer {
         emitter.finishGuardedReadSelections();
         // Before finish(): an unbound handoff is a refusal, and a refusal has
         // to reach the emitted formula's fail-closed marker too.
+        JsonObject guardedReads = emitter.guardedReadModel();
+        // The same join the gate makes: a declared flow whose value left the
+        // wire on arrival is carried by the field its consumer assigned it
+        // to, so a read of that field is the term the wire's value reaches.
         JsonArray wireFlowBindings = emitter.wireFlowBindings(
                 propagation.caseDependencies(),
-                declaredWireFlowPorts(runtimePlan.plans()));
+                declaredWireFlowPorts(runtimePlan.plans()),
+                ClaimPolicy.WireFlowEvidence.read(arguments.mappings, "")
+                        .consumerFieldsByPortSuffix(),
+                ClaimPolicy.guardedReadFields(guardedReadCarrier(
+                        guardedReads)));
         emitter.finish();
         String composedSmt = emitter.render();
 
@@ -285,7 +293,7 @@ public final class ConcolicSmtComposer {
                 emitter.manualSourceMaterializationLedger());
         manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
                 loops.manifest());
-        manifest.add("guardedReadModel", emitter.guardedReadModel());
+        manifest.add("guardedReadModel", guardedReads);
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
         manifest.add(RECORDED_ROOT_VALUES,
@@ -962,6 +970,13 @@ public final class ConcolicSmtComposer {
         }
     }
 
+    /** Wraps the model so the gate's own field reader can walk it. */
+    private static JsonObject guardedReadCarrier(JsonObject guardedReads) {
+        JsonObject carrier = new JsonObject();
+        carrier.add("guardedReadModel", guardedReads);
+        return carrier;
+    }
+
     /**
      * Whether a boundary family that reached no term is this composition's
      * problem or somebody else's region.
@@ -976,6 +991,25 @@ public final class ConcolicSmtComposer {
     static boolean wireFlowRefusable(boolean referenced, boolean bound,
                                      boolean declared) {
         return !bound && (referenced || declared);
+    }
+
+    /**
+     * The field declared for the flow this port carries.
+     *
+     * <p>A port is spelled {@code XCH.<site>.<req|resp>.<flow>} and the
+     * mapping keys its field by the flow id, so the join is on the suffix.
+     */
+    static String consumerFieldOf(String portId,
+                                  Map<String, String> consumerFields) {
+        if (portId == null || portId.isEmpty() || consumerFields == null) {
+            return "";
+        }
+        for (Map.Entry<String, String> declared : consumerFields.entrySet()) {
+            if (portId.endsWith("." + declared.getKey())) {
+                return firstNonBlank(declared.getValue());
+            }
+        }
+        return "";
     }
 
     /**
@@ -1794,7 +1828,9 @@ public final class ConcolicSmtComposer {
          * consumer's own read is free.</p>
          */
         private JsonArray wireFlowBindings(JsonArray dependencies,
-                                           Set<String> declaredPorts) {
+                                           Set<String> declaredPorts,
+                                           Map<String, String> consumerFields,
+                                           Set<String> readFields) {
             Map<String, JsonObject> byFamily = new LinkedHashMap<>();
             for (JsonElement element : dependencies) {
                 if (!element.isJsonObject()) continue;
@@ -1841,7 +1877,15 @@ public final class ConcolicSmtComposer {
                 String port = boundaryPortsByFamily.getOrDefault(
                         familyKey, "");
                 boolean declared = declaredPorts.contains(port);
+                String consumerField = consumerFieldOf(port, consumerFields);
+                boolean fieldRead = !consumerField.isEmpty()
+                        && readFields.contains(consumerField);
                 row.addProperty("declaredWireFlow", declared);
+                if (!consumerField.isEmpty()) {
+                    row.addProperty(ClaimPolicy.CONSUMER_FIELD,
+                            consumerField);
+                    row.addProperty("consumerFieldRead", fieldRead);
+                }
                 if (!referenced) {
                     row.addProperty("reason",
                             CONSUMER_BOUNDARY_FAMILY_UNREFERENCED);
@@ -1854,7 +1898,8 @@ public final class ConcolicSmtComposer {
                 // construction, so nothing referring to it is the same hole
                 // as a referenced family that reached no term: either way the
                 // value the wire carried constrains nothing, silently.
-                if (wireFlowRefusable(referenced, bound, declared)) {
+                if (wireFlowRefusable(referenced, bound, declared)
+                        && !fieldRead) {
                     refuse(WIRE_FLOW_VALUE_UNBOUND + "["
                                     + firstNonBlank(boundaryPortsByFamily
                                     .get(familyKey), familyKey) + "]",
@@ -5645,6 +5690,7 @@ public final class ConcolicSmtComposer {
         private Path runtimePlan;
         private String fatalRegion = "";
         private String occurrenceId = "";
+        private String mappings = "";
         private long clockSkewMillis =
                 ClockRootPhysics.DEFAULT_SKEW_MILLIS;
 
@@ -5673,6 +5719,8 @@ public final class ConcolicSmtComposer {
                     result.fatalRegion = firstNonBlank(value);
                 } else if ("occurrence-id".equals(key)) {
                     result.occurrenceId = firstNonBlank(value);
+                } else if ("mappings".equals(key)) {
+                    result.mappings = firstNonBlank(value);
                 } else if ("clock-skew-ms".equals(key)) {
                     result.clockSkewMillis = Long.parseLong(value);
                     if (result.clockSkewMillis < 0L) {

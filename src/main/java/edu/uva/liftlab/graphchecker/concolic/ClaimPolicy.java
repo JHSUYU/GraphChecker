@@ -89,6 +89,12 @@ public final class ClaimPolicy {
      * The witness reads the fatal value out of an initial container state the
      * composition reported it could not reconstruct.
      */
+    /** The mapping field naming where a flow's value lands on arrival. */
+    public static final String CONSUMER_FIELD = "consumerField";
+    /** The wire's own boundary family reached a term. */
+    static final String PORT_FAMILY = "PORT_FAMILY";
+    /** The field the consumer assigned it to is read in the formula. */
+    static final String CONSUMER_FIELD_READ = "CONSUMER_FIELD_READ";
     static final String UNDETERMINED_INITIAL_STATE =
             "UNDETERMINED_INITIAL_STATE";
     /** The solver returned neither sat nor unsat on an enumerated valuation. */
@@ -182,13 +188,24 @@ public final class ClaimPolicy {
         private final List<String> declared;
         private final Map<String, Set<String>> consumerRegions;
         private final Map<String, Set<String>> producerRegions;
+        /** The field each flow's consumer assigns what it received to. */
+        private final Map<String, String> consumerFields;
 
         private WireFlowEvidence(List<String> declared,
                                  Map<String, Set<String>> consumerRegions,
                                  Map<String, Set<String>> producerRegions) {
+            this(declared, consumerRegions, producerRegions,
+                    new LinkedHashMap<String, String>());
+        }
+
+        private WireFlowEvidence(List<String> declared,
+                                 Map<String, Set<String>> consumerRegions,
+                                 Map<String, Set<String>> producerRegions,
+                                 Map<String, String> consumerFields) {
             this.declared = Collections.unmodifiableList(declared);
             this.consumerRegions = consumerRegions;
             this.producerRegions = producerRegions;
+            this.consumerFields = consumerFields;
         }
 
         /** An experiment that declares no cross-node flow. */
@@ -215,19 +232,42 @@ public final class ClaimPolicy {
         public static WireFlowEvidence read(String mappings, String plan)
                 throws IOException {
             List<String> declared = new ArrayList<>();
+            Map<String, String> fields = new LinkedHashMap<>();
             for (JsonObject row : rows(mappings)) {
                 String id = optionalString(row, "id");
-                if (WIRE_FLOW_KIND.equals(optionalString(row, "kind"))
-                        && !id.isEmpty() && !declared.contains(id)) {
-                    declared.add(id);
+                if (!WIRE_FLOW_KIND.equals(optionalString(row, "kind"))
+                        || id.isEmpty()) {
+                    continue;
                 }
+                if (!declared.contains(id)) declared.add(id);
+                String field = consumerField(row);
+                if (!field.isEmpty()) fields.putIfAbsent(id, field);
             }
             Map<String, Set<String>> consumers = new LinkedHashMap<>();
             Map<String, Set<String>> producers = new LinkedHashMap<>();
             for (JsonObject row : rows(plan)) {
                 collectHandoffs(row, "", consumers, producers);
             }
-            return new WireFlowEvidence(declared, consumers, producers);
+            return new WireFlowEvidence(declared, consumers, producers,
+                    fields);
+        }
+
+        /**
+         * The field this flow's consumer assigns the received value to.
+         *
+         * <p>Declared on the mapping's consumer, because only the experiment
+         * knows it: a wire value does not have to stay a wire value once it
+         * lands. {@code PBHelper.convert(BlockKeyProto)} reads the expiry
+         * date off the proto and hands it to a {@code BlockKey}, after which
+         * the DataNode reads {@code DelegationKey#expiryDate} and never the
+         * port again. The field is named as the guarded-read model names it,
+         * by the class that declares it.</p>
+         */
+        private static String consumerField(JsonObject flow) {
+            String direct = optionalString(flow, CONSUMER_FIELD);
+            return direct.isEmpty()
+                    ? optionalString(object(flow, "consumer"), "field")
+                    : direct;
         }
 
         private static List<JsonObject> rows(String path) throws IOException {
@@ -317,21 +357,45 @@ public final class ClaimPolicy {
          * realized while all eight of its families were unreferenced and no
          * term carried the wire's value.</p>
          */
-        List<String> unrealized(List<BoundFamily> ledger) {
+        List<String> unrealized(List<BoundFamily> ledger,
+                                Set<String> readFields) {
             List<String> missing = new ArrayList<>();
             for (String flow : declared) {
-                if (!realized(flow, ledger)) missing.add(flow);
+                if (realizedBy(flow, ledger, readFields).isEmpty()) {
+                    missing.add(flow);
+                }
             }
             return missing;
         }
 
-        private boolean realized(String flow, List<BoundFamily> ledger) {
+        /**
+         * How this composition made the flow's value constrain the formula,
+         * or "" if it did not.
+         *
+         * <p>Two routes reach the same place. The wire's own boundary family
+         * may be lowered into a term, which is the direct one. Or the value
+         * may leave the wire on arrival -- the consumer assigns it to a field
+         * and everything downstream reads that field -- in which case a
+         * guarded read of that field is the term the wire's value ends up in,
+         * and asking for the port's family instead asks for a term nobody was
+         * ever going to build. The port route is reported first when both
+         * hold, because it is the stronger statement.</p>
+         */
+        String realizedBy(String flow, List<BoundFamily> ledger,
+                          Set<String> readFields) {
             for (BoundFamily family : ledger) {
                 if (family.bound && namesFlow(family.portId, flow)) {
-                    return true;
+                    return PORT_FAMILY;
                 }
             }
-            return false;
+            String field = consumerFields.get(flow);
+            return field != null && !field.isEmpty() && readFields.contains(field)
+                    ? CONSUMER_FIELD_READ : "";
+        }
+
+        /** The field a flow's consumer declares, for the Composer's join. */
+        public Map<String, String> consumerFieldsByPortSuffix() {
+            return Collections.unmodifiableMap(consumerFields);
         }
 
         /**
@@ -344,7 +408,7 @@ public final class ClaimPolicy {
         }
 
         /** The per-flow realization rows the claim publishes as evidence. */
-        JsonArray report(List<BoundFamily> ledger) {
+        JsonArray report(List<BoundFamily> ledger, Set<String> readFields) {
             JsonArray rows = new JsonArray();
             for (String flow : declared) {
                 JsonObject row = new JsonObject();
@@ -358,7 +422,11 @@ public final class ClaimPolicy {
                     families++;
                     if (family.bound) bound++;
                 }
-                row.addProperty("realized", bound > 0);
+                String route = realizedBy(flow, ledger, readFields);
+                row.addProperty("realized", !route.isEmpty());
+                row.addProperty("realizedBy", route);
+                row.addProperty("consumerField",
+                        firstNonEmpty(consumerFields.get(flow), ""));
                 row.addProperty("mechanism", "BOUND_BOUNDARY_FAMILY");
                 row.addProperty("consumerRegionsPlanned",
                         consumers == null ? 0 : consumers.size());
@@ -404,6 +472,28 @@ public final class ClaimPolicy {
                     optionalBool(row, "valueBound", false)));
         }
         return ledger;
+    }
+
+    /**
+     * Every declared field the composition actually reads.
+     *
+     * <p>The guarded-read model holds the reads the Composer lowered, so a
+     * field named in it is a field some term in the formula depends on. That
+     * is the evidence a flow needs when its value left the wire on arrival.
+     */
+    static Set<String> guardedReadFields(JsonObject manifest) {
+        Set<String> fields = new LinkedHashSet<>();
+        for (JsonElement read
+                : array(object(manifest, "guardedReadModel"), "reads")) {
+            if (!read.isJsonObject()) continue;
+            for (JsonElement element : array(read.getAsJsonObject(), "arms")) {
+                if (!element.isJsonObject()) continue;
+                String field = optionalString(element.getAsJsonObject(),
+                        "declaredField");
+                if (!field.isEmpty()) fields.add(field);
+            }
+        }
+        return fields;
     }
 
     /**
@@ -881,7 +971,9 @@ public final class ClaimPolicy {
                 "constrainsRootSpace", false);
         int boundaryFamilies = consumerBoundaryFamilies(manifest);
         List<BoundFamily> wireFlowLedger = wireFlowLedger(manifest);
-        List<String> unrealizedFlows = flows.unrealized(wireFlowLedger);
+        Set<String> readFields = guardedReadFields(manifest);
+        List<String> unrealizedFlows = flows.unrealized(wireFlowLedger,
+                readFields);
 
         List<JsonObject> blockers = new ArrayList<>();
 
@@ -1028,7 +1120,8 @@ public final class ClaimPolicy {
         rootSpace.addProperty("declaredWireFlows", flows.declaredCount());
         rootSpace.addProperty("unrealizedWireFlows",
                 String.join(",", unrealizedFlows));
-        rootSpace.add("wireFlows", flows.report(wireFlowLedger));
+        rootSpace.add("wireFlows", flows.report(wireFlowLedger,
+                readFields));
         rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
         rootSpace.addProperty("consumerBoundaryArms",
                 consumerBoundaryArms(manifest));

@@ -963,4 +963,126 @@ public class ClaimPolicyTest {
         return reach;
     }
 
+
+    private static final String DEK_FIELD =
+            "org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey"
+            + "#keyId";
+
+    /** The wire's own family reached a term: the direct route. */
+    @Test
+    public void aFlowIsRealizedByItsPortFamily() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                flowManifest(true, false), reach(), fieldFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim").getAsString());
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertTrue(flow.get("realized").getAsBoolean());
+        assertEquals("PORT_FAMILY", flow.get("realizedBy").getAsString());
+    }
+
+    /**
+     * HDFS-17897: the value leaves the wire on arrival. The consumer assigns
+     * it to a field and the DataNode reads that field, so the term the wire's
+     * value reaches is the guarded read, and asking for the port's own family
+     * asks for a term nobody was going to build.
+     */
+    @Test
+    public void aFlowIsRealizedByTheFieldItsConsumerAssigns()
+            throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                flowManifest(false, true), reach(), fieldFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE, claim.get("claim").getAsString());
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertTrue(flow.get("realized").getAsBoolean());
+        assertEquals("CONSUMER_FIELD_READ",
+                flow.get("realizedBy").getAsString());
+        assertEquals(DEK_FIELD, flow.get("consumerField").getAsString());
+    }
+
+    /** Neither route: the wire's value constrains nothing, and it is named. */
+    @Test
+    public void aFlowWithNeitherRouteStaysUnrealized() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                flowManifest(false, false), reach(), fieldFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertEquals("data-encryption-key-id",
+                blocker(claim, ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED)
+                        .get("subject").getAsString());
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertFalse(flow.get("realized").getAsBoolean());
+        assertEquals("", flow.get("realizedBy").getAsString());
+    }
+
+    /** A read of some other field is not this flow's value. */
+    @Test
+    public void anotherFieldsReadDoesNotRealizeTheFlow() throws IOException {
+        JsonObject manifest = flowManifest(false, false);
+        manifest.getAsJsonObject("guardedReadModel").add("reads",
+                readsOf("org.apache.hadoop.hdfs.server.datanode.DataNode"
+                        + "#unrelated"));
+
+        JsonObject claim = ClaimPolicy.decide(manifest, reach(),
+                fieldFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+    }
+
+    /** The port route is the stronger statement, so it is reported first. */
+    @Test
+    public void bothRoutesReportThePortFamily() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(
+                flowManifest(true, true), reach(), fieldFlows());
+
+        assertEquals("PORT_FAMILY", wireFlow(claim, "data-encryption-key-id")
+                .get("realizedBy").getAsString());
+    }
+
+    /** One declared flow whose consumer names the field it assigns to. */
+    private static ClaimPolicy.WireFlowEvidence fieldFlows()
+            throws IOException {
+        Path directory = Files.createTempDirectory("claim-field-flows");
+        Path mappings = directory.resolve("communication-mappings.jsonl");
+        Files.write(mappings, ("{\"schemaVersion\":1,"
+                + "\"kind\":\"WIRE_FLOW\","
+                + "\"id\":\"data-encryption-key-id\","
+                + "\"transport\":\"HDFS_SASL\","
+                + "\"direction\":\"REQUEST\","
+                + "\"consumerField\":\"" + DEK_FIELD + "\"}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        return ClaimPolicy.WireFlowEvidence.read(mappings.toString(), "");
+    }
+
+    private static JsonObject flowManifest(boolean portBound,
+                                           boolean fieldRead) {
+        JsonObject manifest = manifest();
+        JsonObject binding = new JsonObject();
+        binding.addProperty("portId", "XCH.da84e470-fe7e-3068-b93f-"
+                + "caafeef64a70.req.data-encryption-key-id");
+        binding.addProperty("valueBound", portBound);
+        JsonArray bindings = new JsonArray();
+        bindings.add(binding);
+        manifest.add(ConcolicSmtComposer.WIRE_FLOW_BINDINGS, bindings);
+        JsonObject guardedReads = new JsonObject();
+        guardedReads.add("reads", fieldRead ? readsOf(DEK_FIELD)
+                : new JsonArray());
+        manifest.add("guardedReadModel", guardedReads);
+        return manifest;
+    }
+
+    private static JsonArray readsOf(String declaredField) {
+        JsonObject arm = new JsonObject();
+        arm.addProperty("declaredField", declaredField);
+        JsonArray arms = new JsonArray();
+        arms.add(arm);
+        JsonObject read = new JsonObject();
+        read.add("arms", arms);
+        JsonArray reads = new JsonArray();
+        reads.add(read);
+        return reads;
+    }
+
 }
