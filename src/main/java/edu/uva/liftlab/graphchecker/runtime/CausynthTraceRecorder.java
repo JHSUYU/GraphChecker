@@ -256,12 +256,8 @@ public final class CausynthTraceRecorder {
                                           String declaredType, Object value,
                                           String primitiveValue) {
         ActiveCallSite site = activeCallSite(invocationId);
-        ExecutionEvent event = newExecutionEvent("CALL_ARGUMENT",
-                site == null ? "" : site.caller,
-                site == null ? 0L : site.ownerCallId);
-        event.invocationId = invocationId;
-        event.siteId = site == null ? "" : site.siteId;
-        event.declaredCallee = site == null ? "" : site.declaredCallee;
+        ExecutionEvent event = callSiteEvent("CALL_ARGUMENT", site,
+                invocationId);
         event.argumentIndex = argumentIndex;
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
@@ -276,12 +272,8 @@ public final class CausynthTraceRecorder {
     public static void endCall(long invocationId, Object returnValue,
                                String primitiveValue) {
         ActiveCallSite site = activeCallSite(invocationId);
-        ExecutionEvent event = newExecutionEvent("CALL_SITE_RETURN",
-                site == null ? "" : site.caller,
-                site == null ? 0L : site.ownerCallId);
-        event.invocationId = invocationId;
-        event.siteId = site == null ? "" : site.siteId;
-        event.declaredCallee = site == null ? "" : site.declaredCallee;
+        ExecutionEvent event = callSiteEvent("CALL_SITE_RETURN", site,
+                invocationId);
         event.runtimeType = runtimeType(returnValue);
         event.objectId = identity(returnValue);
         event.primitiveValue = MapFields.safe(primitiveValue);
@@ -296,11 +288,18 @@ public final class CausynthTraceRecorder {
 
     public static void recordBranch(long callId, String method, int unitIndex,
                                     String expression, boolean outcome) {
+        ExecutionEvent event = branchEvent(callId, method, unitIndex);
+        event.outcome = outcome;
+        emitExecutionEvent(event);
+    }
+
+    /** One branch row at the exact unit of the method that executed it. */
+    private static ExecutionEvent branchEvent(long callId, String method,
+                                              int unitIndex) {
         ExecutionEvent event = newExecutionEvent("BRANCH",
                 firstNonBlank(method, methodForCall(callId)), callId);
         event.siteId = SiteId.of(event.method, unitIndex);
-        event.outcome = outcome;
-        emitExecutionEvent(event);
+        return event;
     }
 
     /** Records one exact case/default successor of a JVM switch. */
@@ -309,9 +308,7 @@ public final class CausynthTraceRecorder {
                                           int successorIndex,
                                           String branchKind,
                                           String encodedCaseKeys) {
-        ExecutionEvent event = newExecutionEvent("BRANCH",
-                firstNonBlank(method, methodForCall(callId)), callId);
-        event.siteId = SiteId.of(event.method, unitIndex);
+        ExecutionEvent event = branchEvent(callId, method, unitIndex);
         event.branchKind = MapFields.safe(branchKind);
         event.switchCaseKeys = MapFields.safe(encodedCaseKeys);
         event.successorIndex = successorIndex >= 0 ? successorIndex : null;
@@ -723,16 +720,24 @@ public final class CausynthTraceRecorder {
         }
     }
 
+    /** One execution event attributed to an exact recorded call site. */
+    private static ExecutionEvent callSiteEvent(String kind,
+                                                ActiveCallSite site,
+                                                long invocationId) {
+        ExecutionEvent event = newExecutionEvent(kind,
+                site == null ? "" : site.caller,
+                site == null ? 0L : site.ownerCallId);
+        event.invocationId = invocationId;
+        event.siteId = site == null ? "" : site.siteId;
+        event.declaredCallee = site == null ? "" : site.declaredCallee;
+        return event;
+    }
+
     private static void closeCallSite(ActiveCallSite site, String kind) {
         if (site == null) {
             return;
         }
-        ExecutionEvent event = newExecutionEvent(kind, site.caller,
-                site.ownerCallId);
-        event.invocationId = site.invocationId;
-        event.siteId = site.siteId;
-        event.declaredCallee = site.declaredCallee;
-        emitExecutionEvent(event);
+        emitExecutionEvent(callSiteEvent(kind, site, site.invocationId));
         ACTIVE_CALL_SITES.get().remove(site);
     }
 
