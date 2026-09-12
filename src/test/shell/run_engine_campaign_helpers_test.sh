@@ -201,7 +201,7 @@ for config_row in "${workflow_config_keys[@]}"; do
       || fail "internal key ${config_key} is loadable from a config file"
   fi
 done
-[[ "$(print_normalized_config | wc -l)" -eq 38 ]] \
+[[ "$(print_normalized_config | wc -l)" -eq 39 ]] \
   || fail "config prints a different number of keys than it used to"
 
 # FREEZE-1: one dispatch decides how each kind of frozen input is digested.
@@ -280,5 +280,30 @@ jq -e '.taskId == "t2" and .queryKey == "k"
   "${primary_record}" >/dev/null \
   || fail "the exploration record does not name the PRIMARY task: \
 $(cat "${primary_record}")"
+
+# EXPLORE-1: a forced closure stop is coverage telemetry on every pending
+# worklist, and it publishes that worklist as the member's closure so the
+# final gap report can read it.
+stop_member="${test_tmp}/stop/workers/task-a"
+stop_wave="${stop_member}/obligations-0003"
+mkdir -p "${stop_wave}"
+printf '%s\n' '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST",
+  "state":"PENDING","coverageState":"PARTIAL","regionId":"REGION.A",
+  "occurrenceId":"REGION.A#a1","gaps":[],"coverageGaps":[]}' \
+  >"${stop_wave}/region_path_manifest.json"
+campaign_explore_stop REGION_PATH_CLOSURE_NO_PROGRESS "stalled" \
+  "${stop_wave}" >/dev/null \
+  || fail "campaign_explore_stop did not record the closure stop"
+jq -e '.coverageGaps | length == 1
+  and .[0].kind == "REGION_PATH_CLOSURE_NO_PROGRESS"
+  and .[0].reason == "stalled" and .[0].regionId == "REGION.A"' \
+  "${stop_wave}/region_path_manifest.json" >/dev/null \
+  || fail "the closure stop is not a coverage gap on the pending worklist: \
+$(cat "${stop_wave}/region_path_manifest.json")"
+# The member's closure is what campaign_path_closures_json collects, so the
+# stop has to be visible there and has to stay non-CLOSED.
+jq -e '.state == "PENDING" and (.coverageGaps | length) == 1' \
+  "${stop_member}/path_closure.json" >/dev/null \
+  || fail "the forced stop published no pending closure for the member"
 
 echo "run_engine campaign helper tests passed"
