@@ -88,6 +88,12 @@ public final class SymbolicPropagationClosure {
     public static final String READ_FROM_DEPENDENCY_POLICY =
             "READ_FROM_ARM_IMPLIES_CASE";
     /** An INITIAL version is an observed source value, not a region write. */
+    /**
+     * A whole-state carrier whose INITIAL version stayed opaque, so its
+     * initial membership is a free container const rather than content.
+     */
+    public static final String INITIAL_CONTAINER_SNAPSHOT_TRUNCATED =
+            "INITIAL_CONTAINER_SNAPSHOT_TRUNCATED";
     public static final String INITIAL_SOURCE_CASE_PREFIX =
             "INITIAL_SOURCE.";
     public static final String GAP_KIND = "SYMBOLIC_PROPAGATION_GAP";
@@ -1445,6 +1451,16 @@ public final class SymbolicPropagationClosure {
                         "initial candidate has no stable reader, location, or"
                                 + " propagated expression");
                 return null;
+            }
+            // Telemetry, not a refusal: an opaque or truncated INITIAL still
+            // lowers, as the free container const it has always been, and the
+            // reader is told that membership over it stays undecidable.
+            if (SharedStateEvidence.isMapState(location)
+                    && SharedStateEvidence.initialSnapshotTruncated(version)) {
+                gap(INITIAL_CONTAINER_SNAPSHOT_TRUNCATED, location,
+                        "whole-state carrier published no complete initial"
+                                + " content snapshot, so membership over its"
+                                + " initial state stays undecidable");
             }
             String writerOccurrence = OccurrenceId.parse(
                     optionalString(version,
