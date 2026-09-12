@@ -200,6 +200,12 @@ public final class SymbolicPropagationClosure {
                 new LinkedHashMap<>();
         private final Set<ReadCandidateKey> ambiguousReadCandidateVersions =
                 new LinkedHashSet<>();
+        /** Writer versions addressed by the VM location every snapshot of
+         *  that location shares inside one replay session. */
+        private final Map<LocationVersionKey, JsonObject> locationVersions =
+                new LinkedHashMap<>();
+        private final Set<LocationVersionKey> ambiguousLocationVersions =
+                new LinkedHashSet<>();
         /** Producer cases referenced by RF arms, grouped by occurrence. */
         private final Map<String, Map<String, CaseInfo>> readFromWriterCases =
                 new LinkedHashMap<>();
@@ -241,6 +247,7 @@ public final class SymbolicPropagationClosure {
             for (JsonObject row : indexedRows) indexCaseRow(row);
             for (JsonObject row : indexedRows) indexBoundaryEvidence(row);
             for (JsonObject row : indexedRows) scanFieldBoundaries(row);
+            claimUnsnapshottedFieldReads(indexedRows);
             validateDynamicArms();
         }
 
@@ -260,6 +267,7 @@ public final class SymbolicPropagationClosure {
             for (JsonObject row : indexedRows) indexCaseRow(row);
             for (JsonObject row : indexedRows) indexBoundaryEvidence(row);
             for (JsonObject row : indexedRows) scanFieldBoundaries(row);
+            claimUnsnapshottedFieldReads(indexedRows);
             validateDynamicArms();
         }
 
@@ -500,6 +508,21 @@ public final class SymbolicPropagationClosure {
                                     ? "read-time writer/read retention is open"
                                     : envelopeFault);
                 }
+                // A snapshot is a session-wide view of one VM location, so
+                // its retained writer versions name the same writes for any
+                // read of that location in this replay session.
+                String snapshotLocation = SharedStateEvidence.locationKey(
+                        envelope);
+                for (JsonElement versionElement : array(envelope,
+                        "versions")) {
+                    if (!versionElement.isJsonObject()) continue;
+                    JsonObject version = versionElement.getAsJsonObject();
+                    putLocationVersion(new LocationVersionKey(scope,
+                                    snapshotLocation,
+                                    optionalLongInteger(version,
+                                            "fieldVersionId", -1L)),
+                            version);
+                }
                 for (JsonElement readElement : array(envelope, "reads")) {
                     if (!readElement.isJsonObject()) continue;
                     JsonObject read = readElement.getAsJsonObject();
@@ -598,6 +621,41 @@ public final class SymbolicPropagationClosure {
                     right.get(WRITER_ACTIVATION_CLOSURE), ""));
         }
 
+        private void putLocationVersion(LocationVersionKey key,
+                                        JsonObject version) {
+            if (key.location.isEmpty() || key.version <= 0L
+                    || version == null
+                    || ambiguousLocationVersions.contains(key)) {
+                return;
+            }
+            JsonObject held = locationVersions.putIfAbsent(key, version);
+            if (held != null && !sameWriterCaseIdentity(held, version)) {
+                locationVersions.remove(key);
+                ambiguousLocationVersions.add(key);
+                gap("READ_FROM_WRITER_VERSION_AMBIGUOUS", key.toString(),
+                        "one location version names two writer activation"
+                                + " identities");
+            }
+        }
+
+        /**
+         * The writer version some read-time snapshot of this exact VM
+         * location recorded.  A location and a version id are session-global,
+         * so a snapshot another activation of the same replay session
+         * published names the same write.  This resolves a read whose own
+         * activation never selected the location as a carrier and therefore
+         * published no snapshot of its own.
+         */
+        private JsonObject locationVersion(String scope, JsonObject read,
+                                           long versionId) {
+            String location = SharedStateEvidence.locationKey(read);
+            if (location.isEmpty()) return null;
+            LocationVersionKey key = new LocationVersionKey(scope, location,
+                    versionId);
+            return ambiguousLocationVersions.contains(key) ? null
+                    : locationVersions.get(key);
+        }
+
         private void indexBoundaryOwner(DynamicKey dynamic, CaseInfo owner,
                                         String family) {
             if (owner == null) {
@@ -678,6 +736,113 @@ public final class SymbolicPropagationClosure {
             for (Map.Entry<String, JsonElement> field : node.entrySet()) {
                 if (evidenceField(field.getKey())) continue;
                 scanFieldBoundaryPayloads(field.getValue(), scope);
+            }
+        }
+
+        /**
+         * Claims one case's own guarded read when no activation published its
+         * read-time version-store snapshot.
+         *
+         * <p>A replay may take a branch its planned occurrence never took in
+         * the seed run and then read a shared location that occurrence never
+         * selected as a carrier.  No snapshot names that read, so the exact
+         * lineage scan cannot address it.  The VM still propagated a complete
+         * guarded read: it names its own location, states that its writer set
+         * is complete, and carries every candidate version with its write
+         * guard.  Only the stable family address is missing, and the read's
+         * own VM location together with the case which carries it name that
+         * exactly.</p>
+         *
+         * <p>A boundary two selected cases carry is a propagated value rather
+         * than one case's own read.  Its reader is then not named by anything
+         * here, so it stays unclaimed and the boundary is still refused.</p>
+         */
+        private void claimUnsnapshottedFieldReads(List<JsonObject> rows) {
+            Map<DynamicKey, JsonObject> boundaries = new LinkedHashMap<>();
+            Map<DynamicKey, CaseInfo> readers = new LinkedHashMap<>();
+            Set<DynamicKey> propagated = new LinkedHashSet<>();
+            for (JsonObject row : rows) {
+                CaseInfo reader = caseForRow(row);
+                if (reader == null) continue;
+                Map<DynamicKey, JsonObject> found = new LinkedHashMap<>();
+                collectFieldBoundaries(row,
+                        optionalString(row, "boundarySessionScope"), found);
+                for (Map.Entry<DynamicKey, JsonObject> boundary
+                        : found.entrySet()) {
+                    boundaries.putIfAbsent(boundary.getKey(),
+                            boundary.getValue());
+                    CaseInfo held = readers.putIfAbsent(boundary.getKey(),
+                            reader);
+                    if (held != null && !held.owner.equals(reader.owner)) {
+                        propagated.add(boundary.getKey());
+                    }
+                }
+            }
+            List<DynamicKey> keys = new ArrayList<>(boundaries.keySet());
+            keys.sort(Comparator.comparing((DynamicKey key) -> key.scope)
+                    .thenComparingLong(key -> key.event));
+            Map<String, Integer> ordinals = new LinkedHashMap<>();
+            for (DynamicKey key : keys) {
+                if (propagated.contains(key)
+                        || dynamicFamilies.containsKey(key)) {
+                    continue;
+                }
+                CaseInfo reader = readers.get(key);
+                JsonObject boundary = boundaries.get(key);
+                JsonElement payload = boundary.get(VmExpressionIr.EXPRESSION);
+                if (reader == null || payload == null
+                        || !payload.isJsonObject()) {
+                    continue;
+                }
+                JsonObject read = payload.getAsJsonObject();
+                if (!SharedStateEvidence.guardedReadFault(read).isEmpty()) {
+                    continue;
+                }
+                String location = SharedStateEvidence.locationKey(read);
+                if (location.isEmpty()) continue;
+                int ordinal = ordinals.merge(reader.owner + "\n" + location,
+                        1, Integer::sum);
+                String family = "CBF." + CanonicalJson.sha256(
+                        reader.epoch + "\n"
+                                + OccurrenceId.parse(
+                                        reader.occurrence).planned() + "\n"
+                                + VmExpressionIr.FIELD_READ + "\n"
+                                + location + "\n" + ordinal);
+                if (!addDynamic(key.scope, key.event, family)) continue;
+                indexBoundaryOwner(key, reader, family);
+                addArm(family, VmExpressionIr.FIELD_READ, reader.epoch,
+                        key.scope, reader, reader.owner, read,
+                        optionalString(boundary, "_java_type"), key.event);
+            }
+        }
+
+        /** Collects every field-read boundary one row propagated itself. */
+        private void collectFieldBoundaries(JsonElement element, String scope,
+                                            Map<DynamicKey, JsonObject> out) {
+            if (element == null || element.isJsonNull()) return;
+            if (element.isJsonArray()) {
+                for (JsonElement child : element.getAsJsonArray()) {
+                    collectFieldBoundaries(child, scope, out);
+                }
+                return;
+            }
+            if (!element.isJsonObject()) return;
+            JsonObject node = element.getAsJsonObject();
+            if (VmExpressionIr.isConsumerBoundary(node)
+                    && VmExpressionIr.FIELD_READ.equals(optionalString(node,
+                    VmExpressionIr.BOUNDARY_KIND))) {
+                long eventId = optionalLongInteger(node,
+                        VmExpressionIr.EVENT_ID, -1L);
+                if (!scope.isEmpty() && eventId > 0L) {
+                    out.putIfAbsent(new DynamicKey(scope, eventId), node);
+                }
+                collectFieldBoundaries(node.get(VmExpressionIr.EXPRESSION),
+                        scope, out);
+                return;
+            }
+            for (Map.Entry<String, JsonElement> field : node.entrySet()) {
+                if (evidenceField(field.getKey())) continue;
+                collectFieldBoundaries(field.getValue(), scope, out);
             }
         }
 
@@ -1049,6 +1214,9 @@ public final class SymbolicPropagationClosure {
                     versionId);
             JsonObject version = ambiguousReadCandidateVersions.contains(key)
                     ? null : readCandidateVersions.get(key);
+            if (version == null) {
+                version = locationVersion(scope, read, versionId);
+            }
             if (version == null) {
                 gap("READ_FROM_WRITER_CASE_MISSING", key.toString(),
                         "guarded read candidate has no unique admitted writer"
@@ -2035,6 +2203,37 @@ public final class SymbolicPropagationClosure {
             return 31 * scope.hashCode() + Long.valueOf(event).hashCode();
         }
         @Override public String toString() { return scope + ":" + event; }
+    }
+
+    /** One writer version of one VM location inside one replay session. */
+    private static final class LocationVersionKey {
+        private final String scope;
+        private final String location;
+        private final long version;
+
+        private LocationVersionKey(String scope, String location,
+                                   long version) {
+            this.scope = safe(scope);
+            this.location = safe(location);
+            this.version = version;
+        }
+
+        @Override public boolean equals(Object other) {
+            if (!(other instanceof LocationVersionKey)) return false;
+            LocationVersionKey key = (LocationVersionKey) other;
+            return scope.equals(key.scope) && location.equals(key.location)
+                    && version == key.version;
+        }
+
+        @Override public int hashCode() {
+            int value = scope.hashCode();
+            value = 31 * value + location.hashCode();
+            return 31 * value + Long.valueOf(version).hashCode();
+        }
+
+        @Override public String toString() {
+            return scope + ":" + location + ":v" + version;
+        }
     }
 
     /** One candidate version inside one exact replay-local guarded read. */

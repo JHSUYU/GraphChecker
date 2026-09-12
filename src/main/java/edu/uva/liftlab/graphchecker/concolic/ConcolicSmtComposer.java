@@ -3017,8 +3017,14 @@ public final class ConcolicSmtComposer {
             if ("V".equals(raw)) return new Term("true", Sort.BOOL);
             String javaType = optionalString(expression, "_java_type");
             Sort encoded = sortOfJava(javaType);
+            // A reference-typed use of an allocated container wants the
+            // object, not its state: only that representation can also hold
+            // the null the same slot may carry.  Its state stays reachable
+            // through the structural witness for a container-typed use.
             Sort sort = expected == Sort.MAP
                     || expected == Sort.ARRAY_VALUE ? expected
+                    : expected == Sort.REF && VmExpressionIr
+                    .isExecutionLocalStructuralWitness(raw) ? Sort.REF
                     : encoded != Sort.VALUE ? encoded
                     : expected == null ? Sort.REF : expected;
             if ((sort == Sort.REF || sort == Sort.MAP
