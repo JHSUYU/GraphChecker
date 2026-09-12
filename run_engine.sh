@@ -557,7 +557,7 @@ do_import() {
     --runtime-plan "${runtime_region_plan}" \
     --output "${imported_summaries}" \
     --diagnostics "${import_diagnostics}" \
-    ${import_topology_delta:+--topology-delta "${import_topology_delta}"} \
+    --topology-delta "${import_topology_delta}" \
     --iteration-id "${iteration_id}"
   status=$?
   [[ "${restore_errexit}" -eq 0 ]] || set -e
@@ -1452,7 +1452,6 @@ campaign_run_adapter() {
   shift 2
   local -a adapter_env
   adapter_env=(
-    "CAUSYNTH_WORKFLOW_CONFIG=${config_file}"
     "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}"
     # Every adapter loads the same frozen artifact as analysis and scheduling.
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
@@ -1981,7 +1980,6 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_TASK_ID=${ids}" \
     "CAUSYNTH_CONCOLIC_RESULTS=${results}" \
     "CAUSYNTH_CONCOLIC_CLASSES=${classes}" \
-    "CAUSYNTH_CONCOLIC_CLASSPATH=${classes}:${project_classpath}" \
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
     "CAUSYNTH_CONCOLIC_REPLAY_GROUP_ID=${replay_group}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
