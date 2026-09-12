@@ -49,7 +49,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -844,21 +843,6 @@ public final class ConcolicRegionRuntime {
             result.addProperty("occurrenceId", occurrenceId);
             return result;
         }
-    }
-
-    /**
-     * Called at a statically selected same-thread region root with its actual
-     * reference arguments.  Primitive parameter slots are null.
-     */
-    public static long enterRegion(String instrumentationSelector,
-                                   String rootMethod,
-                                   Object receiver, Object[] rootArguments) {
-        Configuration config = configuration();
-        RootHookGroup group = config.rootHookGroup(
-                instrumentationSelector, rootMethod);
-        ActiveRegion active = admitRegion(config, group.key, rootMethod,
-                receiver, rootArguments);
-        return active == null ? 0L : active.token;
     }
 
     /**
@@ -6210,12 +6194,9 @@ public final class ConcolicRegionRuntime {
     static final class PathConditionElements {
         static final PathConditionElements EMPTY =
                 new PathConditionElements(new JsonArray());
-        private static final String SCAN_MODE = "SCAN";
         private static final String TREE_MODE = "TREE";
         private static final String WINDOW_MODE = "WINDOW_SCAN";
 
-        private final String raw;
-        private final int[] bounds;
         private final JsonArray tree;
         /** Absolute index of element 0, and the exclusive end of the window. */
         private final int base;
@@ -6223,75 +6204,50 @@ public final class ConcolicRegionRuntime {
         /** Conditions the thread has accumulated, window or not. */
         private final int size;
         private final boolean windowed;
-        /** One hook may attest and then consume the same exact condition. */
-        private final JsonElement[] parsed;
 
         private PathConditionElements(JsonArray tree) {
-            this(null, null, tree, 0, tree.size(), tree.size(), false);
+            this(tree, 0, tree.size(), tree.size(), false);
         }
 
-        private PathConditionElements(String raw, int[] bounds, JsonArray tree,
-                                      int base, int windowEnd, int size,
-                                      boolean windowed) {
-            this.raw = raw;
-            this.bounds = bounds;
+        private PathConditionElements(JsonArray tree, int base, int windowEnd,
+                                      int size, boolean windowed) {
             this.tree = tree;
             this.base = base;
             this.windowEnd = windowEnd;
             this.size = size;
             this.windowed = windowed;
-            this.parsed = raw == null ? null
-                    : new JsonElement[bounds.length / 2];
         }
 
         /**
          * Reads one {@code CONCOLIC_PATH_CONDITION_RANGE} envelope as the
          * conditions at absolute indices {@code [startIndex, endIndex)}.
+         *
+         * <p>The VM always writes the window through the session expression
+         * table, so the envelope is decoded once by the shared importer and
+         * never rescanned by hand.</p>
          */
         static PathConditionElements window(String envelope, int expectedStart,
                                             VmExpressionTable.Store store) {
             if (envelope == null) return null;
-            if (envelope.contains("\""
-                    + VmExpressionTable.FIELD + "\"")) {
-                try {
-                    JsonObject decoded = store.importEnvelope(envelope);
-                    int start = integer(decoded, "startIndex", -1);
-                    int end = integer(decoded, "endIndex", -1);
-                    int watermark = integer(decoded,
-                            "pathConditionWatermark", -1);
-                    JsonArray conditions = array(decoded, "conditions");
-                    int declaredCount = integer(decoded,
-                            "conditionCount", -1);
-                    if (start != expectedStart || end < start
-                            || watermark < 0
-                            || conditions.size() != end - start
-                            || declaredCount != conditions.size()) {
-                        return null;
-                    }
-                    return new PathConditionElements(null, null, conditions,
-                            start, end, watermark, true);
-                } catch (RuntimeException malformed) {
+            try {
+                JsonObject decoded = store.importEnvelope(envelope);
+                int start = integer(decoded, "startIndex", -1);
+                int end = integer(decoded, "endIndex", -1);
+                int watermark = integer(decoded,
+                        "pathConditionWatermark", -1);
+                JsonArray conditions = array(decoded, "conditions");
+                int declaredCount = integer(decoded, "conditionCount", -1);
+                if (start != expectedStart || end < start
+                        || watermark < 0
+                        || conditions.size() != end - start
+                        || declaredCount != conditions.size()) {
                     return null;
                 }
-            }
-            char[] document = envelope.toCharArray();
-            int[] members = members(document, WINDOW_MEMBERS);
-            if (members == null) return null;
-            int start = integerMember(document, members, 0, -1);
-            int end = integerMember(document, members, 1, -1);
-            int watermark = integerMember(document, members, 2, -1);
-            int declaredCount = integerMember(document, members, 3, -1);
-            if (start != expectedStart || end < start || watermark < 0) {
+                return new PathConditionElements(conditions, start, end,
+                        watermark, true);
+            } catch (RuntimeException malformed) {
                 return null;
             }
-            if (members[8] < 0) return null;
-            int[] bounds = scanElements(document, members[8], members[9]);
-            if (bounds == null) return null;
-            int count = bounds.length / 2;
-            // The window's own indices are the authority on what it holds.
-            if (count != end - start || declaredCount != count) return null;
-            return new PathConditionElements(envelope, bounds, null, start,
-                    end, watermark, true);
         }
 
         /** Conditions the thread has accumulated, not just this window's. */
@@ -6305,223 +6261,12 @@ public final class ConcolicRegionRuntime {
                         "path condition index " + index + " outside ["
                                 + base + "," + windowEnd + ") of " + size);
             }
-            int offset = index - base;
-            if (tree != null) return tree.get(offset);
-            JsonElement cached = parsed[offset];
-            if (cached == null) {
-                cached = parseJson(raw.substring(
-                        bounds[2 * offset], bounds[2 * offset + 1]));
-                parsed[offset] = cached;
-            }
-            return cached;
+            return tree.get(index - base);
         }
 
         /** Which reader answered, for the replay's own diagnostics. */
         String mode() {
-            if (windowed) return WINDOW_MODE;
-            return tree == null ? SCAN_MODE : TREE_MODE;
-        }
-
-        /** The members {@link #window} needs, in the order it reads them. */
-        private static final String[] WINDOW_MEMBERS = {
-                "startIndex", "endIndex", "pathConditionWatermark",
-                "conditionCount", "conditions"};
-
-        /**
-         * Bounds of every element of the JSON array occupying
-         * {@code [from, to)}, or {@code null} when that region is not one this
-         * scanner can split with certainty.
-         */
-        private static int[] scanElements(char[] document, int from, int to) {
-            if (document == null || from < 0 || to > document.length
-                    || from >= to) {
-                return null;
-            }
-            int index = skipWhitespace(document, from);
-            if (index >= to || document[index] != '[') return null;
-            index = skipWhitespace(document, index + 1);
-            if (index >= to) return null;
-            int[] bounds = new int[64];
-            int count = 0;
-            if (document[index] == ']') {
-                index++;
-            } else {
-                while (true) {
-                    if (!valueStart(document[index])) return null;
-                    int end = skipValue(document, index);
-                    if (end <= index || end > to) return null;
-                    if (2 * count == bounds.length) {
-                        bounds = Arrays.copyOf(bounds, 2 * bounds.length);
-                    }
-                    bounds[2 * count] = index;
-                    bounds[2 * count + 1] = end;
-                    count++;
-                    index = skipWhitespace(document, end);
-                    if (index >= to) return null;
-                    char delimiter = document[index];
-                    if (delimiter == ']') {
-                        index++;
-                        break;
-                    }
-                    if (delimiter != ',') return null;
-                    index = skipWhitespace(document, index + 1);
-                    if (index >= to) return null;
-                }
-            }
-            return skipWhitespace(document, index) == to
-                    ? Arrays.copyOf(bounds, 2 * count) : null;
-        }
-
-        /**
-         * Bounds of the named members of one JSON object, walked once at the
-         * top level, or {@code null} when the document is not one object of
-         * complete members.
-         *
-         * <p>Searching the text for a quoted name would find one inside a
-         * serialized expression - a recorded bytecode position is a string the
-         * VM copied from the program - and would then read a value belonging
-         * to a condition as if it were the envelope's.</p>
-         *
-         * @return two slots per requested name, {@code -1} when absent
-         */
-        private static int[] members(char[] document, String[] names) {
-            int[] found = new int[2 * names.length];
-            Arrays.fill(found, -1);
-            int length = document.length;
-            int index = skipWhitespace(document, 0);
-            if (index >= length || document[index] != '{') return null;
-            index = skipWhitespace(document, index + 1);
-            if (index >= length) return null;
-            if (document[index] == '}') return found;
-            while (true) {
-                if (document[index] != '"') return null;
-                int keyEnd = skipString(document, index);
-                if (keyEnd < 0) return null;
-                int nameStart = index + 1;
-                int nameEnd = keyEnd - 1;
-                index = skipWhitespace(document, keyEnd);
-                if (index >= length || document[index] != ':') return null;
-                int valueStart = skipWhitespace(document, index + 1);
-                if (valueStart >= length || !valueStart(document[valueStart])) {
-                    return null;
-                }
-                int valueEnd = skipValue(document, valueStart);
-                if (valueEnd <= valueStart) return null;
-                for (int slot = 0; slot < names.length; slot++) {
-                    if (found[2 * slot] >= 0
-                            || !nameEquals(document, nameStart, nameEnd,
-                            names[slot])) {
-                        continue;
-                    }
-                    found[2 * slot] = valueStart;
-                    found[2 * slot + 1] = valueEnd;
-                }
-                index = skipWhitespace(document, valueEnd);
-                if (index >= length) return null;
-                if (document[index] == '}') return found;
-                if (document[index] != ',') return null;
-                index = skipWhitespace(document, index + 1);
-                if (index >= length) return null;
-            }
-        }
-
-        /** Whether an unescaped member key spells {@code name}. */
-        private static boolean nameEquals(char[] document, int from, int to,
-                                          String name) {
-            if (to - from != name.length()) return false;
-            for (int offset = 0; offset < name.length(); offset++) {
-                if (document[from + offset] != name.charAt(offset)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        /** One member read as a plain JSON integer, or {@code fallback}. */
-        private static int integerMember(char[] document, int[] members,
-                                         int slot, int fallback) {
-            int from = members[2 * slot];
-            int to = members[2 * slot + 1];
-            if (from < 0 || to <= from) return fallback;
-            boolean negative = document[from] == '-';
-            int index = negative ? from + 1 : from;
-            if (index >= to) return fallback;
-            long value = 0L;
-            for (; index < to; index++) {
-                char digit = document[index];
-                if (digit < '0' || digit > '9') return fallback;
-                value = value * 10L + (digit - '0');
-                if (value > Integer.MAX_VALUE) return fallback;
-            }
-            return (int) (negative ? -value : value);
-        }
-
-        /** The characters a strict JSON value may begin with. */
-        private static boolean valueStart(char first) {
-            return first == '{' || first == '[' || first == '"'
-                    || first == '-' || (first >= '0' && first <= '9')
-                    || first == 't' || first == 'f' || first == 'n';
-        }
-
-        /**
-         * End of the value starting at {@code start}, or a non-positive
-         * distance when the document ends inside it.
-         */
-        private static int skipValue(char[] document, int start) {
-            int length = document.length;
-            int index = start;
-            int depth = 0;
-            while (index < length) {
-                char current = document[index];
-                if (current == '"') {
-                    index = skipString(document, index);
-                    if (index < 0) return -1;
-                    if (depth == 0) return index;
-                    continue;
-                }
-                if (current == '{' || current == '[') {
-                    depth++;
-                    index++;
-                    continue;
-                }
-                if (current == '}' || current == ']') {
-                    if (depth == 0) return index;
-                    depth--;
-                    index++;
-                    if (depth == 0) return index;
-                    continue;
-                }
-                if (depth == 0 && (current == ','
-                        || Character.isWhitespace(current))) {
-                    return index;
-                }
-                index++;
-            }
-            return -1;
-        }
-
-        /** Index after the string starting at its opening quote. */
-        private static int skipString(char[] document, int start) {
-            int length = document.length;
-            for (int index = start + 1; index < length; index++) {
-                char current = document[index];
-                if (current == '\\') {
-                    index++;
-                    continue;
-                }
-                if (current == '"') return index + 1;
-            }
-            return -1;
-        }
-
-        private static int skipWhitespace(char[] document, int start) {
-            int index = start;
-            int length = document.length;
-            while (index < length
-                    && Character.isWhitespace(document[index])) {
-                index++;
-            }
-            return index;
+            return windowed ? WINDOW_MODE : TREE_MODE;
         }
     }
 
