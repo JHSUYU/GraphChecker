@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
@@ -181,15 +182,15 @@ public final class ConcolicScheduler {
                 }
             }
         }
-        String receiver = PathObservation.plannedOccurrenceOf(occurrenceId);
+        String receiver = OccurrenceId.parse(occurrenceId).planned();
         Set<String> suppliedPorts = new LinkedHashSet<>();
         for (JsonElement element : edgeBindings == null
                 ? new JsonArray() : edgeBindings) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
             if (!AutomaticRegionEdge.tracedExchangeCandidate(binding)
-                    || !receiver.equals(PathObservation.plannedOccurrenceOf(
-                    optionalString(binding, "toOccurrenceId")))) {
+                    || !receiver.equals(OccurrenceId.parse(
+                    optionalString(binding, "toOccurrenceId")).planned())) {
                 continue;
             }
             String port = optionalString(binding, "toInputPort");
@@ -1437,8 +1438,8 @@ public final class ConcolicScheduler {
                     || !candidate.goal.plan().regionId().equals(
                     optionalString(summary, "regionId"))
                     || !expectedInstance.equals(
-                    PathObservation.plannedOccurrenceOf(
-                            optionalString(summary, "occurrenceId")))
+                    OccurrenceId.parse(
+                            optionalString(summary, "occurrenceId")).planned())
                     || !ClosureGoalKind.fromTask(summary)
                     .capturesTargetReach()
                     || optionalString(summary, "summaryId").isEmpty()) {

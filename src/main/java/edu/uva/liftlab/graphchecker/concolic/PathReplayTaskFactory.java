@@ -6,7 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.util.Map;
 import java.util.Set;
@@ -148,8 +148,8 @@ final class PathReplayTaskFactory {
         for (JsonObject source : sources) {
             String taskId = optionalString(source, "taskId");
             result.put(taskId, new JsonArray());
-            occurrenceByTask.put(taskId, PathObservation
-                    .plannedOccurrenceOf(optionalString(source, "occurrenceId")));
+            occurrenceByTask.put(taskId, OccurrenceId.parse(
+                    optionalString(source, "occurrenceId")).planned());
         }
         if (assignments == null) return result;
         for (JsonElement element : assignments) {
@@ -159,8 +159,8 @@ final class PathReplayTaskFactory {
             }
             JsonObject assignment = element.getAsJsonObject();
             String owner = optionalString(assignment, "readerTaskId");
-            String readerOccurrence = PathObservation.plannedOccurrenceOf(
-                    optionalString(assignment, "readerOccurrenceId"));
+            String readerOccurrence = OccurrenceId.parse(
+                    optionalString(assignment, "readerOccurrenceId")).planned();
             JsonArray owned = result.get(owner);
             if (owned == null && !readerOccurrence.isEmpty()) {
                 String occurrenceOwner = null;

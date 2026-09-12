@@ -5,7 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -477,7 +477,7 @@ public final class TopologyDelta {
      * README Step 1 judges topology at is the (sender occurrence, receiver
      * occurrence, port) triple, and the activation ordinal is no member of
      * it, so it is not part of the comparison
-     * ({@link PathObservation#plannedOccurrenceOf} is the one rule for that,
+     * ({@link OccurrenceId#planned} is the one rule for that,
      * shared with the target reach query and the scheduler).</p>
      *
      * <p>Comparing the raw activation string instead makes the comparison
@@ -489,8 +489,8 @@ public final class TopologyDelta {
      * declare still differs after it, and is still reported.</p> */
     private static String exchangeKey(String fromOccurrenceId,
                                       String toOccurrenceId, String portId) {
-        return PathObservation.plannedOccurrenceOf(fromOccurrenceId) + "\n"
-                + PathObservation.plannedOccurrenceOf(toOccurrenceId) + "\n"
+        return OccurrenceId.parse(fromOccurrenceId).planned() + "\n"
+                + OccurrenceId.parse(toOccurrenceId).planned() + "\n"
                 + portId;
     }
 

@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -468,8 +469,7 @@ public class SymbolicPropagationClosureTest {
         row.addProperty("sourceKey", "SOURCE." + region);
         row.addProperty("occurrenceId", occurrence);
         row.addProperty("plannedOccurrenceId",
-                edu.uva.liftlab.graphchecker.contract.PathObservation
-                        .plannedOccurrenceOf(occurrence));
+                OccurrenceId.parse(occurrence).planned());
         row.addProperty("taskId", task);
         row.addProperty("sourceTaskId", task);
         row.addProperty("boundarySessionScope", scope);

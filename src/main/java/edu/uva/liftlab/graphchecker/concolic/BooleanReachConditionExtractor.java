@@ -16,7 +16,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.io.File;
 import java.io.IOException;
@@ -527,7 +527,7 @@ public final class BooleanReachConditionExtractor {
                 occurrence)) return true;
         String prefix = "region:" + region + "/instance:";
         if (owner.startsWith(prefix + occurrence + "/case:")) return true;
-        String planned = PathObservation.plannedOccurrenceOf(occurrence);
+        String planned = OccurrenceId.parse(occurrence).planned();
         return owner.startsWith(prefix + planned + "/case:");
     }
 

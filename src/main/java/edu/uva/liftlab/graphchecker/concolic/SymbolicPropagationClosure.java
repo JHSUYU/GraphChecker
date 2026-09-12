@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 
 import java.util.ArrayList;
@@ -528,8 +528,8 @@ public final class SymbolicPropagationClosure {
                     if (location.isEmpty()) continue;
                     int ordinal = ordinals.merge(location, 1, Integer::sum);
                     String identity = epoch + "\n"
-                            + PathObservation.plannedOccurrenceOf(
-                            readerOccurrence) + "\n"
+                            + OccurrenceId.parse(
+                            readerOccurrence).planned() + "\n"
                             + VmExpressionIr.FIELD_READ + "\n" + location
                             + "\n" + ordinal;
                     String family = "CBF."
@@ -1190,9 +1190,10 @@ public final class SymbolicPropagationClosure {
                                 + " propagated expression");
                 return null;
             }
-            String writerOccurrence = PathObservation.plannedOccurrenceOf(
+            String writerOccurrence = OccurrenceId.parse(
                     optionalString(version,
-                            SharedStateEvidence.WRITER_OCCURRENCE_ID));
+                            SharedStateEvidence.WRITER_OCCURRENCE_ID))
+                    .planned();
             String source = first(optionalString(version,
                     SharedStateEvidence.WRITER_SOURCE_KEY), writerOccurrence);
             String identity = reader.epoch + "\n" + location + "\n" + source

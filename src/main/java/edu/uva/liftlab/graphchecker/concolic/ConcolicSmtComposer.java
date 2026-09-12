@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
@@ -702,7 +703,7 @@ public final class ConcolicSmtComposer {
                         || occurrence.isEmpty()
                         || !occurrence.equals(ownerOccurrence)
                         || !planned.equals(
-                        PathObservation.plannedOccurrenceOf(occurrence))
+                        OccurrenceId.parse(occurrence).planned())
                         || !exactRoot) {
                     throw new IllegalArgumentException(
                             "manual input observation has incomplete exact"
@@ -718,8 +719,8 @@ public final class ConcolicSmtComposer {
                                     + ":occurrence=" + occurrence.equals(
                                     ownerOccurrence)
                                     + ":planned=" + planned.equals(
-                                    PathObservation.plannedOccurrenceOf(
-                                            occurrence))
+                                    OccurrenceId.parse(
+                                            occurrence).planned())
                                     + ":root=" + exactRoot);
                 }
                 String identity = "MANUAL." + CanonicalJson.sha256(

@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 
@@ -1770,8 +1771,8 @@ public final class ConcolicSummaryImporter {
         }
         if (replayGroupId.isEmpty()) return RESULT_REPLAY_GROUP_MISSING;
         if (activationOrdinal < 1 || plannedOccurrenceId.isEmpty()
-                || !occurrenceId.equals(plannedOccurrenceId + "#a"
-                + activationOrdinal)) {
+                || !occurrenceId.equals(OccurrenceId.parse(plannedOccurrenceId)
+                .withActivation(activationOrdinal).render())) {
             return RESULT_ACTIVATION_TUPLE_MALFORMED;
         }
         return "";

@@ -102,25 +102,6 @@ public final class PathObservation {
         return plannedOccurrenceId;
     }
 
-    /**
-     * OCC-1: the planned address behind one occurrence id.
-     *
-     * <p>An activation occurrence is named {@code <plannedAddress>#a<ordinal>}.
-     * A relation, a target reach query and a region plan are all keyed on the
-     * planned address the campaign scheduled, so a match between one of them
-     * and a per-activation summary is made on the address, not the activation.
-     * A string that carries no activation suffix -- a pre-OCC-1 occurrence --
-     * is returned unchanged.</p>
-     */
-    public static String plannedOccurrenceOf(String occurrenceId) {
-        String value = occurrenceId == null ? "" : occurrenceId;
-        int marker = value.lastIndexOf("#a");
-        if (marker <= 0 || marker + 2 >= value.length()) return value;
-        for (int index = marker + 2; index < value.length(); index++) {
-            if (!Character.isDigit(value.charAt(index))) return value;
-        }
-        return value.substring(0, marker);
-    }
     public String sourceKey() { return optionalString(raw, "sourceKey"); }
     public Scope scope() { return scope; }
     public String pathKey() { return pathKey; }

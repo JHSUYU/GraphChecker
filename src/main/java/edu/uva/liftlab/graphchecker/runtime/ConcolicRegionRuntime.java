@@ -31,7 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -2319,11 +2319,11 @@ public final class ConcolicRegionRuntime {
             String producerOccurrenceId, String consumerOccurrenceId) {
         String expectedProducer = active.activation
                 .attachProducerOccurrence(site.portId());
-        String actualProducer = PathObservation.plannedOccurrenceOf(
-                producerOccurrenceId);
+        String actualProducer = OccurrenceId.parse(
+                producerOccurrenceId).planned();
         String expectedConsumer = active.activation.occurrenceId;
-        String actualConsumer = PathObservation.plannedOccurrenceOf(
-                consumerOccurrenceId);
+        String actualConsumer = OccurrenceId.parse(
+                consumerOccurrenceId).planned();
         if (expectedProducer.isEmpty()
                 || !expectedProducer.equals(actualProducer)
                 || !expectedConsumer.equals(actualConsumer)) {
@@ -2345,10 +2345,10 @@ public final class ConcolicRegionRuntime {
     static boolean inboundMessageMatches(String portId,
                                          String producerOccurrenceId,
                                          String consumerOccurrenceId) {
-        String expectedProducer = PathObservation.plannedOccurrenceOf(
-                producerOccurrenceId);
-        String expectedConsumer = PathObservation.plannedOccurrenceOf(
-                consumerOccurrenceId);
+        String expectedProducer = OccurrenceId.parse(
+                producerOccurrenceId).planned();
+        String expectedConsumer = OccurrenceId.parse(
+                consumerOccurrenceId).planned();
         if (safe(portId).isEmpty() || expectedProducer.isEmpty()
                 || expectedConsumer.isEmpty()) {
             return false;
@@ -2356,11 +2356,11 @@ public final class ConcolicRegionRuntime {
         SymbolicMessageEnvelope.Entry carried =
                 SymbolicMessageEnvelope.peek(portId);
         return carried.present() && expectedProducer.equals(
-                PathObservation.plannedOccurrenceOf(
-                        carried.producerOccurrenceId()))
+                OccurrenceId.parse(
+                        carried.producerOccurrenceId()).planned())
                 && expectedConsumer.equals(
-                PathObservation.plannedOccurrenceOf(
-                        carried.consumerOccurrenceId()));
+                OccurrenceId.parse(
+                        carried.consumerOccurrenceId()).planned());
     }
 
     /** Whether every planner-authored input belongs to this exact message. */
@@ -6705,7 +6705,8 @@ public final class ConcolicRegionRuntime {
         /** This activation's own occurrence identity: address plus ordinal. */
         private String occurrenceId() {
             return activationOrdinal <= 0 ? safe(activation.occurrenceId)
-                    : safe(activation.occurrenceId) + "#a" + activationOrdinal;
+                    : OccurrenceId.parse(safe(activation.occurrenceId))
+                            .withActivation(activationOrdinal).render();
         }
 
         /**
@@ -8045,8 +8046,8 @@ public final class ConcolicRegionRuntime {
             this.readIdentity = optionalString(json, "readIdentity");
             this.candidateIdentity = optionalString(json, "candidateIdentity");
             this.readerTaskId = optionalString(json, "readerTaskId");
-            this.readerOccurrenceId = PathObservation.plannedOccurrenceOf(
-                    optionalString(json, "readerOccurrenceId"));
+            this.readerOccurrenceId = OccurrenceId.parse(
+                    optionalString(json, "readerOccurrenceId")).planned();
             this.consumerSiteId = optionalString(json, "consumerSiteId");
             this.consumerSiteOccurrence = optionalInteger(json,
                     "consumerSiteOccurrence", 0);
@@ -8055,8 +8056,8 @@ public final class ConcolicRegionRuntime {
             this.descriptor = javaTypeDescriptor(optionalString(json, "descriptor"));
             String valueType = optionalString(json, "valueType");
             String value = optionalString(json, "value");
-            String plannedTaskOccurrence = PathObservation.plannedOccurrenceOf(
-                    taskOccurrenceId);
+            String plannedTaskOccurrence = OccurrenceId.parse(
+                    taskOccurrenceId).planned();
             if (readIdentity.isEmpty() || candidateIdentity.isEmpty()
                     || readerTaskId.isEmpty() || readerOccurrenceId.isEmpty()
                     || !readerOccurrenceId.equals(plannedTaskOccurrence)
@@ -8857,13 +8858,13 @@ public final class ConcolicRegionRuntime {
                             || !portId.equals(optionalString(binding, "toInputPort"))) {
                         continue;
                     }
-                    String receiver = PathObservation.plannedOccurrenceOf(
-                            optionalString(binding, "toOccurrenceId"));
+                    String receiver = OccurrenceId.parse(optionalString(
+                            binding, "toOccurrenceId")).planned();
                     if (!occurrenceId.equals(receiver)) {
                         continue;
                     }
-                    String candidate = PathObservation.plannedOccurrenceOf(
-                            optionalString(binding, "fromOccurrenceId"));
+                    String candidate = OccurrenceId.parse(optionalString(
+                            binding, "fromOccurrenceId")).planned();
                     if (candidate.isEmpty()) continue;
                     if (!producerOccurrence.isEmpty()
                             && !producerOccurrence.equals(candidate)) {
@@ -8903,8 +8904,8 @@ public final class ConcolicRegionRuntime {
                             optionalString(binding, "fromOutputPort"))) {
                         continue;
                     }
-                    String producer = PathObservation.plannedOccurrenceOf(
-                            optionalString(binding, "fromOccurrenceId"));
+                    String producer = OccurrenceId.parse(optionalString(
+                            binding, "fromOccurrenceId")).planned();
                     if (!occurrenceId.equals(producer)) {
                         continue;
                     }
@@ -8917,8 +8918,8 @@ public final class ConcolicRegionRuntime {
                             optionalString(binding, "requestApi"))) {
                         exactSourceCandidate = false;
                     }
-                    String candidate = PathObservation.plannedOccurrenceOf(
-                            optionalString(binding, "toOccurrenceId"));
+                    String candidate = OccurrenceId.parse(optionalString(
+                            binding, "toOccurrenceId")).planned();
                     if (candidate.isEmpty()) continue;
                     if (!consumerOccurrence.isEmpty()
                             && !consumerOccurrence.equals(candidate)) {

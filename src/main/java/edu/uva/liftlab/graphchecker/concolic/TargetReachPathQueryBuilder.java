@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import com.google.gson.Gson;
@@ -775,8 +776,8 @@ public final class TargetReachPathQueryBuilder {
         // and the failure occurrence is selected among them by
         // directRequiredWitness.
         return region.equals(optionalString(summary, "regionId"))
-                && occurrenceId.equals(PathObservation.plannedOccurrenceOf(
-                        optionalString(summary, "occurrenceId")))
+                && occurrenceId.equals(OccurrenceId.parse(
+                        optionalString(summary, "occurrenceId")).planned())
                 && goalId.equals(optionalString(summary, "goalId"))
                 && ClosureGoalKind.fromTask(summary).capturesTargetReach();
     }
@@ -806,10 +807,10 @@ public final class TargetReachPathQueryBuilder {
                 optionalString(summary, "goalId"))
                 && (manifestSource.isEmpty()
                 || manifestSource.equals(summarySource))
-                && PathObservation.plannedOccurrenceOf(optionalString(manifest,
-                "occurrenceId")).equals(
-                PathObservation.plannedOccurrenceOf(optionalString(summary,
-                        "occurrenceId")));
+                && OccurrenceId.parse(optionalString(manifest,
+                "occurrenceId")).planned().equals(
+                OccurrenceId.parse(optionalString(summary,
+                        "occurrenceId")).planned());
     }
 
     /** This build's one decode of {@code summary}. */
