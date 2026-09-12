@@ -302,6 +302,7 @@ public final class ConcolicConstraintSolver {
 
     private static final class Encoder {
         private static final String SHARED_TERM_PREFIX = "container_dag__";
+        private final SmtSymbolTable smtSymbols = new SmtSymbolTable();
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
         private final Map<String, String> functionDeclarations =
                 new LinkedHashMap<>();
@@ -589,12 +590,14 @@ public final class ConcolicConstraintSolver {
             if (text == null || text.isEmpty() || text.charAt(0) != '(') {
                 return text;
             }
-            String digest = sha256("CONSUMER_MERGE_TERM_V1\u0000"
-                    + sort.name() + "\u0000" + text);
+            String identity = "CONSUMER_MERGE_TERM_V1\u0000"
+                    + sort.name() + "\u0000" + text;
+            String digest = sha256(identity);
             SharedTermDefinition definition = sharedTerms.get(digest);
             if (definition == null) {
                 definition = new SharedTermDefinition(
-                        SHARED_TERM_PREFIX + digest.substring(0, 24),
+                        smtSymbols.mintFromDigest(SHARED_TERM_PREFIX,
+                                digest, identity, 24),
                         sort, text);
                 sharedTerms.put(digest, definition);
             }
@@ -1326,8 +1329,8 @@ public final class ConcolicConstraintSolver {
                         String key = shape + "\u0000" + raw;
                         String name = containerStates.get(key);
                         if (name == null) {
-                            name = "container__" + safeName(raw) + "__"
-                                    + sha256(key).substring(0, 10);
+                            name = smtSymbols.mint("container__"
+                                    + safeName(raw) + "__", key, 10);
                             containerStates.put(key, name);
                             declarations.put(name, stateSort);
                         }
@@ -1456,8 +1459,8 @@ public final class ConcolicConstraintSolver {
                     }
                     String identity = ownerClass + "\u0000" + fieldOffset
                             + "\u0000" + javaType;
-                    String accessor = "container_field__"
-                            + sha256(identity).substring(0, 16);
+                    String accessor = smtSymbols.mint(
+                            "container_field__", identity, 16);
                     functionDeclarations.put(accessor,
                             "(declare-fun " + accessor + " (Ref) "
                                     + result.smt + ")");
@@ -1504,12 +1507,14 @@ public final class ConcolicConstraintSolver {
             }
             Sort sort = containerSort(value.sort);
             if (sort == Sort.UNKNOWN) return value;
-            String digest = sha256(sort.name() + "\u0000" + value.text);
+            String identity = sort.name() + "\u0000" + value.text;
+            String digest = sha256(identity);
             SharedTermDefinition definition = sharedTerms.get(
                     digest);
             if (definition == null) {
                 definition = new SharedTermDefinition(
-                        SHARED_TERM_PREFIX + digest.substring(0, 24),
+                        smtSymbols.mintFromDigest(SHARED_TERM_PREFIX,
+                                digest, identity, 24),
                         sort, value.text);
                 sharedTerms.put(digest, definition);
             }
@@ -1573,7 +1578,8 @@ public final class ConcolicConstraintSolver {
                     .widthOfJavaType(javaType);
             SymbolNames symbolNames = names.get(raw);
             if (symbolNames == null) {
-                symbolNames = new SymbolNames(raw, sort, width);
+                symbolNames = new SymbolNames(raw, sort, width,
+                        smtSymbols);
                 names.put(raw, symbolNames);
             }
             String name = symbolNames.solver;
@@ -1681,10 +1687,10 @@ public final class ConcolicConstraintSolver {
                     int count = dynamicByInput.getOrDefault(input, 0) + 1;
                     dynamicByInput.put(input, count);
                 }
-                String digest = sha256(read.identity + "\u0000"
-                        + read.value.sort + "\u0000" + read.value.text);
-                read.modelName = "container_target__"
-                        + digest.substring(0, 16);
+                String identity = read.identity + "\u0000"
+                        + read.value.sort + "\u0000" + read.value.text;
+                read.modelName = smtSymbols.mintFromDigest(
+                        "container_target__", sha256(identity), identity, 16);
                 if (read.value.sort == Sort.REF) {
                     read.nullModelName = read.modelName + "__is_null";
                     functionDeclarations.put(read.nullModelName,
@@ -1737,8 +1743,8 @@ public final class ConcolicConstraintSolver {
                 currentConstraintSymbols.add(
                         "ENVIRONMENT_PLACEHOLDER:" + identity);
             }
-            String name = "environment__" + safeName(identity) + "__"
-                    + sha256(identity).substring(0, 10);
+            String name = smtSymbols.mint("environment__"
+                    + safeName(identity) + "__", identity, 10);
             declarations.put(name, Sort.INT);
             JavaPrimitiveSmtSemantics.IntegralDomain longDomain =
                     JavaPrimitiveSmtSemantics.domainOfJavaType("J");
@@ -3712,20 +3718,24 @@ public final class ConcolicConstraintSolver {
         private final String floatingBits;
         private final String floatingNaN;
 
-        private SymbolNames(String raw, Sort sort, IntegralWidth width) {
+        private SymbolNames(String raw, Sort sort, IntegralWidth width,
+                            SmtSymbolTable symbols) {
             this.sort = sort;
             this.width = width;
             String safe = safeName(raw);
-            String suffix = safe + "__" + sha256(raw).substring(0, 10);
-            solver = "sym__" + suffix;
+            String digest = sha256(raw);
+            solver = symbols.mintFromDigest("sym__" + safe + "__",
+                    digest, raw, 10);
             String nullableKind = sort == Sort.STRING ? "string"
                     : sort == Sort.REF ? "reference" : "";
+            String nullIdentity = nullableKind + "-null\u0000" + raw;
             nullness = nullableKind.isEmpty() ? ""
-                    : "sym__" + nullableKind + "_is_null__" + safe + "__"
-                    + sha256(nullableKind + "-null\u0000" + raw)
-                    .substring(0, 10);
-            floatingBits = "sym__fpbits__" + suffix;
-            floatingNaN = "sym__fpisnan__" + suffix;
+                    : symbols.mint("sym__" + nullableKind + "_is_null__"
+                    + safe + "__", nullIdentity, 10);
+            floatingBits = symbols.mintFromDigest("sym__fpbits__" + safe
+                    + "__", digest, raw, 10);
+            floatingNaN = symbols.mintFromDigest("sym__fpisnan__" + safe
+                    + "__", digest, raw, 10);
         }
     }
 

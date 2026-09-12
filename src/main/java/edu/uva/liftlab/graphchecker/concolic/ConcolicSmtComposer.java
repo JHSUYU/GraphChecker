@@ -1114,6 +1114,7 @@ public final class ConcolicSmtComposer {
     }
 
     private static final class Emitter {
+        private final SmtSymbolTable smtSymbols = new SmtSymbolTable();
         private final List<String> preamble = new ArrayList<>();
         private final Map<String, String> declarations =
                 new LinkedHashMap<>();
@@ -2100,9 +2101,9 @@ public final class ConcolicSmtComposer {
                 String identity = function + "#" + count;
                 String scopedIdentity = currentSymbolScope + "\u0000"
                         + identity;
-                String name = scopedName("environment", identity) + "__"
-                        + CanonicalJson.sha256(scopedIdentity)
-                        .substring(0, 10);
+                String name = smtSymbols.mint(
+                        scopedName("environment", identity) + "__",
+                        scopedIdentity, 10);
                 declare(name, Sort.INT);
                 assertJavaIntegralDomain(name, Sort.INT, "J", identity);
                 return new Term(name, Sort.INT,
@@ -2254,10 +2255,9 @@ public final class ConcolicSmtComposer {
 
             Term result = guardedReadTerms.get(projectionIdentity);
             if (result == null) {
-                String projectionToken = CanonicalJson.sha256(
-                        projectionIdentity).substring(0, 16);
-                String value = READ_VALUE_PREFIX + smtName(readIdentity)
-                        + "__" + projectionToken;
+                String value = smtSymbols.mint(READ_VALUE_PREFIX
+                        + smtName(readIdentity) + "__",
+                        projectionIdentity, 16);
                 declare(value, sort);
                 String previousGuard = enterGuard("");
                 try {
@@ -2456,15 +2456,14 @@ public final class ConcolicSmtComposer {
             // Nested reads in the writer guard above must observe every use,
             // even though this stable arm's value semantics emit only once.
             if (!emittedGuardedReadArms.add(emittedKey)) return;
-            String token = CanonicalJson.sha256(emittedKey).substring(0, 16);
             String valueAssertion = assertWithoutCurrentGuard(
-                    "guarded_read_value__" + token,
+                    smtSymbols.mint("guarded_read_value__", emittedKey, 16),
                     "(=> " + arm.selector + " "
                             + and(Arrays.asList(arm.term.precondition,
                             "(= " + value + " " + arm.term.text + ")"))
                             + ")");
             String guardAssertion = assertWithoutCurrentGuard(
-                    "guarded_read_writer__" + token,
+                    smtSymbols.mint("guarded_read_writer__", emittedKey, 16),
                     "(=> " + arm.selector + " " + and(writerGuards) + ")");
 
             JsonObject evidence = new JsonObject();
@@ -2512,9 +2511,8 @@ public final class ConcolicSmtComposer {
                 for (String useId : useIds) {
                     GuardedReadUse use = uses.get(useId);
                     String assertion = assertWithoutCurrentGuard(
-                            "guarded_read_choice__"
-                                    + CanonicalJson.sha256(useId)
-                                    .substring(0, 16),
+                            smtSymbols.mint("guarded_read_choice__",
+                                    useId, 16),
                             conditionalExactlyOne(use.activation,
                                     use.selectors));
                     guardedChoiceAssertions.put(useId, assertion);
@@ -2524,9 +2522,8 @@ public final class ConcolicSmtComposer {
                 for (String selector : selectors) {
                     String key = read + "\n" + selector;
                     String activationAssertion = assertWithoutCurrentGuard(
-                            "guarded_read_activation__"
-                                    + CanonicalJson.sha256(key)
-                                    .substring(0, 16),
+                            smtSymbols.mint("guarded_read_activation__",
+                                    key, 16),
                             "(=> " + selector + " " + or(new ArrayList<>(
                                     selectorGuards.get(selector))) + ")");
                     guardedActivationAssertions.put(key,
@@ -2737,9 +2734,8 @@ public final class ConcolicSmtComposer {
                                 + nullness + ")";
                     }
                 }
-                String name = "merged_boundary__"
-                        + CanonicalJson.sha256(projectionIdentity)
-                        .substring(0, 20);
+                String name = smtSymbols.mint("merged_boundary__",
+                        projectionIdentity, 20);
                 defineConstant(name, sort, value);
                 if (sort == Sort.STRING) {
                     defineConstant(name + "__is_null", Sort.BOOL, nullness);
@@ -2898,9 +2894,9 @@ public final class ConcolicSmtComposer {
                     if (currentContainerRequirements != null) {
                         currentContainerRequirements.add(predicate);
                     } else {
-                        assertNamed("container_value_kind_"
-                                + CanonicalJson.sha256(predicate)
-                                .substring(0, 16), predicate);
+                        assertNamed(smtSymbols.mint(
+                                "container_value_kind_", predicate, 16),
+                                predicate);
                     }
                 }
 
@@ -3090,9 +3086,9 @@ public final class ConcolicSmtComposer {
             if (witness == null) {
                 String prefix = sort == Sort.REF
                         ? "structural_ref" : "structural_state";
-                String name = prefix + "__" + scopeToken(executionScope)
-                        + "__" + smtName(raw) + "__"
-                        + CanonicalJson.sha256(key).substring(0, 12);
+                String name = smtSymbols.mint(prefix + "__"
+                        + scopeToken(executionScope) + "__"
+                        + smtName(raw) + "__", key, 12);
                 witness = new Term(name, sort);
                 structuralWitnesses.put(key, witness);
                 declare(name, sort);
@@ -3111,9 +3107,9 @@ public final class ConcolicSmtComposer {
             String previousGuard = currentGuard;
             currentGuard = "";
             try {
-                assertNamed("allocated_reference_non_null_"
-                                + CanonicalJson.sha256(executionScope + "\u0000"
-                                + identity).substring(0, 16),
+                assertNamed(smtSymbols.mint(
+                                "allocated_reference_non_null_",
+                                executionScope + "\u0000" + identity, 16),
                         "(not (= " + reference + " nullRef))");
             } finally {
                 currentGuard = previousGuard;
@@ -3365,7 +3361,7 @@ public final class ConcolicSmtComposer {
                     : smtName(published);
             String held = configuredSourceRoots.putIfAbsent(base, raw);
             return held == null || held.equals(raw) ? base
-                    : base + "__" + sha256(raw).substring(0, 16);
+                    : smtSymbols.mint(base + "__", raw, 16);
         }
 
         /**
