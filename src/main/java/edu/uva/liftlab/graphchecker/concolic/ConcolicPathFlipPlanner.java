@@ -112,6 +112,9 @@ public final class ConcolicPathFlipPlanner {
         private final String familyDigest;
         private final String topologyEpoch;
         private final RegionPathWorklist.Bounds bounds;
+        /** One verification of the wave's table, shared by every member. */
+        private final SharedExpressionTable.Compactor compactor =
+                new SharedExpressionTable.Compactor();
 
         private Wave(List<JsonObject> allExecutionTasks,
                      List<JsonObject> allSummaries,
@@ -225,9 +228,12 @@ public final class ConcolicPathFlipPlanner {
             // A worklist repeats the same upstream PCs in several independent
             // flip rows.  Preserve the portable one-row contract while storing
             // their immutable expression DAG once per row as Merkle references.
-            // Solver workers expand only the one query they select.
+            // Solver workers expand only the one query they select.  Every row
+            // of the wave carries the one table this process just built, so
+            // one compactor verifies it for the whole wave instead of once per
+            // row; each row still publishes only the rows it reaches.
             for (int index = 0; index < result.tasks.size(); index++) {
-                result.tasks.set(index, SharedExpressionTable.compact(
+                result.tasks.set(index, compactor.compact(
                         result.tasks.get(index)));
             }
             Collections.sort(result.tasks, Comparator.comparing(

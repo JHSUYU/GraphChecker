@@ -68,6 +68,36 @@ public final class SharedExpressionTable {
         return compactDecodedArtifact(artifact, builder);
     }
 
+    /**
+     * Compacts a run of artifacts that carry one common expression table.
+     *
+     * <p>{@link #compact(JsonObject)} is one self-contained trust boundary: it
+     * parses and re-hashes every definition it is handed. A wave's flip rows
+     * are handed the <em>same</em> table object, so doing that per row re-read
+     * and re-hashed one table once per row, which grows with the product of
+     * the row count and the table size.</p>
+     *
+     * <p>This compactor keeps the definitions it has already verified, and the
+     * anchors it has already computed, across the artifacts of one such run.
+     * Each artifact still publishes only the rows reachable from itself, so
+     * each one carries exactly the table {@link #compact(JsonObject)} gave it.
+     * Use it only where the artifacts genuinely share their table: definitions
+     * verified for an earlier member of the run stay available to a later one,
+     * which is what makes the reuse sound and what a mixed batch would not
+     * support.</p>
+     */
+    public static final class Compactor {
+        private final Builder builder = new Builder();
+
+        public JsonObject compact(JsonObject artifact) {
+            if (artifact == null) return new JsonObject();
+            builder.collectTables(artifact);
+            builder.validateDefinitions();
+            builder.beginArtifact();
+            return compactDecodedArtifact(artifact, builder);
+        }
+    }
+
     /** Compacts a graph whose content-addressed definitions are trusted. */
     private static JsonObject compactDecodedArtifact(JsonObject artifact,
                                                      Builder builder) {
@@ -411,6 +441,12 @@ public final class SharedExpressionTable {
         private final Set<String> references = new LinkedHashSet<>();
         /** Anchors already checked by an incremental identity client. */
         private final Set<String> validatedReferences = new HashSet<>();
+        /**
+         * Definitions already walked for shape and acyclicity.  A definition
+         * is immutable and named by its own content, so one pass over it
+         * settles it for every artifact this builder goes on to compact.
+         */
+        private final Set<String> validatedDefinitions = new LinkedHashSet<>();
         private Set<String> reachable = Collections.emptySet();
 
         private Builder() {
@@ -519,11 +555,19 @@ public final class SharedExpressionTable {
         }
 
         private void validateDefinitions() {
-            Set<String> visited = new LinkedHashSet<>();
             Set<String> active = new LinkedHashSet<>();
             for (String anchor : definitions.keySet()) {
-                validateReachable(anchor, visited, active);
+                validateReachable(anchor, validatedDefinitions, active);
             }
+        }
+
+        /**
+         * Starts one artifact's reachability.  Definitions and anchors carry
+         * over; what this artifact publishes must not.
+         */
+        private void beginArtifact() {
+            references.clear();
+            reachable = Collections.emptySet();
         }
 
         private void validateReachable(String anchor, Set<String> visited,
