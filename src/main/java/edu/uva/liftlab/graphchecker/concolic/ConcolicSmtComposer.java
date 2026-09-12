@@ -1236,6 +1236,37 @@ public final class ConcolicSmtComposer {
     }
 
     /**
+     * Each recorded chain restricted to the arms one use can observe.
+     *
+     * <p>A chain is one read event's candidate list in version order, and a
+     * read identity may cover several events. Only the part of a chain that
+     * this use's own candidates appear in is evidence about which of them
+     * overwrites which; the rest belongs to another event and orders nothing
+     * here. Keeping the unrelated arms in was what left a read whose events
+     * each have their own candidates with no order at all - no single chain
+     * ordered every pair, so last-writer-wins was abandoned for the whole
+     * read and its INITIAL arm became selectable with its writer active.</p>
+     *
+     * <p>Order within a chain is preserved, and chains that contribute
+     * nothing to this use are dropped rather than returned empty.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static List<List<String>> scopedChains(List<List<String>> chains,
+                                           Collection<String> scope) {
+        Set<String> wanted = new LinkedHashSet<>(scope);
+        List<List<String>> restricted = new ArrayList<>();
+        for (List<String> chain : chains) {
+            List<String> kept = new ArrayList<>();
+            for (String selector : chain) {
+                if (wanted.contains(selector)) kept.add(selector);
+            }
+            if (!kept.isEmpty()) restricted.add(kept);
+        }
+        return restricted;
+    }
+
+    /**
      * Last writer wins, as one formula per candidate arm.
      *
      * {@code selectors} is the read's candidate arms in program order,
@@ -3113,10 +3144,12 @@ public final class ConcolicSmtComposer {
          * because an unordered pair is exactly the case where last-writer-wins
          * cannot say which of the two overwrites the other.
          */
-        private List<String> mergeGuardedReadOrder(String read,
+        private List<String> mergeGuardedReadOrder(String scope, String read,
                                                    List<String> lowered) {
-            List<List<String>> chains = guardedReadChains.getOrDefault(read,
+            List<List<String>> recorded = guardedReadChains.getOrDefault(read,
                     Collections.emptyList());
+            if (recorded.isEmpty()) return null;
+            List<List<String>> chains = scopedChains(recorded, lowered);
             if (chains.isEmpty()) return null;
             Set<String> before = new LinkedHashSet<>();
             Set<String> nodes = new LinkedHashSet<>();
@@ -3131,7 +3164,7 @@ public final class ConcolicSmtComposer {
                 }
             }
             if (!nodes.equals(new LinkedHashSet<>(lowered))) {
-                orderUnknown(read, "the merged chains do not cover every"
+                orderUnknown(scope, "the merged chains do not cover every"
                         + " lowered candidate arm");
                 return null;
             }
@@ -3144,7 +3177,7 @@ public final class ConcolicSmtComposer {
                     boolean backward = before.contains(order.get(right) + "\n"
                             + order.get(left));
                     if (forward == backward) {
-                        orderUnknown(read, forward
+                        orderUnknown(scope, forward
                                 ? "two lowerings order one pair of candidate"
                                 + " writers in opposite directions"
                                 : "two candidate writers are ordered by no"
@@ -3158,9 +3191,10 @@ public final class ConcolicSmtComposer {
             return order;
         }
 
-        private void orderUnknown(String readIdentity, String detail) {
-            guardedReadOrders.remove(readIdentity);
-            guardedReadOrderGaps.putIfAbsent(readIdentity, detail);
+        /** {@code scope} is one read's use, or the read while lowering. */
+        private void orderUnknown(String scope, String detail) {
+            guardedReadOrders.remove(scope);
+            guardedReadOrderGaps.putIfAbsent(scope, detail);
         }
 
         private void recordGuardedReadUse(String readIdentity,
@@ -3414,7 +3448,16 @@ public final class ConcolicSmtComposer {
                     guardedActivationAssertions.put(key,
                             activationAssertion);
                 }
-                emitGuardedReadOrder(read, selectors);
+                // One order per use, not one per read identity: a use is one
+                // read event with its own candidate list, and only candidates
+                // of the same event overwrite each other.  Arms of different
+                // events are never both live at one read, so demanding a
+                // single order over their union leaves reads that have one
+                // per event with no order at all.
+                for (String useId : useIds) {
+                    emitGuardedReadOrder(read, useId,
+                            new ArrayList<>(uses.get(useId).selectors));
+                }
             }
         }
 
@@ -3432,27 +3475,29 @@ public final class ConcolicSmtComposer {
          * Nothing is emitted for the last arm in the chain: it has no later
          * writer to forbid, and its positive obligation is already asserted.
          */
-        private void emitGuardedReadOrder(String read,
+        private void emitGuardedReadOrder(String read, String useId,
                                           List<String> lowered) {
-            if (guardedReadOrderGaps.containsKey(read)) return;
-            List<String> chain = mergeGuardedReadOrder(read, lowered);
+            String scope = read + "\n" + useId;
+            if (guardedReadOrderGaps.containsKey(scope)) return;
+            Collections.sort(lowered);
+            List<String> chain = mergeGuardedReadOrder(scope, read, lowered);
             if (chain == null) return;
             List<String> activity = new ArrayList<>(chain.size());
             for (String selector : chain) {
                 String held = guardedReadArmActivity.get(read + "\n"
                         + selector);
                 if (held == null) {
-                    orderUnknown(read, "one candidate writer has no recorded"
+                    orderUnknown(scope, "one candidate writer has no recorded"
                             + " activity condition");
                     return;
                 }
                 activity.add(held);
             }
-            guardedReadOrders.put(read, chain);
+            guardedReadOrders.put(scope, chain);
             List<String> axioms = lastWriterWins(chain, activity);
             for (int index = 0; index < chain.size(); index++) {
                 if (axioms.get(index).isEmpty()) continue;
-                String key = read + "\n" + chain.get(index);
+                String key = scope + "\n" + chain.get(index);
                 guardedOrderAssertions.put(key, assertWithoutCurrentGuard(
                         smtSymbols.mint("guarded_read_order__", key, 16),
                         axioms.get(index)));
@@ -3484,15 +3529,28 @@ public final class ConcolicSmtComposer {
                 Collections.sort(guards);
                 for (String guard : guards) activations.add(guard);
                 read.add("activationGuards", activations);
+                // One ordered chain per use: the rows name which read event
+                // the order belongs to, because two events of one read need
+                // not order the same arms.
                 JsonArray writerOrder = new JsonArray();
-                for (String selector : guardedReadOrders.getOrDefault(identity,
-                        Collections.emptyList())) {
-                    JsonObject row = new JsonObject();
-                    row.addProperty("selector", selector);
-                    row.addProperty("orderAssertion",
-                            guardedOrderAssertions.getOrDefault(
-                                    identity + "\n" + selector, ""));
-                    writerOrder.add(row);
+                List<String> orderedScopes = new ArrayList<>();
+                for (String scope : guardedReadOrders.keySet()) {
+                    if (scope.startsWith(identity + "\n")) {
+                        orderedScopes.add(scope);
+                    }
+                }
+                Collections.sort(orderedScopes);
+                for (String scope : orderedScopes) {
+                    String useId = scope.substring(identity.length() + 1);
+                    for (String selector : guardedReadOrders.get(scope)) {
+                        JsonObject row = new JsonObject();
+                        row.addProperty("useIdentity", useId);
+                        row.addProperty("selector", selector);
+                        row.addProperty("orderAssertion",
+                                guardedOrderAssertions.getOrDefault(
+                                        scope + "\n" + selector, ""));
+                        writerOrder.add(row);
+                    }
                 }
                 read.add("writerOrder", writerOrder);
                 JsonArray uses = new JsonArray();
@@ -3538,12 +3596,16 @@ public final class ConcolicSmtComposer {
             List<String> ungrouped = new ArrayList<>(
                     guardedReadOrderGaps.keySet());
             Collections.sort(ungrouped);
-            for (String identity : ungrouped) {
+            for (String scope : ungrouped) {
                 JsonObject row = new JsonObject();
                 row.addProperty("reason", GUARDED_READ_ORDER_UNKNOWN);
-                row.addProperty("readIdentity", identity);
+                int split = scope.indexOf('\n');
+                row.addProperty("readIdentity",
+                        split < 0 ? scope : scope.substring(0, split));
+                row.addProperty("useIdentity",
+                        split < 0 ? "" : scope.substring(split + 1));
                 row.addProperty("detail",
-                        guardedReadOrderGaps.get(identity));
+                        guardedReadOrderGaps.get(scope));
                 orderGaps.add(row);
             }
             model.add("orderGaps", orderGaps);
