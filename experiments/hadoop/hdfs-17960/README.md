@@ -11,8 +11,13 @@ The workload follows the upstream reproduction: it records the deletion edits
 with ordered deletion enabled, then restarts the NameNode with ordered deletion
 disabled. The restarted NameNode caches that configuration value in
 `SnapshotManager.snapshotDeletionOrdered`, and the production symbolic-source
-hook publishes that boolean. Replay removes the same snapshot twice, leaving
-the counter different from the actual snapshot list. `saveNamespace` then
+hook publishes that boolean. Replay removes the snapshot *once*: the second
+deletion record finds no such snapshot, and because ordered deletion is now
+off and the image is not yet loaded, `DirectorySnapshottableFeature.removeSnapshot`
+takes its tolerance path and returns without removing anything instead of
+throwing. `SnapshotManager.deleteSnapshot` decrements `numSnapshots`
+unconditionally after that call, so the counter is decremented twice for one
+removal and ends up different from the actual snapshot list. `saveNamespace` then
 reaches the annotated snapshot-count check in
 `FSImageFormatPBSnapshot.Saver.serializeSnapshotSection`. The concolic summary
 keeps the configuration value symbolic, and Z3 validates the `false` valuation
@@ -22,7 +27,8 @@ through the replay mutations to that target.
 ordered deletes -> duplicate edit records -> NameNode restart
                                             |
                                             +-> symbolic ordered=false
-                                                -> duplicate removal
+                                                -> second removal tolerated,
+                                                   counter still decremented
                                                 -> count/list mismatch
                                                 -> annotated check
 ```
@@ -41,10 +47,16 @@ reaches iteration 9, so the default bound of 8 cannot retain the complete state
 transition.
 
 A successful fresh campaign publishes all observed region paths and
-consumer-anchor families on one immutable global-wave snapshot. A sound SAT
-witness may be `FINAL_READY` while unobserved sibling paths remain coverage
-telemetry; claiming closed UNSAT additionally requires complete propagation,
-GuardedRead, path, and topology coverage. The explicit source observations
+consumer-anchor families on one immutable global-wave snapshot. `FINAL_READY`
+is a verdict about the emitted candidate formula, not about the witness being
+tied to the root: unobserved sibling paths are coverage telemetry only while
+the SOLVE stage reports no degeneracy. When it does -- and on this case
+`BooleanReachConditionExtractor` still reports
+`DEGENERATE_UNCONSTRAINED_ROOT_SPACE`, with both valuations SAT -- the sibling
+cases are what the witness is escaping through, so `FINAL_READY` licenses no
+claim about the root and the gap has to be closed first. Claiming closed UNSAT
+additionally requires complete propagation, GuardedRead, path, and topology
+coverage. The explicit source observations
 give overlapping views of the physical configuration event one Boolean
 identity. Z3 should report
 `false` as SAT and `true` as UNSAT.

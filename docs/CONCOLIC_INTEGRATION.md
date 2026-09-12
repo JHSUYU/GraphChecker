@@ -135,6 +135,26 @@ local path condition. All candidates in the bounded write set remain available
 to this choice. An incomplete set remains a coverage gap and cannot support a
 closed final claim.
 
+Requiring the selected arm's writer is necessary but not sufficient: on its own
+it leaves every *later* writer to the same location free to run as well, so a
+read could take a value its own program order has already overwritten. The
+model therefore also says that the selected arm is the last write the read
+could have seen. The order is the VM's own -- each candidate carries the
+session-monotonic `fieldVersionId` of the version it names, and a read's
+candidate list is the location's retained version list taken under the version
+lock at the read, so every candidate was published before the read and the ids
+order them exactly. For candidates `w_1 < ... < w_n`, selecting `w_k` implies
+`w_k` is active and no `w_j` with `j > k` is, where "active" is the same
+conjunction of writer case closure and local path condition the arm's writer
+obligation already asserts. The earliest candidate is the location's `INITIAL`
+version, so selecting it forbids every tracked writer. Each arm but the last
+carries one named `guarded_read_order__` assertion. Version ids minted in
+different symbolic sessions do not compare, so one stable read lowered from
+several sessions keeps an order only where the sessions agree; a read whose
+candidates admit no single order keeps the rest of its model and is reported as
+`GUARDED_READ_ORDER_UNKNOWN` in the guarded-read model, which is telemetry and
+not a refusal.
+
 ## Local path conditions and symbolic merging
 
 Each region records the path condition it executed. RPC propagation does not
