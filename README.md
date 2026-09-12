@@ -86,9 +86,11 @@ the `config` command prints the result.
 At minimum, configure the workload repository/module, production classes,
 classpath, target, loop-bound declarations, workload command and test identity,
 custom VM, scheduling/solver bounds, and fresh output/cache roots. Configure
-`causynth_communication_mappings` when the target crosses a message boundary.
+`causynth_communication_mappings` when the target crosses a message boundary,
+and `causynth_symbolic_inputs` to narrow root minting to a declared allowlist.
 An empty loop-bound file explicitly means that the selected workload has no
 retained condition-controlled loop requiring a bound.
+`docs/CONCOLIC_INTEGRATION.md` describes each declaration file.
 
 `solver_timeout_ms` is the per-query Z3 budget for every solver stage,
 including each region path-flip query. A flip query that exhausts it is
@@ -97,11 +99,18 @@ recorded as the `SOLVER_TIMEOUT` exploration status and named as a
 closed UNSAT conclusion is withheld. Raise it when a host runs several
 campaigns at once.
 
+`schedule_max_jobs` caps how many workload JVMs a stage starts at once. The
+members of one linked replay bundle always run in one JVM, so this bounds
+concurrent bundles, not concurrent regions. `clock_skew_ms` (default 300000)
+bounds how far a witness may move a wall clock from the value that read
+returned; cross-node skew is a failure mechanism the checker explores, so it is
+bounded rather than pinned.
+
 `region_path_max_waves` (default 12, override
 `CAUSYNTH_REGION_PATH_MAX_WAVES`) bounds the EXPLORE closure loop. That loop
 normally ends at its own fixed point, when every member's
-`region_path_manifest.json` reports `state=CLOSED`. Two guards keep a closure
-that is not converging from running forever:
+`region_path_manifest.json` reports `state=CLOSED`. Two guards keep a closure that is not converging from
+running forever:
 
 - **No progress.** A wave that proposes exactly the obligations the previous
   wave proposed, over an exploration-record set whose verdict histogram is
@@ -179,14 +188,15 @@ in `schedule/frozen-inputs/`. Accepted outcomes are:
 `result.json`: one `blockers` row per reason and one `whyNotAccepted` line,
 which EMIT also prints. A claim is accepted only when that list is empty, so a
 run needs zero aggregate gaps, a root space the solver decided is constrained,
-every declared `WIRE_FLOW` realized -- as an exchange port pair or a consumer
-boundary family -- a witness
-some root flips, and matching fresh provenance. Closed selected-path authority
-is required for `UNSAT_CLOSED` alone; open sibling paths leave a SAT candidate
-accepted. The Composer's `finalStatus: FINAL_READY` states that the formula is
-complete, not that the run was accepted. A zero process exit or an old SMT
-file is not sufficient. `docs/CONCOLIC_INTEGRATION.md` holds the whole blocker
-table, and the policy replays offline on any published `schedule/final/`.
+every declared `WIRE_FLOW` reaching the formula by its port family or by the
+field its consumer assigns, a fatal read whose own container was reconstructed,
+an injected fault marker that decides the verdict, and matching fresh
+provenance. Closed selected-path authority is required for `UNSAT_CLOSED`
+alone; open sibling paths leave a SAT candidate accepted. The Composer's
+`finalStatus: FINAL_READY` states that the formula is complete, not that the
+run was accepted. A zero process exit or an old SMT file is not sufficient.
+`docs/CONCOLIC_INTEGRATION.md` holds the whole blocker table, and the policy
+replays offline on any published `schedule/final/`.
 
 ## Development checks
 

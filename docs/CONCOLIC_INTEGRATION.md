@@ -4,15 +4,41 @@ This document describes the boundary between instrumented Java code,
 GraphChecker, and the custom JDK. The graph chooses what to observe and replay;
 the custom JDK supplies the symbolic values used by the SMT query.
 
-## Analysis and execution identity
+## From the annotated target to a runtime plan
 
 Static analysis starts at the annotated target and finds a backward dependency
 closure of region skeletons, communication sites, shared-state sites, explicit
-symbolic sources, and retained loops. The first runtime trace resolves that
-skeleton to concrete region occurrences, message exchanges, selected
-shared-state reads, bounded writer snapshots, and topology. Those observations
-refine the closure and instrumentation plan. They do not create
-producer-to-consumer value equations.
+symbolic sources, and retained loops. That candidate graph and its skeletons
+are the only static product; every address in the plan comes from a recording.
+
+Two traces resolve it, and one finalization mints from both:
+
+1. **Pass-1 lite trace.** A cheap instrumented run of the workload. It says
+   which skeleton regions actually activated, which causal anchors they
+   activated under, and what the topology is. Nothing symbolic is recorded.
+2. **Pass-2 rich trace.** Only the regions pass 1 selected are instrumented
+   richly: symbolic sources, message envelopes, shared-state reads with their
+   bounded writer snapshots, and loop counts.
+3. **Refinement** folds the rich observations back into the dependency graph,
+   dropping edges no execution took and adding the shared locations the
+   recording showed are read across regions.
+4. **Finalization** mints each region occurrence exactly once, from the
+   refined graph, and records on every plan row the basis it was admitted
+   under. Every address in the plan is an address some recording produced.
+
+A plan row's `admissionBasis` is one of: the target's own cone; a declared
+communication endpoint (`rootAuthority: COMMUNICATION_ENTRY`); or
+`SHARED_LOCATION_DEMAND_V1`, the transitive demand that pulls in whoever writes
+a shared location the cone reads, with `demandDepth` recording how many hops
+back it sits. That demand is gated by the care set -- the locations the target's
+cone actually reads -- so a workload's unrelated shared state does not enter
+the plan.
+
+The result is `concolic_region_plan.jsonl`: one row per planned occurrence,
+carrying its region, occurrence id, source key, root selector, admission basis,
+retained loops, `closureGoals` (including the symbolization actions and their
+recorded `primitiveValue`) and `communicationHandoffs`. Every later stage
+addresses the recording through this file.
 
 A scheduled member names one region occurrence and one local path goal:
 
@@ -54,11 +80,27 @@ A schedule is drawn from exactly one closure. `ConcolicScheduler
 --closure-mode` is `candidate` (every occurrence the frozen region plan
 declares), `seed-replay` (only the occurrences a seed activation can replay) or
 `active-observed` (only the occurrences this iteration's summaries observed),
-and the campaign states which one each stage uses.
+and the campaign states which one each stage uses. `schedule_max_jobs` caps how
+many workload JVMs a stage starts at once; members of one linked bundle are
+never split across jobs.
 
 All members in the selected causal closure form one linked replay bundle. They
 execute in one workload JVM so native expression handles, shared-state
 versions, and boundary identities remain valid across the whole causal chain.
+A bundle is seeded from the plan, not from whatever a worker directory happens
+to hold, so the same bundle replays identically in any stage.
+
+Two envelopes carry the VM's evidence out of that JVM:
+
+- `SHARED_FIELD_VERSIONS` -- for each selected shared location, the retained
+  version list under the version lock at the read. Each version carries its
+  session-monotonic `fieldVersionId`, its writer case, and its expression. The
+  earliest version is `INITIAL`; when the VM could capture the location's whole
+  content at that point it also publishes `initialSnapshot`, and membership
+  over the initial state is then decidable rather than free.
+- `CONCOLIC_PATH_CONDITION_RANGE` -- the region-local path condition, delimited
+  so the importer can tell one region's conditions from its callees' without
+  re-deriving them.
 
 ## Explicit symbolic roots
 
@@ -162,11 +204,36 @@ copy an upstream region's path condition into the receiver thread. Instead,
 the importer keeps every region case with its own selector and local path
 condition.
 
-Offline closure groups consumer anchors by stable boundary family. Every
-observed payload becomes one family arm selected by the exact producer case.
-The selector implies that case's local path condition. Nested anchors are
-resolved recursively, so a multi-hop dependency shares its intermediate merge
-instead of enumerating the Cartesian product of all upstream paths.
+Offline closure groups consumer anchors by stable boundary family, one family
+per read event. A family's `boundaryKind` is `FIELD_READ` for a shared-state
+read or `RPC_ATTACH` for a value that crossed a wire. Every observed payload
+becomes one family arm selected by the exact producer case, and the selector
+implies that case's local path condition. One physical read consumed by several
+cases is one family addressed by all of them: sharing is not ambiguity, so no
+second ordering mechanism is introduced.
+
+Resolution is transitive. A boundary leaf that arrives inside another family's
+arm payload is rewritten by the same walk, which pulls that producer's cases in
+recursively until the cone ends in roots, `INITIAL` versions or constants --
+NN to client to DN is one chain, not three. The `active` set guards cycles
+(`CONSUMER_BOUNDARY_FAMILY_CYCLE`), and each resolved family records
+`boundaryDepth`: 0 for a boundary the target reads directly, 1 for one that
+arrived inside another boundary's payload, and so on. A multi-hop dependency
+therefore shares its intermediate merge instead of enumerating the Cartesian
+product of all upstream paths.
+
+Two facts the closure publishes rather than hides:
+
+- `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` -- a whole-state carrier whose
+  `INITIAL` version has no complete content snapshot. Membership over its
+  initial state is then a free Boolean, so "the key was never there" is
+  available at zero cost. The formula is still emitted, because the same read's
+  writer arms are real; the gate is what refuses a witness that stands on it.
+- An attach family that reached no arm and that no consumer leaf referenced is
+  named `RPC_ATTACH_SENDER_EXPRESSION_MISSING` once, by an end-of-closure
+  sweep. A family nothing referenced but which some other slice may own stays
+  telemetry in the wire-flow ledger with
+  `reason: CONSUMER_BOUNDARY_FAMILY_UNREFERENCED`.
 
 For two independent dependencies with two cases each, the formula contains two
 two-arm merges. It does not enumerate four whole executions. For a dependent
@@ -199,6 +266,18 @@ Repeated transfers and shared-state accesses keep their loop/boundary ordinal
 and candidate writer versions. Loop iterations do not become separate
 symbolic-merge cases merely because they repeat.
 
+`RegionPathWorklist` is the per-member record of that loop. Each member writes
+its own `region_path_worklist.jsonl` -- the sibling branches still to flip and
+the verdict each obligation reached -- and its own `region_path_manifest.json`,
+whose `state` is `CLOSED` only at the closure-wide fixed point. The loop ends
+at that fixed point, or at one of two guards -- a wave that proposes exactly
+the previous wave's obligations over an unchanged verdict histogram has learned
+nothing, and failing that the loop stops after `region_path_max_waves` waves.
+Either stop is written onto every still-pending worklist as a
+`REGION_PATH_CLOSURE_NO_PROGRESS` or `REGION_PATH_WAVE_BUDGET_REACHED`
+coverage gap. Both are telemetry: an unexplored sibling path withholds a closed
+UNSAT conclusion and says nothing about a SAT candidate.
+
 ## Result contract
 
 Every imported region summary carries `schemaVersion`, `kind`, `goalId`,
@@ -220,6 +299,8 @@ waves settle, matching each worklist report on `plannedOccurrenceId`.
 `sharedExpressionTable` holds the hash-consed expression definitions the row's
 own payloads refer to.
 
+## Composition
+
 The composer consumes the closure-wide cases and the target predicate. Its
 manifest reports consumer-boundary families, case-to-PC dependencies,
 GuardedRead choices, field versions and reads, propagation gaps, and
@@ -228,9 +309,84 @@ selectors, path conditions, and propagated values needed for a sound SAT
 witness. `FINAL_READY` is stage-local: it states that the formula is complete,
 not that the campaign proved anything. Open path, propagation, and
 bounded-candidate coverage remains telemetry and prevents only a closed UNSAT
-conclusion. The generated SMT therefore follows the recorded causal chain
-directly from explicit roots through propagated consumer expressions to the
-target condition.
+conclusion. The generated SMT follows the recorded causal chain directly from
+explicit roots through propagated consumer expressions to the target condition.
+
+**Case partitions.** A region occurrence's local cases form an exactly-one
+partition. The manifest separates the two kinds, because a consumer may pin one
+and not the other. `caseSelectorPartitions` are the partitions the formula
+asserts unconditionally. `conditionalCaseSelectorPartitions` are those of a
+fault-controlled occurrence, whose predecessor's marker decides whether any of
+its cases runs at all; the formula states that as a
+`request_fault_control__<edge>` assertion -- the fault implies every case of the
+controlled occurrence is idle, and its negation implies the exactly-one
+partition. Advertising such a partition unconditionally would invite a consumer
+to pin it and silently freeze the marker.
+
+**Containers.** A Java container is lowered as a state witness, not as a fresh
+symbol per access: `AssocState` for maps (`assoc_present`, `assoc_values`,
+`assoc_order`, `assoc_position`) and `IndexedState` for lists and arrays. Size
+is a closed form of the operations applied, so `size()` after a put is derived
+rather than assumed, and an allocated container's size is stated once against
+the Java int domain rather than as any one path's precondition. Element and
+field reads project a scalar out of the state with the declared Java type, so
+the arithmetic downstream is the program's.
+
+**Wire flows.** `wireFlowBindings` is the ledger: one row per boundary family
+on a declared port, carrying `portId`, `armCount`, `referenced`, `valueBound`,
+its lowered `solverTerm`, and, where the mapping declares one, `consumerField`
+and `consumerFieldRead`. The declared ports come from the plan's
+`communicationHandoffs`; the declared consumer fields come from
+`--mappings`, the experiment's `communication-mappings.jsonl`. The refusal
+`WIRE_FLOW_VALUE_UNBOUND[<port>]` is decided **per flow**, not per family: a
+flow is unbound only when no family on its port reached a term and the field
+its consumer assigns was not read either. One lowered family out of eleven is
+the wire's value being in the formula; the other ten stay in the ledger as
+telemetry.
+
+## Reading the formula
+
+`BooleanReachConditionExtractor` solves the composed formula and publishes
+`z3-result.json`. It enumerates the Java-boolean roots -- the injected fault
+markers and configured boolean sources -- one valuation per assignment, and
+leaves every other root existential. Each valuation row carries:
+
+- `values`, the boolean assignment, and `status`;
+- `pinnedCaseSelectors`, the case frontier the attempt that decided it was
+  solved under, so a reader can tell a causal verdict from one the frontier
+  decided;
+- `existentialWitness`, the model's value for each non-boolean root;
+- `witnessMechanisms`, each root the witness moved off its recorded value,
+  named as what it is: `MARKER_FLIPPED` for an injected fault, `CLOCK_SKEW`
+  with its `skewMillis` for a wall clock, `ROOT_MOVED` otherwise.
+
+Three further readings sit beside the table:
+
+- **`existentialRootProbe`.** One neighbouring value per existential root, with
+  the others pinned to the witness. A rejected neighbour is the solver's own
+  proof that the root decides the target. A candidate outside a clock's
+  declared `ClockRootPhysics` window is not solved at all; it is recorded
+  `status: "skipped", rejectedBy: "WINDOW_BOUNDARY"`, because a value the
+  root's own physics forbids is refused by that assertion and not by the
+  target.
+- **`mechanismNecessity`.** For each declared marker whose *recorded* polarity
+  is satisfiable, the mechanisms that polarity names are grouped by kind -- all
+  wall clocks together, since "these nodes' clocks disagreed" is the mechanism
+  and one clock is not -- pinned to their recorded values, and solved again. A
+  polarity that survives that was not carried by the mechanism. A model assigns
+  every free root, so a witness always names something; this is how a named
+  mechanism is told from decoration.
+- **`fatalStateSelection`.** The arms of the fatal predicate's own guarded
+  read, with the one the model chose marked. The `fatal_path` assertion names
+  one `merged_boundary__` constant, one equality binds it to a read's value
+  term, and the manifest holds that read's arms.
+
+A composition the composer refused is still solved. Everything above is
+published with `evidenceOnly: true`, the eligibility gap stays in `gaps`, and
+the state stays `CANDIDATE_WITH_GAPS`: a refusal is a reason to withhold a
+verdict, not a reason to withhold a reading. Because a refusal also fails the
+formula closed, evidence-only solving lifts that one `(assert false)` marker
+and reports how many it lifted in `failClosedMarkersLifted`.
 
 ## The claim
 
@@ -257,47 +413,75 @@ else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
 | --- | --- |
 | `COMPOSER_NOT_FINAL_READY` | the manifest's `finalStatus` is not `FINAL_READY` |
 | `COMPOSITION_GAPS_UNRESOLVED` | a Composer refusal or a solver gap is open -- the same rows EMIT counts in `gaps.json` |
+| `DECLARED_WIRE_FLOWS_UNREALIZED` | a declared `WIRE_FLOW` reached the formula by neither route; the subject names those flows |
+| `UNDETERMINED_INITIAL_STATE` | the fatal read's own container carries an `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` gap, so membership over its initial state is a free choice available under every arm |
+| `FAULT_MARKER_NOT_DETERMINING` | the experiment injects a fault marker, both polarities are satisfiable, and no named mechanism the target cannot do without explains the polarity that has no fault |
 | `DEGENERATE_ROOT_SPACE` | `degeneracyCheck` is `DEGENERATE_*`: the target provably ignores every root |
 | `UNDECIDED_ROOT_SPACE` | `degeneracyCheck` is `UNDECIDED_*`: the question was never decided, so it is not answered |
 | `TARGET_UNCONSTRAINED_BY_ROOTS` | a `REACHABLE` result where no single root flip changes satisfiability and no existential perturbation was rejected |
-| `DECLARED_WIRE_FLOWS_UNREALIZED` | `communication-mappings.jsonl` declares a `WIRE_FLOW` the composition realized neither side of; the blocker names those flows |
 | `WITNESS_UNINFORMATIVE` | the existential witness is every-zero, or identical under every satisfying valuation, while no perturbation of it was rejected |
 | `SOLVER_UNDECIDED_VALUATIONS` | the solver returned neither sat nor unsat on an enumerated valuation |
 | `UNSAT_CLOSURE_INCOMPLETE` | an `UNREACHABLE` result without closed selected-path authority |
 | `NO_EXACT_REACHABILITY` | the solver stage reached no exact reachability decision |
 
-The root-space rule is the one the previous jq gate did not have. A witness is
-evidence only if the target predicate depends on a symbolic root: two
-enumerated valuations that differ in exactly one Boolean root and disagree on
-satisfiability show that dependence, and so does a rejected existential
-perturbation. Without either, the formula and the roots are disconnected and
-the witness names nothing, whatever the formula satisfies. That check does not
-apply to an `UNREACHABLE` result, which has no witness to tie to a root.
+A witness is evidence only if the target predicate depends on a symbolic root.
+Two enumerated valuations that differ in exactly one Boolean root and disagree
+on satisfiability show that dependence; so does a rejected existential
+perturbation inside the root's own declared physics. Without either, the
+formula and the roots are disconnected and the witness names nothing, whatever
+the formula satisfies. That check does not apply to an `UNREACHABLE` result,
+which has no witness to tie to a root.
+
+Where the experiment injects a marker, the marker is the hypothesis and the
+verdict has to rest on it. `constrainsRootSpace` on some other root is evidence
+about that root, so the claim also records `rootSpace.probedRoot` -- which root
+the probe perturbed and whether it was rejected.
 
 `UNSAT_CLOSURE_INCOMPLETE` is required for `UNSAT_CLOSED` and for nothing
 else: one connected SAT witness stays valid while sibling paths are open.
 
+**Reading a campaign as passed.** The claim is `SAT_CANDIDATE`, `blockers` is
+empty and `finalStatus` is `FINAL_READY`; and on the plain `candidate.smt2`,
+unpinned, the buggy polarity of the case's declared root is satisfiable while
+the other polarity is not -- or, where the mechanism is not a marker, a
+`mechanismNecessity` row names a mechanism the target cannot do without.
+
 ### Realizing a declared wire flow
 
-A declared `WIRE_FLOW` becomes real in a composition by either of two
-mechanisms, and both count:
+A declared `WIRE_FLOW` reaches the formula by either of two routes, and the
+claim's `rootSpace.wireFlows` row says which one answered in `realizedBy`:
 
-- **an exchange port pair.** The runtime plan binds the flow's
-  `XCH.<exchangeSiteKey>.<req|resp>.<flow>` ports to regions, `side: "IN"` for
-  the consumer and `side: "OUT"` for the producer. The flow is realized when
-  the composition drew a case, a guarded read or a witness from a region on
-  each side. This is the mechanism by which the hdfs-17899 SASL
-  `data-encryption-key-id` flow is real.
-- **a consumer boundary family.** The Composer publishes these as
-  `casePathConditionDependencies` rows of kind
-  `CONSUMER_BOUNDARY_CASE_DEPENDENCY`, whose `boundaryKind` says whether the
-  family came from an `RPC_ATTACH` or a `FIELD_READ`. A declared flow whose
-  ports no plan bound is realized when the composition realized any such
-  family, because nothing else can single that flow out.
+- **`PORT_FAMILY`** -- some boundary family on the flow's own
+  `XCH.<exchangeSiteKey>.<req|resp>.<flow>` port was lowered into a term. This
+  is the direct route and it is reported first when both hold.
+- **`CONSUMER_FIELD_READ`** -- the value left the wire on arrival. The consumer
+  assigned it to a field and everything downstream reads that field, so the
+  term the wire's value ends up in is a guarded read of that field and the
+  port's own family is a term nobody was going to build. Only the experiment
+  knows which field that is, so the mapping declares it as `consumerField`,
+  named as the guarded-read model names a field -- by the class that declares
+  it, for example
+  `org.apache.hadoop.security.token.delegation.DelegationKey#expiryDate`.
 
-`ClaimPolicy` reports one row per declared flow in `rootSpace.wireFlows`
-(`flow`, `realized`, `mechanism`, and whether each side was realized), and the
-blocker's `subject` is the comma-joined names of the flows that were not
-realized -- a count cannot be acted on. Counting consumer boundary families
-alone called the realized SASL flow of hdfs-17899-bug3 unrealized, and reading
-them from the retired `symbolicPropagation` array reported none at all.
+A flow that declares no `consumerField` has only the port route. The composer
+makes the same join before refusing, so the two stages cannot disagree about
+one composition.
+
+## Experiment inputs
+
+Four declarations per experiment directory, read by `run_engine.sh` and
+resolvable with `@config`, `@repo` and `@project`:
+
+| File | Role |
+| --- | --- |
+| `symbolic-inputs.jsonl` | the root allowlist, one `{"regionId", "fieldSignatures": [...]}` row per region: which observed application sources this case may mint as symbolic roots. Configured with `causynth_symbolic_inputs`; when a case declares it, minting is narrowed to exactly those fields, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none mints only the roots the plan's own symbolization actions name. |
+| `communication-mappings.jsonl` | one `WIRE_FLOW` row per declared cross-node value: `id`, `transport`, `direction`, `javaType`, an exact `producer` and `consumer` endpoint, and optionally `consumerField` -- the field the consumer assigns the received value to, which is the second route a flow can reach the formula by. |
+| `loop-bounds.jsonl` | the finite unroll for every retained condition-controlled loop. An empty file explicitly means the workload has no such loop. |
+| `target.yaml` | the `exception_target_id` the annotated throw site carries. |
+
+`workflow.properties` holds the knobs: `schedule_max_jobs` (workload JVMs per
+stage), `solver_timeout_ms` (per-query Z3 budget), `region_path_max_waves`
+(EXPLORE wave budget, default 12), `clock_skew_ms` (how far a witness may move
+a wall clock from the value that read returned, default 300000),
+`reach_max_inputs` and `reach_max_valuations` (the Boolean enumeration bounds),
+`concolic_worker_count`, and the output, cache, classpath and VM paths.
