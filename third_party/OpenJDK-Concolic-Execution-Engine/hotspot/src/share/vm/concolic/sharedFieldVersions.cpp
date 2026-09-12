@@ -242,13 +242,12 @@ bool SharedFieldVersions::plan_read(const Location &location,
   return true;
 }
 
-bool SharedFieldVersions::resolve_read(const Location &location,
-                                       BasicType type, ReadResult *result) {
-  if (result == NULL) return false;
-  *result = ReadResult();
-
-  ReadPlan plan;
-  if (!plan_read(location, &plan)) return false;
+Expression *SharedFieldVersions::build_read_from(
+    const ReadPlan &plan, const Location &location,
+    const std::string &type_name,
+    const std::vector<Expression *> &arm_values) {
+  guarantee(arm_values.size() == plan.candidates.size(),
+            "a read-from needs one arm value per retained candidate");
   std::vector<ReadFromExpression::Candidate> arms;
   for (size_t index = 0; index < plan.candidates.size(); ++index) {
     const Version &version = plan.candidates[index];
@@ -258,18 +257,34 @@ bool SharedFieldVersions::resolve_read(const Location &location,
     arm.selector = std::string(selector, length < 0 ? 0 : length);
     arm.field_version_id = version.version_id;
     arm.version_kind = version_label(version);
-    arm.value = version.value;
+    arm.value = arm_values[index];
     arm.path_guard = version.path_guard;
     arms.push_back(arm);
   }
 
   Expression *selection = new ReadFromExpression(
-      arms, std::string(1, type2char(type)), plan.read_event_id,
-      location.owner, location.slot, location_kind_name(location.kind),
-      plan.writer_set_complete);
-  result->expression = new ConsumerBoundaryExpression(
-      selection, std::string(1, type2char(type)),
-      ConsumerBoundaryExpression::FIELD_READ, plan.read_event_id);
+      arms, type_name, plan.read_event_id, location.owner, location.slot,
+      location_kind_name(location.kind), plan.writer_set_complete);
+  return new ConsumerBoundaryExpression(
+      selection, type_name, ConsumerBoundaryExpression::FIELD_READ,
+      plan.read_event_id);
+}
+
+bool SharedFieldVersions::resolve_read(const Location &location,
+                                       BasicType type, ReadResult *result) {
+  if (result == NULL) return false;
+  *result = ReadResult();
+
+  ReadPlan plan;
+  if (!plan_read(location, &plan)) return false;
+  // A scalar arm is the candidate's own value.
+  std::vector<Expression *> arm_values;
+  arm_values.reserve(plan.candidates.size());
+  for (size_t index = 0; index < plan.candidates.size(); ++index) {
+    arm_values.push_back(plan.candidates[index].value);
+  }
+  result->expression = build_read_from(
+      plan, location, std::string(1, type2char(type)), arm_values);
   return true;
 }
 

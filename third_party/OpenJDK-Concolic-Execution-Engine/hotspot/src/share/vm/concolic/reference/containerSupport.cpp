@@ -192,32 +192,20 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   // path and do not manufacture a state the solver can choose.
   if (plan.candidates.empty()) return answer;
 
-  std::vector<ReadFromExpression::Candidate> arms;
+  // The query applied to that writer's state, not the state.  This is the
+  // whole difference between a scalar arm and a container arm: two writers
+  // that installed different states give two different answers here even when
+  // the member they wrote happens to be equal.  Everything else about the
+  // node is the shared shape SharedFieldVersions::build_read_from writes.
+  std::vector<Expression *> arm_values;
+  arm_values.reserve(plan.candidates.size());
   for (size_t index = 0; index < plan.candidates.size(); ++index) {
-    const SharedFieldVersions::Version &version = plan.candidates[index];
-    ReadFromExpression::Candidate arm;
-    char selector[32];
-    int length = snprintf(selector, sizeof(selector), "rf%d", (int) index + 1);
-    arm.selector = std::string(selector, length < 0 ? 0 : length);
-    arm.field_version_id = version.version_id;
-    arm.version_kind = SharedFieldVersions::version_label(version);
-    // The query applied to that writer's state, not the state.  This is the
-    // whole difference between a scalar arm and a container arm: two writers
-    // that installed different states give two different answers here even
-    // when the member they wrote happens to be equal.
-    arm.value = new ContainerExpression(shape, operation, version.value,
-                                        arguments, result_type, type_name);
-    arm.path_guard = version.path_guard;
-    arms.push_back(arm);
+    arm_values.push_back(new ContainerExpression(
+        shape, operation, plan.candidates[index].value, arguments,
+        result_type, type_name));
   }
-
-  Expression *selection = new ReadFromExpression(
-      arms, type_name, plan.read_event_id, location.owner, location.slot,
-      SharedFieldVersions::location_kind_name(location.kind),
-      plan.writer_set_complete);
-  answer.expression = new ConsumerBoundaryExpression(
-      selection, type_name, ConsumerBoundaryExpression::FIELD_READ,
-      plan.read_event_id);
+  answer.expression = SharedFieldVersions::build_read_from(
+      plan, location, type_name, arm_values);
   return answer;
 }
 

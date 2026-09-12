@@ -251,6 +251,25 @@ public:
   static bool plan_read(const Location &location, ReadPlan *plan);
 
   /**
+   * The read-from node every reader of a selected location publishes.
+   *
+   * `arm_values[i]` is what candidate i resolves to for this particular read:
+   * its own value for a scalar location, the query applied to its state for a
+   * container one.  That one substitution is the whole difference between the
+   * scalar reader here and the container reader in containerSupport.cpp --
+   * the selector names, version ids, version labels, writer guards and the
+   * consumer boundary around the selection are identical, and used to be
+   * written out twice.
+   *
+   * `type_name` is the emitted Java type for both the selection and the
+   * boundary.
+   */
+  static Expression *build_read_from(
+      const ReadPlan &plan, const Location &location,
+      const std::string &type_name,
+      const std::vector<Expression *> &arm_values);
+
+  /**
    * Resolves one read of a selected location against its versions.
    *
    * Returns false when the location is not selected, leaving *result at
