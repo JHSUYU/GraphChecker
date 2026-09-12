@@ -277,17 +277,15 @@ public:
   static void observeExactPrimitiveField(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
-  /* let compiler not optimize this  code!! */
-  inline static bool __attribute__((optimize("O0"))) has_symbolized_method() {
+  inline static bool has_symbolized_method() {
     return ctx && !ctx->is_aborted() && ctx->is_symbolizing_method();
   }
 
-  inline static bool __attribute__((optimize("O0"))) has_active_context() {
+  inline static bool has_active_context() {
     return ctx != NULL && !ctx->is_aborted();
   }
-  
-  /* let compiler not optimize this  code!! */
-  inline static bool __attribute__((optimize("O0"))) can_do_concolic() {
+
+  inline static bool can_do_concolic() {
     return ctx && !ctx->is_aborted()
         && ctx->path_condition_pause_depth() == 0
         && !ctx->is_symbolizing_method()
@@ -300,13 +298,13 @@ public:
   // not reject the explicit VM operation based on that frame-local flag.
   // Its native implementation temporarily enables PC recording only while
   // the VM mutates symbolic state, then restores the caller's pause depth.
-  inline static bool __attribute__((optimize("O0"))) can_explicitly_symbolize() {
+  inline static bool can_explicitly_symbolize() {
     return ctx && !ctx->is_aborted() && !ctx->is_symbolizing_method();
   }
 
   // A paused observation subtree must keep the Zero/shadow frame structure
   // balanced even though its bytecodes do not propagate symbolic state.
-  inline static bool __attribute__((optimize("O0"))) can_maintain_shadow_stack() {
+  inline static bool can_maintain_shadow_stack() {
     return ctx && !ctx->is_aborted() && !ctx->is_symbolizing_method();
   }
 
@@ -316,18 +314,16 @@ public:
     }
   }
 
-  /** unoptimize for breakpoint */
-  inline static void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
+  inline static void record_path_condition(Expression *sym_exp) {
     ctx->record_path_condition(sym_exp);
-
   }
 
-  inline static void __attribute__((optimize("O0"))) record_branch_condition(
+  inline static void record_branch_condition(
       Expression *sym_exp, bool outcome, int opcode) {
     ctx->record_branch_condition(sym_exp, outcome, opcode);
   }
 
-  inline static void __attribute__((optimize("O0"))) record_branch_conditions(
+  inline static void record_branch_conditions(
       const exp_list_t &expressions, bool outcome, int opcode) {
     ctx->record_branch_conditions(expressions, outcome, opcode);
   }
