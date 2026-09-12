@@ -513,10 +513,8 @@ public final class ClaimPolicy {
     }
 
     /**
-     * How many consumer boundary families the composition realized. The
-     * Composer publishes them as {@code casePathConditionDependencies} rows;
-     * the legacy {@code symbolicPropagation} array is read when a manifest
-     * still carries one.
+     * How many consumer boundary families the composition realized, from the
+     * {@code casePathConditionDependencies} rows the Composer publishes.
      */
     static int consumerBoundaryFamilies(JsonObject manifest) {
         Set<String> families = new LinkedHashSet<>();
@@ -537,8 +535,7 @@ public final class ClaimPolicy {
                 families.add(family);
             }
         }
-        return families.size() + unnamed
-                + array(manifest, "symbolicPropagation").size();
+        return families.size() + unnamed;
     }
 
     /** How many arms those consumer boundary families carry in total. */
@@ -550,12 +547,6 @@ public final class ClaimPolicy {
                     && CONSUMER_BOUNDARY_KIND.equals(optionalString(
                             element.getAsJsonObject(), "kind"))) {
                 arms += array(element.getAsJsonObject(), "arms").size();
-            }
-        }
-        for (JsonElement element : array(manifest, "symbolicPropagation")) {
-            if (element.isJsonObject()) {
-                arms += optionalInteger(element.getAsJsonObject(),
-                        "armCount", 0);
             }
         }
         return arms;

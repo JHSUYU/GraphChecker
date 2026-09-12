@@ -309,7 +309,6 @@ public class BooleanReachConditionExtractorSolverTest {
         manifest.addProperty(ConcolicSmtComposer.FINAL_STATUS,
                 ConcolicSmtComposer.FINAL_READY);
         manifest.addProperty("symbolicPropagationComplete", true);
-        manifest.add("symbolicPropagation", new JsonArray());
         manifest.add("symbolicPropagationGaps", new JsonArray());
         JsonObject guardedReads = new JsonObject();
         guardedReads.addProperty("schemaVersion", 1);
