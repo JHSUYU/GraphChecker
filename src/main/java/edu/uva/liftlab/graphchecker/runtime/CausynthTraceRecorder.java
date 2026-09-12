@@ -1124,6 +1124,12 @@ public final class CausynthTraceRecorder {
         if (parent != null) {
             Files.createDirectories(parent.toPath());
         }
+        // The candidate rows are streamed straight into the selected file,
+        // so the one path that would read what it is truncating fails here.
+        if (candidates.getCanonicalFile().equals(output.getCanonicalFile())) {
+            throw new IOException("selected region skeletons must not "
+                    + "overwrite the candidate skeletons: " + candidates);
+        }
         try (BufferedReader reader = skeletonReader(candidates);
              BufferedWriter writer = Files.newBufferedWriter(output.toPath(),
                      StandardCharsets.UTF_8)) {
