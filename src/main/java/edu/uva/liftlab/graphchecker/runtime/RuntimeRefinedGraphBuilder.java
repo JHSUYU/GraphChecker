@@ -40,6 +40,7 @@ import java.util.concurrent.Future;
 import java.util.zip.GZIPOutputStream;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 
 /** Refines the cheap static candidate graph with one concrete REGION_STATE
  * execution. */
@@ -181,7 +182,7 @@ final class RuntimeRefinedGraphBuilder {
         // The candidate graph can be multi-gigabyte.
         streamRows(candidateGraph, candidate -> {
             requireCandidateEdge(candidate, candidateGraph);
-            String method = string(candidate.get("method"));
+            String method = stringValue(candidate.get("method"));
             if (!selectedMethods.contains(method)) {
                 return;
             }
@@ -189,7 +190,7 @@ final class RuntimeRefinedGraphBuilder {
             edge.put("refinementSchemaVersion", REFINEMENT_SCHEMA_VERSION);
             edge.put("graphKind", GRAPH_KIND);
 
-            String transfer = string(edge.get("transferKind"));
+            String transfer = stringValue(edge.get("transferKind"));
             List<String> regionIds = new ArrayList<>(values(
                     skeletons.regionsByMethod.get(method)));
             edge.put("regionIds", regionIds);
@@ -204,7 +205,7 @@ final class RuntimeRefinedGraphBuilder {
                     edge.put("runtimeObserved", true);
                 }
             } else if ("accessor_field_return".equals(
-                    string(edge.get("kind")))) {
+                    stringValue(edge.get("kind")))) {
                 List<RuntimeAccessorBinding> bindings = values(
                         accessorBindingsBySite.get(AccessorSite.from(edge)));
                 if (bindings.isEmpty()) {
@@ -472,11 +473,11 @@ final class RuntimeRefinedGraphBuilder {
                 ? Collections.<Map<String, Object>>emptyList()
                 : runtimeInstances) {
             if (!"RUNTIME_REGION_ACTIVATION".equals(
-                    string(instance.get("kind")))) {
+                    stringValue(instance.get("kind")))) {
                 throw new IOException("invalid runtime activation supplied "
                         + "to refinement");
             }
-            String regionId = string(instance.get("regionId"));
+            String regionId = stringValue(instance.get("regionId"));
             Skeleton skeleton = skeletons.byRegion.get(regionId);
             long rootCallId = longNumber(instance.get("rootCallId"), -1L);
             RuntimeRegionPlanner.MethodEvent root =
@@ -731,17 +732,12 @@ final class RuntimeRefinedGraphBuilder {
                 StandardCharsets.UTF_8));
     }
 
-    private static String string(Object value) {
-        return value == null || "null".equals(String.valueOf(value))
-                ? "" : String.valueOf(value);
-    }
-
     private static int integer(Object value, int fallback) {
         if (value instanceof Number) {
             return ((Number) value).intValue();
         }
         try {
-            return Integer.parseInt(string(value));
+            return Integer.parseInt(stringValue(value));
         } catch (RuntimeException ignored) {
             return fallback;
         }
@@ -775,12 +771,12 @@ final class RuntimeRefinedGraphBuilder {
                         != RuntimeSelectedRegionFinalizer
                         .REGION_SCHEMA_VERSION
                         || !RuntimeSelectedRegionFinalizer.SKELETON_KIND
-                        .equals(string(row.get("kind")))) {
+                        .equals(stringValue(row.get("kind")))) {
                     throw new IOException("invalid selected skeleton row in "
                             + file);
                 }
-                String region = string(row.get("regionId"));
-                String root = string(row.get("rootMethod"));
+                String region = stringValue(row.get("regionId"));
+                String root = stringValue(row.get("rootMethod"));
                 if (region.isEmpty() || root.isEmpty()) {
                     throw new IOException("selected skeleton requires regionId"
                             + " and rootMethod: " + file);
@@ -791,7 +787,7 @@ final class RuntimeRefinedGraphBuilder {
                             + file);
                 }
                 for (Object value : (Collection<?>) methods) {
-                    String method = string(value);
+                    String method = stringValue(value);
                     if (method.isEmpty()) {
                         continue;
                     }
@@ -839,20 +835,20 @@ final class RuntimeRefinedGraphBuilder {
 
         private StaticSite(String method, int unitIndex, String operation,
                            String field) {
-            this.method = string(method);
+            this.method = stringValue(method);
             this.unitIndex = unitIndex;
-            this.operation = string(operation);
-            this.field = string(field);
+            this.operation = stringValue(operation);
+            this.field = stringValue(field);
         }
 
         private static StaticSite from(Map<String, Object> edge) {
-            String transfer = string(edge.get("transferKind"));
+            String transfer = stringValue(edge.get("transferKind"));
             boolean read = "HEAP_READ".equals(transfer);
-            return new StaticSite(string(edge.get("method")),
+            return new StaticSite(stringValue(edge.get("method")),
                     integer(edge.get("unitIndex"), -1),
                     read ? "FIELD_READ" : "FIELD_WRITE",
-                    read ? string(edge.get("fromCell"))
-                            : string(edge.get("toCell")));
+                    read ? stringValue(edge.get("fromCell"))
+                            : stringValue(edge.get("toCell")));
         }
 
         @Override
@@ -882,15 +878,15 @@ final class RuntimeRefinedGraphBuilder {
 
         private AccessorSite(String method, String siteId,
                              String declaredCallee) {
-            this.method = string(method);
-            this.siteId = string(siteId);
-            this.declaredCallee = string(declaredCallee);
+            this.method = stringValue(method);
+            this.siteId = stringValue(siteId);
+            this.declaredCallee = stringValue(declaredCallee);
         }
 
         private static AccessorSite from(Map<String, Object> edge) {
-            return new AccessorSite(string(edge.get("method")),
-                    string(edge.get("siteId")),
-                    string(edge.get("invoke")));
+            return new AccessorSite(stringValue(edge.get("method")),
+                    stringValue(edge.get("siteId")),
+                    stringValue(edge.get("invoke")));
         }
 
         private static AccessorSite from(

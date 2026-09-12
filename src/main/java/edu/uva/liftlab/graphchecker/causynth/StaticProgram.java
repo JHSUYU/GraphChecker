@@ -38,6 +38,9 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * row is an exact staleness stamp for the indexes derived from it.</p>
  */
 public final class StaticProgram {
+    /** How a retained-loop identity spells its header unit. */
+    private static final String LOOP_HEADER_MARKER = "#loop:u";
+
     final List<Map<String, Object>> edges = new ArrayList<>();
     final List<String> traceMethods = new ArrayList<>();
     /** Methods that are allowed to own a REGION activation. */
@@ -385,8 +388,8 @@ public final class StaticProgram {
                 loop.get(LoopBoundPolicy.LOOP_SITE_ID));
         row.put(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS,
                 loop.get(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS));
-        row.put(LoopBoundPolicy.HEADER_UNIT_INDEX, unitIndex(text(loop.get(
-                LoopBoundPolicy.RUNTIME_LOOP_ID)), "#loop:u"));
+        row.put(LoopBoundPolicy.HEADER_UNIT_INDEX, loopHeaderUnitIndex(
+                text(loop.get(LoopBoundPolicy.RUNTIME_LOOP_ID))));
         row.put(LoopBoundPolicy.DEMANDED_UNIT_INDEX, unitIndex);
         return row;
     }
@@ -462,26 +465,27 @@ public final class StaticProgram {
         return iterated;
     }
 
-    /**
-     * Whether {@code unitIndex} lies in the extent a retained-loop row
-     * publishes: from the loop's dominance-proved header to its last exiting
-     * branch.
-     */
-    /** The index after {@code marker} in a loop identity, or -1. */
-    private static int unitIndex(String site, String marker) {
-        int at = site.lastIndexOf(marker);
+    /** The index after the loop-header marker in a loop identity, or -1. */
+    private static int loopHeaderUnitIndex(String site) {
+        int at = site.lastIndexOf(LOOP_HEADER_MARKER);
         if (at < 0) return -1;
         try {
-            return Integer.parseInt(site.substring(at + marker.length()));
+            return Integer.parseInt(site.substring(
+                    at + LOOP_HEADER_MARKER.length()));
         } catch (NumberFormatException notAUnit) {
             return -1;
         }
     }
 
+    /**
+     * Whether {@code unitIndex} lies in the extent a retained-loop row
+     * publishes: from the loop's dominance-proved header to its last exiting
+     * branch.
+     */
     private static boolean loopContains(Map<String, Object> loop,
                                         int unitIndex) {
-        int header = unitIndex(text(loop.get(
-                LoopBoundPolicy.RUNTIME_LOOP_ID)), "#loop:u");
+        int header = loopHeaderUnitIndex(text(loop.get(
+                LoopBoundPolicy.RUNTIME_LOOP_ID)));
         if (header < 0 || unitIndex < header) return false;
         // The body ends at the loop's latch; a while(true) service loop keeps
         // its only guard at the header, so the guards alone would exclude
