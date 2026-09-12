@@ -309,7 +309,7 @@ for config_row in "${workflow_config_keys[@]}"; do
       || fail "internal key ${config_key} is loadable from a config file"
   fi
 done
-[[ "$(print_normalized_config | wc -l)" -eq 39 ]] \
+[[ "$(print_normalized_config | wc -l)" -eq 40 ]] \
   || fail "config prints a different number of keys than it used to"
 
 # FREEZE-1: one dispatch decides how each kind of frozen input is digested.
