@@ -392,4 +392,106 @@ public class RpcAttachLoweringTest {
             return false;
         }
     }
+
+    /**
+     * hdfs-17897's {@code namenode-data-encryption-key-id}: the closure
+     * registered the attach family from the recorded handoff, drew no case
+     * from the producer, and no consumer leaf ever referred to the family --
+     * so neither the resolve-time nor the truncated-payload gap fired and a
+     * declared flow left no trace. The end-of-closure sweep names it.
+     */
+    @Test
+    public void anAttachNoConsumerReferencesIsNamed() {
+        List<JsonObject> rows = new ArrayList<>();
+        String scope = "replay-group:attach-unreferenced";
+        JsonObject leaf = boundary(980L, symbol("M_K"));
+        // The receiver's own value is not the attached leaf, so nothing in
+        // the corpus refers to the family the handoff registers.
+        JsonObject receiver = summary("R", "R#a1", "TASK.R.1", scope,
+                constant(7));
+        handoff(receiver, FAMILY, 980L, "TASK.S.ABSENT", "S#a1", leaf);
+        rows.add(receiver);
+
+        SymbolicPropagationClosure.Result result = rewrite(rows);
+
+        assertFalse(result.complete());
+        assertTrue(reasons(result).contains(SymbolicPropagationClosure
+                .RPC_ATTACH_SENDER_EXPRESSION_MISSING));
+        assertTrue("the gap names the declared port",
+                subjects(result).contains(PORT));
+    }
+
+    /**
+     * A family a consumer did refer to keeps the resolve-time gap, and is not
+     * reported twice by the sweep.
+     */
+    @Test
+    public void aReferencedEmptyAttachIsNamedOnce() {
+        List<JsonObject> rows = new ArrayList<>();
+        String scope = "replay-group:attach-orphan-once";
+        JsonObject leaf = boundary(970L, symbol("M_K"));
+        JsonObject receiver = summary("R", "R#a1", "TASK.R.1", scope, leaf);
+        handoff(receiver, FAMILY, 970L, "TASK.S.ABSENT", "S#a1", leaf);
+        rows.add(receiver);
+
+        SymbolicPropagationClosure.Result result = rewrite(rows);
+
+        int named = 0;
+        for (JsonElement gap : result.gaps()) {
+            if (SymbolicPropagationClosure.RPC_ATTACH_SENDER_EXPRESSION_MISSING
+                    .equals(optionalString(gap.getAsJsonObject(), "reason"))) {
+                named++;
+            }
+        }
+        assertEquals(1, named);
+    }
+
+    /**
+     * A declared flow whose family reached no term is this composition's hole
+     * whether or not a lowered expression referred to it; an undeclared port
+     * nothing referred to stays telemetry.
+     */
+    @Test
+    public void onlyADeclaredPortMakesAnUnreferencedFamilyARefusal() {
+        assertTrue(ConcolicSmtComposer.wireFlowRefusable(true, false, false));
+        assertTrue(ConcolicSmtComposer.wireFlowRefusable(false, false, true));
+        assertFalse(ConcolicSmtComposer.wireFlowRefusable(false, false, false));
+        assertFalse(ConcolicSmtComposer.wireFlowRefusable(true, true, true));
+    }
+
+    /** The declared ports are the plan's own handoff ports, both sides. */
+    @Test
+    public void declaredPortsComeFromThePlansHandoffs() {
+        JsonObject plan = new JsonObject();
+        JsonArray handoffs = new JsonArray();
+        JsonObject out = new JsonObject();
+        out.addProperty("portId", PORT);
+        out.addProperty("side", "OUT");
+        JsonObject in = new JsonObject();
+        in.addProperty("portId", PORT);
+        in.addProperty("side", "IN");
+        JsonObject other = new JsonObject();
+        other.addProperty("portId", "XCH.other.resp.block-key-id");
+        handoffs.add(out);
+        handoffs.add(in);
+        handoffs.add(other);
+        plan.add("communicationHandoffs", handoffs);
+
+        Set<String> ports = ConcolicSmtComposer.declaredWireFlowPorts(
+                java.util.Collections.singletonList(plan));
+
+        assertEquals(2, ports.size());
+        assertTrue(ports.contains(PORT));
+        assertTrue(ports.contains("XCH.other.resp.block-key-id"));
+    }
+
+    private static Set<String> subjects(
+            SymbolicPropagationClosure.Result result) {
+        Set<String> found = new LinkedHashSet<>();
+        for (JsonElement gap : result.gaps()) {
+            found.add(optionalString(gap.getAsJsonObject(), "subject"));
+        }
+        return found;
+    }
+
 }

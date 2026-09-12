@@ -521,4 +521,95 @@ public class BooleanReachConditionExtractorSolverTest {
         return manifest;
     }
 
+
+    /**
+     * hdfs-17899-bug3's witness named ten CLOCK_SKEW rows for the polarity
+     * with no fault, six of them strictly inside the window -- and the target
+     * was still reachable with every clock back at its recorded value. The
+     * necessity probe asks exactly that, once per named mechanism.
+     */
+    @Test
+    public void necessaryMechanismIsTheOneThePolarityCannotDoWithout()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        long recorded = 1789234993718L;
+
+        // The target needs the fault, or a clock that moved: pinning the clock
+        // back to what it read leaves the no-fault polarity unsatisfiable.
+        JsonObject necessary = BooleanReachConditionExtractor.extract(
+                markerAndClockSmt(recorded, "(> " + CLOCK_TERM + " "
+                        + recorded + ")"),
+                markerAndClockManifest(recorded),
+                new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+        assertTrue(mechanismNecessary(necessary));
+
+        // The same shape with the clock free of the target: it moves because
+        // nothing holds it, and pinning it changes nothing.
+        JsonObject decoration = BooleanReachConditionExtractor.extract(
+                markerAndClockSmt(recorded, "true"),
+                markerAndClockManifest(recorded),
+                new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+        assertFalse(mechanismNecessary(decoration));
+    }
+
+    private static boolean mechanismNecessary(JsonObject report) {
+        JsonObject probe = report.getAsJsonObject(
+                BooleanReachConditionExtractor.MECHANISM_NECESSITY);
+        JsonArray rows = probe.getAsJsonArray("mechanisms");
+        for (int index = 0; index < rows.size(); index++) {
+            JsonObject row = rows.get(index).getAsJsonObject();
+            if (!row.get("polarity").getAsBoolean()
+                    && row.get("necessary").getAsBoolean()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final String MARKER_TERM = "manual__fault";
+
+    /** Reach the target with the fault, or with {@code without} instead. */
+    private static String markerAndClockSmt(long recorded, String without) {
+        return "(set-logic ALL)\n"
+                + "(declare-const " + MARKER_TERM + " Bool)\n"
+                + "(declare-const " + CLOCK_TERM + " Int)\n"
+                + "(assert (and (>= " + CLOCK_TERM + " " + (recorded - 300000L)
+                + ") (<= " + CLOCK_TERM + " " + (recorded + 300000L) + ")))\n"
+                + "(assert (or " + MARKER_TERM + " " + without + "))\n"
+                + "(check-sat)\n";
+    }
+
+    private static JsonObject markerAndClockManifest(long recorded) {
+        JsonObject manifest = clockRootManifest(recorded, 300000L);
+        JsonArray roots = manifest.getAsJsonArray(ConcolicSmtComposer
+                .MANUAL_SOURCE_MATERIALIZATION_FIELD);
+        JsonObject marker = roots.get(0).getAsJsonObject().deepCopy();
+        marker.addProperty("portId", "REGION.rpc.in.fault");
+        marker.addProperty("occurrenceId",
+                "hdfs/dn0#epoch0/region/REGION.rpc#1");
+        marker.addProperty("javaTypeDescriptor", "Z");
+        marker.addProperty("sort", "BOOL");
+        marker.addProperty("smtSort", "Bool");
+        marker.addProperty("solverTerm", MARKER_TERM);
+        marker.addProperty("sourceIdentity", "MANUAL.fault");
+        roots.add(marker);
+
+        JsonArray ledger = new JsonArray();
+        ledger.add(recordedRoot(CLOCK_TERM, Long.toString(recorded), true));
+        ledger.add(recordedRoot(MARKER_TERM, "false", false));
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, ledger);
+        return manifest;
+    }
+
+    private static JsonObject recordedRoot(String term, String value,
+                                           boolean wallClock) {
+        JsonObject row = new JsonObject();
+        row.addProperty("solverTerm", term);
+        row.addProperty("recordedValue", value);
+        row.addProperty("wallClock", wallClock);
+        return row;
+    }
+
 }

@@ -60,6 +60,8 @@ public final class BooleanReachConditionExtractor {
             + " (rf_value__[A-Za-z0-9_]+)\\)\\)$");
     /** A perturbation the root's own declared physics forbids. */
     static final String WINDOW_BOUNDARY = "WINDOW_BOUNDARY";
+    /** Whether a witness's named mechanism is needed, or only decoration. */
+    static final String MECHANISM_NECESSITY = "mechanismNecessity";
     static final String SYMBOLIC_VARIABLE_MODELS =
             "symbolicVariableModels";
     private static final String SYMBOLIC_VARIABLE_MODEL_KIND =
@@ -258,6 +260,8 @@ public final class BooleanReachConditionExtractor {
         }
 
         report.add("valuations", valuationRows);
+        report.add(MECHANISM_NECESSITY, mechanismNecessity(solver, base,
+                manifest, inputs, valuationRows));
         if (existentialPerturbations.size() > 0) {
             JsonObject probe = new JsonObject();
             probe.addProperty("authority",
@@ -1472,6 +1476,144 @@ public final class BooleanReachConditionExtractor {
      * Looks for a rejected point adjacent to an already satisfying scalar
      * witness: one unsat neighbour proves the root space is constrained.
      */
+    /**
+     * Whether the mechanism a witness names is needed, or only decoration.
+     *
+     * <p>An experiment that injects a fault marker and finds both polarities
+     * satisfiable can still be a real finding, if the composition can say what
+     * else reached the target in the polarity that has no fault. A witness
+     * always names something -- a model assigns every free root, so a clock
+     * that was free to move will have moved -- and the question is whether the
+     * target needed it to. One query answers that: put the mechanism's roots
+     * back to what they actually recorded, keep the marker at the polarity
+     * being explained, and ask again. Still satisfiable means the mechanism
+     * was decoration and the polarity is explained by nothing.</p>
+     *
+     * <p>Clock rows are pinned as one group. A wall clock is not a mechanism
+     * by itself -- "these nodes' clocks disagreed" is the mechanism -- so
+     * pinning them one at a time would ask about a skew nobody claimed.</p>
+     */
+    private static JsonObject mechanismNecessity(
+            Z3Solver solver, String base, JsonObject manifest,
+            List<RootInput> markers, JsonArray valuations)
+            throws IOException, InterruptedException {
+        JsonObject result = new JsonObject();
+        result.addProperty("schemaVersion", 1);
+        result.addProperty("kind", "WITNESS_MECHANISM_NECESSITY");
+        result.addProperty("authority", "RECORDED_ROOT_PIN_V1");
+        JsonArray rows = new JsonArray();
+        result.add("mechanisms", rows);
+        if (markers.isEmpty()) {
+            return result;
+        }
+        Map<String, String> recorded = new LinkedHashMap<>();
+        Set<String> clocks = new LinkedHashSet<>();
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject ledger = element.getAsJsonObject();
+            String term = optionalString(ledger, "solverTerm");
+            String value = optionalString(ledger, "recordedValue");
+            if (term.isEmpty() || value.isEmpty()) {
+                continue;
+            }
+            recorded.put(term, value);
+            if (optionalBool(ledger, "wallClock", false)) {
+                clocks.add(term);
+            }
+        }
+        if (recorded.isEmpty()) {
+            return result;
+        }
+        for (int index = 0; index < markers.size(); index++) {
+            RootInput marker = markers.get(index);
+            boolean polarity = !"false".equals(recorded.get(
+                    marker.solverTerm));
+            JsonObject valuation = valuationAt(valuations, index, polarity);
+            if (valuation == null || !"sat".equals(optionalString(valuation,
+                    "status"))) {
+                continue;
+            }
+            for (Map.Entry<String, Set<String>> group
+                    : mechanismRoots(valuation, clocks).entrySet()) {
+                JsonObject row = new JsonObject();
+                row.addProperty("marker", marker.solverTerm);
+                row.addProperty("sourceIdentity", marker.sourceIdentity);
+                row.addProperty("polarity", polarity);
+                row.addProperty("mechanism", group.getKey());
+                row.addProperty("pinnedRoots", group.getValue().size());
+                StringBuilder query = new StringBuilder(base);
+                query.append("(assert ").append(marker.literal(polarity))
+                        .append(")").append(System.lineSeparator());
+                for (String term : group.getValue()) {
+                    query.append("(assert (= ").append(term).append(' ')
+                            .append(smtLiteral(recorded.get(term)))
+                            .append("))").append(System.lineSeparator());
+                }
+                query.append("(check-sat)").append(System.lineSeparator());
+                ConcolicConstraintSolver.SolverOutput answer =
+                        solver.check(query.toString());
+                row.addProperty("status", answer.status());
+                row.addProperty("necessary", "unsat".equals(answer.status()));
+                rows.add(row);
+            }
+        }
+        return result;
+    }
+
+    /** The roots each named mechanism of this witness rests on. */
+    private static Map<String, Set<String>> mechanismRoots(
+            JsonObject valuation, Set<String> clocks) {
+        Map<String, Set<String>> groups = new LinkedHashMap<>();
+        for (JsonElement element : array(valuation, "witnessMechanisms")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject mechanism = element.getAsJsonObject();
+            String kind = optionalString(mechanism, "kind");
+            String term = optionalString(mechanism, "solverTerm");
+            if (kind.isEmpty() || "MARKER_FLIPPED".equals(kind)
+                    || term.isEmpty()) {
+                continue;
+            }
+            Set<String> roots = groups.get(kind);
+            if (roots == null) {
+                roots = new LinkedHashSet<>();
+                groups.put(kind, roots);
+            }
+            // "CLOCK_SKEW" is a claim about clocks disagreeing, so the whole
+            // set answers for it; anything else answers for itself.
+            roots.addAll("CLOCK_SKEW".equals(kind) && clocks.contains(term)
+                    ? clocks : Collections.singleton(term));
+        }
+        return groups;
+    }
+
+    /** The valuation that gives this Boolean root that polarity. */
+    private static JsonObject valuationAt(JsonArray valuations, int index,
+                                          boolean polarity) {
+        for (JsonElement element : valuations) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonArray values = array(element.getAsJsonObject(), "values");
+            if (index < values.size() && values.get(index).isJsonPrimitive()
+                    && values.get(index).getAsBoolean() == polarity) {
+                return element.getAsJsonObject();
+            }
+        }
+        return null;
+    }
+
+    /** A ledger value spells -5 as "-5"; a query needs "(- 5)". */
+    private static String smtLiteral(String recorded) {
+        String value = firstNonBlank(recorded);
+        return value.startsWith("-")
+                ? "(- " + value.substring(1).trim() + ")" : value;
+    }
+
     /**
      * Which guarded-read arms could have supplied the fatal predicate's value.
      *
