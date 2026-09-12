@@ -73,6 +73,13 @@ final class RuntimeRegionPlanner {
     /** Authority of one recorded exchange link between two occurrences. */
     static final String DELIVERY_LINK_AUTHORITY =
             "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1";
+    /** A recorded activation this stage could not attribute to a source. */
+    static final String GAP_RUNTIME_SOURCE_UNSTAMPED =
+            "RUNTIME_ACTIVATION_SOURCE_UNSTAMPED";
+    /** Authority of a source taken from the first stamped frame inside the
+     * activation rather than from its root frame. */
+    static final String UPGRADED_SOURCE_AUTHORITY =
+            "FIRST_STAMPED_FRAME_INSIDE_ACTIVATION";
     /** The protocol server stub a run entered as its own region root. */
     static final String COMMUNICATION_ENTRY = "COMMUNICATION_ENTRY";
     private RuntimeRegionPlanner() {
@@ -1030,8 +1037,8 @@ final class RuntimeRegionPlanner {
                     : root;
             // The same upgrade the activation seed was stamped with,
             // applied to the same call set.
-            SourceRef rootSource = activationSource(root,
-                    stampedSources(calls, trace));
+            List<SourceRef> stamped = stampedSources(calls, trace);
+            SourceRef rootSource = activationSource(root, stamped);
             SourceRef source = semanticContext.source != null
                     ? semanticContext.source : rootSource;
             int replayInvocationOrdinal = replayInvocationOrdinals.merge(
@@ -1152,7 +1159,17 @@ final class RuntimeRegionPlanner {
             plan.put("kind", "CONCOLIC_REGION_PLAN");
             // The semantic source of this activation - sourceKey, sourceKind,
             // sourceRole, sourceId and sourceEpoch - is published once, by
-            // putTraceContext below.
+            // putTraceContext below.  Where that source came FROM is this
+            // row's own diagnostic: an activation the pipeline could not
+            // attribute to any source is a named gap, never an authority.
+            plan.put("sourceAuthority",
+                    occurrenceTarget && semanticContext != root
+                            && semanticContext.source != null
+                            ? "SELECTED_TARGET_EVENT_SOURCE"
+                            : semanticContext.source != null
+                            ? "EXPLICIT_TRACE_SOURCE"
+                            : stamped.size() == 1 ? UPGRADED_SOURCE_AUTHORITY
+                            : GAP_RUNTIME_SOURCE_UNSTAMPED);
             plan.put("occurrenceId", occurrenceId);
             plan.put("regionId", region.regionId);
             // The once-only-root rule (README "Loops"): a region rooted on a
@@ -1325,11 +1342,14 @@ final class RuntimeRegionPlanner {
             row.put("schemaVersion", 3);
             row.put("kind", "SYMBOLIC_REGION");
             row.put("regionId", region.regionId);
+            // Copied, not aliased: the catalog row is published on its own
+            // and must not share mutable structure with the graph row that
+            // later passes normalize in place.
             Object declaredSources = region.json.get(
                     StaticSymbolicSourceDeclaration.FIELD);
             if (declaredSources != null) {
                 row.put(StaticSymbolicSourceDeclaration.FIELD,
-                        declaredSources);
+                        deepCopyValue(declaredSources));
             }
             result.regionCatalog.add(row);
         }

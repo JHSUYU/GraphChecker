@@ -16,6 +16,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -1120,18 +1122,25 @@ public final class CausynthTraceRecorder {
                 }
             }
         }
-        File parent = output.getParentFile();
-        if (parent != null) {
-            Files.createDirectories(parent.toPath());
-        }
-        // The candidate rows are streamed straight into the selected file,
-        // so the one path that would read what it is truncating fails here.
+        // The candidate rows are streamed straight through, so the one path
+        // that would read what it is truncating fails before anything is
+        // created.
         if (candidates.getCanonicalFile().equals(output.getCanonicalFile())) {
             throw new IOException("selected region skeletons must not "
                     + "overwrite the candidate skeletons: " + candidates);
         }
+        File parent = output.getParentFile();
+        if (parent != null) {
+            Files.createDirectories(parent.toPath());
+        }
+        // A row that fails the root check throws mid-stream, so the rows are
+        // staged beside the artifact and moved onto it only once every row
+        // has been written: a failed pass leaves the previous file intact
+        // rather than a truncated one.
+        Path target = output.toPath();
+        Path staged = target.resolveSibling(output.getName() + ".tmp");
         try (BufferedReader reader = skeletonReader(candidates);
-             BufferedWriter writer = Files.newBufferedWriter(output.toPath(),
+             BufferedWriter writer = Files.newBufferedWriter(staged,
                      StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -1163,7 +1172,12 @@ public final class CausynthTraceRecorder {
                 writer.write(row.toString());
                 writer.write('\n');
             }
+        } catch (IOException | RuntimeException failed) {
+            Files.deleteIfExists(staged);
+            throw failed;
         }
+        Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE);
     }
 
     private static BufferedReader skeletonReader(File file)
