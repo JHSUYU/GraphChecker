@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import org.junit.Test;
@@ -8,6 +9,7 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,41 +19,69 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
- * An indexed container field is declared as one whole-state location, and
- * never as both a whole state and a reference slot.
+ * Which container fields are declared as one whole-state location.
+ *
+ * <p>An indexed field must additionally be reference-stable.  The two shapes
+ * this decision has to separate are both real: HDFS-17960's
+ * {@code DirectorySnapshottableFeature#snapshotsByNames} is
+ * {@code private final List<Snapshot> = new ArrayList<>()}, while
+ * {@code INodeDirectory#children} is {@code private List<INode> = null} and
+ * allocated on first use.  The fixtures below have exactly those shapes.</p>
  */
 public class IndexedCarrierDeclarationTest {
 
-    @Test
-    public void aBoundedListFieldIsDeclaredAsWholeState() {
-        Map<String, Map<String, Object>> carriers = new LinkedHashMap<>();
-        Map<String, Object> snapshots = port("<org.apache.hadoop.hdfs.server"
-                + ".namenode.snapshot.DirectorySnapshottableFeature:"
-                + " java.util.List snapshotsByNames>");
-        snapshots.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-        RuntimeRegionPlanner.addAccessOwnedCarriers(
-                carriers, snapshots, snapshots);
+    /** The shape of DirectorySnapshottableFeature#snapshotsByNames. */
+    static final class StableOwner {
+        final List<Object> rows = new ArrayList<Object>();
+        final Map<Object, Object> entries = new HashMap<Object, Object>();
+    }
 
-        // Declared as a reference slot it would publish one write for the
-        // list's construction and nothing for any add or remove.
-        String key = "MAP_STATE\norg.apache.hadoop.hdfs.server.namenode"
-                + ".snapshot.DirectorySnapshottableFeature"
-                + "#snapshotsByNames:Ljava/util/List;";
-        assertEquals(SharedStateEvidence.LOCATION_KIND_MAP_STATE,
-                carriers.get(key).get("kind"));
+    /** The shape of INodeDirectory#children. */
+    static final class LazyOwner {
+        List<Object> rows = null;
+        Map<Object, Object> entries = null;
     }
 
     @Test
-    public void aBoundedMapFieldKeepsItsWholeStateDeclaration() {
-        Map<String, Map<String, Object>> carriers = new LinkedHashMap<>();
-        Map<String, Object> entries = port(
-                "<example.State: java.util.Map entries>");
-        entries.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-        RuntimeRegionPlanner.addAccessOwnedCarriers(
-                carriers, entries, entries);
+    public void aFinalListFieldIsDeclaredAsWholeState() {
+        // Declared as a reference slot it would publish one write for the
+        // list's construction and nothing for any add or remove.
         assertEquals(SharedStateEvidence.LOCATION_KIND_MAP_STATE,
-                carriers.get("MAP_STATE\nexample.State#entries"
-                        + ":Ljava/util/Map;").get("kind"));
+                declaredKind(StableOwner.class, "java.util.List", "rows"));
+    }
+
+    @Test
+    public void aLazilyAllocatedListFieldKeepsItsReferenceCarrier() {
+        // What changes when this field is assigned is WHICH list it names,
+        // and a state carrier cannot say that.  At the access that would
+        // select it the field is still null, so there is no container to
+        // carry - the reference is the thing readers share.
+        assertEquals("DECLARED_FIELD",
+                declaredKind(LazyOwner.class, "java.util.List", "rows"));
+    }
+
+    @Test
+    public void aMapFieldKeepsTodaysRuleWhicheverWayItIsDeclared() {
+        // Admitting indexed containers must not change which map fields are
+        // carried whole, so the associative rule stays unconditional.
+        assertEquals(SharedStateEvidence.LOCATION_KIND_MAP_STATE,
+                declaredKind(StableOwner.class, "java.util.Map", "entries"));
+        assertEquals(SharedStateEvidence.LOCATION_KIND_MAP_STATE,
+                declaredKind(LazyOwner.class, "java.util.Map", "entries"));
+    }
+
+    @Test
+    public void anUnresolvableOwnerKeepsItsReferenceCarrier() {
+        // Conservative: keeping the carrier the field already had loses
+        // nothing, while carrying a mutable reference whole would lose every
+        // writer of it.
+        assertEquals("DECLARED_FIELD", kindOf(port(
+                "<example.Absent: java.util.List rows>")));
+        assertFalse(SharedFieldFlow.referenceStableField(
+                "example.Absent", "rows"));
+        assertFalse(SharedFieldFlow.referenceStableField("", "rows"));
+        assertFalse(SharedFieldFlow.referenceStableField(
+                StableOwner.class.getName(), "absent"));
     }
 
     @Test
@@ -64,6 +94,21 @@ public class IndexedCarrierDeclarationTest {
         RuntimeRegionPlanner.addAccessOwnedCarriers(carriers, keys, keys);
         assertTrue(carriers.keySet().toString(), carriers.containsKey(
                 "DECLARED_FIELD\nexample.State#keys:[I"));
+    }
+
+    @Test
+    public void theFinalityRuleSeparatesTheTwoRealFieldShapes() {
+        assertTrue(SharedFieldFlow.referenceStableField(
+                StableOwner.class.getName(), "rows"));
+        assertFalse(SharedFieldFlow.referenceStableField(
+                LazyOwner.class.getName(), "rows"));
+        assertTrue(SharedFieldFlow.wholeStateCarrierField(
+                StableOwner.class.getName(), "rows", "java.util.List"));
+        assertFalse(SharedFieldFlow.wholeStateCarrierField(
+                LazyOwner.class.getName(), "rows", "java.util.List"));
+        // A set is versioned whole by no carrier, final or not.
+        assertFalse(SharedFieldFlow.wholeStateCarrierField(
+                StableOwner.class.getName(), "rows", "java.util.HashSet"));
     }
 
     @Test
@@ -88,6 +133,21 @@ public class IndexedCarrierDeclarationTest {
         // A different field never conflicts with this one.
         assertFalse(SharedStateCapture.wholeStateAndPointerCarrier(
                 conflicting, "<example.State: java.util.List other>"));
+    }
+
+    private static String declaredKind(Class<?> owner, String type,
+                                       String name) {
+        return kindOf(port("<" + owner.getName() + ": " + type + " " + name
+                + ">"));
+    }
+
+    private static String kindOf(Map<String, Object> declaration) {
+        Map<String, Map<String, Object>> carriers = new LinkedHashMap<>();
+        declaration.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
+        RuntimeRegionPlanner.addAccessOwnedCarriers(
+                carriers, declaration, declaration);
+        assertEquals("one carrier per declaration", 1, carriers.size());
+        return (String) carriers.values().iterator().next().get("kind");
     }
 
     private static SharedStateCapture.SharedCarrierRequest request(

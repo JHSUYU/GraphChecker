@@ -117,11 +117,6 @@ public final class JavaContainerTypes {
         return MAPS.contains(value) ? Shape.ASSOCIATIVE : Shape.NONE;
     }
 
-    /** Whether a declared field type is a container the VM versions whole. */
-    public static boolean wholeStateCarrierType(String type) {
-        return wholeStateShape(type) != Shape.NONE;
-    }
-
     public static Shape shape(String type) {
         String value = normalize(type);
         if (value.startsWith("[") || value.endsWith("[]")) {

@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
@@ -1325,7 +1326,7 @@ final class ConcolicTaskPlan {
                 boolean mapState = "BOUNDED_CONTAINER_STATE".equals(
                         action.symbolicDemand)
                         && javaTypeDescriptor(field.type()).startsWith("L")
-                        && isWholeStateContainerType(field.type());
+                        && isWholeStateContainerType(field);
                 declaration.addProperty("kind", mapState
                         ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
                         : "INSTANCE_FIELD");
@@ -1370,10 +1371,13 @@ final class ConcolicTaskPlan {
          * Whether a declared field type is a container whose whole state the
          * VM versions, rather than a reference slot.
          */
-        static boolean isWholeStateContainerType(String javaType) {
-            return isMapType(javaType)
-                    || JavaContainerTypes.wholeStateShape(javaType)
-                    == JavaContainerTypes.Shape.INDEXED;
+        static boolean isWholeStateContainerType(DeclaredField field) {
+            if (field == null) return false;
+            // The map rule is the one this build always had, reflectively
+            // widened past the three names the planner lists.
+            return isMapType(field.type())
+                    || SharedFieldFlow.wholeStateCarrierField(field.owner(),
+                    field.name(), field.type());
         }
 
         /** Whether a declared field type is a Map the VM versions whole. */

@@ -1434,7 +1434,8 @@ final class RuntimeRegionPlanner {
                 .javaTypeDescriptor(field.type());
         if (descriptor.isEmpty()) return;
         Map<String, Object> carrier = object(
-                "kind", JavaContainerTypes.wholeStateCarrierType(field.type())
+                "kind", SharedFieldFlow.wholeStateCarrierField(
+                        field.owner(), field.name(), field.type())
                         ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
                         : "DECLARED_FIELD",
                 "declaringClass", field.owner(),
