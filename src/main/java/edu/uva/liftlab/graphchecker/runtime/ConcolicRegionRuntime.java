@@ -33,6 +33,10 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedCarrier;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateResult;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.ConsumerAccessAnchor;
 import java.io.BufferedWriter;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -49,7 +53,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -80,6 +83,15 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.READ_OUT_MEMO;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.assembleRecordedSharedState;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedStateRaw;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.consumerAccessAnchor;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.evidenceIdentity;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectAccessOwnerSharedCarriers;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectDeclaredSharedCarriers;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectSharedFieldCarrier;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectSharedMapCarrier;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.readPathConditionRange;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
@@ -233,12 +245,12 @@ public final class ConcolicRegionRuntime {
                     return new ArrayDeque<>();
                 }
             };
-    private static final ThreadLocal<AccessorCallContext>
+    static final ThreadLocal<AccessorCallContext>
             CURRENT_ACCESSOR_CALL_CONTEXT = new ThreadLocal<>();
     private static final Pattern BRANCH_OPERATOR = Pattern.compile(
             "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
     /** Session this JVM opened for its workload, or zero when it opened none. */
-    private static volatile long workloadSessionId;
+    static volatile long workloadSessionId;
     /**
      * Content-addressed expression universe of the current VM workload
      * session.  Native expression ids are session-wide, so decoding them in
@@ -331,12 +343,12 @@ public final class ConcolicRegionRuntime {
      * control flow into the workload's path condition and mints session
      * expressions for GraphChecker's own strings.</p>
      */
-    private static void beginBookkeeping() {
+    static void beginBookkeeping() {
         pauseObservation();
     }
 
     /** Ends the muted subtree {@link #beginBookkeeping()} opened. */
-    private static void endBookkeeping() {
+    static void endBookkeeping() {
         resumeObservation();
     }
 
@@ -759,7 +771,7 @@ public final class ConcolicRegionRuntime {
     }
 
     /** Exact nested activation in one VM thread context, or null if ambiguous. */
-    private static WriterActivationIdentity contextActivation(
+    static WriterActivationIdentity contextActivation(
             long contextId, long regionEnterEventId, RuntimeTask writer) {
         synchronized (CONTEXT_ACTIVATION_LOCK) {
             for (WriterActivationIdentity candidate
@@ -775,13 +787,13 @@ public final class ConcolicRegionRuntime {
     }
 
     /** Immutable owner of one session-global VM field-version event. */
-    private static final class WriterActivationIdentity {
+    static final class WriterActivationIdentity {
         private final String vmTaskId;
         private final String vmRegionId;
         private final long regionEnterEventId;
-        private final String sourceKey;
-        private final String occurrenceId;
-        private final List<WriterCaseAddress> caseClosure;
+        final String sourceKey;
+        final String occurrenceId;
+        final List<WriterCaseAddress> caseClosure;
 
         private WriterActivationIdentity(ActiveRegion active) {
             this.vmTaskId = active.activation.taskId;
@@ -792,12 +804,12 @@ public final class ConcolicRegionRuntime {
             this.caseClosure = activeWriterCaseClosure();
         }
 
-        private boolean owns(RuntimeTask writer) {
+        boolean owns(RuntimeTask writer) {
             return writer != null && vmTaskId.equals(writer.taskId)
                     && vmRegionId.equals(writer.regionId);
         }
 
-        private JsonObject caseClosure() {
+        JsonObject caseClosure() {
             JsonObject result = new JsonObject();
             result.addProperty("authority", SymbolicPropagationClosure
                     .WRITER_ACTIVATION_CLOSURE_AUTHORITY);
@@ -1927,7 +1939,7 @@ public final class ConcolicRegionRuntime {
     }
 
     /** Resolves a native session DAG while retaining content sharing here. */
-    private static JsonObject decodeVmEnvelope(JsonObject envelope,
+    static JsonObject decodeVmEnvelope(JsonObject envelope,
                                                ActiveRegion active) {
         VmExpressionTable.Store store = active == null
                 ? workloadExpressionStore
@@ -2540,856 +2552,6 @@ public final class ConcolicRegionRuntime {
         configuration().publishUnansweredAddresses();
     }
 
-    /** Outcome of one recorded shared-state evidence call. */
-    private static final class SharedStateResult {
-        private final String stage;
-        private final int status;
-        private final String locationKey;
-        private final JsonObject record;
-
-        private SharedStateResult(String stage, int status, String locationKey,
-                                  JsonObject record) {
-            this.stage = stage;
-            this.status = status;
-            this.locationKey = locationKey;
-            this.record = record;
-        }
-
-        private boolean ok() {
-            return status == SharedStateEvidence.OK;
-        }
-
-        /** Named reason for a failure; empty for an admitted answer. */
-        private String reason() {
-            return SharedStateEvidence.reason(status);
-        }
-
-        @Override
-        public String toString() {
-            return "SharedStateResult[" + stage + " status=" + status
-                    + (ok() ? "" : " " + reason())
-                    + " location=" + locationKey + "]";
-        }
-    }
-
-    /**
-     * Selects one instance or static field as a symbolic carrier. Later
-     * writes publish candidate expressions and reads capture their bounded
-     * candidate snapshot as a guarded value.
-     */
-    private static SharedStateResult selectSharedFieldCarrier(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        beginBookkeeping();
-        try {
-            return selectedCarrier(SharedCarrier.field(owner, declaringClass,
-                    fieldName, descriptor));
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /** Selects one map as a symbolic carrier of its own whole state. */
-    private static SharedStateResult selectSharedMapCarrier(
-            Object map, String declaringClass, String fieldName,
-            String descriptor) {
-        beginBookkeeping();
-        try {
-            return selectedCarrier(SharedCarrier.map(map, declaringClass,
-                    fieldName, descriptor));
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /**
-     * Selects one carrier of any shape, publishing the same select-stage
-     * evidence for a refused shape, an unavailable VM, a failed invoke and a
-     * negative answer whichever shape asked.
-     */
-    private static SharedStateResult selectedCarrier(SharedCarrier carrier) {
-        ActiveRegion active = activeRegion();
-        return selectedCarrier(carrier, active == null
-                ? null : active.activation, active);
-    }
-
-    /** Selects a carrier using the task that declared this exact access. */
-    private static SharedStateResult selectedCarrier(
-            SharedCarrier carrier, RuntimeTask locator) {
-        return selectedCarrier(carrier, locator, activeRegion());
-    }
-
-    /** Selects one physical carrier while retaining its declaring task. */
-    private static SharedStateResult selectCarrierForTask(
-            SharedCarrier carrier, RuntimeTask task) {
-        beginBookkeeping();
-        try {
-            return selectedCarrier(carrier, task);
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    private static SharedStateResult selectedCarrier(
-            SharedCarrier carrier, RuntimeTask locator,
-            ActiveRegion active) {
-        carrier.bindPlannedReceiver(locator);
-        String missing = carrier.missing();
-        if (!missing.isEmpty()) {
-            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
-                    SharedStateEvidence.MISSING_METADATA, "", missing),
-                    null, active);
-        }
-        ConcolicVmBroker api = engine();
-        long initial;
-        try {
-            initial = carrier.select(api);
-        } catch (Throwable throwable) {
-            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
-                    SharedStateEvidence.INVOCATION_FAILED, "",
-                    rootCause(throwable)), null, active);
-        }
-        // The VM returns zero when this exact location is already selected in
-        // the current session.  Selection is idempotent: this activation must
-        // still retain the carrier so it can read the shared version snapshot.
-        if (initial < 0L) {
-            return recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
-                    initial < Integer.MIN_VALUE
-                            ? SharedStateEvidence.MALFORMED_ENVELOPE
-                            : (int) initial, "",
-                    carrier.selectApi() + " returned " + initial), null,
-                    active);
-        }
-        return recordShared(new SharedStateResult(
-                        SharedStateEvidence.STAGE_SELECT,
-                        SharedStateEvidence.OK, "", new JsonObject()),
-                carrier, active);
-    }
-
-    /**
-     * Raw VM read-outs already taken while closing the selected occurrence on
-     * this thread, keyed by the location they answer for.
-     *
-     * <p>Several evidence builders may ask for the same selected carrier.</p>
-     */
-    private static final ThreadLocal<Map<String, String>> READ_OUT_MEMO =
-            new ThreadLocal<Map<String, String>>();
-
-    // The scope discipline - open, memoize, close, never answer outside a
-    // scope - is what keeps a stale read-out from being served for a live
-    // location.
-
-    /** The bytes already read for {@code key} in this close, or null. */
-    private static String memoizedReadOut(String key) {
-        Map<String, String> memo = READ_OUT_MEMO.get();
-        return memo == null ? null : memo.get(key);
-    }
-
-    /** Files {@code serialized} under {@code key} and returns it unchanged. */
-    private static String memoizeReadOut(String key, String serialized) {
-        Map<String, String> memo = READ_OUT_MEMO.get();
-        if (memo != null && serialized != null) memo.put(key, serialized);
-        return serialized;
-    }
-
-    /** Reads one VM version envelope. */
-    static SharedStateResult decodeVersionsEnvelope(
-            String serialized, SharedCarrier carrier,
-            RecordedEvidenceIdentity identity, ActiveRegion active) {
-        JsonElement parsed = parseJson(serialized);
-        if (!parsed.isJsonObject()) {
-            return failedShared(SharedStateEvidence.STAGE_VERSIONS,
-                    SharedStateEvidence.MALFORMED_ENVELOPE, "",
-                    "version read-out returned no JSON object");
-        }
-        JsonObject envelope = decodeVmEnvelope(parsed.getAsJsonObject(),
-                active);
-        String fault = SharedStateEvidence.versionsFault(envelope);
-        if (!fault.isEmpty()) {
-            boolean unselected = SharedStateEvidence.VERSIONS_ENVELOPE_KIND
-                    .equals(optionalString(envelope, "kind"))
-                    && !optionalBool(envelope, "selected", false);
-            int status = unselected ? SharedStateEvidence.NOT_SELECTED
-                    : SharedStateEvidence
-                    .expressionSerializationTruncationFault(fault)
-                    ? SharedStateEvidence.EXPRESSION_SERIALIZATION_TRUNCATED
-                    : SharedStateEvidence.MALFORMED_ENVELOPE;
-            return failedShared(SharedStateEvidence.STAGE_VERSIONS,
-                    status,
-                    SharedStateEvidence.locationKey(envelope), fault);
-        }
-        String locationKey = SharedStateEvidence.locationKey(envelope);
-        JsonObject record = SharedStateEvidence.versionsRecord(locationKey,
-                envelope, identity);
-        if (carrier != null) {
-            // The VM addresses a location by its own session identity; the
-            // slice and the composer address one by its declared Java field.
-            record.add("carrier", carrier.toJson());
-        }
-        // Publication can run after the owner thread has left ACTIVE.
-        addActivationIdentity(object(record, "envelope"), active, carrier);
-        return new SharedStateResult(SharedStateEvidence.STAGE_VERSIONS,
-                SharedStateEvidence.OK, locationKey, record);
-    }
-
-    /**
-     * Gives every write and read in one envelope the activation address the
-     * rest of the pipeline joins on.
-     *
-     * <p>The VM stamps writes and reads with their task, region and thread
-     * context; reads additionally carry the exact region-entry event.</p>
-     */
-    private static void addActivationIdentity(JsonObject envelope,
-                                              ActiveRegion active,
-                                              SharedCarrier carrier) {
-        ConcolicTaskPlan config = configuration();
-        for (JsonElement element : array(envelope, "versions")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject version = element.getAsJsonObject();
-            // Wave 3 concurrency: every symbolic write of the session is a
-            // version the composer may read from, so each one is addressed
-            // by the write that produced it and the thread that ran it.
-            RuntimeTask writer = config.taskById(
-                    optionalString(version, "taskId"));
-            if (writer == null) continue;
-            WriterActivationIdentity exact = contextActivation(
-                    optionalLongInteger(version, "writerContextId", 0L),
-                    optionalLongInteger(version, "regionEnterEventId", 0L), writer);
-            if (exact != null && exact.owns(writer)) {
-                version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
-                        exact.sourceKey);
-                version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
-                        exact.occurrenceId);
-                version.add(SymbolicPropagationClosure
-                        .WRITER_ACTIVATION_CLOSURE, exact.caseClosure());
-            } else {
-                // A writer without its exact region-entry binding has no
-                // activation owner. Leave it unnamed rather than collapsing
-                // loop activations to their common planned address.
-                version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY, "");
-                version.addProperty(
-                        SharedStateEvidence.WRITER_OCCURRENCE_ID, "");
-            }
-        }
-        List<JsonObject> ownedReads = new ArrayList<>();
-        for (JsonElement element : array(envelope, "reads")) {
-            if (element.isJsonObject()
-                    && activeOwnsRead(element.getAsJsonObject(), active)) {
-                ownedReads.add(element.getAsJsonObject());
-            }
-        }
-        ownedReads.sort(Comparator.comparingLong(
-                read -> optionalLongInteger(read, "readEventId", Long.MAX_VALUE)));
-        if (carrier != null
-                && ownedReads.size() == carrier.consumerAccesses().size()) {
-            for (int index = 0; index < ownedReads.size(); index++) {
-                ConsumerAccessAnchor anchor =
-                        carrier.consumerAccesses().get(index);
-                ownedReads.get(index).addProperty(
-                        SharedStateEvidence.CONSUMER_SITE_ID, anchor.siteId);
-                ownedReads.get(index).addProperty(
-                        SharedStateEvidence.CONSUMER_SITE_OCCURRENCE,
-                        anchor.occurrence);
-            }
-        }
-        for (JsonElement element : array(envelope, "reads")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject read = element.getAsJsonObject();
-            if (active == null) {
-                read.addProperty(READER_AUTHORITY_FIELD,
-                        READER_OUTSIDE_SELECTED_REGION);
-                continue;
-            }
-            RuntimeTask reader = active.activation;
-            // A session envelope contains reads from every task that touched
-            // this location.  A row may claim only the reads issued by the
-            // activation currently closing: native task, context and region
-            // entry together are the exact dynamic owner.
-            if (!activeOwnsRead(read, active)) {
-                read.addProperty(READER_AUTHORITY_FIELD,
-                        READER_FOREIGN_REGION);
-                continue;
-            }
-            read.addProperty(SharedStateEvidence.READER_SOURCE_KEY,
-                    reader.sourceKey);
-            read.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
-                    active.occurrenceId());
-            read.addProperty(READER_AUTHORITY_FIELD,
-                    READER_ACTIVE_REGION_AUTHORITY);
-        }
-    }
-
-    /** Whether this native read belongs to the activation publishing it. */
-    private static boolean activeOwnsRead(JsonObject read,
-                                           ActiveRegion active) {
-        if (read == null || active == null
-                || active.vmRegionEnterEventId <= 0L) {
-            return false;
-        }
-        RuntimeTask reader = active.activation;
-        return active.vmContextId == optionalLongInteger(read,
-                "readerContextId", 0L)
-                && reader.taskId.equals(optionalString(read, "taskId"))
-                && reader.regionId.equals(optionalString(read, "regionId"))
-                && active.vmRegionEnterEventId == optionalLongInteger(read,
-                "regionEnterEventId", 0L);
-    }
-
-    /** Member naming where one read's activation address came from. */
-    static final String READER_AUTHORITY_FIELD = "readerAuthority";
-    /** Authority of a reader address taken from the running activation. */
-    static final String READER_ACTIVE_REGION_AUTHORITY =
-            "ACTIVE_REGION_READER_IDENTITY_V1";
-    /** Marker for a read read out while no selected region was running. */
-    static final String READER_OUTSIDE_SELECTED_REGION =
-            "READER_OUTSIDE_SELECTED_REGION";
-    /** Marker for a read whose static region is not the running one. */
-    static final String READER_FOREIGN_REGION =
-            "READER_REGION_NOT_ACTIVE_ACTIVATION";
-
-    /** The identity every record of one read-out batch is stamped with. */
-    private static RecordedEvidenceIdentity evidenceIdentity(
-            ActiveRegion active) {
-        if (active == null) return null;
-        long session = workloadSessionId;
-        return RecordedEvidenceIdentity.of(
-                RecordedEvidenceIdentity.declaredRunId(),
-                session != 0L ? "workload#" + session
-                        : "region#" + active.token,
-                active.activation.taskId,
-                active.occurrenceId(),
-                active.activation.sourceKey, active.evidenceSnapshot());
-    }
-
-    /** One shared location a task asked this activation to select. */
-    static final class SharedCarrierRequest {
-        final String declaringClass;
-        final String fieldName;
-        final String descriptor;
-        final String sourceKind;
-        final int index;
-        final boolean element;
-        final boolean mapState;
-        /** Came from the planner's cross-region shared-state selection. */
-        final boolean plannerDeclared;
-        final List<String> fieldPath = new ArrayList<>();
-
-        SharedCarrierRequest(JsonObject declaration,
-                             boolean plannerDeclared) {
-            this.declaringClass = optionalString(declaration, "declaringClass");
-            this.fieldName = optionalString(declaration, "fieldName");
-            this.descriptor = optionalString(declaration, "descriptor");
-            this.sourceKind = optionalString(declaration, "sourceKind");
-            this.index = optionalInteger(declaration, "index", -1);
-            this.element = "ARRAY_ELEMENT".equals(
-                    optionalString(declaration, "kind"));
-            this.mapState = SharedStateEvidence.LOCATION_KIND_MAP_STATE
-                    .equals(optionalString(declaration, "kind"));
-            this.plannerDeclared = plannerDeclared;
-            for (JsonElement segment : array(declaration, "fieldPath")) {
-                if (segment.isJsonPrimitive()) {
-                    fieldPath.add(safe(segment.getAsString()));
-                }
-            }
-        }
-
-        /** How this declaration reads back in a gap. */
-        String describe() {
-            return (element ? "element " + index
-                    : (mapState ? "map state of " : "")
-                    + declaringClass + "#" + fieldName + ":" + descriptor)
-                    + " via receiver path " + fieldPath;
-        }
-
-        /**
-         * The object the selection is made on, reached from {@code receiver},
-         * or {@link MissingValue#INSTANCE} when the path does not resolve.
-         */
-        Object resolveOwner(Object receiver) {
-            if (fieldPath.isEmpty()) return receiver;
-            return element || mapState
-                    ? resolveFieldPathValue(receiver, fieldPath)
-                    : resolveFieldPathLeafOwner(receiver, fieldPath);
-        }
-
-        boolean accessOwnerBound() {
-            return "ACTIVATION_FIELD_RECEIVER".equals(sourceKind);
-        }
-
-        boolean matchesAccess(String fieldSignature) {
-            // Cheapest test first: this hook now stands at every selected
-            // field write as well as every selected read, and parsing a
-            // signature for a carrier that is not access-bound would be work
-            // done per store for nothing.
-            if (!accessOwnerBound()) return false;
-            DeclaredField field = FieldPathSpec.declaredField(
-                    fieldSignature);
-            return field != null
-                    && declaringClass.equals(field.owner())
-                    && fieldName.equals(field.name())
-                    && (descriptor.isEmpty() || descriptor.equals(
-                    javaTypeDescriptor(field.type())));
-        }
-
-        boolean observesSharedRead(String fieldSignature) {
-            return plannerDeclared && matchesAccess(fieldSignature);
-        }
-
-        /** Activation-local identity of this exact access-bound request. */
-        String accessSelectionKey(Object owner) {
-            return (mapState ? "MAP" : element ? "ELEMENT" : "FIELD")
-                    + "/" + System.identityHashCode(owner) + "/"
-                    + declaringClass + "#" + fieldName + ":" + descriptor
-                    + "@" + index;
-        }
-
-        /**
-         * Selects this declared location on its exact access owner.
-         *
-         * <p>Wave 3: a declared shared location keeps EVERY symbolic write of
-         * the session as a version.  There is no producer to admit and no
-         * version to pick - the composer enumerates the versions the VM
-         * already recorded as read-from arms - so selection is the whole of
-         * what the runtime decides here.</p>
-         */
-        SharedStateResult selectAtAccess(Object owner,
-                                         String fieldSignature,
-                                         RuntimeTask task,
-                                         ConsumerAccessAnchor consumer) {
-            SharedCarrier carrier = mapState
-                    ? SharedCarrier.map(
-                    readExactField(owner, fieldSignature),
-                    declaringClass, fieldName, descriptor)
-                    : SharedCarrier.field(owner, declaringClass,
-                    fieldName, descriptor);
-            carrier.recordConsumerAccess(consumer);
-            return selectCarrierForTask(carrier, task);
-        }
-
-        /** Selects this carrier for {@code active}, or names why it cannot. */
-        SharedStateResult select(ActiveRegion active, RuntimeTask task) {
-            Object owner = resolveOwner(active.receiver);
-            if (owner == MissingValue.INSTANCE) {
-                return recordShared(failedShared(
-                        SharedStateEvidence.STAGE_SELECT,
-                        SharedStateEvidence.MISSING_METADATA, "",
-                        "declared carrier owner is unreachable from the "
-                                + "region receiver: " + describe()), null,
-                        active);
-            }
-            if (element) {
-                return selectCarrierForTask(
-                        SharedCarrier.element(owner, index), task);
-            }
-            if (mapState) {
-                return selectCarrierForTask(SharedCarrier.map(owner,
-                        declaringClass, fieldName, descriptor), task);
-            }
-            return selectCarrierForTask(SharedCarrier.field(owner,
-                    declaringClass, fieldName, descriptor), task);
-        }
-    }
-
-    /** Selects every carrier this activation's task declared. */
-    private static void selectDeclaredSharedCarriers(ActiveRegion active,
-                                                    RuntimeTask task) {
-        for (SharedCarrierRequest request : task.sharedCarriers) {
-            // This binding is resolved by the exact instrumented field access,
-            // where the actual declaring object is available.
-            if (request.accessOwnerBound()) continue;
-            try {
-                request.select(active, task);
-            } catch (Throwable throwable) {
-                recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
-                        SharedStateEvidence.INVOCATION_FAILED, "",
-                        request.describe() + ": " + rootCause(throwable)),
-                        null, active);
-            }
-        }
-    }
-
-    /**
-     * Stable identity of the getfield this hook immediately precedes.
-     * Accessor implementations use the caller site which selected the
-     * receiver; direct reads use their own bytecode site.
-     */
-    private static ConsumerAccessAnchor consumerAccessAnchor(
-            ActiveRegion active, String method, int unitIndex,
-            int occurrence, Object owner) {
-        AccessorCallContext accessor = CURRENT_ACCESSOR_CALL_CONTEXT.get();
-        if (accessor != null && active != null
-                && accessor.regionToken == active.token
-                && accessor.thread == Thread.currentThread()
-                && accessor.receiver == owner
-                && !accessor.callSiteId.isEmpty()
-                && accessor.occurrence > 0) {
-            return new ConsumerAccessAnchor(accessor.callSiteId,
-                    accessor.occurrence);
-        }
-        if (safe(method).isEmpty() || unitIndex < 0 || occurrence < 1) {
-            return null;
-        }
-        return new ConsumerAccessAnchor(SiteId.of(method, unitIndex),
-                occurrence);
-    }
-
-    /** Selects a demanded carrier on its exact field-access owner once. */
-    private static void selectAccessOwnerSharedCarriers(
-            ActiveRegion active, Object owner, String fieldSignature,
-            ConsumerAccessAnchor consumer) {
-        selectAccessOwnerSharedCarriers(active, active.activation, owner,
-                fieldSignature, consumer);
-    }
-
-    /** Selects one task's access-owner carriers for this activation. */
-    private static void selectAccessOwnerSharedCarriers(
-            ActiveRegion active, RuntimeTask task, Object owner,
-            String fieldSignature, ConsumerAccessAnchor consumer) {
-        Set<String> visited = new LinkedHashSet<>();
-        for (SharedCarrierRequest request : task.sharedCarriers) {
-            if (!request.matchesAccess(fieldSignature)) continue;
-            String selectionKey = request.accessSelectionKey(owner);
-            if (!visited.add(selectionKey)) {
-                continue;
-            }
-            SharedCarrier held = active.sharedCarriers.get(selectionKey);
-            if (held != null) {
-                held.recordConsumerAccess(consumer);
-                continue;
-            }
-            try {
-                request.selectAtAccess(owner, fieldSignature, task,
-                        consumer);
-            } catch (Throwable throwable) {
-                recordShared(failedShared(SharedStateEvidence.STAGE_SELECT,
-                        SharedStateEvidence.INVOCATION_FAILED, "",
-                        request.describe() + ": " + rootCause(throwable)),
-                        null, active);
-            }
-        }
-    }
-
-    /** One stable region-local consumer access, independent of object ids. */
-    static final class ConsumerAccessAnchor {
-        final String siteId;
-        final int occurrence;
-
-        ConsumerAccessAnchor(String siteId, int occurrence) {
-            this.siteId = safe(siteId);
-            this.occurrence = occurrence;
-        }
-    }
-
-    /** One location this activation selected as a symbolic carrier. */
-    static final class SharedCarrier {
-        /** Selection shapes, which is the only thing a carrier varies in. */
-        static final String SHAPE_FIELD = "FIELD";
-        static final String SHAPE_ELEMENT = "ELEMENT";
-        static final String SHAPE_MAP = "MAP";
-
-        private final Object owner;
-        private final String declaringClass;
-        private final String fieldName;
-        private final String descriptor;
-        private final int index;
-        private final String shape;
-        /** Frozen trace locator from this task's selected causal edge. */
-        private long plannedReceiverObjectId;
-        /** Reads of this live carrier in the publishing activation. */
-        private final List<ConsumerAccessAnchor> consumerAccesses =
-                new ArrayList<>();
-
-        private SharedCarrier(Object owner, String declaringClass,
-                              String fieldName, String descriptor, int index,
-                              String shape) {
-            this.owner = owner;
-            this.declaringClass = declaringClass;
-            this.fieldName = fieldName;
-            this.descriptor = descriptor;
-            this.index = index;
-            this.shape = shape;
-        }
-
-        static SharedCarrier field(Object owner, String declaringClass,
-                                   String fieldName, String descriptor) {
-            return new SharedCarrier(owner, safe(declaringClass),
-                    safe(fieldName), safe(descriptor), -1, SHAPE_FIELD);
-        }
-
-        static SharedCarrier element(Object array, int index) {
-            return new SharedCarrier(array, "", "", "", index, SHAPE_ELEMENT);
-        }
-
-        /** One map selected as the carrier of its own whole state. */
-        static SharedCarrier map(Object map, String declaringClass,
-                                 String fieldName, String descriptor) {
-            return new SharedCarrier(map, safe(declaringClass),
-                    safe(fieldName), safe(descriptor), -1, SHAPE_MAP);
-        }
-
-        boolean mapState() {
-            return SHAPE_MAP.equals(shape);
-        }
-
-        void bindPlannedReceiver(RuntimeTask task) {
-            if (!requiresPlannedReceiver()) {
-                return;
-            }
-            bindPlannedReceiver(task == null ? 0L
-                    : task.plannedReceiverObjectId(
-                    declaringClass, fieldName));
-        }
-
-        void bindPlannedReceiver(long receiverObjectId) {
-            plannedReceiverObjectId = Math.max(0L, receiverObjectId);
-        }
-
-        boolean requiresPlannedReceiver() {
-            return !SHAPE_ELEMENT.equals(shape)
-                    && !declaringClass.isEmpty() && !fieldName.isEmpty();
-        }
-
-        long plannedReceiverObjectId() {
-            return plannedReceiverObjectId;
-        }
-
-        void recordConsumerAccess(ConsumerAccessAnchor consumer) {
-            if (consumer != null && SHAPE_FIELD.equals(shape)
-                    && !consumer.siteId.isEmpty()
-                    && consumer.occurrence > 0) {
-                consumerAccesses.add(consumer);
-            }
-        }
-
-        List<ConsumerAccessAnchor> consumerAccesses() {
-            return consumerAccesses;
-        }
-
-        String describe() {
-            return shape + " " + declaringClass + "#" + fieldName + ":"
-                    + descriptor;
-        }
-
-        /** Activation-local dedupe key; never a cross-run address. */
-        String key() {
-            return shape + "/" + System.identityHashCode(owner) + "/"
-                    + declaringClass + "#" + fieldName + ":" + descriptor
-                    + "@" + index;
-        }
-
-        JsonObject toJson() {
-            JsonObject carrier = new JsonObject();
-            carrier.addProperty("kind", SHAPE_ELEMENT.equals(shape)
-                    ? "ARRAY_ELEMENT"
-                    : SHAPE_MAP.equals(shape)
-                    ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
-                    : "DECLARED_FIELD");
-            carrier.addProperty("declaringClass", declaringClass);
-            carrier.addProperty("fieldName", fieldName);
-            carrier.addProperty("descriptor", descriptor);
-            carrier.addProperty("index", index);
-            // A replay-local object id is not a cross-session identity.  The
-            // frozen causal edge's receiver locator is the one stable name
-            // every worker in this campaign shares.
-            carrier.addProperty("receiverObjectId",
-                    plannedReceiverObjectId);
-            if (!SHAPE_ELEMENT.equals(shape) && !declaringClass.isEmpty()
-                    && !fieldName.isEmpty()) {
-                carrier.addProperty("fieldKey",
-                        declaringClass + "#" + fieldName + ":" + descriptor);
-            }
-            return carrier;
-        }
-
-        /** Native read-out only; JSON decoding belongs to publication. */
-        String rawVersions(ConcolicVmBroker api) throws Exception {
-            if (SHAPE_ELEMENT.equals(shape)) {
-                return api.sharedElementVersions(owner, index);
-            }
-            if (SHAPE_MAP.equals(shape)) {
-                return api.sharedMapVersions(owner);
-            }
-            return api.sharedFieldVersions(owner, declaringClass, fieldName,
-                    descriptor);
-        }
-        /** Native selection only; the answer's meaning belongs to the caller. */
-        long select(ConcolicVmBroker api) throws Exception {
-            if (SHAPE_ELEMENT.equals(shape)) {
-                return api.selectSharedElementCarrier(owner, index);
-            }
-            if (SHAPE_MAP.equals(shape)) {
-                return api.selectSharedMapCarrier(owner);
-            }
-            return api.selectSharedFieldCarrier(owner, declaringClass,
-                    fieldName, descriptor);
-        }
-
-        /** The VM entry point {@link #select} calls, named for a failure. */
-        String selectApi() {
-            return SHAPE_ELEMENT.equals(shape) ? "selectSharedElementCarrier"
-                    : SHAPE_MAP.equals(shape) ? "selectSharedMapCarrier"
-                    : "selectSharedFieldCarrier";
-        }
-
-        /** Why this shape cannot name a carrier, or empty when it can. */
-        String missing() {
-            if (SHAPE_MAP.equals(shape)) {
-                return owner == null
-                        ? "a map carrier needs the map it selects" : "";
-            }
-            if (SHAPE_ELEMENT.equals(shape)) {
-                return owner == null || index < 0
-                        ? "an element carrier needs an array and a "
-                        + "non-negative index" : "";
-            }
-            return missingCarrierMetadata(owner, declaringClass, fieldName,
-                    descriptor);
-        }
-
-    }
-
-    private static String missingCarrierMetadata(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        if (owner == null) return "shared carrier has no owner";
-        return firstNonBlank(declaringClass).isEmpty()
-                || firstNonBlank(fieldName).isEmpty()
-                || firstNonBlank(descriptor).isEmpty()
-                ? "shared carrier has no exact declaring class, field name "
-                + "and type descriptor" : "";
-    }
-
-    private static SharedStateResult failedShared(String stage, int status,
-                                                  String locationKey,
-                                                  String detail) {
-        return new SharedStateResult(stage, status, safe(locationKey),
-                SharedStateEvidence.gap(stage, status,
-                        locationKey, detail));
-    }
-
-    /** Files one shared-state outcome with the active region. */
-    private static SharedStateResult recordShared(SharedStateResult result,
-                                                  SharedCarrier carrier,
-                                                  ActiveRegion active) {
-        fileShared(result, carrier, active);
-        diag(result.ok() ? "SHARED_STATE" : SharedStateEvidence.GAP_KIND,
-                result.toString());
-        return result;
-    }
-
-    /** Files an already-decoded outcome without touching the closed VM. */
-    private static void fileShared(SharedStateResult result,
-                                   SharedCarrier carrier,
-                                   ActiveRegion active) {
-        if (active != null) {
-            if (!result.ok()) {
-                active.sharedStateGaps.add(result.record);
-            } else if (carrier != null) {
-                active.sharedCarriers.put(carrier.key(), carrier);
-            } else if (!result.locationKey.isEmpty()) {
-                active.sharedStateRecords.put(result.locationKey,
-                        result.record);
-            }
-        }
-    }
-
-    /**
-     * Captures every native shared-state envelope while the owner thread still
-     * owns the VM context.
-     */
-    private static RawSharedStateReadOut captureRecordedSharedStateRaw(
-            ActiveRegion active, ConcolicVmBroker api,
-            RecordedEvidenceIdentity identity) {
-        List<RawSharedCarrierReadOut> carriers = new ArrayList<>();
-        for (SharedCarrier carrier
-                : new ArrayList<>(active.sharedCarriers.values())) {
-            carrier.bindPlannedReceiver(active.activation);
-            // A map-state expression itself needs one stable map identity.
-            // Scalar field reads instead carry a stable consumer-site anchor
-            // on each read, so a loop-created receiver need not have one
-            // trace-wide object id before its exact VM versions are read.
-            if (carrier.mapState()
-                    && carrier.plannedReceiverObjectId() <= 0L) {
-                carriers.add(RawSharedCarrierReadOut.failure(carrier,
-                        failedShared(SharedStateEvidence.STAGE_VERSIONS,
-                                SharedStateEvidence.MISSING_METADATA, "",
-                                "selected task has no unique frozen receiver"
-                                        + " locator for "
-                                        + carrier.describe())));
-                continue;
-            }
-            try {
-                String serialized = memoizedReadOut(carrier.key());
-                if (serialized == null) {
-                    serialized = memoizeReadOut(carrier.key(),
-                            carrier.rawVersions(api));
-                }
-                carriers.add(new RawSharedCarrierReadOut(carrier,
-                        serialized, null));
-            } catch (Throwable throwable) {
-                carriers.add(RawSharedCarrierReadOut.failure(carrier,
-                        failedShared(SharedStateEvidence.STAGE_VERSIONS,
-                                SharedStateEvidence.INVOCATION_FAILED, "",
-                                rootCause(throwable))));
-            }
-        }
-
-        return new RawSharedStateReadOut(carriers, identity);
-    }
-
-    /** Decodes and files raw envelopes after the VM context is closed. */
-    private static void assembleRecordedSharedState(
-            ActiveRegion active, RawSharedStateReadOut raw) {
-        if (raw == null) return;
-        for (RawSharedCarrierReadOut carrier : raw.carriers) {
-            SharedStateResult decoded = carrier.failure;
-            if (decoded == null) {
-                try {
-                    decoded = decodeVersionsEnvelope(carrier.serialized,
-                            carrier.carrier, raw.identity, active);
-                } catch (Throwable throwable) {
-                    decoded = failedShared(
-                            SharedStateEvidence.STAGE_VERSIONS,
-                            SharedStateEvidence.MALFORMED_ENVELOPE, "",
-                            rootCause(throwable));
-                }
-            }
-            fileShared(decoded, null, active);
-        }
-    }
-
-    /** One carrier's exact VM envelope, or the failure that replaced it. */
-    private static final class RawSharedCarrierReadOut {
-        private final SharedCarrier carrier;
-        private final String serialized;
-        private final SharedStateResult failure;
-
-        private RawSharedCarrierReadOut(SharedCarrier carrier,
-                                         String serialized,
-                                         SharedStateResult failure) {
-            this.carrier = carrier;
-            this.serialized = serialized;
-            this.failure = failure;
-        }
-
-        private static RawSharedCarrierReadOut failure(
-                SharedCarrier carrier, SharedStateResult failure) {
-            return new RawSharedCarrierReadOut(carrier, null, failure);
-        }
-    }
-
-    /** Raw shared-state batch frozen before one VM region is finished. */
-    private static final class RawSharedStateReadOut {
-        private final List<RawSharedCarrierReadOut> carriers;
-        private final RecordedEvidenceIdentity identity;
-
-        private RawSharedStateReadOut(
-                List<RawSharedCarrierReadOut> carriers,
-                RecordedEvidenceIdentity identity) {
-            this.carriers = carriers;
-            this.identity = identity;
-        }
-    }
 
     /**
      * Invocation-exact normal cleanup used by injected roots.  This method is
@@ -5508,7 +4670,7 @@ public final class ConcolicRegionRuntime {
         return MissingValue.INSTANCE;
     }
 
-    private static Object readExactField(
+    static Object readExactField(
             Object receiver, String fieldSignature) {
         Field field = declaredInstanceField(receiver, fieldSignature);
         if (field == null) return MissingValue.INSTANCE;
@@ -5578,7 +4740,7 @@ public final class ConcolicRegionRuntime {
                 + ">";
     }
 
-    private static ActiveRegion activeRegion() {
+    static ActiveRegion activeRegion() {
         Deque<Long> tokens = CURRENT_TOKENS.get();
         Long token = tokens.peek();
         return token == null ? null : ownerRegion(token);
@@ -6012,7 +5174,7 @@ public final class ConcolicRegionRuntime {
     }
 
 
-    private static JsonElement parseJson(String value) {
+    static JsonElement parseJson(String value) {
         if (value == null || value.trim().isEmpty()) {
             return new JsonObject();
         }
@@ -6023,7 +5185,7 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static String rootCause(Throwable throwable) {
+    static String rootCause(Throwable throwable) {
         Throwable current = throwable;
         while (current instanceof InvocationTargetException
                 && ((InvocationTargetException) current).getTargetException() != null) {
@@ -6055,16 +5217,16 @@ public final class ConcolicRegionRuntime {
 
     private enum UnsupportedReplayValue { INSTANCE }
 
-    private static final class AccessorCallContext {
+    static final class AccessorCallContext {
         private final long contextToken;
-        private final long regionToken;
-        private final Thread thread;
+        final long regionToken;
+        final Thread thread;
         private final String callerMethod;
         private final int callUnitIndex;
-        private final String callSiteId;
+        final String callSiteId;
         private final String declaredCallee;
-        private final Object receiver;
-        private final int occurrence;
+        final Object receiver;
+        final int occurrence;
         private final AccessorCallContext previous;
 
         private AccessorCallContext(
@@ -6255,10 +5417,10 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static final class ActiveRegion {
-        private final long token;
+    static final class ActiveRegion {
+        final long token;
         /** The one task whose region-local path this activation records. */
-        private final RuntimeTask activation;
+        final RuntimeTask activation;
         /**
          * This activation's ordinal within its address, taken at admission so
          * every symbol, mint row and handoff lineage it publishes can name
@@ -6266,10 +5428,10 @@ public final class ConcolicRegionRuntime {
          */
         private int activationOrdinal;
         /** VM context whose writes belong to this materialized activation. */
-        private long vmContextId;
+        long vmContextId;
         /** Exact event-ledger entry of this native region frame. */
-        private long vmRegionEnterEventId;
-        private final Object receiver;
+        long vmRegionEnterEventId;
+        final Object receiver;
         private final Thread thread;
         /** Entry lacked local producer-source evidence; OUT must confirm it. */
         private final boolean deferredOutgoingSource;
@@ -6409,11 +5571,11 @@ public final class ConcolicRegionRuntime {
          * Shared locations this activation selected as symbolic carriers, and
          * the evidence read back from them.
          */
-        private final Map<String, SharedCarrier> sharedCarriers =
+        final Map<String, SharedCarrier> sharedCarriers =
                 new LinkedHashMap<>();
-        private final Map<String, JsonObject> sharedStateRecords =
+        final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
-        private final List<JsonObject> sharedStateGaps = new ArrayList<>();
+        final List<JsonObject> sharedStateGaps = new ArrayList<>();
 
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;
@@ -6464,7 +5626,7 @@ public final class ConcolicRegionRuntime {
         private JsonObject replayResourceCut;
         private boolean pathRecordingStarted;
 
-        private ActiveRegion(long token, RuntimeTask activation,
+        ActiveRegion(long token, RuntimeTask activation,
                              Object receiver, Thread thread,
                              boolean deferredOutgoingSource) {
             this.token = token;
@@ -6507,7 +5669,7 @@ public final class ConcolicRegionRuntime {
         }
 
         /** This activation's own occurrence identity: address plus ordinal. */
-        private String occurrenceId() {
+        String occurrenceId() {
             return activationOrdinal <= 0 ? safe(activation.occurrenceId)
                     : OccurrenceId.parse(safe(activation.occurrenceId))
                             .withActivation(activationOrdinal).render();
@@ -7077,7 +6239,7 @@ public final class ConcolicRegionRuntime {
          * on first use so a capture outside the exit batch still gets its own
          * comparable ordinal rather than borrowing a later one.
          */
-        private long evidenceSnapshot() {
+        long evidenceSnapshot() {
             if (evidenceSnapshot == 0L) {
                 evidenceSnapshot = EVIDENCE_SNAPSHOTS.incrementAndGet();
             }

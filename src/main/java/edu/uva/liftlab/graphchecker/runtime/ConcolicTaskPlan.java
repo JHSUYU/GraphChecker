@@ -36,11 +36,11 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ConsumerAccessAnchor;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.ConsumerAccessAnchor;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.GuardedReadAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ModelAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SharedCarrierRequest;
+import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedCarrierRequest;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_EXECUTOR_THREAD_NAME;
