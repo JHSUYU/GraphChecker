@@ -53,8 +53,14 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String DEMAND_SCOPE = "demandScopeMethods";
 
-    /** Existing planner admission vocabulary for a bounded state writer. */
-    private static final String ADMISSION_BASIS = "admissionBasis";
+    /**
+     * Existing planner admission vocabulary for a bounded state writer.  Why
+     * this activation is in the plan at all, when it is there for anything
+     * other than reaching the fatal target: the planner publishes it on the
+     * occurrence's plan row so a reader of the frozen artifact can tell a
+     * demanded state writer from a target-reachable region.
+     */
+    public static final String ADMISSION_BASIS = "admissionBasis";
     private static final String SHARED_LOCATION_DEMAND_ADMISSION =
             "SHARED_LOCATION_DEMAND_V1";
     private static final String DEMANDED_BY_REGIONS = "demandedByRegionIds";
@@ -64,9 +70,21 @@ public final class RuntimeSelectedRegionFinalizer {
      * How many shared-location demand hops separate this admission from the
      * fatal target.  A writer the failure closure's own port demand asked for
      * is one hop; a writer asked for only because an already admitted
-     * occurrence reads the location is one hop further out.
+     * occurrence reads the location is one hop further out.  Published on
+     * the plan row beside {@link #ADMISSION_BASIS}: it is the only place the
+     * frozen artifact records how far a demand travelled, and it cannot be
+     * reconstructed from the retained edges, which carry port demand and
+     * protocol closure as well as this rule's hops.
+     *
+     * <p>It is the shortest demand chain that reached the admission, not a
+     * statement about the configured bound, and it can exceed that bound: an
+     * admission the failure closure's own port demand asked for is made
+     * whatever the bound says, and is then labelled with the chain it sits
+     * on.  Only {@code transitiveSharedLocationDemand} refuses a hop, so a
+     * row deeper than the bound is a first-order admission and not evidence
+     * that the bound leaked.
      */
-    static final String DEMAND_DEPTH = "demandDepth";
+    public static final String DEMAND_DEPTH = "demandDepth";
     /** The fatal target is the origin of every shared-location demand. */
     private static final int TARGET_DEMAND_DEPTH = 0;
     /**

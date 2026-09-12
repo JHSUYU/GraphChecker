@@ -1206,6 +1206,18 @@ final class RuntimeRegionPlanner {
             if (!region.anchorMethod.isEmpty()) {
                 plan.put("targetMethod", region.anchorMethod);
             }
+            // Why this activation was admitted, when it was admitted by
+            // anything other than reaching the target, and how many
+            // shared-location demand hops that took.  The region finalizer
+            // stamps both on the seed; neither is derivable from the
+            // retained edges, which carry port demand and protocol closure
+            // in the same rows.
+            if (seed.containsKey(ADMISSION_BASIS)) {
+                plan.put(ADMISSION_BASIS, seed.get(ADMISSION_BASIS));
+                if (seed.containsKey(DEMAND_DEPTH)) {
+                    plan.put(DEMAND_DEPTH, seed.get(DEMAND_DEPTH));
+                }
+            }
             plan.put("closureGoals", Collections.singletonList(goal));
             result.regionPlans.add(plan);
             goalByOccurrence.put(occurrenceId, goal);
@@ -2424,6 +2436,16 @@ final class RuntimeRegionPlanner {
     private static String relationKey(SourceRef source, String regionId) {
         return source.id() + "/relation/" + regionId;
     }
+
+    /**
+     * Plan-row fields naming why the admission half selected this region and
+     * how far from the fatal target that demand travelled.  One spelling,
+     * owned by the finalizer that writes them onto the seed.
+     */
+    static final String ADMISSION_BASIS =
+            RuntimeSelectedRegionFinalizer.ADMISSION_BASIS;
+    static final String DEMAND_DEPTH =
+            RuntimeSelectedRegionFinalizer.DEMAND_DEPTH;
 
     /** Task member carrying the retained loops of one occurrence. */
     static final String RETAINED_LOOPS_FIELD =
