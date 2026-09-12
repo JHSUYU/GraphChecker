@@ -584,6 +584,68 @@ public class SymbolicPropagationClosureTest {
                 .getAsJsonArray("arms").size());
     }
 
+    /**
+     * A claimed read is addressed by its own VM location key, and that key
+     * (<code>kind/ownerSymRid#slot</code>) is minted per VM session: the same
+     * string names unrelated locations in two replay sessions.  Two cases of
+     * one planned occurrence, one per session, must therefore never claim one
+     * family.
+     */
+    @Test
+    public void unsnapshottedReadsOfTwoSessionsDoNotShareOneFamily() {
+        List<JsonObject> rows = new ArrayList<>();
+        for (int session = 1; session <= 2; session++) {
+            String scope = "replay-group:session-" + session;
+            JsonObject writer = summary("W" + session, "W" + session + "#a1",
+                    "TASK.W." + session, scope,
+                    symbol("M_WRITER_" + session));
+            // One planned occurrence (R), one VM location key
+            // (INSTANCE_FIELD/17#8), two boundary session scopes.  The two
+            // sessions read unrelated locations that the VM happened to
+            // mint the same owner rid for, so their Java types differ.
+            JsonObject read = guardedRead(701L,
+                    candidate("rf_only", 690L + session,
+                            symbol("M_WRITTEN_" + session), writer, 1));
+            read.addProperty("_java_type", session == 1 ? "I" : "J");
+            JsonObject wrapper = boundary(VmExpressionIr.FIELD_READ, 701L,
+                    read);
+            wrapper.addProperty("_java_type", session == 1 ? "I" : "J");
+            // Distinct local control (the two cases took opposite
+            // branches), so neither inherits the other's claim ordinal.
+            JsonObject reader = summary("R", "R#a1", "TASK.R." + session,
+                    scope, wrapper);
+            addGuardedReadEvidence(reader, read, writer);
+            // No reader occurrence: no activation published a snapshot that
+            // names this read, so the claim path addresses it.
+            observedRead(reader).remove(
+                    SharedStateEvidence.READER_OCCURRENCE_ID);
+            rows.add(writer);
+            rows.add(reader);
+        }
+
+        SymbolicPropagationClosure.Result result = rewrite(rows);
+
+        assertTrue(result.gaps().toString(), result.complete());
+        // Each session's read is the only arm of its own family, so nothing
+        // is merged.  A claim that folds no session scope into its slot puts
+        // both reads in one family and emits a two-armed merge instead.
+        Set<String> merged = new LinkedHashSet<>();
+        for (JsonObject summary : result.summaries()) {
+            collectMergeFamilies(summary, merged);
+        }
+        assertTrue(merged.toString(), merged.isEmpty());
+        for (JsonObject summary : result.summaries()) {
+            if (!"R".equals(optionalString(summary, "regionId"))) continue;
+            String own = optionalString(summary, "boundarySessionScope")
+                    .endsWith("-1") ? "1" : "2";
+            String foreign = "1".equals(own) ? "2" : "1";
+            String rendered = summary.toString();
+            assertTrue(rendered, rendered.contains("M_WRITTEN_" + own));
+            assertFalse(rendered,
+                    rendered.contains("M_WRITTEN_" + foreign));
+        }
+    }
+
     /** The single read the guarded-read evidence helper published. */
     private static JsonObject observedRead(JsonObject reader) {
         return reader.getAsJsonObject(SharedStateEvidence.RECORDED_FIELD)
@@ -934,6 +996,27 @@ public class SymbolicPropagationClosureTest {
             if (found.size() > 0) return found;
         }
         return new JsonObject();
+    }
+
+    /** Every family key an emitted case-merge node names. */
+    private static void collectMergeFamilies(JsonElement value,
+                                             Set<String> result) {
+        if (value == null || value.isJsonNull()) return;
+        if (value.isJsonArray()) {
+            for (JsonElement child : value.getAsJsonArray()) {
+                collectMergeFamilies(child, result);
+            }
+        } else if (value.isJsonObject()) {
+            JsonObject object = value.getAsJsonObject();
+            if (SymbolicPropagationClosure.ITE_TYPE.equals(
+                    optionalString(object, "_type"))) {
+                result.add(optionalString(object,
+                        VmExpressionIr.FAMILY_KEY));
+            }
+            for (Map.Entry<String, JsonElement> field : object.entrySet()) {
+                collectMergeFamilies(field.getValue(), result);
+            }
+        }
     }
 
     private static Set<String> mergeIds(List<JsonObject> summaries) {

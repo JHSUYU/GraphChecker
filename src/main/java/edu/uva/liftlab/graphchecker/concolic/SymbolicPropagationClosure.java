@@ -892,11 +892,18 @@ public final class SymbolicPropagationClosure {
                 }
                 String location = SharedStateEvidence.locationKey(read);
                 if (location.isEmpty()) continue;
-                int ordinal = ordinals.merge(reader.owner + "\n" + location,
+                // A VM location key is `kind/ownerSymRid#slot`: the owner rid
+                // is minted per VM session and the slot names no session, so
+                // the same string addresses unrelated locations in two
+                // boundary sessions of one planned occurrence.  The session
+                // scope is therefore part of the slot this claim addresses;
+                // without it two sessions' reads would join one family.
+                String slot = "session:" + key.scope + "\u0000" + location;
+                int ordinal = ordinals.merge(reader.owner + "\n" + slot,
                         1, Integer::sum);
                 String family = boundaryFamilyKey(reader.epoch,
                         OccurrenceId.parse(reader.occurrence).planned(),
-                        VmExpressionIr.FIELD_READ, location, ordinal);
+                        VmExpressionIr.FIELD_READ, slot, ordinal);
                 if (!addDynamic(key.scope, key.event, family)) continue;
                 indexBoundaryOwner(key, reader, family);
                 addArm(family, VmExpressionIr.FIELD_READ, reader.epoch,
