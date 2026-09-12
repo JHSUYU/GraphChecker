@@ -33,7 +33,6 @@ public final class RuntimePlanArtifact {
     private static final String CATALOG_KIND =
             "CONCOLIC_RUNTIME_MODEL_CATALOG";
     private static final String PLAN_KIND = "CONCOLIC_REGION_PLAN";
-    private static final String EDGE_BINDING_IDS = "edgeBindingIds";
 
     private final List<RegionInstancePlan> plans;
     private final List<JsonObject> regions;
@@ -62,13 +61,13 @@ public final class RuntimePlanArtifact {
                                 Collection<JsonObject> encodedEdges,
                                 Collection<JsonObject> encodedRegions) {
         List<JsonObject> edges = copies(encodedEdges);
-        Map<String, JsonObject> edgeById = indexEdges(edges);
+        EdgeBindingCatalog catalog = EdgeBindingCatalog.of(edges);
 
         StringBuilder output = new StringBuilder();
         output.append(encodeCatalog(edges, copies(encodedRegions)));
         for (JsonObject source : encodedPlans) {
             output.append(CanonicalJson.render(
-                    compactBindings(source, edgeById))).append('\n');
+                    compactBindings(source, catalog))).append('\n');
         }
         return output.toString();
     }
@@ -107,9 +106,9 @@ public final class RuntimePlanArtifact {
                 "runtime edge catalog", path);
         List<JsonObject> regions = objects(array(catalog, "regions"),
                 "runtime region catalog", path);
-        Map<String, JsonObject> edgeById;
+        EdgeBindingCatalog bindings;
         try {
-            edgeById = indexEdges(edges);
+            bindings = EdgeBindingCatalog.of(edges);
         } catch (IllegalArgumentException malformed) {
             throw new IOException("invalid runtime edge catalog: " + path,
                     malformed);
@@ -118,7 +117,7 @@ public final class RuntimePlanArtifact {
         try {
             for (JsonObject plan : compactPlans) {
                 decoded.add(RegionInstancePlan.decode(
-                        hydrateBindings(plan, edgeById)));
+                        hydrateBindings(plan, bindings)));
             }
         } catch (IllegalArgumentException malformed) {
             throw new IOException("invalid compact runtime plan: " + path,
@@ -158,39 +157,26 @@ public final class RuntimePlanArtifact {
     }
 
     private static JsonObject compactBindings(
-            JsonObject source, Map<String, JsonObject> edgeById) {
+            JsonObject source, EdgeBindingCatalog catalog) {
         JsonObject plan = source.deepCopy();
         for (JsonElement element : array(plan, "closureGoals")) {
             JsonObject goal = element.getAsJsonObject();
             // Compacting twice would replace the stored ids with an empty
             // list, so the second pass is refused rather than absorbed.
-            if (goal.has(EDGE_BINDING_IDS)) {
+            if (goal.has(EdgeBindingCatalog.IDS)) {
                 throw new IllegalArgumentException(
                         "runtime plan is already binding-compacted");
             }
-            Set<String> ids = new LinkedHashSet<>();
-            for (JsonElement bindingElement : array(goal,
-                    "edgeBindings")) {
-                JsonObject binding = bindingElement.getAsJsonObject();
-                String id = optionalString(binding, "edgeId");
-                JsonObject evidence = edgeById.get(id);
-                if (id.isEmpty() || !binding.equals(evidence)) {
-                    throw new IllegalArgumentException(
-                            "goal binding is absent from the edge catalog: "
-                                    + id);
-                }
-                ids.add(id);
-            }
-            JsonArray encodedIds = new JsonArray();
-            for (String id : ids) encodedIds.add(id);
-            goal.remove("edgeBindings");
-            goal.add(EDGE_BINDING_IDS, encodedIds);
+            JsonArray ids = catalog.idsOf(
+                    array(goal, EdgeBindingCatalog.BINDINGS));
+            goal.remove(EdgeBindingCatalog.BINDINGS);
+            goal.add(EdgeBindingCatalog.IDS, ids);
         }
         return plan;
     }
 
     private static JsonObject hydrateBindings(
-            JsonObject source, Map<String, JsonObject> edgeById) {
+            JsonObject source, EdgeBindingCatalog catalog) {
         JsonObject plan = source.deepCopy();
         for (JsonElement element : array(plan, "closureGoals")) {
             if (!element.isJsonObject()) {
@@ -198,47 +184,16 @@ public final class RuntimePlanArtifact {
                         "closureGoals must contain objects");
             }
             JsonObject goal = element.getAsJsonObject();
-            if (goal.has("edgeBindings")) {
+            if (goal.has(EdgeBindingCatalog.BINDINGS)) {
                 throw new IllegalArgumentException(
                         "compact runtime plan must not duplicate edgeBindings");
             }
-            JsonArray hydrated = new JsonArray();
-            Set<String> ids = new LinkedHashSet<>();
-            for (JsonElement idElement : array(goal, EDGE_BINDING_IDS)) {
-                if (!idElement.isJsonPrimitive()
-                        || !idElement.getAsJsonPrimitive().isString()
-                        || idElement.getAsString().trim().isEmpty()
-                        || !ids.add(idElement.getAsString())) {
-                    throw new IllegalArgumentException(
-                            "edgeBindingIds must be unique nonempty strings");
-                }
-                JsonObject edge = edgeById.get(idElement.getAsString());
-                if (edge == null) {
-                    throw new IllegalArgumentException(
-                            "unknown runtime edge id "
-                                    + idElement.getAsString());
-                }
-                hydrated.add(edge.deepCopy());
-            }
-            goal.remove(EDGE_BINDING_IDS);
-            goal.add("edgeBindings", hydrated);
+            JsonArray hydrated = catalog.hydrate(
+                    array(goal, EdgeBindingCatalog.IDS));
+            goal.remove(EdgeBindingCatalog.IDS);
+            goal.add(EdgeBindingCatalog.BINDINGS, hydrated);
         }
         return plan;
-    }
-
-    private static Map<String, JsonObject> indexEdges(
-            List<JsonObject> edges) {
-        Map<String, JsonObject> result = new LinkedHashMap<>();
-        for (JsonObject edge : edges) {
-            String id = optionalString(edge, "edgeId");
-            if (id.isEmpty() || edge.has("bindings")
-                    || result.putIfAbsent(id, edge) != null) {
-                throw new IllegalArgumentException(
-                        "runtime edges must be flat with unique nonempty ids: "
-                                + id);
-            }
-        }
-        return result;
     }
 
     private static List<JsonObject> objects(JsonArray values, String label,
