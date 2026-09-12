@@ -4176,6 +4176,40 @@ public final class ConcolicSmtComposer {
                                 ? "false" : "true", Sort.BOOL),
                                 left, right);
                     }
+                    // One side a String literal decides this by content.
+                    //
+                    // Java's == on Strings is reference identity, and a
+                    // literal is interned, so `lit == x` holds exactly when
+                    // x is that interned object.  Content equality is the
+                    // same relation over the values the other side can
+                    // actually take: it is a recorded expression, so every
+                    // value in its range is a String this execution really
+                    // produced, and two equal Strings in one interning pool
+                    // are one object.  HDFS's own SerialNumberManager
+                    // string table is exactly this comparison, and refusing
+                    // it discarded the whole formula around it.
+                    //
+                    // With no literal on either side the relation is still
+                    // reference identity between two unknown objects, which
+                    // content equality would genuinely over-approximate, so
+                    // that stays refused.
+                    Term literalSide = stringLiteral(
+                            expression.get("_left")) != null ? left
+                            : stringLiteral(expression.get("_right")) != null
+                            ? right : null;
+                    if (literalSide != null) {
+                        Term symbolSide = literalSide == left ? right : left;
+                        String equality = ContainerSmtCodec
+                                .materializedStringEquality(left.text,
+                                        right.text,
+                                        symbolSide.stringNullness);
+                        if (!equality.isEmpty()) {
+                            return dependent(Term.of("!=".equals(operator)
+                                            ? "(not " + equality + ")"
+                                            : equality, Sort.BOOL),
+                                    left, right);
+                        }
+                    }
                     unsupported.add("MODEL_SEMANTICS_MISSING:"
                             + "JAVA_STRING_REFERENCE_IDENTITY:"
                             + operator);
@@ -5331,6 +5365,12 @@ public final class ConcolicSmtComposer {
     }
 
     /** The container sort a read of a whole container answers, or null. */
+    /** The exact String one operand is a literal for, or null. */
+    private static String stringLiteral(JsonElement expression) {
+        return VmExpressionIr.exactStringLiteral(expression,
+                type -> sortOfJava(type) == Sort.STRING);
+    }
+
     private static Sort containerValuedReadSort(JsonObject node) {
         String shape = ContainerSmtCodec.containerValuedReadShape(node);
         return "INDEXED".equals(shape) ? Sort.ARRAY_VALUE

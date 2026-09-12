@@ -355,6 +355,27 @@ public class IndexedStateCarrierTest {
                 ContainerSmtCodec.containerValuedReadShape(null));
     }
 
+    // -------------------------------------------- String literal identity
+
+    @Test
+    public void aStringLiteralDecidesIdentityByContent() {
+        // HDFS's SerialNumberManager string table compares a table cell
+        // against an interned literal with ==.  A literal is interned, so
+        // `lit == x` holds exactly when x is that object, and over the
+        // recorded values x can take, content equality is that same
+        // relation.  materializedStringEquality carries the non-nullness
+        // the comparison also needs.
+        assertEquals("(= (valueString cell) \"supergroup\")",
+                ContainerSmtCodec.materializedStringEquality(
+                        "(valueString cell)", "\"supergroup\"", "false"));
+        assertEquals("(and (= a b) (not nil_a))",
+                ContainerSmtCodec.materializedStringEquality(
+                        "a", "b", "nil_a"));
+        // No nullness is known, so nothing is stated and the caller refuses.
+        assertEquals("", ContainerSmtCodec.materializedStringEquality(
+                "a", "b", ""));
+    }
+
     // --------------------------------------------------------------- helpers
 
     private static JsonObject guardedRead(String javaType,
