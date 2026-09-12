@@ -2074,6 +2074,12 @@ public final class ConcolicScheduler {
                         retained.addProperty("symbolicDemand",
                                 "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
                         suppressed.add(suppressedCandidate(regionId, action));
+                    } else {
+                        // Named by hand: the replay mints here rather than
+                        // reusing whatever carrier happens to wrap the read.
+                        retained.addProperty(
+                                InputActionCatalog.DECLARED_SYMBOLIC_ROOT,
+                                true);
                     }
                 }
                 selected.add(retained);

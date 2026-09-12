@@ -10,6 +10,17 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
  */
 public final class InputActionCatalog {
     public static final String FIELD = "inputActions";
+    /**
+     * Marks an input the experiment's {@code symbolic-inputs.jsonl} named by
+     * hand, as opposed to one an automatic mechanism proposed.
+     *
+     * <p>The replay reads it: a declared primitive source mints its root even
+     * when the value arrives wrapped in a carrier over a constant, which is
+     * the only way an experiment can say "the search starts at this field"
+     * about a field nothing symbolic has reached yet.</p>
+     */
+    public static final String DECLARED_SYMBOLIC_ROOT =
+            "declaredSymbolicRoot";
 
     public enum Mode {
         SYMBOLIC, CONCRETE, DECLARATION_ONLY

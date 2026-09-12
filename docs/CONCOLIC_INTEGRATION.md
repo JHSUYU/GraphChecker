@@ -108,6 +108,20 @@ at every call site of that callee inside the region, so one entry declares
 {"regionId":"REGION.aaa1cfd7-...","fieldSignatures":["<org.apache.hadoop.security.token.delegation.DelegationKey: int keyId>"],"cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
 ```
 
+A declared row does not only survive the narrowing: it **mints**. Once a
+shared-state carrier is installed, every later read of a field arrives wrapped
+in a `ReadFrom`, including a field only ever written from constants, and the
+automatic rule reads that wrapper as "already propagated" and skips the mint --
+so a declared field could stay concrete. A declared source of primitive type
+asks the strict question instead (is anything symbolic actually inside the
+tree?) and mints where the answer is no, recording the usual
+`PLANNED_MANUAL_SYMBOLIZATION_V1` evidence. A declared read that a symbol has
+already reached still flows, so declaring both a root and the values derived
+from it does not fork the chain: on the HDFS block-key experiments
+`BlockTokenSecretManager#serialNo` is the mint and `DelegationKey#keyId` /
+`#expiryDate` flow from it and from the clock. Non-primitive declarations keep
+the loose rule, since a container or reference has no root to mint.
+
 Two things are exempt from the allowlist and stay symbolic without a row:
 
 - a field owned by a `CausynthSymbolicSource.symbolize` hook site — the hook

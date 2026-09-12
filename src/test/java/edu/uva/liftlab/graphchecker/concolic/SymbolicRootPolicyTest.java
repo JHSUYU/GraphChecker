@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -69,6 +70,28 @@ public class SymbolicRootPolicyTest {
                 "CONCRETE", mode(selected, 1));
         assertEquals("CONFIGURED_SYMBOLIC_INPUT_UNSELECTED",
                 demand(selected, 1));
+    }
+
+    /** The replay needs to know the row was named by hand, not proposed. */
+    @Test
+    public void anAdmittedActionIsStampedAsDeclared() throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations("{\"regionId\":\"" + NN + "\",\"cells\":[\""
+                                + CLOCK_CELL + "\"]}"), catalog());
+
+        JsonArray selected = selection.select(NN, proposals());
+
+        assertTrue("the declared clock carries the mint marker",
+                selected.get(0).getAsJsonObject().get(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT)
+                        .getAsBoolean());
+        assertFalse("a concretized row never carries it",
+                selected.get(1).getAsJsonObject().has(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
+        assertFalse("nor does the exempt fault marker",
+                selected.get(2).getAsJsonObject().has(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
     }
 
     @Test
