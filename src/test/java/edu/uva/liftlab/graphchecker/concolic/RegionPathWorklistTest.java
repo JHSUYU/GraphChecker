@@ -96,6 +96,65 @@ public class RegionPathWorklistTest {
                 "coverageState")));
     }
 
+    /**
+     * An obligation keeps its identity when the wave's family snapshot moves.
+     *
+     * <p>The closure loop runs until no member proposes an obligation, so an
+     * obligation discharged in one wave has to be recognised as discharged in
+     * the next one. Keying the record on the receiver-family snapshot digest
+     * made identity a function of the whole corpus instead: a discharged flip
+     * re-replayed its own case, the case grew the snapshot, and the grown
+     * snapshot renamed every obligation, so no wave ever recognised a record
+     * it had just written and EXPLORE could not reach a fixed point.</p>
+     */
+    @Test
+    public void obligationIdentityIsStableAcrossFamilySnapshots() {
+        JsonObject task = task("B", "REGION.B", "REGION.B/occurrence-1");
+        JsonObject taken = summary(task, 1, true);
+
+        RegionPathWorklist.Result first = RegionPathWorklist.plan(
+                Collections.singletonList(taken),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                CanonicalJson.sha256("wave-0-family-snapshot"));
+        assertEquals(1, first.tasks.size());
+        String queryKey = optionalString(first.tasks.get(0), "queryKey");
+
+        // The same obligation planned against a larger snapshot is the same
+        // obligation, so it is named the same.
+        String grownDigest = CanonicalJson.sha256("wave-1-family-snapshot");
+        RegionPathWorklist.Result again = RegionPathWorklist.plan(
+                Collections.singletonList(taken),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(), grownDigest);
+        assertEquals(1, again.tasks.size());
+        assertEquals(queryKey, optionalString(again.tasks.get(0), "queryKey"));
+        // The snapshot it was planned against stays on the row as evidence.
+        assertEquals(grownDigest, optionalString(again.tasks.get(0),
+                LinkedReplayBundle.FAMILY_DIGEST_FIELD));
+
+        // An UNSAT verdict from the first wave therefore still discharges the
+        // obligation in the second one.
+        JsonObject record = new JsonObject();
+        record.addProperty("schemaVersion", 1);
+        record.addProperty("kind", "PATH_EXPLORATION_RECORD");
+        record.addProperty("queryKey", queryKey);
+        record.addProperty("status", "UNSAT");
+        record.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
+                CanonicalJson.sha256("wave-0-family-snapshot"));
+
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+                Collections.singletonList(taken),
+                Collections.singletonList(task),
+                Collections.singletonList(record),
+                RegionPathWorklist.Bounds.defaults(), grownDigest);
+        assertTrue(closed.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                closed.manifest.get("state").getAsString());
+    }
+
     /** The constraint solver reports a timeout as SOLVER_ERROR with reason
      *  SOLVER_TIMEOUT; every other solver error stays fatal. */
     @Test

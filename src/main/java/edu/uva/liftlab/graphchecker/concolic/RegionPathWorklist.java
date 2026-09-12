@@ -476,12 +476,21 @@ public final class RegionPathWorklist {
             String semanticKey = path.flipKey(mapping, desired);
 
             // A local branch is one semantic obligation regardless of which
-            // upstream anchor arm supplied its current payload.  A solver
-            // verdict, however, is valid only for the receiver-family
-            // snapshot it saw: a newly discovered upstream arm can turn a
-            // previously UNSAT flip into a replayable one.
-            String key = CanonicalJson.sha256(semanticKey + "\n"
-                    + familySnapshotDigest);
+            // upstream anchor arm supplied its current payload, and
+            // regardless of how large the wave's corpus has grown around it.
+            // The identity is therefore the semantic flip key alone: the
+            // planned occurrence and goal, the branch site, its decision
+            // polarity and a digest of the path-prefix DECISIONS -- all of
+            // which a later wave reproduces exactly.
+            //
+            // Mixing the receiver-family snapshot digest in here made the
+            // identity of an obligation a function of the whole corpus.  A
+            // discharged flip re-replays its own case, that case grows the
+            // family snapshot, the grown snapshot renames every obligation,
+            // and the next wave no longer recognises the record it just
+            // wrote: the closure loop had no fixed point.  The snapshot the
+            // solver saw stays on the record below as evidence.
+            String key = semanticKey;
 
             JsonObject previous = records.get(key);
             if (previous != null && terminal(previous)) {
