@@ -49,6 +49,69 @@ public class RegionPathWorklistTest {
                 result.manifest.get("state").getAsString());
     }
 
+    /** A flip query the solver could not decide in its budget is an
+     *  unexplored sibling path: it is not proposed again in the same
+     *  snapshot, and it leaves the region's coverage open so that only a
+     *  closed UNSAT conclusion is withheld. */
+    @Test
+    public void solverTimeoutIsATerminalPathCoverageGap() {
+        JsonObject task = task("B", "REGION.B", "REGION.B/occurrence-1");
+        JsonObject taken = summary(task, 1, true);
+        String familyDigest = CanonicalJson.sha256("timeout-family-snapshot");
+
+        RegionPathWorklist.Result open = RegionPathWorklist.plan(
+                Collections.singletonList(taken),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(), familyDigest);
+        assertEquals(1, open.tasks.size());
+        String queryKey = optionalString(open.tasks.get(0), "queryKey");
+
+        JsonObject record = new JsonObject();
+        record.addProperty("schemaVersion", 1);
+        record.addProperty("kind", "PATH_EXPLORATION_RECORD");
+        record.addProperty("queryKey", queryKey);
+        record.addProperty("status", ConcolicPathFlipSolver.SOLVER_TIMEOUT);
+        record.addProperty("reason", ConcolicPathFlipSolver.SOLVER_TIMEOUT);
+
+        RegionPathWorklist.Result replanned = RegionPathWorklist.plan(
+                Collections.singletonList(taken),
+                Collections.singletonList(task),
+                Collections.singletonList(record),
+                RegionPathWorklist.Bounds.defaults(), familyDigest);
+
+        assertTrue(replanned.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.CLOSED.name(),
+                replanned.manifest.get("state").getAsString());
+        JsonArray coverageGaps = replanned.manifest.getAsJsonArray(
+                "coverageGaps");
+        assertEquals(1, coverageGaps.size());
+        assertEquals("PATH_FLIP_SOLVER_TIMEOUT", optionalString(
+                coverageGaps.get(0).getAsJsonObject(), "kind"));
+        assertEquals(queryKey, optionalString(
+                coverageGaps.get(0).getAsJsonObject(), "queryKey"));
+        // An open coverage gap must keep the region out of the CLOSED
+        // coverage state; the shell reads exactly that to deny pathSetClosed.
+        assertTrue(!"CLOSED".equals(optionalString(replanned.manifest,
+                "coverageState")));
+    }
+
+    /** The constraint solver reports a timeout as SOLVER_ERROR with reason
+     *  SOLVER_TIMEOUT; every other solver error stays fatal. */
+    @Test
+    public void onlyATimedOutSolverErrorBecomesAnExplorationStatus() {
+        assertTrue(ConcolicPathFlipSolver.isSolverTimeout(
+                "SOLVER_ERROR", "SOLVER_TIMEOUT"));
+        assertTrue(!ConcolicPathFlipSolver.isSolverTimeout(
+                "SOLVER_ERROR", "NO_SOLVER_STATUS"));
+        assertTrue(!ConcolicPathFlipSolver.isSolverTimeout(
+                "SOLVER_ERROR", "unknown"));
+        assertTrue(ConcolicPathFlipSolver.terminalExplorationOutcome(
+                ConcolicPathFlipSolver.SOLVER_TIMEOUT));
+        assertTrue(!ConcolicPathFlipSolver.terminalExplorationOutcome(
+                "SOLVER_ERROR"));
+    }
+
     @Test
     public void oneFlipCarriesTheWholeDependencyClosure() {
         JsonObject c = task("C", "REGION.C", "REGION.C/occurrence-1");

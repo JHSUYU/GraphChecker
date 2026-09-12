@@ -2103,13 +2103,15 @@ campaign_worker_task() {
   [[ "${status}" -eq 0 ]] || die "the path solver failed with exit ${status}"
   outcome=$(jq -er '.status' "${worker}/path_flip_solver_result.json")
   # The solver owns what a finished flip is. ConcolicPathFlipSolver exits 0
-  # for UNSAT, UNSUPPORTED and MATERIALIZATION_GAP alike, calling all three
-  # "recorded terminal exploration outcomes, not process failures", and the
-  # planner records them by queryKey so the flip is not proposed again.
-  # Killing the worker on two of them would make the shell overrule the
-  # semantic owner and discard the remaining local path cases in the wave.
+  # for UNSAT, UNSUPPORTED, MATERIALIZATION_GAP and SOLVER_TIMEOUT alike,
+  # calling all four "recorded terminal exploration outcomes, not process
+  # failures", and the planner records them by queryKey so the flip is not
+  # proposed again.  Killing the worker on any of them would make the shell
+  # overrule the semantic owner and discard the remaining local path cases
+  # in the wave.  A solver that crashed or rejected the query still exits
+  # non-zero above and remains fatal.
   case "${outcome}" in
-    UNSAT|UNSUPPORTED|MATERIALIZATION_GAP)
+    UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|SOLVER_TIMEOUT)
       jq -c '. + {schemaVersion: 1,
                     kind: "PATH_EXPLORATION_RECORD"}' \
         "${worker}/path_flip_solver_result.json" \
@@ -2233,7 +2235,7 @@ campaign_publish_wave() {
         "the obligation published no unique terminal status"
     fi
     case "${record_status}" in
-      UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|REPLAY_NOT_ADMITTED|BUNDLE_TOPOLOGY_DIVERGENCE)
+      UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|SOLVER_TIMEOUT|REPLAY_NOT_ADMITTED|BUNDLE_TOPOLOGY_DIVERGENCE)
         # Companion summaries from a linked replay whose primary prefix did
         # not match are not a causal observation. Publishing them used to
         # leave propagated boundary values without the primary producer case.

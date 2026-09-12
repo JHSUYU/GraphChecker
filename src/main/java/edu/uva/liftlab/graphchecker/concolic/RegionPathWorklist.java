@@ -785,6 +785,12 @@ public final class RegionPathWorklist {
         if ("BUNDLE_TOPOLOGY_DIVERGENCE".equals(status)) {
             return "LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH";
         }
+        // The solver reached no verdict inside its budget.  The sibling path
+        // stays unexplored, so the obligation is an open coverage gap rather
+        // than a flip to propose again in this same snapshot.
+        if (ConcolicPathFlipSolver.SOLVER_TIMEOUT.equals(status)) {
+            return "PATH_FLIP_SOLVER_TIMEOUT";
+        }
         return "";
     }
 

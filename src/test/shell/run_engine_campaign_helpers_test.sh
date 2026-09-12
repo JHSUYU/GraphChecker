@@ -81,7 +81,7 @@ emit_fixture() {
     unsatClosureComplete: false, gaps: [], valuations: []}' \
     >"${reach_report}"
   printf '%s\n' \
-    '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"}]}' \
+    '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
     >"${emit_iteration}/workers/task-target/path_closure.json"
   printf '%s\n' \
     '{"taskId":"task-target","published":true}' \
@@ -124,6 +124,40 @@ jq -e '.evidence.symbolicPropagationComplete == false
   and .telemetryCount >= 4' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
+
+# A flip query the solver could not decide in its budget is an unexplored
+# sibling path.  It is coverage telemetry, so it leaves a SAT candidate
+# accepted; only the closed UNSAT conclusion is withheld by it.
+jq -e '[.telemetryGaps[]
+        | select(.stage == "EXPLORE" and .source == "PATH_WORKLIST"
+            and .code == "PATH_FLIP_SOLVER_TIMEOUT"
+            and .subject == "slow-flip")] | length == 1' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the solver-timeout path gap was not published as telemetry"
+jq -e '[.gaps[] | select(.code == "PATH_FLIP_SOLVER_TIMEOUT")] | length == 0' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the solver-timeout path gap blocked an accepted SAT candidate"
+
+# A published obligation wave records a solver timeout instead of failing the
+# campaign, and contributes only its exploration record: no new path case.
+wave_root="${test_tmp}/wave"
+mkdir -p "${wave_root}/planner/slow-flip"
+printf '%s\n' \
+  '{"schemaVersion":1,"kind":"PATH_EXPLORATION_RECORD","queryKey":"slow-flip","status":"SOLVER_TIMEOUT","reason":"SOLVER_TIMEOUT"}' \
+  >"${wave_root}/planner/slow-flip/exploration_record.jsonl"
+printf '%s\n' '{"summaryId":"SUMMARY.SEED","taskId":"task-target"}' \
+  >"${wave_root}/summaries.jsonl"
+printf '%s\n' '{"taskId":"task-target"}' >"${wave_root}/tasks.jsonl"
+: >"${wave_root}/records.jsonl"
+campaign_publish_wave "${wave_root}/planner" "${wave_root}/summaries.jsonl" \
+  "${wave_root}/tasks.jsonl" "${wave_root}/records.jsonl" \
+  || fail "a solver-timeout obligation aborted the published wave"
+[[ $(wc -l <"${wave_root}/summaries.jsonl") -eq 1 ]] \
+  || fail "a solver-timeout obligation published a path case"
+jq -e -s '[.[] | select(.queryKey == "slow-flip"
+    and .status == "SOLVER_TIMEOUT")] | length == 1' \
+  "${wave_root}/records.jsonl" >/dev/null \
+  || fail "the solver-timeout exploration record was not published"
 
 # EMIT re-hashes frozen inputs before publishing any result.
 emit_fixture

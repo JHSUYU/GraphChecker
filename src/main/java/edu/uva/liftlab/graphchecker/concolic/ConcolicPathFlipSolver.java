@@ -89,6 +89,17 @@ public final class ConcolicPathFlipSolver {
                         Paths.get(firstNonBlank(options.get("z3"), "z3")),
                         number(options, "solver-timeout-ms", 20_000L));
         String status = optionalString(solved.record, "status");
+        if (isSolverTimeout(status,
+                optionalString(solved.record, "reason"))) {
+            // A flip query the solver could not decide inside its budget is
+            // an unexplored sibling path, not a broken solver: README keeps
+            // an unobserved sibling as coverage telemetry, which blocks only
+            // a closed UNSAT conclusion.  Promote it to a first-class
+            // exploration status so the caller records it like any other
+            // named gap instead of aborting the campaign.
+            status = SOLVER_TIMEOUT;
+            solved.record.addProperty("status", status);
+        }
         List<JsonObject> replay = "SAT_MODEL_READY".equals(status)
                 ? PathReplayTaskFactory.createLinked(task, bundle,
                 linkedSources, solved.modelAssignments,
@@ -119,14 +130,25 @@ public final class ConcolicPathFlipSolver {
                 replay);
         System.out.println(record);
 
-        // UNSUPPORTED and MATERIALIZATION_GAP are recorded terminal
-        // exploration outcomes, not process failures: the caller closes over
-        // either as a named exploration gap and the pipeline proceeds to
-        // candidates/compose.  Only a solver that reached no verdict at all
-        // still fails the process.
+        // UNSUPPORTED, MATERIALIZATION_GAP and SOLVER_TIMEOUT are recorded
+        // terminal exploration outcomes, not process failures: the caller
+        // closes over each as a named exploration gap and the pipeline
+        // proceeds to candidates/compose.  Only a solver that failed
+        // outright - crashed, or rejected the query - still fails the
+        // process.
         if (!terminalExplorationOutcome(status)) {
             System.exit(2);
         }
+    }
+
+    /** Exploration status of a flip query the solver could not decide in
+     *  its configured budget. */
+    static final String SOLVER_TIMEOUT = "SOLVER_TIMEOUT";
+
+    /** True when the constraint solver's own verdict was "no verdict in
+     *  time", as opposed to a crashed or rejected query. */
+    static boolean isSolverTimeout(String status, String reason) {
+        return "SOLVER_ERROR".equals(status) && SOLVER_TIMEOUT.equals(reason);
     }
 
     /** True for a status the caller can record and move past. */
@@ -134,6 +156,7 @@ public final class ConcolicPathFlipSolver {
         return "SAT_MODEL_READY".equals(status)
                 || "UNSAT".equals(status)
                 || "UNSUPPORTED".equals(status)
-                || "MATERIALIZATION_GAP".equals(status);
+                || "MATERIALIZATION_GAP".equals(status)
+                || SOLVER_TIMEOUT.equals(status);
     }
 }

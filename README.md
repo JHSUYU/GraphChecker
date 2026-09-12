@@ -80,6 +80,13 @@ custom VM, scheduling/solver bounds, and fresh output/cache roots. Configure
 An empty loop-bound file explicitly means that the selected workload has no
 retained condition-controlled loop requiring a bound.
 
+`solver_timeout_ms` is the per-query Z3 budget for every solver stage,
+including each region path-flip query. A flip query that exhausts it is
+recorded as the `SOLVER_TIMEOUT` exploration status and named as a
+`PATH_FLIP_SOLVER_TIMEOUT` coverage gap: the campaign continues, and only a
+closed UNSAT conclusion is withheld. Raise it when a host runs several
+campaigns at once.
+
 Inspect and validate before running:
 
 ```bash
