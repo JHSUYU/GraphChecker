@@ -31,6 +31,10 @@ SharedFieldVersions::PendingReadStore
 SharedFieldVersions::ArmedTokenIndex SharedFieldVersions::_armed_read_tokens;
 SharedFieldVersions::ConsumedReadStore
     SharedFieldVersions::_consumed_primitive_reads;
+// Members the initial-snapshot bound refused, per canonical container id.
+// Guarded by _mutex and cleared with the session, like every other record
+// here: a refusal is a fact about one session's container.
+static std::map<sym_rid_t, int> _refused_initial_snapshots;
 volatile int SharedFieldVersions::_carrier_count = 0;
 pthread_mutex_t SharedFieldVersions::_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -83,6 +87,7 @@ void SharedFieldVersions::open_session() {
             "replay read receipts outlived the previous session");
   guarantee(_consumed_primitive_reads.empty(),
             "replay read receipts outlived the previous session");
+  _refused_initial_snapshots.clear();
   _carrier_count = 0;
   _open = true;
 }
@@ -95,6 +100,7 @@ void SharedFieldVersions::close_session() {
   _pending_primitive_reads.clear();
   _armed_read_tokens.clear();
   _consumed_primitive_reads.clear();
+  _refused_initial_snapshots.clear();
   _carrier_count = 0;
   _open = false;
 }
@@ -113,6 +119,28 @@ bool SharedFieldVersions::is_carrier(const Location &location) {
 
 jlong SharedFieldVersions::select_carrier(const Location &location,
                                           Expression *initial) {
+  return select_carrier(location, initial, 0, false);
+}
+
+void SharedFieldVersions::note_refused_initial_snapshot(sym_rid_t owner,
+                                                        int entries) {
+  if (owner == NULL_SYM_RID || entries < 0) return;
+  VERSION_LOCK;
+  _refused_initial_snapshots[owner] = entries;
+}
+
+int SharedFieldVersions::refused_initial_snapshot(sym_rid_t owner) {
+  if (owner == NULL_SYM_RID) return -1;
+  VERSION_LOCK;
+  std::map<sym_rid_t, int>::const_iterator found =
+      _refused_initial_snapshots.find(owner);
+  return found == _refused_initial_snapshots.end() ? -1 : found->second;
+}
+
+jlong SharedFieldVersions::select_carrier(const Location &location,
+                                          Expression *initial,
+                                          int snapshot_entries,
+                                          bool snapshot_truncated) {
   if (!location.is_valid()) return 0;
 
   // A version id correlates this expression with a candidate arm.  Its
@@ -123,6 +151,10 @@ jlong SharedFieldVersions::select_carrier(const Location &location,
   version.version_kind = VERSION_INITIAL;
   version.value = initial;
   version.path_guard = NULL;
+  version.initial_snapshot_present = snapshot_entries > 0
+      || snapshot_truncated;
+  version.initial_snapshot_entries = snapshot_entries;
+  version.initial_snapshot_truncated = snapshot_truncated;
   if (ConcolicMngr::ctx != NULL) {
     version.writer_context_id = ConcolicMngr::ctx->get_context_id();
     version.region_id = ConcolicMngr::ctx->get_region_id();
@@ -533,6 +565,15 @@ std::string SharedFieldVersions::describe(const Location &location) {
     writer.String(version.task_id.c_str());
     writer.Key("regionEnterEventId");
     writer.Int64(version.region_enter_event_id);
+    if (version.initial_snapshot_present) {
+      writer.Key("initialSnapshot");
+      writer.StartObject();
+      writer.Key("entries");
+      writer.Int(version.initial_snapshot_entries);
+      writer.Key("truncated");
+      writer.Bool(version.initial_snapshot_truncated);
+      writer.EndObject();
+    }
     writer.Key("expression");
     if (version.value == NULL) {
       writer.Null();
@@ -898,7 +939,18 @@ jlong ConcolicMngr::selectSharedMapCarrier(Handle map) {
   if (!location.is_valid()) {
     return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
   }
-  jlong version_id = SharedFieldVersions::select_carrier(location, root);
+  // What the INITIAL value says about the pre-selection contents.  A
+  // recorded snapshot is a SNAPSHOT_BASE with one PUT/APPEND per member, so
+  // the chain itself is the answer; a bound that refused one leaves the
+  // opaque root and its member count recorded separately.  Without this a
+  // reader cannot tell a container that held nothing from one whose contents
+  // this engine never stated.
+  int refused = SharedFieldVersions::refused_initial_snapshot(
+      ctx->canonical_container_id(target));
+  int snapshot_entries = refused >= 0 ? refused
+      : ContainerSupport::snapshot_entry_count(root);
+  jlong version_id = SharedFieldVersions::select_carrier(
+      location, root, snapshot_entries, refused >= 0);
   if (version_id == 0) {
     if (SharedFieldVersions::is_carrier(location)) {
       ctx->set_pc_admitted(true);

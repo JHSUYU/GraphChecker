@@ -23,6 +23,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionContainerLiveInApiSmoke.java \
   test/causynth/RegionIndexedCarrierApiSmoke.java \
   test/causynth/RegionUnshadowedStringArgumentSmoke.java \
+  test/causynth/RegionInitialSnapshotCarrierSmoke.java \
   test/causynth/RegionDeepExpressionSerializeSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
@@ -99,3 +100,10 @@ done
   -cp "$OUT" RegionPathConditionTruncationSmoke
 "$JDK_HOME/bin/java" -Xint -Dcausynth.vm.pathcondition.bytes=8192 \
   -cp "$OUT" RegionPathConditionTruncationSmoke
+
+# The initial-snapshot bound.  Its default is 64 members, so the refusal arm
+# is unreachable from a smoke unless the bound is lowered for the run --
+# which is the whole reason it is a property.  Two members are snapshotted
+# exactly; three exceed the lowered bound and keep the opaque state root.
+"$JDK_HOME/bin/java" -Xint -Dcausynth.concolic.initial.snapshot.max=2 \
+  -cp "$OUT" RegionInitialSnapshotCarrierSmoke

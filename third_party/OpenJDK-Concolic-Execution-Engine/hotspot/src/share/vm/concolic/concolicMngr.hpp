@@ -265,6 +265,9 @@ public:
 
   static bool trackContainerExpression(Handle container,
                                        const char *prefix);
+  /** Members past which an initial snapshot keeps the opaque state root. */
+  static int initialSnapshotMaxEntries();
+
   static bool snapshotContainerExpression(
       Handle container, Handle keys, Handle values, jint kind);
   static std::string getRegionSummary();

@@ -135,6 +135,21 @@ std::string ContainerSupport::unsupported(const char *category,
 // Selected whole-container state.
 // ---------------------------------------------------------------------------
 
+int ContainerSupport::snapshot_entry_count(Expression *state) {
+  int entries = 0;
+  Expression *cursor = state;
+  while (cursor != NULL) {
+    ContainerExpression *relation = cursor->as_container_expression();
+    if (relation == NULL) return 0;
+    const std::string &operation = relation->get_operation();
+    if (operation == "SNAPSHOT_BASE") return entries;
+    if (operation != "PUT" && operation != "APPEND") return 0;
+    ++entries;
+    cursor = relation->get_receiver();
+  }
+  return 0;
+}
+
 bool ContainerSupport::whole_state_selectable(oop container) {
   if (container == NULL || container->is_array()) return false;
   if (shape(container) == NULL) return false;
