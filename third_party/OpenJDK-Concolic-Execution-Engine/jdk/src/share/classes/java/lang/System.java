@@ -726,11 +726,6 @@ public final class System {
     public static native String finishConcolicRegion();
 
     /**
-     * make an Object symbolic
-     */
-    public static native void symbolize(Object obj);
-
-    /**
      * make an Object symbolic with prefix for symbolic variable name
      */
     public static native void symbolize(Object obj, String prefix);
@@ -760,11 +755,6 @@ public final class System {
     public static native void observeExactPrimitiveField(
             Object owner, String declaringClass, String fieldName,
             String descriptor);
-
-    /**
-     * make an method symbolic
-     */
-    public static native void symbolizeMethod(Object holder_name, Object callee_name);
 
     /**
      * Copies an array from the specified source array, beginning at the

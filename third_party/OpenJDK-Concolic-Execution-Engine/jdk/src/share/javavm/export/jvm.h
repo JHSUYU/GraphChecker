@@ -127,9 +127,6 @@ JNIEXPORT jstring JNICALL
 JVM_GetWorkloadSessionStatus(JNIEnv *env, jclass ignored);
 
 JNIEXPORT void JNICALL
-JVM_Symbolize(JNIEnv *env, jclass ignored, jobject obj);
-
-JNIEXPORT void JNICALL
 JVM_Symbolize_prefix(JNIEnv *env, jclass ignored, jobject obj, jstring prefix);
 
 JNIEXPORT void JNICALL
@@ -145,9 +142,6 @@ JNIEXPORT void JNICALL
 JVM_ObserveExactPrimitiveField(JNIEnv *env, jclass ignored, jobject owner,
                                jstring declaring_class, jstring field_name,
                                jstring descriptor);
-
-JNIEXPORT void JNICALL
-JVM_SymbolizeMethod(JNIEnv *env, jclass ignored, jobject holder_name, jobject callee_name);
 
 JNIEXPORT void JNICALL
 JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src_pos,

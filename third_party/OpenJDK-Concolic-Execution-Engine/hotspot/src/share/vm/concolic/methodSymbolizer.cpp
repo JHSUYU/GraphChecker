@@ -61,28 +61,6 @@ void MethodSymbolizer::add_finish_helper_methods(const std::string class_name,
   _finish_helper_methods[class_name] = finish_helper_func;
 }
 
-MethodSymbolizer::~MethodSymbolizer() {
-  for (SymClassMapIt sym_class_map_it = _symbolicMethods.begin();
-       sym_class_map_it != _symbolicMethods.end(); ++sym_class_map_it) {
-    if (sym_class_map_it->second) {
-      delete sym_class_map_it->second;
-    }
-  }
-}
-
-void MethodSymbolizer::add_method(const char *class_name,
-                                  const char *method_name) {
-  SymClassMapIt sym_class_map_it =
-      _symbolicMethods
-          .insert(std::make_pair(std::string(class_name), (SymMethodSet *) NULL))
-          .first;
-  if (sym_class_map_it->second == NULL) {
-    sym_class_map_it->second = new SymMethodSet();
-  }
-  sym_class_map_it->second->insert(std::string(method_name));
-}
-
-
 static bool names(Symbol *symbol, const std::string &registered) {
   return symbol != NULL
       && symbol->equals(registered.c_str(), (int)registered.size());
@@ -126,18 +104,6 @@ bool MethodSymbolizer::intercepts(Method *callee_method) {
        helper != _invoke_helper_methods.end(); ++helper) {
     if (names(holder, helper->first)) return true;
   }
-  for (SymClassMap::const_iterator holder_methods = _symbolicMethods.begin();
-       holder_methods != _symbolicMethods.end(); ++holder_methods) {
-    if (!names(holder, holder_methods->first)
-        || holder_methods->second == NULL) {
-      continue;
-    }
-    Symbol *name = callee_method->name();
-    for (SymMethodSet::const_iterator method = holder_methods->second->begin();
-         method != holder_methods->second->end(); ++method) {
-      if (names(name, *method)) return true;
-    }
-  }
   if (boxes_a_primitive(holder)) return true;
   if (_classes_prefix_to_disable.empty()) return false;
   ResourceMark rm;
@@ -172,8 +138,6 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
    * Whether we need to symbolize the process of this function
    */
   bool need_symbolize = false;
-  SymMethodSet *sym_methods =
-      this->get_sym_methods(_handle.get_callee_holder_name());
   BasicType basicType = primitive_target(_handle.get_callee_holder_name());
   const std::string& callee_holder_name = _handle.get_callee_holder_name();
   const bool disabled = disabled_class(callee_holder_name);
@@ -187,16 +151,6 @@ void MethodSymbolizer::invoke_method(ZeroFrame *caller_frame,
     need_symbolize = primitive_invoke_method_helper(_handle, basicType);
   } else if (_invoke_helper_methods.find(callee_holder_name) != _invoke_helper_methods.end()) {
     need_symbolize = _invoke_helper_methods[callee_holder_name](_handle);
-//    if (need_symbolize) {
-//      tty->print_cr("symbolizing method: %s.%s", callee_holder_name.c_str(), _handle.get_callee_name().c_str());
-//    }
-  } else if (sym_methods != NULL &&
-             sym_methods->find(_handle.get_callee_name()) !=
-             sym_methods->end()) {
-//    tty->print_cr("Calling function name: %s",
-//                  callee_method->name_and_sig_as_C_string());
-    invoke_method_helper(_handle);
-    need_symbolize = true;
   }
 
   if (need_symbolize) {
@@ -254,13 +208,6 @@ void __attribute__((optimize("O0"))) MethodSymbolizer::finish_method(ZeroFrame *
     this->_handle.reset();
     this->set_symbolizing_method(false);
   }
-}
-
-MethodSymbolizer::SymMethodSet *
-MethodSymbolizer::get_sym_methods(const std::string &class_name) {
-  SymClassMapIt sym_class_map_it = _symbolicMethods.find(class_name);
-  return sym_class_map_it != _symbolicMethods.end() ? sym_class_map_it->second
-                                                    : NULL;
 }
 
 void MethodSymbolizer::invoke_method_helper(MethodSymbolizerHandle &handle) {

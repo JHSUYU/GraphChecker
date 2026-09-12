@@ -143,10 +143,6 @@ public:
   void symbolize_exact_field(
       Handle owner, std::string declaring_class, std::string field_name,
       std::string descriptor, std::string prefix);
-  inline void symbolize_method(const char *class_name,
-                               const char *method_name) {
-    _method_symbolizer.add_method(class_name, method_name);
-  }
   PathCondition &get_path_condition();
 
   // Opens a region on this thread.  The first push is the thread's outermost

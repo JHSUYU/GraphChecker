@@ -268,7 +268,6 @@ public:
   static bool snapshotContainerExpression(
       Handle container, Handle keys, Handle values, jint kind);
   static std::string getRegionSummary();
-  static void symbolize(Handle handle);
   static void symbolize(Handle handle, const char* prefix);
   static void symbolizeField(Handle handle, const char* field_name,
                              const char* prefix);
@@ -278,9 +277,6 @@ public:
   static void observeExactPrimitiveField(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
-  static void symbolizeMethod(Handle holder_name_handle,
-                              Handle callee_name_handle);
-
   /* let compiler not optimize this  code!! */
   inline static bool __attribute__((optimize("O0"))) has_symbolized_method() {
     return ctx && !ctx->is_aborted() && ctx->is_symbolizing_method();
@@ -338,9 +334,6 @@ public:
 
 #else
   static jlong endConcolic();
-  static void symbolize(Handle handle);
-  static void symbolizeMethod(Handle holder_name_handle,
-                              Handle callee_name_handle);
 #endif // ENABLE_CONCOLIC
 };
 

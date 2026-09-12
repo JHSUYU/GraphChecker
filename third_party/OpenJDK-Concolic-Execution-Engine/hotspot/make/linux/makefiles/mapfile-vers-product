@@ -260,12 +260,10 @@ SUNWprivate_1.1 {
                 JVM_OpenWorkloadSession;
                 JVM_CloseWorkloadSession;
                 JVM_GetWorkloadSessionStatus;
-                JVM_Symbolize;
                 JVM_Symbolize_prefix;
                 JVM_SymbolizeField;
                 JVM_SymbolizeExactField;
                 JVM_ObserveExactPrimitiveField;
-                JVM_SymbolizeMethod;
                 JVM_GetPcStr;
                 JVM_PauseConcolicPathCondition;
                 JVM_ResumeConcolicPathCondition;

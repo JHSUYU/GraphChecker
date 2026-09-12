@@ -904,23 +904,6 @@ jlong ConcolicMngr::endConcolic() {
   return 0;
 }
 
-void ConcolicMngr::symbolize(Handle handle) {
-  if (can_explicitly_symbolize()) {
-    ctx->set_pc_admitted(true);
-    int pause_depth = ctx->path_condition_pause_depth();
-    while (ctx->path_condition_pause_depth() > 0) {
-      ctx->resume_path_condition_recording();
-    }
-    ctx->symbolize(handle);
-    for (int index = 0; index < pause_depth; ++index) {
-      ctx->pause_path_condition_recording();
-    }
-  } else {
-    tty->print_cr("Warning: symbolize canned without proper ctx, try System.startConcolicRegion() before symbolize");
-  }
-//  tty->print_cr("----- %s", ctx->get_code_pos_for_first("main").c_str());
-}
-
 void ConcolicMngr::symbolize(Handle handle, const char* prefix) {
   if (can_explicitly_symbolize()) {
     ctx->set_pc_admitted(true);
@@ -1019,24 +1002,10 @@ void ConcolicMngr::observeExactPrimitiveField(
   ctx->set_pc_admitted(true);
 }
 
-void ConcolicMngr::symbolizeMethod(Handle holder_name_handle,
-                                   Handle callee_name_handle) {
-  ResourceMark rm;
-  const char *holder_name = OopUtils::java_string_to_c(holder_name_handle());
-  const char *callee_name = OopUtils::java_string_to_c(callee_name_handle());
-
-  ctx->symbolize_method(holder_name, callee_name);
-
-}
-
 #else
 
 jlong ConcolicMngr::endConcolic() {
   return 0;
 }
 
-void ConcolicMngr::symbolize(Handle handle) {}
-
-void ConcolicMngr::symbolizeMethod(Handle holder_name_handle,
-                                   Handle callee_name_handle) {}
 #endif

@@ -7,22 +7,16 @@
 #include "concolic/methodSymbolizerHandle.hpp"
 
 #include <map>
-#include <set>
 #include <string>
 #include <vector>
 
 class ZeroFrame;
 
 class MethodSymbolizer {
-  typedef std::set<std::string> SymMethodSet;
-  typedef SymMethodSet::iterator SymMethodSetIt;
-  typedef std::map<std::string, SymMethodSet *> SymClassMap;
-  typedef SymClassMap::iterator SymClassMapIt;
   typedef std::map<std::string, bool(*)(MethodSymbolizerHandle&)> invoke_helper_method_map_t;
   typedef std::map<std::string, Expression*(*)(MethodSymbolizerHandle&)> finish_helper_method_map_t;
 
   bool _symbolizing_method;
-  SymClassMap _symbolicMethods;
   MethodSymbolizerHandle _handle;
   invoke_helper_method_map_t _invoke_helper_methods;
   finish_helper_method_map_t _finish_helper_methods;
@@ -34,7 +28,6 @@ class MethodSymbolizer {
 
 public:
   MethodSymbolizer();
-  ~MethodSymbolizer();
 
 
   /* let compiler not optimize this  code!! */
@@ -42,7 +35,6 @@ public:
 
   inline void set_symbolizing_method(bool symbolizing_method) { _symbolizing_method = symbolizing_method; }
 
-  void add_method(const char *class_name, const char *method_name);
   // True when invoke_method would route this callee to a handler rather than
   // let its body speak for itself.  Such a call must reach invoke_method, so
   // an entry point that skips the Java frame has to decline it.
@@ -51,7 +43,6 @@ public:
   void finish_method(ZeroFrame *caller_frame);
 
 private:
-  SymMethodSet *get_sym_methods(const std::string &class_name);
   void init_helper_methods();
 
 public:

@@ -400,28 +400,6 @@ JVM_ENTRY(jstring, JVM_GetWorkloadSessionStatus(JNIEnv *env, jclass ignored))
 #endif
 JVM_END
 
-JVM_ENTRY(void, JVM_Symbolize(JNIEnv *env, jclass ignored, jobject obj))
-  JVMWrapper("JVM_Symbolize");
-#ifdef ENABLE_CONCOLIC
-  if (obj == NULL) {
-    // TODO: use THROW instead of assertion
-    guarantee(false, "JVM_Symbolize: obj is null");
-  }
-  // TODO: check behaviors when facing like `arrayOop`
-  oop o = JNIHandles::resolve_non_null(obj);
-
-  {
-    HandleMark hm;
-
-    Handle handle(THREAD, o);
-    assert(handle()->is_oop(), "JVM_Symbolize: obj not an oop");
-    ConcolicMngr::symbolize(handle);
-  }
-#else
-  return;
-#endif
-JVM_END
-
 JVM_ENTRY(void, JVM_Symbolize_prefix(JNIEnv *env, jclass ignored, jobject obj, jstring prefix))
   JVMWrapper("JVM_Symbolize_prefix");
 #ifdef ENABLE_CONCOLIC
@@ -516,31 +494,6 @@ JVM_ENTRY(void, JVM_ObserveExactPrimitiveField(
       JNIHandles::resolve_non_null(descriptor));
   ConcolicMngr::observeExactPrimitiveField(
       field_owner, holder, name, type);
-#else
-  return;
-#endif
-JVM_END
-
-JVM_ENTRY(void, JVM_SymbolizeMethod(JNIEnv *env, jclass ignored,
-                                    jobject holder_name, jobject callee_name))
-  JVMWrapper("JVM_SymbolizeMethod");
-#ifdef ENABLE_CONCOLIC
-  if (holder_name == NULL || callee_name == NULL) {
-    // TODO: use THROW instead of assertion
-    assert(false, "JVM_SymbolizeMethod: class or method name is null");
-  }
-  oop holder_name_o = JNIHandles::resolve_non_null(holder_name);
-  oop callee_name_o = JNIHandles::resolve_non_null(callee_name);
-
-  {
-    HandleMark hm;
-
-    Handle holder_name_handle(THREAD, holder_name_o);
-    Handle callee_name_handle(THREAD, callee_name_o);
-    assert(holder_name_handle()->is_oop() && callee_name_handle->is_oop(),
-           "JVM_Symbolize: class_name_o or method_name_o is not an oop");
-    ConcolicMngr::symbolizeMethod(holder_name_handle, callee_name_handle);
-  }
 #else
   return;
 #endif
