@@ -2527,119 +2527,9 @@ public final class ConcolicRegionRuntime {
                                         String method, int unitIndex,
                                         String expression,
                                         boolean observedOutcome) {
-        ActiveRegion active = activeRegion();
-        if (active == null) return observedOutcome;
-        BranchDecision decision = BranchDecision.binary(observedOutcome);
-        String branchSite = SiteId.of(method, unitIndex);
-        boolean declared = active.activation.declaresBranch(branchSite);
-        boolean replayBoundary = active.activation
-                .observesReplayBoundary(branchSite);
-        if (!declared && !replayBoundary) {
-            active.takePreparedBranch(preparedHandle);
-            return observedOutcome;
-        }
-        if (!declared) {
-            PreparedBranch prepared = active.takePreparedBranch(
-                    preparedHandle);
-            int occurrence;
-            if (!active.pathRecordingStarted) {
-                occurrence = active.nextBranchOccurrence(branchSite);
-            } else if (prepared != null && prepared.matches(method,
-                    unitIndex, expression)) {
-                occurrence = prepared.occurrence;
-            } else {
-                active.addUnresolvedOnce("missing or mismatched replay loop "
-                        + "boundary " + preparedHandle + " for "
-                        + branchSite);
-                return observedOutcome;
-            }
-            ExactConcreteBranchObservation observation =
-                    active.recordReplayBoundary(method, unitIndex,
-                            occurrence, decision);
-            if (observation != null) {
-                active.observeReplayDecision(branchSite, occurrence,
-                        decision);
-            }
-            if (active.replayPrefixContradicted()) {
-                finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
-                        null);
-            }
-            return observedOutcome;
-        }
-        if (!active.pathRecordingStarted) {
-            ExactConcreteBranchObservation observation =
-                    active.recordConcreteDecision(method, unitIndex,
-                            decision);
-            if (observation != null) {
-                active.observeReplayDecision(observation.siteId(),
-                        observation.occurrence(), decision);
-                if (active.replayPrefixContradicted()) {
-                    finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
-                            null);
-                }
-            }
-            return observedOutcome;
-        }
-        PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
-        if (prepared == null || !prepared.matches(method, unitIndex,
-                expression)) {
-            active.addUnresolvedOnce("missing or mismatched prepared branch "
-                    + preparedHandle + " for "
-                    + SiteId.of(method, unitIndex));
-            // No unverified VM event may be rebound heuristically on a JDK
-            // that advertised the exact API.
-            return observedOutcome;
-        }
-        ConcolicVmBroker api = engine();
-        boolean paused = false;
-        boolean replayContradicted = false;
-        try {
-            api.pausePathCondition();
-            paused = true;
-            RecordedBranch recorded = recordBranchPaused(active, api, method,
-                    unitIndex, expression, prepared.occurrence,
-                    observedOutcome, vmEventId);
-            boolean replayTargetMatched = active.observeReplayDecision(
-                    SiteId.of(method, unitIndex), prepared.occurrence,
-                    decision, recorded.symbolicSupportDigest);
-            replayContradicted = active.replayPrefixContradicted();
-            if (recorded.solverWitness && replayTargetMatched
-                    && !active.activation.targetBranchSite.isEmpty()
-                    && active.activation.targetBranchSite.equals(
-                    SiteId.of(method, unitIndex))
-                    && (active.activation.replayContract != null
-                    || active.activation.targetBranchOccurrence
-                    == prepared.occurrence)) {
-                // Reaching the target is a fact of this case, never a reason
-                // to stop recording it: the RPC, state and throw effects the
-                // occurrence still owes all happen after this branch.
-                // targetReach is the planner's semantic source address.  The
-                // branch mapping beside it retains the actual occurrence and
-                // symbolic support which matched that source after a bounded
-                // loop permutation.
-                active.recordTargetReach(
-                        active.activation.replayContract == null
-                                ? SiteId.of(method, unitIndex)
-                                : active.activation.targetBranchSite,
-                        active.activation.replayContract == null
-                                ? prepared.occurrence
-                                : active.activation.targetBranchOccurrence,
-                        observedOutcome);
-            }
-            return observedOutcome;
-        } catch (Throwable throwable) {
-            active.addUnresolvedOnce("branch/PC exact-event observation "
-                    + "failed: " + rootCause(throwable));
-            return observedOutcome;
-        } finally {
-            if (paused) resumePathCondition(active, api);
-            if (replayContradicted) {
-                // Release the engine here rather than at this activation's own
-                // return: the branch that just executed already decided that
-                // nothing publishable can follow.
-                finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "", null);
-            }
-        }
+        observeDecision(BranchDecision.binary(observedOutcome), preparedHandle,
+                vmEventId, method, unitIndex, expression);
+        return observedOutcome;
     }
 
     /** Exact multiway counterpart of {@link #resolveBranch}. */
@@ -2660,16 +2550,29 @@ public final class ConcolicRegionRuntime {
             }
             return observedSuccessorIndex;
         }
+        observeDecision(BranchDecision.multiway(expected), preparedHandle,
+                vmEventId, method, unitIndex, expression);
+        return observedSuccessorIndex;
+    }
+
+    /**
+     * Observes one decision of either kind at one instrumented site.
+     *
+     * <p>The workload's own value is the hook's to return: nothing observed
+     * here may change it, so this reports nothing back.</p>
+     */
+    private static void observeDecision(
+            BranchDecision decision, long preparedHandle, long vmEventId,
+            String method, int unitIndex, String expression) {
         ActiveRegion active = activeRegion();
-        if (active == null) return observedSuccessorIndex;
-        BranchDecision decision = BranchDecision.multiway(expected);
+        if (active == null) return;
         String branchSite = SiteId.of(method, unitIndex);
         boolean declared = active.activation.declaresBranch(branchSite);
         boolean replayBoundary = active.activation
                 .observesReplayBoundary(branchSite);
         if (!declared && !replayBoundary) {
             active.takePreparedBranch(preparedHandle);
-            return observedSuccessorIndex;
+            return;
         }
         if (!declared) {
             PreparedBranch prepared = active.takePreparedBranch(
@@ -2681,10 +2584,10 @@ public final class ConcolicRegionRuntime {
                     unitIndex, expression)) {
                 occurrence = prepared.occurrence;
             } else {
-                active.addUnresolvedOnce("missing or mismatched replay loop "
-                        + "switch boundary " + preparedHandle + " for "
-                        + branchSite);
-                return observedSuccessorIndex;
+                active.addUnresolvedOnce("missing or mismatched "
+                        + decision.boundaryNoun() + " " + preparedHandle
+                        + " for " + branchSite);
+                return;
             }
             ExactConcreteBranchObservation observation =
                     active.recordReplayBoundary(method, unitIndex,
@@ -2697,7 +2600,7 @@ public final class ConcolicRegionRuntime {
                 finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
                         null);
             }
-            return observedSuccessorIndex;
+            return;
         }
         if (!active.pathRecordingStarted) {
             ExactConcreteBranchObservation observation =
@@ -2711,15 +2614,17 @@ public final class ConcolicRegionRuntime {
                             null);
                 }
             }
-            return observedSuccessorIndex;
+            return;
         }
         PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
         if (prepared == null || !prepared.matches(method, unitIndex,
                 expression)) {
-            active.addUnresolvedOnce("missing or mismatched prepared switch "
-                    + preparedHandle + " for "
-                    + SiteId.of(method, unitIndex));
-            return observedSuccessorIndex;
+            active.addUnresolvedOnce("missing or mismatched "
+                    + decision.preparedNoun() + " " + preparedHandle
+                    + " for " + branchSite);
+            // No unverified VM event may be rebound heuristically on a JDK
+            // that advertised the exact API.
+            return;
         }
         ConcolicVmBroker api = engine();
         boolean paused = false;
@@ -2727,27 +2632,44 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            boolean attested = recordSwitchBranchPaused(active, api, method,
-                    unitIndex,
-                    expression, prepared.occurrence, expected, vmEventId);
-            active.observeReplayDecision(branchSite, prepared.occurrence,
-                    decision);
+            RecordedBranch recorded = decision.recordPaused(active, api,
+                    method, unitIndex, expression, prepared.occurrence,
+                    vmEventId);
+            boolean replayTargetMatched = active.observeReplayDecision(
+                    branchSite, prepared.occurrence, decision,
+                    recorded.symbolicSupportDigest);
             replayContradicted = active.replayPrefixContradicted();
-            if (attested
+            // A bounded loop may have run the planned target occurrence at
+            // another one.  targetReach is the planner's semantic source
+            // address; the branch mapping beside it retains the actual
+            // occurrence and symbolic support which matched that source.
+            boolean permuted = decision.addressesPermutedTargetOccurrence()
+                    && active.activation.replayContract != null;
+            if (recorded.solverWitness && replayTargetMatched
+                    && !active.activation.targetBranchSite.isEmpty()
                     && active.activation.targetBranchSite.equals(branchSite)
-                    && active.activation.targetBranchOccurrence
-                    == prepared.occurrence) {
-                active.recordTargetReach(branchSite, prepared.occurrence,
-                        expected.caseArm());
+                    && (permuted || active.activation.targetBranchOccurrence
+                    == prepared.occurrence)) {
+                // Reaching the target is a fact of this case, never a reason
+                // to stop recording it: the RPC, state and throw effects the
+                // occurrence still owes all happen after this branch.
+                active.recordTargetReach(
+                        permuted ? active.activation.targetBranchSite
+                                : branchSite,
+                        permuted ? active.activation.targetBranchOccurrence
+                                : prepared.occurrence,
+                        decision.outcome());
             }
-            return observedSuccessorIndex;
         } catch (Throwable throwable) {
-            active.addUnresolvedOnce("switch/PC exact-event observation "
-                    + "failed: " + rootCause(throwable));
-            return observedSuccessorIndex;
+            active.addUnresolvedOnce(decision.observationNoun()
+                    + " exact-event observation failed: "
+                    + rootCause(throwable));
         } finally {
             if (paused) resumePathCondition(active, api);
             if (replayContradicted) {
+                // Release the engine here rather than at this activation's own
+                // return: the branch that just executed already decided that
+                // nothing publishable can follow.
                 finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "", null);
             }
         }
