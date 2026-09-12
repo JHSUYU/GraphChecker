@@ -1885,11 +1885,16 @@ campaign_plan() {
   [[ -n "${campaign_member_rows}" ]] || campaign_fail PLAN ConcolicScheduler \
     "${index}" "the region-path schedule index names no target member"
   # Member directories own path-closure artifacts, while every member points
-  # at the same immutable linked replay plan.
+  # at the same immutable linked replay plan.  Link it rather than copy it:
+  # a copy per member restated one plan once per member, which is most of
+  # what a campaign writes (measured: 49 members x 10.2 MB = 498 MB of the
+  # 545 MB of task plans in one recorded iteration).  Every writer here
+  # publishes through a temporary file and an atomic rename, so a later
+  # rewrite replaces a member's entry instead of editing the shared one.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     worker="${iteration_dir}/workers/${task}"
     mkdir -p "${worker}"
-    cp -f "${plan}" "${worker}/execution_task_plan.jsonl"
+    ln -f "${plan}" "${worker}/execution_task_plan.jsonl"
     campaign_log "member ${role} task=${task} occurrence=${occurrence}"
   done <<<"${campaign_member_rows}"
   campaign_log "planned tasks: $(jq -s 'length' "${plan}") by goal $(jq -r -s '

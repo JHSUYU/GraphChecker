@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNull;
 
 /** Focused checks for activation-scoped symbolic choices. */
@@ -221,6 +222,51 @@ public class GuardedChoiceActivationTest {
         assertEquals(0, process.waitFor());
         return new String(output.toByteArray(), StandardCharsets.UTF_8)
                 .trim();
+    }
+
+    /**
+     * One read event's order is decided by that event's own candidates.
+     *
+     * <p>A read identity can cover several events, and their candidate lists
+     * need not order each other: event A's arms and event B's arms are never
+     * both live at one read. Merging them demanded a total order over the
+     * union, found none, and abandoned last-writer-wins for the whole read -
+     * which let the INITIAL arm be selected while its writer ran, so a read
+     * could return the value the location held before the write it is
+     * supposed to have seen. Restricting each recorded chain to the arms one
+     * use observes gives each event the order it does have.</p>
+     */
+    @Test
+    public void eachUseKeepsTheOrderItsOwnCandidatesWitness() {
+        List<List<String>> chains = Arrays.asList(
+                Arrays.asList("initialA", "writerA"),
+                Arrays.asList("initialB", "writerB"));
+
+        List<List<String>> useA = ConcolicSmtComposer.scopedChains(chains,
+                Arrays.asList("initialA", "writerA"));
+        assertEquals(1, useA.size());
+        assertEquals(Arrays.asList("initialA", "writerA"), useA.get(0));
+
+        List<List<String>> useB = ConcolicSmtComposer.scopedChains(chains,
+                Arrays.asList("initialB", "writerB"));
+        assertEquals(Arrays.asList("initialB", "writerB"), useB.get(0));
+
+        // The order the use does witness is kept, and the arms of the other
+        // event contribute nothing rather than an unordered pair.
+        List<String> axioms = ConcolicSmtComposer.lastWriterWins(
+                useA.get(0), Arrays.asList("actInitialA", "actWriterA"));
+        assertEquals("(=> initialA (and actInitialA (not actWriterA)))",
+                axioms.get(0));
+        assertEquals("", axioms.get(1));
+    }
+
+    /** An arm no chain of this use mentions leaves the use unordered. */
+    @Test
+    public void aUseWithNoWitnessedChainIsNotOrdered() {
+        List<List<String>> chains = Collections.singletonList(
+                Arrays.asList("initialB", "writerB"));
+        assertTrue(ConcolicSmtComposer.scopedChains(chains,
+                Arrays.asList("initialA", "writerA")).isEmpty());
     }
 
     private static boolean z3Available() {
