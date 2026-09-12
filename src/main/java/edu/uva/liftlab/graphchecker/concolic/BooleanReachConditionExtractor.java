@@ -62,6 +62,12 @@ public final class BooleanReachConditionExtractor {
     static final String WINDOW_BOUNDARY = "WINDOW_BOUNDARY";
     /** Whether a witness's named mechanism is needed, or only decoration. */
     static final String MECHANISM_NECESSITY = "mechanismNecessity";
+    /** Solved to be read, never to be believed: the Composer refused. */
+    static final String EVIDENCE_ONLY = "evidenceOnly";
+    /** How the Composer spells "this formula must not be satisfiable". */
+    private static final String FAIL_CLOSED_MARKER = "; fail closed";
+    private static final String COMPOSITION_NOT_ELIGIBLE =
+            "COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE";
     static final String SYMBOLIC_VARIABLE_MODELS =
             "symbolicVariableModels";
     private static final String SYMBOLIC_VARIABLE_MODEL_KIND =
@@ -173,19 +179,47 @@ public final class BooleanReachConditionExtractor {
             gaps.add("BOOLEAN_VALUATION_LIMIT_EXCEEDED:" + valuationCount
                     + ">" + Math.max(1, maxValuations));
         }
-        if (!gaps.isEmpty()) {
+        // A composition the Composer refused is still worth solving: the
+        // valuations, the arm the witness picks and the probes are how anyone
+        // finds out *why* it was refused, and refusing to look is how a
+        // refusal becomes a dead end. What must not happen is the answer
+        // being mistaken for a verdict, so it is solved, marked, and can
+        // never reach candidate authority.
+        boolean evidenceOnly = onlyRefusedCompositionGap(gaps);
+        if (!gaps.isEmpty() && !evidenceOnly) {
             return incomplete(report, gaps);
         }
+        report.addProperty(EVIDENCE_ONLY, evidenceOnly);
 
         String base = SmtLibQueries.stripSolverCommands(
                 composedSmt);
+        // A refused composition fails its formula closed, so every valuation
+        // of it is unsat by construction and answers nothing. Evidence-only
+        // solving lifts that one marker -- and only that one -- so the
+        // valuations, the arm the model picks and the probes can be read;
+        // the verdict is already pinned below candidate authority, so what
+        // comes back can inform a reader and can never accept a run.
+        int failClosed = 0;
+        if (evidenceOnly) {
+            StringBuilder lifted = new StringBuilder(base.length());
+            for (String line : base.split("\\R", -1)) {
+                if (line.contains(FAIL_CLOSED_MARKER)) {
+                    failClosed++;
+                    continue;
+                }
+                lifted.append(line).append(System.lineSeparator());
+            }
+            base = lifted.toString();
+        }
+        report.addProperty("failClosedMarkersLifted", failClosed);
         List<JsonObject> fatalArms = fatalReadArms(composedSmt, manifest);
         List<String> fatalArmSelectors = new ArrayList<>();
         for (JsonObject arm : fatalArms) {
             fatalArmSelectors.add(optionalString(arm, "selector"));
         }
-        report.add(FATAL_STATE_SELECTION, fatalStateSelection(fatalArms,
-                Collections.<String, String>emptyMap()));
+        report.add(FATAL_STATE_SELECTION, asEvidence(fatalStateSelection(
+                fatalArms, Collections.<String, String>emptyMap()),
+                evidenceOnly));
         List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         JsonArray existentialPerturbations = new JsonArray();
@@ -201,7 +235,8 @@ public final class BooleanReachConditionExtractor {
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
             String status = result.status();
-            JsonObject row = valuationRow(values, status);
+            JsonObject row = asEvidence(valuationRow(values, status),
+                    evidenceOnly);
             // A reader has to be able to tell a causal verdict from one the
             // case frontier decided: these are the selectors this valuation
             // was solved under.
@@ -210,9 +245,10 @@ public final class BooleanReachConditionExtractor {
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
                 if (!fatalArms.isEmpty() && satisfyingValuations.size() == 1) {
-                    report.add(FATAL_STATE_SELECTION, fatalStateSelection(
-                            fatalArms, ConcolicConstraintSolver.parseGetValues(
-                                    result.stdout)));
+                    report.add(FATAL_STATE_SELECTION, asEvidence(
+                            fatalStateSelection(fatalArms,
+                                    ConcolicConstraintSolver.parseGetValues(
+                                            result.stdout)), evidenceOnly));
                 }
                 JsonArray witness = existentialWitness(result,
                         discovery.existentialNonBooleanRootInputs);
@@ -260,8 +296,9 @@ public final class BooleanReachConditionExtractor {
         }
 
         report.add("valuations", valuationRows);
-        report.add(MECHANISM_NECESSITY, mechanismNecessity(solver, base,
-                manifest, inputs, valuationRows));
+        report.add(MECHANISM_NECESSITY, asEvidence(mechanismNecessity(
+                solver, base, manifest, inputs, valuationRows),
+                evidenceOnly));
         if (existentialPerturbations.size() > 0) {
             JsonObject probe = new JsonObject();
             probe.addProperty("authority",
@@ -269,7 +306,8 @@ public final class BooleanReachConditionExtractor {
             probe.addProperty("constrainsRootSpace",
                     rejectedExistentialPerturbation);
             probe.add("perturbations", existentialPerturbations);
-            report.add("existentialRootProbe", probe);
+            report.add("existentialRootProbe", asEvidence(probe,
+                    evidenceOnly));
         }
 
         // Every Boolean assignment was queried above and the DNF is built
@@ -304,6 +342,9 @@ public final class BooleanReachConditionExtractor {
         reachCondition.addProperty("degeneracyCheck", degeneracy);
         report.add("reachCondition", reachCondition);
         JsonArray resultGaps = new JsonArray();
+        for (String gap : gaps) {
+            resultGaps.add(gap);
+        }
         if (solverErrors > 0) {
             resultGaps.add("UNDECIDED_SOLVER_VALUATIONS:"
                     + solverErrors);
@@ -318,9 +359,39 @@ public final class BooleanReachConditionExtractor {
             resultGaps.add(degeneracy);
         }
         report.add("gaps", resultGaps);
-        report.addProperty("state", complete && !unconstrainedRootSpace
-                ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
+        report.addProperty("state",
+                complete && !unconstrainedRootSpace && !evidenceOnly
+                        ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         return report;
+    }
+
+    /**
+     * Whether the only thing wrong is that the Composer refused.
+     *
+     * <p>Every other gap says this stage cannot answer -- an empty formula, a
+     * root catalog it could not read, a valuation space too large to
+     * enumerate. That one says the answer may not be believed, which is a
+     * different thing and leaves the answer worth having.</p>
+     */
+    private static boolean onlyRefusedCompositionGap(List<String> gaps) {
+        if (gaps.isEmpty()) {
+            return false;
+        }
+        for (String gap : gaps) {
+            if (!COMPOSITION_NOT_ELIGIBLE.equals(gap)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Stamps one published row as read-only evidence. */
+    private static JsonObject asEvidence(JsonObject row,
+                                         boolean evidenceOnly) {
+        if (evidenceOnly && row != null) {
+            row.addProperty(EVIDENCE_ONLY, true);
+        }
+        return row;
     }
 
     /** States whether the degeneracy question was decided, and on what. */
@@ -356,7 +427,7 @@ public final class BooleanReachConditionExtractor {
                 && "CONCOLIC_COMPOSED_SMT".equals(optionalString(manifest, "kind"));
         if (!commonManifest
                 || !"CANDIDATE_READY".equals(optionalString(manifest, "state"))) {
-            gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
+            gaps.add(COMPOSITION_NOT_ELIGIBLE);
         }
         validatePropagationContract(composedSmt, manifest, gaps);
     }
