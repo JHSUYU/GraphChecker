@@ -80,6 +80,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
+import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
+import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.readPathConditionRange;
+import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
 
 /**
  * Runtime bridge injected at symbolic-region roots for the second (concolic)
@@ -3789,12 +3792,12 @@ public final class ConcolicRegionRuntime {
                 vmEventConditionIndices(events, vmEventId);
         boolean noVmCondition = eventConditionIndices != null
                 && eventConditionIndices.isEmpty();
-        PathConditionElements conditions;
+        PathConditionWindow conditions;
         int rawPathConditionSize;
         int attestationBaseline;
         if (noVmCondition) {
             // An exact conditionless event cannot contribute a branch guard.
-            conditions = PathConditionElements.EMPTY;
+            conditions = PathConditionWindow.EMPTY;
             rawPathConditionSize = baseline;
             attestationBaseline = 0;
         } else if (contiguousConditionIndices(eventConditionIndices)) {
@@ -3804,7 +3807,8 @@ public final class ConcolicRegionRuntime {
             diag("PC_READ_BEGIN", siteId + " occ=" + occurrence
                     + " range=[" + firstCondition + ","
                     + (lastCondition + 1) + ")");
-            PathConditionRead read = readPathConditionRange(active, api,
+            PathConditionWindow.Read read = readPathConditionRange(
+                    active.expressionStore, api,
                     firstCondition, lastCondition + 1);
             diag("PC_READ_END", siteId + " occ=" + occurrence
                     + " chars=" + read.chars + " source=" + read.source);
@@ -3817,7 +3821,7 @@ public final class ConcolicRegionRuntime {
         } else {
             // The exact event stream is the only authority on which path
             // conditions belong to this branch.
-            conditions = PathConditionElements.EMPTY;
+            conditions = PathConditionWindow.EMPTY;
             rawPathConditionSize = baseline;
             attestationBaseline = baseline;
         }
@@ -3884,86 +3888,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** One branch hook's exact, VM-owned condition window. */
-    private static final class PathConditionRead {
-        private final PathConditionElements conditions;
-        private final int chars;
-        private final String source;
-
-        private PathConditionRead(PathConditionElements conditions, int chars,
-                                  String source) {
-            this.conditions = conditions;
-            this.chars = chars;
-            this.source = source;
-        }
-    }
-
-    /** Reads only the absolute indices named by an exact VM branch event. */
-    private static PathConditionRead readPathConditionRange(
-            ActiveRegion active, ConcolicVmBroker api, int start, int end)
-            throws Exception {
-        if (start < 0 || end <= start) {
-            return new PathConditionRead(PathConditionElements.EMPTY, -1,
-                    "EXACT_RANGE_UNAVAILABLE");
-        }
-        String windowed;
-        try {
-            windowed = api.pathConditionRange(start, end);
-        } catch (Throwable refused) {
-            windowed = null;
-        }
-        PathConditionElements exact =
-                PathConditionElements.window(windowed, start,
-                        active.expressionStore);
-        if (exact == null) {
-            return new PathConditionRead(PathConditionElements.EMPTY,
-                    windowed == null ? -1 : windowed.length(),
-                    "EXACT_RANGE_REFUSED");
-        }
-        return new PathConditionRead(exact, windowed.length(),
-                "EXACT_EVENT_RANGE");
-    }
-
-    private static List<Integer> vmEventConditionIndices(
-            JsonElement parsed, long eventId) {
-        if (!parsed.isJsonObject()) return null;
-        JsonObject selected = null;
-        int matches = 0;
-        for (JsonElement candidate : array(
-                parsed.getAsJsonObject(), "events")) {
-            if (!candidate.isJsonObject()) continue;
-            JsonObject event = candidate.getAsJsonObject();
-            if (optionalLongInteger(event, "eventId", -1L) == eventId) {
-                selected = event;
-                matches++;
-            }
-        }
-        if (matches != 1 || selected == null) return null;
-        JsonArray raw = array(selected, "conditionIndices");
-        if (optionalInteger(selected, "conditionCount", -1) != raw.size()) {
-            return null;
-        }
-        List<Integer> indices = new ArrayList<>();
-        for (JsonElement value : raw) {
-            try {
-                indices.add(value.getAsInt());
-            } catch (RuntimeException malformed) {
-                return null;
-            }
-        }
-        return indices;
-    }
-
-    private static boolean contiguousConditionIndices(List<Integer> indices) {
-        if (indices == null || indices.isEmpty()) return false;
-        int expected = indices.get(0);
-        if (expected < 0) return false;
-        for (Integer index : indices) {
-            if (index == null || index != expected) return false;
-            expected++;
-        }
-        return true;
-    }
 
     private static boolean recordSwitchBranchPaused(
             ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
@@ -3976,23 +3900,24 @@ public final class ConcolicRegionRuntime {
                 vmEventConditionIndices(events, vmEventId);
         boolean noVmCondition = eventConditionIndices != null
                 && eventConditionIndices.isEmpty();
-        PathConditionRead read;
+        PathConditionWindow.Read read;
         if (noVmCondition) {
-            read = new PathConditionRead(PathConditionElements.EMPTY, 0,
+            read = new PathConditionWindow.Read(PathConditionWindow.EMPTY, 0,
                     "CONDITIONLESS_EVENT");
         } else if (contiguousConditionIndices(eventConditionIndices)) {
             int firstCondition = eventConditionIndices.get(0);
             int lastCondition = eventConditionIndices.get(
                     eventConditionIndices.size() - 1);
-            read = readPathConditionRange(active, api, firstCondition,
+            read = readPathConditionRange(active.expressionStore, api,
+                    firstCondition,
                     lastCondition + 1);
         } else {
-            read = new PathConditionRead(PathConditionElements.EMPTY, -1,
+            read = new PathConditionWindow.Read(PathConditionWindow.EMPTY, -1,
                     "EXACT_RANGE_UNAVAILABLE");
         }
         diag("PC_READ_END", siteId + " occ=" + occurrence
                 + " chars=" + read.chars + " source=" + read.source);
-        PathConditionElements conditions = read.conditions;
+        PathConditionWindow conditions = read.conditions;
         VmBranchEventAttestation attestation = attestVmBranchEvent(api,
                 active, siteId, expression, expected.caseArm(), vmEventId,
                 occurrence, conditions, noVmCondition ? 0 : baseline,
@@ -4077,7 +4002,7 @@ public final class ConcolicRegionRuntime {
     private static VmBranchEventAttestation attestVmBranchEvent(
             ConcolicVmBroker api, ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
-            int occurrence, PathConditionElements conditions, int baseline,
+            int occurrence, PathConditionWindow conditions, int baseline,
             SwitchExpectation switchExpectation, JsonElement readEvents) {
         if (eventId <= 0L) {
             return VmBranchEventAttestation.invalid(
@@ -4200,7 +4125,7 @@ public final class ConcolicRegionRuntime {
 
     private static VmBranchEventAttestation attestVmSwitchConditions(
             JsonObject event, SwitchExpectation expected,
-            JsonArray rawIndices, PathConditionElements conditions) {
+            JsonArray rawIndices, PathConditionWindow conditions) {
         int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
                 ? 170 : 171;
         if (optionalInteger(event, "opcode", -1) != expectedOpcode) {
@@ -6086,93 +6011,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Indexed access to a serialized path condition without materializing
-     * every element.
-     *
-     * <p>A branch hook needs exactly two facts from that document: how many
-     * conditions the VM has accumulated, and the one element the VM's exact
-     * event says this branch owns - an index the event stream, a few kilobytes
-     * wide, already carries.</p>
-     */
-    static final class PathConditionElements {
-        static final PathConditionElements EMPTY =
-                new PathConditionElements(new JsonArray());
-        private static final String TREE_MODE = "TREE";
-        private static final String WINDOW_MODE = "WINDOW_SCAN";
-
-        private final JsonArray tree;
-        /** Absolute index of element 0, and the exclusive end of the window. */
-        private final int base;
-        private final int windowEnd;
-        /** Conditions the thread has accumulated, window or not. */
-        private final int size;
-        private final boolean windowed;
-
-        private PathConditionElements(JsonArray tree) {
-            this(tree, 0, tree.size(), tree.size(), false);
-        }
-
-        private PathConditionElements(JsonArray tree, int base, int windowEnd,
-                                      int size, boolean windowed) {
-            this.tree = tree;
-            this.base = base;
-            this.windowEnd = windowEnd;
-            this.size = size;
-            this.windowed = windowed;
-        }
-
-        /**
-         * Reads one {@code CONCOLIC_PATH_CONDITION_RANGE} envelope as the
-         * conditions at absolute indices {@code [startIndex, endIndex)}.
-         *
-         * <p>The VM always writes the window through the session expression
-         * table, so the envelope is decoded once by the shared importer and
-         * never rescanned by hand.</p>
-         */
-        static PathConditionElements window(String envelope, int expectedStart,
-                                            VmExpressionTable.Store store) {
-            if (envelope == null) return null;
-            try {
-                JsonObject decoded = store.importEnvelope(envelope);
-                int start = optionalInteger(decoded, "startIndex", -1);
-                int end = optionalInteger(decoded, "endIndex", -1);
-                int watermark = optionalInteger(decoded,
-                        "pathConditionWatermark", -1);
-                JsonArray conditions = array(decoded, "conditions");
-                int declaredCount = optionalInteger(decoded, "conditionCount", -1);
-                if (start != expectedStart || end < start
-                        || watermark < 0
-                        || conditions.size() != end - start
-                        || declaredCount != conditions.size()) {
-                    return null;
-                }
-                return new PathConditionElements(conditions, start, end,
-                        watermark, true);
-            } catch (RuntimeException malformed) {
-                return null;
-            }
-        }
-
-        /** Conditions the thread has accumulated, not just this window's. */
-        int size() {
-            return size;
-        }
-
-        JsonElement get(int index) {
-            if (index < base || index >= windowEnd) {
-                throw new IndexOutOfBoundsException(
-                        "path condition index " + index + " outside ["
-                                + base + "," + windowEnd + ") of " + size);
-            }
-            return tree.get(index - base);
-        }
-
-        /** Which reader answered, for the replay's own diagnostics. */
-        String mode() {
-            return windowed ? WINDOW_MODE : TREE_MODE;
-        }
-    }
 
     private static JsonElement parseJson(String value) {
         if (value == null || value.trim().isEmpty()) {
