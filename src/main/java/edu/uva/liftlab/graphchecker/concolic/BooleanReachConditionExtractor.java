@@ -177,6 +177,11 @@ public final class BooleanReachConditionExtractor {
                     solver.check(query);
             String status = result.status();
             JsonObject row = valuationRow(values, status);
+            // A reader has to be able to tell a causal verdict from one the
+            // case frontier decided: these are the selectors this valuation
+            // was solved under.
+            row.add("pinnedCaseSelectors",
+                    GSON.toJsonTree(solver.lastPinnedSelectors()));
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
                 JsonArray witness = existentialWitness(result,
@@ -355,7 +360,13 @@ public final class BooleanReachConditionExtractor {
 
         Map<String, List<Integer>> partitionsBySelector =
                 new LinkedHashMap<>();
-        JsonArray partitions = encodedPartitions.getAsJsonArray();
+        // A conditional partition still declares its selectors and their
+        // definitions; it is only the unconditional exactly-one assertion it
+        // does not carry.  Validation covers both, pinning covers neither.
+        JsonArray partitions = new JsonArray();
+        partitions.addAll(encodedPartitions.getAsJsonArray());
+        partitions.addAll(array(manifest,
+                ConcolicSmtComposer.CONDITIONAL_CASE_PARTITIONS));
         for (int partitionIndex = 0;
              partitionIndex < partitions.size(); partitionIndex++) {
             JsonElement encodedPartition = partitions.get(partitionIndex);
@@ -814,8 +825,15 @@ public final class BooleanReachConditionExtractor {
             }
         }
 
+        private volatile List<String> lastPinned = Collections.emptyList();
+
         synchronized JsonArray attempts() {
             return attempts.deepCopy();
+        }
+
+        /** Case selectors the attempt that decided the last check pinned. */
+        List<String> lastPinnedSelectors() {
+            return new ArrayList<>(lastPinned);
         }
 
         ConcolicConstraintSolver.SolverOutput check(String smt)
@@ -824,9 +842,11 @@ public final class BooleanReachConditionExtractor {
             int currentQuery = queryOrdinal++;
             PartitionPlan plan = splitPartitions();
             if (plan.primary.isEmpty()) {
+                lastPinned = Collections.emptyList();
                 return attempt(currentQuery, 0, "Z3", smt,
                         timeoutMillis, Collections.emptyList());
             }
+            lastPinned = Collections.emptyList();
             List<PartitionQuery> queries = conditionedQueries(smt,
                     plan.primary);
             if (!plan.refinement.isEmpty()) {
@@ -899,6 +919,11 @@ public final class BooleanReachConditionExtractor {
             row.addProperty("timeoutMillis", attemptTimeout);
             row.addProperty("elapsedMillis", elapsedMillis);
             row.addProperty("status", result.status());
+            // The attempt that finds a model is the one whose pin the verdict
+            // rests on; an unsat over every attempt rests on none of them.
+            if ("sat".equals(result.status())) {
+                lastPinned = new ArrayList<>(selectedCaseSelectors);
+            }
             synchronized (this) {
                 attempts.add(row);
             }

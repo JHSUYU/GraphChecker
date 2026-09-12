@@ -120,6 +120,12 @@ public final class ConcolicSmtComposer {
     /** Whether this artifact may be accepted as the milestone result. */
     public static final String FINAL_STATUS = "finalStatus";
     /** Whether all selected producer and target path sets were explored. */
+    /**
+     * Case partitions the formula asserts only under a condition, so a
+     * consumer must not pin them: doing so decides the condition silently.
+     */
+    public static final String CONDITIONAL_CASE_PARTITIONS =
+            "conditionalCaseSelectorPartitions";
     public static final String PATH_SET_COMPLETE = "pathSetComplete";
     public static final String FINAL_READY = "FINAL_READY";
     /**
@@ -235,8 +241,15 @@ public final class ConcolicSmtComposer {
         manifest.add("casePathConditionDependencies",
                 propagation.caseDependencies());
         manifest.add("targetReachLedger", emitter.targetReachLedger());
+        // Only the partitions the formula asserts unconditionally.  A
+        // consumer that pins one of these is restating something the formula
+        // already says; pinning a conditional one silently decides the
+        // condition, which is how a fault marker got frozen to its recorded
+        // value during root-polarity evaluation.
         manifest.add("caseSelectorPartitions",
-                GSON.toJsonTree(emitter.casePartitions.values()));
+                GSON.toJsonTree(emitter.unconditionalCasePartitions()));
+        manifest.add(CONDITIONAL_CASE_PARTITIONS,
+                GSON.toJsonTree(emitter.conditionalCasePartitions()));
         manifest.add(CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
                 emitter.configuredSourceMaterializationLedger());
         manifest.add(MANUAL_SOURCE_MATERIALIZATION_FIELD,
@@ -1619,6 +1632,34 @@ public final class ConcolicSmtComposer {
         private String recordManualRootName(String raw, String name) {
             manualRootNames.put(raw, name);
             return name;
+        }
+
+        /**
+         * The case partitions this formula asserts unconditionally.
+         *
+         * <p>A fault-controlled occurrence keeps no unconditional
+         * exactly-one partition -- its predecessor's marker decides whether
+         * any of its cases runs -- so advertising one would invite a consumer
+         * to pin it and freeze the marker.</p>
+         */
+        private List<Collection<String>> unconditionalCasePartitions() {
+            return casePartitionsBy(false);
+        }
+
+        private List<Collection<String>> conditionalCasePartitions() {
+            return casePartitionsBy(true);
+        }
+
+        private List<Collection<String>> casePartitionsBy(boolean conditional) {
+            List<Collection<String>> rows = new ArrayList<>();
+            for (Map.Entry<InvocationKey, Set<String>> entry
+                    : casePartitions.entrySet()) {
+                if (faultControlledInstances.contains(entry.getKey())
+                        == conditional) {
+                    rows.add(entry.getValue());
+                }
+            }
+            return rows;
         }
 
         /**
