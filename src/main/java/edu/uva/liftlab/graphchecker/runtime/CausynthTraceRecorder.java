@@ -959,6 +959,7 @@ public final class CausynthTraceRecorder {
                     "runtime_trace.jsonl"), test, false);
             trace.sort();
             reattributeFramesToRegisteredOwners(trace);
+            nameObservedObjectsFromContent(trace);
             Set<String> observedMethods = new LinkedHashSet<>();
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
                 observedMethods.add(event.method);
@@ -1068,6 +1069,7 @@ public final class CausynthTraceRecorder {
                     "runtime_trace.jsonl"), test, true);
             trace.sort();
             reattributeFramesToRegisteredOwners(trace);
+            nameObservedObjectsFromContent(trace);
             File skeletons = new File(outputDirectory,
                     "region_skeletons.jsonl");
             if (candidateSkeletons == null) {
@@ -1199,6 +1201,163 @@ public final class CausynthTraceRecorder {
      * two already-sorted streams together so an owner becomes available only
      * after its durable source event.</p>
      */
+    /**
+     * Renames every object the recording observed from the content of its
+     * first observation.
+     *
+     * <p>The recorder's {@code identity()} counter is exact inside one run
+     * and arbitrary across two, so publishing it put a per-run number into
+     * the plan's receiver anchors and into every id hashed from them.  This
+     * replaces each recorded id with the content-addressed name
+     * {@link RuntimeObjectIdentity} derives, which preserves "same object"
+     * and "different object" within the recording while spelling the name
+     * from the site that introduced the object.</p>
+     *
+     * <p>It runs after {@link #reattributeFramesToRegisteredOwners} so that
+     * the source key in an address is the one the frame finally belongs to,
+     * and before any planner or refiner reads the events, so no published
+     * artifact can carry a recorded id.</p>
+     */
+    private static void nameObservedObjectsFromContent(TraceData trace) {
+        RuntimeObjectIdentity identity = new RuntimeObjectIdentity();
+        Map<Long, String> sourceKeyByCall = sourceKeyByCall(trace);
+        for (TraceObservation observation : orderedObservations(trace)) {
+            identity.observe(observation.objectId,
+                    observation.address(sourceKeyByCall));
+        }
+        for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+            event.objectId = identity.nameOf(event.objectId);
+        }
+        for (RuntimeRegionPlanner.RuntimeEvent event : trace.execution) {
+            event.objectId = identity.nameOf(event.objectId);
+        }
+        for (RuntimeRegionPlanner.FieldAccessEvent event : trace.fields) {
+            event.receiverObjectId = identity.nameOf(event.receiverObjectId);
+            event.valueObjectId = identity.nameOf(event.valueObjectId);
+        }
+        for (SourceTraceEvent event : trace.sources) {
+            event.objectId = identity.nameOf(event.objectId);
+        }
+    }
+
+    /**
+     * The logical source of each recorded frame, for the events that carry
+     * only a call id.
+     *
+     * <p>An uninstrumented helper entered from an attributed frame has no
+     * source of its own, so the parent chain is walked until one answers.</p>
+     */
+    private static Map<Long, String> sourceKeyByCall(TraceData trace) {
+        Map<Long, String> own = new LinkedHashMap<>();
+        Map<Long, Long> parents = new LinkedHashMap<>();
+        for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+            own.put(event.callId, MapFields.safe(event.sourceKey));
+            parents.put(event.callId, event.parentCallId);
+        }
+        Map<Long, String> resolved = new LinkedHashMap<>();
+        for (Long callId : own.keySet()) {
+            Set<Long> walked = new LinkedHashSet<>();
+            Long cursor = callId;
+            String answer = "";
+            while (cursor != null && walked.add(cursor)) {
+                String candidate = own.get(cursor);
+                if (candidate != null && !candidate.isEmpty()) {
+                    answer = candidate;
+                    break;
+                }
+                cursor = parents.get(cursor);
+            }
+            resolved.put(callId, answer);
+        }
+        return resolved;
+    }
+
+    /**
+     * Every object slot of every recorded event, in recorded order.
+     *
+     * <p>The four event streams are each sorted by sequence; merging them on
+     * sequence is what makes "first observation" mean the same thing however
+     * the trace was batched across threads at load.</p>
+     */
+    private static List<TraceObservation> orderedObservations(
+            TraceData trace) {
+        List<TraceObservation> observations = new ArrayList<>();
+        for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+            observations.add(new TraceObservation(event.seq, event.objectId,
+                    event.sourceKey, "METHOD_ENTER", event.method, "", -1,
+                    "", event.receiverType, "objectId", event.callId));
+        }
+        for (RuntimeRegionPlanner.RuntimeEvent event : trace.execution) {
+            observations.add(new TraceObservation(event.seq, event.objectId,
+                    null, event.kind, event.method, event.siteId,
+                    event.argumentIndex, "", event.runtimeType, "objectId",
+                    event.callId));
+        }
+        for (RuntimeRegionPlanner.FieldAccessEvent event : trace.fields) {
+            observations.add(new TraceObservation(event.seq,
+                    event.receiverObjectId, null, event.kind, event.method,
+                    event.siteId, -1, event.field, "",
+                    "fieldReceiverObjectId", event.callId));
+            observations.add(new TraceObservation(event.seq,
+                    event.valueObjectId, null, event.kind, event.method,
+                    event.siteId, -1, event.field, "", "valueObjectId",
+                    event.callId));
+        }
+        for (SourceTraceEvent event : trace.sources) {
+            observations.add(new TraceObservation(event.seq, event.objectId,
+                    MapFields.safe(event.source == null ? ""
+                            : event.source.key()), event.kind, "", "", -1,
+                    "", "", "objectId", 0L));
+        }
+        // A stable order for the slots one event carries: the sequence alone
+        // does not separate a field access's receiver from its value.
+        observations.sort((left, right) -> {
+            int bySeq = Long.compare(left.seq, right.seq);
+            return bySeq != 0 ? bySeq : left.slot.compareTo(right.slot);
+        });
+        return observations;
+    }
+
+    /** One object slot of one recorded event. */
+    private static final class TraceObservation {
+        private final long seq;
+        private final int objectId;
+        private final String sourceKey;
+        private final String eventKind;
+        private final String method;
+        private final String siteId;
+        private final int argumentIndex;
+        private final String field;
+        private final String runtimeType;
+        private final String slot;
+        private final long callId;
+
+        private TraceObservation(long seq, int objectId, String sourceKey,
+                                 String eventKind, String method,
+                                 String siteId, int argumentIndex,
+                                 String field, String runtimeType,
+                                 String slot, long callId) {
+            this.seq = seq;
+            this.objectId = objectId;
+            this.sourceKey = sourceKey;
+            this.eventKind = MapFields.safe(eventKind);
+            this.method = MapFields.safe(method);
+            this.siteId = MapFields.safe(siteId);
+            this.argumentIndex = argumentIndex;
+            this.field = MapFields.safe(field);
+            this.runtimeType = MapFields.safe(runtimeType);
+            this.slot = MapFields.safe(slot);
+            this.callId = callId;
+        }
+
+        private String address(Map<Long, String> sourceKeyByCall) {
+            String source = sourceKey != null ? sourceKey
+                    : MapFields.safe(sourceKeyByCall.get(callId));
+            return RuntimeObjectIdentity.address(source, eventKind, method,
+                    siteId, argumentIndex, field, runtimeType, slot);
+        }
+    }
+
     private static void reattributeFramesToRegisteredOwners(TraceData trace) {
         Map<Integer, SourceRef> owners = new LinkedHashMap<>();
         Set<Integer> disputed = new LinkedHashSet<>();
@@ -1786,8 +1945,10 @@ public final class CausynthTraceRecorder {
         private final String kind;
         private final SourceRef source;
         private final SourceRef relatedSource;
-        /** Recorded identity of the object this row registered, or 0. */
-        private final int objectId;
+        /** Identity of the object this row registered, or 0.  Not final:
+         * renamed to its content-addressed name once the trace has
+         * loaded. */
+        private int objectId;
 
         private SourceTraceEvent(long seq, String kind, SourceRef source,
                                  SourceRef relatedSource, int objectId) {

@@ -3190,7 +3190,10 @@ final class RuntimeRegionPlanner {
         final String threadName;
         final long tid;
         final String method;
-        final int objectId;
+        /** Not final: the recorded identity counter is renamed to its
+         * content-addressed name once the trace has loaded, so that no
+         * published artifact carries a per-run object number. */
+        int objectId;
         final String receiverType;
         final long callId;
         final long parentCallId;
@@ -3344,7 +3347,8 @@ final class RuntimeRegionPlanner {
         final String declaredCallee;
         final int argumentIndex;
         final String runtimeType;
-        final int objectId;
+        /** Not final: renamed to its content-addressed name at load. */
+        int objectId;
         final String primitiveValue;
         final Boolean outcome;
         final Integer successorIndex;
@@ -3383,8 +3387,10 @@ final class RuntimeRegionPlanner {
         final int unitIndex;
         final String siteId;
         final String field;
-        final int receiverObjectId;
-        final int valueObjectId;
+        /** Not final: renamed to its content-addressed name at load. */
+        int receiverObjectId;
+        /** Not final: renamed to its content-addressed name at load. */
+        int valueObjectId;
         final String primitiveValue;
 
         FieldAccessEvent(long seq, String kind, String method, long callId,
