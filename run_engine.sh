@@ -1402,23 +1402,6 @@ campaign_wait_workers() {
   return "${status}"
 }
 
-# Waits in launch order and preserves every child's exact exit status.  Planner
-# processes use 2 for a semantic GAPPED result, so collapsing the batch to a
-# boolean would lose the distinction between that result and a crashed JVM.
-campaign_exact_wait_statuses=()
-campaign_wait_exact_statuses() {
-  local pid status
-  campaign_exact_wait_statuses=()
-  for pid in "$@"; do
-    if wait "${pid}"; then
-      status=0
-    else
-      status=$?
-    fi
-    campaign_exact_wait_statuses+=("${status}")
-  done
-}
-
 campaign_validate() {
   validate_config >/dev/null
   [[ -n "${concolic_replay_command}" ]] || die \
@@ -2317,7 +2300,7 @@ campaign_target_reach_query() {
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local role campaign_id region occurrence goal task member planner_dir
-  local worklist key_rows key worker_dir target_task=""
+  local worklist key_rows key worker_dir target_task="" wave_dir roster
   local status=0 wave=0 pending=0 job planner_index
   local summaries="${iteration_dir}/linked_observed_path_summaries.jsonl"
   local tasks="${iteration_dir}/linked_observed_execution_tasks.jsonl"
@@ -2328,7 +2311,7 @@ campaign_explore() {
   local seed_delta="${iteration_dir}/seed-result/topology_delta.jsonl"
   local -a bound_args=() jobs=() pids=() planner_dirs=()
   local -a planner_all_dirs=()
-  local -a planner_roles=() planner_tasks=() planner_statuses=()
+  local -a planner_roles=() planner_tasks=()
 
   campaign_json select-tasks \
     "${iteration_dir}/concolic_region_summaries.jsonl" "${active_plan}" \
@@ -2359,9 +2342,14 @@ campaign_explore() {
     planner_all_dirs=()
     planner_roles=()
     planner_tasks=()
-    planner_statuses=()
     pids=()
     pending=0
+    wave_dir=$(printf '%s/obligations-%04d' "${iteration_dir}" "${wave}")
+    [[ ! -e "${wave_dir}" ]] || die \
+      "obligation wave directory already exists: ${wave_dir}"
+    mkdir -p "${wave_dir}"
+    roster="${wave_dir}/members.tsv"
+    : >"${roster}"
     while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
       member="${iteration_dir}/workers/${task}"
       if [[ "${role}" == "TARGET" ]]; then
@@ -2374,32 +2362,30 @@ campaign_explore() {
       planner_roles+=("${role}")
       planner_tasks+=("${task}")
       planner_all_dirs+=("${planner_dir}")
-      (
-        run_java_main \
-          edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
-          --summaries "${summaries}" \
-          --task-plan "${tasks}" \
-          --records "${records}" \
-          --output-dir "${planner_dir}" \
-          --region-id "${region}" \
-          --goal-id "${goal}" \
-          --topology-epoch "${iteration_id}" \
-          "${bound_args[@]}"
-      ) >"${planner_dir}/stdout.log" 2>"${planner_dir}/stderr.log" &
-      pids+=("$!")
-      if [[ ${#pids[@]} -eq ${concolic_worker_count} ]]; then
-        campaign_wait_exact_statuses "${pids[@]}"
-        planner_statuses+=("${campaign_exact_wait_statuses[@]}")
-        pids=()
-      fi
+      printf '%s\t%s\t%s\n' "${region}" "${goal}" "${planner_dir}" \
+        >>"${roster}"
     done <<<"${campaign_member_rows}"
-    if [[ ${#pids[@]} -gt 0 ]]; then
-      campaign_wait_exact_statuses "${pids[@]}"
-      planner_statuses+=("${campaign_exact_wait_statuses[@]}")
+    # Every member of the wave is planned against the same summaries, the same
+    # task plan and therefore the same symbolic propagation closure.  One JVM
+    # computes that closure once and writes each member's own manifest and
+    # worklist into the member's own directory.
+    status=0
+    run_java_main \
+      edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
+      --summaries "${summaries}" \
+      --task-plan "${tasks}" \
+      --records "${records}" \
+      --members "${roster}" \
+      --topology-epoch "${iteration_id}" \
+      "${bound_args[@]}" \
+      >"${wave_dir}/stdout.log" 2>"${wave_dir}/stderr.log" || status=$?
+    # Exit 2 names a member whose worklist is not executable; which member it
+    # is, is read below from that member's own manifest state.
+    if [[ "${status}" -ne 0 && "${status}" -ne 2 ]]; then
+      campaign_fail EXPLORE ConcolicPathFlipPlanner \
+        "${wave_dir}/stderr.log" \
+        "the wave path planner failed with exit ${status}"
     fi
-    [[ ${#planner_all_dirs[@]} -eq ${#planner_statuses[@]} ]] \
-      || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}/workers" \
-        "planner batch lost an exact process status"
 
     # Collect in the schedule index's original order. Completion order therefore
     # cannot change manifest publication or the obligation launch order.
@@ -2408,30 +2394,22 @@ campaign_explore() {
       role="${planner_roles[planner_index]}"
       task="${planner_tasks[planner_index]}"
       planner_dir="${planner_all_dirs[planner_index]}"
-      status="${planner_statuses[planner_index]}"
       member="${iteration_dir}/workers/${task}"
       require_nonempty "${role} path worklist manifest" \
         "${planner_dir}/region_path_manifest.json"
-      if [[ "${status}" -eq 2 ]]; then
-        campaign_report_worklist "${planner_dir}"
-        campaign_fail EXPLORE RegionPathWorklist \
-          "${planner_dir}/region_path_manifest.json" \
-          "the ${role} path worklist is not executable"
-      fi
-      [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE \
-        ConcolicPathFlipPlanner "${planner_dir}/region_path_manifest.json" \
-        "the ${role} path planner failed with exit ${status}"
       if jq -e '.state == "CLOSED"' \
           "${planner_dir}/region_path_manifest.json" >/dev/null; then
         cp -f "${planner_dir}/region_path_manifest.json" \
           "${member}/path_closure.json"
         continue
       fi
-      jq -e '.state == "PENDING"' \
-        "${planner_dir}/region_path_manifest.json" >/dev/null \
-        || campaign_fail EXPLORE RegionPathWorklist \
+      if ! jq -e '.state == "PENDING"' \
+          "${planner_dir}/region_path_manifest.json" >/dev/null; then
+        campaign_report_worklist "${planner_dir}"
+        campaign_fail EXPLORE RegionPathWorklist \
           "${planner_dir}/region_path_manifest.json" \
-          "the ${role} path planner published no pending or closed state"
+          "the ${role} path worklist is not executable"
+      fi
       worklist="${planner_dir}/region_path_worklist.jsonl"
       if ! key_rows=$(campaign_decode_worklist_keys "${worklist}"); then
         campaign_fail EXPLORE RegionPathWorklist "${worklist}" \
