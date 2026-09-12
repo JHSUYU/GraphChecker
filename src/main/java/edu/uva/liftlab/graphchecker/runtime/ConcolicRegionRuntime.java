@@ -42,7 +42,6 @@ import java.io.OutputStreamWriter;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -82,6 +81,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteg
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 
 /**
  * Runtime bridge injected at symbolic-region roots for the second (concolic)
@@ -238,7 +238,6 @@ public final class ConcolicRegionRuntime {
     private static final Pattern BRANCH_OPERATOR = Pattern.compile(
             "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
     private static volatile Configuration configuration;
-    private static volatile EngineApi engineApi;
     /** Session this JVM opened for its workload, or zero when it opened none. */
     private static volatile long workloadSessionId;
     /**
@@ -352,7 +351,7 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = activeRegion();
         if (active == null) return;
 
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         boolean paused = false;
         LoopBoundCut cut = null;
         try {
@@ -404,7 +403,7 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = activeRegion();
         if (active == null) return;
 
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         boolean paused = false;
         ReplayLoopResourceCut cut = null;
         try {
@@ -679,7 +678,7 @@ public final class ConcolicRegionRuntime {
             clearContextActivations();
             return "";
         }
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         api.requireCurrentCapabilities();
         final long status;
         try {
@@ -715,7 +714,7 @@ public final class ConcolicRegionRuntime {
             clearContextActivations();
             return "";
         }
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         final long status;
         try {
             status = api.closeWorkloadSession();
@@ -991,7 +990,7 @@ public final class ConcolicRegionRuntime {
             String admittedMessageSource,
             boolean deferredOutgoingSource) {
         beginLiveSelectedRegion();
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         boolean engineStarted = false;
         boolean pathConditionPaused = false;
         boolean javaRegionPushed = false;
@@ -1547,7 +1546,7 @@ public final class ConcolicRegionRuntime {
             active.recordFieldAccessOwner(action.symbol, leafOwner);
             if (!active.materialized.add(action.symbol)) continue;
             try {
-                EngineApi api = engine();
+                ConcolicVmBroker api = engine();
                 Field exactField = declaredInstanceField(leafOwner,
                         action.exactLeafFieldSignature());
                 if (exactField == null) {
@@ -1812,7 +1811,7 @@ public final class ConcolicRegionRuntime {
                         + "field");
                 return false;
             }
-            EngineApi api = engine();
+            ConcolicVmBroker api = engine();
             String declaringClass = field.getDeclaringClass().getName();
             String descriptor = javaTypeDescriptor(
                     field.getType().getTypeName());
@@ -2014,7 +2013,7 @@ public final class ConcolicRegionRuntime {
             return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
                     RpcExpressionHandoff.MISSING_METADATA, 0L, missing));
         }
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         long handle;
         // README RPC-1: the VM reports the export's own ledger event here,
         // so the producer's interaction row can name the exact export it
@@ -2273,7 +2272,7 @@ public final class ConcolicRegionRuntime {
                 return;
             }
             Object value = storage.get(owner);
-            EngineApi api = engine();
+            ConcolicVmBroker api = engine();
             expression = containerValue(value)
                     ? engineExpression(api.expression(value))
                     : engineExpression(api.fieldExpression(owner,
@@ -2433,7 +2432,7 @@ public final class ConcolicRegionRuntime {
             return failed(RpcExpressionHandoff.STAGE_ATTACH,
                     RpcExpressionHandoff.MISSING_METADATA, handle, missing);
         }
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         long exportEventId;
         // README RPC-1: both endpoints of the VALUE_HANDOFF edge leave the VM
         // together.
@@ -2642,7 +2641,7 @@ public final class ConcolicRegionRuntime {
                     SharedStateEvidence.MISSING_METADATA, "", missing),
                     null, active);
         }
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         long initial;
         try {
             initial = carrier.select(api);
@@ -3204,7 +3203,7 @@ public final class ConcolicRegionRuntime {
         }
 
         /** Native read-out only; JSON decoding belongs to publication. */
-        String rawVersions(EngineApi api) throws Exception {
+        String rawVersions(ConcolicVmBroker api) throws Exception {
             if (SHAPE_ELEMENT.equals(shape)) {
                 return api.sharedElementVersions(owner, index);
             }
@@ -3215,7 +3214,7 @@ public final class ConcolicRegionRuntime {
                     descriptor);
         }
         /** Native selection only; the answer's meaning belongs to the caller. */
-        long select(EngineApi api) throws Exception {
+        long select(ConcolicVmBroker api) throws Exception {
             if (SHAPE_ELEMENT.equals(shape)) {
                 return api.selectSharedElementCarrier(owner, index);
             }
@@ -3300,7 +3299,7 @@ public final class ConcolicRegionRuntime {
      * owns the VM context.
      */
     private static RawSharedStateReadOut captureRecordedSharedStateRaw(
-            ActiveRegion active, EngineApi api,
+            ActiveRegion active, ConcolicVmBroker api,
             RecordedEvidenceIdentity identity) {
         List<RawSharedCarrierReadOut> carriers = new ArrayList<>();
         for (SharedCarrier carrier
@@ -3617,7 +3616,7 @@ public final class ConcolicRegionRuntime {
             // that advertised the exact API.
             return observedOutcome;
         }
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         boolean paused = false;
         boolean replayContradicted = false;
         try {
@@ -3746,7 +3745,7 @@ public final class ConcolicRegionRuntime {
                     + SiteId.of(method, unitIndex));
             return observedSuccessorIndex;
         }
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         boolean paused = false;
         boolean replayContradicted = false;
         try {
@@ -3779,7 +3778,7 @@ public final class ConcolicRegionRuntime {
     }
 
     private static RecordedBranch recordBranchPaused(
-            ActiveRegion active, EngineApi api, String method, int unitIndex,
+            ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
             String expression, int occurrence, boolean observedOutcome,
             long vmEventId) throws Exception {
         if (vmEventId <= 0L) {
@@ -3905,7 +3904,7 @@ public final class ConcolicRegionRuntime {
 
     /** Reads only the absolute indices named by an exact VM branch event. */
     private static PathConditionRead readPathConditionRange(
-            ActiveRegion active, EngineApi api, int start, int end)
+            ActiveRegion active, ConcolicVmBroker api, int start, int end)
             throws Exception {
         if (start < 0 || end <= start) {
             return new PathConditionRead(PathConditionElements.EMPTY, -1,
@@ -3971,7 +3970,7 @@ public final class ConcolicRegionRuntime {
     }
 
     private static boolean recordSwitchBranchPaused(
-            ActiveRegion active, EngineApi api, String method, int unitIndex,
+            ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
             String expression, int occurrence, SwitchExpectation expected,
             long vmEventId) throws Exception {
         String siteId = SiteId.of(method, unitIndex);
@@ -4080,7 +4079,7 @@ public final class ConcolicRegionRuntime {
      *                   two different observations of it.
      */
     private static VmBranchEventAttestation attestVmBranchEvent(
-            EngineApi api, ActiveRegion active, String siteId,
+            ConcolicVmBroker api, ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
             int occurrence, PathConditionElements conditions, int baseline,
             SwitchExpectation switchExpectation, JsonElement readEvents) {
@@ -4532,7 +4531,7 @@ public final class ConcolicRegionRuntime {
         boolean hasEnclosingRegion = hasEnclosingActiveRegion(active);
         ActiveRegion enclosingRegion = hasEnclosingRegion
                 ? enclosingActiveRegion(active) : null;
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         boolean engineFinished = false;
         boolean pathConditionPaused = false;
         String rawEngineSummary = null;
@@ -4934,7 +4933,7 @@ public final class ConcolicRegionRuntime {
 
     private static void symbolizeReceiverFields(ActiveRegion active,
                                                RuntimeTask task,
-                                               EngineApi api) {
+                                               ConcolicVmBroker api) {
         for (SymbolizeAction action : task.symbolize) {
             // Nested/shared heap fields are materialized on their real owner
             // at the field-access hook.
@@ -4963,7 +4962,7 @@ public final class ConcolicRegionRuntime {
                                        SymbolizeAction action,
                                        Object owner, String symbolicPath,
                                        List<String> exactFieldPath,
-                                       EngineApi api) {
+                                       ConcolicVmBroker api) {
         String symbol = action.symbol + "." + safe(symbolicPath);
         try {
             String leafFieldSignature = action.exactLeafFieldSignature(
@@ -5016,7 +5015,7 @@ public final class ConcolicRegionRuntime {
                                            SymbolizeAction action,
                                            Object root,
                                            List<String> path,
-                                           EngineApi api) {
+                                           ConcolicVmBroker api) {
         String label = FieldPathSpec.join(path);
         if (path == null || path.isEmpty() || label.isEmpty()) {
             active.unresolved.add(action.symbol
@@ -5069,7 +5068,7 @@ public final class ConcolicRegionRuntime {
     private static Object materializePrimitiveValue(
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         List<String> exactPath = path == null
                 ? Collections.<String>emptyList() : path;
         String fieldSignature = path == null ? ""
@@ -5122,7 +5121,7 @@ public final class ConcolicRegionRuntime {
 
     /** Exact expression stored in a Java primitive wrapper's value field. */
     private static JsonElement primitiveBoxExpression(
-            EngineApi api, Object boxed) throws Exception {
+            ConcolicVmBroker api, Object boxed) throws Exception {
         if (boxed == null) return null;
         String descriptor = JavaPrimitiveBoxing.primitiveDescriptor(
                 boxed.getClass().getName());
@@ -5456,7 +5455,7 @@ public final class ConcolicRegionRuntime {
     }
 
     private static void symbolize(ActiveRegion active, SymbolizeAction action,
-                                  Object value, EngineApi api) {
+                                  Object value, ConcolicVmBroker api) {
         try {
             boolean liveArray = value != null && value.getClass().isArray();
             boolean declaredArray = action.declaresArrayInput(
@@ -5541,7 +5540,7 @@ public final class ConcolicRegionRuntime {
     }
 
     private static void requireTrackedContainer(
-            EngineApi api, Object value, String symbol) throws Exception {
+            ConcolicVmBroker api, Object value, String symbol) throws Exception {
         if (!api.trackContainer(value, symbol)) {
             throw new UnsupportedOperationException(
                     "custom VM has no symbolic model for container "
@@ -5554,7 +5553,7 @@ public final class ConcolicRegionRuntime {
      * that scopes separately symbolized leaves.
      */
     private static boolean trackContainerOrObserveConcrete(
-            ActiveRegion active, EngineApi api, Object value,
+            ActiveRegion active, ConcolicVmBroker api, Object value,
             SymbolizeAction action) throws Exception {
         if (api.trackContainer(value, action.symbol)) return true;
         if (!"BOUNDED_CONTAINER_STATE".equals(action.symbolicDemand)) {
@@ -5943,21 +5942,8 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static EngineApi engine() {
-        EngineApi current = engineApi;
-        if (current != null) {
-            return current;
-        }
-        synchronized (CONFIG_LOCK) {
-            if (engineApi == null) {
-                engineApi = EngineApi.load();
-            }
-            return engineApi;
-        }
-    }
-
     private static void resumePathCondition(ActiveRegion active,
-                                            EngineApi api) {
+                                            ConcolicVmBroker api) {
         try {
             api.resumePathCondition();
         } catch (Throwable throwable) {
@@ -6078,7 +6064,7 @@ public final class ConcolicRegionRuntime {
      */
     static void diag(String event, String detail) {
         if (!diagnosticsEnabled()) return;
-        EngineApi api = engine();
+        ConcolicVmBroker api = engine();
         boolean paused = false;
         try {
             api.pausePathCondition();
@@ -6240,7 +6226,7 @@ public final class ConcolicRegionRuntime {
         return result;
     }
 
-    private static String safe(String value) {
+    static String safe(String value) {
         return value == null ? "" : value;
     }
 
@@ -10077,352 +10063,5 @@ public final class ConcolicRegionRuntime {
         return !arguments.present || arguments.matches(rootArguments);
     }
 
-
-    /**
-     * Reflective view of the concolic VM's static entry points.
-     *
-     * <p>Every name below is looked up by reflection so this class remains
-     * loadable on a stock JDK. A replay plan requires the complete current
-     * broker surface before its workload starts.</p>
-     */
-    private static final class EngineApi {
-        private Method openWorkloadSession;
-        private Method closeWorkloadSession;
-        private Method workloadSessionStatus;
-        private Method startRegion;
-        private Method currentContextId;
-        private Method currentRegionEnterEventId;
-        private Method symbolizeWithPrefix;
-        private Method symbolizeField;
-        private Method symbolizeExactField;
-        private Method trackContainer;
-        private Method getExpression;
-        private Method getFieldExpression;
-        private Method finishRegion;
-        private Method pausePathCondition;
-        private Method resumePathCondition;
-        private Method getBranchEvents;
-        private Method cleanupEnd;
-        private Method export;
-        private Method attach;
-        private Method range;
-        private Method selectField;
-        private Method armPrimitiveFieldRead;
-        private Method confirmPrimitiveFieldRead;
-        private Method selectElement;
-        private Method selectMap;
-        private Method fieldVersions;
-        private Method elementVersions;
-        private Method mapVersions;
-
-        private void requireCurrentCapabilities() {
-            List<String> missing = new ArrayList<>();
-            for (Field capability : EngineApi.class.getDeclaredFields()) {
-                if (capability.getType() != Method.class) continue;
-                try {
-                    if (capability.get(this) == null) {
-                        missing.add(capability.getName());
-                    }
-                } catch (IllegalAccessException impossible) {
-                    throw new AssertionError(impossible);
-                }
-            }
-            Collections.sort(missing);
-            if (!missing.isEmpty()) {
-                throw new IllegalStateException("Concolic task plan requires "
-                        + "current custom VM broker capabilities: " + missing);
-            }
-        }
-
-        /** Positive session id, or a negative VM status. */
-        private long openWorkloadSession() throws Exception {
-            Object status = openWorkloadSession.invoke(null);
-            return status instanceof Number
-                    ? ((Number) status).longValue() : Long.MIN_VALUE;
-        }
-
-        /** Zero, or a negative VM status. */
-        private long closeWorkloadSession() throws Exception {
-            Object status = closeWorkloadSession.invoke(null);
-            return status instanceof Number
-                    ? ((Number) status).longValue() : Long.MIN_VALUE;
-        }
-
-        /** One JSON snapshot of the session, or {@code ""} when absent. */
-        private String workloadSessionStatus() {
-            if (workloadSessionStatus == null) return "";
-            try {
-                return safe(String.valueOf(
-                        workloadSessionStatus.invoke(null)));
-            } catch (Throwable unavailable) {
-                return "";
-            }
-        }
-
-        private void start(String regionId, String taskId) throws Exception {
-            Object status = startRegion.invoke(null, regionId, taskId);
-            if (status instanceof Number
-                    && ((Number) status).longValue() != 0L) {
-                throw new IllegalStateException(
-                        "custom concolic engine rejected region start: "
-                                + ((Number) status).longValue());
-            }
-        }
-
-        private long currentContextId() throws Exception {
-            Object value = currentContextId.invoke(null);
-            return value instanceof Number
-                    ? ((Number) value).longValue() : 0L;
-        }
-
-        private long currentRegionEnterEventId() throws Exception {
-            Object value = currentRegionEnterEventId.invoke(null);
-            return value instanceof Number
-                    ? ((Number) value).longValue() : 0L;
-        }
-
-        private void symbolize(Object value, String prefix) throws Exception {
-            symbolizeWithPrefix.invoke(null, value, prefix);
-        }
-
-        private void symbolizeField(Object owner, String field, String prefix)
-                throws Exception {
-            symbolizeField.invoke(null, owner, field, prefix);
-        }
-
-        private void symbolizeExactField(
-                Object owner, String fieldSignature, String prefix)
-                throws Exception {
-            DeclaredField field = FieldPathSpec.declaredField(
-                    safe(fieldSignature));
-            if (field == null) {
-                throw new UnsupportedOperationException(
-                        "no exact declared field for symbolized leaf: "
-                                + safe(fieldSignature));
-            }
-            symbolizeExactField.invoke(null, owner, field.owner(),
-                    field.name(), javaTypeDescriptor(field.type()), prefix);
-        }
-
-        private boolean trackContainer(Object value, String prefix)
-                throws Exception {
-            return Boolean.TRUE.equals(trackContainer.invoke(
-                    null, value, prefix));
-        }
-
-        private String expression(Object value) throws Exception {
-            return String.valueOf(getExpression.invoke(null, value));
-        }
-
-        private String fieldExpression(
-                Object owner, String declaringClass, String fieldName,
-                String fieldDescriptor, Object value)
-                throws Exception {
-            return String.valueOf(getFieldExpression.invoke(null, owner,
-                    declaringClass, fieldName, fieldDescriptor, value));
-        }
-
-        private String finish() throws Exception {
-            return String.valueOf(finishRegion.invoke(null));
-        }
-
-        private void pausePathCondition() throws Exception {
-            pausePathCondition.invoke(null);
-        }
-
-        private void resumePathCondition() throws Exception {
-            resumePathCondition.invoke(null);
-        }
-
-        private String branchEvents() throws Exception {
-            return String.valueOf(getBranchEvents.invoke(null));
-        }
-
-        private void cleanupAfterFailure() {
-            if (cleanupEnd != null) {
-                try {
-                    cleanupEnd.invoke(null);
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-
-        /** Exports one field and reports its session-unique endpoint id. */
-        private long exportExpression(
-                Object owner, String declaringClass, String fieldName,
-                String descriptor, long[] eventOut) throws Exception {
-            Object handle = export.invoke(null, owner, declaringClass,
-                    fieldName, descriptor, eventOut);
-            return handle instanceof Number
-                    ? ((Number) handle).longValue() : 0L;
-        }
-
-        /**
-         * Attaches one live handle. The return value identifies the export;
-         * {@code eventOut} receives this attach's session-unique endpoint id.
-         */
-        private long attachExpression(
-                Object owner, String declaringClass, String fieldName,
-                String descriptor, long handle, long[] eventOut)
-                throws Exception {
-            Object answer = attach.invoke(null, owner, declaringClass,
-                    fieldName, descriptor, handle, eventOut);
-            return answer instanceof Number
-                    ? ((Number) answer).longValue()
-                    : RpcExpressionHandoff.MALFORMED_RESULT;
-        }
-
-        private String pathConditionRange(int startIndex, int endIndex)
-                throws Exception {
-            return String.valueOf(range.invoke(null, startIndex, endIndex));
-        }
-
-        private long selectSharedFieldCarrier(
-                Object owner, String declaringClass, String fieldName,
-                String descriptor) throws Exception {
-            Object version = selectField.invoke(null, owner, declaringClass,
-                    fieldName, descriptor);
-            if (!(version instanceof Number)) {
-                throw new IllegalStateException(
-                        "selectSharedFieldCarrier returned no numeric version");
-            }
-            return ((Number) version).longValue();
-        }
-
-        /** Arms the concrete operand of the immediately following getfield. */
-        private long armSharedPrimitiveFieldRead(
-                Object owner, String declaringClass, String fieldName,
-                String descriptor, long valueBits) throws Exception {
-            Object status = armPrimitiveFieldRead.invoke(null, owner,
-                    declaringClass, fieldName, descriptor, valueBits);
-            return status instanceof Number
-                    ? ((Number) status).longValue() : Long.MIN_VALUE;
-        }
-
-        /** Consumes the VM's receipt for one armed concrete field operand. */
-        private long confirmSharedPrimitiveFieldRead(long token)
-                throws Exception {
-            Object status = confirmPrimitiveFieldRead.invoke(null, token);
-            return status instanceof Number
-                    ? ((Number) status).longValue() : Long.MIN_VALUE;
-        }
-
-        private long selectSharedElementCarrier(Object array, int index)
-                throws Exception {
-            Object version = selectElement.invoke(null, array, index);
-            if (!(version instanceof Number)) {
-                throw new IllegalStateException(
-                        "selectSharedElementCarrier returned no numeric version");
-            }
-            return ((Number) version).longValue();
-        }
-
-        private long selectSharedMapCarrier(Object map) throws Exception {
-            Object version = selectMap.invoke(null, map);
-            if (!(version instanceof Number)) {
-                throw new IllegalStateException(
-                        "selectSharedMapCarrier returned no numeric version");
-            }
-            return ((Number) version).longValue();
-        }
-
-        private String sharedMapVersions(Object map) throws Exception {
-            return requiredVmJson(mapVersions.invoke(null, map),
-                    "getSharedMapVersions");
-        }
-
-        private String sharedFieldVersions(
-                Object owner, String declaringClass, String fieldName,
-                String descriptor) throws Exception {
-            return requiredVmJson(fieldVersions.invoke(null, owner,
-                    declaringClass, fieldName, descriptor),
-                    "getSharedFieldVersions");
-        }
-
-        private String sharedElementVersions(Object array, int index)
-                throws Exception {
-            return requiredVmJson(elementVersions.invoke(null, array, index),
-                    "getSharedElementVersions");
-        }
-
-        private static String requiredVmJson(Object value, String api) {
-            if (!(value instanceof String)
-                    || ((String) value).trim().isEmpty()) {
-                throw new IllegalStateException(api
-                        + " returned no serialized VM evidence");
-            }
-            return (String) value;
-        }
-
-        private static EngineApi load() {
-            Class<System> system = System.class;
-            EngineApi api = new EngineApi();
-            api.openWorkloadSession = method(system, "openWorkloadSession");
-            api.closeWorkloadSession = method(system, "closeWorkloadSession");
-            api.workloadSessionStatus =
-                    method(system, "getWorkloadSessionStatus");
-            api.startRegion = method(system, "startConcolicRegion",
-                    String.class, String.class);
-            api.currentContextId = method(system,
-                    "getCurrentConcolicContextId");
-            api.currentRegionEnterEventId = method(system,
-                    "getCurrentConcolicRegionEnterEventId");
-            api.symbolizeWithPrefix = method(system, "symbolize",
-                    Object.class, String.class);
-            api.symbolizeField = method(system, "symbolizeField",
-                    Object.class, String.class, String.class);
-            api.symbolizeExactField = method(system, "symbolizeExactField",
-                    Object.class, String.class, String.class, String.class,
-                    String.class);
-            api.trackContainer = method(system, "trackContainerExpression",
-                    Object.class, String.class);
-            api.getExpression = method(system, "getSymbolicExpression",
-                    Object.class);
-            api.getFieldExpression = method(system,
-                    "getSymbolicFieldExpression", Object.class, String.class,
-                    String.class, String.class, Object.class);
-            api.finishRegion = method(system, "finishConcolicRegion");
-            api.pausePathCondition =
-                    method(system, "pauseConcolicPathCondition");
-            api.resumePathCondition =
-                    method(system, "resumeConcolicPathCondition");
-            api.getBranchEvents = method(system, "getConcolicBranchEvents");
-            api.cleanupEnd = method(system, "endConcolic");
-            api.export = method(system, "exportExpression", Object.class,
-                    String.class, String.class, String.class, long[].class);
-            api.attach = method(system, "attachExpression", Object.class,
-                    String.class, String.class, String.class, long.class,
-                    long[].class);
-            api.range = method(system, "getConcolicPathConditionRange",
-                    int.class, int.class);
-            api.selectField = method(system, "selectSharedFieldCarrier",
-                    Object.class, String.class, String.class, String.class);
-            api.armPrimitiveFieldRead = method(system,
-                    "armSharedPrimitiveFieldRead", Object.class,
-                    String.class, String.class, String.class, long.class);
-            api.confirmPrimitiveFieldRead = method(system,
-                    "confirmSharedPrimitiveFieldRead", long.class);
-            api.selectElement = method(system, "selectSharedElementCarrier",
-                    Object.class, int.class);
-            api.selectMap = method(system, "selectSharedMapCarrier",
-                    Object.class);
-            api.fieldVersions = method(system, "getSharedFieldVersions",
-                    Object.class, String.class, String.class, String.class);
-            api.elementVersions = method(system, "getSharedElementVersions",
-                    Object.class, int.class);
-            api.mapVersions = method(system, "getSharedMapVersions",
-                    Object.class);
-            return api;
-        }
-
-        private static Method method(Class<?> owner, String name,
-                                     Class<?>... parameters) {
-            try {
-                return owner.getMethod(name, parameters);
-            } catch (NoSuchMethodException ignored) {
-                return null;
-            }
-        }
-    }
 
 }
