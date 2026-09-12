@@ -826,24 +826,60 @@ public class ClaimPolicyTest {
 
     /**
      * A second mechanism may carry the polarity that has no fault, but only
-     * when it is inside what the recording allows. Saturated at the window
-     * bound is the analysis answering itself.
+     * one the target cannot do without. hdfs-17899-bug3's witness named six
+     * clock rows strictly inside the window and the target reached its fault
+     * site with every clock back at its recorded value, so those six carried
+     * nothing. Interior is not evidence; necessary is.
      */
     @Test
-    public void otherPolarityNeedsAMechanismInsideTheWindow() {
-        JsonObject saturated = ClaimPolicy.decide(markerManifest(),
-                markerReach(true, "300000"), noFlows());
-        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
-                saturated.get("claim").getAsString());
-        assertEquals(0, markerRow(saturated)
-                .getAsJsonArray("otherPolarityMechanisms").size());
-
-        JsonObject inside = ClaimPolicy.decide(markerManifest(),
+    public void otherPolarityNeedsAMechanismTheTargetCannotDoWithout() {
+        JsonObject decoration = ClaimPolicy.decide(markerManifest(),
                 markerReach(true, "245021"), noFlows());
-        assertEquals(ClaimPolicy.SAT_CANDIDATE,
-                inside.get("claim").getAsString());
-        assertEquals(1, markerRow(inside)
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                decoration.get("claim").getAsString());
+        // The row is inside the window and still explains nothing.
+        assertEquals(1, markerRow(decoration)
                 .getAsJsonArray("otherPolarityMechanisms").size());
+        assertEquals(0, markerRow(decoration)
+                .getAsJsonArray("necessaryMechanisms").size());
+        assertTrue(blocker(decoration, ClaimPolicy.FAULT_MARKER_NOT_DETERMINING)
+                .get("detail").getAsString()
+                .contains("0 necessary mechanism(s) of 1 named"));
+
+        JsonObject reach = markerReach(true, "245021");
+        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY, parse(
+                "{\"schemaVersion\":1,"
+                + "\"kind\":\"WITNESS_MECHANISM_NECESSITY\","
+                + "\"authority\":\"RECORDED_ROOT_PIN_V1\","
+                + "\"mechanisms\":[{\"marker\":\"manual__fault\","
+                + "\"polarity\":false,\"mechanism\":\"CLOCK_SKEW\","
+                + "\"pinnedRoots\":4,\"status\":\"unsat\","
+                + "\"necessary\":true}]}"));
+
+        JsonObject carried = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                carried.get("claim").getAsString());
+        assertEquals(1, markerRow(carried)
+                .getAsJsonArray("necessaryMechanisms").size());
+    }
+
+    /** A necessity row for the other polarity answers a different question. */
+    @Test
+    public void necessityOfTheFaultPolarityDoesNotExcuseTheOther() {
+        JsonObject reach = markerReach(true, "245021");
+        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY, parse(
+                "{\"mechanisms\":[{\"marker\":\"manual__fault\","
+                + "\"polarity\":true,\"mechanism\":\"CLOCK_SKEW\","
+                + "\"status\":\"unsat\",\"necessary\":true}]}"));
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertEquals(0, markerRow(claim)
+                .getAsJsonArray("necessaryMechanisms").size());
     }
 
     /** The verdict must say which root the probe actually perturbed. */

@@ -659,6 +659,15 @@ public final class ClaimPolicy {
      * other polarity has to be explained by a named mechanism strictly inside
      * what the recording allows, or the marker is not determining and no
      * accepted claim may rest on it.</p>
+     *
+     * <p>"Explained" is measured, not inferred from the witness. A model
+     * assigns every free root, so a witness always names something; the
+     * extractor's {@code mechanismNecessity} probe puts each named
+     * mechanism's roots back to what they recorded and asks whether the
+     * polarity survives. A mechanism the polarity survives without is
+     * decoration, whatever its skew reads. The saturation census is kept
+     * beside it because a reader deciding how much to trust a mechanism still
+     * wants to see how much of it was pressed against the window.</p>
      */
     static JsonObject faultMarkerEvidence(JsonObject manifest,
                                           JsonObject reach) {
@@ -706,6 +715,8 @@ public final class ClaimPolicy {
             boolean flips = flipped != null && satisfied(flipped)
                     && atRecorded != null && !satisfied(atRecorded);
             JsonArray unsaturated = unsaturatedMechanisms(atRecorded, window);
+            JsonArray necessary = necessaryMechanisms(reach,
+                    optionalString(marker, "solverTerm"), recordedPolarity);
             row.addProperty("polarityDecides", flips);
             // A reader deciding whether to trust the mechanism needs to see
             // how much of it is pressed against the window: six interior rows
@@ -717,7 +728,8 @@ public final class ClaimPolicy {
                     unsaturated.size());
             row.addProperty("clockWindowMillis", window);
             row.add("otherPolarityMechanisms", unsaturated);
-            row.addProperty("determining", flips || unsaturated.size() > 0);
+            row.add("necessaryMechanisms", necessary);
+            row.addProperty("determining", flips || necessary.size() > 0);
             rows.add(row);
         }
         return evidence;
@@ -739,6 +751,34 @@ public final class ClaimPolicy {
             }
         }
         return null;
+    }
+
+    /**
+     * The named mechanisms the solver showed this polarity cannot do without.
+     *
+     * <p>Each row is one extra query the extractor already ran: the polarity
+     * asserted, the mechanism's roots pinned to their recorded values. An
+     * {@code unsat} there is the only evidence that the mechanism carried the
+     * polarity rather than merely accompanying it.</p>
+     */
+    private static JsonArray necessaryMechanisms(JsonObject reach,
+                                                 String markerTerm,
+                                                 boolean polarity) {
+        JsonArray necessary = new JsonArray();
+        JsonObject probe = object(reach,
+                BooleanReachConditionExtractor.MECHANISM_NECESSITY);
+        for (JsonElement element : array(probe, "mechanisms")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            if (optionalBool(row, "necessary", false)
+                    && optionalBool(row, "polarity", false) == polarity
+                    && optionalString(row, "marker").equals(markerTerm)) {
+                necessary.add(row);
+            }
+        }
+        return necessary;
     }
 
     /**
@@ -795,8 +835,14 @@ public final class ClaimPolicy {
                     + (optionalBool(marker, "flippedPolaritySatisfiable",
                             false) ? "sat" : "unsat")
                     + ", "
-                    + array(marker, "otherPolarityMechanisms").size()
-                    + " mechanism(s) inside the recorded window");
+                    + array(marker, "necessaryMechanisms").size()
+                    + " necessary mechanism(s) of "
+                    + optionalInteger(marker, "otherPolarityMechanismCount",
+                            0)
+                    + " named ("
+                    + optionalInteger(marker,
+                            "otherPolarityUnsaturatedCount", 0)
+                    + " inside the recorded window)");
         }
         if (undetermined.isEmpty()) {
             return null;

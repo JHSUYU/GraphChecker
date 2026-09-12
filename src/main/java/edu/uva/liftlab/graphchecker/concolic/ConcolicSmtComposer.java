@@ -255,7 +255,8 @@ public final class ConcolicSmtComposer {
         // Before finish(): an unbound handoff is a refusal, and a refusal has
         // to reach the emitted formula's fail-closed marker too.
         JsonArray wireFlowBindings = emitter.wireFlowBindings(
-                propagation.caseDependencies());
+                propagation.caseDependencies(),
+                declaredWireFlowPorts(runtimePlan.plans()));
         emitter.finish();
         String composedSmt = emitter.render();
 
@@ -959,6 +960,55 @@ public final class ConcolicSmtComposer {
         if (!occurrence.isEmpty()) {
             selected.add(OccurrenceId.parse(occurrence).planned());
         }
+    }
+
+    /**
+     * Whether a boundary family that reached no term is this composition's
+     * problem or somebody else's region.
+     *
+     * <p>A family a lowered expression referred to and that still reached no
+     * term is the original defect: the wire's value constrains nothing,
+     * silently. A family nothing referred to is normally telemetry, because
+     * the region it was observed in may lie outside this causal slice --
+     * unless the experiment declared that port, in which case the slice is
+     * exactly where it belongs and nothing referring to it is the same hole.
+     */
+    static boolean wireFlowRefusable(boolean referenced, boolean bound,
+                                     boolean declared) {
+        return !bound && (referenced || declared);
+    }
+
+    /**
+     * Every exchange port the experiment declared a value handoff for.
+     *
+     * <p>The planner writes one {@code communicationHandoffs} entry per
+     * declared {@code WIRE_FLOW} side, so the plan already carries what the
+     * mappings file said without this stage reading it again. The set matters
+     * because it is the line between two facts that look identical in the
+     * manifest: a boundary family nothing referred to because its region was
+     * outside this causal slice, which is telemetry, and one nothing referred
+     * to on a port the experiment declared, which is a hole in the very flow
+     * the experiment is about.</p>
+     */
+    static Set<String> declaredWireFlowPorts(List<JsonObject> plans) {
+        Set<String> ports = new LinkedHashSet<>();
+        for (JsonObject plan : plans == null
+                ? Collections.<JsonObject>emptyList() : plans) {
+            if (plan == null) {
+                continue;
+            }
+            for (JsonElement handoff : array(plan, "communicationHandoffs")) {
+                if (!handoff.isJsonObject()) {
+                    continue;
+                }
+                String port = optionalString(handoff.getAsJsonObject(),
+                        "portId");
+                if (!port.isEmpty()) {
+                    ports.add(port);
+                }
+            }
+        }
+        return ports;
     }
 
     private static void appendGaps(JsonArray target, String kind,
@@ -1743,7 +1793,8 @@ public final class ConcolicSmtComposer {
          * to: the wire's value then constrains nothing, silently, and the
          * consumer's own read is free.</p>
          */
-        private JsonArray wireFlowBindings(JsonArray dependencies) {
+        private JsonArray wireFlowBindings(JsonArray dependencies,
+                                           Set<String> declaredPorts) {
             Map<String, JsonObject> byFamily = new LinkedHashMap<>();
             for (JsonElement element : dependencies) {
                 if (!element.isJsonObject()) continue;
@@ -1787,6 +1838,10 @@ public final class ConcolicSmtComposer {
                 row.addProperty("valueBound", bound);
                 row.addProperty("solverTerm",
                         loweredBoundaryFamilies.getOrDefault(familyKey, ""));
+                String port = boundaryPortsByFamily.getOrDefault(
+                        familyKey, "");
+                boolean declared = declaredPorts.contains(port);
+                row.addProperty("declaredWireFlow", declared);
                 if (!referenced) {
                     row.addProperty("reason",
                             CONSUMER_BOUNDARY_FAMILY_UNREFERENCED);
@@ -1794,10 +1849,12 @@ public final class ConcolicSmtComposer {
                 rows.add(row);
                 // A family no lowered expression referred to is telemetry,
                 // not a refusal: the region it was observed in may simply be
-                // outside this causal slice.  A family that *is* referenced
-                // and still reached no term is the original defect -- the
-                // wire's value then constrains nothing, silently.
-                if (referenced && !bound) {
+                // outside this causal slice.  Unless the experiment declared
+                // that port -- a declared flow is inside the slice by
+                // construction, so nothing referring to it is the same hole
+                // as a referenced family that reached no term: either way the
+                // value the wire carried constrains nothing, silently.
+                if (wireFlowRefusable(referenced, bound, declared)) {
                     refuse(WIRE_FLOW_VALUE_UNBOUND + "["
                                     + firstNonBlank(boundaryPortsByFamily
                                     .get(familyKey), familyKey) + "]",

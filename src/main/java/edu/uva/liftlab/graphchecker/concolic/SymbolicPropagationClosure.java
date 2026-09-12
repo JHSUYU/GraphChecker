@@ -248,6 +248,13 @@ public final class SymbolicPropagationClosure {
         private final Map<DynamicKey, String> dynamicFamilies =
                 new LinkedHashMap<>();
         /** Boundary kind of every family the evidence named. */
+        /** Families a resolve-time or payload gap already named once. */
+        private final Set<String> namedEmptyFamilies = new LinkedHashSet<>();
+        /** Declared wire port and receiving occurrence, per attach family. */
+        private final Map<String, String> familyPorts =
+                new LinkedHashMap<>();
+        private final Map<String, String> familyReceivers =
+                new LinkedHashMap<>();
         private final Map<String, String> familyKinds =
                 new LinkedHashMap<>();
         /** One immutable payload observation per VM boundary event. */
@@ -574,6 +581,15 @@ public final class SymbolicPropagationClosure {
             // a family that never gets one is exactly the case whose gap has
             // to say which kind of boundary was left open.
             familyKinds.putIfAbsent(familyKey, VmExpressionIr.RPC_ATTACH);
+            String declaredPort = optionalString(event, "portId");
+            if (!declaredPort.isEmpty()) {
+                familyPorts.putIfAbsent(familyKey, declaredPort);
+            }
+            String declaredReceiver = optionalString(event,
+                    "consumerOccurrenceId");
+            if (!declaredReceiver.isEmpty()) {
+                familyReceivers.putIfAbsent(familyKey, declaredReceiver);
+            }
             DynamicKey dynamic = new DynamicKey(scope, eventId);
             indexBoundaryOwner(dynamic, receiverCase, familyKey);
             CaseInfo producer = uniqueProducerCase(scope, optionalString(event,
@@ -1143,6 +1159,7 @@ public final class SymbolicPropagationClosure {
             for (Map.Entry<DynamicKey, String> observation
                     : truncatedDynamicArms.entrySet()) {
                 if (dynamicArms.containsKey(observation.getKey())) continue;
+                namedEmptyFamilies.add(observation.getValue());
                 gap(VmExpressionIr.RPC_ATTACH.equals(
                                 familyKinds.get(observation.getValue()))
                                 ? RPC_ATTACH_SENDER_EXPRESSION_MISSING
@@ -1215,9 +1232,50 @@ public final class SymbolicPropagationClosure {
                     emittedWriterCases.add(family);
                 }
             }
+            reportUnreferencedAttachFamilies();
             return new Result(gaps.isEmpty(), rewrittenFatal, summaries,
                     orderedValues(dependencies),
                     orderedValues(gaps));
+        }
+
+        /**
+         * Declared wire handoffs that ended the closure with nothing in them.
+         *
+         * <p>{@link #resolveFamily} names an attach family whose arms are
+         * empty, and {@link #validateDynamicArms} names one whose payload was
+         * truncated. A family with no arm that no consumer leaf ever
+         * referenced falls between the two and used to leave no trace at all
+         * -- which is the shape of a declared flow whose producer side the
+         * closure never walked. Every attach family is a declared wire
+         * handoff by construction: the kind is set only where a
+         * {@code communicationHandoffs} port produced the boundary evidence.
+         * So the sweep needs no port list to know these are the experiment's
+         * own flows.</p>
+         */
+        private void reportUnreferencedAttachFamilies() {
+            List<String> keys = new ArrayList<>(familyKinds.keySet());
+            Collections.sort(keys);
+            for (String key : keys) {
+                if (!VmExpressionIr.RPC_ATTACH.equals(familyKinds.get(key))
+                        || resolved.containsKey(key)
+                        || namedEmptyFamilies.contains(key)) {
+                    continue;
+                }
+                Family family = families.get(key);
+                if (family != null && !family.arms.isEmpty()) {
+                    continue;
+                }
+                String port = familyPorts.get(key);
+                gap(RPC_ATTACH_SENDER_EXPRESSION_MISSING,
+                        port == null || port.isEmpty() ? key : port,
+                        "declared value handoff reached no arm and no"
+                                + " consumer reference, so the value the wire"
+                                + " carried never entered the formula"
+                                + " (receiver "
+                                + JsonFields.firstNonBlank(
+                                        familyReceivers.get(key), "unknown")
+                                + ")");
+            }
         }
 
         private JsonObject rewriteObject(JsonObject input, String scope) {
@@ -1657,6 +1715,7 @@ public final class SymbolicPropagationClosure {
                 // equal to nothing.  For a wire that is the sender's
                 // expression having failed to reach the join, which is a
                 // different fact from a field read with no writer case.
+                namedEmptyFamilies.add(key);
                 gap(VmExpressionIr.RPC_ATTACH.equals(familyKinds.get(key))
                                 ? RPC_ATTACH_SENDER_EXPRESSION_MISSING
                                 : "CONSUMER_BOUNDARY_FAMILY_UNOBSERVED",
