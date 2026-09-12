@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.RelationSummary;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.TreeMap;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -80,6 +81,13 @@ public final class SymbolicPropagationClosure {
      * a replay, so path queries must never join a guarded expression to a cut
      * by the bare numeric id.
      */
+    /**
+     * Cases one shared read may be consumed by before the closure stops
+     * naming it.  A read every case in a wave consumes is a sign the
+     * boundary address is wrong, not a value worth a family.
+     */
+    private static final int MAX_BOUNDARY_CONSUMERS = 32;
+
     public static final String READ_CHOICE_IDENTITY = "readChoiceIdentity";
     public static final String READ_CHOICE_OWNER = "readChoiceOwner";
     public static final String READ_CHOICE_OCCURRENCE_ID =
@@ -202,6 +210,9 @@ public final class SymbolicPropagationClosure {
         private final Map<String, List<CaseInfo>> caseObservationsByOwner =
                 new LinkedHashMap<>();
         private final Map<String, List<CaseInfo>> casesByExecution =
+                new LinkedHashMap<>();
+        /** Consuming cases of one shared read, for provenance only. */
+        private final Map<String, List<String>> boundaryConsumers =
                 new LinkedHashMap<>();
         private final Map<DynamicKey, String> dynamicFamilies =
                 new LinkedHashMap<>();
@@ -849,10 +860,39 @@ public final class SymbolicPropagationClosure {
          * than one case's own read.  Its reader is then not named by anything
          * here, so it stays unclaimed and the boundary is still refused.</p>
          */
+        /** Stable, run-independent name of one consuming case. */
+        private static String consumerKey(CaseInfo consumer) {
+            return OccurrenceId.parse(consumer.occurrence).planned()
+                    + "\u0000" + consumer.owner;
+        }
+
+        /**
+         * Records which cases consume one read, so the composition manifest
+         * and the result chain can say where a shared value travelled rather
+         * than only which case happened to name it.
+         */
+        private void noteBoundaryConsumers(String family,
+                                           Collection<CaseInfo> consumers) {
+            if (family.isEmpty() || consumers.size() < 2) return;
+            List<String> rendered = new ArrayList<>();
+            for (CaseInfo consumer : consumers) {
+                rendered.add(OccurrenceId.parse(consumer.occurrence).planned()
+                        + " case " + consumer.owner);
+            }
+            boundaryConsumers.put(family, rendered);
+        }
+
         private void claimUnsnapshottedFieldReads(List<JsonObject> rows) {
             Map<DynamicKey, JsonObject> boundaries = new LinkedHashMap<>();
             Map<DynamicKey, CaseInfo> readers = new LinkedHashMap<>();
-            Set<DynamicKey> propagated = new LinkedHashSet<>();
+            // Every case whose expressions contain the boundary.  More than
+            // one is not ambiguity: one physical read of a shared location is
+            // exactly the value several cases go on to consume, and that
+            // sharing is the cross-region flow this tool exists to expose.
+            // The read's own writers are its candidates, each already tagged
+            // with its writer case, so nothing here has to order writes.
+            Map<DynamicKey, Map<String, CaseInfo>> consumers =
+                    new LinkedHashMap<>();
             for (JsonObject row : rows) {
                 CaseInfo reader = caseForRow(row);
                 if (reader == null) continue;
@@ -863,11 +903,10 @@ public final class SymbolicPropagationClosure {
                         : found.entrySet()) {
                     boundaries.putIfAbsent(boundary.getKey(),
                             boundary.getValue());
-                    CaseInfo held = readers.putIfAbsent(boundary.getKey(),
-                            reader);
-                    if (held != null && !held.owner.equals(reader.owner)) {
-                        propagated.add(boundary.getKey());
-                    }
+                    readers.putIfAbsent(boundary.getKey(), reader);
+                    consumers.computeIfAbsent(boundary.getKey(),
+                            ignored -> new TreeMap<String, CaseInfo>())
+                            .put(consumerKey(reader), reader);
                 }
             }
             List<DynamicKey> keys = new ArrayList<>(boundaries.keySet());
@@ -875,11 +914,20 @@ public final class SymbolicPropagationClosure {
                     .thenComparingLong(key -> key.event));
             Map<String, Integer> ordinals = new LinkedHashMap<>();
             for (DynamicKey key : keys) {
-                if (propagated.contains(key)
-                        || dynamicFamilies.containsKey(key)) {
+                if (dynamicFamilies.containsKey(key)) continue;
+                Map<String, CaseInfo> carrying = consumers.get(key);
+                if (carrying == null || carrying.isEmpty()) continue;
+                if (carrying.size() > MAX_BOUNDARY_CONSUMERS) {
+                    gap("CONSUMER_BOUNDARY_ARM_BOUND", key.toString(),
+                            "one read is consumed by " + carrying.size()
+                                    + " cases, past the bound of "
+                                    + MAX_BOUNDARY_CONSUMERS);
                     continue;
                 }
-                CaseInfo reader = readers.get(key);
+                // The read belongs to the read, not to whichever case we
+                // happened to see it in first.  Its consumers are sorted, so
+                // the representative below is the same in every run.
+                CaseInfo reader = carrying.values().iterator().next();
                 JsonObject boundary = boundaries.get(key);
                 JsonElement payload = boundary.get(VmExpressionIr.EXPRESSION);
                 if (reader == null || payload == null
@@ -899,13 +947,27 @@ public final class SymbolicPropagationClosure {
                 // scope is therefore part of the slot this claim addresses;
                 // without it two sessions' reads would join one family.
                 String slot = "session:" + key.scope + "\u0000" + location;
-                int ordinal = ordinals.merge(reader.owner + "\n" + slot,
-                        1, Integer::sum);
+                int ordinal;
+                if (carrying.size() > 1) {
+                    // Several cases consume this one read, so its address
+                    // cannot be counted per consumer: the physical read event
+                    // is already unique inside its session scope, and naming
+                    // it directly is what makes every consumer resolve to the
+                    // same family.  The marker also keeps such a key from ever
+                    // colliding with a single-consumer read's ordinal.
+                    slot = "session:" + key.scope + "\u0000read:" + key.event
+                            + "\u0000" + location;
+                    ordinal = 1;
+                } else {
+                    ordinal = ordinals.merge(reader.owner + "\n" + slot,
+                            1, Integer::sum);
+                }
                 String family = boundaryFamilyKey(reader.epoch,
                         OccurrenceId.parse(reader.occurrence).planned(),
                         VmExpressionIr.FIELD_READ, slot, ordinal);
                 if (!addDynamic(key.scope, key.event, family)) continue;
                 indexBoundaryOwner(key, reader, family);
+                noteBoundaryConsumers(family, carrying.values());
                 addArm(family, VmExpressionIr.FIELD_READ, reader.epoch,
                         key.scope, reader, reader.owner, read,
                         optionalString(boundary, "_java_type"), key.event);

@@ -485,8 +485,11 @@ public class SymbolicPropagationClosureTest {
         assertTrue(unaddressed.gaps().toString(), containsReason(
                 unaddressed.gaps(), "CONSUMER_BOUNDARY_FAMILY_MISSING"));
 
-        // The same read without a reader occurrence: one carrier case joins
-        // it, two leave it unaddressed and the boundary is refused.
+        // The same read without a reader occurrence: one consuming case
+        // joins it, and so do several - one physical read of a shared
+        // location is exactly the value more than one case goes on to
+        // consume, and that sharing is a link to expose rather than an
+        // ambiguity to refuse.
         JsonObject soleWriter = summary("W", "W#a1", "TASK.W2", scope,
                 symbol("M_WRITER"));
         JsonObject soleRead = guardedRead(711L,
@@ -511,9 +514,17 @@ public class SymbolicPropagationClosureTest {
         SymbolicPropagationClosure.Result shared = rewrite(Arrays.asList(
                 soleWriter, soleReader, secondCarrier));
 
-        assertFalse(shared.gaps().toString(), shared.complete());
-        assertTrue(shared.gaps().toString(), containsReason(shared.gaps(),
+        // One read, one family.  A consumer-keyed address would have minted
+        // one family per consuming case, and each consumer would then have
+        // resolved the same physical read through a family of its own -
+        // which is what left this boundary unjoined before.
+        assertTrue(shared.gaps().toString(), shared.complete());
+        assertFalse(shared.gaps().toString(), containsReason(shared.gaps(),
                 "CONSUMER_BOUNDARY_FAMILY_MISSING"));
+        assertFalse(shared.gaps().toString(), containsReason(shared.gaps(),
+                "CONSUMER_BOUNDARY_EVENT_AMBIGUOUS"));
+        assertFalse(shared.gaps().toString(), containsReason(shared.gaps(),
+                "CONSUMER_BOUNDARY_OWNER_CASE_AMBIGUOUS"));
     }
 
     /**
