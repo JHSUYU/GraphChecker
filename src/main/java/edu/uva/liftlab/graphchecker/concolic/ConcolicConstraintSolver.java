@@ -992,8 +992,8 @@ public final class ConcolicConstraintSolver {
                 String candidateIdentity = optionalString(candidate,
                         SymbolicPropagationClosure.READ_CANDIDATE_IDENTITY);
                 String selector = optionalString(candidate, "selector");
-                String expectedSelector = stableReadSelector(readIdentity,
-                        candidateIdentity);
+                String expectedSelector = GuardedReadNaming.selector(
+                        readIdentity, candidateIdentity);
                 if (candidateIdentity.isEmpty()
                         || !selector.equals(expectedSelector)) {
                     unsupported.add(origin
@@ -1055,7 +1055,9 @@ public final class ConcolicConstraintSolver {
                             + arm.stringNullnessText + " " + nullness + ")";
                 }
             }
-            recordGuardedReadUse(readIdentity, activation, selectors);
+            recordGuardedReadUse(readIdentity,
+                    GuardedReadNaming.projectionIdentity(read), activation,
+                    selectors);
             return new Term(value, sort,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(
                             optionalString(read, "_java_type")), nullness, "");
@@ -1166,25 +1168,20 @@ public final class ConcolicConstraintSolver {
         }
 
         private void recordGuardedReadUse(String readIdentity,
+                                          String projectionIdentity,
                                           String activation,
                                           Collection<String> selectors) {
             List<String> ordered = new ArrayList<>(selectors);
             Collections.sort(ordered);
-            String identity = "RF_USE." + sha256(readIdentity + "\n"
-                    + activation + "\n" + String.join("\n", ordered));
+            String identity = GuardedReadNaming.useIdentity(
+                    projectionIdentity, activation);
             GuardedReadUse use = new GuardedReadUse(activation, ordered);
-            guardedReadUses.computeIfAbsent(readIdentity,
-                    ignored -> new LinkedHashMap<>()).putIfAbsent(identity,
-                    use);
-        }
-
-        private static String stableReadSelector(String readIdentity,
-                                                 String candidateIdentity) {
-            if (readIdentity.isEmpty() || candidateIdentity.isEmpty()) {
-                return "";
+            GuardedReadUse held = guardedReadUses.computeIfAbsent(
+                    readIdentity, ignored -> new LinkedHashMap<>())
+                    .putIfAbsent(identity, use);
+            if (held != null && !held.same(use)) {
+                unsupported.add("GUARDED_READ_USE_AMBIGUOUS:" + identity);
             }
-            return "read_selector__" + CanonicalJson.sha256(
-                    readIdentity + "\n" + candidateIdentity);
         }
 
         private void noteReadFromWriterCase(JsonObject candidate,
@@ -2904,6 +2901,11 @@ public final class ConcolicConstraintSolver {
             this.activation = activation;
             this.selectors = new ArrayList<>(selectors);
             Collections.sort(this.selectors);
+        }
+
+        private boolean same(GuardedReadUse other) {
+            return other != null && activation.equals(other.activation)
+                    && selectors.equals(other.selectors);
         }
     }
 

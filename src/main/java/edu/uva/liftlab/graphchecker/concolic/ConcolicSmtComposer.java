@@ -2250,7 +2250,7 @@ public final class ConcolicSmtComposer {
             }
             String projectionIdentity = projectionTermIdentity(
                     "READ", readIdentity, sort.name(),
-                    guardedReadProjectionIdentity(node));
+                    GuardedReadNaming.projectionIdentity(node));
 
             Term result = guardedReadTerms.get(projectionIdentity);
             if (result == null) {
@@ -2296,8 +2296,8 @@ public final class ConcolicSmtComposer {
                                           String projectionIdentity,
                                           String activation,
                                           Set<String> selectors) {
-            String identity = "RF_USE." + CanonicalJson.sha256(
-                    projectionIdentity + "\n" + activation);
+            String identity = GuardedReadNaming.useIdentity(
+                    projectionIdentity, activation);
             GuardedReadUse use = new GuardedReadUse(identity, activation,
                     selectors);
             GuardedReadUse held = guardedReadUses.computeIfAbsent(readIdentity,
@@ -2319,8 +2319,8 @@ public final class ConcolicSmtComposer {
                     SymbolicPropagationClosure.WRITER_CASE_OWNER);
             String writerCaseSelector = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
-            String expectedSelector = stableReadSelector(readIdentity,
-                    candidateIdentity);
+            String expectedSelector = GuardedReadNaming.selector(
+                    readIdentity, candidateIdentity);
             if (candidateIdentity.isEmpty() || owner.isEmpty()
                     || !writerCaseSelector.equals(
                     LocalCaseIdentity.selector(owner))
@@ -2385,37 +2385,6 @@ public final class ConcolicSmtComposer {
                 return Collections.emptyList();
             }
             return new ArrayList<>(selectors);
-        }
-
-        private static String stableReadSelector(String readIdentity,
-                                                 String candidateIdentity) {
-            if (readIdentity.isEmpty() || candidateIdentity.isEmpty()) {
-                return "";
-            }
-            return "read_selector__" + CanonicalJson.sha256(
-                    readIdentity + "\n" + candidateIdentity);
-        }
-
-        /**
-         * One read site may execute repeatedly inside a bounded loop.  Its
-         * stable read identity names the site/case; the already
-         * content-addressed candidate identities distinguish the value seen
-         * at each execution without hashing the expanded expression DAG.
-         */
-        private static String guardedReadProjectionIdentity(JsonObject read) {
-            List<String> candidates = new ArrayList<>();
-            int index = 0;
-            for (JsonElement encoded : array(read, "candidates")) {
-                String identity = encoded.isJsonObject()
-                        ? optionalString(encoded.getAsJsonObject(),
-                        SymbolicPropagationClosure.READ_CANDIDATE_IDENTITY)
-                        : "";
-                candidates.add(firstNonBlank(identity,
-                        "MISSING_CANDIDATE_" + index++));
-            }
-            Collections.sort(candidates);
-            return "READ_CANDIDATES.v1." + CanonicalJson.sha256(
-                    String.join("\n", candidates));
         }
 
         private <T> T inReadArmOwner(JsonObject candidate,

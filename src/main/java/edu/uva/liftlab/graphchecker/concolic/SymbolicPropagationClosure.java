@@ -1019,8 +1019,8 @@ public final class SymbolicPropagationClosure {
                 int ordinal = duplicates.merge(base, 1, Integer::sum);
                 String candidateIdentity = "RFC_ARM."
                         + CanonicalJson.sha256(base + "\n" + ordinal);
-                String selector = "read_selector__" + CanonicalJson.sha256(
-                        readIdentity + "\n" + candidateIdentity);
+                String selector = GuardedReadNaming.selector(readIdentity,
+                        candidateIdentity);
                 candidate.addProperty(READ_CANDIDATE_IDENTITY,
                         candidateIdentity);
                 candidate.addProperty("selector", selector);
