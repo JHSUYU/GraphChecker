@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import org.junit.Test;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
@@ -35,6 +36,47 @@ public class ConcolicHookAbiTest {
     private static final String RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
     private static final Map<String, Class<?>> SOOT_TYPES = sootTypes();
+    private static final Map<String, Class<?>> PINNED_TYPES = pinnedTypes();
+
+    /**
+     * Driver entry points: runtime methods no hook weaves, called by a
+     * launcher, by a workload checkout or by the trace recorder.  Nothing in
+     * this repository's own call graph fails when one is renamed, moved to
+     * another class or narrowed, so each row pins visibility, return type,
+     * name and parameter types.
+     */
+    private static final String[][] DRIVER_ENTRY_POINTS = {
+            {"public", "String", "openWorkloadSession"},
+            {"public", "String", "closeWorkloadSession"},
+            {"public", "void", "awaitSelectedResultPublications"},
+            {"public", "boolean", "symbolizeConfiguredSourceField",
+                    "String", "Object", "String"},
+            {"package", "void", "observeCausalSource", "String"},
+            {"public", "boolean", "materializeSymbolicBoolean", "String"},
+    };
+
+    /** Binary name of every handoff carrier leaf and the type it carries. */
+    private static final String[][] CARRIER_LEAVES = {
+            {"z", "boolean"}, {"b", "byte"}, {"s", "short"},
+            {"c", "char"}, {"i", "int"}, {"j", "long"},
+            {"f", "float"}, {"d", "double"}, {"o", "Object"},
+    };
+
+    private static Map<String, Class<?>> pinnedTypes() {
+        Map<String, Class<?>> types = new HashMap<>();
+        types.put("void", void.class);
+        types.put("boolean", boolean.class);
+        types.put("byte", byte.class);
+        types.put("short", short.class);
+        types.put("char", char.class);
+        types.put("int", int.class);
+        types.put("long", long.class);
+        types.put("float", float.class);
+        types.put("double", double.class);
+        types.put("String", String.class);
+        types.put("Object", Object.class);
+        return types;
+    }
 
     private static Map<String, Class<?>> sootTypes() {
         Map<String, Class<?>> types = new HashMap<>();
@@ -90,16 +132,49 @@ public class ConcolicHookAbiTest {
     }
 
     @Test
+    public void everyDriverEntryPointKeepsItsPinnedSignature()
+            throws Exception {
+        Class<?> runtime = Class.forName(RUNTIME_CLASS);
+        for (String[] pinned : DRIVER_ENTRY_POINTS) {
+            String name = pinned[2];
+            Class<?>[] parameters = new Class<?>[pinned.length - 3];
+            for (int i = 0; i < parameters.length; i++) {
+                parameters[i] = pinnedType(pinned[i + 3]);
+            }
+            Method entry;
+            try {
+                entry = runtime.getDeclaredMethod(name, parameters);
+            } catch (NoSuchMethodException missing) {
+                fail("driver entry point " + name + " is no longer declared "
+                        + "on " + RUNTIME_CLASS + ": " + missing);
+                return;
+            }
+            assertTrue(name + " must stay static",
+                    Modifier.isStatic(entry.getModifiers()));
+            assertEquals(name + " return type", pinnedType(pinned[1]),
+                    entry.getReturnType());
+            assertEquals(name + " visibility", "public".equals(pinned[0]),
+                    Modifier.isPublic(entry.getModifiers()));
+        }
+    }
+
+    @Test
     public void theHandoffCarrierKeepsItsBinaryNameAndLeaves()
             throws Exception {
         Class<?> carrier = Class.forName(RUNTIME_CLASS + "$HandoffLeafCarrier");
         assertTrue("carrier must stay public",
                 Modifier.isPublic(carrier.getModifiers()));
-        for (String leaf : new String[]{"z", "b", "s", "c", "i", "j", "f",
-                "d", "o"}) {
-            assertTrue("carrier leaf " + leaf + " must stay public",
-                    Modifier.isPublic(carrier.getField(leaf).getModifiers()));
+        for (String[] leaf : CARRIER_LEAVES) {
+            Field field = carrier.getField(leaf[0]);
+            assertTrue("carrier leaf " + leaf[0] + " must stay public",
+                    Modifier.isPublic(field.getModifiers()));
+            // The woven store picks a leaf by the value's type, so a leaf
+            // that changed type would silently take the wrong values.
+            assertEquals("carrier leaf " + leaf[0] + " type",
+                    pinnedType(leaf[1]), field.getType());
         }
+        assertEquals("the carrier declares one leaf per JVM value type",
+                CARRIER_LEAVES.length, carrier.getFields().length);
     }
 
     /**
@@ -182,6 +257,14 @@ public class ConcolicHookAbiTest {
         assertTrue("hook name must be a literal: " + literal,
                 literal.startsWith("\"") && literal.endsWith("\""));
         return literal.substring(1, literal.length() - 1);
+    }
+
+    private static Class<?> pinnedType(String name) {
+        Class<?> type = PINNED_TYPES.get(name);
+        if (type == null) {
+            throw new IllegalStateException("unmapped pinned type: " + name);
+        }
+        return type;
     }
 
     private static Class<?> javaType(String sootType) {

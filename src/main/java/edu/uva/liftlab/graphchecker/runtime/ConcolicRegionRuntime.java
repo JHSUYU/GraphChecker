@@ -72,7 +72,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.awaitSelectedResultPublications;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginSelectedResultPublication;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.addResultIdentity;
@@ -592,6 +591,20 @@ public final class ConcolicRegionRuntime {
         workloadSessionId = 0L;
         workloadExpressionStore = new VmExpressionTable.Store();
         return "";
+    }
+
+    /**
+     * Waits until every selected activation has durably closed its result
+     * record or reported a write failure.
+     *
+     * <p>Called from outside this class: a launcher that owns no workload
+     * session drives the durability barrier directly, the way the workload
+     * checkouts call {@link #symbolizeConfiguredSourceField}.  The work
+     * itself belongs to {@code ConcolicResultPublisher}; this is the driver
+     * entry point that names it.</p>
+     */
+    public static void awaitSelectedResultPublications() {
+        ConcolicResultPublisher.awaitSelectedResultPublications();
     }
 
     private static String workloadSessionStatusName(long status) {
