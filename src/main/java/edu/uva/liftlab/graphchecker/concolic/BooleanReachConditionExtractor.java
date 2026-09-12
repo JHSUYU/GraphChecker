@@ -66,7 +66,8 @@ public final class BooleanReachConditionExtractor {
                 arguments.workers);
         JsonObject report = extract(smt, manifest, solver,
                 arguments.maxInputs, arguments.maxValuations,
-                ClaimPolicy.declaredWireFlows(arguments.mappings));
+                ClaimPolicy.WireFlowEvidence.read(arguments.mappings,
+                        arguments.runtimePlan.toString()));
         report.add("solverAttempts", solver.attempts());
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
@@ -81,7 +82,7 @@ public final class BooleanReachConditionExtractor {
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         return extract(composedSmt, manifest, solver, maxInputs,
-                maxValuations, 0);
+                maxValuations, ClaimPolicy.WireFlowEvidence.none());
     }
 
     /**
@@ -93,12 +94,12 @@ public final class BooleanReachConditionExtractor {
     static JsonObject extract(String composedSmt, JsonObject manifest,
                               Z3Solver solver,
                               int maxInputs, int maxValuations,
-                              int declaredWireFlows)
+                              ClaimPolicy.WireFlowEvidence flows)
             throws IOException, InterruptedException {
         JsonObject report = reachReport(composedSmt, manifest, solver,
                 maxInputs, maxValuations);
         report.add(ClaimPolicy.CLAIM,
-                ClaimPolicy.decide(manifest, report, declaredWireFlows));
+                ClaimPolicy.decide(manifest, report, flows));
         return report;
     }
 

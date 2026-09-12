@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 import com.google.gson.Gson;
@@ -16,11 +17,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * The one decision that states what a campaign proved.
@@ -47,6 +51,12 @@ public final class ClaimPolicy {
     static final String KIND = "CAMPAIGN_CLAIM";
     /** The {@code kind} the communication mappings declare each flow with. */
     private static final String WIRE_FLOW_KIND = "WIRE_FLOW";
+    /** The {@code kind} the Composer names a consumer boundary family with. */
+    private static final String CONSUMER_BOUNDARY_KIND =
+            "CONSUMER_BOUNDARY_CASE_DEPENDENCY";
+    /** Every region identity the manifest and the runtime plan share. */
+    private static final Pattern REGION_ID =
+            Pattern.compile("REGION\\.[0-9a-fA-F-]{36}");
 
     /** A bounded witness the target predicate ties to a symbolic root. */
     public static final String SAT_CANDIDATE = "SAT_CANDIDATE";
@@ -104,7 +114,7 @@ public final class ClaimPolicy {
             }
             String key = option.substring(2);
             if (!"manifest".equals(key) && !"reach".equals(key)
-                    && !"mappings".equals(key)) {
+                    && !"mappings".equals(key) && !"plan".equals(key)) {
                 throw new IllegalArgumentException(
                         "Unknown claim option: --" + key);
             }
@@ -113,8 +123,15 @@ public final class ClaimPolicy {
         JsonObject manifest = ArtifactIO.readObject(
                 required(values, "manifest"));
         JsonObject reach = ArtifactIO.readObject(required(values, "reach"));
+        // The plan the composition pinned is the plan that bound its exchange
+        // ports, so a replay needs no argument to find it.
+        String plan = values.get("plan");
+        if (plan == null || plan.trim().isEmpty()) {
+            plan = optionalString(object(manifest, "runtimePlanArtifact"),
+                    "path");
+        }
         JsonObject claim = decide(manifest, reach,
-                declaredWireFlows(values.get("mappings")));
+                WireFlowEvidence.read(values.get("mappings"), plan));
         System.out.println(GSON.toJson(claim));
         if (!accepted(optionalString(claim, "claim"))) {
             System.exit(2);
@@ -134,25 +151,278 @@ public final class ClaimPolicy {
     }
 
     /**
-     * The number of {@code WIRE_FLOW} rows the experiment declares. A blank
-     * or absent path is an experiment that declares none, which is a
-     * single-node experiment rather than an unrealized flow.
+     * What the experiment declares and where the plan bound each declared
+     * flow, so a composition can be asked which flows it realized rather
+     * than only how many exist.
+     *
+     * <p>A consumer boundary family is one of two mechanisms by which a
+     * declared flow becomes real: the other is an exchange handoff, where the
+     * plan binds a flow's {@code XCH.<site>.<req|resp>.<flow>} ports to one
+     * producer region and one consumer region and the composition then draws
+     * cases from both. Counting only boundary families called the realized
+     * SASL flow of hdfs-17899-bug3 unrealized.</p>
      */
-    public static int declaredWireFlows(String mappings) throws IOException {
-        if (mappings == null || mappings.trim().isEmpty()) {
-            return 0;
+    public static final class WireFlowEvidence {
+        private final List<String> declared;
+        private final Map<String, Set<String>> consumerRegions;
+        private final Map<String, Set<String>> producerRegions;
+
+        private WireFlowEvidence(List<String> declared,
+                                 Map<String, Set<String>> consumerRegions,
+                                 Map<String, Set<String>> producerRegions) {
+            this.declared = Collections.unmodifiableList(declared);
+            this.consumerRegions = consumerRegions;
+            this.producerRegions = producerRegions;
         }
-        Path path = Paths.get(mappings.trim());
-        if (!Files.isRegularFile(path)) {
-            return 0;
+
+        /** An experiment that declares no cross-node flow. */
+        public static WireFlowEvidence none() {
+            return new WireFlowEvidence(new ArrayList<String>(),
+                    new LinkedHashMap<String, Set<String>>(),
+                    new LinkedHashMap<String, Set<String>>());
         }
-        int declared = 0;
-        for (JsonObject row : ArtifactIO.readJsonl(path)) {
-            if (WIRE_FLOW_KIND.equals(optionalString(row, "kind"))) {
-                declared++;
+
+        /** Declared flows whose ports no plan bound, named in order. */
+        public static WireFlowEvidence declaredOnly(List<String> flows) {
+            return new WireFlowEvidence(new ArrayList<>(flows),
+                    new LinkedHashMap<String, Set<String>>(),
+                    new LinkedHashMap<String, Set<String>>());
+        }
+
+        /**
+         * Reads the declared flows from the communication mappings and their
+         * planned exchange ports from the runtime plan. A blank or absent
+         * mapping path is an experiment that declares none, which is a
+         * single-node experiment rather than an unrealized flow; a blank or
+         * absent plan leaves the declared flows without port evidence.
+         */
+        public static WireFlowEvidence read(String mappings, String plan)
+                throws IOException {
+            List<String> declared = new ArrayList<>();
+            for (JsonObject row : rows(mappings)) {
+                String id = optionalString(row, "id");
+                if (WIRE_FLOW_KIND.equals(optionalString(row, "kind"))
+                        && !id.isEmpty() && !declared.contains(id)) {
+                    declared.add(id);
+                }
+            }
+            Map<String, Set<String>> consumers = new LinkedHashMap<>();
+            Map<String, Set<String>> producers = new LinkedHashMap<>();
+            for (JsonObject row : rows(plan)) {
+                collectHandoffs(row, "", consumers, producers);
+            }
+            return new WireFlowEvidence(declared, consumers, producers);
+        }
+
+        private static List<JsonObject> rows(String path) throws IOException {
+            if (path == null || path.trim().isEmpty()
+                    || !Files.isRegularFile(Paths.get(path.trim()))) {
+                return new ArrayList<>();
+            }
+            return ArtifactIO.readJsonl(Paths.get(path.trim()));
+        }
+
+        /**
+         * Walks a plan row for {@code communicationHandoffs} and records, per
+         * declared flow, the regions the plan bound its consumer ({@code IN})
+         * and producer ({@code OUT}) ports to. The flow name is the last
+         * segment of the port id.
+         */
+        private static void collectHandoffs(
+                JsonElement element, String regionId,
+                Map<String, Set<String>> consumers,
+                Map<String, Set<String>> producers) {
+            if (element == null || element.isJsonNull()) {
+                return;
+            }
+            if (element.isJsonArray()) {
+                for (JsonElement member : element.getAsJsonArray()) {
+                    collectHandoffs(member, regionId, consumers, producers);
+                }
+                return;
+            }
+            if (!element.isJsonObject()) {
+                return;
+            }
+            JsonObject row = element.getAsJsonObject();
+            String region = optionalString(row, "regionId");
+            String scope = region.isEmpty() ? regionId : region;
+            for (JsonElement handoff : array(row, "communicationHandoffs")) {
+                if (!handoff.isJsonObject() || scope.isEmpty()) {
+                    continue;
+                }
+                JsonObject port = handoff.getAsJsonObject();
+                String portId = optionalString(port, "portId");
+                int separator = portId.lastIndexOf('.');
+                if (separator < 0 || separator + 1 >= portId.length()) {
+                    continue;
+                }
+                String flow = portId.substring(separator + 1);
+                String side = optionalString(port, "side");
+                if ("IN".equals(side)) {
+                    add(consumers, flow, scope);
+                } else if ("OUT".equals(side)) {
+                    add(producers, flow, scope);
+                }
+            }
+            for (Map.Entry<String, JsonElement> member : row.entrySet()) {
+                if ("communicationHandoffs".equals(member.getKey())) {
+                    continue;
+                }
+                collectHandoffs(member.getValue(), scope, consumers,
+                        producers);
             }
         }
-        return declared;
+
+        private static void add(Map<String, Set<String>> index, String key,
+                                String value) {
+            Set<String> values = index.get(key);
+            if (values == null) {
+                values = new LinkedHashSet<>();
+                index.put(key, values);
+            }
+            values.add(value);
+        }
+
+        public int declaredCount() {
+            return declared.size();
+        }
+
+        /**
+         * The declared flows this composition did not realize. A flow whose
+         * ports the plan bound is realized when the composition drew a case
+         * from a region on each side of its exchange; a flow with no port
+         * evidence at all falls back to whether the composition realized any
+         * consumer boundary family, because nothing else can single it out.
+         */
+        List<String> unrealized(Set<String> realizedRegions,
+                                int boundaryFamilies) {
+            List<String> missing = new ArrayList<>();
+            for (String flow : declared) {
+                if (!realized(flow, realizedRegions, boundaryFamilies)) {
+                    missing.add(flow);
+                }
+            }
+            return missing;
+        }
+
+        private boolean realized(String flow, Set<String> realizedRegions,
+                                 int boundaryFamilies) {
+            Set<String> consumers = consumerRegions.get(flow);
+            Set<String> producers = producerRegions.get(flow);
+            if (consumers == null && producers == null) {
+                return boundaryFamilies > 0;
+            }
+            return intersects(consumers, realizedRegions)
+                    && intersects(producers, realizedRegions);
+        }
+
+        private static boolean intersects(Set<String> ports,
+                                          Set<String> realized) {
+            if (ports == null) {
+                return false;
+            }
+            for (String port : ports) {
+                if (realized.contains(port)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** The per-flow realization rows the claim publishes as evidence. */
+        JsonArray report(Set<String> realizedRegions, int boundaryFamilies) {
+            JsonArray rows = new JsonArray();
+            for (String flow : declared) {
+                JsonObject row = new JsonObject();
+                row.addProperty("flow", flow);
+                Set<String> consumers = consumerRegions.get(flow);
+                Set<String> producers = producerRegions.get(flow);
+                boolean realized = realized(flow, realizedRegions,
+                        boundaryFamilies);
+                row.addProperty("realized", realized);
+                row.addProperty("mechanism", consumers == null
+                        && producers == null
+                        ? (realized ? "CONSUMER_BOUNDARY_FAMILY"
+                                : "NO_PORT_EVIDENCE")
+                        : "EXCHANGE_PORT_PAIR");
+                row.addProperty("consumerRegionsPlanned",
+                        consumers == null ? 0 : consumers.size());
+                row.addProperty("producerRegionsPlanned",
+                        producers == null ? 0 : producers.size());
+                row.addProperty("consumerRealized",
+                        intersects(consumers, realizedRegions));
+                row.addProperty("producerRealized",
+                        intersects(producers, realizedRegions));
+                rows.add(row);
+            }
+            return rows;
+        }
+    }
+
+    /**
+     * Every region identity the composition drew a case, a read or a witness
+     * from. Region ids appear inside occurrence ids, case owners and location
+     * keys as well as in their own field, so they are read as identities
+     * rather than from one place.
+     */
+    static Set<String> realizedRegions(JsonObject manifest) {
+        Set<String> regions = new LinkedHashSet<>();
+        Matcher matcher = REGION_ID.matcher(
+                manifest == null ? "" : manifest.toString());
+        while (matcher.find()) {
+            regions.add(matcher.group());
+        }
+        return regions;
+    }
+
+    /**
+     * How many consumer boundary families the composition realized. The
+     * Composer publishes them as {@code casePathConditionDependencies} rows;
+     * the legacy {@code symbolicPropagation} array is read when a manifest
+     * still carries one.
+     */
+    static int consumerBoundaryFamilies(JsonObject manifest) {
+        Set<String> families = new LinkedHashSet<>();
+        int unnamed = 0;
+        for (JsonElement element
+                : array(manifest, "casePathConditionDependencies")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            if (!CONSUMER_BOUNDARY_KIND.equals(optionalString(row, "kind"))) {
+                continue;
+            }
+            String family = optionalString(row, "familyKey");
+            if (family.isEmpty()) {
+                unnamed++;
+            } else {
+                families.add(family);
+            }
+        }
+        return families.size() + unnamed
+                + array(manifest, "symbolicPropagation").size();
+    }
+
+    /** How many arms those consumer boundary families carry in total. */
+    static int consumerBoundaryArms(JsonObject manifest) {
+        int arms = 0;
+        for (JsonElement element
+                : array(manifest, "casePathConditionDependencies")) {
+            if (element.isJsonObject()
+                    && CONSUMER_BOUNDARY_KIND.equals(optionalString(
+                            element.getAsJsonObject(), "kind"))) {
+                arms += array(element.getAsJsonObject(), "arms").size();
+            }
+        }
+        for (JsonElement element : array(manifest, "symbolicPropagation")) {
+            if (element.isJsonObject()) {
+                arms += optionalInteger(element.getAsJsonObject(),
+                        "armCount", 0);
+            }
+        }
+        return arms;
     }
 
     /**
@@ -162,10 +432,10 @@ public final class ClaimPolicy {
      *
      * @param manifest the composition manifest the Composer published
      * @param reach the reach-condition report the solver stage published
-     * @param declaredWireFlows how many wire flows the experiment declares
+     * @param flows what the experiment declares and where the plan bound it
      */
     public static JsonObject decide(JsonObject manifest, JsonObject reach,
-                                    int declaredWireFlows) {
+                                    WireFlowEvidence flows) {
         JsonObject reachCondition = object(reach, "reachCondition");
         String reachability = firstNonEmpty(
                 optionalString(reachCondition, "reachability"), "UNKNOWN");
@@ -178,7 +448,10 @@ public final class ClaimPolicy {
         boolean probeConstrains = optionalBool(
                 object(reach, "existentialRootProbe"),
                 "constrainsRootSpace", false);
-        int boundaryFamilies = array(manifest, "symbolicPropagation").size();
+        int boundaryFamilies = consumerBoundaryFamilies(manifest);
+        Set<String> realized = realizedRegions(manifest);
+        List<String> unrealizedFlows = flows.unrealized(realized,
+                boundaryFamilies);
 
         List<JsonObject> blockers = new ArrayList<>();
 
@@ -236,15 +509,19 @@ public final class ClaimPolicy {
                             + " fault-sensitive"));
         }
 
-        // An experiment that declares cross-node flows and composes no
-        // consumer boundary family replayed neither side of the wire into the
-        // formula, whatever the formula then satisfies.
-        if (declaredWireFlows > 0 && boundaryFamilies == 0) {
+        // A declared flow the composition never drew either side of is not
+        // in the formula the witness satisfies, whatever the formula then
+        // satisfies. Which flows those are is the blocker: a count cannot be
+        // acted on, and counting one realization mechanism out of two called
+        // a realized flow unrealized.
+        if (!unrealizedFlows.isEmpty()) {
             blockers.add(blocker(DECLARED_WIRE_FLOWS_UNREALIZED,
-                    String.valueOf(declaredWireFlows),
-                    "the experiment declares " + declaredWireFlows
-                            + " WIRE_FLOW(s) and the composition realized no"
-                            + " consumer boundary family"));
+                    String.join(",", unrealizedFlows),
+                    "the composition realized neither side of "
+                            + unrealizedFlows.size() + " of "
+                            + flows.declaredCount()
+                            + " declared WIRE_FLOW(s): "
+                            + String.join(", ", unrealizedFlows)));
         }
 
         JsonObject witnessGap = witnessBlocker(valuations, probeConstrains);
@@ -297,8 +574,14 @@ public final class ClaimPolicy {
         rootSpace.addProperty("degeneracyCheck", degeneracy);
         rootSpace.addProperty("faultSensitive",
                 faultSensitive(valuations, probeConstrains));
-        rootSpace.addProperty("declaredWireFlows", declaredWireFlows);
+        rootSpace.addProperty("declaredWireFlows", flows.declaredCount());
+        rootSpace.addProperty("unrealizedWireFlows",
+                String.join(",", unrealizedFlows));
+        rootSpace.add("wireFlows", flows.report(realized, boundaryFamilies));
         rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
+        rootSpace.addProperty("consumerBoundaryArms",
+                consumerBoundaryArms(manifest));
+        rootSpace.addProperty("realizedRegions", realized.size());
         rootSpace.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
         result.add("rootSpace", rootSpace);

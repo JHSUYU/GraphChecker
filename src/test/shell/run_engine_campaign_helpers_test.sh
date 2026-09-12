@@ -87,7 +87,9 @@ emit_fixture() {
     campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
       claim: "SAT_CANDIDATE",
       claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
-      blockers: [], blockerCount: 0, whyNotAccepted: ""}}' \
+      blockers: [], blockerCount: 0, whyNotAccepted: "",
+      rootSpace: {consumerBoundaryFamilies: 1, consumerBoundaryArms: 2,
+                  declaredWireFlows: 0, wireFlows: []}}}' \
     >"${reach_report}"
   printf '%s\n' \
     '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
@@ -127,9 +129,18 @@ emit_fixture_undecided_roots() {
          detail: "the degeneracy question was not decided"},
         {code: "TARGET_UNCONSTRAINED_BY_ROOTS", subject: "",
          detail: "no symbolic root flips the target predicate"},
-        {code: "DECLARED_WIRE_FLOWS_UNREALIZED", subject: "2",
-         detail: "the experiment declares 2 WIRE_FLOW(s) and the composition realized no consumer boundary family"}],
-      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 3 blocker(s) withhold acceptance\n  UNDECIDED_ROOT_SPACE [UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9]: the degeneracy question was not decided\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  DECLARED_WIRE_FLOWS_UNREALIZED [2]: the experiment declares 2 WIRE_FLOW(s) and the composition realized no consumer boundary family")}}' \
+        {code: "DECLARED_WIRE_FLOWS_UNREALIZED", subject: "block-key-id",
+         detail: "the composition realized neither side of 1 of 2 declared WIRE_FLOW(s): block-key-id"}],
+      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 3 blocker(s) withhold acceptance\n  UNDECIDED_ROOT_SPACE [UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9]: the degeneracy question was not decided\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  DECLARED_WIRE_FLOWS_UNREALIZED [block-key-id]: the composition realized neither side of 1 of 2 declared WIRE_FLOW(s): block-key-id"),
+      rootSpace: {consumerBoundaryFamilies: 99, consumerBoundaryArms: 240,
+                  declaredWireFlows: 2,
+                  wireFlows: [
+                    {flow: "block-key-id", realized: false,
+                     mechanism: "EXCHANGE_PORT_PAIR",
+                     consumerRealized: true, producerRealized: false},
+                    {flow: "data-encryption-key-id", realized: true,
+                     mechanism: "EXCHANGE_PORT_PAIR",
+                     consumerRealized: true, producerRealized: true}]}}}' \
     >"${reach_report}"
 }
 
@@ -197,6 +208,19 @@ jq -e '[.blockers[].code] == ["UNDECIDED_ROOT_SPACE",
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result did not publish the named blockers: \
 $(jq -c '.blockers' "${campaign_final}/result.json")"
+# The unrealized flow is named, not counted: an owner acts on the name.
+jq -e '[.blockers[] | select(.code == "DECLARED_WIRE_FLOWS_UNREALIZED")
+    | .subject] == ["block-key-id"]' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the wire-flow blocker did not name the unrealized flow"
+# The per-flow realization rows are published with the claim, so the realized
+# flow is visible next to the one that blocked it.
+jq -e '.evidence.declaredWireFlows == 2
+  and .evidence.consumerBoundaryFamilies == 99
+  and ([.evidence.wireFlows[] | select(.realized)] | length) == 1' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the result lost its per-flow realization evidence: \
+$(jq -c '.evidence' "${campaign_final}/result.json")"
 # The one view: a header plus one line per blocker, printed and recorded.
 [[ $(jq -r '.whyNotAccepted' "${campaign_final}/result.json" \
       | wc -l) -eq 4 ]] \
