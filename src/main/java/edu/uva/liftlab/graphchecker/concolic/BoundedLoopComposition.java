@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -54,6 +55,16 @@ public final class BoundedLoopComposition {
     private BoundedLoopComposition() {
     }
 
+    /**
+     * A retained loop belongs to the planned region that declares it, not to
+     * one activation of that region.  Plan rows are already addressed that
+     * way; bound authorities and observed cases arrive as activations of it.
+     */
+    private static String planned(JsonObject row) {
+        return OccurrenceId.parse(optionalString(row, "occurrenceId"))
+                .planned();
+    }
+
     /** Reads one declaration per {@code (occurrenceId, loopSiteId)}. */
     public static BoundedLoopComposition ofPlanRows(
             Collection<JsonObject> planRows,
@@ -63,7 +74,7 @@ public final class BoundedLoopComposition {
         Set<String> conflictingPolicies = new LinkedHashSet<>();
         for (JsonObject authority : safe(boundAuthorityRows)) {
             if (authority == null) continue;
-            String occurrence = optionalString(authority, "occurrenceId");
+            String occurrence = planned(authority);
             if (occurrence.isEmpty()) continue;
             if (!authority.has(LoopBoundPolicy.FIELD)
                     || !authority.get(LoopBoundPolicy.FIELD).isJsonObject()) {
@@ -81,7 +92,7 @@ public final class BoundedLoopComposition {
         Map<String, List<JsonObject>> declarations = new LinkedHashMap<>();
         for (JsonObject plan : safe(planRows)) {
             if (plan == null) continue;
-            String occurrence = optionalString(plan, "occurrenceId");
+            String occurrence = planned(plan);
             if (occurrence.isEmpty()) continue;
             LoopBoundPolicy policy = policies.get(occurrence);
             for (JsonElement element : array(plan, PLAN_FIELD)) {
@@ -215,6 +226,7 @@ public final class BoundedLoopComposition {
 
     /** Adds one complete region-path count vector to the audit model. */
     public void observeCase(String occurrenceId, JsonObject item) {
+        String occurrence = OccurrenceId.parse(occurrenceId).planned();
         Map<String, JsonObject> observed = new LinkedHashMap<>();
         Set<String> duplicates = new LinkedHashSet<>();
         for (JsonElement element : array(item,
@@ -228,7 +240,7 @@ public final class BoundedLoopComposition {
         }
         String caseId = optionalString(item, "caseId");
         for (BoundedLoop loop : loops) {
-            if (!loop.occurrenceId.equals(occurrenceId)) continue;
+            if (!loop.occurrenceId.equals(occurrence)) continue;
             JsonObject row = observed.get(loop.loopSiteId);
             if (row == null) {
                 fail(loop, LoopBoundPolicy.PATH_LOOP_COUNT_MISSING, caseId,
@@ -241,7 +253,12 @@ public final class BoundedLoopComposition {
                 continue;
             }
             JsonObject countRow = caseCount(caseId, row, item);
-            loop.pathCounts.add(countRow);
+            // One planned region can run several times, and each activation
+            // reports the same region-local case.  Identical evidence is one
+            // count, not one per activation.
+            if (loop.pathCountKeys.add(CanonicalJson.render(countRow))) {
+                loop.pathCounts.add(countRow);
+            }
             if (!loop.classification.equals(optionalString(row,
                     LoopBoundPolicy.LOOP_CLASSIFICATION))
                     || !loop.classificationAuthority.equals(optionalString(row,
@@ -289,12 +306,6 @@ public final class BoundedLoopComposition {
             String subject = optionalString(row, "subject");
             gap(optionalString(row, "reason"), subject + "\n" + caseId,
                     optionalString(row, "detail"));
-            for (BoundedLoop loop : loops) {
-                if (loop.occurrenceId.equals(occurrenceId)
-                        && (loop.loopSiteId.equals(subject)
-                        || loop.identity.equals(subject))) {
-                }
-            }
         }
     }
 
@@ -397,6 +408,7 @@ public final class BoundedLoopComposition {
         public final String identity;
         public final boolean failureRelevant;
         private final List<JsonObject> pathCounts = new ArrayList<>();
+        private final Set<String> pathCountKeys = new LinkedHashSet<>();
 
         private BoundedLoop(String occurrenceId, String loopSiteId,
                             String runtimeLoopId, int bodyBound,

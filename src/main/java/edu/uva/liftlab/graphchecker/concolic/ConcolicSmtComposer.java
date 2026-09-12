@@ -842,6 +842,13 @@ public final class ConcolicSmtComposer {
 
     /**
      * The plan rows in composition scope: the selected region occurrences.
+     *
+     * <p>A plan row is addressed by its <em>planned</em> occurrence, while a
+     * relation summary is addressed by the activation of it that ran
+     * ({@code …#1#a1}).  Both sides are reduced to the planned address before
+     * they are matched; comparing the two spellings directly selected nothing
+     * but the fatal region's own row and silently emptied the bounded-loop
+     * model.</p>
      */
     static List<JsonObject> targetScopedPlanRows(
             Collection<JsonObject> planRows, JsonObject fatal,
@@ -850,7 +857,9 @@ public final class ConcolicSmtComposer {
         for (RelationSummary relation : Objects.requireNonNull(
                 loweredRelations, "loweredRelations")) {
             String occurrence = relation.occurrenceId();
-            if (!occurrence.isEmpty()) selected.add(occurrence);
+            if (!occurrence.isEmpty()) {
+                selected.add(OccurrenceId.parse(occurrence).planned());
+            }
         }
         // Do not recursively scan the whole target query: it may embed
         // propagated expression evidence. Only its explicit target members
@@ -861,7 +870,8 @@ public final class ConcolicSmtComposer {
         Set<String> held = new LinkedHashSet<>();
         for (JsonObject row : Objects.requireNonNull(planRows, "planRows")) {
             if (row == null) continue;
-            String occurrence = optionalString(row, "occurrenceId");
+            String occurrence = OccurrenceId.parse(
+                    optionalString(row, "occurrenceId")).planned();
             if (occurrence.isEmpty() || !selected.contains(occurrence)
                     || !held.add(occurrence)) {
                 continue;
@@ -894,7 +904,9 @@ public final class ConcolicSmtComposer {
     private static void addOccurrence(JsonObject row, String field,
                                       Set<String> selected) {
         String occurrence = optionalString(row, field);
-        if (!occurrence.isEmpty()) selected.add(occurrence);
+        if (!occurrence.isEmpty()) {
+            selected.add(OccurrenceId.parse(occurrence).planned());
+        }
     }
 
     private static void appendGaps(JsonArray target, String kind,
