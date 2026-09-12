@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import soot.PrimType;
 import soot.SootClass;
 import soot.SootField;
@@ -683,7 +684,7 @@ public final class ConcolicInstrumentationSelections {
                     || implementation.isEmpty()) {
                 throw unsupported(action);
             }
-            String site = CommunicationCatalogContract.siteId(caller,
+            String site = SiteId.of(caller,
                     unitIndex);
 
             String fieldSignature = optionalString(action,
@@ -889,7 +890,7 @@ public final class ConcolicInstrumentationSelections {
                 }
             }
             return accessorCallsBySite.containsKey(
-                    CommunicationCatalogContract.siteId(method, unitIndex));
+                    SiteId.of(method, unitIndex));
         }
 
         boolean associativeContainerState() {

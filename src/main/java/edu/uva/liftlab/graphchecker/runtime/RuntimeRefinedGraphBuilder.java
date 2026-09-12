@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -139,7 +140,7 @@ final class RuntimeRefinedGraphBuilder {
                     if (completion == null || completion.seq <= event.seq) {
                         continue;
                     }
-                    int unitIndex = unitIndex(event.siteId);
+                    int unitIndex = SiteId.unitIndexOf(event.siteId);
                     if (unitIndex < 0) continue;
                     for (RuntimeRegionPlanner.FieldAccessEvent container
                             : latestContainerFields(
@@ -542,16 +543,6 @@ final class RuntimeRefinedGraphBuilder {
                 event.field, event.receiverObjectId, event.valueObjectId);
         return path == null ? Collections.emptyList()
                 : Collections.singletonList(path);
-    }
-
-    private static int unitIndex(String siteId) {
-        int marker = siteId == null ? -1 : siteId.lastIndexOf("#u");
-        if (marker < 0 || marker + 2 >= siteId.length()) return -1;
-        try {
-            return Integer.parseInt(siteId.substring(marker + 2));
-        } catch (NumberFormatException ignored) {
-            return -1;
-        }
     }
 
     private static void requireCandidateEdge(Map<String, Object> edge,
@@ -1021,7 +1012,7 @@ final class RuntimeRefinedGraphBuilder {
             result.put("callId", enter.callId);
             result.put("invocationId", enter.invocationId);
             result.put("callerMethod", enter.method);
-            result.put("unitIndex", unitIndex(enter.siteId));
+            result.put("unitIndex", SiteId.unitIndexOf(enter.siteId));
             result.put("siteId", enter.siteId);
             result.put("eventSeq", returned.seq);
             result.put("receiverObjectId", enter.objectId);

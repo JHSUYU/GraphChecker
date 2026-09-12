@@ -107,7 +107,7 @@ public final class CommunicationHandoffSpec {
 
     public String siteId() {
         return unitIndex < 0 ? method
-                : CommunicationCatalogContract.siteId(method, unitIndex);
+                : SiteId.of(method, unitIndex);
     }
 
     @Override

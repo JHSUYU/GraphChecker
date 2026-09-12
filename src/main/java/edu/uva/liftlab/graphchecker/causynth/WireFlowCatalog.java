@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import soot.Body;
 import soot.SootMethod;
 import soot.Type;
@@ -295,7 +296,7 @@ final class WireFlowCatalog {
 
         String siteId() {
             return unitIndex < 0 ? method
-                    : CommunicationCatalogContract.siteId(method, unitIndex);
+                    : SiteId.of(method, unitIndex);
         }
 
         Map<String, Object> row() {

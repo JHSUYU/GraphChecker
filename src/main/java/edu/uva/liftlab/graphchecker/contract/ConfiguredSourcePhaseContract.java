@@ -77,7 +77,7 @@ public final class ConfiguredSourcePhaseContract {
         row.addProperty("fieldSignature", trimmed(fieldSignature));
         row.addProperty("declarationMethod", exactMethod);
         row.addProperty("declarationUnitIndex", unitIndex);
-        row.addProperty("siteId", siteId(exactMethod, unitIndex));
+        row.addProperty("siteId", SiteId.of(exactMethod, unitIndex));
         validateDeclaration(row);
         return row;
     }
@@ -215,13 +215,6 @@ public final class ConfiguredSourcePhaseContract {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    public static String siteId(String method, int unitIndex) {
-        if (unitIndex < 0) {
-            throw new IllegalArgumentException("unitIndex must be non-negative");
-        }
-        return required(method, "method") + "#u" + unitIndex;
-    }
-
     private static Declaration validateDeclaration(JsonObject row) {
         if (!DECLARATION_FIELDS.equals(row.keySet())
                 || !constants(row, DECLARATION_KIND, DECLARATION_AUTHORITY)) {
@@ -264,7 +257,7 @@ public final class ConfiguredSourcePhaseContract {
                 "declarationMethod");
         int unit = exactInt(row, "declarationUnitIndex");
         if (unit < 0 || FieldPathSpec.declaredField(signature) == null
-                || !siteId(method, unit).equals(text(row, "siteId"))) {
+                || !SiteId.of(method, unit).equals(text(row, "siteId"))) {
             throw new IllegalArgumentException(
                     field + " has an invalid exact hook site");
         }
@@ -366,7 +359,7 @@ public final class ConfiguredSourcePhaseContract {
             this.fieldSignature = fieldSignature;
             this.method = method;
             this.unitIndex = unitIndex;
-            this.siteId = ConfiguredSourcePhaseContract.siteId(
+            this.siteId = SiteId.of(
                     method, unitIndex);
         }
 

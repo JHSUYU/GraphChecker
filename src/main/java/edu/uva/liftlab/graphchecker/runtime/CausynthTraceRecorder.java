@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
 import java.io.File;
@@ -238,7 +239,7 @@ public final class CausynthTraceRecorder {
         closeStaleCallSite(ownerCallId);
         ExecutionEvent event = newExecutionEvent("CALL_SITE_ENTER",
                 firstNonBlank(caller, owner == null ? "" : owner.method), ownerCallId);
-        event.siteId = siteId(event.method, unitIndex);
+        event.siteId = SiteId.of(event.method, unitIndex);
         event.declaredCallee = MapFields.safe(declaredCallee);
         event.runtimeType = runtimeType(receiver);
         event.objectId = identity(receiver);
@@ -300,7 +301,7 @@ public final class CausynthTraceRecorder {
                                     String expression, boolean outcome) {
         ExecutionEvent event = newExecutionEvent("BRANCH",
                 firstNonBlank(method, methodForCall(callId)), callId);
-        event.siteId = siteId(event.method, unitIndex);
+        event.siteId = SiteId.of(event.method, unitIndex);
         event.outcome = outcome;
         emitExecutionEvent(event);
     }
@@ -313,7 +314,7 @@ public final class CausynthTraceRecorder {
                                           String encodedCaseKeys) {
         ExecutionEvent event = newExecutionEvent("BRANCH",
                 firstNonBlank(method, methodForCall(callId)), callId);
-        event.siteId = siteId(event.method, unitIndex);
+        event.siteId = SiteId.of(event.method, unitIndex);
         event.branchKind = MapFields.safe(branchKind);
         event.switchCaseKeys = MapFields.safe(encodedCaseKeys);
         event.successorIndex = successorIndex >= 0 ? successorIndex : null;
@@ -418,7 +419,7 @@ public final class CausynthTraceRecorder {
         RuntimeRegionPlanner.FieldAccessEvent event =
                 new RuntimeRegionPlanner.FieldAccessEvent(id, kind, method,
                         activeCall == null ? 0L : activeCall.callId,
-                        unitIndex, siteId(method, unitIndex), field,
+                        unitIndex, SiteId.of(method, unitIndex), field,
                         receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
             writeFieldTraceLine(event);
@@ -445,7 +446,7 @@ public final class CausynthTraceRecorder {
         RuntimeRegionPlanner.ArrayAccessEvent event =
                 new RuntimeRegionPlanner.ArrayAccessEvent(id, kind, method,
                         activeCall == null ? 0L : activeCall.callId,
-                        unitIndex, siteId(method, unitIndex),
+                        unitIndex, SiteId.of(method, unitIndex),
                         identity(array), index, identity(element));
         synchronized (LOCK) {
             writeArrayTraceLine(event);
@@ -667,7 +668,7 @@ public final class CausynthTraceRecorder {
             return false;
         }
         ActiveCallSite site = activeCallSite(call.parentSiteId);
-        String expectedSite = siteId(callerMethod, callerUnitIndex);
+        String expectedSite = SiteId.of(callerMethod, callerUnitIndex);
         return site != null
                 && MapFields.safe(callerMethod).equals(site.caller)
                 && MapFields.safe(callerSiteId).equals(expectedSite)
@@ -741,10 +742,6 @@ public final class CausynthTraceRecorder {
     private static String methodForCall(long callId) {
         ActiveCall call = activeCall(callId);
         return call == null ? "" : call.method;
-    }
-
-    private static String siteId(String method, int unitIndex) {
-        return MapFields.safe(method) + "#u" + unitIndex;
     }
 
     private static int identity(Object value) {

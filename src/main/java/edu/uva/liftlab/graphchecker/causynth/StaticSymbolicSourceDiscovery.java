@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
@@ -28,7 +29,6 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
-import static edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract.siteId;
 
 /** Discovers the PUBLISH sites of the explicit {@code symbolize} hook, one
  *  declaration per source id and one phase per hook site. */
@@ -175,7 +175,8 @@ final class StaticSymbolicSourceDiscovery {
     private static IOException malformed(
             SootMethod method, int unitIndex, String detail) {
         return new IOException("invalid CausynthSymbolicSource.symbolize "
-                + "declaration at " + siteId(method.getSignature(), unitIndex)
+                + "declaration at "
+                + SiteId.of(method.getSignature(), unitIndex)
                 + ": " + detail);
     }
 

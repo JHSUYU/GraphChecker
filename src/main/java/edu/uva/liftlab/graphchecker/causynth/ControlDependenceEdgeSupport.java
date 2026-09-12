@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -200,7 +201,7 @@ final class ControlDependenceEdgeSupport {
 
     private static String siteId(String method, int unitIndex, String kind) {
         if (unitIndex >= 0) {
-            return CommunicationCatalogContract.siteId(method, unitIndex);
+            return SiteId.of(method, unitIndex);
         }
         String suffix = kind == null || kind.trim().isEmpty()
                 ? "edge" : kind.trim();

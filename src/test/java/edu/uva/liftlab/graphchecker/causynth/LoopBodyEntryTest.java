@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import org.junit.After;
 import org.junit.Test;
 import soot.Body;
@@ -213,7 +214,7 @@ public class LoopBodyEntryTest {
     }
 
     private static String site(SootMethod method, int unitIndex) {
-        return CommunicationCatalogContract.siteId(method.getSignature(),
+        return SiteId.of(method.getSignature(),
                 unitIndex);
     }
 

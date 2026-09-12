@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import soot.Body;
 import soot.Unit;
 import soot.jimple.IfStmt;
@@ -99,7 +100,7 @@ final class CommunicationCatalogPlanner {
             for (Unit guard : loop.guards) {
                 Integer position = unitIndices.get(guard);
                 if (position == null) continue;
-                controlSites.add(CommunicationCatalogContract.siteId(method,
+                controlSites.add(SiteId.of(method,
                         position.intValue()));
             }
             if (controlSites.isEmpty()) continue;
@@ -132,7 +133,7 @@ final class CommunicationCatalogPlanner {
                 if (innermostByBranch.get(unit) != loop) continue;
                 Integer position = unitIndices.get(unit);
                 if (position != null) {
-                    memberBranches.add(CommunicationCatalogContract.siteId(
+                    memberBranches.add(SiteId.of(
                             method, position.intValue()));
                 }
             }
@@ -144,7 +145,7 @@ final class CommunicationCatalogPlanner {
                 CausynthBranchShape shape = CausynthBranchShape.from(
                         body, guard);
                 if (position == null || shape == null) continue;
-                String site = CommunicationCatalogContract.siteId(method,
+                String site = SiteId.of(method,
                         position.intValue());
                 for (int successor = 0;
                      successor < shape.successors.size(); successor++) {

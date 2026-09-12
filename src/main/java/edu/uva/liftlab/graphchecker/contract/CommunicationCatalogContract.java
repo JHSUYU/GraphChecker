@@ -94,11 +94,6 @@ public final class CommunicationCatalogContract {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** {@code <method>#u<unitIndex>}: the project-wide site id form. */
-    public static String siteId(String method, int unitIndex) {
-        return nonNull(method) + "#u" + unitIndex;
-    }
-
     /** {@code <exchangeSiteKey>.req.<name>}. */
     public static String requestPortId(String exchangeSiteKey, String name) {
         return nonNull(exchangeSiteKey) + ".req." + nonNull(name);

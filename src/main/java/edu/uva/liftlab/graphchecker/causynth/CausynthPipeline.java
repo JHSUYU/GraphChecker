@@ -6,9 +6,9 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.C
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
-import static edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract.siteId;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.SiteId;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
 import org.slf4j.Logger;
@@ -516,7 +516,7 @@ public final class CausynthPipeline {
         }
 
         private String loopRootKey(InstrumentationPlan plan) {
-            return siteId(plan.rootLoopMethod(),
+            return SiteId.of(plan.rootLoopMethod(),
                     plan.rootLoopHeaderUnitIndex());
         }
 
@@ -857,7 +857,7 @@ public final class CausynthPipeline {
         if (found == null) {
             throw new IllegalStateException(
                     "LOOP_BODY_ROOT_HEADER_UNAVAILABLE: "
-                            + siteId(method.getSignature(), headerIndex));
+                            + SiteId.of(method.getSignature(), headerIndex));
         }
         return found;
     }
@@ -1829,7 +1829,7 @@ public final class CausynthPipeline {
                         throw new IllegalStateException(
                                 "UNKNOWN_FIELD_MATERIALIZATION_UNSUPPORTED: "
                                         + declaredSignature + " at "
-                                        + siteId(method.getSignature(),
+                                        + SiteId.of(method.getSignature(),
                                         unitIndex));
                     }
                     InstanceFieldRef instanceField =
@@ -1977,7 +1977,7 @@ public final class CausynthPipeline {
             throw new IllegalStateException(
                     "STATIC_FIELD_READ_SHAPE_UNSUPPORTED: "
                             + declaredSignature + " at "
-                            + siteId(method.getSignature(), unitIndex));
+                            + SiteId.of(method.getSignature(), unitIndex));
         }
         Local consumed = (Local) ((AssignStmt) stmt).getLeftOp();
         List<Unit> after = new ArrayList<>();
@@ -1995,7 +1995,7 @@ public final class CausynthPipeline {
             throw new IllegalStateException(
                     "STATIC_FIELD_MATERIALIZATION_UNSUPPORTED: "
                             + declaredSignature + " at "
-                            + siteId(method.getSignature(), unitIndex));
+                            + SiteId.of(method.getSignature(), unitIndex));
         }
         insertAfterSequence(body, stmt, after);
     }
@@ -2258,7 +2258,7 @@ public final class CausynthPipeline {
             Set<String> sites, SootMethod method, Unit unit) {
         int index = originalUnitIndex(unit);
         if (index >= 0) {
-            sites.add(siteId(method.getSignature(), index));
+            sites.add(SiteId.of(method.getSignature(), index));
         }
     }
 
@@ -2408,7 +2408,7 @@ public final class CausynthPipeline {
                             throw new IllegalStateException(
                                     "CONCOLIC_BRANCH_BEFORE_CONSTRUCTOR_"
                                             + "INITIALIZATION: "
-                                            + siteId(signature, unitIndex));
+                                            + SiteId.of(signature, unitIndex));
                         }
                         if (unit instanceof IfStmt) {
                             instrumentConcolicBranch(body, method,
@@ -2545,7 +2545,7 @@ public final class CausynthPipeline {
         beforeBranch.add(Jimple.v().newAssignStmt(vmOccurrence,
                 Jimple.v().newCastExpr(prepared, IntType.v())));
         emit(beforeBranch, vmEvent, refs.ref(Hook.MARK_CONCOLIC_BRANCH),
-                StringConstant.v(siteId(method.getSignature(), unitIndex)),
+                StringConstant.v(SiteId.of(method.getSignature(), unitIndex)),
                 vmOccurrence);
         Unit exactTransfer = Jimple.v().newGotoStmt(branch);
         beforeBranch.add(exactTransfer);
