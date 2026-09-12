@@ -1791,9 +1791,6 @@ final class ConcolicTaskPlan {
             evidence.addProperty("occurrenceBudget", loopOccurrenceBudget);
             evidence.addProperty("anchoredOccurrences",
                     anchoredOccurrences);
-            evidence.addProperty("unanchoredTurnsReleased",
-                    unanchoredTurnsReleased);
-            evidence.addProperty("turnsAdmitted", admittedTurns);
             return evidence;
         }
 

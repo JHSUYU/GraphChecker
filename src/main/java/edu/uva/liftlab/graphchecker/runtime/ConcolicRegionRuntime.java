@@ -826,10 +826,6 @@ public final class ConcolicRegionRuntime {
                 evidence.add("configuredSourceAnchorPhases", phases);
                 evidence.addProperty("anchoredOccurrences",
                         admitted.anchoredOccurrences);
-                evidence.addProperty("unanchoredTurnsReleased",
-                        admitted.unanchoredTurnsReleased);
-                evidence.addProperty("turnsAdmitted",
-                        admitted.admittedTurns);
                 reason = reason + "; occurrences were addressed by the "
                         + "region's semantic anchors (ports="
                         + admitted.causalAnchorPorts() + ", sourcePhases="

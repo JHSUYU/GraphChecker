@@ -1126,8 +1126,6 @@ public final class BooleanReachConditionExtractor {
                 if (!fieldSignature.isEmpty()) {
                     result.addProperty("fieldSignature", fieldSignature);
                 }
-                result.addProperty("displayName", occurrenceId + "::"
-                        + portId);
                 result.addProperty("sourceIdentity", sourceIdentity);
                 result.addProperty("sourceIdentityAuthority",
                         sourceIdentityAuthority);
@@ -1149,11 +1147,6 @@ public final class BooleanReachConditionExtractor {
                 result.addProperty("sourceOccurrenceId", occurrenceId);
                 result.addProperty("sourcePhaseId", sourcePhaseId);
                 result.addProperty("fieldSignature", fieldSignature);
-                // Name each entry independently because one site may
-                // materialize multiple roots with otherwise equal metadata.
-                result.addProperty("displayName", sourceKey + "::"
-                        + sourceId + "::" + occurrenceId + "::"
-                        + sourcePhaseId);
             }
             result.addProperty("javaTypeDescriptor", descriptor);
             result.addProperty("solverTerm", solverTerm);
