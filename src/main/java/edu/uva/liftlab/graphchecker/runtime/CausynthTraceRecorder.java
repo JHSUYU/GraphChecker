@@ -13,8 +13,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -38,7 +36,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.zip.GZIPInputStream;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.objectWithoutNulls;
@@ -1136,7 +1133,7 @@ public final class CausynthTraceRecorder {
         // rather than a truncated one.
         Path target = output.toPath();
         Path staged = target.resolveSibling(output.getName() + ".tmp");
-        try (BufferedReader reader = skeletonReader(candidates);
+        try (BufferedReader reader = MapFields.rowReader(candidates);
              BufferedWriter writer = Files.newBufferedWriter(staged,
                      StandardCharsets.UTF_8)) {
             String line;
@@ -1175,21 +1172,6 @@ public final class CausynthTraceRecorder {
         }
         Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING,
                 StandardCopyOption.ATOMIC_MOVE);
-    }
-
-    private static BufferedReader skeletonReader(File file)
-            throws IOException {
-        InputStream input = Files.newInputStream(file.toPath());
-        try {
-            if (file.getName().endsWith(".gz")) {
-                input = new GZIPInputStream(input);
-            }
-            return new BufferedReader(new InputStreamReader(input,
-                    StandardCharsets.UTF_8));
-        } catch (IOException exception) {
-            input.close();
-            throw exception;
-        }
     }
 
     private static void requireClosedTrace(File manifestFile)

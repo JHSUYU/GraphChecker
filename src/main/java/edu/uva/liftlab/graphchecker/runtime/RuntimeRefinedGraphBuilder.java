@@ -15,8 +15,6 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.lang.reflect.Type;
@@ -39,7 +37,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
@@ -279,7 +276,7 @@ final class RuntimeRefinedGraphBuilder {
                     thread.setDaemon(true);
                     return thread;
                 });
-        try (BufferedReader input = reader(file.toPath())) {
+        try (BufferedReader input = MapFields.rowReader(file)) {
             ArrayDeque<Future<List<Map<String, Object>>>> pending =
                     new ArrayDeque<>();
             int batchCapacity = 4096;
@@ -676,20 +673,6 @@ final class RuntimeRefinedGraphBuilder {
                 events == null ? Collections.emptyList() : events);
         result.sort(Comparator.comparingLong(value -> value.seq));
         return result;
-    }
-
-    private static BufferedReader reader(Path path) throws IOException {
-        InputStream input = Files.newInputStream(path);
-        try {
-            if (path.getFileName().toString().endsWith(".gz")) {
-                input = new GZIPInputStream(input);
-            }
-            return new BufferedReader(new InputStreamReader(input,
-                    StandardCharsets.UTF_8));
-        } catch (IOException exception) {
-            input.close();
-            throw exception;
-        }
     }
 
     private static void writeRows(Path output,

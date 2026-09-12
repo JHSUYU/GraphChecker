@@ -39,18 +39,32 @@ public final class MapFields {
     }
 
     /**
+     * The one JSONL artifact byte source: UTF-8 lines, gzip decided by the
+     * file name.  The stream is closed rather than leaked when the gzip
+     * header refuses.
+     */
+    public static BufferedReader rowReader(File file) throws IOException {
+        InputStream bytes = Files.newInputStream(file.toPath());
+        try {
+            if (file.getName().endsWith(".gz")) {
+                bytes = new GZIPInputStream(bytes);
+            }
+            return new BufferedReader(new InputStreamReader(bytes,
+                    StandardCharsets.UTF_8));
+        } catch (IOException refused) {
+            bytes.close();
+            throw refused;
+        }
+    }
+
+    /**
      * The one JSONL artifact reader: one row per non-blank line, gzip decided
      * by the file name, a row that decodes to nothing refused by name.
      */
     public static List<Map<String, Object>> readRows(File file)
             throws IOException {
         List<Map<String, Object>> result = new ArrayList<>();
-        InputStream bytes = Files.newInputStream(file.toPath());
-        if (file.getName().endsWith(".gz")) {
-            bytes = new GZIPInputStream(bytes);
-        }
-        try (BufferedReader lines = new BufferedReader(
-                new InputStreamReader(bytes, StandardCharsets.UTF_8))) {
+        try (BufferedReader lines = rowReader(file)) {
             String line;
             while ((line = lines.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;
