@@ -278,8 +278,14 @@ public:
   static bool resolve_read(const Location &location, BasicType type,
                            ReadResult *result);
 
-  /** One-shot concrete operand override; symbolic resolve_read is unchanged. */
+  /**
+   * One-shot concrete operand override; symbolic resolve_read is unchanged.
+   *
+   * `region_enter_event_id` is the region occurrence that armed the read, so
+   * that closing that region -- and only that region -- abandons it.
+   */
   static jlong arm_primitive_read(jlong context_id,
+                                  jlong region_enter_event_id,
                                   const Location &location,
                                   BasicType type, jlong value_bits);
   static bool consume_primitive_read(jlong context_id,
@@ -289,7 +295,7 @@ public:
   static jlong confirm_primitive_read(jlong context_id, jlong token);
 
   /**
-   * Drops the arms one context left behind when its region ended.
+   * Drops the arms one region left behind when it ended.
    *
    * An arm is a one-shot override of *the read that the arming code is about
    * to perform*.  If that read never happens -- the branch was not taken, the
@@ -299,12 +305,20 @@ public:
    * consumed a value that was never meant for it.  A region boundary is the
    * point at which such an arm is provably abandoned, so it is dropped there.
    *
+   * Regions nest on one thread context, so the boundary that abandons an arm
+   * is the region that armed it and not merely the thread it ran on: purging
+   * every arm of the context when an INNER region closes would drop the
+   * enclosing region's still-pending arms.  `region_enter_event_id` names the
+   * closing region occurrence; zero means every region of this context, which
+   * is what forget_context() needs.
+   *
    * Receipts for arms that *were* consumed are deliberately kept: they are
    * evidence the caller still has to confirm, and confirmation happens during
    * region close.  forget_context() below is what retires those, at the point
    * where no caller can reach them any more.
    */
-  static void discard_armed_reads(jlong context_id);
+  static void discard_armed_reads(jlong context_id,
+                                  jlong region_enter_event_id);
 
   /**
    * Retires every replay-read record owned by one thread context.
@@ -442,9 +456,15 @@ private:
 
   struct PendingPrimitiveRead {
     jlong token;
+    // The region occurrence that armed this read.  Consumption does not look
+    // at it -- the arming code's own read is the consumer wherever it is --
+    // but a region-boundary purge drops only what that region armed.
+    jlong region_enter_event_id;
     BasicType type;
     jlong value_bits;
-    PendingPrimitiveRead() : token(0), type(T_ILLEGAL), value_bits(0) {}
+    PendingPrimitiveRead()
+        : token(0), region_enter_event_id(0), type(T_ILLEGAL),
+          value_bits(0) {}
   };
 
   typedef std::map<PendingReadKey, PendingPrimitiveRead> PendingReadStore;

@@ -861,9 +861,12 @@ jlong ConcolicMngr::endConcolic() {
   // An armed replay read is an override of the read the arming code was about
   // to perform.  A region boundary proves that read did not happen, so the
   // arm is abandoned here rather than left for an unrelated later read of the
-  // same field to consume.  Consumed receipts survive: the caller confirms
-  // them as part of closing this region.
-  SharedFieldVersions::discard_armed_reads(ctx->get_context_id());
+  // same field to consume.  Only what THIS region armed is abandoned: regions
+  // nest on one thread context, so purging the whole context here would drop
+  // the enclosing region's still-pending arms.  Consumed receipts survive:
+  // the caller confirms them as part of closing this region.
+  SharedFieldVersions::discard_armed_reads(ctx->get_context_id(),
+                                           ctx->region_enter_event());
 
   // Closing an inner region restores the enclosing frame.  The full indexed
   // path remains thread-owned, while the inner frame's local branch/auxiliary

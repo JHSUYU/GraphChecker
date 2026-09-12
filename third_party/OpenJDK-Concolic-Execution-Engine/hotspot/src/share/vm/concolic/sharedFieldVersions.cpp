@@ -289,8 +289,8 @@ bool SharedFieldVersions::resolve_read(const Location &location,
 }
 
 jlong SharedFieldVersions::arm_primitive_read(
-    jlong context_id, const Location &location, BasicType type,
-    jlong value_bits) {
+    jlong context_id, jlong region_enter_event_id, const Location &location,
+    BasicType type, jlong value_bits) {
   if (context_id <= 0 || !location.is_valid()) {
     return REPLAY_READ_NO_CONTEXT;
   }
@@ -313,6 +313,7 @@ jlong SharedFieldVersions::arm_primitive_read(
   }
   PendingPrimitiveRead read;
   read.token = token;
+  read.region_enter_event_id = region_enter_event_id;
   read.type = type;
   read.value_bits = value_bits;
   _pending_primitive_reads[key] = read;
@@ -364,12 +365,19 @@ jlong SharedFieldVersions::confirm_primitive_read(jlong context_id,
   return REPLAY_READ_PENDING;
 }
 
-void SharedFieldVersions::discard_armed_reads(jlong context_id) {
+void SharedFieldVersions::discard_armed_reads(jlong context_id,
+                                              jlong region_enter_event_id) {
   if (context_id <= 0) return;
   VERSION_LOCK;
   PendingReadStore::iterator pending = _pending_primitive_reads.begin();
   while (pending != _pending_primitive_reads.end()) {
-    if (pending->first.context_id != context_id) {
+    // Regions nest on one context: an inner region's close abandons what the
+    // inner region armed and leaves the enclosing region's arms pending.
+    // Zero is the context-wide purge that context teardown needs.
+    if (pending->first.context_id != context_id
+        || (region_enter_event_id > 0
+            && pending->second.region_enter_event_id
+               != region_enter_event_id)) {
       ++pending;
       continue;
     }
@@ -381,7 +389,8 @@ void SharedFieldVersions::discard_armed_reads(jlong context_id) {
 
 void SharedFieldVersions::forget_context(jlong context_id) {
   if (context_id <= 0) return;
-  discard_armed_reads(context_id);
+  // The context itself is going away, so every region of it is over.
+  discard_armed_reads(context_id, 0);
   VERSION_LOCK;
   ConsumedReadStore::iterator consumed = _consumed_primitive_reads.begin();
   while (consumed != _consumed_primitive_reads.end()) {
@@ -813,7 +822,8 @@ jlong ConcolicMngr::armSharedPrimitiveFieldRead(
   }
   location.owner = shadow->get_sym_rid();
   return SharedFieldVersions::arm_primitive_read(
-      ctx->get_context_id(), location, type, value_bits);
+      ctx->get_context_id(), ctx->region_enter_event(), location, type,
+      value_bits);
 }
 
 jlong ConcolicMngr::confirmSharedPrimitiveFieldRead(jlong token) {
