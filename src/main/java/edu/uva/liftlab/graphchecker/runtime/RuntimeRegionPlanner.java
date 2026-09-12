@@ -1280,6 +1280,13 @@ final class RuntimeRegionPlanner {
                 if (seed.containsKey(DEMAND_DEPTH)) {
                     plan.put(DEMAND_DEPTH, seed.get(DEMAND_DEPTH));
                 }
+                // Which location bought the admission travels with it: the
+                // basis says why, the depth says how far, and this says
+                // through what.
+                if (seed.containsKey(DEMANDED_SHARED_LOCATIONS)) {
+                    plan.put(DEMANDED_SHARED_LOCATIONS, new ArrayList<>(
+                            strings(seed.get(DEMANDED_SHARED_LOCATIONS))));
+                }
             }
             plan.put("closureGoals", Collections.singletonList(goal));
             result.regionPlans.add(plan);
@@ -2524,6 +2531,8 @@ final class RuntimeRegionPlanner {
             RuntimeSelectedRegionFinalizer.ADMISSION_BASIS;
     static final String DEMAND_DEPTH =
             RuntimeSelectedRegionFinalizer.DEMAND_DEPTH;
+    static final String DEMANDED_SHARED_LOCATIONS =
+            RuntimeSelectedRegionFinalizer.DEMANDED_SHARED_LOCATIONS;
 
     /** Task member carrying the retained loops of one occurrence. */
     static final String RETAINED_LOOPS_FIELD =

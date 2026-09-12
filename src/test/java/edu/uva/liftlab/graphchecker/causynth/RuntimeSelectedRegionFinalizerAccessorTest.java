@@ -456,7 +456,7 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
         assertEquals(Collections.singleton(middle),
                 RuntimeSelectedRegionFinalizer.admitWritersOfDemands(
                         Collections.singletonList(target), fatalInputs,
-                        instances, edges, depths));
+                        instances, edges, depths, null, null, null));
         assertEquals("SHARED_LOCATION_DEMAND_V1",
                 instances.get(middle).get("admissionBasis"));
         assertEquals(1, instances.get(middle).get(
@@ -471,7 +471,8 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
         Set<String> transitive = RuntimeSelectedRegionFinalizer
                 .transitiveSharedLocationDemand(
                         Arrays.asList(target, middle), fatalInputs,
-                        instances, edges, depths, Integer.MAX_VALUE);
+                        instances, edges, depths, Integer.MAX_VALUE,
+                        null, null);
         assertEquals(Collections.singleton(middle + "\n" + middlePort),
                 transitive);
         Set<String> reDemanded = new LinkedHashSet<>(fatalInputs);
@@ -483,7 +484,7 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                         middle, outer, farSide)),
                 RuntimeSelectedRegionFinalizer.admitWritersOfDemands(
                         Arrays.asList(target, middle), reDemanded,
-                        instances, edges, depths));
+                        instances, edges, depths, null, null, null));
         assertEquals("SHARED_LOCATION_DEMAND_V1",
                 instances.get(outer).get("admissionBasis"));
         assertEquals(2, instances.get(outer).get(
@@ -527,7 +528,7 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 .transitiveSharedLocationDemand(
                         Arrays.asList(target, middle),
                         Collections.<String>emptySet(), instances, edges,
-                        depths, Integer.MAX_VALUE).isEmpty());
+                        depths, Integer.MAX_VALUE, null, null).isEmpty());
     }
 
     @Test
@@ -558,20 +559,20 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 .transitiveSharedLocationDemand(
                         Arrays.asList(target, middle),
                         Collections.<String>emptySet(), instances, edges,
-                        depths, 1).isEmpty());
+                        depths, 1, null, null).isEmpty());
         // Zero turns the rule off outright, leaving the first-order
         // admissions this bound never gates.
         assertTrue(RuntimeSelectedRegionFinalizer
                 .transitiveSharedLocationDemand(
                         Arrays.asList(target, middle),
                         Collections.<String>emptySet(), instances, edges,
-                        depths, 0).isEmpty());
+                        depths, 0, null, null).isEmpty());
         assertEquals(Collections.singleton(middle + "\n" + middlePort),
                 RuntimeSelectedRegionFinalizer
                         .transitiveSharedLocationDemand(
                                 Arrays.asList(target, middle),
                                 Collections.<String>emptySet(), instances,
-                                edges, depths, 2));
+                                edges, depths, 2, null, null));
         assertEquals(0, RuntimeSelectedRegionFinalizer.configuredDemandDepth(
                 "0"));
         assertEquals(Integer.MAX_VALUE, RuntimeSelectedRegionFinalizer
@@ -586,6 +587,109 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 assertTrue(expected.getMessage().contains(refused));
             }
         }
+    }
+
+    /**
+     * The care set is the intersection of the two conditions: a field must
+     * appear on the backward slice AND be forward-reachable from a symbolic
+     * root.  A field the slice names but no root reaches is a constant for
+     * this failure and stays out.
+     */
+    @Test
+    public void careSetKeepsOnlySliceFieldsASymbolicRootReaches() {
+        List<Map<String, Object>> graph = Arrays.asList(
+                // The fault symbol enters at the wire and flows to a cell
+                // that reads the rolled key.
+                row("kind", "explicit_symbolic_fault",
+                        "explicitSymbolicFault", true,
+                        "fromCell", "cell.fault", "toCell", "cell.request"),
+                row("kind", "field_read", "fromCell", "cell.request",
+                        "toCell", "cell.key",
+                        "declaredFieldSignature",
+                        "<example.Owner: example.Key currentKey>"),
+                // On the slice, but nothing symbolic reaches it: a harness
+                // setter writing its own island.
+                row("kind", "field_write", "fromCell", "cell.harness",
+                        "toCell", "cell.interval",
+                        "declaredFieldSignature",
+                        "<example.Owner: long keyUpdateInterval>"));
+
+        Set<String> cared = RuntimeSelectedRegionFinalizer
+                .caredSharedLocations(graph);
+        assertTrue(cared.contains("example.Owner#currentKey"));
+        assertFalse(cared.contains("example.Owner#keyUpdateInterval"));
+    }
+
+    /** A wire attach point is a symbolic root of the same standing. */
+    @Test
+    public void careSetTreatsWireHandoffAsASymbolicRoot() {
+        List<Map<String, Object>> graph = Arrays.asList(
+                row("kind", "wire_handoff", "fromCell", "cell.send",
+                        "toCell", "cell.receive"),
+                row("kind", "field_write", "fromCell", "cell.receive",
+                        "toCell", "cell.keys",
+                        "fieldPathDeclarations", Collections.singletonList(
+                                "<example.Owner: java.util.Map allKeys>")));
+        assertTrue(RuntimeSelectedRegionFinalizer.caredSharedLocations(graph)
+                .contains("example.Owner#allKeys"));
+    }
+
+    /**
+     * The care set gates the transitive hop only.  A demanded location
+     * inside the set still opens its hop; one outside stops the walk and is
+     * recorded as pruned, naming the location and the region that read it.
+     */
+    @Test
+    public void uncaredLocationStopsTheHopAndIsRecorded() {
+        String source = "cluster/node#epoch0";
+        String target = source + "/region/REGION.fatal#1";
+        String middle = source + "/region/REGION.middle#1";
+        String outer = source + "/region/REGION.outer#1";
+        String caredPort = "REGION.middle.in.currentKey";
+        String uncaredPort = "REGION.middle.in.interval";
+        Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
+        instances.put(target, demandActivation(
+                "AT", "REGION.fatal", target, source));
+        instances.put(middle, demandActivation(
+                "AM", "REGION.middle", middle, source));
+        instances.put(outer, demandActivation(
+                "AO", "REGION.outer", outer, source));
+        List<Map<String, Object>> edges = Arrays.asList(
+                fieldFlow("SF.cared", outer, middle, caredPort,
+                        "example.Owner#currentKey"),
+                fieldFlow("SF.uncared", outer, middle, uncaredPort,
+                        "example.Owner#keyUpdateInterval"));
+        Map<String, Integer> depths = new LinkedHashMap<>();
+        depths.put(target, 0);
+        depths.put(middle, 1);
+        Set<String> cared = new LinkedHashSet<>(
+                Collections.singletonList("example.Owner#currentKey"));
+        Map<String, Map<String, Object>> pruned = new LinkedHashMap<>();
+
+        // Only the cared location seeds a demand.
+        assertEquals(Collections.singleton(middle + "\n" + caredPort),
+                RuntimeSelectedRegionFinalizer
+                        .transitiveSharedLocationDemand(
+                                Arrays.asList(target, middle),
+                                Collections.<String>emptySet(), instances,
+                                edges, depths, Integer.MAX_VALUE, cared,
+                                pruned));
+        // The refused hop is named rather than silent.
+        assertEquals(1, pruned.size());
+        Map<String, Object> refusal = pruned.values().iterator().next();
+        assertEquals(RuntimeSelectedRegionFinalizer.DEMAND_PRUNED_UNCARED_KIND,
+                refusal.get("kind"));
+        assertEquals("example.Owner#keyUpdateInterval",
+                refusal.get(SharedFieldFlow.EDGE_LOCATION));
+        assertEquals(middle, refusal.get("readerOccurrenceId"));
+        assertEquals("REGION.middle", refusal.get("readerRegionId"));
+
+        // A null care set is the ungated rule: both locations seed again.
+        assertEquals(2, RuntimeSelectedRegionFinalizer
+                .transitiveSharedLocationDemand(
+                        Arrays.asList(target, middle),
+                        Collections.<String>emptySet(), instances, edges,
+                        depths, Integer.MAX_VALUE, null, null).size());
     }
 
     private static Map<String, Object> demandActivation(

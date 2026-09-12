@@ -15,11 +15,13 @@ import edu.uva.liftlab.graphchecker.contract.SiteId;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -64,8 +66,24 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final String SHARED_LOCATION_DEMAND_ADMISSION =
             "SHARED_LOCATION_DEMAND_V1";
     private static final String DEMANDED_BY_REGIONS = "demandedByRegionIds";
-    private static final String DEMANDED_SHARED_LOCATIONS =
+    /**
+     * Which shared locations a demand admission was asked for.  Published on
+     * the plan row beside {@link #ADMISSION_BASIS} so a reader of the frozen
+     * artifact can tell which location bought each admission, rather than
+     * having to re-derive it from the retained edges.
+     */
+    public static final String DEMANDED_SHARED_LOCATIONS =
             "demandedSharedLocations";
+    /**
+     * Telemetry row kind for a shared-location demand hop the care set
+     * refused.  A location outside the care set is a constant for this
+     * failure: nothing the target reads depends on which writer produced it,
+     * so the hop stops there and its writers are never admitted.  Recording
+     * the refusal by name keeps a pruned-but-needed location diagnosable
+     * instead of silent.
+     */
+    public static final String DEMAND_PRUNED_UNCARED_KIND =
+            "SHARED_LOCATION_DEMAND_PRUNED_UNCARED";
     /**
      * How many shared-location demand hops separate this admission from the
      * fatal target.  A writer the failure closure's own port demand asked for
@@ -286,7 +304,8 @@ public final class RuntimeSelectedRegionFinalizer {
         // Declared last, and deliberately after the closure filter.
         declareCommunicationPorts(program, skeletonRows);
         canonicalizeRegionEdges(program);
-        return new Result(program.regions, program.regionEdges);
+        return new Result(program.regions, program.regionEdges,
+                new ArrayList<>(program.demandPruned.values()));
     }
 
     /** The edge id is the canonical semantic identity. */
@@ -1076,6 +1095,11 @@ public final class RuntimeSelectedRegionFinalizer {
             demandDepths.put(target, TARGET_DEMAND_DEPTH);
         }
         int demandDepthBound = configuredDemandDepthBound();
+        // The locations transitive demand may travel through, decided once
+        // per finalization off the runtime-refined graph.
+        Set<String> caredLocations = caredSharedLocations(
+                program.refinedGraph);
+        Map<String, Map<String, Object>> prunedUncared = program.demandPruned;
         Set<String> admittedStateWriters = new LinkedHashSet<>(
                 admitSharedLocationWriters(targets, instances, demands,
                         program.regionEdges, demandDepths));
@@ -1144,10 +1168,12 @@ public final class RuntimeSelectedRegionFinalizer {
                     new LinkedHashMap<>(demandDepths);
             boolean grown = admittedStateWriters.addAll(admitWritersOfDemands(
                     union.reached, union.demandedInputs, instances,
-                    program.regionEdges, demandDepths));
+                    program.regionEdges, demandDepths, targets,
+                    caredLocations, prunedUncared));
             grown |= transitiveDemands.addAll(transitiveSharedLocationDemand(
                     union.reached, union.demandedInputs, instances,
-                    program.regionEdges, demandDepths, demandDepthBound));
+                    program.regionEdges, demandDepths, demandDepthBound,
+                    caredLocations, prunedUncared));
             // A hop the bound refused reads the consumer's depth, so a round
             // that only shortened a demand chain can still open one.  Depths
             // never rise and the occurrence set is finite, so answering that
@@ -1501,7 +1527,7 @@ public final class RuntimeSelectedRegionFinalizer {
             fatalInputs.addAll(demands.targetInputs(instances.get(target)));
         }
         return admitWritersOfDemands(targets, fatalInputs, instances,
-                regionEdges, demandDepths);
+                regionEdges, demandDepths, targets, null, null);
     }
 
     /**
@@ -1558,6 +1584,117 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
+     * The shared locations this failure cares about.
+     *
+     * <p>Transitive demand may only travel through a location whose value
+     * can still differ in a way the target can observe.  Two conditions
+     * decide that, both read off the one runtime-refined graph this
+     * finalization already holds:</p>
+     *
+     * <ol>
+     *   <li>the location lies on the backward slice from the fatal target,
+     *   i.e. it appears as a declared field of some refined edge; and</li>
+     *   <li>it is forward-reachable from a symbolic root -- the explicit
+     *   fault symbol, a declared {@code CausynthSymbolicSource} field, an
+     *   {@code EXTERNAL_CALL_RETURN} value, or a wire attach point -- so
+     *   some symbolic choice can still change it.</li>
+     * </ol>
+     *
+     * <p>A location on the slice that no symbolic root reaches is a constant
+     * for this failure: every replay arm writes the value the recording
+     * observed, so admitting its writers buys no new behaviour and only
+     * grows the campaign.  Heartbeat timestamps, report counters and
+     * test-harness setters fall out here.</p>
+     */
+    static Set<String> caredSharedLocations(
+            List<Map<String, Object>> refinedGraph) {
+        List<Map<String, Object>> rows = refinedGraph == null
+                ? Collections.<Map<String, Object>>emptyList() : refinedGraph;
+        Map<String, Set<String>> forward = new LinkedHashMap<>();
+        Set<String> roots = new LinkedHashSet<>();
+        for (Map<String, Object> edge : rows) {
+            String from = text(edge.get("fromCell"));
+            String to = text(edge.get("toCell"));
+            if (from.isEmpty() || to.isEmpty()) continue;
+            forward.computeIfAbsent(from,
+                    ignored -> new LinkedHashSet<>()).add(to);
+            if (symbolicRootEdge(edge)) {
+                // Both ends: the fault edge names the symbol it introduces
+                // on one side and the cell that carries it on the other.
+                roots.add(from);
+                roots.add(to);
+            }
+        }
+        Set<String> reachable = new LinkedHashSet<>(roots);
+        Deque<String> pending = new ArrayDeque<>(roots);
+        while (!pending.isEmpty()) {
+            for (String next : forward.getOrDefault(pending.removeFirst(),
+                    Collections.<String>emptySet())) {
+                if (reachable.add(next)) pending.addLast(next);
+            }
+        }
+        Set<String> cared = new LinkedHashSet<>();
+        for (Map<String, Object> edge : rows) {
+            if (!reachable.contains(text(edge.get("fromCell")))
+                    && !reachable.contains(text(edge.get("toCell")))) {
+                continue;
+            }
+            cared.addAll(declaredFieldLocations(edge));
+        }
+        return cared;
+    }
+
+    /** A refined edge that introduces a symbolic value of its own. */
+    private static boolean symbolicRootEdge(Map<String, Object> edge) {
+        String kind = text(edge.get("kind"));
+        return Boolean.TRUE.equals(booleanValue(
+                edge.get("explicitSymbolicFault")))
+                || !text(edge.get("symbolicName")).isEmpty()
+                || "wire_handoff".equals(kind)
+                || "wire_capture_argument".equals(kind)
+                || EXTERNAL_CALL_RETURN.equals(text(edge.get("sourceKind")));
+    }
+
+    /** Every {@code owner#field} address one refined edge names. */
+    private static Set<String> declaredFieldLocations(
+            Map<String, Object> edge) {
+        Set<String> located = new LinkedHashSet<>();
+        List<String> declarations = new ArrayList<>(
+                strings(edge.get("fieldPathDeclarations")));
+        declarations.add(text(edge.get("declaredFieldSignature")));
+        for (String declaration : declarations) {
+            FieldPathSpec.DeclaredField field =
+                    FieldPathSpec.declaredField(declaration);
+            if (field == null) continue;
+            String key = SharedFieldFlow.fieldKey(field.owner(),
+                    field.name());
+            if (!key.isEmpty()) located.add(key);
+        }
+        return located;
+    }
+
+    /** One refused demand hop, keyed by the location and the reader. */
+    private static void recordPrunedDemand(
+            Map<String, Map<String, Object>> prunedUncared,
+            String location, String consumer,
+            Map<String, Object> reader, int readerDepth) {
+        if (prunedUncared == null || location.isEmpty()) return;
+        String regionId = reader == null ? ""
+                : text(reader.get("regionId"));
+        Map<String, Object> row = prunedUncared.computeIfAbsent(
+                location + "\n" + consumer, ignored -> {
+                    Map<String, Object> fresh = new LinkedHashMap<>();
+                    fresh.put("schemaVersion", 3);
+                    fresh.put("kind", DEMAND_PRUNED_UNCARED_KIND);
+                    fresh.put(SharedFieldFlow.EDGE_LOCATION, location);
+                    fresh.put("readerOccurrenceId", consumer);
+                    fresh.put("readerRegionId", regionId);
+                    return fresh;
+                });
+        row.put(DEMAND_DEPTH, readerDepth);
+    }
+
+    /**
      * Second-order shared-location demand: the read ports an already admitted
      * occurrence holds for a location some other recorded activation of the
      * same node and epoch wrote.
@@ -1589,7 +1726,9 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Map<String, Object>> instances,
             List<Map<String, Object>> regionEdges,
             Map<String, Integer> demandDepths,
-            int depthBound) {
+            int depthBound,
+            Set<String> caredLocations,
+            Map<String, Map<String, Object>> prunedUncared) {
         Set<String> reached = new LinkedHashSet<>(admitted);
         Set<String> seeds = new LinkedHashSet<>();
         for (Map<String, Object> edge : regionEdges) {
@@ -1617,6 +1756,18 @@ public final class RuntimeSelectedRegionFinalizer {
                     activationSourceKey(instances.get(writer)))) {
                 continue;
             }
+            String location = text(edge.get(SharedFieldFlow.EDGE_LOCATION));
+            if (caredLocations != null
+                    && !caredLocations.contains(location)) {
+                // Outside the care set this location is a constant for the
+                // failure, so the hop stops here.  Record the refusal by
+                // location and reader so a pruned-but-needed location is
+                // diagnosable rather than silent.
+                recordPrunedDemand(prunedUncared, location, consumer,
+                        instances.get(consumer), demandDepth(
+                                demandDepths, consumer));
+                continue;
+            }
             int hop = demandDepth(demandDepths, consumer) + 1;
             if (hop > depthBound) continue;
             recordDemandDepth(demandDepths, writer, hop);
@@ -1631,7 +1782,11 @@ public final class RuntimeSelectedRegionFinalizer {
             Set<String> demandedInputs,
             Map<String, Map<String, Object>> instances,
             List<Map<String, Object>> regionEdges,
-            Map<String, Integer> demandDepths) throws IOException {
+            Map<String, Integer> demandDepths,
+            Collection<String> fatalTargets,
+            Set<String> caredLocations,
+            Map<String, Map<String, Object>> prunedUncared)
+            throws IOException {
         Set<String> targets = new LinkedHashSet<>(demanding);
         Set<String> fatalInputs = demandedInputs;
         Map<String, Set<String>> locationsByWriter = new LinkedHashMap<>();
@@ -1652,6 +1807,20 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             String location = text(edge.get(SharedFieldFlow.EDGE_LOCATION));
             if (location.isEmpty()) {
+                continue;
+            }
+            // The fatal target's own reads are demanded whatever they are:
+            // they are the failure's direct inputs.  Every other consumer is
+            // here because it was itself admitted to supply a location, so
+            // its reads are second-order demand and travel only through the
+            // care set.
+            if (caredLocations != null
+                    && (fatalTargets == null
+                    || !fatalTargets.contains(consumer))
+                    && !caredLocations.contains(location)) {
+                recordPrunedDemand(prunedUncared, location, consumer,
+                        instances.get(consumer),
+                        demandDepth(demandDepths, consumer));
                 continue;
             }
             locationsByWriter.computeIfAbsent(writer,
@@ -4083,10 +4252,18 @@ public final class RuntimeSelectedRegionFinalizer {
         public final List<Map<String, Object>> regions;
         /** Canonicalized region edges exactly as written to the artifact. */
         public final List<Map<String, Object>> regionEdges;
+        /**
+         * One row per shared-location demand hop the care set refused.
+         * Telemetry only: nothing downstream schedules off these, they exist
+         * so a pruned-but-needed location can be named after the fact.
+         */
+        public final List<Map<String, Object>> demandPruned;
         private Result(List<Map<String, Object>> regions,
-                       List<Map<String, Object>> regionEdges) {
+                       List<Map<String, Object>> regionEdges,
+                       List<Map<String, Object>> demandPruned) {
             this.regions = regions;
             this.regionEdges = regionEdges;
+            this.demandPruned = demandPruned;
         }
     }
 }

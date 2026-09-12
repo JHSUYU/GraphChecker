@@ -490,6 +490,11 @@ do_analyze() {
       "-Dcausynth.instrument.concolic=true"
       "-Dcausynth.concolic.task.plan=${concolic_plan}"
       "-Dcausynth.concolic.task.id=${concolic_task_ids}"
+      # The instrumentation pass bounds the campaign it is about to rewrite
+      # by the same number the scheduler bounded it by.  Left unstated it
+      # falls back to its own default, so a raised schedule_max_jobs planned
+      # a campaign this stage then refused.
+      "-Dcausynth.concolic.campaign.max.tasks=${schedule_max_jobs}"
     )
   fi
   require_file "GraphChecker jar" "${graphchecker_jar}"

@@ -8,6 +8,8 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.concolic.ArtifactIO;
+import com.google.gson.Gson;
+import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
@@ -997,6 +999,10 @@ public final class CausynthTraceRecorder {
             writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
                     closure.regions, closure.regionEdges, trace,
                     activationGraph.runtimeInstances);
+            // Telemetry beside the plan, never inside it: the plan artifact
+            // owns exactly two row kinds and downstream identity checks read
+            // it whole.
+            writeDemandPruned(planOutputDirectory, closure.demandPruned);
         }
     }
 
@@ -1882,6 +1888,26 @@ public final class CausynthTraceRecorder {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
                 planned.runtimePlanJsonl());
         return planned;
+    }
+
+    /** One reusable encoder for the telemetry rows below. */
+    private static final Gson GSON = new Gson();
+
+    /**
+     * Publishes the shared-location demand hops the care set refused.  An
+     * empty run still writes the file, so "no hop was pruned" and "this
+     * build does not prune" are distinguishable in an evidence directory.
+     */
+    private static void writeDemandPruned(
+            File directory, List<Map<String, Object>> pruned)
+            throws IOException {
+        StringBuilder rows = new StringBuilder();
+        for (Map<String, Object> row : pruned) {
+            rows.append(CanonicalJson.render(GSON.toJsonTree(row)))
+                    .append('\n');
+        }
+        writeFile(new File(directory,
+                "shared_location_demand_pruned.jsonl"), rows.toString());
     }
 
     private static void writeFile(File file, String value) throws IOException {

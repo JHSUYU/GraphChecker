@@ -230,9 +230,13 @@ public final class ConcolicScheduler {
                 : RuntimeWorkflowDiscovery.rankedWorkflow(
                         loaded.regionPlans);
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
+            // A bare count says only that the campaign is too big; what a
+            // reader needs is which admission rule bought the rows, so the
+            // next step is either raising --max-jobs or tightening that rule.
             throw new IOException("selected exact closure exceeds max jobs: "
                     + workflow.scheduledTaskCount() + " > "
-                    + arguments.maxJobs);
+                    + arguments.maxJobs + "; "
+                    + closureAdmissionSummary(loaded.regionPlans));
         }
 
         List<Result> scheduled = scheduleSelections(arguments, loaded,
@@ -1764,6 +1768,45 @@ public final class ConcolicScheduler {
             }
             return CanonicalJson.render(filtered);
         }
+    }
+
+    /**
+     * How the plan rows of an over-sized closure were admitted.  Counted by
+     * admission basis, then by demand depth, then by the region anchors that
+     * contributed most, so the cap failure names its own top contributors
+     * instead of sending a reader back to the plan artifact.
+     */
+    static String closureAdmissionSummary(List<RegionInstancePlan> rows) {
+        Map<String, Integer> byBasis = new TreeMap<>();
+        Map<String, Integer> byDepth = new TreeMap<>();
+        Map<String, Integer> byAnchor = new LinkedHashMap<>();
+        for (RegionInstancePlan plan : rows) {
+            String basis = optionalString(plan.json(), "admissionBasis");
+            byBasis.merge(basis.isEmpty()
+                    ? "TARGET_REACHABLE" : basis, 1, Integer::sum);
+            int depth = optionalInteger(plan.json(), "demandDepth", -1);
+            byDepth.merge(depth < 0 ? "-" : String.valueOf(depth),
+                    1, Integer::sum);
+            String anchor = optionalString(plan.json(), "targetMethod");
+            if (!anchor.isEmpty()) {
+                byAnchor.merge(anchor, 1, Integer::sum);
+            }
+        }
+        StringBuilder summary = new StringBuilder();
+        summary.append("admissionBasis=").append(byBasis)
+                .append(" demandDepth=").append(byDepth)
+                .append(" topAnchors=[");
+        List<Map.Entry<String, Integer>> anchors =
+                new ArrayList<>(byAnchor.entrySet());
+        anchors.sort(Comparator.<Map.Entry<String, Integer>>comparingInt(
+                Map.Entry::getValue).reversed()
+                .thenComparing(Map.Entry::getKey));
+        for (int index = 0; index < anchors.size() && index < 5; index++) {
+            if (index > 0) summary.append(", ");
+            summary.append(anchors.get(index).getValue()).append("x ")
+                    .append(anchors.get(index).getKey());
+        }
+        return summary.append(']').toString();
     }
 
     /** Describes the existing selection/admission decision without adding one.
