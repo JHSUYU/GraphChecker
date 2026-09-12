@@ -70,6 +70,13 @@ public final class StaticProgram {
 
     /** The runtime-refined dataflow rows this finalization reads. */
     List<Map<String, Object>> refinedGraph = Collections.emptyList();
+    /**
+     * Shared-location demand hops the care set refused, by location and
+     * reader.  Diagnostic telemetry of one finalization, not scheduling
+     * evidence.
+     */
+    final Map<String, Map<String, Object>> demandPruned =
+            new LinkedHashMap<>();
     /** The selected region skeletons, by region id. */
     final Map<String, Map<String, Object>> skeletons = new LinkedHashMap<>();
     /** Minted region activations, by occurrence id. */

@@ -268,6 +268,47 @@ public class RuntimeWorkflowHandoffClosureTest {
         return result;
     }
 
+    /**
+     * The job-cap refusal has to name its own top contributors: a bare count
+     * says the campaign is too big but not which admission rule bought the
+     * rows, which is the only thing that decides between raising the cap and
+     * tightening the rule.
+     */
+    @Test
+    public void closureAdmissionSummaryNamesTopContributors() {
+        String convert = "<example.PBHelper: example.Key convert("
+                + "example.KeyProto)>";
+        String addKeys = "<example.Manager: void addKeys(example.Keys)>";
+        java.util.List<RegionInstancePlan> rows = Arrays.asList(
+                admitted("R.a", "s/region/R.a#1", null, null, addKeys),
+                admitted("R.b", "s/region/R.b#1",
+                        "SHARED_LOCATION_DEMAND_V1", 1, addKeys),
+                admitted("R.c", "s/region/R.c#1",
+                        "SHARED_LOCATION_DEMAND_V1", 2, convert),
+                admitted("R.d", "s/region/R.d#1",
+                        "SHARED_LOCATION_DEMAND_V1", 2, convert),
+                admitted("R.e", "s/region/R.e#1",
+                        "SHARED_LOCATION_DEMAND_V1", 4, convert));
+
+        String summary = ConcolicScheduler.closureAdmissionSummary(rows);
+        // Counted by basis, by depth, and by the anchors that dominate.
+        assertEquals("admissionBasis={SHARED_LOCATION_DEMAND_V1=4, "
+                + "TARGET_REACHABLE=1} demandDepth={-=1, 1=1, 2=2, 4=1} "
+                + "topAnchors=[3x " + convert + ", 2x " + addKeys + "]",
+                summary);
+    }
+
+    private static RegionInstancePlan admitted(
+            String region, String occurrence, String basis, Integer depth,
+            String targetMethod) {
+        JsonObject encoded = plan("s", region, occurrence,
+                "GOAL." + region, false, new JsonArray()).json().deepCopy();
+        encoded.addProperty("targetMethod", targetMethod);
+        if (basis != null) encoded.addProperty("admissionBasis", basis);
+        if (depth != null) encoded.addProperty("demandDepth", depth);
+        return RegionInstancePlan.decode(encoded);
+    }
+
     private static RegionInstancePlan plan(String source, String region,
                                            String occurrence, String goal,
                                            boolean target, JsonArray edges) {
