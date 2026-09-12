@@ -89,8 +89,7 @@ public final class ExecutionTask extends PlanRow {
             JsonArray inputActions,
             JsonArray branches,
             JsonArray edgeBindings,
-            LoopBoundPolicy loopBound,
-            boolean ready) {
+            LoopBoundPolicy loopBound) {
         if (goal == null || inputActions == null || branches == null
                 || edgeBindings == null || loopBound == null) {
             throw new IllegalArgumentException(
@@ -108,8 +107,12 @@ public final class ExecutionTask extends PlanRow {
             task.add("edgeBindings", edgeBindings.deepCopy());
         }
         retainSelectedCommunicationHandoffs(task, edgeBindings);
+        // A scheduled task is executable by construction: the scheduler
+        // publishes the occurrences it selected, never ones it decided
+        // against.  The state is still written, and still read back on
+        // decode, because a decoded row is externally authored.
         JsonObject admission = new JsonObject();
-        admission.addProperty("state", ready ? "EXECUTABLE" : "BLOCKED");
+        admission.addProperty("state", "EXECUTABLE");
         task.add("admission", admission);
         return new ExecutionTask(task, loopBound,
                 goal.plan().configuredSourcePhases());

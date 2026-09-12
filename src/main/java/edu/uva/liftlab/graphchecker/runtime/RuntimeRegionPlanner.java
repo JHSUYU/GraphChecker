@@ -62,8 +62,6 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 
 /** Binds region skeletons and refined region state to concrete activations. */
 final class RuntimeRegionPlanner {
-    private static final Type ROW =
-            new TypeToken<Map<String, Object>>() { }.getType();
     private static final Gson GSON = new GsonBuilder()
             .setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE)
             .create();
@@ -2968,33 +2966,12 @@ final class RuntimeRegionPlanner {
         if (file == null || !file.isFile()) {
             throw new IllegalArgumentException("artifact is missing: " + file);
         }
-        List<Map<String, Object>> result = new ArrayList<>();
-        try (BufferedReader reader = reader(file)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (!line.trim().isEmpty()) {
-                    Map<String, Object> row = GSON.fromJson(line, ROW);
-                    if (row == null) {
-                        throw new IllegalArgumentException(
-                                "null artifact row: " + file);
-                    }
-                    result.add(row);
-                }
-            }
+        try {
+            return MapFields.readRows(file);
         } catch (IOException failure) {
             throw new IllegalArgumentException("cannot read " + file,
                     failure);
         }
-        return result;
-    }
-
-    private static BufferedReader reader(File file) throws IOException {
-        InputStream input = Files.newInputStream(file.toPath());
-        if (file.getName().endsWith(".gz")) {
-            input = new GZIPInputStream(input);
-        }
-        return new BufferedReader(new InputStreamReader(input,
-                StandardCharsets.UTF_8));
     }
 
     private static String activationId(MethodEvent root) {

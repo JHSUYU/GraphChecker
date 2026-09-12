@@ -3070,7 +3070,7 @@ public final class CausynthPipeline {
                 StringConstant.v(field), methodReceiver, receiver, valueObject,
                 primitiveValue);
         prefixUnits.add(traceCall);
-        if (fieldValueIsReadValue || "FIELD_WRITE".equals(kind)) {
+        if (fieldValueIsReadValue) {
             insertAfterSequence(body, unit, prefixUnits);
         } else {
             insertBeforeSequence(body, unit, prefixUnits);

@@ -1235,8 +1235,7 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void selectActivationCaller(String kind, String targetMethod,
-                                        String callerMethod, Fact callsite,
-                                        boolean emitActivationEdge) {
+                                        String callerMethod, Fact callsite) {
         if (callerMethod == null || callsite == null
                 || !expandOnce(kind, targetMethod, callerMethod,
                 callsite.unitIndex)) {
@@ -1247,10 +1246,8 @@ final class SeedBackwardStaticAnalyzer {
             loadMethod(caller);
         }
         String activation = targetMethod + ".activation";
-        if (emitActivationEdge) {
-            addEdge(kind, factNode(callsite), activation, callerMethod,
-                    callsite);
-        }
+        addEdge(kind, factNode(callsite), activation, callerMethod,
+                callsite);
         selectedMethods.add(callerMethod);
 
         forEachGuardOperand(callerMethod, controllingGuards(callerMethod,
@@ -1829,9 +1826,7 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             relevantFlow = true;
-            if (kind != null) {
-                addEdge(kind, actual, formal, callerMethod, fact);
-            }
+            addEdge(kind, actual, formal, callerMethod, fact);
             callerRelevant.add(actual);
         }
         return relevantFlow;
@@ -1848,9 +1843,7 @@ final class SeedBackwardStaticAnalyzer {
             if (!callerRelevant.contains(def)) {
                 continue;
             }
-            if (kind != null) {
-                addEdge(kind, returnNode, def, callerMethod, fact);
-            }
+            addEdge(kind, returnNode, def, callerMethod, fact);
             if (targetExpandable) {
                 targetRelevant.add(returnNode);
                 selectedMethods.add(targetMethod);
@@ -2377,7 +2370,7 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 if (relevantFlow) {
                     selectActivationCaller("dispatch_activation",
-                            targetMethod, callsite.method, callsiteFact, true);
+                            targetMethod, callsite.method, callsiteFact);
                 }
             });
         }
@@ -2430,10 +2423,8 @@ final class SeedBackwardStaticAnalyzer {
             if (ignoreNode(actual)) {
                 continue;
             }
-            if (edgeKind != null) {
-                addEdge(edgeKind, actual, formal, callsite.method,
-                        callsiteFact);
-            }
+            addEdge(edgeKind, actual, formal, callsite.method,
+                    callsiteFact);
             callerRelevant.add(actual);
             selectedMethods.add(callsite.method);
             expanded = true;

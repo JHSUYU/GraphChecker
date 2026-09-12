@@ -147,8 +147,7 @@ public final class ConcolicScheduler {
             }
             ExecutionTask scheduled = ExecutionTask.create(candidate.goal,
                     taskId, selectedInputs,
-                    candidate.branches, edgeBindings,
-                    loopBound, candidate.ready);
+                    candidate.branches, edgeBindings, loopBound);
             // json() is the live row by decision (contract/PlanRow): the
             // scheduler annotates the task it has just created, and no typed
             // member it already decoded is derived from these carriers.
@@ -489,7 +488,7 @@ public final class ConcolicScheduler {
                         branches);
                 result.add(new Candidate(goal, branches,
                         TargetBranch.regionPath(), true,
-                        inputActions, true,
+                        inputActions,
                         goal.plan().occurrenceId(),
                         new JsonObject(), null));
                 return;
@@ -568,7 +567,7 @@ public final class ConcolicScheduler {
                         queryInstance);
                 result.add(new Candidate(goal,
                         reachSlice, target,
-                        hasWitness, inputActions, true,
+                        hasWitness, inputActions,
                         queryInstance,
                         targetQueryOccurrence(arguments, goal,
                                 inputActions, targetBindings),
@@ -1658,7 +1657,6 @@ public final class ConcolicScheduler {
     private static final class Candidate {
         private static final Comparator<Candidate> ORDER =
                 Comparator.comparing((Candidate value) -> !value.directed)
-                        .thenComparing(value -> !value.ready)
                         .thenComparing(Comparator.comparingLong(
                                 (Candidate value) ->
                                         value.target.runtimeEventSeq)
@@ -1673,7 +1671,6 @@ public final class ConcolicScheduler {
         private final TargetBranch target;
         private final boolean directed;
         private final JsonArray inputActions;
-        private final boolean ready;
         private final String queryOccurrenceId;
         private final JsonObject queryOccurrence;
         private final JsonArray targetEdgeBindings;
@@ -1681,7 +1678,7 @@ public final class ConcolicScheduler {
         private Candidate(Goal goal, JsonArray branches,
                           TargetBranch target,
                           boolean hasRequiredWitness,
-                          JsonArray inputActions, boolean ready,
+                          JsonArray inputActions,
                           String queryOccurrenceId,
                           JsonObject queryOccurrence,
                           JsonArray targetEdgeBindings) {
@@ -1691,7 +1688,6 @@ public final class ConcolicScheduler {
             this.directed = goal.kind().capturesRegionPath()
                     || !hasRequiredWitness;
             this.inputActions = inputActions;
-            this.ready = ready;
             this.queryOccurrenceId = firstNonBlank(
                     queryOccurrenceId,
                     goal.plan().occurrenceId());

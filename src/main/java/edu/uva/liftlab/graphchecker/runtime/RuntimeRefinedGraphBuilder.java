@@ -678,25 +678,6 @@ final class RuntimeRefinedGraphBuilder {
         return result;
     }
 
-    private static List<Map<String, Object>> readRows(File file)
-            throws IOException {
-        List<Map<String, Object>> result = new ArrayList<>();
-        try (BufferedReader reader = reader(file.toPath())) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) {
-                    continue;
-                }
-                Map<String, Object> row = GSON.fromJson(line, ROW_TYPE);
-                if (row == null) {
-                    throw new IOException("null JSON row in " + file);
-                }
-                result.add(row);
-            }
-        }
-        return result;
-    }
-
     private static BufferedReader reader(Path path) throws IOException {
         InputStream input = Files.newInputStream(path);
         try {
@@ -806,7 +787,7 @@ final class RuntimeRefinedGraphBuilder {
 
         private static SkeletonCatalog read(File file) throws IOException {
             SkeletonCatalog result = new SkeletonCatalog();
-            for (Map<String, Object> row : readRows(file)) {
+            for (Map<String, Object> row : MapFields.readRows(file)) {
                 if (integer(row.get("schemaVersion"), -1)
                         != RuntimeSelectedRegionFinalizer
                         .REGION_SCHEMA_VERSION
