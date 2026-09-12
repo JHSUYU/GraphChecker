@@ -2759,7 +2759,12 @@ public final class ConcolicRegionRuntime {
                 symbolicSupportDigest);
     }
 
-    /** Result of one exact binary-branch capture used by replay matching. */
+    /**
+     * Result of one exact capture, used by replay matching: whether the
+     * decision was attested well enough to address a target reach, and the
+     * symbolic support a binary branch matched its replay prefix on.  A
+     * multiway successor is its own authority and carries no support.
+     */
     private static final class RecordedBranch {
         private static final RecordedBranch NONE =
                 new RecordedBranch(false, "");
