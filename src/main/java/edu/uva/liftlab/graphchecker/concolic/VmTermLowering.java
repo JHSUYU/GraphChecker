@@ -9,7 +9,10 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
@@ -238,6 +241,88 @@ final class VmTermLowering {
                     "_java_type");
         }
         return optionalString(object, "_java_type");
+    }
+
+
+    /**
+     * SMT-LIB's str.from_int is defined only for non-negative integers, so
+     * Java's decimal Integer.toString needs the leading '-' spelled out.
+     */
+    static final String JAVA_INT_TO_STRING =
+            "(define-fun java_int_to_string ((i Int)) String"
+                    + " (ite (< i 0)"
+                    + " (str.++ \"-\" (str.from_int (- i)))"
+                    + " (str.from_int i)))";
+
+    /**
+     * The sort, datatype and helper declarations every lowered query opens
+     * with.  The two callers froze the nullRef declaration on either side of
+     * the Value datatype; the position is inert to SMT and is kept as each
+     * emitted it so their bytes do not move.
+     */
+    static List<String> preamble(boolean nullRefBeforeValueDatatype) {
+        List<String> lines = new ArrayList<>();
+        lines.add("(declare-sort Ref 0)");
+        if (nullRefBeforeValueDatatype) {
+            lines.add("(declare-const nullRef Ref)");
+        }
+        lines.add(ContainerSmtCodec.valueDatatypeDeclaration());
+        if (!nullRefBeforeValueDatatype) {
+            lines.add("(declare-const nullRef Ref)");
+        }
+        lines.addAll(ContainerSmtCodec.preamble());
+        return lines;
+    }
+
+    /** The container codec's sort for one lowered value, or null. */
+    static ContainerSmtCodec.Sort containerSortOf(Sort sort) {
+        if (sort == null) return null;
+        switch (sort) {
+            case BOOL: return ContainerSmtCodec.Sort.BOOL;
+            case INT: return ContainerSmtCodec.Sort.INT;
+            case FLOAT32: return ContainerSmtCodec.Sort.FLOAT32;
+            case FLOAT64: return ContainerSmtCodec.Sort.FLOAT64;
+            case STRING: return ContainerSmtCodec.Sort.STRING;
+            case REF: return ContainerSmtCodec.Sort.REF;
+            case VALUE: return ContainerSmtCodec.Sort.VALUE;
+            case ARRAY_VALUE: return ContainerSmtCodec.Sort.INDEXED;
+            case MAP: return ContainerSmtCodec.Sort.ASSOCIATIVE;
+            default: return null;
+        }
+    }
+
+    /** The lowered sort one container codec value carries. */
+    static Sort sortOfContainer(ContainerSmtCodec.Sort sort) {
+        if (sort == null) return Sort.UNKNOWN;
+        switch (sort) {
+            case BOOL: return Sort.BOOL;
+            case INT: return Sort.INT;
+            case FLOAT32: return Sort.FLOAT32;
+            case FLOAT64: return Sort.FLOAT64;
+            case STRING: return Sort.STRING;
+            case REF: return Sort.REF;
+            case VALUE: return Sort.VALUE;
+            case INDEXED: return Sort.ARRAY_VALUE;
+            default: return Sort.MAP;
+        }
+    }
+
+    /**
+     * Records one read-time use of a guarded read under the identity the two
+     * callers already agree on, refusing when the same use is claimed twice
+     * with different candidates.
+     */
+    static void recordGuardedReadUse(
+            Map<String, Map<String, GuardedReadUse>> uses,
+            String readIdentity, String projectionIdentity,
+            String activation, Collection<String> selectors,
+            Consumer<String> ambiguous) {
+        String identity = GuardedReadNaming.useIdentity(projectionIdentity,
+                activation);
+        GuardedReadUse use = new GuardedReadUse(activation, selectors);
+        GuardedReadUse held = uses.computeIfAbsent(readIdentity,
+                ignored -> new LinkedHashMap<>()).putIfAbsent(identity, use);
+        if (held != null && !held.same(use)) ambiguous.accept(identity);
     }
 
     /** One lowered VM expression: its SMT text plus its Java-level facts. */

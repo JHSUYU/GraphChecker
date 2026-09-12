@@ -1466,16 +1466,8 @@ public final class ConcolicSmtComposer {
             preamble.add("; GraphChecker composed concolic query");
             preamble.add("; fatal region: " + optionalString(fatal, "regionId"));
             preamble.add("(set-logic ALL)");
-            preamble.add("(declare-sort Ref 0)");
-            preamble.add(ContainerSmtCodec.valueDatatypeDeclaration());
-            preamble.add("(declare-const nullRef Ref)");
-            preamble.addAll(ContainerSmtCodec.preamble());
-            // SMT-LIB's str.from_int is defined only for non-negative
-            // integers.  Java's decimal Integer.toString additionally emits
-            preamble.add("(define-fun java_int_to_string ((i Int)) String"
-                    + " (ite (< i 0)"
-                    + " (str.++ \"-\" (str.from_int (- i)))"
-                    + " (str.from_int i)))");
+            preamble.addAll(VmTermLowering.preamble(false));
+            preamble.add(VmTermLowering.JAVA_INT_TO_STRING);
             // Java integral bytecodes wrap in two's-complement arithmetic.
             // Keeping the public scalar carrier as SMT Int is convenient for
             preamble.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
@@ -2332,16 +2324,11 @@ public final class ConcolicSmtComposer {
                                           String projectionIdentity,
                                           String activation,
                                           Set<String> selectors) {
-            String identity = GuardedReadNaming.useIdentity(
-                    projectionIdentity, activation);
-            GuardedReadUse use = new GuardedReadUse(activation, selectors);
-            GuardedReadUse held = guardedReadUses.computeIfAbsent(readIdentity,
-                    ignored -> new LinkedHashMap<>()).putIfAbsent(identity,
-                    use);
-            if (held != null && !held.same(use)) {
-                refuseGuardedRead("GuardedReadUseAmbiguous:" + identity,
-                        "one stable read use has two candidate sets");
-            }
+            VmTermLowering.recordGuardedReadUse(guardedReadUses,
+                    readIdentity, projectionIdentity, activation, selectors,
+                    identity -> refuseGuardedRead(
+                            "GuardedReadUseAmbiguous:" + identity,
+                            "one stable read use has two candidate sets"));
         }
 
         private DirectReadArm lowerDirectReadArm(String readIdentity,
@@ -2969,25 +2956,8 @@ public final class ConcolicSmtComposer {
         private ContainerSmtCodec.Term toContainerTerm(Term value) {
             if (value == null) return null;
             retainContainerPrecondition(value);
-            ContainerSmtCodec.Sort sort = value.sort == Sort.BOOL
-                    ? ContainerSmtCodec.Sort.BOOL
-                    : value.sort == Sort.INT
-                    ? ContainerSmtCodec.Sort.INT
-                    : value.sort == Sort.REF
-                    ? ContainerSmtCodec.Sort.REF
-                    : value.sort == Sort.VALUE
-                    ? ContainerSmtCodec.Sort.VALUE : null;
-            if (value.sort == Sort.ARRAY_VALUE) {
-                sort = ContainerSmtCodec.Sort.INDEXED;
-            } else if (value.sort == Sort.MAP) {
-                sort = ContainerSmtCodec.Sort.ASSOCIATIVE;
-            } else if (value.sort == Sort.FLOAT32) {
-                sort = ContainerSmtCodec.Sort.FLOAT32;
-            } else if (value.sort == Sort.FLOAT64) {
-                sort = ContainerSmtCodec.Sort.FLOAT64;
-            } else if (value.sort == Sort.STRING) {
-                sort = ContainerSmtCodec.Sort.STRING;
-            }
+            ContainerSmtCodec.Sort sort =
+                    VmTermLowering.containerSortOf(value.sort);
             if (sort == null) {
                 unsupported.add("ContainerOperandSort:" + value.sort);
                 return null;
@@ -3006,23 +2976,10 @@ public final class ConcolicSmtComposer {
 
         private Term fromContainerTerm(ContainerSmtCodec.Term value) {
             if (value == null) return unsupportedTerm(Sort.VALUE);
-            Sort sort = value.sort == ContainerSmtCodec.Sort.BOOL
-                    ? Sort.BOOL
-                    : value.sort == ContainerSmtCodec.Sort.INT
-                    ? Sort.INT
-                    : value.sort == ContainerSmtCodec.Sort.REF
-                    ? Sort.REF
-                    : value.sort == ContainerSmtCodec.Sort.FLOAT32
-                    ? Sort.FLOAT32
-                    : value.sort == ContainerSmtCodec.Sort.FLOAT64
-                    ? Sort.FLOAT64
-                    : value.sort == ContainerSmtCodec.Sort.STRING
-                    ? Sort.STRING
-                    : value.sort == ContainerSmtCodec.Sort.INDEXED
-                    ? Sort.ARRAY_VALUE
-                    : value.sort == ContainerSmtCodec.Sort.ASSOCIATIVE
-                    ? Sort.MAP : Sort.VALUE;
-            return Term.of(value.text, sort, value.integralWidth);
+            Sort sort = VmTermLowering.sortOfContainer(value.sort);
+            return Term.of(value.text,
+                    sort == Sort.UNKNOWN ? Sort.VALUE : sort,
+                    value.integralWidth);
         }
 
         private Term symbol(JsonObject expression, Sort expected) {

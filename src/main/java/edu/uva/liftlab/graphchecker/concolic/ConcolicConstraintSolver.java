@@ -1209,17 +1209,10 @@ public final class ConcolicConstraintSolver {
                                           String projectionIdentity,
                                           String activation,
                                           Collection<String> selectors) {
-            List<String> ordered = new ArrayList<>(selectors);
-            Collections.sort(ordered);
-            String identity = GuardedReadNaming.useIdentity(
-                    projectionIdentity, activation);
-            GuardedReadUse use = new GuardedReadUse(activation, ordered);
-            GuardedReadUse held = guardedReadUses.computeIfAbsent(
-                    readIdentity, ignored -> new LinkedHashMap<>())
-                    .putIfAbsent(identity, use);
-            if (held != null && !held.same(use)) {
-                unsupported.add("GUARDED_READ_USE_AMBIGUOUS:" + identity);
-            }
+            VmTermLowering.recordGuardedReadUse(guardedReadUses,
+                    readIdentity, projectionIdentity, activation, selectors,
+                    identity -> unsupported.add(
+                            "GUARDED_READ_USE_AMBIGUOUS:" + identity));
         }
 
         private void noteReadFromWriterCase(JsonObject candidate,
@@ -1513,20 +1506,6 @@ public final class ConcolicConstraintSolver {
         }
 
         /** The one codec-sort to solver-sort direction. */
-        private static Sort containerSort(ContainerSmtCodec.Sort sort) {
-            if (sort == null) return Sort.UNKNOWN;
-            switch (sort) {
-                case BOOL: return Sort.BOOL;
-                case INT: return Sort.INT;
-                case FLOAT32: return Sort.FLOAT32;
-                case FLOAT64: return Sort.FLOAT64;
-                case STRING: return Sort.STRING;
-                case REF: return Sort.REF;
-                case VALUE: return Sort.VALUE;
-                case INDEXED: return Sort.ARRAY_VALUE;
-                default: return Sort.MAP;
-            }
-        }
 
         /**
          * Interns a compound codec term as a fully constrained constant.  A
@@ -1540,7 +1519,7 @@ public final class ConcolicConstraintSolver {
                     || value.text.charAt(0) != '(') {
                 return value;
             }
-            Sort sort = containerSort(value.sort);
+            Sort sort = VmTermLowering.sortOfContainer(value.sort);
             if (sort == Sort.UNKNOWN) return value;
             String identity = sort.replayName() + "\u0000" + value.text;
             String digest = sha256(identity);
@@ -1559,24 +1538,8 @@ public final class ConcolicConstraintSolver {
 
         private ContainerSmtCodec.Term toContainerTerm(Term value) {
             if (value == null) return null;
-            ContainerSmtCodec.Sort sort = value.sort == Sort.BOOL
-                    ? ContainerSmtCodec.Sort.BOOL
-                    : value.sort == Sort.INT
-                    ? ContainerSmtCodec.Sort.INT
-                    : value.sort == Sort.FLOAT32
-                    ? ContainerSmtCodec.Sort.FLOAT32
-                    : value.sort == Sort.FLOAT64
-                    ? ContainerSmtCodec.Sort.FLOAT64
-                    : value.sort == Sort.STRING
-                    ? ContainerSmtCodec.Sort.STRING
-                    : value.sort == Sort.REF
-                    ? ContainerSmtCodec.Sort.REF
-                    : value.sort == Sort.VALUE
-                    ? ContainerSmtCodec.Sort.VALUE
-                    : value.sort == Sort.ARRAY_VALUE
-                    ? ContainerSmtCodec.Sort.INDEXED
-                    : value.sort == Sort.MAP
-                    ? ContainerSmtCodec.Sort.ASSOCIATIVE : null;
+            ContainerSmtCodec.Sort sort =
+                    VmTermLowering.containerSortOf(value.sort);
             return sort == null ? null
                     : new ContainerSmtCodec.Term(value.text, sort,
                     value.integralWidth);
@@ -1585,7 +1548,7 @@ public final class ConcolicConstraintSolver {
         private Term fromContainerTerm(
                 ContainerSmtCodec.Term value, String origin) {
             if (value == null) return null;
-            Sort sort = containerSort(value.sort);
+            Sort sort = VmTermLowering.sortOfContainer(value.sort);
             if (sort == Sort.UNKNOWN) {
                 unsupported.add(origin + ":CONTAINER_STATE_USED_AS_VALUE");
                 return null;
@@ -2728,11 +2691,7 @@ public final class ConcolicConstraintSolver {
             StringBuilder result = new StringBuilder();
             result.append("(set-option :produce-models true)\n");
             result.append("(set-logic ALL)\n");
-            result.append("(declare-sort Ref 0)\n");
-            result.append("(declare-const nullRef Ref)\n");
-            result.append(ContainerSmtCodec.valueDatatypeDeclaration())
-                    .append('\n');
-            for (String declaration : ContainerSmtCodec.preamble()) {
+            for (String declaration : VmTermLowering.preamble(true)) {
                 result.append(declaration).append('\n');
             }
             result.append(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION)
@@ -2740,12 +2699,8 @@ public final class ConcolicConstraintSolver {
             result.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
                     .append('\n');
             if (usesJavaIntString) {
-                // SMT-LIB's str.from_int is defined only for non-negative
-                // integers, so negative values need a leading '-'.  This
-                // mirrors ConcolicSmtComposer's preamble.
-                result.append("(define-fun java_int_to_string ((i Int)) "
-                        + "String (ite (< i 0) (str.++ \"-\" "
-                        + "(str.from_int (- i))) (str.from_int i)))\n");
+                result.append(VmTermLowering.JAVA_INT_TO_STRING)
+                        .append('\n');
             }
             for (Map.Entry<String, Sort> declaration
                     : declarations.entrySet()) {
