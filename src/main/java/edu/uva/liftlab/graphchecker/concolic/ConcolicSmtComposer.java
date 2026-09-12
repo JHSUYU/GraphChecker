@@ -245,6 +245,11 @@ public final class ConcolicSmtComposer {
         JsonArray gaps = new JsonArray();
         appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported,
                 emitter.unsupportedDetail);
+        // A loop the replay traversed that no declared bound covers is a
+        // property of this formula, not coverage telemetry it can outlive.
+        for (JsonObject loopGap : loops.compositionGaps()) {
+            gaps.add(loopGap);
+        }
         manifest.add("gaps", gaps);
         manifest.addProperty("state", gaps.size() == 0
                 ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");

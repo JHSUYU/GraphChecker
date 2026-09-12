@@ -47,6 +47,14 @@ public final class BoundedLoopComposition {
             "BOUNDED_LOOP_CLASSIFICATION_UNDECLARED";
     public static final String LOOP_CLASSIFICATION_DISAGREES =
             "BOUNDED_LOOP_CLASSIFICATION_DISAGREES";
+    /**
+     * A replayed case traversed a retained loop's backedge, and this model
+     * admitted no bounded loop for it -- so nothing checked that traversal
+     * against a declared bound.  Before this reason existed the model
+     * published {@code {boundedLoops: [], gaps: []}} and read as closed.
+     */
+    public static final String LOOP_OBSERVED_UNDECLARED =
+            "BOUNDED_LOOP_OBSERVED_UNDECLARED";
 
     private final List<BoundedLoop> loops = new ArrayList<>();
     private final List<JsonObject> gaps = new ArrayList<>();
@@ -227,6 +235,7 @@ public final class BoundedLoopComposition {
     /** Adds one complete region-path count vector to the audit model. */
     public void observeCase(String occurrenceId, JsonObject item) {
         String occurrence = OccurrenceId.parse(occurrenceId).planned();
+        Set<String> matched = new LinkedHashSet<>();
         Map<String, JsonObject> observed = new LinkedHashMap<>();
         Set<String> duplicates = new LinkedHashSet<>();
         for (JsonElement element : array(item,
@@ -252,6 +261,7 @@ public final class BoundedLoopComposition {
                         "region path carries more than one count for loop");
                 continue;
             }
+            matched.add(loop.loopSiteId);
             JsonObject countRow = caseCount(caseId, row, item);
             // One planned region can run several times, and each activation
             // reports the same region-local case.  Identical evidence is one
@@ -306,6 +316,19 @@ public final class BoundedLoopComposition {
             String subject = optionalString(row, "subject");
             gap(optionalString(row, "reason"), subject + "\n" + caseId,
                     optionalString(row, "detail"));
+        }
+        // A retained loop whose backedge this case actually traversed, with
+        // no bounded loop admitted to check it against a declared bound.
+        for (Map.Entry<String, JsonObject> observation : observed.entrySet()) {
+            String site = observation.getKey();
+            if (site.isEmpty() || matched.contains(site)) continue;
+            if (optionalInteger(observation.getValue(),
+                    LoopBoundPolicy.LOOP_BODY_COUNT, 0) < 1) {
+                continue;
+            }
+            gap(LOOP_OBSERVED_UNDECLARED, occurrence + "\n" + site,
+                    "replayed case traversed a retained loop that this"
+                            + " composition declared no bound for");
         }
     }
 
@@ -389,6 +412,24 @@ public final class BoundedLoopComposition {
         for (JsonObject gap : gaps) gapRows.add(gap.deepCopy());
         result.add("gaps", gapRows);
         return result;
+    }
+
+    /**
+     * The gaps this model raised, for the composer's own gap stream.
+     *
+     * <p>A loop the replay traversed and this model could not check is a
+     * property of the emitted candidate, not only coverage telemetry, so the
+     * composer refuses on it rather than publishing it and moving on.</p>
+     */
+    public List<JsonObject> compositionGaps() {
+        List<JsonObject> rows = new ArrayList<>();
+        for (JsonObject gap : gaps) {
+            if (LOOP_OBSERVED_UNDECLARED.equals(
+                    optionalString(gap, "reason"))) {
+                rows.add(gap.deepCopy());
+            }
+        }
+        return rows;
     }
 
     private static Collection<JsonObject> safe(
