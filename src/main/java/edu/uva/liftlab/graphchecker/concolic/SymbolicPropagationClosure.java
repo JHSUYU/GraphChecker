@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -252,6 +253,35 @@ public final class SymbolicPropagationClosure {
         private final Map<JsonElement, Map<String, JsonElement>> rewritten =
                 new IdentityHashMap<>();
         private final Map<JsonElement, Map<String, String>> semanticIdentities =
+                new IdentityHashMap<>();
+        /**
+         * Boundary payload nodes the arm scan has entered, per session scope.
+         *
+         * <p>A propagated value is a shared DAG, and a boundary shell occurs in
+         * thousands of downstream copies, so the former descent re-entered the
+         * same node once per referencing edge and once per row that carried it.
+         * Re-entering one node under one scope can only repeat what the first
+         * entry already did: a gap is keyed by its rendered row, an arm by its
+         * dynamic event, and both ignore a second identical claim. Recording
+         * the entry therefore drops the repetition and not its effect.</p>
+         */
+        private final Map<JsonElement, Set<String>> scannedBoundaries =
+                new IdentityHashMap<>();
+        /**
+         * Subtree digests that no allocated-reference alpha name reached.
+         *
+         * <p>Summary rows share one propagated expression DAG, so every root
+         * hashed here re-descends the same upstream history. A subtree that
+         * never consults the per-root oop naming table hashes to a pure
+         * function of its node and owner, so it is hashed once for the whole
+         * closure instead of once per root. Subtrees that do consult that
+         * table stay private to their root, where the naming order that
+         * produced them still holds.</p>
+         */
+        private final Map<JsonElement, Map<String, String>> stableIdentities =
+                new IdentityHashMap<>();
+        /** The same, for arms hashed as ordinary objects by a case merge. */
+        private final Map<JsonElement, Map<String, String>> stableArms =
                 new IdentityHashMap<>();
 
         private Resolver(Collection<RelationSummary> summaries,
@@ -723,12 +753,30 @@ public final class SymbolicPropagationClosure {
          * surface in this downstream row, so the walk continues into a hit
          * unless its visitor says it is finished with it.
          */
+        /**
+         * Walks one row's propagated value, announcing each field-read
+         * boundary.
+         *
+         * <p>A propagated value is a shared DAG, so a boundary shell occurs in
+         * many downstream copies and this descent would re-enter one node once
+         * per referencing edge.  {@code entered} records the nodes this walk
+         * has already gone through, and how far it may be carried is the
+         * caller's to say: a visitor whose effects are idempotent may reuse
+         * one across rows, while a visitor that reports per row needs its
+         * own.</p>
+         */
         private void walkFieldBoundaries(JsonElement element, String scope,
-                                         FieldBoundaryVisitor visitor) {
+                                         FieldBoundaryVisitor visitor,
+                                         Map<JsonElement, Set<String>> entered) {
             if (element == null || element.isJsonNull()) return;
+            if (!element.isJsonPrimitive()
+                    && !entered.computeIfAbsent(element,
+                            ignored -> new HashSet<String>()).add(scope)) {
+                return;
+            }
             if (element.isJsonArray()) {
                 for (JsonElement child : element.getAsJsonArray()) {
-                    walkFieldBoundaries(child, scope, visitor);
+                    walkFieldBoundaries(child, scope, visitor, entered);
                 }
                 return;
             }
@@ -740,18 +788,22 @@ public final class SymbolicPropagationClosure {
                 if (visitor.visit(node, optionalLongInteger(node,
                         VmExpressionIr.EVENT_ID, -1L))) {
                     walkFieldBoundaries(node.get(VmExpressionIr.EXPRESSION),
-                            scope, visitor);
+                            scope, visitor, entered);
                 }
                 return;
             }
             for (Map.Entry<String, JsonElement> field : node.entrySet()) {
                 if (evidenceField(field.getKey())) continue;
-                walkFieldBoundaries(field.getValue(), scope, visitor);
+                walkFieldBoundaries(field.getValue(), scope, visitor, entered);
             }
         }
 
         private void scanFieldBoundaryPayloads(
                 JsonElement element, String scope) {
+            // Re-entering one node under one scope can only repeat what the
+            // first entry did: a gap is keyed by its rendered row and an arm
+            // by its dynamic event, and both ignore an identical repeat.  So
+            // this walk carries its entries across every row of the closure.
             walkFieldBoundaries(element, scope, (node, eventId) -> {
                 FieldRead read = fieldReads.get(new DynamicKey(scope,
                         eventId));
@@ -776,7 +828,7 @@ public final class SymbolicPropagationClosure {
                         read.receiverOwner, payload,
                         optionalString(node, "_java_type"), eventId);
                 return true;
-            });
+            }, scannedBoundaries);
         }
 
         /**
@@ -853,7 +905,14 @@ public final class SymbolicPropagationClosure {
             }
         }
 
-        /** Collects every field-read boundary one row propagated itself. */
+        /**
+         * Collects every field-read boundary one row propagated itself.
+         *
+         * <p>Which rows report a boundary is what separates one case's own
+         * read from a value two cases carry, so this walk starts with no
+         * entries: a node another row already went through must still be
+         * reported for this one.</p>
+         */
         private void collectFieldBoundaries(JsonElement element, String scope,
                                             Map<DynamicKey, JsonObject> out) {
             walkFieldBoundaries(element, scope, (node, eventId) -> {
@@ -861,7 +920,7 @@ public final class SymbolicPropagationClosure {
                     out.putIfAbsent(new DynamicKey(scope, eventId), node);
                 }
                 return true;
-            });
+            }, new IdentityHashMap<JsonElement, Set<String>>());
         }
 
         private boolean addDynamic(String scope, long eventId,
@@ -1885,7 +1944,8 @@ public final class SymbolicPropagationClosure {
             Map<String, String> cached = semanticIdentities.get(value);
             String held = cached == null ? null : cached.get(owner);
             if (held != null) return held;
-            String result = new ReplaySemanticHasher(owner).identity(value);
+            String result = new ReplaySemanticHasher(owner, stableIdentities,
+                    stableArms).identity(value);
             if (value != null && !value.isJsonNull()
                     && !value.isJsonPrimitive()) {
                 semanticIdentities.computeIfAbsent(value,
@@ -1908,9 +1968,35 @@ public final class SymbolicPropagationClosure {
                     new LinkedHashMap<>();
             private final Map<JsonElement, Map<String, String>> memo =
                     new IdentityHashMap<>();
+            /** Cross-root digests for subtrees free of allocated references. */
+            private final Map<JsonElement, Map<String, String>> stable;
+            private final Map<JsonElement, Map<String, String>> stableArms;
+            /**
+             * Counts every alpha name this root has read or minted. A subtree
+             * that leaves it untouched did not depend on the naming order.
+             */
+            private long alphaReads;
 
-            private ReplaySemanticHasher(String rootOwner) {
+            private ReplaySemanticHasher(String rootOwner,
+                    Map<JsonElement, Map<String, String>> stable,
+                    Map<JsonElement, Map<String, String>> stableArms) {
                 this.rootOwner = safe(rootOwner);
+                this.stable = stable;
+                this.stableArms = stableArms;
+            }
+
+            private static String held(
+                    Map<JsonElement, Map<String, String>> cache,
+                    JsonElement value, String scope) {
+                Map<String, String> scoped = cache.get(value);
+                return scoped == null ? null : scoped.get(scope);
+            }
+
+            private static void keep(
+                    Map<JsonElement, Map<String, String>> cache,
+                    JsonElement value, String scope, String digest) {
+                cache.computeIfAbsent(value,
+                        ignored -> new LinkedHashMap<>()).put(scope, digest);
             }
 
             private String identity(JsonElement value) {
@@ -1923,9 +2009,20 @@ public final class SymbolicPropagationClosure {
                     return CanonicalJson.render(value);
                 }
                 String scope = safe(owner);
-                Map<String, String> scoped = memo.get(value);
-                String held = scoped == null ? null : scoped.get(scope);
-                if (held != null) return held;
+                // Every alpha-free digest is kept in both caches, so a hit
+                // that only the private memo holds is one whose subtree read
+                // the naming table.  Reusing it has to age the counter too,
+                // or an ancestor would read its own descent as alpha-free
+                // and publish a digest that only this root's naming order
+                // justifies.
+                String cached = held(stable, value, scope);
+                if (cached != null) return cached;
+                cached = held(memo, value, scope);
+                if (cached != null) {
+                    alphaReads++;
+                    return cached;
+                }
+                long before = alphaReads;
                 String result;
                 if (value.isJsonArray()) {
                     StringBuilder encoded = new StringBuilder("[");
@@ -1939,8 +2036,10 @@ public final class SymbolicPropagationClosure {
                             ? guardedRead(object, scope)
                             : ordinaryObject(object, scope);
                 }
-                memo.computeIfAbsent(value,
-                        ignored -> new LinkedHashMap<>()).put(scope, result);
+                keep(memo, value, scope, result);
+                if (alphaReads == before) {
+                    keep(stable, value, scope, result);
+                }
                 return result;
             }
 
@@ -1990,13 +2089,28 @@ public final class SymbolicPropagationClosure {
                         JsonObject arm = element.getAsJsonObject();
                         String armOwner = first(optionalString(arm, "caseOwner"),
                                 owner);
-                        appendFramed(armList,
-                                ordinaryObject(arm, armOwner));
+                        appendFramed(armList, mergeArm(arm, armOwner));
                     }
                     appendFramed(encoded,
                             digest(armList.append(']').toString()));
                 }
                 return digest(encoded.append('}').toString());
+            }
+
+            /**
+             * One merge arm, hashed as an ordinary object under its producer
+             * case. Shares the same alpha-free reuse rule as {@link #hash}.
+             */
+            private String mergeArm(JsonObject value, String owner) {
+                String scope = safe(owner);
+                String cached = held(stableArms, value, scope);
+                if (cached != null) return cached;
+                long before = alphaReads;
+                String result = ordinaryObject(value, scope);
+                if (alphaReads == before) {
+                    keep(stableArms, value, scope, result);
+                }
+                return result;
             }
 
             private String guardedRead(JsonObject read, String owner) {
@@ -2065,6 +2179,7 @@ public final class SymbolicPropagationClosure {
                         safe(owner), ignored -> new LinkedHashMap<>());
                 String alpha = names.computeIfAbsent(identity,
                         ignored -> "o" + names.size());
+                alphaReads++;
                 return VmExpressionIr.alphaAllocatedReference(raw, alpha);
             }
 

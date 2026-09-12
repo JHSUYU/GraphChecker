@@ -6,6 +6,8 @@ import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -84,16 +86,18 @@ public final class SolverPathContext {
             candidates.add(new PositionedConstraint(index,
                     pathCondition.get(index)));
         }
+        TokenMemo memo = new TokenMemo();
         Set<String> demanded = dependencyTokens(
-                pathCondition.get(targetPosition));
+                pathCondition.get(targetPosition), memo);
         for (Integer position : branches) {
-            demanded.addAll(dependencyTokens(pathCondition.get(position)));
+            demanded.addAll(dependencyTokens(pathCondition.get(position),
+                    memo));
         }
         Set<Integer> retainedPositions = new LinkedHashSet<>();
         Map<Integer, Set<String>> tokensByPosition = new LinkedHashMap<>();
         for (PositionedConstraint candidate : candidates) {
             tokensByPosition.put(candidate.summaryPcIndex,
-                    dependencyTokens(candidate.expression));
+                    dependencyTokens(candidate.expression, memo));
         }
 
         // Backward dependency closure.  A retained equality may introduce a
@@ -187,41 +191,83 @@ public final class SolverPathContext {
         return false;
     }
 
-    private static Set<String> dependencyTokens(JsonElement expression) {
+    private static Set<String> dependencyTokens(JsonElement expression,
+                                                TokenMemo memo) {
         Set<String> result = new LinkedHashSet<>();
-        collectDependencyTokens(expression, result);
+        result.addAll(memo.tokensOf(expression));
         return result;
     }
 
-    private static void collectDependencyTokens(JsonElement expression,
-                                                Set<String> result) {
-        if (expression == null || expression.isJsonNull()) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement child : expression.getAsJsonArray()) {
-                collectDependencyTokens(child, result);
+    /**
+     * Per-path memo for the symbol slice of one expression node.
+     *
+     * <p>Propagated path conditions are a shared DAG, not a tree: one upstream
+     * node is referenced by every later constraint that consumed it. Walking
+     * each constraint independently re-descended that shared history once per
+     * incoming edge, so the slice cost grew with the square of the corpus.
+     * A node's token slice is a pure function of the node, so it is computed
+     * once and replayed.</p>
+     *
+     * <p>The replayed list is the node's own token sequence with repeats
+     * removed, in first-emission order. Inserting it into the caller's
+     * {@link LinkedHashSet} leaves exactly the set and iteration order the
+     * former full descent produced, because re-adding a member never moves
+     * it.</p>
+     */
+    private static final class TokenMemo {
+        private final Map<JsonElement, List<String>> slices =
+                new IdentityHashMap<>();
+        /** One instance per distinct slice; sibling nodes usually agree. */
+        private final Map<List<String>, List<String>> interned =
+                new HashMap<>();
+
+        private List<String> tokensOf(JsonElement expression) {
+            if (expression == null || expression.isJsonNull()
+                    || !(expression.isJsonArray()
+                    || expression.isJsonObject())) {
+                return Collections.emptyList();
             }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject object = expression.getAsJsonObject();
-        String type = primitiveString(object, "_type");
-        if ("SymbolExpression".equals(type)) {
-            String symbol = primitiveString(object, "_exp");
-            if (!symbol.isEmpty()
-                    && !VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
-                    && !"V".equals(symbol)) {
-                result.add("SYMBOL:" + symbol);
+            List<String> held = slices.get(expression);
+            if (held != null) return held;
+            Set<String> collected = new LinkedHashSet<>();
+            if (expression.isJsonArray()) {
+                for (JsonElement child : expression.getAsJsonArray()) {
+                    collected.addAll(tokensOf(child));
+                }
+            } else {
+                JsonObject object = expression.getAsJsonObject();
+                String type = primitiveString(object, "_type");
+                if ("SymbolExpression".equals(type)) {
+                    String symbol = primitiveString(object, "_exp");
+                    if (!symbol.isEmpty()
+                            && !VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
+                            && !"V".equals(symbol)) {
+                        collected.add("SYMBOL:" + symbol);
+                    }
+                } else if ("PlaceholderExpression".equals(type)) {
+                    String function = primitiveString(object,
+                            "_place_holder_func");
+                    int count = primitiveInteger(object, "_count", -1);
+                    if (!function.isEmpty() && count >= 0) {
+                        collected.add("PLACEHOLDER:" + function + "#" + count);
+                    }
+                }
+                for (Map.Entry<String, JsonElement> entry
+                        : object.entrySet()) {
+                    collected.addAll(tokensOf(entry.getValue()));
+                }
             }
-        } else if ("PlaceholderExpression".equals(type)) {
-            String function = primitiveString(object,
-                    "_place_holder_func");
-            int count = primitiveInteger(object, "_count", -1);
-            if (!function.isEmpty() && count >= 0) {
-                result.add("PLACEHOLDER:" + function + "#" + count);
+            List<String> slice = collected.isEmpty()
+                    ? Collections.<String>emptyList()
+                    : Collections.unmodifiableList(
+                            new ArrayList<>(collected));
+            List<String> canonical = interned.get(slice);
+            if (canonical == null) {
+                interned.put(slice, slice);
+                canonical = slice;
             }
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            collectDependencyTokens(entry.getValue(), result);
+            slices.put(expression, canonical);
+            return canonical;
         }
     }
 
