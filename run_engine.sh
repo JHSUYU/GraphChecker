@@ -54,6 +54,7 @@ workflow_config_keys=(
   "region_path_max_paths_per_region CAUSYNTH_REGION_PATH_MAX_PATHS_PER_REGION krp -"
   "region_path_max_flips_per_path CAUSYNTH_REGION_PATH_MAX_FLIPS_PER_PATH krp -"
   "region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS krp -"
+  "region_path_max_waves CAUSYNTH_REGION_PATH_MAX_WAVES krp 12"
   "config_file - p -"
   "workflow_path_base GRAPH_CHECKER_PATH_BASE krp -"
   "graphchecker_jar GRAPH_CHECKER_JAR krp -"
@@ -394,7 +395,8 @@ validate_config() {
   # does not start.
   local key
   for key in solver_timeout_ms schedule_max_jobs reach_max_inputs \
-      reach_max_valuations concolic_worker_count campaign_max_iterations; do
+      reach_max_valuations concolic_worker_count campaign_max_iterations \
+      region_path_max_waves; do
     require_positive_integer "${key}"
   done
   local bound
@@ -2281,11 +2283,41 @@ campaign_target_reach_query() {
     "${member}/reach_query.jsonl")"
 }
 
+# EXPLORE-1: the closure loop stops on its own fixed point, and failing that
+# on a budget.  A wave that proposes the very same obligations as the wave
+# before it, and whose recorded verdicts have not changed either, has learned
+# nothing; continuing would re-solve and re-replay the same set forever.  Both
+# stops are coverage telemetry, never a campaign failure: an unexplored
+# sibling path blocks a closed UNSAT conclusion and says nothing about a SAT
+# candidate, so the gap is written onto the still-pending worklists and the
+# campaign goes on to publish what it did establish.
+campaign_explore_stop() {
+  local kind=$1 reason=$2
+  shift 2
+  local planner_dir member pending_manifest
+  for planner_dir in "$@"; do
+    member=$(dirname "${planner_dir}")
+    pending_manifest="${planner_dir}/region_path_manifest.json"
+    [[ -s "${pending_manifest}" ]] || continue
+    jq -c --arg kind "${kind}" --arg reason "${reason}" \
+      '.coverageGaps = ((.coverageGaps // []) + [{kind: $kind,
+         reason: $reason, regionId: .regionId,
+         occurrenceId: (.occurrenceId // "")}])' \
+      "${pending_manifest}" >"${pending_manifest}.stopped" \
+      || campaign_fail EXPLORE RegionPathWorklist "${pending_manifest}" \
+        "failed to record the closure stop on a pending worklist"
+    mv "${pending_manifest}.stopped" "${pending_manifest}"
+    cp -f "${pending_manifest}" "${member}/path_closure.json"
+  done
+  campaign_log "closure exploration stopped: ${kind}: ${reason}"
+}
+
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local role campaign_id region occurrence goal task member planner_dir
   local worklist key_rows key worker_dir target_task="" wave_dir roster
   local status=0 wave=0 pending=0 job planner_index
+  local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
   local summaries="${iteration_dir}/linked_observed_path_summaries.jsonl"
   local tasks="${iteration_dir}/linked_observed_execution_tasks.jsonl"
   local active_plan="${iteration_dir}/seed-query/execution_task_plan.jsonl"
@@ -2411,6 +2443,35 @@ campaign_explore() {
     done
 
     [[ "${pending}" -gt 0 ]] || break
+
+    # The obligations this wave would solve, plus the verdicts every earlier
+    # wave recorded.  Obligation identity is stable across waves
+    # (RegionPathWorklist#emitTask), so an unchanged signature means an
+    # unchanged frontier over unchanged evidence: a fixed point the
+    # `pending -gt 0` test alone cannot see.
+    wave_signature=$({
+        printf '%s\n' "${jobs[@]}" | cut -f2 | LC_ALL=C sort
+        printf -- '--\n'
+        jq -r '.status // ""' "${records}" | LC_ALL=C sort | uniq -c
+      } | sha256sum | cut -d' ' -f1) \
+      || campaign_fail EXPLORE CAMPAIGN "${records}" \
+        "failed to summarise closure wave ${wave}"
+    stop_kind=""
+    if [[ "${wave}" -ge "${region_path_max_waves}" ]]; then
+      stop_kind=REGION_PATH_WAVE_BUDGET_REACHED
+      stop_reason="the closure loop reached its configured budget of \
+${region_path_max_waves} wave(s) with ${pending} obligation(s) still open"
+    elif [[ "${wave_signature}" == "${previous_signature}" ]]; then
+      stop_kind=REGION_PATH_CLOSURE_NO_PROGRESS
+      stop_reason="closure wave ${wave} proposes the same ${pending} \
+obligation(s) as the wave before it with no new verdict"
+    fi
+    if [[ -n "${stop_kind}" ]]; then
+      campaign_explore_stop "${stop_kind}" "${stop_reason}" \
+        "${planner_dirs[@]}"
+      break
+    fi
+    previous_signature=${wave_signature}
     campaign_log "closure wave ${wave}: ${pending} linked obligation(s), workers=${concolic_worker_count}"
     pids=()
     status=0

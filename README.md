@@ -97,6 +97,27 @@ recorded as the `SOLVER_TIMEOUT` exploration status and named as a
 closed UNSAT conclusion is withheld. Raise it when a host runs several
 campaigns at once.
 
+`region_path_max_waves` (default 12, override
+`CAUSYNTH_REGION_PATH_MAX_WAVES`) bounds the EXPLORE closure loop. That loop
+normally ends at its own fixed point, when every member's
+`region_path_manifest.json` reports `state=CLOSED`. Two guards keep a closure
+that is not converging from running forever:
+
+- **No progress.** A wave that proposes exactly the obligations the previous
+  wave proposed, over an exploration-record set whose verdict histogram is
+  also unchanged, has learned nothing; the loop stops instead of re-solving
+  and re-replaying the same set.
+- **Wave budget.** Failing that, the loop stops after
+  `region_path_max_waves` waves.
+
+Either stop is recorded on every still-pending worklist as a
+`REGION_PATH_CLOSURE_NO_PROGRESS` or `REGION_PATH_WAVE_BUDGET_REACHED`
+coverage gap, never as a campaign failure. Like any coverage gap these are
+telemetry: an unexplored sibling path withholds a closed UNSAT conclusion and
+says nothing about a SAT candidate, so the campaign still publishes what it
+established. Raise the budget for a workload whose closure legitimately needs
+more waves than it has members.
+
 Inspect and validate before running:
 
 ```bash
