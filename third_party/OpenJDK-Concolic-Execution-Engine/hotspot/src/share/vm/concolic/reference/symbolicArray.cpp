@@ -9,11 +9,4 @@ SymArr::SymArr(sym_rid_t sym_rid, Expression *length_exp)
 
 SymArr::~SymArr() {}
 
-void SymArr::print() {
-  tty->print_cr("SymArr: ");
-  if (_length_exp) {
-    _length_exp->print();
-  }
-}
-
 #endif

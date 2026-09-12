@@ -28,7 +28,6 @@ public:
     OpStrExpression(const std::string &method, Expression* exp);
 
 public:
-    void print();
 
     static OpStrExpression* to_string(Expression* exp);
     bool is_op_str_expression() { return true; }

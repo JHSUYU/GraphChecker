@@ -116,7 +116,6 @@ public:
   // that reached the field by propagation is never overwritten by one.
   virtual bool has_sym_exp(int field_offset) = 0;
 
-  virtual void print() = 0;
   virtual bool need_recursive() { return true; }
 
   inline void init_sym_exp(int field_offset, BasicType type) {

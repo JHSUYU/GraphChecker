@@ -49,7 +49,6 @@ public:
   inline int get_version() { return _version; }
 
 public:
-  void print();
 };
 
 #endif // ENABLE_CONCOLIC

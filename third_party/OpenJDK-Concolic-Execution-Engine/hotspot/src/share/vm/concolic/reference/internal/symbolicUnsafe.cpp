@@ -14,10 +14,6 @@ Expression *SymbolicUnsafe::finish_method_helper(MethodSymbolizerHandle &handle)
   return NULL;
 }
 
-Expression *SymbolicUnsafe::get_exp_of(oop obj) {
-  return NULL;
-}
-
 void SymbolicUnsafe::init_register_class(MethodSymbolizer *m_symbolizer) {
   const std::string unsafe_klass_name("sun/misc/Unsafe");
   const std::string sun_instrument("sun/instrument/TransformerManager");

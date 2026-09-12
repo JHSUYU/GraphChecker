@@ -33,7 +33,6 @@ public:
   static void set_symbolic_field(oop obj, Symbol* fld_name, Symbol* fld_tp_sig, MethodSymbolizerHandle &handle);
   static bool match_callee_and_do_sym(MethodSymbolizerHandle &handle, const char* sig);
 public:
-  void print();
 
 public:
   static Expression *get_exp_of(oop obj);

@@ -246,12 +246,6 @@ Expression *SymBigDecimal::get_con_exp(oop obj) {
   return new ConSymbolExp(str, T_DOUBLE);
 }
 
-void SymBigDecimal::print() {
-  tty->print_cr("SymBigDecimal: ");
-  _exp->print();
-  tty->print("\n");
-}
-
 // Last-writer-wins under _field_mutex, exactly as for SymObj::_exps; see the
 // field-shadow write policy in sessionSymbolicHeap.hpp.
 void SymBigDecimal::set_sym_exp(int field_offset, Expression *exp) {

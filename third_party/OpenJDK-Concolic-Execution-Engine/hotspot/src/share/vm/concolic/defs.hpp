@@ -18,8 +18,6 @@
 // separate small cap.
 typedef ulong sym_rid_t;
 
-typedef ulong tx_id_t;
-
 #define FIELD_INDEX_ARRAY_LENGTH -1
 
 typedef std::set<std::string> method_set_t;

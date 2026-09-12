@@ -33,7 +33,6 @@ class ConsumerBoundaryExpression : public Expression {
   BoundaryKind get_boundary_kind() const { return _boundary_kind; }
   jlong get_event_id() const { return _event_id; }
 
-  virtual void print();
   virtual bool is_boolean_expression();
   virtual bool is_recorded_container_mutation();
   virtual ContainerExpression *as_container_expression();

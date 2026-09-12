@@ -56,7 +56,6 @@ protected:
   void finalize(const char *buf, int length);
 
 public:
-  void print();
   void set(const char *buf, int length);
   virtual bool is_boolean_expression() {
     return _type.size() == 1 && _type[0] == type2char(T_BOOLEAN);

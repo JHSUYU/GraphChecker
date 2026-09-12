@@ -40,8 +40,6 @@ void SymbolExpression::finalize(const char *buf, int length) {
   _str = std::string(buf, length);
 }
 
-void SymbolExpression::print() { tty->indent().print("%s", _str.c_str()); }
-
 void SymbolExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   writer.Key("_type");
   writer.String("SymbolExpression");

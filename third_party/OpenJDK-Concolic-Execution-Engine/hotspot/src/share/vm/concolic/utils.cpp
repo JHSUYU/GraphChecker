@@ -187,12 +187,7 @@ Klass *OopUtils::get_fd_by_name(oop obj, const std::string &name, const std::str
       ? Thread::current() : ConcolicMngr::ctx->get_thread();
   TempNewSymbol field_name = SymbolTable::new_symbol(name.c_str(), thread);
   TempNewSymbol field_signature = SymbolTable::new_symbol(signature.c_str(), thread);
-  Klass *klass = obj->klass()->find_field(field_name, field_signature, &ret_fd);
-  if (klass != NULL) {
-    ResourceMark rm;
-    ret_fd.print();
-  }
-  return klass;
+  return obj->klass()->find_field(field_name, field_signature, &ret_fd);
 }
 
 Klass *OopUtils::get_local_fd_by_name(
@@ -218,37 +213,12 @@ Klass *OopUtils::get_local_fd_by_name(
   return NULL;
 }
 
-#define DEFINE_GET_FIELD_BY_NAME(ret_type, field_type, not_found)                                               \
-ret_type OopUtils::field_type##_field_by_name(oop obj, const std::string &name, const std::string &signature) { \
-  fieldDescriptor fd;                                                                                           \
-  Klass *klass = get_fd_by_name(obj, name, signature, fd);                                                      \
-  if (klass != NULL) {                                                                                          \
-    return obj->field_type##_field(fd.offset());                                                                \
-  } else {                                                                                                      \
-    return not_found;                                                                                           \
-  }                                                                                                             \
-}                                                                                                               \
-                                                                                                                \
-ret_type OopUtils::field_type##_field_by_name(oop obj, const NameSignaturePair &name_signature) {               \
-  fieldDescriptor fd;                                                                                           \
-  Klass *klass = get_fd_by_name(obj, name_signature.first, name_signature.second, fd);                          \
-  if (klass != NULL) {                                                                                          \
-    return obj->field_type##_field(fd.offset());                                                                \
-  } else {                                                                                                      \
-    return not_found;                                                                                           \
-  }                                                                                                             \
+oop OopUtils::obj_field_by_name(oop obj, const std::string &name,
+                                const std::string &signature) {
+  fieldDescriptor fd;
+  return get_fd_by_name(obj, name, signature, fd) == NULL
+      ? NULL : obj->obj_field(fd.offset());
 }
-
-DEFINE_GET_FIELD_BY_NAME(oop, obj, NULL)
-DEFINE_GET_FIELD_BY_NAME(jbyte, byte, 0);
-DEFINE_GET_FIELD_BY_NAME(jchar, char, 0);
-DEFINE_GET_FIELD_BY_NAME(jboolean, bool, false);
-DEFINE_GET_FIELD_BY_NAME(jint, int, 0);
-DEFINE_GET_FIELD_BY_NAME(jshort, short, 0);
-DEFINE_GET_FIELD_BY_NAME(jlong, long, 0);
-DEFINE_GET_FIELD_BY_NAME(jfloat, float, 0.0);
-DEFINE_GET_FIELD_BY_NAME(jdouble, double, 0.0);
-DEFINE_GET_FIELD_BY_NAME(address, address, 0);
 
 oop OopUtils::bigd_to_java_string(oop bigd) {
   JavaThread* thread = ConcolicMngr::ctx->get_thread();
@@ -282,15 +252,6 @@ oop OopUtils::bigd_to_java_string(oop bigd) {
   oop res = (oop)result.get_jobject();
   guarantee(res->klass()->name() == vmSymbols::java_lang_String(), "should be string");
   return res;
-}
-
-oop OopUtils::value_of_map_node(oop node_obj) {
-  if (node_obj == NULL) {
-    return NULL;
-  }
-  // HashMap.Node layout is not an API and changes with VM layout choices.
-  // Resolve the declared field instead of relying on the old 40-byte offset.
-  return obj_field_by_name(node_obj, "value", "Ljava/lang/Object;");
 }
 
 oop OopUtils::key_of_map_node(oop node_obj) {

@@ -242,7 +242,6 @@ public:
 
 public:
   std::string get_current_code_pos();
-  std::string get_code_pos_for_first(const std::string &str);
 
 public:
   SymInstance *get_or_alloc_sym_inst(oop obj);
@@ -347,7 +346,6 @@ public:
    * calculated, which doesn't have `sym_rid` and `index`
    */
   void set_stack_slot(int offset, Expression *sym_exp);
-  void set_stack_slot_if_possible(int offset, Expression *sym_exp);
   void set_stack_value_if_possible(int anchor_offset, int slot_count,
                                    Expression *sym_exp);
   void set_stack_slot(int offset, Expression *sym_exp, sym_rid_t sym_rid,
@@ -369,10 +367,6 @@ public:
     this->get_last_local().set_slot(offset, exp);
   }
 
-  /**
-   * TODO: document when to clear the stack
-   */
-  void clear_stack_slot(int offset);
   void clear_stack_words(int first_offset, int slot_count);
   // A category-1 value owns its anchor only.  A category-2 value owns the
   // anchor plus the immediately preceding NULL companion word.  These APIs
@@ -388,8 +382,6 @@ public:
                                  int local_anchor_offset, int slot_count);
   void copy_stack_slot(int src_off, int dst_off, int size);
   void swap_two_stack_slot(int off1, int off2);
-  void copy_entry_from_local_to_stack(int local_offset, int stack_offset);
-  void copy_entry_from_stack_to_local(int stack_offset, int local_offset);
   void symbolize_recursive(oop obj);
   void symbolize_recursive(oop obj, std::string prefix);
   void cancel_pending_branch();

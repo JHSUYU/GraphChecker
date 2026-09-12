@@ -18,8 +18,6 @@ public:
   virtual Expression *get_ref_exp() = 0;
 
   inline sym_rid_t get_sym_rid() { return _sym_rid; }
-
-  virtual void print() {}
 };
 
 #endif // ENABLE_CONCOLIC

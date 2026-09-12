@@ -14,21 +14,6 @@ MethodExpression::MethodExpression(const std::string &holder, const std::string 
 
 MethodExpression::~MethodExpression() {}
 
-void MethodExpression::print() {
-  if(_ignorable) {
-    tty->print("$");
-  }
-  tty->print("(f %s ", _name.c_str());
-  int size = _param_list.size();
-  for (int i = 0; i < size; ++i) {
-    tty->print(" ,");
-    Expression::print_on_maybe_null(_param_list[i]);
-  }
-  tty->print(" ");
-  Expression::print_on_maybe_null(_res_exp);
-  tty->print(")");
-}
-
 void MethodExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   writer.Key("_type");
   writer.String("MethodExpression");

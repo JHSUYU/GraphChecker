@@ -19,20 +19,6 @@ ContainerExpression::ContainerExpression(
 
 ContainerExpression::~ContainerExpression() {}
 
-void ContainerExpression::print() {
-  tty->print("(container %s %s ", _shape.c_str(), _operation.c_str());
-  Expression::print_on_maybe_null(_receiver);
-  for (size_t index = 0; index < _arguments.size(); ++index) {
-    tty->print(" ");
-    Expression::print_on_maybe_null(_arguments[index]);
-  }
-  if (_guard != NULL) {
-    tty->print(" guard=");
-    Expression::print_on_maybe_null(_guard);
-  }
-  tty->print(")");
-}
-
 void ContainerExpression::serialize_internal(
     rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   writer.Key("_type");

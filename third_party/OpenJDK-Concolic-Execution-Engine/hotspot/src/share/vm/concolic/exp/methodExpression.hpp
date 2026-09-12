@@ -24,7 +24,6 @@ public:
   ~MethodExpression();
 
 public:
-  void print();
 
 protected:
   virtual void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);

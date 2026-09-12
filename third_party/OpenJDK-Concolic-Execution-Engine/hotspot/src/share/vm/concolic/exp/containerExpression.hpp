@@ -49,7 +49,6 @@ class ContainerExpression : public Expression {
   Expression *get_receiver() const { return _receiver; }
   Expression *get_guard() const { return _guard; }
 
-  virtual void print();
   virtual void serialize_internal(
       rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };

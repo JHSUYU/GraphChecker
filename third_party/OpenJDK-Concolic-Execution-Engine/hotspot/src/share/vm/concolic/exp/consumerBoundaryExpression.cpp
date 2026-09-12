@@ -20,15 +20,6 @@ ConsumerBoundaryExpression::ConsumerBoundaryExpression(
 
 ConsumerBoundaryExpression::~ConsumerBoundaryExpression() {}
 
-void ConsumerBoundaryExpression::print() {
-  tty->print("(consumer-boundary %s " JLONG_FORMAT " ",
-             _boundary_kind == RPC_ATTACH ? "RPC_ATTACH"
-                                          : "FIELD_READ",
-             _event_id);
-  Expression::print_on_maybe_null(_expression);
-  tty->print(")");
-}
-
 bool ConsumerBoundaryExpression::is_boolean_expression() {
   return _expression->is_boolean_expression();
 }

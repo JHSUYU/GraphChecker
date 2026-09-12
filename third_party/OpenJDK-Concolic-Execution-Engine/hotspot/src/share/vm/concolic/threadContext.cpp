@@ -12,7 +12,6 @@
 #include "concolic/reference/symbolicStringBuilder.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
 #include "utilities/exceptions.hpp"
-#include "concolic/reference/symbolicNDFunc.hpp"
 #include "classfile/javaClasses.hpp"
 #include "runtime/osThread.hpp"
 
@@ -613,60 +612,6 @@ std::string ThreadContext::get_current_code_pos() {
 
   method->print_name(&ss);
   ss.print(":%d", bci);
-
-  return std::string(buf, ss.size());
-}
-
-static void print_method_name_and_line(const ZeroFrame *zero_frame, stringStream *ss) {
-  interpreterState istate = zero_frame->as_interpreter_frame()->interpreter_state();
-  Method *method = istate->method();
-  address bcp = istate->bcp();
-
-  method->print_name(ss);
-  if (bcp) {
-    int bci = method->bci_from(bcp);
-    int line = method->line_number_from_bci(bci);
-    ss->print(":%d", line);
-  }
-}
-
-std::string ThreadContext::get_code_pos_for_first(const std::string &str) {
-  // Stack-local for the same reason as get_current_code_pos above.
-  static const int SIZE = 2048;
-  char buf[SIZE];
-
-  stringStream ss(buf, SIZE);
-
-  const char *c_str = str.c_str();
-  const ZeroFrame *zero_frame = get_shadow_stack().get_last_frame().get_zero_frame();
-
-  // generate top method name and line string
-  while (!zero_frame->is_interpreter_frame()) {
-    zero_frame = zero_frame->next();
-  }
-  print_method_name_and_line(zero_frame, &ss);
-  std::string top_name(buf, ss.size());
-  tty->print_cr("trying: %s", top_name.c_str());
-
-  // if not containing, use a loop to find it
-  if (!strstr(ss.as_string(), c_str)) {
-    zero_frame = zero_frame->next();
-    while (zero_frame) {
-      while (zero_frame && !zero_frame->is_interpreter_frame()) {
-        zero_frame = zero_frame->next();
-      }
-      if (!zero_frame) {
-        break;
-      }
-      ss.reset();
-      print_method_name_and_line(zero_frame, &ss);
-      // tty->print_cr("trying: %s", ss.as_string());
-      if (strstr(ss.as_string(), c_str)) {
-        break;
-      }
-      zero_frame = zero_frame->next();
-    }
-  }
 
   return std::string(buf, ss.size());
 }

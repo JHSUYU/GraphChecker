@@ -50,7 +50,6 @@ public:
                      sym_rid_t owner, int slot, const char *location_kind,
                      bool writer_set_complete);
 
-  virtual void print();
   virtual bool is_boolean_expression();
   virtual std::string get_name();
 

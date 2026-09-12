@@ -37,8 +37,6 @@ add_definitions(-DTARGET_COMPILER_gcc)
 add_definitions(-DASSERT)
 
 add_definitions(-DENABLE_CONCOLIC)
-add_definitions(-DCONCOLIC_DEBUG)
-add_definitions(-DONELINE)
 
 #add_definitions(-DTARGET_OS_FAMILY_linux)
 #add_definitions(-DINCLUDE_ALL_GCS)

@@ -45,11 +45,6 @@ SymStrBuilder::SymStrBuilder(sym_rid_t sym_rid)
 
 SymStrBuilder::~SymStrBuilder() {}
 
-void SymStrBuilder::print() {
-  tty->print_cr("SymStrBuilder: ");
-  Expression::print_on_maybe_null(_ref_exp);
-}
-
 void SymStrBuilder::set_sym_exp(int field_offset, Expression *exp) {
   // StringBuilder state is represented by its append/concat reference
   // expression.  Once a builder has that shadow, ordinary append execution

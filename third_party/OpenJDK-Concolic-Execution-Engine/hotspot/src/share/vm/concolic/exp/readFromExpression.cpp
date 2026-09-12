@@ -29,15 +29,6 @@ std::string ReadFromExpression::get_name() {
   return std::string(buf, length < 0 ? 0 : length);
 }
 
-void ReadFromExpression::print() {
-  tty->print("(read-from r%ld", (long) _read_event_id);
-  for (size_t index = 0; index < _candidates.size(); ++index) {
-    tty->print(" %s=", _candidates[index].selector.c_str());
-    Expression::print_on_maybe_null(_candidates[index].value);
-  }
-  tty->print(")");
-}
-
 void ReadFromExpression::serialize_candidate(
     rapidjson::Writer<rapidjson::StringBuffer> &writer,
     const Candidate &candidate) {

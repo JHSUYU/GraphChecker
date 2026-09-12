@@ -49,8 +49,6 @@ private:
 
 public:
   virtual ~Expression() {}
-  virtual void print();
-  void print_cr();
   virtual bool is_op_str_expression() { return false; }
   // JVM booleans occupy int-shaped operand-stack slots, but their symbolic
   // semantics must remain Boolean.  Consumers use this bit to choose a
@@ -86,14 +84,6 @@ public:
   // result a comparison the SMT codec already lowers rather than introducing a
   // unary `not` it might not.
   virtual Expression *logical_negation() { return NULL; }
-
-  static void print_on_maybe_null(Expression *exp) {
-    if (exp) {
-      exp->print();
-    } else {
-      tty->print("U");
-    }
-  }
 
   void set_java_code_position(const std::string &javaCodePosition);
 
@@ -219,8 +209,6 @@ public:
 };
 
 class OpSymExpression : public Expression {
-  static const int EXP_NAME_LENGTH = 16;
-
 private:
   Expression *_left;
   Expression *_right;
@@ -232,9 +220,6 @@ public:
   virtual std::string get_name();
   virtual bool is_boolean_expression();
   virtual Expression *logical_negation();
-
-public:
-  void print();
 
 protected:
   void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
@@ -258,8 +243,6 @@ public:
   ConExpression(jdouble d);
 
 public:
-  void print();
-
   virtual bool is_boolean_expression();
 
   void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);

@@ -202,13 +202,7 @@
 #ifdef USELABELS
 // Have to do this dispatch this way in C++ because otherwise gcc complains about crossing an
 // initialization (which is is the initialization of the table pointer...)
-#if defined(ENABLE_CONCOLIC) && defined(CONCOLIC_DEBUG)
-#define DISPATCH(opcode)\
-//  BytecodeInterpreter::print_debug_info(istate, pc, topOfStack); \
-  goto *(void*)dispatch_table[opcode]
-#else
 #define DISPATCH(opcode) goto *(void*)dispatch_table[opcode]
-#endif
 #define CONTINUE {                              \
         opcode = *pc;                           \
         DO_UPDATE_INSTRUCTION_COUNT(opcode);    \
@@ -1030,10 +1024,6 @@ run:
       /* QQQ Hmm this has knowledge of direction, ought to be a stack method */
       assert(topOfStack >= istate->stack_limit(), "Stack overrun");
       assert(topOfStack < istate->stack_base(), "Stack underrun");
-
-#if not defined(USELABELS) && defined(ENABLE_CONCOLIC) && defined(CONCOLIC_DEBUG)
-//      BytecodeInterpreter::print_debug_info(istate, pc, topOfStack);
-#endif
 
 #ifdef USELABELS
       DISPATCH(opcode);
@@ -4835,26 +4825,6 @@ extern "C" {
   }
 }
 #endif // PRODUCT
-
-/**
- * DEBUG INFO: this is a concolic debug info printer
- */
-#if defined(ENABLE_CONCOLIC) && defined(CONCOLIC_DEBUG)
-void BytecodeInterpreter::print_debug_info(interpreterState istate, address pc, intptr_t *topOfStack) {
-  if (ConcolicMngr::can_do_concolic()) {
-    Method *method = istate->method();
-    if (method != NULL) {
-      ResourceMark rm;
-      tty->print_cr(CL_YELLOW "=================================================================" CNONE);
-      tty->print_cr("current stack pointer %p %p %d", topOfStack, istate->stack_base(), GET_STACK_OFFSET);
-//      ConcolicMngr::ctx->print_stack_trace();
-      methodHandle mh(THREAD, (Method *) method);
-      BytecodeTracer::set_closure(BytecodeTracer::std_closure());
-      BytecodeTracer::trace(mh, pc, tty);
-    }
-  }
-}
-#endif
 
 #endif // JVMTI
 #endif // CC_INTERP

@@ -53,7 +53,6 @@ public:
   inline Expression * create_ref_exp(oop obj) { return get_con_exp(obj); }
 
   bool need_recursive() { return false; }
-  void print();
 
   virtual void set_sym_exp(int field_offset, Expression *exp);
   virtual bool has_sym_exp(int field_offset);

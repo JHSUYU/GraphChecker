@@ -187,8 +187,8 @@ if [[ ! -f "$SPEC_FILE" ]]; then
     --with-jvm-variants=zero \
     --with-debug-level=release \
     --with-native-debug-symbols=none \
-    --with-extra-cflags="-DENABLE_CONCOLIC -DONELINE" \
-    --with-extra-cxxflags="-DENABLE_CONCOLIC -DONELINE"; then
+    --with-extra-cflags="-DENABLE_CONCOLIC" \
+    --with-extra-cxxflags="-DENABLE_CONCOLIC"; then
     die "OpenJDK configure failed. A fresh full image needs all native JDK build dependencies (including freetype and CUPS headers); provide them via an existing toolchain/container and rerun. No system packages were installed."
   fi
 fi

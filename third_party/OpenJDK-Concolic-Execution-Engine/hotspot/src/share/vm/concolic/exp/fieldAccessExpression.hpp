@@ -21,7 +21,6 @@ class FieldAccessExpression : public Expression {
                         const std::string &java_type = std::string());
   virtual ~FieldAccessExpression();
 
-  virtual void print();
   virtual void serialize_internal(
       rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };

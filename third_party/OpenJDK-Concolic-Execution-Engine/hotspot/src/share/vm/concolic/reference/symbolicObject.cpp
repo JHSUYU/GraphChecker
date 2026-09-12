@@ -37,13 +37,4 @@ bool SymObj::has_sym_exp(int field_offset) {
   return _exps.find(field_offset) != _exps.end();
 }
 
-void SymObj::print() {
-  FieldLock guard(this);
-  exp_map_t::iterator iter;
-  for (iter = _exps.begin(); iter != _exps.end(); ++iter) {
-    tty->print_cr("Field(%d): ", iter->first);
-    iter->second->print_cr();
-  }
-}
-
 #endif

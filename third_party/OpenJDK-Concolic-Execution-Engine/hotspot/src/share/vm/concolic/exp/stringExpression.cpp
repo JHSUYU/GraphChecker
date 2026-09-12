@@ -25,16 +25,6 @@ OpStrExpression::OpStrExpression(const std::string &method, Expression *exp)
   _param_list.push_back(exp);
 }
 
-void OpStrExpression::print() {
-  tty->print("(s %s ", _name.c_str());
-  int size = _param_list.size();
-  for (int i = 0; i < size; ++i) {
-    tty->print(" ,");
-    Expression::print_on_maybe_null(_param_list[i]);
-  }
-  tty->print(" )");
-}
-
 OpStrExpression *OpStrExpression::to_string(Expression *exp) {
   return new OpStrExpression("toString", exp);
 }

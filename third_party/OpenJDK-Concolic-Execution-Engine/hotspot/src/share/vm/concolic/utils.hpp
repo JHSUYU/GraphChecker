@@ -27,21 +27,10 @@ Klass* get_local_fd_by_name(
     oop obj, const std::string &declaring_class, const std::string &name,
     const std::string &signature, fieldDescriptor& ret_fd);
 
-typedef std::pair<const std::string, const std::string> NameSignaturePair;
-#define DECLARE_GET_FIELD_BY_NAME(ret_type, field_type) \
-  ret_type field_type##_field_by_name(oop obj, const std::string &name, const std::string &signature); \
-  ret_type field_type##_field_by_name(oop obj, const NameSignaturePair &name_signature);
-
-    DECLARE_GET_FIELD_BY_NAME(oop, obj);
-    DECLARE_GET_FIELD_BY_NAME(jbyte, byte);
-    DECLARE_GET_FIELD_BY_NAME(jchar, char);
-    DECLARE_GET_FIELD_BY_NAME(jboolean, bool);
-    DECLARE_GET_FIELD_BY_NAME(jint, int);
-    DECLARE_GET_FIELD_BY_NAME(jshort, short);
-    DECLARE_GET_FIELD_BY_NAME(jlong, long);
-    DECLARE_GET_FIELD_BY_NAME(jfloat, float);
-    DECLARE_GET_FIELD_BY_NAME(jdouble, double);
-    DECLARE_GET_FIELD_BY_NAME(address, address);
+// Only the reference-typed lookup is used (by key_of_map_node below); the
+// nine primitive variants this macro also generated had no caller.
+oop obj_field_by_name(oop obj, const std::string &name,
+                      const std::string &signature);
 
 
 /**
@@ -59,20 +48,12 @@ jdouble java_double_to_c(oop double_obj);
 
 oop bigd_to_java_string(oop bigd);
 
-oop value_of_map_node(oop node_obj);
 // The KEY oop of a Map.Entry node (HashMap$Node / LinkedHashMap$Entry).
 // removeExpiredKeys iterates entrySet() and never calls e.getKey(), so a
 // conditional removal recovers the map key from the entry directly.
 oop key_of_map_node(oop node_obj);
 
 } // namespace OopUtils
-
-namespace SigName {
-  static const std::string String = "Ljava/lang/String;";
-  static const std::string StringArray = "[Ljava/lang/String;";
-  static const std::string EntityPersister = "Lorg/hibernate/persister/entity/EntityPersister;";
-
-}
 
 namespace StringUtils {
   void replaceAll(std::string& str, const std::string& from, const std::string& to);

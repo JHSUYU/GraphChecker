@@ -16,12 +16,6 @@ FieldAccessExpression::FieldAccessExpression(
 
 FieldAccessExpression::~FieldAccessExpression() {}
 
-void FieldAccessExpression::print() {
-  tty->print("(field %s@%d ", _owner_class.c_str(), _field_offset);
-  Expression::print_on_maybe_null(_owner);
-  tty->print(")");
-}
-
 void FieldAccessExpression::serialize_internal(
     rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   writer.Key("_type");

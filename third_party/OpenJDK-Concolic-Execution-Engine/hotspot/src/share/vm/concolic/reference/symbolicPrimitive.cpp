@@ -59,12 +59,6 @@ template <class T> bool SymPrimitive<T>::has_sym_exp(int field_offset) {
   return _exp != NULL;
 }
 
-template <class T> void SymPrimitive<T>::print() {
-  tty->print_cr("SymPrimitive: ");
-  _exp->print();
-  tty->print("\n");
-}
-
 template <class T> Expression *SymPrimitive<T>::get_exp_of(oop obj) {
   assert(obj->klass()->name()->equals(TYPE_NAME), "should be");
   Expression *exp;

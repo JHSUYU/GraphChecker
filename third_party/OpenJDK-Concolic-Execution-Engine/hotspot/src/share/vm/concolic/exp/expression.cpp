@@ -595,16 +595,6 @@ Expression::Expression()
   GlobalSymbolicSession::record_expression(this);
 }
 
-void Expression::print() {
-  tty->indent().print("exp#%u at code %s", _unique_id,
-                      _java_code_position.c_str());
-}
-
-void Expression::print_cr() {
-  print();
-  tty->cr();
-}
-
 void Expression::set_java_code_position(const std::string &javaCodePosition) {
   _java_code_position = javaCodePosition;
 }
@@ -640,16 +630,6 @@ OpSymExpression::OpSymExpression(Expression *l, Expression *r, SymbolicOp op,
 
 OpSymExpression::OpSymExpression(Expression *r, SymbolicOp op)
     : _left(NULL), _right(r), _op(op) {
-}
-
-void OpSymExpression::print() {
-  tty->print("(%c %s ", (_left != NULL) ? '2' : '1', SymbolicOpStr[(int) _op]);
-  if (_left) {
-    _left->print();
-    tty->print(" ");
-  }
-  Expression::print_on_maybe_null(_right);
-  tty->print(")");
 }
 
 void OpSymExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) {
@@ -768,11 +748,6 @@ ConExpression::ConExpression(jdouble d) {
 
 bool ConExpression::is_boolean_expression() {
   return _type.size() == 1 && _type[0] == type2char(T_BOOLEAN);
-}
-
-void ConExpression::print() {
-  // TODO: include primiteive type
-  tty->indent().print("%s", _str);
 }
 
 void ConExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) {

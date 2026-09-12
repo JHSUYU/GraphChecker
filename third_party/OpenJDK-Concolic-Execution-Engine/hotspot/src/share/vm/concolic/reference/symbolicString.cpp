@@ -97,11 +97,6 @@ SymString::SymString(sym_rid_t sym_rid)
 
 SymString::~SymString() {}
 
-void SymString::print() {
-  tty->print_cr("SymString: ");
-  _ref_exp->print_cr();
-}
-
 bool SymString::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
   bool need_symbolize = false;

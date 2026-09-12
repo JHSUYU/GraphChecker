@@ -30,7 +30,6 @@ public:
   bool has_sym_exp(int field_offset);
 
 public:
-  void print();
 };
 
 #endif // ENABLE_CONCOLIC

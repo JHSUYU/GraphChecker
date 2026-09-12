@@ -16,12 +16,6 @@ void ThreadContext::set_stack_slot(int offset, Expression *exp) {
   }
 }
 
-void ThreadContext::set_stack_slot_if_possible(int offset, Expression *exp) {
-  if (this->get_last_stack().size() > 0) {
-    this->set_stack_slot(offset, exp);
-  }
-}
-
 void ThreadContext::set_stack_value_if_possible(int anchor_offset,
                                                 int slot_count,
                                                 Expression *exp) {
@@ -51,10 +45,6 @@ void ThreadContext::set_stack_slot(int offset, Expression *exp,
 /**
  * TODO: document when to clear the stack
  */
-void ThreadContext::clear_stack_slot(int offset) {
-  return this->get_last_stack().clear_slot(offset);
-}
-
 void ThreadContext::clear_stack_words(int first_offset, int slot_count) {
   ShadowTable &opr_stack = this->get_last_stack();
   if (opr_stack.size() == 0 || slot_count == 0) return;
@@ -117,22 +107,6 @@ void ThreadContext::copy_stack_slot(int src_off, int dst_off, int size) {
 void ThreadContext::swap_two_stack_slot(int off1, int off2) {
   ShadowTable &opr_stack = this->get_last_stack();
   opr_stack.swap_two_entries(off1, off2);
-}
-
-void ThreadContext::copy_entry_from_local_to_stack(int local_offset,
-                                                   int stack_offset) {
-  assert(local_offset >= 0, "local_offset >= 0");
-  assert(stack_offset >= 0, "stack_offset >= 0");
-  ShadowTable::Entry &entry = this->get_local_entry(local_offset);
-  this->get_last_stack().set_slot(stack_offset, entry);
-}
-
-void ThreadContext::copy_entry_from_stack_to_local(int stack_offset,
-                                                   int local_offset) {
-  assert(local_offset >= 0, "local_offset >= 0");
-  assert(stack_offset >= 0, "stack_offset >= 0");
-  ShadowTable::Entry &entry = this->get_stack_entry(stack_offset);
-  this->get_last_local().set_slot(local_offset, entry);
 }
 
 #endif

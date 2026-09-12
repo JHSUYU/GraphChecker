@@ -5,7 +5,6 @@
 #include "concolic/exp/expression.hpp"
 #include "concolic/globalSymbolicSession.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
-#include "concolic/reference/symbolicNDFunc.hpp"
 #include "concolic/reference/symbolicObject.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/reference/symbolicString.hpp"
