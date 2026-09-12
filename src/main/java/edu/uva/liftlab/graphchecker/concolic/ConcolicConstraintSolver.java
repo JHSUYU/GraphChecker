@@ -1,6 +1,9 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.GuardedReadUse;
+import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
+import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
 
 import com.google.gson.JsonArray;
@@ -35,6 +38,8 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.floatingKind;
+import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.numeric;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
@@ -433,7 +438,7 @@ public final class ConcolicConstraintSolver {
                     unsupported.add(origin + ":MALFORMED_NOT");
                     return null;
                 }
-                return new Term("(not " + operand.text + ")", Sort.BOOL);
+                return Term.vm("(not " + operand.text + ")", Sort.BOOL);
             }
             if ("TypeCastExpression".equals(type)) {
                 return typeCast(object, origin);
@@ -537,13 +542,13 @@ public final class ConcolicConstraintSolver {
                 String value = values.get(values.size() - 1).text;
                 IntegralWidth width = values.get(0).integralWidth;
                 String nullness = sort == Sort.STRING
-                        ? values.get(values.size() - 1).stringNullnessText : "";
+                        ? values.get(values.size() - 1).stringNullness : "";
                 for (Term arm : values) {
                     if (arm.integralWidth != width) {
                         width = IntegralWidth.NONE;
                     }
                     if (sort == Sort.STRING
-                            && arm.stringNullnessText.isEmpty()) {
+                            && arm.stringNullness.isEmpty()) {
                         unsupported.add(origin
                                 + ":CONSUMER_MERGE_STRING_NULLNESS_MISSING");
                         return null;
@@ -553,17 +558,17 @@ public final class ConcolicConstraintSolver {
                     Term arm = values.get(index);
                     boolean sameValue = arm.text.equals(value);
                     boolean sameNullness = sort != Sort.STRING
-                            || arm.stringNullnessText.equals(nullness);
+                            || arm.stringNullness.equals(nullness);
                     if (sameValue && sameNullness) continue;
                     value = "(ite " + selectors.get(index) + " "
                             + arm.text + " " + value + ")";
                     if (sort == Sort.STRING) {
                         nullness = "(ite " + selectors.get(index) + " "
-                                + arm.stringNullnessText + " " + nullness
+                                + arm.stringNullness + " " + nullness
                                 + ")";
                     }
                 }
-                Term merged = new Term(value, sort, width, nullness, "");
+                Term merged = Term.vm(value, sort, width, nullness, "");
                 return shareConsumerMergeTerm(merged);
             } finally {
                 activeConsumerMerges.remove(mergeId);
@@ -578,12 +583,12 @@ public final class ConcolicConstraintSolver {
          */
         private Term shareConsumerMergeTerm(Term value) {
             String sharedValue = shareSemanticTerm(value.text, value.sort);
-            String nullness = value.stringNullnessText;
+            String nullness = value.stringNullness;
             if (value.sort == Sort.STRING && !nullness.isEmpty()) {
                 nullness = shareSemanticTerm(nullness, Sort.BOOL);
             }
-            return new Term(sharedValue, value.sort, value.integralWidth,
-                    nullness, value.stringReferenceKey);
+            return Term.vm(sharedValue, value.sort, value.integralWidth,
+                    nullness, value.stringReferenceOrigin);
         }
 
         private String shareSemanticTerm(String text, Sort sort) {
@@ -591,7 +596,7 @@ public final class ConcolicConstraintSolver {
                 return text;
             }
             String identity = "CONSUMER_MERGE_TERM_V1\u0000"
-                    + sort.name() + "\u0000" + text;
+                    + sort.replayName() + "\u0000" + text;
             String digest = sha256(identity);
             SharedTermDefinition definition = sharedTerms.get(digest);
             if (definition == null) {
@@ -957,7 +962,7 @@ public final class ConcolicConstraintSolver {
                     .selectedReadViewState(read);
             if (selectedViewState != null) {
                 read = selectedViewState;
-                expected = Sort.ASSOCIATIVE;
+                expected = Sort.MAP;
             }
             String fault = SharedStateEvidence.guardedReadFault(read);
             String readIdentity = optionalString(read,
@@ -1035,10 +1040,10 @@ public final class ConcolicConstraintSolver {
 
             String value = arms.get(arms.size() - 1).text;
             String nullness = sort == Sort.STRING
-                    ? arms.get(arms.size() - 1).stringNullnessText : "";
+                    ? arms.get(arms.size() - 1).stringNullness : "";
             if (sort == Sort.STRING) {
                 for (Term arm : arms) {
-                    if (arm.stringNullnessText.isEmpty()) {
+                    if (arm.stringNullness.isEmpty()) {
                         unsupported.add(origin
                                 + ":GUARDED_READ_STRING_NULLNESS_MISSING");
                         return null;
@@ -1049,19 +1054,19 @@ public final class ConcolicConstraintSolver {
                 Term arm = arms.get(index);
                 boolean sameValue = arm.text.equals(value);
                 boolean sameNullness = sort != Sort.STRING
-                        || arm.stringNullnessText.equals(nullness);
+                        || arm.stringNullness.equals(nullness);
                 if (sameValue && sameNullness) continue;
                 value = "(ite " + selectors.get(index) + " "
                         + arm.text + " " + value + ")";
                 if (sort == Sort.STRING) {
                     nullness = "(ite " + selectors.get(index) + " "
-                            + arm.stringNullnessText + " " + nullness + ")";
+                            + arm.stringNullness + " " + nullness + ")";
                 }
             }
             recordGuardedReadUse(readIdentity,
                     GuardedReadNaming.projectionIdentity(read), activation,
                     selectors);
-            return new Term(value, sort,
+            return Term.vm(value, sort,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(
                             optionalString(read, "_java_type")), nullness, "");
         }
@@ -1317,7 +1322,7 @@ public final class ConcolicConstraintSolver {
                         JsonElement identity,
                         ContainerSmtCodec.Sort shape) {
                     Sort stateSort = shape == ContainerSmtCodec.Sort.INDEXED
-                            ? Sort.INDEXED : Sort.ASSOCIATIVE;
+                            ? Sort.ARRAY_VALUE : Sort.MAP;
                     if (identity != null && identity.isJsonObject()
                             && "SymbolExpression".equals(optionalString(
                             identity.getAsJsonObject(), "_type"))) {
@@ -1368,9 +1373,9 @@ public final class ConcolicConstraintSolver {
                             : expected == ContainerSmtCodec.Sort.REF
                             ? Sort.REF
                             : expected == ContainerSmtCodec.Sort.INDEXED
-                            ? Sort.INDEXED
+                            ? Sort.ARRAY_VALUE
                             : expected == ContainerSmtCodec.Sort.ASSOCIATIVE
-                            ? Sort.ASSOCIATIVE : null;
+                            ? Sort.MAP : null;
                     return shareTerm(toContainerTerm(term(expression,
                             nativeExpected,
                             origin + ":container-operand")));
@@ -1398,14 +1403,14 @@ public final class ConcolicConstraintSolver {
                             expressionJavaType(expression)) : "";
                     String stringValue = "";
                     if (value.sort == Sort.STRING) {
-                        if (value.stringNullnessText.isEmpty()) {
+                        if (value.stringNullness.isEmpty()) {
                             unsupported("ContainerStringNullness");
                             return null;
                         }
                         stringValue = "false".equals(
-                                value.stringNullnessText)
+                                value.stringNullness)
                                 ? "(VString " + value.text + ")"
-                                : "(ite " + value.stringNullnessText
+                                : "(ite " + value.stringNullness
                                 + " (VRef nullRef) (VString "
                                 + value.text + "))";
                     }
@@ -1435,7 +1440,7 @@ public final class ConcolicConstraintSolver {
                         ContainerSmtCodec.Term value,
                         String javaType) {
                     return ContainerSmtCodec.unboxValue(value,
-                            javaType, unboxedCellSort(javaType),
+                            javaType, VmTermLowering.unboxedCellSort(sortOfJava(javaType)),
                             this);
                 }
 
@@ -1464,7 +1469,7 @@ public final class ConcolicConstraintSolver {
                     functionDeclarations.put(accessor,
                             "(declare-fun " + accessor + " (Ref) "
                                     + result.smt + ")");
-                    return toContainerTerm(new Term("(" + accessor + " "
+                    return toContainerTerm(Term.vm("(" + accessor + " "
                             + owner.text + ")", result,
                             JavaPrimitiveSmtSemantics.widthOfJavaType(
                                     javaType)));
@@ -1488,8 +1493,8 @@ public final class ConcolicConstraintSolver {
                 case STRING: return Sort.STRING;
                 case REF: return Sort.REF;
                 case VALUE: return Sort.VALUE;
-                case INDEXED: return Sort.INDEXED;
-                default: return Sort.ASSOCIATIVE;
+                case INDEXED: return Sort.ARRAY_VALUE;
+                default: return Sort.MAP;
             }
         }
 
@@ -1507,7 +1512,7 @@ public final class ConcolicConstraintSolver {
             }
             Sort sort = containerSort(value.sort);
             if (sort == Sort.UNKNOWN) return value;
-            String identity = sort.name() + "\u0000" + value.text;
+            String identity = sort.replayName() + "\u0000" + value.text;
             String digest = sha256(identity);
             SharedTermDefinition definition = sharedTerms.get(
                     digest);
@@ -1538,9 +1543,9 @@ public final class ConcolicConstraintSolver {
                     ? ContainerSmtCodec.Sort.REF
                     : value.sort == Sort.VALUE
                     ? ContainerSmtCodec.Sort.VALUE
-                    : value.sort == Sort.INDEXED
+                    : value.sort == Sort.ARRAY_VALUE
                     ? ContainerSmtCodec.Sort.INDEXED
-                    : value.sort == Sort.ASSOCIATIVE
+                    : value.sort == Sort.MAP
                     ? ContainerSmtCodec.Sort.ASSOCIATIVE : null;
             return sort == null ? null
                     : new ContainerSmtCodec.Term(value.text, sort,
@@ -1555,15 +1560,15 @@ public final class ConcolicConstraintSolver {
                 unsupported.add(origin + ":CONTAINER_STATE_USED_AS_VALUE");
                 return null;
             }
-            return new Term(value.text, sort, value.integralWidth);
+            return Term.vm(value.text, sort, value.integralWidth);
         }
 
         private Term symbol(JsonObject expression, String origin) {
             String raw = optionalString(expression, "_exp");
             if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
-                return new Term("nullRef", Sort.REF);
+                return Term.vm("nullRef", Sort.REF);
             }
-            if ("V".equals(raw)) return new Term("true", Sort.BOOL);
+            if ("V".equals(raw)) return Term.vm("true", Sort.BOOL);
             if (currentConstraintSymbols != null && !raw.isEmpty()) {
                 currentConstraintSymbols.add(raw);
             }
@@ -1606,10 +1611,10 @@ public final class ConcolicConstraintSolver {
                 }
             }
             if (symbolNames.sort == Sort.STRING) {
-                return new Term(name, Sort.STRING, IntegralWidth.NONE,
+                return Term.vm(name, Sort.STRING, IntegralWidth.NONE,
                         symbolNames.nullness, raw);
             }
-            return new Term(name, symbolNames.sort, symbolNames.width);
+            return Term.vm(name, symbolNames.sort, symbolNames.width);
         }
 
         private SymbolNames names(String raw) {
@@ -1750,7 +1755,7 @@ public final class ConcolicConstraintSolver {
                     JavaPrimitiveSmtSemantics.domainOfJavaType("J");
             assertions.add("(and (<= " + longDomain.lower + " " + name
                     + ") (<= " + name + " " + longDomain.upper + "))");
-            return new Term(name, Sort.INT, IntegralWidth.JAVA_LONG);
+            return Term.vm(name, Sort.INT, IntegralWidth.JAVA_LONG);
         }
 
         private Term constant(JsonObject expression, Sort expected,
@@ -1760,15 +1765,15 @@ public final class ConcolicConstraintSolver {
             Sort sort = sortOfJava(optionalString(expression, "_java_type"));
             if (expected == Sort.BOOL && (sort == Sort.INT
                     || sort == Sort.BOOL)) {
-                return new Term("0".equals(payload) ? "false" : "true",
+                return Term.vm("0".equals(payload) ? "false" : "true",
                         Sort.BOOL);
             }
             if (expected == Sort.REF && ("0".equals(payload)
                     || VmExpressionIr.SYMBOLIC_NULL.equals(raw))) {
-                return new Term("nullRef", Sort.REF);
+                return Term.vm("nullRef", Sort.REF);
             }
             if (sort == Sort.BOOL) {
-                return new Term("0".equals(payload) ? "false" : "true",
+                return Term.vm("0".equals(payload) ? "false" : "true",
                         Sort.BOOL);
             }
             if (sort == Sort.INT) {
@@ -1778,7 +1783,7 @@ public final class ConcolicConstraintSolver {
                             + firstNonBlank(raw, "MISSING"));
                     return null;
                 }
-                return new Term(literal, Sort.INT,
+                return Term.vm(literal, Sort.INT,
                         JavaPrimitiveSmtSemantics.widthOfJavaType(
                                 optionalString(expression, "_java_type")));
             }
@@ -1791,13 +1796,13 @@ public final class ConcolicConstraintSolver {
                             + firstNonBlank(raw, "MISSING"));
                     return null;
                 }
-                return new Term(literal, sort);
+                return Term.vm(literal, sort);
             }
             if (sort == Sort.STRING) {
-                return Term.nonNullString(quote(payload));
+                return Term.nonNullString(quote(payload), "true");
             }
             if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
-                return new Term("nullRef", Sort.REF);
+                return Term.vm("nullRef", Sort.REF);
             }
             unsupported.add(origin + ":UNSUPPORTED_CONSTANT_TYPE:"
                     + firstNonBlank(optionalString(expression, "_java_type"),
@@ -1828,7 +1833,7 @@ public final class ConcolicConstraintSolver {
                 String conversion = JavaPrimitiveSmtSemantics.primitiveCast(
                         source.text, sourceType, targetType);
                 if (conversion != null) {
-                    return new Term(conversion, targetSort,
+                    return Term.vm(conversion, targetSort,
                             JavaPrimitiveSmtSemantics.widthOfJavaType(
                                     targetType));
                 }
@@ -1854,11 +1859,11 @@ public final class ConcolicConstraintSolver {
                 if ("-".equals(operator) && operand != null
                         && numeric(operand.sort)) {
                     if (operand.sort.floating()) {
-                        return new Term(JavaPrimitiveSmtSemantics
+                        return Term.vm(JavaPrimitiveSmtSemantics
                                 .floatingNegate(operand.text), operand.sort);
                     }
                     if (operand.integralWidth != IntegralWidth.NONE) {
-                        return new Term(JavaPrimitiveSmtSemantics.wrap(
+                        return Term.vm(JavaPrimitiveSmtSemantics.wrap(
                                 "(- " + operand.text + ")",
                                 operand.integralWidth), Sort.INT,
                                 operand.integralWidth);
@@ -1870,7 +1875,7 @@ public final class ConcolicConstraintSolver {
                 if ("~".equals(operator) && operand != null
                         && operand.sort == Sort.INT
                         && operand.integralWidth != IntegralWidth.NONE) {
-                    return new Term(JavaPrimitiveSmtSemantics.complement(
+                    return Term.vm(JavaPrimitiveSmtSemantics.complement(
                             operand.text, operand.integralWidth), Sort.INT,
                             operand.integralWidth);
                 }
@@ -1885,16 +1890,16 @@ public final class ConcolicConstraintSolver {
             if (left == null || right == null) return null;
             if (left.sort != right.sort && right.isZero()
                     && left.sort == Sort.REF) {
-                right = new Term("nullRef", Sort.REF);
+                right = Term.vm("nullRef", Sort.REF);
             } else if (left.sort != right.sort && left.isZero()
                     && right.sort == Sort.REF) {
-                left = new Term("nullRef", Sort.REF);
+                left = Term.vm("nullRef", Sort.REF);
             }
             if ("--".equals(operator)) {
                 if (left.sort == Sort.INT && right.sort == Sort.INT
                         && left.integralWidth == IntegralWidth.JAVA_LONG
                         && right.integralWidth == IntegralWidth.JAVA_LONG) {
-                    return new Term(JavaPrimitiveSmtSemantics
+                    return Term.vm(JavaPrimitiveSmtSemantics
                             .integralCompareResult(left.text, right.text),
                             Sort.INT, IntegralWidth.JAVA_INT);
                 }
@@ -1905,7 +1910,7 @@ public final class ConcolicConstraintSolver {
             }
             if ("--l".equals(operator) || "--g".equals(operator)) {
                 if (left.sort == right.sort && left.sort.floating()) {
-                    return new Term(JavaPrimitiveSmtSemantics
+                    return Term.vm(JavaPrimitiveSmtSemantics
                             .floatingCompareResult(left.text, right.text,
                                     "--g".equals(operator)), Sort.INT,
                             IntegralWidth.JAVA_INT);
@@ -1937,18 +1942,18 @@ public final class ConcolicConstraintSolver {
                                 expression.get("_left")) ? right : left;
                         String materialization = ContainerSmtCodec
                                 .materializedStringEquality(left.text,
-                                right.text, symbol.stringNullnessText);
+                                right.text, symbol.stringNullness);
                         if (materialization.isEmpty()) {
                             unsupported.add(origin
                                     + ":STRING_MATERIALIZATION_NULLNESS");
                             return null;
                         }
-                        return new Term(materialization, Sort.BOOL);
+                        return Term.vm(materialization, Sort.BOOL);
                     }
-                    if (!left.stringReferenceKey.isEmpty()
-                            && left.stringReferenceKey.equals(
-                            right.stringReferenceKey)) {
-                        return new Term("==".equals(operator)
+                    if (!left.stringReferenceOrigin.isEmpty()
+                            && left.stringReferenceOrigin.equals(
+                            right.stringReferenceOrigin)) {
+                        return Term.vm("==".equals(operator)
                                 ? "true" : "false", Sort.BOOL);
                     }
                     // A BinaryExpression over Java Strings comes from JVM
@@ -1964,12 +1969,12 @@ public final class ConcolicConstraintSolver {
                     return null;
                 }
                 if (left.sort.floating()) {
-                    return new Term(JavaPrimitiveSmtSemantics
+                    return Term.vm(JavaPrimitiveSmtSemantics
                             .floatingComparison(operator, left.text,
                                     right.text), Sort.BOOL);
                 }
                 String equals = "(= " + left.text + " " + right.text + ")";
-                return new Term("!=".equals(operator)
+                return Term.vm("!=".equals(operator)
                         ? "(not " + equals + ")" : equals, Sort.BOOL);
             }
             if ("&&".equals(operator) || "||".equals(operator)) {
@@ -1977,7 +1982,7 @@ public final class ConcolicConstraintSolver {
                     unsupported.add(origin + ":NON_BOOLEAN_LOGIC");
                     return null;
                 }
-                return new Term("(" + ("&&".equals(operator) ? "and" : "or")
+                return Term.vm("(" + ("&&".equals(operator) ? "and" : "or")
                         + " " + left.text + " " + right.text + ")",
                         Sort.BOOL);
             }
@@ -1993,11 +1998,11 @@ public final class ConcolicConstraintSolver {
                     return null;
                 }
                 if (left.sort.floating()) {
-                    return new Term(JavaPrimitiveSmtSemantics
+                    return Term.vm(JavaPrimitiveSmtSemantics
                             .floatingComparison(operator, left.text,
                                     right.text), Sort.BOOL);
                 }
-                return new Term("(" + comparison + " " + left.text + " "
+                return Term.vm("(" + comparison + " " + left.text + " "
                         + right.text + ")", Sort.BOOL);
             }
             if (bitwiseOperator(operator)) {
@@ -2014,7 +2019,7 @@ public final class ConcolicConstraintSolver {
                             + right.integralWidth);
                     return null;
                 }
-                return new Term(JavaPrimitiveSmtSemantics.bitwise(operator,
+                return Term.vm(JavaPrimitiveSmtSemantics.bitwise(operator,
                         left.text, right.text, width), Sort.INT, width);
             }
             if (shiftOperator(operator)) {
@@ -2026,7 +2031,7 @@ public final class ConcolicConstraintSolver {
                             + right.integralWidth);
                     return null;
                 }
-                return new Term(JavaPrimitiveSmtSemantics.shift(operator,
+                return Term.vm(JavaPrimitiveSmtSemantics.shift(operator,
                         left.text, right.text, left.integralWidth), Sort.INT,
                         left.integralWidth);
             }
@@ -2059,7 +2064,7 @@ public final class ConcolicConstraintSolver {
                     }
                     assertions.add(JavaPrimitiveSmtSemantics
                             .integralDivisorDefined(right.text));
-                    return new Term(JavaPrimitiveSmtSemantics
+                    return Term.vm(JavaPrimitiveSmtSemantics
                             .integralRemainder(left.text, right.text,
                                     resultWidth), Sort.INT, resultWidth);
                 }
@@ -2068,7 +2073,7 @@ public final class ConcolicConstraintSolver {
                             .floatingArithmetic(operator, left.text,
                                     right.text);
                     if (arithmetic != null) {
-                        return new Term(arithmetic, result);
+                        return Term.vm(arithmetic, result);
                     }
                     unsupported.add(origin
                             + ":JAVA_FLOATING_OPERATOR_UNMODELED:"
@@ -2092,7 +2097,7 @@ public final class ConcolicConstraintSolver {
                             + right.integralWidth);
                     return null;
                 }
-                return new Term(JavaPrimitiveSmtSemantics.wrap(
+                return Term.vm(JavaPrimitiveSmtSemantics.wrap(
                         arithmeticExpression, resultWidth), Sort.INT,
                         resultWidth);
             }
@@ -2113,11 +2118,11 @@ public final class ConcolicConstraintSolver {
                     && left.isNullReference()) {
                 string = right;
             }
-            if (string == null || string.stringNullnessText.isEmpty()) {
+            if (string == null || string.stringNullness.isEmpty()) {
                 return null;
             }
-            String isNull = string.stringNullnessText;
-            return new Term("!=".equals(operator)
+            String isNull = string.stringNullness;
+            return Term.vm("!=".equals(operator)
                     ? "(not " + isNull + ")" : isNull, Sort.BOOL);
         }
 
@@ -2129,12 +2134,12 @@ public final class ConcolicConstraintSolver {
                 String converted = JavaPrimitiveSmtSemantics
                         .floatingConversion(term.text,
                                 floatingKind(term.sort), targetKind);
-                if (converted != null) return new Term(converted, target);
+                if (converted != null) return Term.vm(converted, target);
             } else if (term.sort == Sort.INT
                     && term.integralWidth != IntegralWidth.NONE) {
                 String converted = JavaPrimitiveSmtSemantics
                         .integralToFloating(term.text, targetKind);
-                if (converted != null) return new Term(converted, target);
+                if (converted != null) return Term.vm(converted, target);
             }
             unsupported.add(origin + ":UNSUPPORTED_JAVA_NUMERIC_PROMOTION:"
                     + term.sort + "->" + target);
@@ -2168,7 +2173,7 @@ public final class ConcolicConstraintSolver {
                 if (!requireNonNullStrings(strings, origin, operation)) {
                     return null;
                 }
-                Term length = new Term("(str.len "
+                Term length = Term.vm("(str.len "
                         + strings.get(0).text + ")", Sort.INT,
                         IntegralWidth.JAVA_INT);
                 JavaPrimitiveSmtSemantics.IntegralDomain intDomain =
@@ -2196,13 +2201,14 @@ public final class ConcolicConstraintSolver {
                     return null;
                 }
                 if (strings.size() == 1) {
-                    return Term.nonNullString(strings.get(0).text);
+                    return Term.nonNullString(strings.get(0).text, "true");
                 }
                 StringBuilder result = new StringBuilder("(str.++");
                 for (Term value : strings) {
                     result.append(' ').append(value.text);
                 }
-                return Term.nonNullString(result.append(')').toString());
+                return Term.nonNullString(result.append(')').toString(),
+                        "true");
             }
             if ("toString".equals(operation)) {
                 if (negated) {
@@ -2281,16 +2287,16 @@ public final class ConcolicConstraintSolver {
             if (argument.isNullReference()) {
                 predicate = "false";
             } else if (argument.sort == Sort.STRING) {
-                if (argument.stringNullnessText.isEmpty()) {
+                if (argument.stringNullness.isEmpty()) {
                     unsupported.add(origin
                             + ":STRING_EQUALS_NULLABILITY_UNKNOWN:1");
                     return null;
                 }
                 String contentEquals = "(= " + receiver.text + " "
                         + argument.text + ")";
-                predicate = "false".equals(argument.stringNullnessText)
+                predicate = "false".equals(argument.stringNullness)
                         ? contentEquals : "(and (not "
-                        + argument.stringNullnessText + ") "
+                        + argument.stringNullness + ") "
                         + contentEquals + ")";
             } else {
                 unsupported.add(origin
@@ -2345,22 +2351,22 @@ public final class ConcolicConstraintSolver {
          */
         private boolean requireNonNullString(Term value, String origin,
                                              String operation, int index) {
-            if (value.stringNullnessText.isEmpty()) {
+            if (value.stringNullness.isEmpty()) {
                 unsupported.add(origin + ":STRING_"
                         + operation.toUpperCase(java.util.Locale.ROOT)
                         + "_NULLABILITY_UNKNOWN:" + index);
                 return false;
             }
-            if (!"false".equals(value.stringNullnessText)) {
+            if (!"false".equals(value.stringNullness)) {
                 requireUnderCurrentGuard(
-                        "(not " + value.stringNullnessText + ")");
+                        "(not " + value.stringNullness + ")");
             }
             return true;
         }
 
         private Term booleanStringResult(String predicate,
                                          boolean negated) {
-            return new Term(negated ? "(not " + predicate + ")"
+            return Term.vm(negated ? "(not " + predicate + ")"
                     : predicate, Sort.BOOL);
         }
 
@@ -2539,7 +2545,7 @@ public final class ConcolicConstraintSolver {
         private Term javaIntString(Term integer) {
             usesJavaIntString = true;
             return Term.nonNullString("(java_int_to_string "
-                    + integer.text + ")");
+                    + integer.text + ")", "true");
         }
 
         private void assertJavaIntRange(Term integer) {
@@ -2898,47 +2904,6 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    private static final class GuardedReadUse {
-        private final String activation;
-        private final List<String> selectors;
-
-        private GuardedReadUse(String activation,
-                               Collection<String> selectors) {
-            this.activation = activation;
-            this.selectors = new ArrayList<>(selectors);
-            Collections.sort(this.selectors);
-        }
-
-        private boolean same(GuardedReadUse other) {
-            return other != null && activation.equals(other.activation)
-                    && selectors.equals(other.selectors);
-        }
-    }
-
-    private enum Sort {
-        BOOL("Bool"), INT("Int"),
-        FLOAT32("(_ FloatingPoint 8 24)"),
-        FLOAT64("(_ FloatingPoint 11 53)"), STRING("String"),
-        REF("Ref"), VALUE("Value"),
-        INDEXED("IndexedState"), ASSOCIATIVE("AssocState"),
-        UNKNOWN("");
-
-        private final String smt;
-
-        Sort(String smt) {
-            this.smt = smt;
-        }
-
-        private boolean containerState() {
-            return this == INDEXED || this == ASSOCIATIVE;
-        }
-
-        private boolean floating() {
-            return this == FLOAT32 || this == FLOAT64;
-        }
-    }
-
-    /** One topologically inserted, fully constrained SMT alias. */
     private static final class SharedTermDefinition {
         private final String name;
         private final Sort sort;
@@ -2948,50 +2913,6 @@ public final class ConcolicConstraintSolver {
             this.name = name;
             this.sort = sort;
             this.body = body;
-        }
-    }
-
-    private static final class Term {
-        private final String text;
-        private final Sort sort;
-        private final IntegralWidth integralWidth;
-        private final String stringNullnessText;
-        private final String stringReferenceKey;
-
-        private Term(String text, Sort sort) {
-            this(text, sort, IntegralWidth.NONE, "", "");
-        }
-
-        private Term(String text, Sort sort,
-                     IntegralWidth integralWidth) {
-            this(text, sort, integralWidth, "", "");
-        }
-
-        private Term(String text, Sort sort,
-                     IntegralWidth integralWidth,
-                     String stringNullnessText,
-                     String stringReferenceKey) {
-            this.text = text;
-            this.sort = sort;
-            this.integralWidth = sort == Sort.INT && integralWidth != null
-                    ? integralWidth : IntegralWidth.NONE;
-            this.stringNullnessText = stringNullnessText == null
-                    ? "" : stringNullnessText;
-            this.stringReferenceKey = stringReferenceKey == null
-                    ? "" : stringReferenceKey;
-        }
-
-        private static Term nonNullString(String content) {
-            return new Term(content, Sort.STRING, IntegralWidth.NONE,
-                    "false", "");
-        }
-
-        private boolean isZero() {
-            return "0".equals(text);
-        }
-
-        private boolean isNullReference() {
-            return sort == Sort.REF && "nullRef".equals(text);
         }
     }
 
@@ -3156,7 +3077,7 @@ public final class ConcolicConstraintSolver {
                 assignment.addProperty("valueType", "REAL");
                 assignment.addProperty("value", decoded);
             } else {
-                assignment.addProperty("valueType", names.sort.name());
+                assignment.addProperty("valueType", names.sort.replayName());
                 assignment.addProperty("value",
                         SmtModelValueCodec.normalizeScalar(value));
             }
@@ -3199,7 +3120,7 @@ public final class ConcolicConstraintSolver {
                 }
             } else if (read.value.sort == Sort.INT
                     || read.value.sort == Sort.BOOL) {
-                valueType = read.value.sort.name();
+                valueType = read.value.sort.replayName();
                 value = SmtModelValueCodec.normalizeScalar(modeled);
             } else {
                 unresolved.add(modelName);
@@ -3671,29 +3592,8 @@ public final class ConcolicConstraintSolver {
                 ? Sort.REF : Sort.UNKNOWN;
     }
 
-    /** The Java sort one boxed container cell unboxes to. */
-    private static ContainerSmtCodec.Sort unboxedCellSort(String javaType) {
-        Sort sort = sortOfJava(javaType);
-        return sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
-                : sort == Sort.REF ? ContainerSmtCodec.Sort.REF
-                : sort == Sort.FLOAT32 ? ContainerSmtCodec.Sort.FLOAT32
-                : sort == Sort.FLOAT64 ? ContainerSmtCodec.Sort.FLOAT64
-                : sort == Sort.STRING ? ContainerSmtCodec.Sort.STRING
-                : ContainerSmtCodec.Sort.VALUE;
-    }
-
-    private static boolean numeric(Sort sort) {
-        return sort == Sort.INT || sort.floating();
-    }
-
     private static Sort castSort(String descriptor) {
         return sortOfJava(descriptor);
-    }
-
-    private static FloatingKind floatingKind(Sort sort) {
-        if (sort == Sort.FLOAT32) return FloatingKind.JAVA_FLOAT;
-        if (sort == Sort.FLOAT64) return FloatingKind.JAVA_DOUBLE;
-        return FloatingKind.NONE;
     }
 
     private static String expressionJavaType(JsonElement expression) {

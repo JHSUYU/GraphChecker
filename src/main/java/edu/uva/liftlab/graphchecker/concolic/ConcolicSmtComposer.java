@@ -48,11 +48,16 @@ import java.util.regex.Pattern;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
+import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.GuardedReadUse;
+import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
+import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
 
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.floatingKind;
+import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.numeric;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
@@ -2106,7 +2111,7 @@ public final class ConcolicSmtComposer {
                         scopedIdentity, 10);
                 declare(name, Sort.INT);
                 assertJavaIntegralDomain(name, Sort.INT, "J", identity);
-                return new Term(name, Sort.INT,
+                return Term.of(name, Sort.INT,
                         IntegralWidth.JAVA_LONG);
             }
             if ("TypeCastExpression".equals(type)) {
@@ -2158,7 +2163,7 @@ public final class ConcolicSmtComposer {
                     && precondition.equals(value.precondition)) {
                 return value;
             }
-            return new Term(text, value.sort, value.integralWidth, nullness,
+            return Term.of(text, value.sort, value.integralWidth, nullness,
                     value.stringReferenceOrigin, precondition);
         }
 
@@ -2266,7 +2271,7 @@ public final class ConcolicSmtComposer {
                 } finally {
                     restoreGuard(previousGuard);
                 }
-                result = new Term(value, sort,
+                result = Term.of(value, sort,
                         integralWidthOfJava(javaType));
                 guardedReadTerms.put(projectionIdentity, result);
             }
@@ -2298,8 +2303,7 @@ public final class ConcolicSmtComposer {
                                           Set<String> selectors) {
             String identity = GuardedReadNaming.useIdentity(
                     projectionIdentity, activation);
-            GuardedReadUse use = new GuardedReadUse(identity, activation,
-                    selectors);
+            GuardedReadUse use = new GuardedReadUse(activation, selectors);
             GuardedReadUse held = guardedReadUses.computeIfAbsent(readIdentity,
                     ignored -> new LinkedHashMap<>()).putIfAbsent(identity,
                     use);
@@ -2565,7 +2569,7 @@ public final class ConcolicSmtComposer {
                 for (String useId : useIds) {
                     GuardedReadUse use = useRows.get(useId);
                     JsonObject row = new JsonObject();
-                    row.addProperty("useIdentity", use.identity);
+                    row.addProperty("useIdentity", useId);
                     row.addProperty("activationGuard", use.activation);
                     JsonArray selectors = new JsonArray();
                     for (String selector : use.selectors) {
@@ -2613,25 +2617,6 @@ public final class ConcolicSmtComposer {
                 this.selector = selector;
                 this.term = term;
                 this.writerCaseClosure = new ArrayList<>(writerCaseClosure);
-            }
-        }
-
-        private static final class GuardedReadUse {
-            private final String identity;
-            private final String activation;
-            private final List<String> selectors;
-
-            private GuardedReadUse(String identity, String activation,
-                                   Collection<String> selectors) {
-                this.identity = identity;
-                this.activation = activation;
-                this.selectors = new ArrayList<>(selectors);
-                Collections.sort(this.selectors);
-            }
-
-            private boolean same(GuardedReadUse other) {
-                return other != null && activation.equals(other.activation)
-                        && selectors.equals(other.selectors);
             }
         }
 
@@ -2741,7 +2726,7 @@ public final class ConcolicSmtComposer {
                     defineConstant(name + "__is_null", Sort.BOOL, nullness);
                     nullness = name + "__is_null";
                 }
-                Term result = new Term(name, sort, width, nullness, "",
+                Term result = Term.of(name, sort, width, nullness, "",
                         and(defined));
                 guardedMergeTerms.put(projectionIdentity, result);
                 return result;
@@ -2885,7 +2870,7 @@ public final class ConcolicSmtComposer {
                         ContainerSmtCodec.Term value,
                         String javaType) {
                     return ContainerSmtCodec.unboxValue(value,
-                            javaType, unboxedCellSort(javaType),
+                            javaType, VmTermLowering.unboxedCellSort(sortOfJava(javaType)),
                             this);
                 }
 
@@ -2932,8 +2917,8 @@ public final class ConcolicSmtComposer {
                     String accessor = "container_field__"
                             + scopeToken(identity);
                     declareFunction(accessor, Collections.singletonList(
-                            new Term("", Sort.REF)), result);
-                    return toContainerTerm(new Term("(" + accessor + " "
+                            Term.of("", Sort.REF)), result);
+                    return toContainerTerm(Term.of("(" + accessor + " "
                             + owner.text + ")", result,
                             integralWidthOfJava(javaType)));
                 }
@@ -3006,15 +2991,15 @@ public final class ConcolicSmtComposer {
                     ? Sort.ARRAY_VALUE
                     : value.sort == ContainerSmtCodec.Sort.ASSOCIATIVE
                     ? Sort.MAP : Sort.VALUE;
-            return new Term(value.text, sort, value.integralWidth);
+            return Term.of(value.text, sort, value.integralWidth);
         }
 
         private Term symbol(JsonObject expression, Sort expected) {
             String raw = optionalString(expression, "_exp");
             if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
-                return new Term("nullRef", Sort.REF);
+                return Term.of("nullRef", Sort.REF);
             }
-            if ("V".equals(raw)) return new Term("true", Sort.BOOL);
+            if ("V".equals(raw)) return Term.of("true", Sort.BOOL);
             String javaType = optionalString(expression, "_java_type");
             Sort encoded = sortOfJava(javaType);
             // A reference-typed use of an allocated container wants the
@@ -3095,7 +3080,7 @@ public final class ConcolicSmtComposer {
                 String name = smtSymbols.mint(prefix + "__"
                         + scopeToken(executionScope) + "__"
                         + smtName(raw) + "__", key, 12);
-                witness = new Term(name, sort);
+                witness = Term.of(name, sort);
                 structuralWitnesses.put(key, witness);
                 declare(name, sort);
             }
@@ -3216,7 +3201,7 @@ public final class ConcolicSmtComposer {
                         sourcePrefix + key);
             }
             recordSourceMaterialization(raw, symbol);
-            return new Term(symbol.name, symbol.sort,
+            return Term.of(symbol.name, symbol.sort,
                     integralWidthOfJava(javaType));
         }
 
@@ -3460,30 +3445,30 @@ public final class ConcolicSmtComposer {
                             + firstNonBlank(raw, "MISSING"));
                     result = unsupportedTerm(Sort.BOOL);
                 } else {
-                    result = new Term("1".equals(value)
+                    result = Term.of("1".equals(value)
                             ? "true" : "false", Sort.BOOL);
                 }
             } else if (expected == Sort.REF && ("0".equals(value)
                     || VmExpressionIr.SYMBOLIC_NULL.equals(raw))) {
-                result = new Term("nullRef", Sort.REF);
+                result = Term.of("nullRef", Sort.REF);
             } else if (sort.floating()) {
                 String literal = JavaPrimitiveSmtSemantics.floatingLiteral(
                         value, floatingKind(sort));
                 result = literal == null
                         ? invalidNumericLiteral(raw, sort)
-                        : new Term(literal, sort);
+                        : Term.of(literal, sort);
             } else if (sort == Sort.INT) {
                 String literal = integerLiteral(value);
                 result = literal == null
                         ? invalidNumericLiteral(raw, sort)
-                        : new Term(literal, Sort.INT,
+                        : Term.of(literal, Sort.INT,
                         integralWidthOfJava(javaType));
             } else if (sort == Sort.STRING) {
                 result = Term.nonNullString(quote(value), "true");
             } else {
                 String name = "const__" + smtName(raw);
                 declare(name, sort == Sort.VALUE ? Sort.REF : sort);
-                result = new Term(name,
+                result = Term.of(name,
                         sort == Sort.VALUE ? Sort.REF : sort);
             }
             return result;
@@ -3514,7 +3499,7 @@ public final class ConcolicSmtComposer {
                 String conversion = JavaPrimitiveSmtSemantics.primitiveCast(
                         source.text, sourceType, targetType);
                 if (conversion != null) {
-                    return dependent(new Term(conversion, targetSort,
+                    return dependent(Term.of(conversion, targetSort,
                             integralWidthOfJava(targetType)), source);
                 }
             } else if (primitivePair) {
@@ -3541,12 +3526,12 @@ public final class ConcolicSmtComposer {
                 Term operand = term(expression.get("_right"), null);
                 if ("-".equals(operator) && numeric(operand.sort)) {
                     if (operand.sort.floating()) {
-                        return dependent(new Term(JavaPrimitiveSmtSemantics
+                        return dependent(Term.of(JavaPrimitiveSmtSemantics
                                 .floatingNegate(operand.text), operand.sort),
                                 operand);
                     }
                     if (operand.integralWidth != IntegralWidth.NONE) {
-                        return dependent(new Term(wrapIntegral("(- " + operand.text
+                        return dependent(Term.of(wrapIntegral("(- " + operand.text
                                 + ")", operand.integralWidth), Sort.INT,
                                 operand.integralWidth), operand);
                     }
@@ -3556,7 +3541,7 @@ public final class ConcolicSmtComposer {
                 }
                 if ("~".equals(operator) && operand.sort == Sort.INT
                         && operand.integralWidth != IntegralWidth.NONE) {
-                    return dependent(new Term(JavaPrimitiveSmtSemantics
+                    return dependent(Term.of(JavaPrimitiveSmtSemantics
                             .complement(operand.text, operand.integralWidth),
                             Sort.INT, operand.integralWidth), operand);
                 }
@@ -3572,35 +3557,35 @@ public final class ConcolicSmtComposer {
                     identitySort == null ? left.sort : identitySort);
             if (left.sort != right.sort && right.isZero()
                     && left.sort == Sort.REF) {
-                right = new Term("nullRef", Sort.REF);
+                right = Term.of("nullRef", Sort.REF);
             } else if (left.sort != right.sort && left.isZero()
                     && right.sort == Sort.REF) {
-                left = new Term("nullRef", Sort.REF);
+                left = Term.of("nullRef", Sort.REF);
             }
             if ("--".equals(operator)) {
                 if (left.sort == Sort.INT && right.sort == Sort.INT
                         && left.integralWidth == IntegralWidth.JAVA_LONG
                         && right.integralWidth == IntegralWidth.JAVA_LONG) {
-                    return dependent(new Term(JavaPrimitiveSmtSemantics
+                    return dependent(Term.of(JavaPrimitiveSmtSemantics
                             .integralCompareResult(left.text, right.text),
                             Sort.INT, IntegralWidth.JAVA_INT), left, right);
                 }
                 unsupported.add("MalformedJvmLcmpOperands:"
                         + left.sort + ":" + left.integralWidth + ":"
                         + right.sort + ":" + right.integralWidth);
-                return new Term("0", Sort.INT,
+                return Term.of("0", Sort.INT,
                         IntegralWidth.JAVA_INT);
             }
             if ("--l".equals(operator) || "--g".equals(operator)) {
                 if (left.sort == right.sort && left.sort.floating()) {
-                    return dependent(new Term(JavaPrimitiveSmtSemantics
+                    return dependent(Term.of(JavaPrimitiveSmtSemantics
                             .floatingCompareResult(left.text, right.text,
                                     "--g".equals(operator)), Sort.INT,
                             IntegralWidth.JAVA_INT), left, right);
                 }
                 unsupported.add("MalformedJvmFloatingCompareOperands:"
                         + operator + ":" + left.sort + ":" + right.sort);
-                return new Term("0", Sort.INT,
+                return Term.of("0", Sort.INT,
                         IntegralWidth.JAVA_INT);
             }
             if (left.sort != right.sort && numeric(left.sort)
@@ -3617,7 +3602,7 @@ public final class ConcolicSmtComposer {
                     || right.sort == Sort.STRING && isNull(left))) {
                 Term string = left.sort == Sort.STRING ? left : right;
                 String equality = string.stringNullness;
-                return dependent(new Term("!=".equals(operator)
+                return dependent(Term.of("!=".equals(operator)
                         ? "(not " + equality + ")" : equality,
                         Sort.BOOL), left, right);
             }
@@ -3626,7 +3611,7 @@ public final class ConcolicSmtComposer {
                     && (isNull(left) || isNull(right)))) {
                 // Java primitives are never null.  This is the one mixed-sort
                 // binary relation whose semantics can be closed without an
-                return dependent(new Term("!=".equals(operator)
+                return dependent(Term.of("!=".equals(operator)
                         ? "true" : "false", Sort.BOOL), left, right);
             }
             if ("&&".equals(operator) || "||".equals(operator)) {
@@ -3641,7 +3626,7 @@ public final class ConcolicSmtComposer {
                 String defined = and(Arrays.asList(left.precondition,
                         "(=> " + rightEvaluated + " "
                                 + right.precondition + ")"));
-                return new Term("(" + (conjunction ? "and" : "or")
+                return Term.of("(" + (conjunction ? "and" : "or")
                         + " " + left.text + " " + right.text + ")",
                         Sort.BOOL).withPrecondition(defined);
             }
@@ -3656,7 +3641,7 @@ public final class ConcolicSmtComposer {
             }
             if ("==".equals(operator) || "!=".equals(operator)) {
                 if (left.text.equals(right.text)) {
-                    return dependent(new Term("==".equals(operator)
+                    return dependent(Term.of("==".equals(operator)
                             ? "true" : "false", Sort.BOOL), left, right);
                 }
                 if (left.sort == Sort.STRING) {
@@ -3666,13 +3651,13 @@ public final class ConcolicSmtComposer {
                         String materialization = ContainerSmtCodec
                                 .materializedStringEquality(left.text,
                                 right.text, symbol.stringNullness);
-                        return dependent(new Term(materialization,
+                        return dependent(Term.of(materialization,
                                 Sort.BOOL), left, right);
                     }
                     if (!left.stringReferenceOrigin.isEmpty()
                             && left.stringReferenceOrigin.equals(
                             right.stringReferenceOrigin)) {
-                        return dependent(new Term("!=".equals(operator)
+                        return dependent(Term.of("!=".equals(operator)
                                 ? "false" : "true", Sort.BOOL),
                                 left, right);
                     }
@@ -3683,12 +3668,12 @@ public final class ConcolicSmtComposer {
                             left, right);
                 }
                 if (left.sort.floating()) {
-                    return dependent(new Term(JavaPrimitiveSmtSemantics
+                    return dependent(Term.of(JavaPrimitiveSmtSemantics
                             .floatingComparison(operator, left.text,
                                     right.text), Sort.BOOL), left, right);
                 }
                 String equality = "(= " + left.text + " " + right.text + ")";
-                return dependent(new Term("!=".equals(operator)
+                return dependent(Term.of("!=".equals(operator)
                         ? "(not " + equality + ")" : equality, Sort.BOOL),
                         left, right);
             }
@@ -3700,11 +3685,11 @@ public final class ConcolicSmtComposer {
                     return unsupportedTerm(Sort.BOOL);
                 }
                 if (left.sort.floating()) {
-                    return dependent(new Term(JavaPrimitiveSmtSemantics
+                    return dependent(Term.of(JavaPrimitiveSmtSemantics
                             .floatingComparison(operator, left.text,
                                     right.text), Sort.BOOL), left, right);
                 }
-                return dependent(new Term("(" + smt + " " + left.text + " "
+                return dependent(Term.of("(" + smt + " " + left.text + " "
                         + right.text + ")", Sort.BOOL), left, right);
             }
             if (bitwiseOperator(operator)) {
@@ -3715,7 +3700,7 @@ public final class ConcolicSmtComposer {
                             + right.integralWidth);
                     return unsupportedTerm(Sort.INT);
                 }
-                return dependent(new Term(JavaPrimitiveSmtSemantics.bitwise(
+                return dependent(Term.of(JavaPrimitiveSmtSemantics.bitwise(
                         operator, left.text, right.text, width), Sort.INT,
                         width), left, right);
             }
@@ -3727,7 +3712,7 @@ public final class ConcolicSmtComposer {
                             + right.integralWidth);
                     return unsupportedTerm(Sort.INT);
                 }
-                return dependent(new Term(JavaPrimitiveSmtSemantics.shift(
+                return dependent(Term.of(JavaPrimitiveSmtSemantics.shift(
                         operator, left.text, right.text,
                         left.integralWidth), Sort.INT,
                         left.integralWidth), left, right);
@@ -3749,7 +3734,7 @@ public final class ConcolicSmtComposer {
                     String floating = JavaPrimitiveSmtSemantics
                             .floatingArithmetic(operator, left.text,
                                     right.text);
-                    if (floating != null) return dependent(new Term(floating,
+                    if (floating != null) return dependent(Term.of(floating,
                             resultSort), left, right);
                     unsupported.add("JavaFloatingOperatorUnmodeled:"
                             + operator);
@@ -3774,7 +3759,7 @@ public final class ConcolicSmtComposer {
                             left.text, right.text, quotientWidth)
                             : JavaPrimitiveSmtSemantics.integralDivision(
                             left.text, right.text, quotientWidth);
-                    return dependent(new Term(quotient, Sort.INT,
+                    return dependent(Term.of(quotient, Sort.INT,
                             quotientWidth).withPrecondition(
                             JavaPrimitiveSmtSemantics.integralDivisorDefined(
                                     right.text)), left, right);
@@ -3790,7 +3775,7 @@ public final class ConcolicSmtComposer {
                             + right.integralWidth);
                     return unsupportedTerm(Sort.INT);
                 }
-                return dependent(new Term(wrapIntegral(arithmeticExpression,
+                return dependent(Term.of(wrapIntegral(arithmeticExpression,
                         resultWidth), Sort.INT, resultWidth), left, right);
             }
             unsupported.add("BinaryOperator:" + operator);
@@ -3831,13 +3816,13 @@ public final class ConcolicSmtComposer {
                 String converted = JavaPrimitiveSmtSemantics
                         .floatingConversion(term.text,
                                 floatingKind(term.sort), targetKind);
-                if (converted != null) return dependent(new Term(converted,
+                if (converted != null) return dependent(Term.of(converted,
                         target), term);
             } else if (term.sort == Sort.INT
                     && term.integralWidth != IntegralWidth.NONE) {
                 String converted = JavaPrimitiveSmtSemantics
                         .integralToFloating(term.text, targetKind);
-                if (converted != null) return dependent(new Term(converted,
+                if (converted != null) return dependent(Term.of(converted,
                         target), term);
             }
             unsupported.add("UnsupportedJavaNumericPromotion:" + origin
@@ -3875,7 +3860,7 @@ public final class ConcolicSmtComposer {
                                     : "ARITY", Sort.INT);
                 }
                 Term receiver = strings.get(0);
-                Term length = new Term("(str.len " + receiver.text + ")",
+                Term length = Term.of("(str.len " + receiver.text + ")",
                         Sort.INT, IntegralWidth.JAVA_INT).withPrecondition(
                         stringDereferencePrecondition(receiver));
                 assertJavaIntegralDomain(length.text, length.sort, "I",
@@ -3995,7 +3980,7 @@ public final class ConcolicSmtComposer {
         private Term booleanStringResult(String predicate,
                                          boolean negated,
                                          String precondition) {
-            return new Term(negated ? "(not " + predicate + ")"
+            return Term.of(negated ? "(not " + predicate + ")"
                     : predicate, Sort.BOOL).withPrecondition(precondition);
         }
 
@@ -4389,14 +4374,14 @@ public final class ConcolicSmtComposer {
             if (term.sort == Sort.INT) {
                 String boxed = ContainerSmtCodec.boxIntegral(
                         term.text, javaType);
-                return dependent(new Term(firstNonBlank(boxed,
+                return dependent(Term.of(firstNonBlank(boxed,
                         "(VInt " + term.text + ")"), Sort.VALUE), term);
             }
-            if (term.sort == Sort.FLOAT32) return dependent(new Term(
+            if (term.sort == Sort.FLOAT32) return dependent(Term.of(
                     "(VFloat " + term.text + ")", Sort.VALUE), term);
-            if (term.sort == Sort.FLOAT64) return dependent(new Term(
+            if (term.sort == Sort.FLOAT64) return dependent(Term.of(
                     "(VDouble " + term.text + ")", Sort.VALUE), term);
-            if (term.sort == Sort.BOOL) return dependent(new Term("(VBool "
+            if (term.sort == Sort.BOOL) return dependent(Term.of("(VBool "
                     + term.text + ")", Sort.VALUE), term);
             if (term.sort == Sort.STRING) {
                 String boxed = "false".equals(term.stringNullness)
@@ -4404,9 +4389,9 @@ public final class ConcolicSmtComposer {
                         : "(ite " + term.stringNullness
                                 + " (VRef nullRef) (VString "
                                 + term.text + "))";
-                return dependent(new Term(boxed, Sort.VALUE), term);
+                return dependent(Term.of(boxed, Sort.VALUE), term);
             }
-            if (term.sort == Sort.REF) return dependent(new Term("(VRef "
+            if (term.sort == Sort.REF) return dependent(Term.of("(VRef "
                     + term.text + ")", Sort.VALUE), term);
             unsupported.add("CannotBox:" + term.sort);
             return unsupportedTerm(Sort.VALUE);
@@ -4419,7 +4404,7 @@ public final class ConcolicSmtComposer {
 
         private void defineConstant(String name, Sort sort,
                                     String expression) {
-            definitions.putIfAbsent(name, new Term(expression, sort));
+            definitions.putIfAbsent(name, Term.of(expression, sort));
         }
 
         private void declareFunction(String name, List<Term> arguments,
@@ -4511,20 +4496,20 @@ public final class ConcolicSmtComposer {
          * Unsupported expressions never gain solver freedom.  Their gap is
          */
         private Term unsupportedTerm(Sort sort) {
-            if (sort == Sort.BOOL) return new Term("false", sort);
-            if (sort == Sort.INT) return new Term("0", sort);
+            if (sort == Sort.BOOL) return Term.of("false", sort);
+            if (sort == Sort.INT) return Term.of("0", sort);
             if (sort == Sort.FLOAT32 || sort == Sort.FLOAT64) {
-                return new Term(JavaPrimitiveSmtSemantics.floatingLiteral(
+                return Term.of(JavaPrimitiveSmtSemantics.floatingLiteral(
                         "0.0", floatingKind(sort)), sort);
             }
             if (sort == Sort.STRING) {
                 return Term.nonNullString("\"\"", "true");
             }
-            if (sort == Sort.REF) return new Term("nullRef", sort);
+            if (sort == Sort.REF) return Term.of("nullRef", sort);
             String nullValues = "((as const (Array Value Value))"
                     + " (VRef nullRef))";
             if (sort == Sort.MAP) {
-                return new Term("(mkAssocState 0"
+                return Term.of("(mkAssocState 0"
                         + " ((as const (Array Value Bool)) false)"
                         + " " + nullValues
                         + " ((as const (Array Int Value))"
@@ -4532,11 +4517,11 @@ public final class ConcolicSmtComposer {
                         + " ((as const (Array Value Int)) (- 1)))", sort);
             }
             if (sort == Sort.VALUE) {
-                return new Term("(VRef nullRef)", sort);
+                return Term.of("(VRef nullRef)", sort);
             }
             String elements = "((as const (Array Int Value))"
                     + " (VRef nullRef))";
-            return new Term("(mkIndexedState 0 " + elements + ")", sort);
+            return Term.of("(mkIndexedState 0 " + elements + ")", sort);
         }
 
         /** A readable prefix plus a reversible UTF-8 encoding avoids scope
@@ -4661,84 +4646,6 @@ public final class ConcolicSmtComposer {
         private RawSymbol(String name, Sort sort) {
             this.name = name;
             this.sort = sort;
-        }
-    }
-
-    enum Sort {
-        BOOL("Bool"), INT("Int"),
-        FLOAT32("(_ FloatingPoint 8 24)"),
-        FLOAT64("(_ FloatingPoint 11 53)"), STRING("String"),
-        REF("Ref"), MAP("AssocState"), VALUE("Value"),
-        ARRAY_VALUE("IndexedState");
-
-        private final String smt;
-
-        Sort(String smt) {
-            this.smt = smt;
-        }
-
-        private boolean floating() {
-            return this == FLOAT32 || this == FLOAT64;
-        }
-    }
-
-    private static final class Term {
-        private final String text;
-        private final Sort sort;
-        private final IntegralWidth integralWidth;
-        /** Empty only for non-String terms.  "false" means a known non-null
-         * String; any other value is the nullable reference companion Bool. */
-        private final String stringNullness;
-        /** Stable provenance used only for Java reference identity. */
-        private final String stringReferenceOrigin;
-        /** Java evaluation definedness (notably String dereference guards). */
-        private final String precondition;
-
-        private Term(String text, Sort sort) {
-            this(text, sort, IntegralWidth.NONE);
-        }
-
-        private Term(String text, Sort sort,
-                     IntegralWidth integralWidth) {
-            this(text, sort, integralWidth,
-                    sort == Sort.STRING ? "false" : "", "", "true");
-        }
-
-        private Term(String text, Sort sort,
-                     IntegralWidth integralWidth,
-                     String stringNullness,
-                     String stringReferenceOrigin,
-                     String precondition) {
-            this.text = text;
-            this.sort = sort;
-            this.integralWidth = sort == Sort.INT && integralWidth != null
-                    ? integralWidth : IntegralWidth.NONE;
-            this.stringNullness = sort == Sort.STRING
-                    ? firstNonBlank(stringNullness, "false") : "";
-            this.stringReferenceOrigin = sort == Sort.STRING
-                    ? firstNonBlank(stringReferenceOrigin) : "";
-            this.precondition = firstNonBlank(precondition, "true");
-        }
-
-        private static Term nullableString(String text, String nullness,
-                                           String referenceOrigin) {
-            return new Term(text, Sort.STRING, IntegralWidth.NONE,
-                    nullness, referenceOrigin, "true");
-        }
-
-        private static Term nonNullString(String text,
-                                          String precondition) {
-            return new Term(text, Sort.STRING, IntegralWidth.NONE,
-                    "false", "", precondition);
-        }
-
-        private Term withPrecondition(String value) {
-            return new Term(text, sort, integralWidth, stringNullness,
-                    stringReferenceOrigin, value);
-        }
-
-        private boolean isZero() {
-            return "0".equals(text) || "(- 0)".equals(text);
         }
     }
 
@@ -4954,16 +4861,6 @@ public final class ConcolicSmtComposer {
         return Sort.REF;
     }
 
-    /** The Java sort one boxed container cell unboxes to. */
-    private static ContainerSmtCodec.Sort unboxedCellSort(String javaType) {
-        Sort sort = sortOfJava(javaType);
-        return sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
-                : sort == Sort.REF ? ContainerSmtCodec.Sort.REF
-                : sort == Sort.FLOAT32 ? ContainerSmtCodec.Sort.FLOAT32
-                : sort == Sort.FLOAT64 ? ContainerSmtCodec.Sort.FLOAT64
-                : sort == Sort.STRING ? ContainerSmtCodec.Sort.STRING
-                : ContainerSmtCodec.Sort.VALUE;
-    }
 
 
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
@@ -4984,18 +4881,8 @@ public final class ConcolicSmtComposer {
                 ? Sort.ARRAY_VALUE : Sort.VALUE;
     }
 
-    private static boolean numeric(Sort sort) {
-        return sort == Sort.INT || sort.floating();
-    }
-
     private static IntegralWidth integralWidthOfJava(String javaType) {
         return JavaPrimitiveSmtSemantics.widthOfJavaType(javaType);
-    }
-
-    private static FloatingKind floatingKind(Sort sort) {
-        if (sort == Sort.FLOAT32) return FloatingKind.JAVA_FLOAT;
-        if (sort == Sort.FLOAT64) return FloatingKind.JAVA_DOUBLE;
-        return FloatingKind.NONE;
     }
 
     /** Java binary numeric promotion for the two integral JVM widths. */

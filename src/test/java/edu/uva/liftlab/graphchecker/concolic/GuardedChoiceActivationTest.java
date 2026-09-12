@@ -39,18 +39,18 @@ public class GuardedChoiceActivationTest {
         JsonObject anchored = new JsonObject();
         anchored.addProperty("_java_type", "L");
         anchored.addProperty("replayReadDescriptor", "Ljava/lang/String;");
-        assertEquals(ConcolicSmtComposer.Sort.STRING,
+        assertEquals(VmTermLowering.Sort.STRING,
                 ConcolicSmtComposer.guardedReadSort(anchored,
-                        ConcolicSmtComposer.Sort.REF,
+                        VmTermLowering.Sort.REF,
                         Collections.singletonList(
-                                ConcolicSmtComposer.Sort.STRING)));
+                                VmTermLowering.Sort.STRING)));
 
         JsonObject erased = new JsonObject();
         erased.addProperty("_java_type", "REF");
         assertNull(ConcolicSmtComposer.guardedReadSort(erased,
-                ConcolicSmtComposer.Sort.REF,
-                Arrays.asList(ConcolicSmtComposer.Sort.REF,
-                        ConcolicSmtComposer.Sort.STRING)));
+                VmTermLowering.Sort.REF,
+                Arrays.asList(VmTermLowering.Sort.REF,
+                        VmTermLowering.Sort.STRING)));
     }
 
     private static String declarations(String... names) {
