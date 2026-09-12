@@ -19,7 +19,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Immutable, once-decoded view of one imported concolic path summary.  The
@@ -79,8 +79,8 @@ public final class PathObservation {
                 ? value.getAsString().trim() : "";
     }
 
-    public String regionId() { return string(raw, "regionId"); }
-    public String sourceTaskId() { return string(raw, "taskId"); }
+    public String regionId() { return optionalString(raw, "regionId"); }
+    public String sourceTaskId() { return optionalString(raw, "taskId"); }
     public String occurrenceId() { return occurrenceId; }
 
     /**
@@ -121,7 +121,7 @@ public final class PathObservation {
         }
         return value.substring(0, marker);
     }
-    public String sourceKey() { return string(raw, "sourceKey"); }
+    public String sourceKey() { return optionalString(raw, "sourceKey"); }
     public Scope scope() { return scope; }
     public String pathKey() { return pathKey; }
     public List<SummaryBranchMapping> branchMappings() {
@@ -337,7 +337,7 @@ public final class PathObservation {
                         "closure goal is required");
             }
             ClosureGoalKind goalKind = ClosureGoalKind.fromTask(canonical);
-            String goalId = string(canonical, "goalId");
+            String goalId = optionalString(canonical, "goalId");
             if (goalId.isEmpty()) {
                 throw new IllegalArgumentException(
                         "closure goal is required");
@@ -351,15 +351,15 @@ public final class PathObservation {
             for (JsonElement element : array(source, "branches")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject branch = element.getAsJsonObject();
-                if (!"EXPLORE".equals(string(branch, "policy"))) continue;
-                String site = string(branch, "siteId");
+                if (!"EXPLORE".equals(optionalString(branch, "policy"))) continue;
+                String site = optionalString(branch, "siteId");
                 if (!site.isEmpty()) sites.add(site);
             }
-            String region = firstNonBlank(string(source, "regionId"),
-                    string(canonical, "regionId"));
-            String occurrence = firstNonBlank(string(source,
-                    "occurrenceId"), string(canonical, "occurrenceId"));
-            String targetMethod = string(source, "targetMethod");
+            String region = firstNonBlank(optionalString(source, "regionId"),
+                    optionalString(canonical, "regionId"));
+            String occurrence = firstNonBlank(optionalString(source,
+                    "occurrenceId"), optionalString(canonical, "occurrenceId"));
+            String targetMethod = optionalString(source, "targetMethod");
             String kind = goalKind.capturesTargetReach()
                     ? "TARGET_REACH_CLOSURE_V2"
                     : "REGION_PATH_CLOSURE_V1";

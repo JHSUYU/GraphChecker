@@ -58,7 +58,7 @@ public final class JsonFields {
                 ? value.getAsJsonObject() : new JsonObject();
     }
 
-    public static String string(JsonObject object, String field) {
+    public static String optionalString(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()
@@ -68,8 +68,8 @@ public final class JsonFields {
         }
     }
 
-    public static boolean bool(JsonObject object, String field,
-                               boolean fallback) {
+    public static boolean optionalBool(JsonObject object, String field,
+                                       boolean fallback) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()
@@ -79,7 +79,7 @@ public final class JsonFields {
         }
     }
 
-    public static int integer(JsonObject object, String field, int fallback) {
+    public static int optionalInteger(JsonObject object, String field, int fallback) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()
@@ -89,8 +89,8 @@ public final class JsonFields {
         }
     }
 
-    public static long longInteger(JsonObject object, String field,
-                                   long fallback) {
+    public static long optionalLongInteger(JsonObject object, String field,
+                                           long fallback) {
         JsonElement value = object == null ? null : object.get(field);
         try {
             return value == null || value.isJsonNull()

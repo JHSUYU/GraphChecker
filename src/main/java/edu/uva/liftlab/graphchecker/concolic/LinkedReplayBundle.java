@@ -15,8 +15,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * One path flip and the target dependency closure replayed with it.
@@ -53,7 +53,7 @@ final class LinkedReplayBundle {
                 }
             }
         }
-        ordered.sort(Comparator.comparing(row -> string(row,
+        ordered.sort(Comparator.comparing(row -> optionalString(row,
                 VmExpressionIr.FAMILY_KEY)));
         JsonArray rows = new JsonArray();
         for (JsonObject row : ordered) rows.add(row);
@@ -70,7 +70,7 @@ final class LinkedReplayBundle {
                              String topologyEpoch) {
         Map<String, JsonObject> byId = new LinkedHashMap<>();
         for (JsonObject task : executionTasks) {
-            String id = string(task, "taskId");
+            String id = optionalString(task, "taskId");
             if (!id.isEmpty() && byId.put(id, task) != null) {
                 throw new IllegalArgumentException(
                         "duplicate linked replay source task: " + id);
@@ -86,7 +86,7 @@ final class LinkedReplayBundle {
         JsonObject primarySummary = null;
         if (closureSummaries != null) {
             for (JsonObject summary : closureSummaries) {
-                String summaryId = string(summary, "summaryId");
+                String summaryId = optionalString(summary, "summaryId");
                 if (primarySummaryId != null
                         && primarySummaryId.equals(summaryId)) {
                     primarySummary = summary;
@@ -97,8 +97,8 @@ final class LinkedReplayBundle {
             throw new IllegalArgumentException(
                     "linked replay primary summary is absent");
         }
-        String priorGroup = string(primary, GROUP_FIELD);
-        String sourceReplayGroup = string(primarySummary, "replayGroupId");
+        String priorGroup = optionalString(primary, GROUP_FIELD);
+        String sourceReplayGroup = optionalString(primarySummary, "replayGroupId");
         if (sourceReplayGroup.isEmpty()) {
             throw new IllegalArgumentException(
                     "linked replay primary summary has no replay group");
@@ -109,7 +109,7 @@ final class LinkedReplayBundle {
                     "linked replay task and summary groups differ");
         }
         String epoch = topologyEpoch == null ? "" : topologyEpoch.trim();
-        if (epoch.isEmpty() || !epoch.equals(string(primarySummary,
+        if (epoch.isEmpty() || !epoch.equals(optionalString(primarySummary,
                 VmExpressionIr.TOPOLOGY_EPOCH))) {
             throw new IllegalArgumentException(
                     "linked replay primary summary is outside topology epoch "
@@ -118,17 +118,17 @@ final class LinkedReplayBundle {
         Map<String, JsonObject> selected = new LinkedHashMap<>();
         for (JsonObject task : byId.values()) {
             boolean candidate = priorGroup.isEmpty()
-                    ? string(task, GROUP_FIELD).isEmpty()
-                    && string(task, "pathQueryKey").isEmpty()
-                    : priorGroup.equals(string(task, GROUP_FIELD));
+                    ? optionalString(task, GROUP_FIELD).isEmpty()
+                    && optionalString(task, "pathQueryKey").isEmpty()
+                    : priorGroup.equals(optionalString(task, GROUP_FIELD));
             if (!candidate && !primarySourceTaskId.equals(
-                    string(task, "taskId"))) {
+                    optionalString(task, "taskId"))) {
                 continue;
             }
             String key = memberKey(task);
             JsonObject previous = selected.putIfAbsent(key, task);
-            if (previous != null && !string(previous, "taskId").equals(
-                    string(task, "taskId"))) {
+            if (previous != null && !optionalString(previous, "taskId").equals(
+                    optionalString(task, "taskId"))) {
                 throw new IllegalArgumentException(
                         "linked replay group has two tasks for " + key);
             }
@@ -137,13 +137,13 @@ final class LinkedReplayBundle {
         members.sort(Comparator.comparing(LinkedReplayBundle::memberKey));
         JsonArray encodedMembers = new JsonArray();
         for (JsonObject task : members) {
-            String taskId = string(task, "taskId");
+            String taskId = optionalString(task, "taskId");
             JsonObject member = new JsonObject();
             member.addProperty("sourceTaskId", taskId);
-            member.addProperty("regionId", string(task, "regionId"));
-            member.addProperty("sourceKey", string(task, "sourceKey"));
-            member.addProperty("occurrenceId", string(task, "occurrenceId"));
-            member.addProperty("goalId", string(task, "goalId"));
+            member.addProperty("regionId", optionalString(task, "regionId"));
+            member.addProperty("sourceKey", optionalString(task, "sourceKey"));
+            member.addProperty("occurrenceId", optionalString(task, "occurrenceId"));
+            member.addProperty("goalId", optionalString(task, "goalId"));
             JsonElement loopBound = task.get(LoopBoundPolicy.FIELD);
             if (loopBound == null || !loopBound.isJsonObject()) {
                 throw new IllegalArgumentException(
@@ -174,15 +174,15 @@ final class LinkedReplayBundle {
                     "path flip has no linked replay bundle");
         }
         JsonObject bundle = encoded.getAsJsonObject();
-        if (integer(bundle, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(string(bundle, "kind"))) {
+        if (optionalInteger(bundle, "schemaVersion", -1) != SCHEMA_VERSION
+                || !KIND.equals(optionalString(bundle, "kind"))) {
             throw new IllegalArgumentException(
                     "unsupported linked replay bundle schema");
         }
-        requireDigest(string(bundle, FAMILY_DIGEST_FIELD));
+        requireDigest(optionalString(bundle, FAMILY_DIGEST_FIELD));
         JsonArray members = array(bundle, "members");
         if (members.size() == 0
-                || string(bundle, TOPOLOGY_EPOCH_FIELD).isEmpty()) {
+                || optionalString(bundle, TOPOLOGY_EPOCH_FIELD).isEmpty()) {
             throw new IllegalArgumentException(
                     "linked replay bundle has no members or summary refs");
         }
@@ -195,8 +195,8 @@ final class LinkedReplayBundle {
                         "linked replay member must be an object");
             }
             JsonObject member = element.getAsJsonObject();
-            String id = string(member, "sourceTaskId");
-            String role = string(member, "role");
+            String id = optionalString(member, "sourceTaskId");
+            String role = optionalString(member, "role");
             if (id.isEmpty() || !ids.add(id)
                     || !addresses.add(memberKey(member))) {
                 throw new IllegalArgumentException(
@@ -208,7 +208,7 @@ final class LinkedReplayBundle {
                         "unknown linked replay member role: " + role);
             }
         }
-        if (primaries != 1 || !ids.contains(string(bundle,
+        if (primaries != 1 || !ids.contains(optionalString(bundle,
                 "primarySourceTaskId"))) {
             throw new IllegalArgumentException(
                     "linked replay primary and members disagree");
@@ -220,7 +220,7 @@ final class LinkedReplayBundle {
                                         Map<String, JsonObject> taskById) {
         List<JsonObject> result = new ArrayList<>();
         for (JsonElement element : array(bundle, "members")) {
-            String id = string(element.getAsJsonObject(), "sourceTaskId");
+            String id = optionalString(element.getAsJsonObject(), "sourceTaskId");
             JsonObject task = taskById.get(id);
             if (task == null) {
                 throw new IllegalArgumentException(
@@ -232,24 +232,24 @@ final class LinkedReplayBundle {
     }
 
     static String primarySourceTaskId(JsonObject bundle) {
-        return string(bundle, "primarySourceTaskId");
+        return optionalString(bundle, "primarySourceTaskId");
     }
 
     static String memberRole(JsonObject bundle, String sourceTaskId) {
         for (JsonElement element : array(bundle, "members")) {
             JsonObject member = element.getAsJsonObject();
-            if (sourceTaskId.equals(string(member, "sourceTaskId"))) {
-                return string(member, "role");
+            if (sourceTaskId.equals(optionalString(member, "sourceTaskId"))) {
+                return optionalString(member, "role");
             }
         }
         return "";
     }
 
     private static String memberKey(JsonObject task) {
-        return string(task, "regionId") + '\u0000'
-                + string(task, "sourceKey") + '\u0000'
-                + string(task, "occurrenceId") + '\u0000'
-                + string(task, "goalId");
+        return optionalString(task, "regionId") + '\u0000'
+                + optionalString(task, "sourceKey") + '\u0000'
+                + optionalString(task, "occurrenceId") + '\u0000'
+                + optionalString(task, "goalId");
     }
 
     private static String requireDigest(String value) {

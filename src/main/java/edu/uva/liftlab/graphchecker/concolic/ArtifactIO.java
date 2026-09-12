@@ -189,7 +189,7 @@ final class ArtifactIO {
         Map<String, JsonObject> result = new LinkedHashMap<>();
         if (rows == null) return result;
         for (JsonObject row : rows) {
-            String key = JsonFields.string(row, field);
+            String key = JsonFields.optionalString(row, field);
             if (key.isEmpty()) continue;
             JsonObject previous = result.put(key, row);
             if (previous != null && !previous.equals(row)) {

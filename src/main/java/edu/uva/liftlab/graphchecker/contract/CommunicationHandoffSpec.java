@@ -7,8 +7,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** One typed value capture at one side of a message boundary. */
 public final class CommunicationHandoffSpec {
@@ -29,22 +29,22 @@ public final class CommunicationHandoffSpec {
     private final int argumentIndex;
 
     private CommunicationHandoffSpec(JsonObject row) {
-        portId = string(row, CommunicationCatalogContract.PORT_ID);
-        leafPath = string(row,
+        portId = optionalString(row, CommunicationCatalogContract.PORT_ID);
+        leafPath = optionalString(row,
                 CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH);
-        direction = string(row,
+        direction = optionalString(row,
                 CommunicationCatalogContract.PORT_DIRECTION);
-        String javaType = string(row,
+        String javaType = optionalString(row,
                 CommunicationCatalogContract.PORT_JAVA_TYPE);
-        side = string(row, SIDE);
-        captureKind = string(row, CAPTURE_KIND);
-        method = string(row,
+        side = optionalString(row, SIDE);
+        captureKind = optionalString(row, CAPTURE_KIND);
+        method = optionalString(row,
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD);
-        declaredCallee = string(row,
+        declaredCallee = optionalString(row,
                 CommunicationCatalogContract.DECLARED_CALLEE);
-        unitIndex = integer(row,
+        unitIndex = optionalInteger(row,
                 CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, -1);
-        argumentIndex = integer(row,
+        argumentIndex = optionalInteger(row,
                 CommunicationCatalogContract.PORT_ARGUMENT_INDEX, -1);
         if (portId.isEmpty() || leafPath.isEmpty() || javaType.isEmpty()
                 || method.isEmpty()

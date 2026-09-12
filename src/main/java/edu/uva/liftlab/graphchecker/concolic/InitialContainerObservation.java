@@ -6,7 +6,7 @@ import com.google.gson.JsonObject;
 import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Recognizes sparse initial-container reads and their concrete replay
@@ -23,11 +23,11 @@ public final class InitialContainerObservation {
 
     static Read initialRead(JsonObject expression) {
         if (expression == null
-                || !"ContainerRelation".equals(string(expression, "_type"))) {
+                || !"ContainerRelation".equals(optionalString(expression, "_type"))) {
             return null;
         }
-        String shape = string(expression, "shape");
-        String operation = string(expression, "operation");
+        String shape = optionalString(expression, "shape");
+        String operation = optionalString(expression, "operation");
         if (!"INDEXED".equals(shape) && !"ASSOCIATIVE".equals(shape)) {
             return null;
         }
@@ -43,14 +43,14 @@ public final class InitialContainerObservation {
         }
         JsonObject state = initialState(expression.get("receiver"), shape,
                 !iterationProjection.isEmpty());
-        if (!"ContainerRelation".equals(string(state, "_type"))
-                || !shape.equals(string(state, "shape"))
-                || !"STATE".equals(string(state, "operation"))) {
+        if (!"ContainerRelation".equals(optionalString(state, "_type"))
+                || !shape.equals(optionalString(state, "shape"))
+                || !"STATE".equals(optionalString(state, "operation"))) {
             return null;
         }
         JsonObject identity = object(state, "receiver");
-        String symbol = "SymbolExpression".equals(string(identity, "_type"))
-                ? string(identity, "_exp") : "";
+        String symbol = "SymbolExpression".equals(optionalString(identity, "_type"))
+                ? optionalString(identity, "_exp") : "";
         String inputPort = inputPort(symbol);
         if (inputPort.isEmpty()) {
             return null;
@@ -72,7 +72,7 @@ public final class InitialContainerObservation {
         }
         return new Read(shape, symbol, inputPort, index, selector,
                 selectorExpression, iterationProjection,
-                string(expression, "_java_type"));
+                optionalString(expression, "_java_type"));
     }
 
     private static JsonObject initialState(JsonElement expression,
@@ -100,11 +100,11 @@ public final class InitialContainerObservation {
                 }
                 return selected == null ? new JsonObject() : selected;
             }
-            if (!"ContainerRelation".equals(string(relation, "_type"))
-                    || !shape.equals(string(relation, "shape"))) {
+            if (!"ContainerRelation".equals(optionalString(relation, "_type"))
+                    || !shape.equals(optionalString(relation, "shape"))) {
                 return new JsonObject();
             }
-            String operation = string(relation, "operation");
+            String operation = optionalString(relation, "operation");
             if ("STATE".equals(operation)) return relation;
             boolean associativeMutation = "ASSOCIATIVE".equals(shape)
                     && ("PUT".equals(operation)
@@ -143,11 +143,11 @@ public final class InitialContainerObservation {
                 }
                 return selected;
             }
-            if (!"ContainerRelation".equals(string(relation, "_type"))
-                    || !"ASSOCIATIVE".equals(string(relation, "shape"))) {
+            if (!"ContainerRelation".equals(optionalString(relation, "_type"))
+                    || !"ASSOCIATIVE".equals(optionalString(relation, "shape"))) {
                 return "";
             }
-            String operation = string(relation, "operation");
+            String operation = optionalString(relation, "operation");
             if ("KEY_VIEW".equals(operation)
                     || "VALUE_VIEW".equals(operation)) {
                 String candidate = "KEY_VIEW".equals(operation)
@@ -179,7 +179,7 @@ public final class InitialContainerObservation {
             if (value != null) result.add(value);
             return result;
         }
-        String type = string(expression, "_type");
+        String type = optionalString(expression, "_type");
         String armsField;
         if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
             armsField = "candidates";
@@ -271,8 +271,8 @@ public final class InitialContainerObservation {
             return false;
         }
         JsonObject binary = expression.getAsJsonObject();
-        if (!"BinaryExpression".equals(string(binary, "_type"))
-                || !"==".equals(string(binary, "_op"))) {
+        if (!"BinaryExpression".equals(optionalString(binary, "_type"))
+                || !"==".equals(optionalString(binary, "_op"))) {
             return false;
         }
         return observedRead(binary.get("_left"), binary.get("_right"))
@@ -288,12 +288,12 @@ public final class InitialContainerObservation {
         }
         JsonObject relation = readElement.getAsJsonObject();
         JsonObject value = valueElement.getAsJsonObject();
-        String symbol = string(value, "_exp");
-        if ("ContainerRelation".equals(string(relation, "_type"))
-                && ("READ".equals(string(relation, "operation"))
-                || "NEXT".equals(string(relation, "operation")))
-                && "L".equals(string(relation, "_java_type"))
-                && "SymbolExpression".equals(string(value, "_type"))
+        String symbol = optionalString(value, "_exp");
+        if ("ContainerRelation".equals(optionalString(relation, "_type"))
+                && ("READ".equals(optionalString(relation, "operation"))
+                || "NEXT".equals(optionalString(relation, "operation")))
+                && "L".equals(optionalString(relation, "_java_type"))
+                && "SymbolExpression".equals(optionalString(value, "_type"))
                 && (VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
                 || VmExpressionIr.isAllocatedInstanceReference(symbol))) {
             return true;
@@ -306,14 +306,14 @@ public final class InitialContainerObservation {
         if (concreteScalar(value)) {
             return read.concreteSelector()
                     && primitiveFamily(read.javaType).equals(
-                    primitiveFamily(string(value, "_java_type")));
+                    primitiveFamily(optionalString(value, "_java_type")));
         }
         return false;
     }
 
     private static boolean replayableMapKey(JsonObject expression) {
         String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                string(expression, "_java_type"));
+                optionalString(expression, "_java_type"));
         return descriptor.length() == 1
                 && "ZBCSIJ".contains(descriptor);
     }
@@ -324,13 +324,13 @@ public final class InitialContainerObservation {
         }
         JsonObject constant = expression.getAsJsonObject();
         String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                string(constant, "_java_type"));
+                optionalString(constant, "_java_type"));
         if (descriptor.length() != 1 || !"BCSIJ".contains(descriptor)) {
             return null;
         }
         try {
             long value = Long.parseLong(constantPayload(
-                    string(constant, "_exp")));
+                    optionalString(constant, "_exp")));
             return value < Integer.MIN_VALUE || value > Integer.MAX_VALUE
                     ? null : (int) value;
         } catch (NumberFormatException malformed) {
@@ -342,7 +342,7 @@ public final class InitialContainerObservation {
         if (expression == null || !expression.isJsonObject()) {
             return false;
         }
-        String type = string(expression.getAsJsonObject(), "_type");
+        String type = optionalString(expression.getAsJsonObject(), "_type");
         return ContainerSmtCodec.constantKind(type);
     }
 

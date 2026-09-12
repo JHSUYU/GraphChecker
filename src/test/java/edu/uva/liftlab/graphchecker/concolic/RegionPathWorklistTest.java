@@ -15,7 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -128,12 +128,12 @@ public class RegionPathWorklistTest {
             assertEquals(primary, replayTask.has("pathQueryKey"));
             JsonObject expanded = SharedExpressionTable.expand(replayTask);
             ExecutionTask decodedTask = ExecutionTask.decode(replayTask);
-            assertEquals(string(expanded, "taskId"),
+            assertEquals(optionalString(expanded, "taskId"),
                     decodedTask.taskId());
             if (primary) {
                 assertTrue(replayTask.has(SharedExpressionTable.FIELD));
-                assertEquals(string(query, "queryKey"),
-                        string(replayTask, "pathQueryKey"));
+                assertEquals(optionalString(query, "queryKey"),
+                        optionalString(replayTask, "pathQueryKey"));
                 assertEquals(expanded.get("replayContract"),
                         decodedTask.replayContract());
                 assertEquals("SITE.B", decodedTask.replaySchedule()
@@ -143,7 +143,7 @@ public class RegionPathWorklistTest {
                 assertEquals("M_I_CURRENT", expanded.getAsJsonArray(
                         "modelAssignments").get(0).getAsJsonObject()
                         .get("engineSymbol").getAsString());
-            } else if ("REGION.A".equals(string(expanded, "regionId"))) {
+            } else if ("REGION.A".equals(optionalString(expanded, "regionId"))) {
                 assertEquals("M_I_COMPANION", expanded.getAsJsonArray(
                         "modelAssignments").get(0).getAsJsonObject()
                         .get("engineSymbol").getAsString());
@@ -176,7 +176,7 @@ public class RegionPathWorklistTest {
                 summary(first, 1), summary(second, 1), summary(third, 1));
         Map<String, JsonObject> taskById = new LinkedHashMap<>();
         for (JsonObject task : tasks) {
-            taskById.put(string(task, "taskId"), task);
+            taskById.put(optionalString(task, "taskId"), task);
         }
         JsonArray assignments = new JsonArray();
         assignments.add(modelAssignment(shared, 9));
@@ -194,8 +194,8 @@ public class RegionPathWorklistTest {
             for (JsonObject replayTask : replay) {
                 JsonObject expanded = SharedExpressionTable.expand(
                         replayTask);
-                assertEquals(string(expanded, "regionId").equals(
-                                string(primary, "regionId")) ? 1 : 0,
+                assertEquals(optionalString(expanded, "regionId").equals(
+                                optionalString(primary, "regionId")) ? 1 : 0,
                         expanded.getAsJsonArray("modelAssignments").size());
             }
         }
@@ -263,13 +263,13 @@ public class RegionPathWorklistTest {
         query.addProperty("schemaVersion", 3);
         query.addProperty("kind", "REGION_PATH_FLIP");
         query.addProperty("queryKey", CanonicalJson.sha256(
-                "shared-owner-" + string(primary, "taskId")));
+                "shared-owner-" + optionalString(primary, "taskId")));
         query.addProperty("goalId", "GOAL.LINKED");
-        query.addProperty("sourceTaskId", string(primary, "taskId"));
+        query.addProperty("sourceTaskId", optionalString(primary, "taskId"));
         ClosureGoalKind.REGION_PATH_CLOSURE.writeToTask(query);
         query.add(LinkedReplayBundle.FIELD, LinkedReplayBundle.create(
-                string(primary, "taskId"), tasks, summaries,
-                string(primarySummary, "summaryId"),
+                optionalString(primary, "taskId"), tasks, summaries,
+                optionalString(primarySummary, "summaryId"),
                 CanonicalJson.sha256("shared-owner-family"),
                 "ITERATION.7"));
         return query;

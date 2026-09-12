@@ -2,9 +2,9 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonObject;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Named vocabulary for the VM symbolic expression handoff bridge. */
 public final class RpcExpressionHandoff {
@@ -102,9 +102,9 @@ public final class RpcExpressionHandoff {
     /** Whether {@code row} is a handoff gap this vocabulary produced. */
     public static boolean isGap(JsonObject row) {
         return row != null
-                && GAP_KIND.equals(string(row, "kind"))
-                && GAP_AUTHORITY.equals(string(row, "authority"))
-                && !string(row, "reason").isEmpty()
-                && integer(row, "statusCode", OK) != OK;
+                && GAP_KIND.equals(optionalString(row, "kind"))
+                && GAP_AUTHORITY.equals(optionalString(row, "authority"))
+                && !optionalString(row, "reason").isEmpty()
+                && optionalInteger(row, "statusCode", OK) != OK;
     }
 }

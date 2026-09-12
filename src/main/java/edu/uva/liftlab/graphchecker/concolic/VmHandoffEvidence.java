@@ -10,11 +10,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Case-local references to the VM's own symbolic handoffs.
@@ -145,28 +145,28 @@ public final class VmHandoffEvidence {
      */
     public static String eventFault(JsonObject row) {
         if (row == null) return "handoff reference is not an object";
-        if (!KIND.equals(string(row, "kind"))) {
+        if (!KIND.equals(optionalString(row, "kind"))) {
             return "handoff reference has no declared kind";
         }
-        if (!AUTHORITY.equals(string(row, "authority"))) {
+        if (!AUTHORITY.equals(optionalString(row, "authority"))) {
             return "handoff reference has no VM propagation authority";
         }
-        if (integer(row, "schemaVersion", -1) != SCHEMA_VERSION) {
+        if (optionalInteger(row, "schemaVersion", -1) != SCHEMA_VERSION) {
             return "handoff reference has an unsupported schema";
         }
-        if (string(row, "portId").isEmpty()) {
+        if (optionalString(row, "portId").isEmpty()) {
             return "handoff reference names no receiving port";
         }
-        if (longInteger(row, EXPORT_EVENT_ID, 0L) <= 0L) {
+        if (optionalLongInteger(row, EXPORT_EVENT_ID, 0L) <= 0L) {
             return "handoff reference names no export event";
         }
-        if (longInteger(row, ATTACH_EVENT_ID, 0L) <= 0L) {
+        if (optionalLongInteger(row, ATTACH_EVENT_ID, 0L) <= 0L) {
             return "handoff reference names no attach event";
         }
-        if (string(row, PRODUCER_TASK_ID).isEmpty()) {
+        if (optionalString(row, PRODUCER_TASK_ID).isEmpty()) {
             return "handoff reference names no producer task";
         }
-        if (string(row, PRODUCER_OCCURRENCE_ID).isEmpty()) {
+        if (optionalString(row, PRODUCER_OCCURRENCE_ID).isEmpty()) {
             return "handoff reference names no producer occurrence";
         }
         if (!row.has(EXPRESSION) || !row.get(EXPRESSION).isJsonObject()) {
@@ -180,7 +180,7 @@ public final class VmHandoffEvidence {
         }
         return VmExpressionIr.consumerBoundaryFault(expression,
                 VmExpressionIr.RPC_ATTACH,
-                longInteger(row, ATTACH_EVENT_ID, -1L));
+                optionalLongInteger(row, ATTACH_EVENT_ID, -1L));
     }
 
     /**

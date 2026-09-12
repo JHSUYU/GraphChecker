@@ -14,8 +14,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Converts one VM-session expression-id DAG into portable Merkle anchors.
@@ -49,7 +49,7 @@ public final class VmExpressionTable {
         }
         JsonObject object = artifact.getAsJsonObject();
         if (object.has(FIELD)
-                || REFERENCE_TYPE.equals(string(object, "_type"))) {
+                || REFERENCE_TYPE.equals(optionalString(object, "_type"))) {
             return true;
         }
         for (Map.Entry<String, JsonElement> field : object.entrySet()) {
@@ -232,7 +232,7 @@ public final class VmExpressionTable {
                 return;
             }
             JsonObject object = value.getAsJsonObject();
-            if (REFERENCE_TYPE.equals(string(object, "_type"))) {
+            if (REFERENCE_TYPE.equals(optionalString(object, "_type"))) {
                 validateDefinition(rawKey(object, REFERENCE_TYPE), supplied,
                         visited, active);
                 return;
@@ -272,10 +272,10 @@ public final class VmExpressionTable {
             JsonObject table = encoded.getAsJsonObject();
             long session = exactNonNegativeLong(table, "sessionId");
             JsonArray rows = array(table, "definitions");
-            if (integer(table, "schemaVersion", -1) != 1
-                    || !KIND.equals(string(table, "kind"))
-                    || !AUTHORITY.equals(string(table, "authority"))
-                    || integer(table, "definitionCount", -1) != rows.size()
+            if (optionalInteger(table, "schemaVersion", -1) != 1
+                    || !KIND.equals(optionalString(table, "kind"))
+                    || !AUTHORITY.equals(optionalString(table, "authority"))
+                    || optionalInteger(table, "definitionCount", -1) != rows.size()
                     || session == 0L && rows.size() != 0) {
                 throw new IllegalArgumentException(
                         "unsupported VM expression table schema");
@@ -322,7 +322,7 @@ public final class VmExpressionTable {
                 return result;
             }
             JsonObject source = value.getAsJsonObject();
-            if (REFERENCE_TYPE.equals(string(source, "_type"))) {
+            if (REFERENCE_TYPE.equals(optionalString(source, "_type"))) {
                 RawKey key = rawKey(source, REFERENCE_TYPE);
                 JsonElement held = expanded.get(key);
                 if (held != null) return held;
@@ -352,7 +352,7 @@ public final class VmExpressionTable {
     }
 
     private static RawKey rawKey(JsonObject row, String expectedType) {
-        if (!expectedType.equals(string(row, "_type"))) {
+        if (!expectedType.equals(optionalString(row, "_type"))) {
             throw new IllegalArgumentException(
                     "VM expression row has wrong type");
         }

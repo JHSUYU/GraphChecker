@@ -4,11 +4,11 @@ import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -70,7 +70,7 @@ public final class BooleanReachConditionExtractor {
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(report));
-        if (!"CANDIDATE_READY".equals(string(report, "state"))) {
+        if (!"CANDIDATE_READY".equals(optionalString(report, "state"))) {
             System.exit(2);
         }
     }
@@ -83,7 +83,7 @@ public final class BooleanReachConditionExtractor {
         report.addProperty("schemaVersion", 3);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
         boolean guardedReadModelComplete =
-                bool(manifest, "guardedReadModelComplete", false);
+                optionalBool(manifest, "guardedReadModelComplete", false);
         report.addProperty("guardedReadModelComplete",
                 guardedReadModelComplete);
         boolean unsatClosureComplete = unsatClosureComplete(manifest);
@@ -162,7 +162,7 @@ public final class BooleanReachConditionExtractor {
                                 witness);
                         for (JsonElement perturbation : perturbations) {
                             existentialPerturbations.add(perturbation);
-                            if ("unsat".equals(string(
+                            if ("unsat".equals(optionalString(
                                     perturbation.getAsJsonObject(),
                                     "status"))) {
                                 rejectedExistentialPerturbation = true;
@@ -279,10 +279,10 @@ public final class BooleanReachConditionExtractor {
         // candidate-ready; re-deriving that verdict from its members would
         // be the second gate README forbids.
         boolean commonManifest = manifest != null
-                && integer(manifest, "schemaVersion", -1) == 2
-                && "CONCOLIC_COMPOSED_SMT".equals(string(manifest, "kind"));
+                && optionalInteger(manifest, "schemaVersion", -1) == 2
+                && "CONCOLIC_COMPOSED_SMT".equals(optionalString(manifest, "kind"));
         if (!commonManifest
-                || !"CANDIDATE_READY".equals(string(manifest, "state"))) {
+                || !"CANDIDATE_READY".equals(optionalString(manifest, "state"))) {
             gaps.add("COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE");
         }
         validatePropagationContract(composedSmt, manifest, gaps);
@@ -361,7 +361,7 @@ public final class BooleanReachConditionExtractor {
         for (JsonElement encodedTarget : array(manifest,
                 "targetReachLedger")) {
             if (!encodedTarget.isJsonObject()) continue;
-            String guard = string(encodedTarget.getAsJsonObject(),
+            String guard = optionalString(encodedTarget.getAsJsonObject(),
                     "caseGuard");
             if (!guard.isEmpty()) {
                 targetReachGuards.merge(guard, 1, Integer::sum);
@@ -378,16 +378,16 @@ public final class BooleanReachConditionExtractor {
                 continue;
             }
             JsonObject dependency = encodedDependency.getAsJsonObject();
-            String family = string(dependency, VmExpressionIr.FAMILY_KEY);
-            String boundaryKind = string(dependency, "boundaryKind");
-            String epoch = string(dependency, VmExpressionIr.TOPOLOGY_EPOCH);
+            String family = optionalString(dependency, VmExpressionIr.FAMILY_KEY);
+            String boundaryKind = optionalString(dependency, "boundaryKind");
+            String epoch = optionalString(dependency, VmExpressionIr.TOPOLOGY_EPOCH);
             JsonElement encodedArms = dependency.get("arms");
-            if (integer(dependency, "schemaVersion", -1)
+            if (optionalInteger(dependency, "schemaVersion", -1)
                     != SymbolicPropagationClosure.SCHEMA_VERSION
                     || !SymbolicPropagationClosure.DEPENDENCY_KIND.equals(
-                    string(dependency, "kind"))
+                    optionalString(dependency, "kind"))
                     || !"REGION_CASE_PC_V1".equals(
-                    string(dependency, "authority"))
+                    optionalString(dependency, "authority"))
                     || family.isEmpty() || epoch.isEmpty()
                     || !(VmExpressionIr.RPC_ATTACH.equals(boundaryKind)
                     || VmExpressionIr.FIELD_READ.equals(boundaryKind))
@@ -409,15 +409,15 @@ public final class BooleanReachConditionExtractor {
                     continue;
                 }
                 JsonObject arm = encodedArm.getAsJsonObject();
-                String owner = string(arm, "caseOwner");
-                String baseSelector = string(arm, "caseSelector");
-                String encodedSelector = string(arm, "selector");
-                String observationSelector = string(arm,
+                String owner = optionalString(arm, "caseOwner");
+                String baseSelector = optionalString(arm, "caseSelector");
+                String encodedSelector = optionalString(arm, "selector");
+                String observationSelector = optionalString(arm,
                         SymbolicPropagationClosure.OBSERVATION_SELECTOR);
                 String selector = firstNonBlank(observationSelector,
                         encodedSelector);
-                String region = string(arm, "regionId");
-                String occurrence = string(arm, "occurrenceId");
+                String region = optionalString(arm, "regionId");
+                String occurrence = optionalString(arm, "occurrenceId");
                 String armIdentity = owner + "\u0000" + selector;
                 boolean selectorShapeMatches = observationSelector.isEmpty()
                         ? encodedSelector.equals(baseSelector)
@@ -443,7 +443,7 @@ public final class BooleanReachConditionExtractor {
                         && !(VmExpressionIr.FIELD_READ.equals(boundaryKind)
                         && SymbolicPropagationClosure
                         .READ_FROM_DEPENDENCY_POLICY.equals(
-                                string(dependency, "selectionPolicy"))
+                                optionalString(dependency, "selectionPolicy"))
                         && observationSelector.isEmpty()
                         && selector.equals(baseSelector)
                         && arm.has("pathCondition")
@@ -576,28 +576,28 @@ public final class BooleanReachConditionExtractor {
     /** The Composer's single, internally consistent UNSAT closure claim. */
     private static boolean unsatClosureComplete(JsonObject manifest) {
         if (manifest == null
-                || !bool(manifest,
+                || !optionalBool(manifest,
                 ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false)
                 || !ConcolicSmtComposer.FINAL_READY.equals(
-                string(manifest, ConcolicSmtComposer.FINAL_STATUS))) {
+                optionalString(manifest, ConcolicSmtComposer.FINAL_STATUS))) {
             return false;
         }
         JsonObject evidence = object(manifest,
                 ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE);
         JsonElement partial = evidence.get("partialProducerSummaryIds");
-        return integer(evidence, "schemaVersion", -1) == 1
+        return optionalInteger(evidence, "schemaVersion", -1) == 1
                 && "UNSAT_CLOSURE_EVIDENCE".equals(
-                string(evidence, "kind"))
+                optionalString(evidence, "kind"))
                 && ConcolicSmtComposer.UNSAT_CLOSURE_AUTHORITY.equals(
-                string(evidence, "authority"))
+                optionalString(evidence, "authority"))
                 // The manifest states the guarded-read verdict once; the
                 // remaining components are the closure itself, and their
                 // conjunction is what the evidence used to restate.
-                && bool(manifest, "guardedReadModelComplete", false)
-                && bool(evidence, "targetPathsClosed", false)
-                && bool(evidence, "finalStatusReady", false)
-                && integer(evidence, "targetCoverageGapCount", -1) == 0
-                && integer(evidence,
+                && optionalBool(manifest, "guardedReadModelComplete", false)
+                && optionalBool(evidence, "targetPathsClosed", false)
+                && optionalBool(evidence, "finalStatusReady", false)
+                && optionalInteger(evidence, "targetCoverageGapCount", -1) == 0
+                && optionalInteger(evidence,
                 "compositionCoverageGapCount", -1) == 0
                 && partial != null && partial.isJsonArray()
                 && partial.getAsJsonArray().size() == 0;
@@ -1311,8 +1311,8 @@ public final class BooleanReachConditionExtractor {
         for (JsonElement element : witness) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
-            String solverTerm = string(row, "solverTerm");
-            String value = string(row, "value");
+            String solverTerm = optionalString(row, "solverTerm");
+            String value = optionalString(row, "value");
             if (!solverTerm.isEmpty() && !value.isEmpty()) {
                 values.put(solverTerm, value);
             }
@@ -1546,23 +1546,23 @@ public final class BooleanReachConditionExtractor {
         }
 
         private static ManualSymbolicRootInfo decode(JsonObject row) {
-            if (row == null || integer(row, "schemaVersion", -1) != 1
+            if (row == null || optionalInteger(row, "schemaVersion", -1) != 1
                     || !ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_KIND.equals(
-                    string(row, "kind"))
+                    optionalString(row, "kind"))
                     || !ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_AUTHORITY
-                    .equals(string(row, "authority"))) {
+                    .equals(optionalString(row, "authority"))) {
                 return null;
             }
             ManualSymbolicRootInfo result = new ManualSymbolicRootInfo(
-                    string(row, "portId"), string(row, "occurrenceId"),
-                    string(row, "fieldSignature"),
-                    string(row, "javaTypeDescriptor"),
-                    string(row, "sort"), string(row, "smtSort"),
-                    string(row, "solverTerm"),
-                    string(row, "nullnessSolverTerm"),
-                    string(row, "sourceIdentity"),
-                    string(row, "sourceIdentityAuthority"),
-                    bool(row, SymbolicSourceEvidence.REUSED, false));
+                    optionalString(row, "portId"), optionalString(row, "occurrenceId"),
+                    optionalString(row, "fieldSignature"),
+                    optionalString(row, "javaTypeDescriptor"),
+                    optionalString(row, "sort"), optionalString(row, "smtSort"),
+                    optionalString(row, "solverTerm"),
+                    optionalString(row, "nullnessSolverTerm"),
+                    optionalString(row, "sourceIdentity"),
+                    optionalString(row, "sourceIdentityAuthority"),
+                    optionalBool(row, SymbolicSourceEvidence.REUSED, false));
             return result.portId.isEmpty() || result.occurrenceId.isEmpty()
                     || result.descriptor.isEmpty() || result.sort.isEmpty()
                     || result.smtSort.isEmpty() || result.solverTerm.isEmpty()
@@ -1704,25 +1704,25 @@ public final class BooleanReachConditionExtractor {
         }
 
         private static ConfiguredSourceInfo decode(JsonObject row) {
-            if (row == null || integer(row, "schemaVersion", -1) != 3
+            if (row == null || optionalInteger(row, "schemaVersion", -1) != 3
                     || !ConcolicSmtComposer
                     .CONFIGURED_SOURCE_MATERIALIZATION_KIND.equals(
-                    string(row, "kind"))
+                    optionalString(row, "kind"))
                     || !ConcolicSmtComposer
                     .CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY.equals(
-                    string(row, "authority"))) {
+                    optionalString(row, "authority"))) {
                 return null;
             }
             ConfiguredSourceInfo result = new ConfiguredSourceInfo(
-                    string(row, "sourceKey"),
-                    string(row, "sourceId"),
-                    string(row, "sourcePhaseId"),
-                    string(row, "sourceOccurrenceId"),
-                    string(row, "fieldSignature"),
-                    string(row, "javaTypeDescriptor"),
-                    string(row, "sort"), string(row, "smtSort"),
-                    string(row, "solverTerm"),
-                    string(row, "nullnessSolverTerm"));
+                    optionalString(row, "sourceKey"),
+                    optionalString(row, "sourceId"),
+                    optionalString(row, "sourcePhaseId"),
+                    optionalString(row, "sourceOccurrenceId"),
+                    optionalString(row, "fieldSignature"),
+                    optionalString(row, "javaTypeDescriptor"),
+                    optionalString(row, "sort"), optionalString(row, "smtSort"),
+                    optionalString(row, "solverTerm"),
+                    optionalString(row, "nullnessSolverTerm"));
             return result.sourceKey.isEmpty() || result.sourceId.isEmpty()
                     || result.sourcePhaseId.isEmpty()
                     || !result.sourcePhaseId.startsWith("SOURCE_PHASE.")
@@ -1818,9 +1818,9 @@ public final class BooleanReachConditionExtractor {
                                              JsonObject actual)
             throws IOException {
         if (expected.size() == 0
-                || !string(actual, "path").equals(normalizedPath(
-                string(expected, "path")))
-                || !string(actual, "sha256").equals(string(expected,
+                || !optionalString(actual, "path").equals(normalizedPath(
+                optionalString(expected, "path")))
+                || !optionalString(actual, "sha256").equals(optionalString(expected,
                 "sha256"))) {
             throw new IOException(label + " artifact fingerprint mismatch");
         }

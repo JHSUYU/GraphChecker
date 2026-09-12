@@ -74,13 +74,13 @@ import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Runtime bridge injected at symbolic-region roots for the second (concolic)
@@ -2245,7 +2245,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         long exportEvent = result.ok()
-                ? longInteger(result.record, "exportEventId", 0L) : 0L;
+                ? optionalLongInteger(result.record, "exportEventId", 0L) : 0L;
         if (exportEvent <= 0L) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
@@ -2255,7 +2255,7 @@ public final class ConcolicRegionRuntime {
         }
         // README RPC-1: the reference carries both endpoints of the edge.
         long attachEvent = result.ok()
-                ? longInteger(result.record, "attachEventId", 0L) : 0L;
+                ? optionalLongInteger(result.record, "attachEventId", 0L) : 0L;
         if (attachEvent <= 0L) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
@@ -2712,8 +2712,8 @@ public final class ConcolicRegionRuntime {
         String fault = SharedStateEvidence.versionsFault(envelope);
         if (!fault.isEmpty()) {
             boolean unselected = SharedStateEvidence.VERSIONS_ENVELOPE_KIND
-                    .equals(string(envelope, "kind"))
-                    && !bool(envelope, "selected", false);
+                    .equals(optionalString(envelope, "kind"))
+                    && !optionalBool(envelope, "selected", false);
             int status = unselected ? SharedStateEvidence.NOT_SELECTED
                     : SharedStateEvidence
                     .expressionSerializationTruncationFault(fault)
@@ -2755,11 +2755,11 @@ public final class ConcolicRegionRuntime {
             // version the composer may read from, so each one is addressed
             // by the write that produced it and the thread that ran it.
             RuntimeTask writer = config.taskById(
-                    string(version, "taskId"));
+                    optionalString(version, "taskId"));
             if (writer == null) continue;
             WriterActivationIdentity exact = contextActivation(
-                    longInteger(version, "writerContextId", 0L),
-                    longInteger(version, "regionEnterEventId", 0L), writer);
+                    optionalLongInteger(version, "writerContextId", 0L),
+                    optionalLongInteger(version, "regionEnterEventId", 0L), writer);
             if (exact != null && exact.owns(writer)) {
                 version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
                         exact.sourceKey);
@@ -2784,7 +2784,7 @@ public final class ConcolicRegionRuntime {
             }
         }
         ownedReads.sort(Comparator.comparingLong(
-                read -> longInteger(read, "readEventId", Long.MAX_VALUE)));
+                read -> optionalLongInteger(read, "readEventId", Long.MAX_VALUE)));
         if (carrier != null
                 && ownedReads.size() == carrier.consumerAccesses().size()) {
             for (int index = 0; index < ownedReads.size(); index++) {
@@ -2832,11 +2832,11 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         RuntimeTask reader = active.activation;
-        return active.vmContextId == longInteger(read,
+        return active.vmContextId == optionalLongInteger(read,
                 "readerContextId", 0L)
-                && reader.taskId.equals(string(read, "taskId"))
-                && reader.regionId.equals(string(read, "regionId"))
-                && active.vmRegionEnterEventId == longInteger(read,
+                && reader.taskId.equals(optionalString(read, "taskId"))
+                && reader.regionId.equals(optionalString(read, "regionId"))
+                && active.vmRegionEnterEventId == optionalLongInteger(read,
                 "regionEnterEventId", 0L);
     }
 
@@ -2881,15 +2881,15 @@ public final class ConcolicRegionRuntime {
 
         SharedCarrierRequest(JsonObject declaration,
                              boolean plannerDeclared) {
-            this.declaringClass = string(declaration, "declaringClass");
-            this.fieldName = string(declaration, "fieldName");
-            this.descriptor = string(declaration, "descriptor");
-            this.sourceKind = string(declaration, "sourceKind");
-            this.index = integer(declaration, "index", -1);
+            this.declaringClass = optionalString(declaration, "declaringClass");
+            this.fieldName = optionalString(declaration, "fieldName");
+            this.descriptor = optionalString(declaration, "descriptor");
+            this.sourceKind = optionalString(declaration, "sourceKind");
+            this.index = optionalInteger(declaration, "index", -1);
             this.element = "ARRAY_ELEMENT".equals(
-                    string(declaration, "kind"));
+                    optionalString(declaration, "kind"));
             this.mapState = SharedStateEvidence.LOCATION_KIND_MAP_STATE
-                    .equals(string(declaration, "kind"));
+                    .equals(optionalString(declaration, "kind"));
             this.plannerDeclared = plannerDeclared;
             for (JsonElement segment : array(declaration, "fieldPath")) {
                 if (segment.isJsonPrimitive()) {
@@ -3941,14 +3941,14 @@ public final class ConcolicRegionRuntime {
                 parsed.getAsJsonObject(), "events")) {
             if (!candidate.isJsonObject()) continue;
             JsonObject event = candidate.getAsJsonObject();
-            if (longInteger(event, "eventId", -1L) == eventId) {
+            if (optionalLongInteger(event, "eventId", -1L) == eventId) {
                 selected = event;
                 matches++;
             }
         }
         if (matches != 1 || selected == null) return null;
         JsonArray raw = array(selected, "conditionIndices");
-        if (integer(selected, "conditionCount", -1) != raw.size()) {
+        if (optionalInteger(selected, "conditionCount", -1) != raw.size()) {
             return null;
         }
         List<Integer> indices = new ArrayList<>();
@@ -4108,15 +4108,15 @@ public final class ConcolicRegionRuntime {
                     "event stream is not a JSON object");
         }
         JsonObject envelope = parsed.getAsJsonObject();
-        if (integer(envelope, "schemaVersion", -1) != 1
+        if (optionalInteger(envelope, "schemaVersion", -1) != 1
                 || !"CONCOLIC_THREAD_BRANCH_EVENTS".equals(
-                string(envelope, "kind"))
-                || !bool(envelope, "active", false)) {
+                optionalString(envelope, "kind"))
+                || !optionalBool(envelope, "active", false)) {
             return VmBranchEventAttestation.invalid(
                     "unexpected or inactive event stream");
         }
-        long envelopeContext = longInteger(envelope, "contextId", 0L);
-        long envelopeOwner = longInteger(envelope,
+        long envelopeContext = optionalLongInteger(envelope, "contextId", 0L);
+        long envelopeOwner = optionalLongInteger(envelope,
                 "ownerJavaThreadId", 0L);
         if (envelopeContext <= 0L) {
             return VmBranchEventAttestation.invalid(
@@ -4128,9 +4128,9 @@ public final class ConcolicRegionRuntime {
                             + " instead of " + active.thread.getId());
         }
         if (!safe(active.activation.regionId).equals(
-                string(envelope, "regionId"))
+                optionalString(envelope, "regionId"))
                 || !safe(active.activation.taskId).equals(
-                string(envelope, "taskId"))) {
+                optionalString(envelope, "taskId"))) {
             return VmBranchEventAttestation.invalid(
                     "event stream region/task does not match owner");
         }
@@ -4140,7 +4140,7 @@ public final class ConcolicRegionRuntime {
         for (JsonElement candidate : array(envelope, "events")) {
             if (!candidate.isJsonObject()) continue;
             JsonObject event = candidate.getAsJsonObject();
-            if (longInteger(event, "eventId", -1L) == eventId) {
+            if (optionalLongInteger(event, "eventId", -1L) == eventId) {
                 selected = event;
                 matches++;
             }
@@ -4150,23 +4150,23 @@ public final class ConcolicRegionRuntime {
                     "event id " + eventId + " matched " + matches
                             + " records");
         }
-        String authority = string(selected, "authority");
+        String authority = optionalString(selected, "authority");
         if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
             return VmBranchEventAttestation.invalid(
                     "unsupported event authority " + authority);
         }
-        if (!safe(siteId).equals(string(selected, "siteId"))
-                || integer(selected, "occurrence", -1) != occurrence) {
+        if (!safe(siteId).equals(optionalString(selected, "siteId"))
+                || optionalInteger(selected, "occurrence", -1) != occurrence) {
             return VmBranchEventAttestation.invalid(
                     "event site/occurrence does not match prepared branch");
         }
-        if (bool(selected, "outcome", !observedOutcome)
+        if (optionalBool(selected, "outcome", !observedOutcome)
                 != observedOutcome) {
             return VmBranchEventAttestation.invalid(
                     "event outcome differs from observed branch");
         }
         JsonArray indices = array(selected, "conditionIndices");
-        if (integer(selected, "conditionCount", -1) != indices.size()) {
+        if (optionalInteger(selected, "conditionCount", -1) != indices.size()) {
             return VmBranchEventAttestation.invalid(
                     "event condition count differs from its index vector");
         }
@@ -4211,12 +4211,12 @@ public final class ConcolicRegionRuntime {
             JsonArray rawIndices, PathConditionElements conditions) {
         int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
                 ? 170 : 171;
-        if (integer(event, "opcode", -1) != expectedOpcode) {
+        if (optionalInteger(event, "opcode", -1) != expectedOpcode) {
             return VmBranchEventAttestation.invalid(
                     "event opcode does not match static "
                             + expected.branchKind);
         }
-        if (string(event, "codePosition").isEmpty()) {
+        if (optionalString(event, "codePosition").isEmpty()) {
             return VmBranchEventAttestation.invalid(
                     "switch event has no bytecode position");
         }
@@ -4236,7 +4236,7 @@ public final class ConcolicRegionRuntime {
         }
         List<Integer> indices = new ArrayList<>();
         String selector = "";
-        String expectedPosition = string(event, "codePosition");
+        String expectedPosition = optionalString(event, "codePosition");
         int previousIndex = -1;
         for (int offset = 0; offset < rawIndices.size(); offset++) {
             final int conditionIndex;
@@ -4280,7 +4280,7 @@ public final class ConcolicRegionRuntime {
                         "switch conditions do not share one selector");
             }
             String conditionPosition = condition.isJsonObject()
-                    ? string(condition.getAsJsonObject(), "_code_position")
+                    ? optionalString(condition.getAsJsonObject(), "_code_position")
                     : "";
             if (!conditionPosition.isEmpty()
                     && !expectedPosition.equals(conditionPosition)) {
@@ -4298,22 +4298,22 @@ public final class ConcolicRegionRuntime {
             JsonElement condition, String expectedOperator, int expectedKey) {
         if (condition == null || !condition.isJsonObject()) return "";
         JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(string(object, "_type"))
-                || !expectedOperator.equals(string(object, "_op"))) {
+        if (!"BinaryExpression".equals(optionalString(object, "_type"))
+                || !expectedOperator.equals(optionalString(object, "_op"))) {
             return "";
         }
         JsonElement left = object.get("_left");
         JsonElement right = object.get("_right");
         if (left == null || !left.isJsonObject()
                 || right == null || !right.isJsonObject()
-                || "ConstExpr".equals(string(left.getAsJsonObject(),
+                || "ConstExpr".equals(optionalString(left.getAsJsonObject(),
                 "_type"))) {
             return "";
         }
         JsonObject constant = right.getAsJsonObject();
-        if (!"ConstExpr".equals(string(constant, "_type"))) return "";
+        if (!"ConstExpr".equals(optionalString(constant, "_type"))) return "";
         Matcher encoded = Pattern.compile("^Y_I_(-?(?:0|[1-9][0-9]*))$")
-                .matcher(string(constant, "_exp"));
+                .matcher(optionalString(constant, "_exp"));
         if (!encoded.matches()) return "";
         final int key;
         try {
@@ -4867,7 +4867,7 @@ public final class ConcolicRegionRuntime {
             return true;
         }
         if (task.capturesTargetReach) {
-            return bool(result, "targetReached", false);
+            return optionalBool(result, "targetReached", false);
         }
         return true;
     }
@@ -5794,7 +5794,7 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(string(object, "_type"))) {
+        if (!"BinaryExpression".equals(optionalString(object, "_type"))) {
             Boolean requiredValue = booleanValueRequiredByZeroBranch(
                     expression, outcome);
             Boolean representedValue = representedBooleanValue(object);
@@ -5808,7 +5808,7 @@ public final class ConcolicRegionRuntime {
         String declared = matcher.group(1);
         String expected = outcome ? declared
                 : BranchPredicateAlgebra.complementOperator(declared);
-        String observed = string(object, "_op");
+        String observed = optionalString(object, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))) {
             return false;
@@ -5846,10 +5846,10 @@ public final class ConcolicRegionRuntime {
      * semantics are not part of the exact codec.
      */
     private static Boolean representedBooleanValue(JsonObject condition) {
-        if (!"OpStrExpression".equals(string(condition, "_type"))) {
+        if (!"OpStrExpression".equals(optionalString(condition, "_type"))) {
             return null;
         }
-        String operation = string(condition, "_name");
+        String operation = optionalString(condition, "_name");
         int expectedArity;
         if ("isEmpty".equals(operation)) {
             expectedArity = 1;
@@ -5864,7 +5864,7 @@ public final class ConcolicRegionRuntime {
         if (array(condition, "_param_list").size() != expectedArity) {
             return null;
         }
-        return !bool(condition, "_is_not", false);
+        return !optionalBool(condition, "_is_not", false);
     }
 
     /**
@@ -5897,7 +5897,7 @@ public final class ConcolicRegionRuntime {
             return condition;
         }
         JsonObject original = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(string(original, "_type"))) {
+        if (!"BinaryExpression".equals(optionalString(original, "_type"))) {
             return condition;
         }
         Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
@@ -5907,7 +5907,7 @@ public final class ConcolicRegionRuntime {
         String expected = outcome ? matcher.group(1)
                 : BranchPredicateAlgebra.complementOperator(
                 matcher.group(1));
-        String observed = string(original, "_op");
+        String observed = optionalString(original, "_op");
         if (!observedOperatorImpliesBranch(expected, observed,
                 safe(expression).matches(".*\\bnull\\b.*"))
                 || expected.equals(observed)) {
@@ -5920,7 +5920,7 @@ public final class ConcolicRegionRuntime {
 
     private static String binaryOperator(JsonElement condition) {
         return condition != null && condition.isJsonObject()
-                ? string(condition.getAsJsonObject(), "_op") : "";
+                ? optionalString(condition.getAsJsonObject(), "_op") : "";
     }
 
     private static boolean symbolicNull(JsonElement element) {
@@ -5928,9 +5928,9 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         JsonObject object = element.getAsJsonObject();
-        return "SymbolExpression".equals(string(object, "_type"))
+        return "SymbolExpression".equals(optionalString(object, "_type"))
                 && VmExpressionIr.SYMBOLIC_NULL.equals(
-                string(object, "_exp"));
+                optionalString(object, "_exp"));
     }
 
     private static Configuration configuration() {
@@ -6169,12 +6169,12 @@ public final class ConcolicRegionRuntime {
             if (envelope == null) return null;
             try {
                 JsonObject decoded = store.importEnvelope(envelope);
-                int start = integer(decoded, "startIndex", -1);
-                int end = integer(decoded, "endIndex", -1);
-                int watermark = integer(decoded,
+                int start = optionalInteger(decoded, "startIndex", -1);
+                int end = optionalInteger(decoded, "endIndex", -1);
+                int watermark = optionalInteger(decoded,
                         "pathConditionWatermark", -1);
                 JsonArray conditions = array(decoded, "conditions");
-                int declaredCount = integer(decoded, "conditionCount", -1);
+                int declaredCount = optionalInteger(decoded, "conditionCount", -1);
                 if (start != expectedStart || end < start
                         || watermark < 0
                         || conditions.size() != end - start
@@ -6586,14 +6586,14 @@ public final class ConcolicRegionRuntime {
             Set<String> carried = new LinkedHashSet<>();
             for (JsonObject observation
                     : configuredSourcePhaseObservations) {
-                String phaseId = string(observation, "matchedPhaseId");
+                String phaseId = optionalString(observation, "matchedPhaseId");
                 if (!phaseId.isEmpty()) {
                     carried.add(activation.sourcePhaseAnchorId(phaseId));
                 }
             }
             Set<String> anchors = activation.causalAnchorPorts();
             for (JsonObject handoff : vmHandoffEvents) {
-                String portId = string(handoff, "portId");
+                String portId = optionalString(handoff, "portId");
                 if (anchors.contains(portId)) {
                     carried.add(activation.attachAnchorId(portId));
                 }
@@ -7218,9 +7218,9 @@ public final class ConcolicRegionRuntime {
                     ? JsonNull.INSTANCE : expression);
             JsonObject exact = VmExpressionIr.exactSymbolRoot(expression);
             row.addProperty("rawSymbol", exact == null ? ""
-                    : string(exact, "_exp"));
+                    : optionalString(exact, "_exp"));
             row.addProperty("javaType", exact == null ? action.javaType
-                    : string(exact, "_java_type"));
+                    : optionalString(exact, "_java_type"));
             row.addProperty("minted", minted);
             row.addProperty("reused", reused);
             symbolizedRows.add(row);
@@ -7424,7 +7424,7 @@ public final class ConcolicRegionRuntime {
                 int separator = scoped.indexOf(SCOPE_SEPARATOR);
                 String loopId = separator < 0 ? scoped
                         : scoped.substring(0, separator);
-                int previous = integer(encoded, loopId, 0);
+                int previous = optionalInteger(encoded, loopId, 0);
                 if (entry.getValue() > previous) {
                     encoded.addProperty(loopId, entry.getValue());
                 }
@@ -7439,7 +7439,7 @@ public final class ConcolicRegionRuntime {
                 int separator = scoped.indexOf(SCOPE_SEPARATOR);
                 String loopId = separator < 0 ? scoped
                         : scoped.substring(0, separator);
-                long total = (long) integer(encoded, loopId, 0)
+                long total = (long) optionalInteger(encoded, loopId, 0)
                         + entry.getValue();
                 encoded.addProperty(loopId,
                         (int) Math.min(total, Integer.MAX_VALUE));
@@ -7558,23 +7558,23 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
 
         private SymbolizeAction(JsonObject json) {
-            this.symbol = string(json, "symbol");
+            this.symbol = optionalString(json, "symbol");
             this.actionDigest = CanonicalJson.sha256(json);
-            this.cell = string(json, "cell");
-            this.location = string(json, "location");
-            this.index = integer(json, "index", -1);
-            this.replayOccurrence = integer(json,
+            this.cell = optionalString(json, "cell");
+            this.location = optionalString(json, "location");
+            this.index = optionalInteger(json, "index", -1);
+            this.replayOccurrence = optionalInteger(json,
                     "replayOccurrence", -1);
-            this.bindingMode = string(json, "bindingMode");
-            this.javaType = string(json, "javaType");
+            this.bindingMode = optionalString(json, "bindingMode");
+            this.javaType = optionalString(json, "javaType");
             JsonObject definition = json;
-            this.method = string(definition, "method");
-            this.local = string(definition, "local");
-            int unitIndex = integer(definition, "unitIndex", -1);
+            this.method = optionalString(definition, "method");
+            this.local = optionalString(definition, "local");
+            int unitIndex = optionalInteger(definition, "unitIndex", -1);
             if (unitIndex >= 0) definitionUnitIndices.add(unitIndex);
             for (JsonElement element : array(json, "definitionSites")) {
                 if (element.isJsonObject()) {
-                    int definitionIndex = integer(element.getAsJsonObject(),
+                    int definitionIndex = optionalInteger(element.getAsJsonObject(),
                             "unitIndex", -1);
                     if (definitionIndex >= 0) {
                         definitionUnitIndices.add(definitionIndex);
@@ -7585,7 +7585,7 @@ public final class ConcolicRegionRuntime {
                     FieldPathSpec.stringArray(json, "fieldPath"));
             this.accessField = this.fieldPath.isEmpty() ? ""
                     : this.fieldPath.get(0);
-            this.accessFieldSignature = string(json,
+            this.accessFieldSignature = optionalString(json,
                     "accessFieldSignature");
             DeclaredField accessDeclaration = FieldPathSpec.declaredField(
                     this.accessFieldSignature);
@@ -7593,18 +7593,18 @@ public final class ConcolicRegionRuntime {
                     : accessDeclaration.owner();
             this.accessSites.addAll(
                     FieldPathSpec.stringArray(json, "accessSites"));
-            this.accessorCallerMethod = string(json,
+            this.accessorCallerMethod = optionalString(json,
                     "accessorCallerMethod");
-            this.accessorCallUnitIndex = integer(json,
+            this.accessorCallUnitIndex = optionalInteger(json,
                     "accessorCallUnitIndex", -1);
-            this.accessorDeclaredCallee = string(json,
+            this.accessorDeclaredCallee = optionalString(json,
                     "accessorDeclaredCallee");
-            this.accessorImplementationMethod = string(json,
+            this.accessorImplementationMethod = optionalString(json,
                     "accessorImplementationMethod");
-            this.symbolicDemand = string(json, "symbolicDemand");
-            this.rootKind = string(json, "rootKind");
+            this.symbolicDemand = optionalString(json, "symbolicDemand");
+            this.rootKind = optionalString(json, "rootKind");
             String explicitLeafSignature = firstNonBlank(
-                    string(json, "leafFieldSignature"),
+                    optionalString(json, "leafFieldSignature"),
                     this.accessFieldSignature);
             this.fieldPaths = new ArrayList<>(
                     FieldPathSpec.paths(json, "fieldPaths"));
@@ -7634,7 +7634,7 @@ public final class ConcolicRegionRuntime {
                 leafFieldSignaturesByPath.put(FieldPathSpec.join(
                         this.fieldPath), explicitLeafSignature);
             }
-            this.symbolicName = string(json, "symbolicName");
+            this.symbolicName = optionalString(json, "symbolicName");
         }
 
         private boolean declaresArrayInput(List<String> actualPath) {
@@ -7896,38 +7896,38 @@ public final class ConcolicRegionRuntime {
         private final List<String> path = new ArrayList<>();
 
         ModelAssignment(JsonObject json) {
-            this.engineSymbol = firstNonBlank(string(json, "engineSymbol"));
-            this.inputSymbol = string(json, "inputSymbol");
-            this.valueType = string(json, "valueType");
-            this.value = string(json, "value");
-            this.configuredSourcePhaseId = string(json,
+            this.engineSymbol = firstNonBlank(optionalString(json, "engineSymbol"));
+            this.inputSymbol = optionalString(json, "inputSymbol");
+            this.valueType = optionalString(json, "valueType");
+            this.value = optionalString(json, "value");
+            this.configuredSourcePhaseId = optionalString(json,
                     "configuredSourcePhaseId");
-            this.configuredSourceId = string(json,
+            this.configuredSourceId = optionalString(json,
                     "configuredSourceId");
-            this.configuredSourceFieldSignature = string(json,
+            this.configuredSourceFieldSignature = optionalString(json,
                     "configuredSourceFieldSignature");
-            this.modelIsNull = bool(json, "modelIsNull", false);
+            this.modelIsNull = optionalBool(json, "modelIsNull", false);
             JsonElement encodedContainerTarget = json.get("containerTarget");
             this.containerTargetPresent = encodedContainerTarget != null;
             JsonObject containerTarget = object(json, "containerTarget");
-            this.containerShape = string(containerTarget, "shape");
-            this.containerSelectorKind = string(containerTarget,
+            this.containerShape = optionalString(containerTarget, "shape");
+            this.containerSelectorKind = optionalString(containerTarget,
                     "selectorKind");
-            this.containerProjection = string(containerTarget,
+            this.containerProjection = optionalString(containerTarget,
                     "projection");
-            this.containerIndex = integer(containerTarget, "index", -1);
-            this.containerAccessOrdinal = integer(containerTarget,
+            this.containerIndex = optionalInteger(containerTarget, "index", -1);
+            this.containerAccessOrdinal = optionalInteger(containerTarget,
                     "accessOrdinal", -1);
-            this.containerKeyJavaType = string(containerTarget,
+            this.containerKeyJavaType = optionalString(containerTarget,
                     "keyJavaType");
-            this.containerKeyValue = string(containerTarget, "keyValue");
+            this.containerKeyValue = optionalString(containerTarget, "keyValue");
             for (JsonElement element : array(json,
                     "materializationPath")) {
                 if (element.isJsonPrimitive()) {
                     path.add(element.getAsString());
                 }
             }
-            this.key = firstNonBlank(string(json, "modelAssignmentKey"),
+            this.key = firstNonBlank(optionalString(json, "modelAssignmentKey"),
                     engineSymbol);
         }
 
@@ -8036,25 +8036,25 @@ public final class ConcolicRegionRuntime {
         private final long valueBits;
 
         GuardedReadAssignment(JsonObject json, String taskOccurrenceId) {
-            if (integer(json, "schemaVersion", 0) != 1
-                    || !KIND.equals(string(json, "kind"))
-                    || !AUTHORITY.equals(string(json, "authority"))) {
+            if (optionalInteger(json, "schemaVersion", 0) != 1
+                    || !KIND.equals(optionalString(json, "kind"))
+                    || !AUTHORITY.equals(optionalString(json, "authority"))) {
                 throw new IllegalArgumentException(
                         "unsupported guarded read assignment schema");
             }
-            this.readIdentity = string(json, "readIdentity");
-            this.candidateIdentity = string(json, "candidateIdentity");
-            this.readerTaskId = string(json, "readerTaskId");
+            this.readIdentity = optionalString(json, "readIdentity");
+            this.candidateIdentity = optionalString(json, "candidateIdentity");
+            this.readerTaskId = optionalString(json, "readerTaskId");
             this.readerOccurrenceId = PathObservation.plannedOccurrenceOf(
-                    string(json, "readerOccurrenceId"));
-            this.consumerSiteId = string(json, "consumerSiteId");
-            this.consumerSiteOccurrence = integer(json,
+                    optionalString(json, "readerOccurrenceId"));
+            this.consumerSiteId = optionalString(json, "consumerSiteId");
+            this.consumerSiteOccurrence = optionalInteger(json,
                     "consumerSiteOccurrence", 0);
-            this.declaringClass = string(json, "declaringClass");
-            this.fieldName = string(json, "fieldName");
-            this.descriptor = javaTypeDescriptor(string(json, "descriptor"));
-            String valueType = string(json, "valueType");
-            String value = string(json, "value");
+            this.declaringClass = optionalString(json, "declaringClass");
+            this.fieldName = optionalString(json, "fieldName");
+            this.descriptor = javaTypeDescriptor(optionalString(json, "descriptor"));
+            String valueType = optionalString(json, "valueType");
+            String value = optionalString(json, "value");
             String plannedTaskOccurrence = PathObservation.plannedOccurrenceOf(
                     taskOccurrenceId);
             if (readIdentity.isEmpty() || candidateIdentity.isEmpty()
@@ -8230,18 +8230,18 @@ public final class ConcolicRegionRuntime {
         }
 
         private static RootContextSelector from(JsonObject selector) {
-            String kind = string(selector, "kind");
+            String kind = optionalString(selector, "kind");
             boolean global = "GLOBAL_INVOCATION".equals(kind);
-            String receiverClass = string(selector, "receiverClass");
+            String receiverClass = optionalString(selector, "receiverClass");
             String thread = selector.has("thread")
-                    ? string(selector, "thread") : "";
+                    ? optionalString(selector, "thread") : "";
             JsonObject anchor = object(selector, "causalAnchor");
-            String sourceKey = string(anchor, "sourceKey");
-            String requestKey = string(anchor, "requestKey");
-            String requestApi = string(anchor, "requestApi");
-            int invocationOrdinal = integer(selector,
+            String sourceKey = optionalString(anchor, "sourceKey");
+            String requestKey = optionalString(anchor, "requestKey");
+            String requestApi = optionalString(anchor, "requestApi");
+            int invocationOrdinal = optionalInteger(selector,
                     "invocationOrdinal", -1);
-            String anchorKind = string(anchor, "kind");
+            String anchorKind = optionalString(anchor, "kind");
             boolean registeredSource = RuntimeRegionPlanner
                     .ANCHOR_REGISTERED_SOURCE.equals(anchorKind);
             boolean unregisteredSource = RuntimeRegionPlanner
@@ -8390,11 +8390,11 @@ public final class ConcolicRegionRuntime {
                 }
                 JsonObject predicate = rawPredicate.getAsJsonObject();
                 if (!ROOT_ARGUMENT_PREDICATE_KIND.equals(
-                        string(predicate, "kind"))) {
+                        optionalString(predicate, "kind"))) {
                     return invalid("predicate kind must be exact runtime type");
                 }
-                int index = integer(predicate, "argumentIndex", -1);
-                String runtimeType = string(predicate, "runtimeType");
+                int index = optionalInteger(predicate, "argumentIndex", -1);
+                String runtimeType = optionalString(predicate, "runtimeType");
                 if (index < 0 || runtimeType.isEmpty()
                         || !runtimeType.equals(runtimeType.trim())
                         || !indices.add(index)) {
@@ -8612,16 +8612,16 @@ public final class ConcolicRegionRuntime {
             // groups and then exports that same one id, so the two can only
             // disagree when the task states none: a seed plan, whose group
             // the invocation names.
-            String plannedReplayGroup = string(task.json(),
+            String plannedReplayGroup = optionalString(task.json(),
                     "linkedReplayGroupId");
             this.replayGroupId = plannedReplayGroup.isEmpty()
                     ? safe(System.getenv(REPLAY_GROUP_ENV))
                     : plannedReplayGroup;
-            this.linkedReplayRole = string(task.json(),
+            this.linkedReplayRole = optionalString(task.json(),
                     "linkedReplayRole");
-            this.familySnapshotDigest = string(task.json(),
+            this.familySnapshotDigest = optionalString(task.json(),
                     "familySnapshotDigest");
-            this.topologyEpoch = string(task.json(), "topologyEpoch");
+            this.topologyEpoch = optionalString(task.json(), "topologyEpoch");
             this.edgeBindings = task.edgeBindings();
             indexPlannedReceiverObjectIds(task.inputActions().all());
             // The plan row decoded this catalog once; phase ids are already
@@ -8634,8 +8634,8 @@ public final class ConcolicRegionRuntime {
             }
             this.replayContract = task.replaySchedule();
             JsonObject targetBranch = object(task.json(), "targetBranch");
-            this.targetBranchSite = string(targetBranch, "siteId");
-            this.targetBranchOccurrence = integer(targetBranch,
+            this.targetBranchSite = optionalString(targetBranch, "siteId");
+            this.targetBranchOccurrence = optionalInteger(targetBranch,
                     "occurrence", -1);
             this.targetBranchRequiredOutcome = targetRequiredOutcome(
                     task.branches(), targetBranchSite,
@@ -8644,14 +8644,14 @@ public final class ConcolicRegionRuntime {
                 JsonObject encoded = element.getAsJsonObject();
                 SymbolizeAction action = new SymbolizeAction(encoded);
                 if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                        string(encoded, "mode"))) {
+                        optionalString(encoded, "mode"))) {
                     this.symbolize.add(action);
                 }
             }
             for (JsonElement element : task.branches()) {
                 JsonObject branch = element.getAsJsonObject();
-                String siteId = string(branch, "siteId");
-                branchPolicies.put(siteId, string(branch, "policy"));
+                String siteId = optionalString(branch, "siteId");
+                branchPolicies.put(siteId, optionalString(branch, "policy"));
             }
             JsonElement encodedAssignments = task.json().get(
                     "modelAssignments");
@@ -8853,17 +8853,17 @@ public final class ConcolicRegionRuntime {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
                     if (!"RUNTIME_PROTOCOL_FLOW".equals(
-                            string(binding, "kind"))
-                            || !portId.equals(string(binding, "toInputPort"))) {
+                            optionalString(binding, "kind"))
+                            || !portId.equals(optionalString(binding, "toInputPort"))) {
                         continue;
                     }
                     String receiver = PathObservation.plannedOccurrenceOf(
-                            string(binding, "toOccurrenceId"));
+                            optionalString(binding, "toOccurrenceId"));
                     if (!occurrenceId.equals(receiver)) {
                         continue;
                     }
                     String candidate = PathObservation.plannedOccurrenceOf(
-                            string(binding, "fromOccurrenceId"));
+                            optionalString(binding, "fromOccurrenceId"));
                     if (candidate.isEmpty()) continue;
                     if (!producerOccurrence.isEmpty()
                             && !producerOccurrence.equals(candidate)) {
@@ -8898,27 +8898,27 @@ public final class ConcolicRegionRuntime {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
                     if (!"RUNTIME_PROTOCOL_FLOW".equals(
-                            string(binding, "kind"))
+                            optionalString(binding, "kind"))
                             || !portId.equals(
-                            string(binding, "fromOutputPort"))) {
+                            optionalString(binding, "fromOutputPort"))) {
                         continue;
                     }
                     String producer = PathObservation.plannedOccurrenceOf(
-                            string(binding, "fromOccurrenceId"));
+                            optionalString(binding, "fromOccurrenceId"));
                     if (!occurrenceId.equals(producer)) {
                         continue;
                     }
                     found = true;
                     if (!"TRACED_RPC_EXCHANGE_CORRELATION_V1".equals(
-                            string(binding, "correlationAuthority"))
+                            optionalString(binding, "correlationAuthority"))
                             || !rootContextSelector.requestKey.equals(
-                            string(binding, "requestKey"))
+                            optionalString(binding, "requestKey"))
                             || !rootContextSelector.requestApi.equals(
-                            string(binding, "requestApi"))) {
+                            optionalString(binding, "requestApi"))) {
                         exactSourceCandidate = false;
                     }
                     String candidate = PathObservation.plannedOccurrenceOf(
-                            string(binding, "toOccurrenceId"));
+                            optionalString(binding, "toOccurrenceId"));
                     if (candidate.isEmpty()) continue;
                     if (!consumerOccurrence.isEmpty()
                             && !consumerOccurrence.equals(candidate)) {
@@ -8962,11 +8962,11 @@ public final class ConcolicRegionRuntime {
             for (JsonElement element : inputActions) {
                 if (!element.isJsonObject()) continue;
                 JsonObject action = element.getAsJsonObject();
-                long receiver = longInteger(action,
+                long receiver = optionalLongInteger(action,
                         "fieldReceiverObjectId", 0L);
                 DeclaredField field = FieldPathSpec.declaredField(
-                        firstNonBlank(string(action, "leafFieldSignature"),
-                                string(action, "accessFieldSignature")));
+                        firstNonBlank(optionalString(action, "leafFieldSignature"),
+                                optionalString(action, "accessFieldSignature")));
                 if (field == null || receiver <= 0L) continue;
                 candidates.computeIfAbsent(field.owner() + "#" + field.name(),
                         ignored -> new LinkedHashSet<>()).add(receiver);
@@ -9394,8 +9394,8 @@ public final class ConcolicRegionRuntime {
         private boolean reachedRequiredTargetOutcome(JsonObject reach) {
             return declaresTargetBranch()
                     && reach != null
-                    && targetBranchSite.equals(string(reach, "siteId"))
-                    && targetBranchOccurrence == integer(reach,
+                    && targetBranchSite.equals(optionalString(reach, "siteId"))
+                    && targetBranchOccurrence == optionalInteger(reach,
                     "occurrence", -1)
                     && reach.has("outcome")
                     && reach.get("outcome").isJsonPrimitive()
@@ -9417,8 +9417,8 @@ public final class ConcolicRegionRuntime {
             for (JsonElement element : branches) {
                 if (!element.isJsonObject()) continue;
                 JsonObject branch = element.getAsJsonObject();
-                if (!targetSite.equals(string(branch, "siteId"))
-                        || targetOccurrence != integer(branch,
+                if (!targetSite.equals(optionalString(branch, "siteId"))
+                        || targetOccurrence != optionalInteger(branch,
                         "selectedOccurrence", -1)) {
                     continue;
                 }

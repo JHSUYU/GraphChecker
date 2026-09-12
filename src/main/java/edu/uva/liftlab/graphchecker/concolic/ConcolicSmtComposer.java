@@ -50,12 +50,12 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingK
 
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.arithmetic;
 import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.arithmeticOperator;
 import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.bitwiseOperator;
@@ -160,7 +160,7 @@ public final class ConcolicSmtComposer {
                     + arguments.occurrenceId);
         }
         requireCanonicalFatalQuerySchema(fatal);
-        String fatalSite = string(fatal, "targetSiteId");
+        String fatalSite = optionalString(fatal, "targetSiteId");
 
         // Every path in this query is backed by the runtime's exact target
         // event.  The replay seed only fixes the selected branch identity; it
@@ -169,7 +169,7 @@ public final class ConcolicSmtComposer {
         // describe supplied summaries; they must never erase a demanded edge
         JsonObject resolutionContext = rawContext.deepCopy();
         boolean instanceScopedContext = resolutionContext.size() > 0
-                && !string(resolutionContext, "occurrenceId").isEmpty();
+                && !optionalString(resolutionContext, "occurrenceId").isEmpty();
 
         // Keep the original case evidence long enough to register every exact
         // symbolic source. Value closure below uses VM boundary observations
@@ -186,8 +186,8 @@ public final class ConcolicSmtComposer {
         loweredRelations = decodeRelationSummaries(
                 propagation.summaries());
         Emitter emitter = new Emitter(new InvocationKey(
-                string(fatal, "regionId"),
-                string(resolutionContext, "occurrenceId")));
+                optionalString(fatal, "regionId"),
+                optionalString(resolutionContext, "occurrenceId")));
         emitter.registerConfiguredSourcePlan(runtimePlan.regionPlans());
         emitter.begin(fatal);
         // A configured source may reach a selected downstream relation
@@ -199,8 +199,8 @@ public final class ConcolicSmtComposer {
             // Named against the target the context is missing for, like every
             // other composition gap: the row's kind is not its subject.
             emitter.unsupported.add("MissingTargetInstanceSymbolicContext:"
-                    + firstNonBlank(string(fatal, "occurrenceId"), fatalSite,
-                    string(fatal, "regionId")));
+                    + firstNonBlank(optionalString(fatal, "occurrenceId"), fatalSite,
+                    optionalString(fatal, "regionId")));
         }
         BoundedLoopComposition loops = lowerBoundedLoops(runtimePlan, fatal,
                 loweredRelations);
@@ -247,8 +247,8 @@ public final class ConcolicSmtComposer {
         AcceptanceGate gate = new AcceptanceGate();
         for (JsonElement element : gaps) {
             JsonObject gap = element.getAsJsonObject();
-            gate.refuse(string(gap, "kind"), string(gap, "subject"),
-                    string(gap, "detail"));
+            gate.refuse(optionalString(gap, "kind"), optionalString(gap, "subject"),
+                    optionalString(gap, "detail"));
         }
         boolean selectedPathSetComplete =
                 pathSetComplete(loweredRelations, fatal);
@@ -330,8 +330,8 @@ public final class ConcolicSmtComposer {
         List<String> fatalTerms = new ArrayList<>();
         List<String> fatalPathSelectors = new ArrayList<>();
         String previousFatalScope = emitter.enterSymbolScope("fatal:"
-                + firstNonBlank(string(fatal, "occurrenceId"), fatalSite,
-                string(fatal, "regionId"), "selected"));
+                + firstNonBlank(optionalString(fatal, "occurrenceId"), fatalSite,
+                optionalString(fatal, "regionId"), "selected"));
         try {
             int pathOrdinal = 0;
             for (JsonElement element : array(fatal, "paths")) {
@@ -447,9 +447,9 @@ public final class ConcolicSmtComposer {
             boolean guardedReadModelComplete, JsonObject evidence) {
         return guardedReadModelComplete
                 && array(evidence, "partialProducerSummaryIds").size() == 0
-                && bool(evidence, "targetPathsClosed", false)
-                && integer(evidence, "compositionCoverageGapCount", -1) == 0
-                && bool(evidence, "finalStatusReady", false);
+                && optionalBool(evidence, "targetPathsClosed", false)
+                && optionalInteger(evidence, "compositionCoverageGapCount", -1) == 0
+                && optionalBool(evidence, "finalStatusReady", false);
     }
 
     /** Producer summaries whose local path coverage remains open. */
@@ -480,13 +480,13 @@ public final class ConcolicSmtComposer {
     /** Adds each fatal replay path's own loop-count vector to the audit. */
     static void observeFatalLoopCases(BoundedLoopComposition loops,
                                       JsonObject fatal) {
-        String occurrence = string(fatal, "occurrenceId");
+        String occurrence = optionalString(fatal, "occurrenceId");
         JsonArray paths = array(fatal, "paths");
         for (int index = 0; index < paths.size(); index++) {
             if (!paths.get(index).isJsonObject()) continue;
             JsonObject path = shallowCopy(
                     paths.get(index).getAsJsonObject());
-            if (string(path, "caseId").isEmpty()) {
+            if (optionalString(path, "caseId").isEmpty()) {
                 path.addProperty("caseId", "TARGET_PATH." + index);
             }
             loops.observeCase(occurrence, path);
@@ -540,20 +540,20 @@ public final class ConcolicSmtComposer {
         for (RelationSummary relation : Objects.requireNonNull(relations,
                 "relations")) {
             JsonObject item = relation.pathCaseView();
-            String caseOccurrence = string(item, "occurrenceId");
+            String caseOccurrence = optionalString(item, "occurrenceId");
             item.addProperty("toOccurrenceId", caseOccurrence);
             item.addProperty(CASE_REGION_ID, relation.regionId());
             item.addProperty("sourceKey", relation.sourceKey());
             JsonObject relationRow = relation.immutableJson();
             item.addProperty("taskId", firstNonBlank(
-                    string(item, "taskId"), string(relationRow, "taskId")));
+                    optionalString(item, "taskId"), optionalString(relationRow, "taskId")));
             item.addProperty("boundarySessionScope", firstNonBlank(
-                    string(item, "boundarySessionScope"),
-                    string(relationRow, "boundarySessionScope")));
+                    optionalString(item, "boundarySessionScope"),
+                    optionalString(relationRow, "boundarySessionScope")));
             item.addProperty(VmExpressionIr.TOPOLOGY_EPOCH,
-                    firstNonBlank(string(item,
+                    firstNonBlank(optionalString(item,
                                     VmExpressionIr.TOPOLOGY_EPOCH),
-                            string(relationRow,
+                            optionalString(relationRow,
                                     VmExpressionIr.TOPOLOGY_EPOCH)));
             String owner = LocalCaseIdentity.owner(relationRow);
             item = retainCaseOwner(item, owner);
@@ -562,7 +562,7 @@ public final class ConcolicSmtComposer {
         if (fatal != null) {
             JsonObject target = shallowCopy(fatal);
             target.addProperty("toOccurrenceId",
-                    string(fatal, "occurrenceId"));
+                    optionalString(fatal, "occurrenceId"));
             rows.add(target);
             JsonArray paths = array(fatal, "paths");
             for (int index = 0; index < paths.size(); index++) {
@@ -582,23 +582,23 @@ public final class ConcolicSmtComposer {
                     continue;
                 }
                 path.addProperty("toOccurrenceId",
-                        firstNonBlank(string(path, "occurrenceId"),
-                                string(fatal, "occurrenceId")));
+                        firstNonBlank(optionalString(path, "occurrenceId"),
+                                optionalString(fatal, "occurrenceId")));
                 path.addProperty(CASE_REGION_ID,
-                        string(fatal, "regionId"));
-                path.addProperty("regionId", string(fatal, "regionId"));
+                        optionalString(fatal, "regionId"));
+                path.addProperty("regionId", optionalString(fatal, "regionId"));
                 path.addProperty("occurrenceId", firstNonBlank(
-                        string(path, "occurrenceId"),
-                        string(fatal, "occurrenceId")));
+                        optionalString(path, "occurrenceId"),
+                        optionalString(fatal, "occurrenceId")));
                 path.addProperty("boundarySessionScope", firstNonBlank(
-                        string(path, "boundarySessionScope"),
-                        string(fatal, "boundarySessionScope")));
+                        optionalString(path, "boundarySessionScope"),
+                        optionalString(fatal, "boundarySessionScope")));
                 path.addProperty(VmExpressionIr.TOPOLOGY_EPOCH,
-                        firstNonBlank(string(path,
+                        firstNonBlank(optionalString(path,
                                         VmExpressionIr.TOPOLOGY_EPOCH),
-                                string(fatal,
+                                optionalString(fatal,
                                         VmExpressionIr.TOPOLOGY_EPOCH)));
-                path.addProperty("sourceKey", string(fatal, "sourceKey"));
+                path.addProperty("sourceKey", optionalString(fatal, "sourceKey"));
                 path = retainCaseOwner(path, targetPathCaseOwner(fatal, path,
                         index));
                 rows.add(path);
@@ -612,10 +612,10 @@ public final class ConcolicSmtComposer {
                                               JsonObject path,
                                               int ordinal) {
         return LocalCaseIdentity.owner(
-                string(fatal, "regionId"), firstNonBlank(
-                        string(path, "occurrenceId"),
-                        string(fatal, "occurrenceId")),
-                firstNonBlank(string(path, "caseId"),
+                optionalString(fatal, "regionId"), firstNonBlank(
+                        optionalString(path, "occurrenceId"),
+                        optionalString(fatal, "occurrenceId")),
+                firstNonBlank(optionalString(path, "caseId"),
                         "TARGET_PATH." + ordinal), ordinal);
     }
 
@@ -632,11 +632,11 @@ public final class ConcolicSmtComposer {
         if (owners == null) return Collections.emptyMap();
         for (JsonObject owner : owners) {
             if (owner == null) continue;
-            String ownerKey = string(owner, LocalCaseIdentity.OWNER);
+            String ownerKey = optionalString(owner, LocalCaseIdentity.OWNER);
             String session = firstNonBlank(
                     executionScopesByCase == null ? ""
                             : executionScopesByCase.get(ownerKey),
-                    string(owner, "boundarySessionScope"));
+                    optionalString(owner, "boundarySessionScope"));
             for (JsonElement element : array(owner,
                     ConcolicSummaryImporter
                             .MANUAL_INPUT_OBSERVATION_FIELD)) {
@@ -644,12 +644,12 @@ public final class ConcolicSmtComposer {
                 JsonObject observation = element.getAsJsonObject();
                 if (!ConcolicSummaryImporter
                         .MANUAL_INPUT_OBSERVATION_KIND.equals(
-                        string(observation, "kind"))) {
+                        optionalString(observation, "kind"))) {
                     continue;
                 }
                 boolean claimsExactAuthority = ConcolicSummaryImporter
                         .MANUAL_INPUT_OBSERVATION_AUTHORITY.equals(
-                        string(observation, "authority"));
+                        optionalString(observation, "authority"));
                 JsonElement minted = observation.get("minted");
                 JsonElement reused = observation.get(
                         SymbolicSourceEvidence.REUSED);
@@ -669,36 +669,36 @@ public final class ConcolicSmtComposer {
                 JsonObject expression = observation.has("expression")
                         && observation.get("expression").isJsonObject()
                         ? observation.getAsJsonObject("expression") : null;
-                String raw = string(observation, "rawSymbol");
-                String javaType = string(observation, "javaType");
+                String raw = optionalString(observation, "rawSymbol");
+                String javaType = optionalString(observation, "javaType");
                 // Exact actions may reuse a compound propagated value.  It
                 // remains useful boundary evidence, but there is no scalar
                 // root for this registry to authorize.
                 if (expression == null
                         || !"SymbolExpression".equals(
-                        string(expression, "_type"))
+                        optionalString(expression, "_type"))
                         || raw.isEmpty()) {
                     continue;
                 }
-                String occurrence = string(observation, "occurrenceId");
-                String planned = string(observation,
+                String occurrence = optionalString(observation, "occurrenceId");
+                String planned = optionalString(observation,
                         "plannedOccurrenceId");
-                String port = string(observation, "portId");
-                String actionDigest = string(observation, "actionDigest");
-                String ownerOccurrence = string(owner, "occurrenceId");
-                String sourceKey = string(owner, "sourceKey");
-                String region = firstNonBlank(string(owner, CASE_REGION_ID),
-                        string(owner, "regionId"));
-                boolean exactRoot = raw.equals(string(expression, "_exp"))
+                String port = optionalString(observation, "portId");
+                String actionDigest = optionalString(observation, "actionDigest");
+                String ownerOccurrence = optionalString(owner, "occurrenceId");
+                String sourceKey = optionalString(owner, "sourceKey");
+                String region = firstNonBlank(optionalString(owner, CASE_REGION_ID),
+                        optionalString(owner, "regionId"));
+                boolean exactRoot = raw.equals(optionalString(expression, "_exp"))
                         && !raw.isEmpty() && raw.startsWith("M_")
                         && !javaType.isEmpty()
                         && javaTypeDescriptor(javaType).equals(
-                        javaTypeDescriptor(string(expression,
+                        javaTypeDescriptor(optionalString(expression,
                                 "_java_type")));
                 if (session.isEmpty() || sourceKey.isEmpty()
                         || region.isEmpty() || port.isEmpty()
                         || actionDigest.isEmpty()
-                        || !port.equals(string(observation, "symbol"))
+                        || !port.equals(optionalString(observation, "symbol"))
                         || occurrence.isEmpty()
                         || !occurrence.equals(ownerOccurrence)
                         || !planned.equals(
@@ -713,7 +713,7 @@ public final class ConcolicSmtComposer {
                                     + ":region=" + !region.isEmpty()
                                     + ":port=" + !port.isEmpty()
                                     + ":digest=" + !actionDigest.isEmpty()
-                                    + ":symbol=" + port.equals(string(
+                                    + ":symbol=" + port.equals(optionalString(
                                     observation, "symbol"))
                                     + ":occurrence=" + occurrence.equals(
                                     ownerOccurrence)
@@ -731,7 +731,7 @@ public final class ConcolicSmtComposer {
                 List<JsonObject> events = admitted.computeIfAbsent(key,
                         ignored -> new ArrayList<>());
                 for (JsonObject held : events) {
-                    if (!javaTypeDescriptor(string(held, "javaType"))
+                    if (!javaTypeDescriptor(optionalString(held, "javaType"))
                             .equals(javaTypeDescriptor(javaType))) {
                         throw new IllegalArgumentException(
                                 "one reused manual VM root has incompatible"
@@ -740,7 +740,7 @@ public final class ConcolicSmtComposer {
                 }
                 boolean duplicate = false;
                 for (JsonObject held : events) {
-                    if (identity.equals(string(held, "sourceIdentity"))) {
+                    if (identity.equals(optionalString(held, "sourceIdentity"))) {
                         duplicate = true;
                         break;
                     }
@@ -754,7 +754,7 @@ public final class ConcolicSmtComposer {
         for (String key : keys) {
             List<JsonObject> events = admitted.get(key);
             events.sort(Comparator.comparing(event ->
-                    string(event, "sourceIdentity")));
+                    optionalString(event, "sourceIdentity")));
             ordered.put(key, Collections.unmodifiableList(events));
         }
         return Collections.unmodifiableMap(ordered);
@@ -851,7 +851,7 @@ public final class ConcolicSmtComposer {
         Set<String> held = new LinkedHashSet<>();
         for (JsonObject row : Objects.requireNonNull(planRows, "planRows")) {
             if (row == null) continue;
-            String occurrence = string(row, "occurrenceId");
+            String occurrence = optionalString(row, "occurrenceId");
             if (occurrence.isEmpty() || !selected.contains(occurrence)
                     || !held.add(occurrence)) {
                 continue;
@@ -883,7 +883,7 @@ public final class ConcolicSmtComposer {
 
     private static void addOccurrence(JsonObject row, String field,
                                       Set<String> selected) {
-        String occurrence = string(row, field);
+        String occurrence = optionalString(row, field);
         if (!occurrence.isEmpty()) selected.add(occurrence);
     }
 
@@ -917,11 +917,11 @@ public final class ConcolicSmtComposer {
      */
     private static void requireCanonicalFatalQuerySchema(JsonObject fatal)
             throws IOException {
-        if (integer(fatal, "schemaVersion", -1)
+        if (optionalInteger(fatal, "schemaVersion", -1)
                 != TargetReachPathQueryBuilder.SCHEMA_VERSION
                 || !"TARGET_REACH_PATH_SET_QUERY".equals(
-                        string(fatal, "kind"))
-                || string(fatal, "queryKey").isEmpty()) {
+                        optionalString(fatal, "kind"))
+                || optionalString(fatal, "queryKey").isEmpty()) {
             throw new IOException("Unsupported canonical fatal query schema");
         }
         if (JsonFields.exactInteger(fatal, "targetOccurrence", -1) < 1) {
@@ -972,17 +972,17 @@ public final class ConcolicSmtComposer {
                                                Arguments arguments) {
         for (JsonObject row : rows) {
             if (!arguments.fatalRegion.isEmpty()
-                    && !arguments.fatalRegion.equals(string(row,
+                    && !arguments.fatalRegion.equals(optionalString(row,
                     "regionId"))) {
                 continue;
             }
             if (!arguments.occurrenceId.isEmpty()
-                    && !arguments.occurrenceId.equals(string(row,
+                    && !arguments.occurrenceId.equals(optionalString(row,
                     "occurrenceId"))) {
                 continue;
             }
             if ("TARGET_REACH_PATH_SET_QUERY".equals(
-                    string(row, "kind"))) {
+                    optionalString(row, "kind"))) {
                 return row;
             }
         }
@@ -1106,9 +1106,9 @@ public final class ConcolicSmtComposer {
         }
 
         private boolean matches(JsonObject event) {
-            return sourceKey.equals(string(event, "sourceKey"))
-                    && sourceId.equals(string(event, "sourceId"))
-                    && fieldSignature.equals(string(event, "fieldSignature"));
+            return sourceKey.equals(optionalString(event, "sourceKey"))
+                    && sourceId.equals(optionalString(event, "sourceId"))
+                    && fieldSignature.equals(optionalString(event, "fieldSignature"));
         }
     }
 
@@ -1323,7 +1323,7 @@ public final class ConcolicSmtComposer {
                     summaries, "summaries")) {
                 JsonObject row = summary.pathCaseView();
                 JsonObject summaryRow = summary.immutableJson();
-                String owner = firstNonBlank(string(row,
+                String owner = firstNonBlank(optionalString(row,
                                 LocalCaseIdentity.OWNER),
                         LocalCaseIdentity.owner(summaryRow));
                 registerExecutionScope(owner, row, summaryRow);
@@ -1344,13 +1344,13 @@ public final class ConcolicSmtComposer {
                 for (JsonElement armElement : array(dependency, "arms")) {
                     if (!armElement.isJsonObject()) continue;
                     JsonObject arm = armElement.getAsJsonObject();
-                    if (firstNonBlank(string(arm,
+                    if (firstNonBlank(optionalString(arm,
                                     SymbolicPropagationClosure
                                             .OBSERVATION_SCOPE),
-                            string(arm, "boundarySessionScope")).isEmpty()) {
+                            optionalString(arm, "boundarySessionScope")).isEmpty()) {
                         continue;
                     }
-                    registerExecutionScope(string(arm, "caseOwner"), arm,
+                    registerExecutionScope(optionalString(arm, "caseOwner"), arm,
                             dependency);
                 }
             }
@@ -1360,15 +1360,15 @@ public final class ConcolicSmtComposer {
                                             JsonObject parent) {
             if (owner.isEmpty()) return;
             String boundarySessionScope = firstNonBlank(
-                    string(local,
+                    optionalString(local,
                             SymbolicPropagationClosure.OBSERVATION_SCOPE),
-                    string(local, "boundarySessionScope"),
-                    string(parent,
+                    optionalString(local, "boundarySessionScope"),
+                    optionalString(parent,
                             SymbolicPropagationClosure.OBSERVATION_SCOPE),
-                    string(parent, "boundarySessionScope"));
-            String observationSelector = firstNonBlank(string(local,
+                    optionalString(parent, "boundarySessionScope"));
+            String observationSelector = firstNonBlank(optionalString(local,
                             SymbolicPropagationClosure.OBSERVATION_SELECTOR),
-                    string(parent,
+                    optionalString(parent,
                             SymbolicPropagationClosure.OBSERVATION_SELECTOR));
             String scopeOwner = firstNonBlank(observationSelector, owner);
             if (boundarySessionScope.isEmpty()) {
@@ -1426,7 +1426,7 @@ public final class ConcolicSmtComposer {
 
         private void begin(JsonObject fatal) {
             preamble.add("; GraphChecker composed concolic query");
-            preamble.add("; fatal region: " + string(fatal, "regionId"));
+            preamble.add("; fatal region: " + optionalString(fatal, "regionId"));
             preamble.add("(set-logic ALL)");
             preamble.add("(declare-sort Ref 0)");
             preamble.add(ContainerSmtCodec.valueDatatypeDeclaration());
@@ -1466,18 +1466,18 @@ public final class ConcolicSmtComposer {
                         new LinkedHashMap<>();
                 for (JsonObject owner : Objects.requireNonNull(owners,
                         "owners")) {
-                    String sourceKey = string(owner, "sourceKey");
+                    String sourceKey = optionalString(owner, "sourceKey");
                     for (JsonObject event
                             : SymbolicSourceEvidence.eventsOf(owner)) {
-                        String raw = string(event, "rawSymbol");
+                        String raw = optionalString(event, "rawSymbol");
                         JsonObject registered = shallowCopy(event);
                         registered.addProperty("sourceKey", sourceKey);
                         if (SymbolicSourceEvidence.isManual(event)) {
                             JsonObject held = manualEvents.putIfAbsent(raw,
                                     registered);
                             if (held != null
-                                    && !string(held, "sourceIdentity").equals(
-                                    string(registered, "sourceIdentity"))) {
+                                    && !optionalString(held, "sourceIdentity").equals(
+                                    optionalString(registered, "sourceIdentity"))) {
                                 throw new IllegalArgumentException(
                                         "one VM symbol names two manual"
                                                 + " task inputs: " + raw);
@@ -1499,12 +1499,12 @@ public final class ConcolicSmtComposer {
                         boolean namesRoot =
                                 SymbolicSourceEvidence.isReused(registered);
                         if (heldNames != namesRoot) {
-                            if (!string(held, "sourceId").equals(
-                                    string(registered, "sourceId"))
-                                    || !string(held, "fieldSignature").equals(
-                                    string(registered, "fieldSignature"))
-                                    || !string(held, "javaType").equals(
-                                    string(registered, "javaType"))) {
+                            if (!optionalString(held, "sourceId").equals(
+                                    optionalString(registered, "sourceId"))
+                                    || !optionalString(held, "fieldSignature").equals(
+                                    optionalString(registered, "fieldSignature"))
+                                    || !optionalString(held, "javaType").equals(
+                                    optionalString(registered, "javaType"))) {
                                 throw new IllegalArgumentException(
                                         "one VM symbol is minted and named"
                                                 + " as different configured"
@@ -1525,28 +1525,28 @@ public final class ConcolicSmtComposer {
                             // by construction, and the first read registered
                             // names it for everyone.  Only a different SOURCE
                             // behind one symbol is corruption.
-                            if (!string(held, "sourceId").equals(
-                                    string(event, "sourceId"))
-                                    || !string(held, "fieldSignature").equals(
-                                    string(event, "fieldSignature"))
-                                    || !string(held, "javaType").equals(
-                                    string(event, "javaType"))) {
+                            if (!optionalString(held, "sourceId").equals(
+                                    optionalString(event, "sourceId"))
+                                    || !optionalString(held, "fieldSignature").equals(
+                                    optionalString(event, "fieldSignature"))
+                                    || !optionalString(held, "javaType").equals(
+                                    optionalString(event, "javaType"))) {
                                 throw new IllegalArgumentException(
                                         "one VM symbol names two configured"
                                                 + " sources: " + raw);
                             }
                             continue;
                         }
-                        if (!string(held, "sourceId").equals(
-                                string(event, "sourceId"))
-                                || !string(held, "sourceKey").equals(
+                        if (!optionalString(held, "sourceId").equals(
+                                optionalString(event, "sourceId"))
+                                || !optionalString(held, "sourceKey").equals(
                                 sourceKey)
-                                || !string(held, "sourcePhaseId").equals(
-                                string(event, "sourcePhaseId"))
-                                || !string(held, "fieldSignature").equals(
-                                string(event, "fieldSignature"))
-                                || !string(held, "javaType").equals(
-                                string(event, "javaType"))) {
+                                || !optionalString(held, "sourcePhaseId").equals(
+                                optionalString(event, "sourcePhaseId"))
+                                || !optionalString(held, "fieldSignature").equals(
+                                optionalString(event, "fieldSignature"))
+                                || !optionalString(held, "javaType").equals(
+                                optionalString(event, "javaType"))) {
                             throw new IllegalArgumentException(
                                     "one VM symbol has inconsistent configured"
                                             + " source metadata: " + raw);
@@ -1593,7 +1593,7 @@ public final class ConcolicSmtComposer {
                 // VM spelling at that same B.  Use every observation, including
                 // REUSED rows, to connect those spellings.
                 for (JsonObject event : observedEvents) {
-                    String phaseId = string(event, "sourcePhaseId");
+                    String phaseId = optionalString(event, "sourcePhaseId");
                     RecordedConfiguredSource recorded =
                             configuredSourceRecordedByPhase.get(
                                     phaseId);
@@ -1602,16 +1602,16 @@ public final class ConcolicSmtComposer {
                                 "ConfiguredSourcePlanPhaseMissing:"
                                         + firstNonBlank(phaseId,
                                         "MISSING") + ":"
-                                        + string(event, "rawSymbol"));
+                                        + optionalString(event, "rawSymbol"));
                         continue;
                     }
                     if (!recorded.matches(event)) {
                         throw new IllegalArgumentException(
                                 "configured source evidence disagrees with"
                                         + " recorded event: "
-                                        + string(event, "sourcePhaseId"));
+                                        + optionalString(event, "sourcePhaseId"));
                     }
-                    String raw = string(event, "rawSymbol");
+                    String raw = optionalString(event, "rawSymbol");
                     rawAliases.computeIfAbsent(raw,
                             ignored -> new LinkedHashSet<>());
                     rawByRecordedEvent.computeIfAbsent(recorded.identity(),
@@ -1655,13 +1655,13 @@ public final class ConcolicSmtComposer {
                     String canonicalRaw = minted.get(0);
                     String canonicalIdentity =
                             symbolicSourceIdentities.get(canonicalRaw);
-                    String canonicalJavaType = string(
+                    String canonicalJavaType = optionalString(
                             mintEventByIdentity.get(canonicalIdentity),
                             "javaType");
                     for (String raw : minted) {
                         String identity = symbolicSourceIdentities.get(raw);
                         JsonObject event = mintEventByIdentity.get(identity);
-                        if (!canonicalJavaType.equals(string(event,
+                        if (!canonicalJavaType.equals(optionalString(event,
                                 "javaType"))) {
                             throw new IllegalArgumentException(
                                     "one recorded configured source event has"
@@ -1791,7 +1791,7 @@ public final class ConcolicSmtComposer {
             BranchWitness source = replay.source();
             int occurrence = JsonFields.exactInteger(fatal,
                     "targetOccurrence", -1);
-            String attestationRole = string(path,
+            String attestationRole = optionalString(path,
                     TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE);
             boolean sourceAttestation = TargetReachPathQueryBuilder
                     .SOURCE_TARGET_REACH_EVENT.equals(attestationRole);
@@ -1846,7 +1846,7 @@ public final class ConcolicSmtComposer {
                     source.sourceTakenOutcome())
                     || requiredAttestation
                     && exactRequired
-                    && event.matches(string(fatal, "targetSiteId"),
+                    && event.matches(optionalString(fatal, "targetSiteId"),
                     occurrence, required.getAsBoolean());
             boolean matchingPolarity = exactRequired
                     && (sourceAttestation
@@ -1856,7 +1856,7 @@ public final class ConcolicSmtComposer {
             if (!exactRequired || !exactDesired
                     || desired.getAsBoolean() != required.getAsBoolean()
                     || !matchingPolarity
-                    || !string(fatal, "targetSiteId").equals(
+                    || !optionalString(fatal, "targetSiteId").equals(
                     source.siteId())
                     || occurrence != source.occurrence()
                     || !matchingEvent) {
@@ -1908,8 +1908,8 @@ public final class ConcolicSmtComposer {
             }
             int occurrence = JsonFields.exactInteger(fatal,
                     "targetOccurrence", -1);
-            String targetSite = string(fatal, "targetSiteId");
-            String attestationRole = string(path,
+            String targetSite = optionalString(fatal, "targetSiteId");
+            String attestationRole = optionalString(path,
                     TargetReachPathQueryBuilder.TARGET_ATTESTATION_ROLE);
             boolean sameAuthority = pathObservation.siteId().equals(
                     seedObservation.siteId())
@@ -1930,7 +1930,7 @@ public final class ConcolicSmtComposer {
                     || !TargetReachPathQueryBuilder
                     .REQUIRED_TARGET_REACH_EVENT.equals(attestationRole)
                     || !TargetReachPathQueryBuilder
-                    .REQUIRED_CONCRETE_BRANCH_AUTHORITY.equals(string(path,
+                    .REQUIRED_CONCRETE_BRANCH_AUTHORITY.equals(optionalString(path,
                     "fatalBranchConditionAuthority"))) {
                 unsupported.add("SelectedConcreteTargetReachEventMismatch:"
                         + "path:" + pathOrdinal + ":" + event.siteId() + "#"
@@ -2009,7 +2009,7 @@ public final class ConcolicSmtComposer {
                 return unknownConstraint(origin, expression);
             }
             JsonObject object = expression.getAsJsonObject();
-            String type = string(object, "_type");
+            String type = optionalString(object, "_type");
             if ("MethodExpression".equals(type)) {
                 return methodConstraint(object);
             }
@@ -2074,7 +2074,7 @@ public final class ConcolicSmtComposer {
                         ? Sort.REF : expected);
             }
             JsonObject object = expression.getAsJsonObject();
-            String type = string(object, "_type");
+            String type = optionalString(object, "_type");
             if ("SymbolExpression".equals(type)) {
                 return symbol(object, expected);
             }
@@ -2086,8 +2086,8 @@ public final class ConcolicSmtComposer {
                 return stringOperation(object);
             }
             if ("PlaceholderExpression".equals(type)) {
-                String function = string(object, "_place_holder_func");
-                int count = integer(object, "_count", -1);
+                String function = optionalString(object, "_place_holder_func");
+                int count = optionalInteger(object, "_count", -1);
                 if (!"currentTimeMills".equals(function) || count < 1) {
                     unsupported.add("PlaceholderExpression:"
                             + firstNonBlank(function, "unknown") + "#"
@@ -2187,9 +2187,9 @@ public final class ConcolicSmtComposer {
                 expected = Sort.MAP;
             }
             String fault = SharedStateEvidence.guardedReadFault(node);
-            String readIdentity = string(node,
+            String readIdentity = optionalString(node,
                     SymbolicPropagationClosure.READ_CHOICE_IDENTITY);
-            String readOwner = string(node,
+            String readOwner = optionalString(node,
                     SymbolicPropagationClosure.READ_CHOICE_OWNER);
             String readCaseSelector = LocalCaseIdentity.selector(readOwner);
             if (!fault.isEmpty() || readIdentity.isEmpty()
@@ -2311,12 +2311,12 @@ public final class ConcolicSmtComposer {
         private DirectReadArm lowerDirectReadArm(String readIdentity,
                                                   JsonObject candidate,
                                                   Sort expected) {
-            String candidateIdentity = string(candidate,
+            String candidateIdentity = optionalString(candidate,
                     SymbolicPropagationClosure.READ_CANDIDATE_IDENTITY);
-            String selector = string(candidate, "selector");
-            String owner = string(candidate,
+            String selector = optionalString(candidate, "selector");
+            String owner = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_OWNER);
-            String writerCaseSelector = string(candidate,
+            String writerCaseSelector = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
             String expectedSelector = stableReadSelector(readIdentity,
                     candidateIdentity);
@@ -2357,16 +2357,16 @@ public final class ConcolicSmtComposer {
                     return Collections.emptyList();
                 }
                 JsonObject owner = element.getAsJsonObject();
-                String caseOwner = string(owner,
+                String caseOwner = optionalString(owner,
                         SymbolicPropagationClosure.WRITER_CASE_OWNER);
-                String selector = string(owner,
+                String selector = optionalString(owner,
                         SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
                 if (caseOwner.isEmpty()
                         || !selector.equals(
                         LocalCaseIdentity.selector(caseOwner))
-                        || string(owner, SymbolicPropagationClosure
+                        || optionalString(owner, SymbolicPropagationClosure
                         .WRITER_CASE_REGION_ID).isEmpty()
-                        || string(owner, SymbolicPropagationClosure
+                        || optionalString(owner, SymbolicPropagationClosure
                         .WRITER_CASE_OCCURRENCE_ID).isEmpty()
                         || !selectors.add(selector)) {
                     refuseGuardedRead("GuardedReadWriterClosure:"
@@ -2406,7 +2406,7 @@ public final class ConcolicSmtComposer {
             int index = 0;
             for (JsonElement encoded : array(read, "candidates")) {
                 String identity = encoded.isJsonObject()
-                        ? string(encoded.getAsJsonObject(),
+                        ? optionalString(encoded.getAsJsonObject(),
                         SymbolicPropagationClosure.READ_CANDIDATE_IDENTITY)
                         : "";
                 candidates.add(firstNonBlank(identity,
@@ -2419,15 +2419,15 @@ public final class ConcolicSmtComposer {
 
         private <T> T inReadArmOwner(JsonObject candidate,
                                      Supplier<T> body) {
-            String owner = string(candidate,
+            String owner = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_OWNER);
-            String observationSelector = string(candidate,
+            String observationSelector = optionalString(candidate,
                     SymbolicPropagationClosure.OBSERVATION_SELECTOR);
-            String observationScope = string(candidate,
+            String observationScope = optionalString(candidate,
                     SymbolicPropagationClosure.OBSERVATION_SCOPE);
-            String region = string(candidate,
+            String region = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_REGION_ID);
-            String occurrence = string(candidate,
+            String occurrence = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_OCCURRENCE_ID);
             InvocationKey previousInvocation = currentInvocation;
             String previousSymbolScope = currentSymbolScope;
@@ -2458,7 +2458,7 @@ public final class ConcolicSmtComposer {
                                        DirectReadArm arm) {
             String emittedKey = projectionIdentity + "\n" + arm.selector;
             JsonObject candidate = arm.candidate;
-            String writerCaseSelector = string(candidate,
+            String writerCaseSelector = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
             List<String> writerGuards = new ArrayList<>();
             for (String caseSelector : arm.writerCaseClosure) {
@@ -2506,7 +2506,7 @@ public final class ConcolicSmtComposer {
             evidence.addProperty("selector", arm.selector);
             evidence.addProperty("locationKey",
                     SharedStateEvidence.locationKey(node));
-            evidence.addProperty("writerCaseOwner", string(candidate,
+            evidence.addProperty("writerCaseOwner", optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_OWNER));
             evidence.addProperty("writerCaseSelector", writerCaseSelector);
             evidence.add("writerCaseClosure",
@@ -2613,14 +2613,14 @@ public final class ConcolicSmtComposer {
                 JsonArray arms = new JsonArray();
                 for (JsonElement encoded : guardedReadChoices) {
                     JsonObject arm = encoded.getAsJsonObject();
-                    if (!identity.equals(string(arm, "readIdentity"))) {
+                    if (!identity.equals(optionalString(arm, "readIdentity"))) {
                         continue;
                     }
                     JsonObject copy = shallowCopy(arm);
                     copy.addProperty("activationAssertion",
                             guardedActivationAssertions.getOrDefault(
                                     identity + "\n"
-                                            + string(arm, "selector"), ""));
+                                            + optionalString(arm, "selector"), ""));
                     arms.add(copy);
                 }
                 read.add("arms", arms);
@@ -2670,7 +2670,7 @@ public final class ConcolicSmtComposer {
 
         /** Lowers one shared, n-ary guarded output without case products. */
         private Term caseMergeTerm(JsonObject node, Sort expected) {
-            String mergeId = string(node, "mergeId");
+            String mergeId = optionalString(node, "mergeId");
             JsonArray encoded = array(node, "arms");
             if (mergeId.isEmpty() || encoded.size() == 0) {
                 unsupported.add("GuardedMergeMalformed:"
@@ -2696,13 +2696,13 @@ public final class ConcolicSmtComposer {
                 for (JsonElement element : encoded) {
                     if (!element.isJsonObject()) continue;
                     JsonObject arm = element.getAsJsonObject();
-                    String observationSelector = string(arm,
+                    String observationSelector = optionalString(arm,
                             SymbolicPropagationClosure.OBSERVATION_SELECTOR);
                     String selector = firstNonBlank(observationSelector,
-                            string(arm, "selector"));
+                            optionalString(arm, "selector"));
                     JsonElement expression = arm.get("expression");
-                    String owner = string(arm, "caseOwner");
-                    String occurrence = string(arm, "occurrenceId");
+                    String owner = optionalString(arm, "caseOwner");
+                    String occurrence = optionalString(arm, "occurrenceId");
                     if (selector.isEmpty() || owner.isEmpty()
                             || occurrence.isEmpty()
                             || expression == null) continue;
@@ -2710,17 +2710,17 @@ public final class ConcolicSmtComposer {
                     // expression after equal observations are folded.  Its
                     // allocated VM references still belong to that physical
                     // replay, whose scope travels on the arm itself.
-                    if (!firstNonBlank(string(arm,
+                    if (!firstNonBlank(optionalString(arm,
                                     SymbolicPropagationClosure
                                             .OBSERVATION_SCOPE),
-                            string(arm, "boundarySessionScope")).isEmpty()) {
+                            optionalString(arm, "boundarySessionScope")).isEmpty()) {
                         registerExecutionScope(owner, arm, node);
                     }
                     declare(selector, Sort.BOOL);
                     selectors.add(selector);
                     values.add(lowerChoiceArm(selector, () -> {
                         InvocationKey previousInvocation = enterInvocation(
-                                new InvocationKey(string(arm, "regionId"),
+                                new InvocationKey(optionalString(arm, "regionId"),
                                         occurrence));
                         String previousScope = enterSymbolScope(firstNonBlank(
                                 observationSelector, owner));
@@ -3044,12 +3044,12 @@ public final class ConcolicSmtComposer {
         }
 
         private Term symbol(JsonObject expression, Sort expected) {
-            String raw = string(expression, "_exp");
+            String raw = optionalString(expression, "_exp");
             if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
                 return new Term("nullRef", Sort.REF);
             }
             if ("V".equals(raw)) return new Term("true", Sort.BOOL);
-            String javaType = string(expression, "_java_type");
+            String javaType = optionalString(expression, "_java_type");
             Sort encoded = sortOfJava(javaType);
             Sort sort = expected == Sort.MAP
                     || expected == Sort.ARRAY_VALUE ? expected
@@ -3284,11 +3284,11 @@ public final class ConcolicSmtComposer {
             String key = reusedManualAuthorityKey(raw);
             if (key == null) return;
             for (JsonObject event : reusedManualSourceEvents.get(key)) {
-                String javaType = string(event, "javaType");
+                String javaType = optionalString(event, "javaType");
                 if (sortOfJava(javaType) != symbol.sort) {
                     unsupported.add(
                             "ReusedManualSourceMaterializationSortConflict:"
-                                    + string(event, "portId"));
+                                    + optionalString(event, "portId"));
                     continue;
                 }
                 JsonObject row = new JsonObject();
@@ -3296,12 +3296,12 @@ public final class ConcolicSmtComposer {
                 row.addProperty("kind", MANUAL_SOURCE_MATERIALIZATION_KIND);
                 row.addProperty("authority",
                         MANUAL_SOURCE_MATERIALIZATION_AUTHORITY);
-                row.addProperty("portId", string(event, "portId"));
+                row.addProperty("portId", optionalString(event, "portId"));
                 row.addProperty("occurrenceId",
-                        string(event, "plannedOccurrenceId"));
-                if (!string(event, "fieldSignature").isEmpty()) {
+                        optionalString(event, "plannedOccurrenceId"));
+                if (!optionalString(event, "fieldSignature").isEmpty()) {
                     row.addProperty("fieldSignature",
-                            string(event, "fieldSignature"));
+                            optionalString(event, "fieldSignature"));
                 }
                 row.addProperty("javaTypeDescriptor",
                         javaTypeDescriptor(javaType));
@@ -3312,17 +3312,17 @@ public final class ConcolicSmtComposer {
                     row.addProperty("nullnessSolverTerm", symbol.nullness);
                 }
                 row.addProperty("sourceIdentity",
-                        string(event, "sourceIdentity"));
+                        optionalString(event, "sourceIdentity"));
                 row.addProperty("sourceIdentityAuthority",
                         ConcolicSummaryImporter
                                 .MANUAL_INPUT_OBSERVATION_AUTHORITY);
                 row.addProperty("reused", true);
                 JsonObject held = manualSourceMaterializations.putIfAbsent(
-                        string(event, "sourceIdentity"), row);
+                        optionalString(event, "sourceIdentity"), row);
                 if (held != null && !held.equals(row)) {
                     unsupported.add(
                             "ReusedManualSourceMaterializationConflict:"
-                                    + string(event, "portId"));
+                                    + optionalString(event, "portId"));
                 }
             }
         }
@@ -3335,10 +3335,10 @@ public final class ConcolicSmtComposer {
                 unsupported.add("ManualSourceMaterializationMissing:" + raw);
                 return;
             }
-            String javaType = string(event, "javaType");
+            String javaType = optionalString(event, "javaType");
             if (sortOfJava(javaType) != symbol.sort) {
                 unsupported.add("ManualSourceMaterializationSortConflict:"
-                        + string(event, "portId"));
+                        + optionalString(event, "portId"));
                 return;
             }
             JsonObject row = new JsonObject();
@@ -3346,12 +3346,12 @@ public final class ConcolicSmtComposer {
             row.addProperty("kind", MANUAL_SOURCE_MATERIALIZATION_KIND);
             row.addProperty("authority",
                     MANUAL_SOURCE_MATERIALIZATION_AUTHORITY);
-            row.addProperty("portId", string(event, "portId"));
+            row.addProperty("portId", optionalString(event, "portId"));
             row.addProperty("occurrenceId",
-                    string(event, "sourceOccurrenceId"));
-            if (!string(event, "fieldSignature").isEmpty()) {
+                    optionalString(event, "sourceOccurrenceId"));
+            if (!optionalString(event, "fieldSignature").isEmpty()) {
                 row.addProperty("fieldSignature",
-                        string(event, "fieldSignature"));
+                        optionalString(event, "fieldSignature"));
             }
             row.addProperty("javaTypeDescriptor",
                     javaTypeDescriptor(javaType));
@@ -3368,7 +3368,7 @@ public final class ConcolicSmtComposer {
                     identity, row);
             if (held != null && !held.equals(row)) {
                 unsupported.add("ManualSourceMaterializationConflict:"
-                        + string(event, "portId"));
+                        + optionalString(event, "portId"));
             }
         }
 
@@ -3387,7 +3387,7 @@ public final class ConcolicSmtComposer {
                                                 String identity) {
             JsonObject event = symbolicSourceEvents.get(raw);
             String published = event == null ? ""
-                    : string(event, SymbolicSourceEvidence.SYMBOL);
+                    : optionalString(event, SymbolicSourceEvidence.SYMBOL);
             String base = published.isEmpty()
                     ? SymbolicSourceEvidence.isReused(event)
                     ? "sym__propagated__" + smtName(raw)
@@ -3425,15 +3425,15 @@ public final class ConcolicSmtComposer {
                         + raw);
                 return;
             }
-            String javaType = string(event, "javaType");
+            String javaType = optionalString(event, "javaType");
             String fieldType = fieldSignatureJavaType(
-                    string(event, "fieldSignature"));
+                    optionalString(event, "fieldSignature"));
             Sort declaredSort = sortOfJava(javaType);
             if (declaredSort != symbol.sort
                     || !javaTypeDescriptor(javaType).equals(
                     javaTypeDescriptor(fieldType))) {
                 unsupported.add("ConfiguredSourceMaterializationSortConflict:"
-                        + string(event, "sourceId") + ":" + declaredSort
+                        + optionalString(event, "sourceId") + ":" + declaredSort
                         + "->" + symbol.sort + ":" + fieldType + "->"
                         + javaType);
                 return;
@@ -3444,20 +3444,20 @@ public final class ConcolicSmtComposer {
                     CONFIGURED_SOURCE_MATERIALIZATION_KIND);
             row.addProperty("authority",
                     CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY);
-            String sourceKey = string(event, "sourceKey");
+            String sourceKey = optionalString(event, "sourceKey");
             if (sourceKey.isEmpty()) {
                 unsupported.add("ConfiguredSourceMaterializationSourceKeyMissing:"
-                        + string(event, "sourceId"));
+                        + optionalString(event, "sourceId"));
                 return;
             }
             row.addProperty("sourceKey", sourceKey);
-            row.addProperty("sourceId", string(event, "sourceId"));
+            row.addProperty("sourceId", optionalString(event, "sourceId"));
             row.addProperty("sourcePhaseId",
-                    string(event, "sourcePhaseId"));
+                    optionalString(event, "sourcePhaseId"));
             row.addProperty("sourceOccurrenceId",
-                    string(event, "sourceOccurrenceId"));
+                    optionalString(event, "sourceOccurrenceId"));
             row.addProperty("fieldSignature",
-                    string(event, "fieldSignature"));
+                    optionalString(event, "fieldSignature"));
             row.addProperty("javaTypeDescriptor",
                     javaTypeDescriptor(javaType));
             row.addProperty("sort", symbol.sort.name());
@@ -3470,13 +3470,13 @@ public final class ConcolicSmtComposer {
                     identity, row);
             if (held != null && !held.equals(row)) {
                 unsupported.add("ConfiguredSourceMaterializationConflict:"
-                        + string(event, "sourceId"));
+                        + optionalString(event, "sourceId"));
             }
         }
 
         private Term constant(JsonObject expression, Sort expected) {
-            String raw = string(expression, "_exp");
-            String javaType = string(expression, "_java_type");
+            String raw = optionalString(expression, "_exp");
+            String javaType = optionalString(expression, "_java_type");
             String value = constantPayload(raw);
             Sort sort = sortOfJava(javaType);
             Term result;
@@ -3527,11 +3527,11 @@ public final class ConcolicSmtComposer {
             JsonElement sourceExpression = expression.get("_exp");
             Term source = term(sourceExpression, null);
             String sourceType = castDescriptor(
-                    firstNonBlank(string(expression, "sourceJavaType"),
+                    firstNonBlank(optionalString(expression, "sourceJavaType"),
                             expressionJavaType(sourceExpression)));
             String targetType = castDescriptor(firstNonBlank(
-                    string(expression, "targetJavaType"),
-                    string(expression, "_java_type")));
+                    optionalString(expression, "targetJavaType"),
+                    optionalString(expression, "_java_type")));
             Sort sourceSort = castSort(sourceType);
             Sort targetSort = castSort(targetType);
             boolean primitivePair = JavaPrimitiveSmtSemantics
@@ -3563,7 +3563,7 @@ public final class ConcolicSmtComposer {
 
         private Term binary(JsonObject expression) {
             String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
-                    string(expression, "_op"));
+                    optionalString(expression, "_op"));
             JsonElement leftExpression = expression.get("_left");
             if (leftExpression == null || leftExpression.isJsonNull()) {
                 Term operand = term(expression.get("_right"), null);
@@ -3827,7 +3827,7 @@ public final class ConcolicSmtComposer {
 
         private boolean boxedPrimitiveReferenceEquality(
                 JsonObject expression) {
-            String operator = string(expression, "_op");
+            String operator = optionalString(expression, "_op");
             if (!"==".equals(operator) && !"!=".equals(operator)) {
                 return false;
             }
@@ -3842,13 +3842,13 @@ public final class ConcolicSmtComposer {
                 return false;
             }
             JsonObject object = expression.getAsJsonObject();
-            if (!"SymbolExpression".equals(string(object, "_type"))
-                    || sortOfJava(string(object, "_java_type"))
+            if (!"SymbolExpression".equals(optionalString(object, "_type"))
+                    || sortOfJava(optionalString(object, "_java_type"))
                     != Sort.REF) {
                 return false;
             }
             return JavaPrimitiveBoxing.wrapperType(
-                    string(object, "_java_type"));
+                    optionalString(object, "_java_type"));
         }
 
         private Term floatingPromotion(Term term, Sort target,
@@ -3876,8 +3876,8 @@ public final class ConcolicSmtComposer {
         /** Emits exact core Java String predicates/value operations plus the
          * materially different Java/SMT semantics remain fail-closed. */
         private Term stringOperation(JsonObject expression) {
-            String operation = string(expression, "_name");
-            boolean negated = bool(expression, "_is_not", false);
+            String operation = optionalString(expression, "_name");
+            boolean negated = optionalBool(expression, "_is_not", false);
             JsonArray params = array(expression, "_param_list");
             if ("isEmpty".equals(operation)) {
                 List<Term> strings = exactStringParameters(params, 1);
@@ -4112,8 +4112,8 @@ public final class ConcolicSmtComposer {
                 return SplitSegment.gap("NOT_METHOD_EXPRESSION");
             }
             JsonObject split = selected.getAsJsonObject();
-            if (!"MethodExpression".equals(string(split, "_type"))
-                    || !isJavaSplitElement(string(split, "_name"))) {
+            if (!"MethodExpression".equals(optionalString(split, "_type"))
+                    || !isJavaSplitElement(optionalString(split, "_name"))) {
                 return SplitSegment.gap("NOT_STRING_SPLIT_ELEMENT");
             }
             JsonArray params = array(split, "_param_list");
@@ -4221,8 +4221,8 @@ public final class ConcolicSmtComposer {
                 return false;
             }
             JsonObject object = expression.getAsJsonObject();
-            return "SymbolExpression".equals(string(object, "_type"))
-                    && declaredSymbolicRoot(string(object, "_exp"));
+            return "SymbolExpression".equals(optionalString(object, "_type"))
+                    && declaredSymbolicRoot(optionalString(object, "_exp"));
         }
 
         /** Lowers a split piece's int in the invocation that states it. */
@@ -4245,9 +4245,9 @@ public final class ConcolicSmtComposer {
             if (expression == null || !expression.isJsonObject()) return null;
             JsonObject object = expression.getAsJsonObject();
             JsonArray params = array(object, "_param_list");
-            if (!"OpStrExpression".equals(string(object, "_type"))
-                    || !"toString".equals(string(object, "_name"))
-                    || bool(object, "_is_not", false)
+            if (!"OpStrExpression".equals(optionalString(object, "_type"))
+                    || !"toString".equals(optionalString(object, "_name"))
+                    || optionalBool(object, "_is_not", false)
                     || params.size() != 1
                     || !isPrimitiveIntExpression(params.get(0))) {
                 return null;
@@ -4309,7 +4309,7 @@ public final class ConcolicSmtComposer {
         }
 
         private String methodConstraint(JsonObject expression) {
-            String name = string(expression, "_name");
+            String name = optionalString(expression, "_name");
             if (isJavaParseInt(name) || isJavaSplitElement(name)) {
                 boolean split = isJavaSplitElement(name);
                 Term value = methodTerm(expression);
@@ -4332,7 +4332,7 @@ public final class ConcolicSmtComposer {
         }
 
         private Term methodTerm(JsonObject expression) {
-            String method = string(expression, "_name");
+            String method = optionalString(expression, "_name");
             if (isJavaParseInt(method)) {
                 return parseIntTerm(expression);
             }
@@ -4353,19 +4353,19 @@ public final class ConcolicSmtComposer {
         private void lowerRegionCase(RelationSummary summary,
                                      JsonObject item, int index) {
             JsonObject guardIr = object(item, "guard");
-            if (!"PATH_CONDITION".equals(string(guardIr, "kind"))) {
+            if (!"PATH_CONDITION".equals(optionalString(guardIr, "kind"))) {
                 heapGap("UnsupportedRegionGuard@" + summary.regionId()
                         + ":" + index);
                 return;
             }
-            String occurrence = firstNonBlank(string(item, "occurrenceId"),
+            String occurrence = firstNonBlank(optionalString(item, "occurrenceId"),
                     summary.occurrenceId());
-            String owner = firstNonBlank(string(item,
+            String owner = firstNonBlank(optionalString(item,
                             LocalCaseIdentity.OWNER),
                     LocalCaseIdentity.owner(
                             summary.immutableJson()));
             String baseSelector = LocalCaseIdentity.selector(owner);
-            String observationSelector = string(item,
+            String observationSelector = optionalString(item,
                     SymbolicPropagationClosure.OBSERVATION_SELECTOR);
             String selector = firstNonBlank(observationSelector,
                     baseSelector);
@@ -4791,7 +4791,7 @@ public final class ConcolicSmtComposer {
         }
 
         private static SplitPiece integer(JsonElement source,
-                                          InvocationKey invocation) {
+                                                  InvocationKey invocation) {
             return new SplitPiece("", source, invocation);
         }
     }
@@ -4934,14 +4934,14 @@ public final class ConcolicSmtComposer {
     }
 
     private static String guardedReadJavaType(JsonObject node) {
-        String encoded = string(node, "_java_type");
+        String encoded = optionalString(node, "_java_type");
         if (!erasedReferenceType(encoded)) return encoded;
         String descriptor = replayReadDescriptor(node);
         return sortOfJava(descriptor) == Sort.STRING ? descriptor : encoded;
     }
 
     private static String replayReadDescriptor(JsonObject node) {
-        return string(node, "replayReadDescriptor");
+        return optionalString(node, "replayReadDescriptor");
     }
 
     private static boolean erasedReferenceType(String type) {
@@ -5062,14 +5062,14 @@ public final class ConcolicSmtComposer {
     private static String expressionJavaType(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         if ("TypeCastExpression".equals(type)) {
-            return string(object, "_java_type");
+            return optionalString(object, "_java_type");
         }
         if ("MethodExpression".equals(type)) {
-            return string(object(object, "_res_exp"), "_java_type");
+            return optionalString(object(object, "_res_exp"), "_java_type");
         }
-        return string(object, "_java_type");
+        return optionalString(object, "_java_type");
     }
 
     private static String integerLiteral(String value) {

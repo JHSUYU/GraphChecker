@@ -15,7 +15,7 @@ import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralW
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {
@@ -197,21 +197,21 @@ public final class ContainerSmtCodec {
     public static boolean handles(JsonElement expression) {
         return expression != null && expression.isJsonObject()
                 && EXPRESSION_TYPE.equals(
-                string(expression.getAsJsonObject(), "_type"));
+                optionalString(expression.getAsJsonObject(), "_type"));
     }
 
     public static boolean handlesField(JsonElement expression) {
         return expression != null && expression.isJsonObject()
                 && "FieldAccessExpression".equals(
-                string(expression.getAsJsonObject(), "_type"));
+                optionalString(expression.getAsJsonObject(), "_type"));
     }
 
     public static boolean handlesFieldBinding(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject binary = expression.getAsJsonObject();
-        String position = string(binary, "_code_position");
-        if (!"BinaryExpression".equals(string(binary, "_type"))
-                || !"==".equals(string(binary, "_op"))
+        String position = optionalString(binary, "_code_position");
+        if (!"BinaryExpression".equals(optionalString(binary, "_type"))
+                || !"==".equals(optionalString(binary, "_op"))
                 || position.indexOf(
                 "java.lang.System.symbolizeExactField(") < 0
                 && position.indexOf(
@@ -228,7 +228,7 @@ public final class ContainerSmtCodec {
     public static boolean handlesAccessConstraint(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject binary = expression.getAsJsonObject();
-        if (!"BinaryExpression".equals(string(binary, "_type"))) {
+        if (!"BinaryExpression".equals(optionalString(binary, "_type"))) {
             return false;
         }
         JsonElement left = binary.get("_left");
@@ -241,7 +241,7 @@ public final class ContainerSmtCodec {
     public static boolean constant(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         return constantKind(
-                string(expression.getAsJsonObject(), "_type"));
+                optionalString(expression.getAsJsonObject(), "_type"));
     }
 
     /** Whether one already-read {@code _type} names a constant payload. */
@@ -262,19 +262,19 @@ public final class ContainerSmtCodec {
     private static boolean symbol(JsonElement expression) {
         return expression != null && expression.isJsonObject()
                 && "SymbolExpression".equals(
-                string(expression.getAsJsonObject(), "_type"));
+                optionalString(expression.getAsJsonObject(), "_type"));
     }
 
     public static Term field(JsonObject expression, Host host) {
         Term owner = host.operand(expression.get("owner"), Sort.REF);
         if (owner == null) return null;
-        String ownerClass = string(expression, "ownerClass");
-        String javaType = string(expression, "_java_type");
+        String ownerClass = optionalString(expression, "ownerClass");
+        String javaType = optionalString(expression, "_java_type");
         if (boxedPrimitiveValue(owner, ownerClass, javaType)) {
             return owner;
         }
         return host.field(owner, ownerClass,
-                JsonFields.integer(expression, "fieldOffset", -1), javaType);
+                JsonFields.optionalInteger(expression, "fieldOffset", -1), javaType);
     }
 
     private static boolean boxedPrimitiveValue(
@@ -308,14 +308,14 @@ public final class ContainerSmtCodec {
         }
         JsonObject object = expression.getAsJsonObject();
         JsonArray arguments = array(object, "arguments");
-        if (!EXPRESSION_TYPE.equals(string(object, "_type"))
-                || !"INDEXED".equals(string(object, "shape"))
-                || !"READ".equals(string(object, "operation"))
+        if (!EXPRESSION_TYPE.equals(optionalString(object, "_type"))
+                || !"INDEXED".equals(optionalString(object, "shape"))
+                || !"READ".equals(optionalString(object, "operation"))
                 || arguments.size() != 1) {
             return expression;
         }
         JsonElement stored = storedIndexedWrite(object.get("receiver"),
-                arguments.get(0), string(object, "_java_type"));
+                arguments.get(0), optionalString(object, "_java_type"));
         return stored == null ? expression : selectedIndexedElement(stored);
     }
 
@@ -350,7 +350,7 @@ public final class ContainerSmtCodec {
             projected.add(VmExpressionIr.EXPRESSION, selected);
             return projected;
         }
-        String type = string(root, "_type");
+        String type = optionalString(root, "_type");
         String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
                 ? "arms" : SharedStateEvidence.GUARDED_READ_TYPE.equals(type)
                 ? "candidates" : "";
@@ -363,7 +363,7 @@ public final class ContainerSmtCodec {
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (string(arm, "selector").isEmpty()
+                if (optionalString(arm, "selector").isEmpty()
                         || arm.get("expression") == null) {
                     return null;
                 }
@@ -381,9 +381,9 @@ public final class ContainerSmtCodec {
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject node = cursor.getAsJsonObject();
             JsonArray arguments = array(node, "arguments");
-            if (!EXPRESSION_TYPE.equals(string(node, "_type"))
-                    || !"INDEXED".equals(string(node, "shape"))
-                    || !"WRITE".equals(string(node, "operation"))) {
+            if (!EXPRESSION_TYPE.equals(optionalString(node, "_type"))
+                    || !"INDEXED".equals(optionalString(node, "shape"))
+                    || !"WRITE".equals(optionalString(node, "operation"))) {
                 break;
             }
             if (arguments.size() != 2) return null;
@@ -417,9 +417,9 @@ public final class ContainerSmtCodec {
         JsonElement cursor = receiver;
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject node = cursor.getAsJsonObject();
-            if (!EXPRESSION_TYPE.equals(string(node, "_type"))
-                    || !"INDEXED".equals(string(node, "shape"))
-                    || !"WRITE".equals(string(node, "operation"))
+            if (!EXPRESSION_TYPE.equals(optionalString(node, "_type"))
+                    || !"INDEXED".equals(optionalString(node, "shape"))
+                    || !"WRITE".equals(optionalString(node, "operation"))
                     || array(node, "arguments").size() != 2
                     || node.get("receiver") == null) {
                 return cursor;
@@ -433,13 +433,13 @@ public final class ContainerSmtCodec {
     private static Integer exactIndexLiteral(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         if (!"ConstExpr".equals(type) && !"ConSymbolExp".equals(type)) {
             return null;
         }
-        String javaType = string(object, "_java_type");
+        String javaType = optionalString(object, "_java_type");
         if (!"I".equals(javaType) && !"int".equals(javaType)) return null;
-        String payload = string(object, "_exp");
+        String payload = optionalString(object, "_exp");
         int first = payload.indexOf('_');
         int second = first < 0 ? -1 : payload.indexOf('_', first + 1);
         String value = second < 0 ? payload : payload.substring(second + 1);
@@ -453,9 +453,9 @@ public final class ContainerSmtCodec {
 
     public static Term term(JsonObject expression, Host host) {
         ProjectionMemo memo = new ProjectionMemo();
-        String shape = string(expression, "shape");
-        String operation = string(expression, "operation");
-        String javaType = string(expression, "_java_type");
+        String shape = optionalString(expression, "shape");
+        String operation = optionalString(expression, "operation");
+        String javaType = optionalString(expression, "_java_type");
         if ("ASSOCIATIVE".equals(shape)
                 && (SCALAR_ASSOC_MEMBER.equals(operation)
                 || SCALAR_ASSOC_NEXT.equals(operation)
@@ -487,7 +487,7 @@ public final class ContainerSmtCodec {
             if (SCALAR_ASSOC_MEMBER.equals(operation)) {
                 return associativeMemberAt(state, index, host, memo);
             }
-            String viewKind = string(expression, "viewKind");
+            String viewKind = optionalString(expression, "viewKind");
             Term value = associativeElementAt(state, index, viewKind, host,
                     memo);
             return value == null ? null : host.unbox(value, javaType);
@@ -844,7 +844,7 @@ public final class ContainerSmtCodec {
 
     private static String expressionJavaType(JsonElement expression) {
         return expression != null && expression.isJsonObject()
-                ? string(expression.getAsJsonObject(), "_java_type") : "";
+                ? optionalString(expression.getAsJsonObject(), "_java_type") : "";
     }
 
     private static Term associativeHas(
@@ -1186,11 +1186,11 @@ public final class ContainerSmtCodec {
     private static Mutation associativeMutation(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject relation = expression.getAsJsonObject();
-        if (!EXPRESSION_TYPE.equals(string(relation, "_type"))
-                || !"ASSOCIATIVE".equals(string(relation, "shape"))) {
+        if (!EXPRESSION_TYPE.equals(optionalString(relation, "_type"))
+                || !"ASSOCIATIVE".equals(optionalString(relation, "shape"))) {
             return null;
         }
-        String operation = string(relation, "operation");
+        String operation = optionalString(relation, "operation");
         JsonArray arguments = array(relation, "arguments");
         int arity = emptiesState(operation) ? 0
                 : "REMOVE".equals(operation) ? 1
@@ -1212,15 +1212,15 @@ public final class ContainerSmtCodec {
     private static Entry entry(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject next = expression.getAsJsonObject();
-        if (!EXPRESSION_TYPE.equals(string(next, "_type"))
-                || !"NEXT".equals(string(next, "operation"))) return null;
+        if (!EXPRESSION_TYPE.equals(optionalString(next, "_type"))
+                || !"NEXT".equals(optionalString(next, "operation"))) return null;
         JsonArray positions = array(next, "arguments");
         if (positions.size() != 1) return null;
         JsonElement cursor = next.get("receiver");
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject view = cursor.getAsJsonObject();
-            if (!EXPRESSION_TYPE.equals(string(view, "_type"))) break;
-            String operation = string(view, "operation");
+            if (!EXPRESSION_TYPE.equals(optionalString(view, "_type"))) break;
+            String operation = optionalString(view, "operation");
             if ("ITERATOR".equals(operation)
                     || "ENTRY_VIEW".equals(operation)) {
                 cursor = view.get("receiver");
@@ -1237,8 +1237,8 @@ public final class ContainerSmtCodec {
         String kind = "";
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject operation = cursor.getAsJsonObject();
-            if (!EXPRESSION_TYPE.equals(string(operation, "_type"))) break;
-            String name = string(operation, "operation");
+            if (!EXPRESSION_TYPE.equals(optionalString(operation, "_type"))) break;
+            String name = optionalString(operation, "operation");
             if ("ENTRY_VIEW".equals(name) || "KEY_VIEW".equals(name)
                     || "VALUE_VIEW".equals(name)) {
                 kind = name;
@@ -1262,7 +1262,7 @@ public final class ContainerSmtCodec {
     private static boolean propagationWrapper(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         return VmExpressionIr.isConsumerBoundary(object)
                 || VmExpressionIr.isConsumerBoundaryReference(object)
                 || SymbolicPropagationClosure.ITE_TYPE.equals(type)
@@ -1303,7 +1303,7 @@ public final class ContainerSmtCodec {
             projected.add(VmExpressionIr.EXPRESSION, payload);
             return projected;
         }
-        String type = string(root, "_type");
+        String type = optionalString(root, "_type");
         String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
                 ? "arms" : SharedStateEvidence.GUARDED_READ_TYPE.equals(type)
                 ? "candidates" : "";
@@ -1316,7 +1316,7 @@ public final class ContainerSmtCodec {
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (string(arm, "selector").isEmpty()
+                if (optionalString(arm, "selector").isEmpty()
                         || arm.get("expression") == null) return null;
                 JsonElement payload = projectAssociativeChoice(
                         arm.get("expression"), index, viewKind,
@@ -1355,9 +1355,9 @@ public final class ContainerSmtCodec {
                 continue;
             }
             JsonObject object = cursor.getAsJsonObject();
-            if (EXPRESSION_TYPE.equals(string(object, "_type"))
-                    && "ASSOCIATIVE".equals(string(object, "shape"))) {
-                return "STATE".equals(string(object, "operation"))
+            if (EXPRESSION_TYPE.equals(optionalString(object, "_type"))
+                    && "ASSOCIATIVE".equals(optionalString(object, "shape"))) {
+                return "STATE".equals(optionalString(object, "operation"))
                         && object.get("receiver") != null
                         && !propagationWrapper(object.get("receiver"));
             }
@@ -1387,8 +1387,8 @@ public final class ContainerSmtCodec {
         JsonElement cursor = expression;
         while (cursor != null && cursor.isJsonObject()) {
             JsonObject relation = cursor.getAsJsonObject();
-            if (!EXPRESSION_TYPE.equals(string(relation, "_type"))) break;
-            String operation = string(relation, "operation");
+            if (!EXPRESSION_TYPE.equals(optionalString(relation, "_type"))) break;
+            String operation = optionalString(relation, "operation");
             if (!"ITERATOR".equals(operation)
                     && !"ENTRY_VIEW".equals(operation)
                     && !"KEY_VIEW".equals(operation)
@@ -1434,8 +1434,8 @@ public final class ContainerSmtCodec {
             return payload == null || !payload.isJsonObject() ? ""
                     : selectedReadViewKind(payload);
         }
-        if (EXPRESSION_TYPE.equals(string(object, "_type"))) {
-            String operation = string(object, "operation");
+        if (EXPRESSION_TYPE.equals(optionalString(object, "_type"))) {
+            String operation = optionalString(object, "operation");
             if ("ENTRY_VIEW".equals(operation)
                     || "KEY_VIEW".equals(operation)
                     || "VALUE_VIEW".equals(operation)) {
@@ -1444,7 +1444,7 @@ public final class ContainerSmtCodec {
             return "ITERATOR".equals(operation)
                     ? selectedReadViewKind(object.get("receiver")) : "";
         }
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         JsonArray arms;
         if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
             arms = array(object, "arms");
@@ -1458,7 +1458,7 @@ public final class ContainerSmtCodec {
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return "";
             JsonObject arm = element.getAsJsonObject();
-            if (string(arm, "selector").isEmpty()) return "";
+            if (optionalString(arm, "selector").isEmpty()) return "";
             JsonElement armExpression = arm.get("expression");
             if (armExpression == null || !armExpression.isJsonObject()) {
                 return "";
@@ -1508,8 +1508,8 @@ public final class ContainerSmtCodec {
             memo.put(expression, normalized);
             return normalized;
         }
-        if (EXPRESSION_TYPE.equals(string(object, "_type"))) {
-            String operation = string(object, "operation");
+        if (EXPRESSION_TYPE.equals(optionalString(object, "_type"))) {
+            String operation = optionalString(object, "operation");
             if (kind.equals(operation)) {
                 JsonElement receiver = object.get("receiver");
                 if (receiver == null || !receiver.isJsonObject()) return null;
@@ -1522,7 +1522,7 @@ public final class ContainerSmtCodec {
             if (result != null) memo.put(expression, result);
             return result;
         }
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         String armsField;
         if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
             armsField = "arms";
@@ -1539,7 +1539,7 @@ public final class ContainerSmtCodec {
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return null;
             JsonObject arm = element.getAsJsonObject();
-            if (string(arm, "selector").isEmpty()) return null;
+            if (optionalString(arm, "selector").isEmpty()) return null;
             JsonElement projectedArm = selectedViewState(
                     arm.get("expression"), kind, memo);
             if (projectedArm == null) return null;

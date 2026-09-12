@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonObject;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * How a run departed from the model, and what is left of the model when it
@@ -39,9 +39,9 @@ public final class CoverageDivergence {
     /** Whether {@code row} is a divergence this vocabulary produced. */
     public static boolean isDivergence(JsonObject row) {
         return row != null
-                && KIND.equals(string(row, "kind"))
-                && AUTHORITY.equals(string(row, "authority"))
-                && classOf(string(row, "divergenceClass")) != null;
+                && KIND.equals(optionalString(row, "kind"))
+                && AUTHORITY.equals(optionalString(row, "authority"))
+                && classOf(optionalString(row, "divergenceClass")) != null;
     }
 
     private static Kind classOf(String name) {
@@ -54,9 +54,9 @@ public final class CoverageDivergence {
     /** Classifies one named gap from the existing coverage stream. */
     public static Kind classify(JsonObject gap) {
         if (gap == null) return null;
-        String kind = string(gap, "kind");
-        String reason = string(gap, "reason");
-        if (isDivergence(gap)) return classOf(string(gap, "divergenceClass"));
+        String kind = optionalString(gap, "kind");
+        String reason = optionalString(gap, "reason");
+        if (isDivergence(gap)) return classOf(optionalString(gap, "divergenceClass"));
         if (RpcExpressionHandoff.GAP_KIND.equals(kind)) {
             return reason.endsWith("SHAPE_MISMATCH")
                     || reason.endsWith("SORT_MISMATCH")

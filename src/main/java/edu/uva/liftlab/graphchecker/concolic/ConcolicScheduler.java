@@ -40,12 +40,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Builds graph-directed concolic jobs from static regions and concrete
  * runtime-selected region instance plans. */
@@ -189,10 +189,10 @@ public final class ConcolicScheduler {
             JsonObject binding = element.getAsJsonObject();
             if (!AutomaticRegionEdge.tracedExchangeCandidate(binding)
                     || !receiver.equals(PathObservation.plannedOccurrenceOf(
-                    string(binding, "toOccurrenceId")))) {
+                    optionalString(binding, "toOccurrenceId")))) {
                 continue;
             }
-            String port = string(binding, "toInputPort");
+            String port = optionalString(binding, "toInputPort");
             if (declaredInboundPorts.contains(port)) {
                 suppliedPorts.add(port);
             }
@@ -206,8 +206,8 @@ public final class ConcolicScheduler {
             }
             JsonObject action = element.getAsJsonObject();
             if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                    string(action, "mode"))
-                    && suppliedPorts.contains(string(action, "symbol"))) {
+                    optionalString(action, "mode"))
+                    && suppliedPorts.contains(optionalString(action, "symbol"))) {
                 continue;
             }
             retained.add(action.deepCopy());
@@ -338,7 +338,7 @@ public final class ConcolicScheduler {
     /** The exact target-query aggregation seam used by target-first. */
     static void indexTargetQuery(Map<String, JsonObject> queries,
                                  JsonObject query) throws IOException {
-        String key = JsonFields.string(query, "queryKey");
+        String key = JsonFields.optionalString(query, "queryKey");
         if (key.isEmpty()) {
             throw new IOException("scheduled row has no queryKey");
         }
@@ -376,7 +376,7 @@ public final class ConcolicScheduler {
                 throw new IOException("edge binding must be an object");
             }
             JsonObject row = element.getAsJsonObject();
-            String edgeId = string(row, "edgeId");
+            String edgeId = optionalString(row, "edgeId");
             if (edgeId.isEmpty()) {
                 throw new IOException("edge binding has no edgeId");
             }
@@ -447,9 +447,9 @@ public final class ConcolicScheduler {
                     BoundedLoopComposition.PLAN_FIELD)) {
                 if (!element.isJsonObject()) continue;
                 JsonObject loop = element.getAsJsonObject();
-                String loopSiteId = string(loop,
+                String loopSiteId = optionalString(loop,
                         LoopBoundPolicy.LOOP_SITE_ID);
-                int bound = integer(loop, LoopBoundPolicy.LOOP_BODY_BOUND, 0);
+                int bound = optionalInteger(loop, LoopBoundPolicy.LOOP_BODY_BOUND, 0);
                 if (loopSiteId.isEmpty() || bound < 1) continue;
                 Integer held = declared.put(loopSiteId, bound);
                 if (held != null && held.intValue() != bound) {
@@ -522,23 +522,23 @@ public final class ConcolicScheduler {
                     continue;
                 }
                 JsonObject branch = element.getAsJsonObject();
-                String siteId = string(branch, "siteId");
-                if (!bool(branch, "failureTarget", false)) {
+                String siteId = optionalString(branch, "siteId");
+                if (!optionalBool(branch, "failureTarget", false)) {
                     continue;
                 }
-                if (!bool(branch, "observed", false)
+                if (!optionalBool(branch, "observed", false)
                         || !branch.has("requiredOutcome")
                         || branch.get("requiredOutcome").isJsonNull()) {
                     continue;
                 }
-                boolean required = bool(branch, "requiredOutcome", false);
+                boolean required = optionalBool(branch, "requiredOutcome", false);
                 TargetBranch target = TargetBranch.select(
                         siteId, array(branch, "occurrences"), required);
                 if (target == null) {
                     continue;
                 }
                 boolean hasWitness = target.observedOutcome == required;
-                boolean explore = "EXPLORE".equals(string(branch, "policy"));
+                boolean explore = "EXPLORE".equals(optionalString(branch, "policy"));
                 if (hasWitness && !explore) {
                     continue;
                 }
@@ -565,16 +565,16 @@ public final class ConcolicScheduler {
     }
 
     private static boolean eligibleFailureTarget(JsonObject branch) {
-        if (!bool(branch, "failureTarget", false)
-                || bool(branch, "loopControlGuard", false)
-                || !bool(branch, "observed", false)
+        if (!optionalBool(branch, "failureTarget", false)
+                || optionalBool(branch, "loopControlGuard", false)
+                || !optionalBool(branch, "observed", false)
                 || !branch.has("requiredOutcome")
                 || branch.get("requiredOutcome").isJsonNull()) {
             return false;
         }
-        return TargetBranch.select(string(branch, "siteId"),
+        return TargetBranch.select(optionalString(branch, "siteId"),
                 array(branch, "occurrences"),
-                bool(branch, "requiredOutcome", false)) != null;
+                optionalBool(branch, "requiredOutcome", false)) != null;
     }
 
     private static String targetQueryInstance(
@@ -598,12 +598,12 @@ public final class ConcolicScheduler {
         Set<String> selectedPorts = new LinkedHashSet<>();
         for (JsonElement element : actions) {
             if (!element.isJsonObject()) continue;
-            String port = string(element.getAsJsonObject(), "symbol");
+            String port = optionalString(element.getAsJsonObject(), "symbol");
             if (!port.isEmpty()) selectedPorts.add(port);
         }
         for (JsonElement element : bindings) {
             if (!element.isJsonObject()) continue;
-            String port = string(element.getAsJsonObject(), "toInputPort");
+            String port = optionalString(element.getAsJsonObject(), "toInputPort");
             if (!port.isEmpty()) selectedPorts.add(port);
         }
         JsonArray ports = new JsonArray();
@@ -620,7 +620,7 @@ public final class ConcolicScheduler {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
             if (!InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                    string(action, "mode"))) {
+                    optionalString(action, "mode"))) {
                 continue;
             }
             result.add(action.deepCopy());
@@ -636,17 +636,17 @@ public final class ConcolicScheduler {
         Set<String> represented = new LinkedHashSet<>();
         for (JsonElement element : result) {
             if (element.isJsonObject()) {
-                represented.add(string(element.getAsJsonObject(), "symbol"));
+                represented.add(optionalString(element.getAsJsonObject(), "symbol"));
             }
         }
         for (JsonElement element : guardedTargetActions == null
                 ? new JsonArray() : guardedTargetActions) {
             if (!element.isJsonObject()) continue;
             JsonObject action = element.getAsJsonObject();
-            String symbol = string(action, "symbol");
+            String symbol = optionalString(action, "symbol");
             if (!symbol.isEmpty() && represented.add(symbol)
                     && InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                    string(action, "mode"))) {
+                    optionalString(action, "mode"))) {
                 result.add(action.deepCopy());
             }
         }
@@ -660,7 +660,7 @@ public final class ConcolicScheduler {
         for (JsonElement element : goal.edgeBindings()) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
-            if (queryInstance.equals(string(binding,
+            if (queryInstance.equals(optionalString(binding,
                     "toOccurrenceId"))
                     && AutomaticRegionEdge
                     .tracedExchangeCandidate(binding)) {
@@ -677,11 +677,11 @@ public final class ConcolicScheduler {
         for (JsonElement element : branches) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject().deepCopy();
-            if (target.siteId.equals(string(branch, "siteId"))) {
+            if (target.siteId.equals(optionalString(branch, "siteId"))) {
                 branch.addProperty("policy", "EXPLORE");
                 branch.addProperty("policyReason",
                         "TARGET_REACH_SELECTED_FAILURE_BRANCH");
-            } else if ("EXPLORE".equals(string(branch, "policy"))) {
+            } else if ("EXPLORE".equals(optionalString(branch, "policy"))) {
                 branch.addProperty("policy", "PATH_ASSUMPTION");
                 branch.addProperty("policyReason",
                         "TARGET_REACH_PREFIX_CONTEXT");
@@ -698,7 +698,7 @@ public final class ConcolicScheduler {
         for (JsonElement element : branches) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
-            if (!bool(branch, "failureTarget", false)) continue;
+            if (!optionalBool(branch, "failureTarget", false)) continue;
             JsonObject compact = new JsonObject();
             for (String field : new String[]{
                     "siteId", "failureTarget", "requiredOutcome",
@@ -722,7 +722,7 @@ public final class ConcolicScheduler {
         JsonArray result = new JsonArray();
         Set<String> represented = new LinkedHashSet<>();
         // The frame the root-entry hooks are injected into.
-        String planRootMethod = string(object(goal.plan().json(),
+        String planRootMethod = optionalString(object(goal.plan().json(),
                 "rootSelector"), "method");
         Set<String> guardDependent = definitions.guardDependentCells(
                 exploredGuardOperands(demandedBranches));
@@ -732,8 +732,8 @@ public final class ConcolicScheduler {
             }
             JsonObject action = element.getAsJsonObject();
             JsonObject binding = action.deepCopy();
-            String location = string(action, "location");
-            String cell = string(action, "cell");
+            String location = optionalString(action, "location");
+            String cell = optionalString(action, "cell");
             String dependencyRole = DependencyRole.normalize(
                     action.get("dependencyRole"));
             // A container type describes how an admitted value frontier is
@@ -743,7 +743,7 @@ public final class ConcolicScheduler {
             // propagated element expressions remain symbolic.  Explicit
             // VALUE_FRONTIER containers still use the bounded model.
             if (DependencyRole.VALUE_FRONTIER.equals(dependencyRole)
-                    && JavaContainerTypes.shape(string(action, "javaType"))
+                    && JavaContainerTypes.shape(optionalString(action, "javaType"))
                     != JavaContainerTypes.Shape.NONE) {
                 binding.addProperty("symbolicDemand",
                         "BOUNDED_CONTAINER_STATE");
@@ -788,7 +788,7 @@ public final class ConcolicScheduler {
                 continue;
             }
             if (action.has("observed")
-                    && !bool(action, "observed", false)) {
+                    && !optionalBool(action, "observed", false)) {
                 addConcreteInputAction(result, represented, binding,
                         "CONCRETE_UNOBSERVED_INPUT");
                 continue;
@@ -796,8 +796,8 @@ public final class ConcolicScheduler {
             if ("ARGUMENT".equals(location)
                     || "ARGUMENT_FIELD".equals(location)
                     || "RECEIVER_FIELD".equals(location)) {
-                String argumentMethod = string(action, "method");
-                int argumentIndex = integer(action, "index", -1);
+                String argumentMethod = optionalString(action, "method");
+                int argumentIndex = optionalInteger(action, "index", -1);
                 if ("ARGUMENT".equals(location)
                         && !argumentMethod.isEmpty()
                         && !argumentMethod.equals(planRootMethod)
@@ -836,12 +836,12 @@ public final class ConcolicScheduler {
                     continue;
                 }
                 String returnCell = cell;
-                String sourceKind = string(action, "sourceKind");
+                String sourceKind = optionalString(action, "sourceKind");
                 if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
                         .equals(sourceKind)
                         || RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
                         .equals(sourceKind)) {
-                    String callee = string(action, "declaredCallee");
+                    String callee = optionalString(action, "declaredCallee");
                     if (!callee.isEmpty()) returnCell = callee + ".return";
                 }
                 JsonArray sites = definitions.returnSites(returnCell,
@@ -858,9 +858,9 @@ public final class ConcolicScheduler {
                     localBinding.addProperty("bindingMode",
                             "LOCAL_DEFINITION");
                     localBinding.addProperty("method",
-                            string(site, "method"));
+                            optionalString(site, "method"));
                     localBinding.addProperty("local",
-                            string(site, "local"));
+                            optionalString(site, "local"));
                     JsonArray oneSite = new JsonArray();
                     oneSite.add(site.deepCopy());
                     localBinding.add("definitionSites", oneSite);
@@ -880,7 +880,7 @@ public final class ConcolicScheduler {
         }
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()
-                    || represented.contains(string(
+                    || represented.contains(optionalString(
                     element.getAsJsonObject(), "symbol"))) {
                 continue;
             }
@@ -893,22 +893,22 @@ public final class ConcolicScheduler {
 
     static JsonArray exactCallReturnSite(
             JsonObject action, JsonArray sites) {
-        String sourceKind = string(action, "sourceKind");
+        String sourceKind = optionalString(action, "sourceKind");
         if (!RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
                 sourceKind)
                 && !RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
                 .equals(sourceKind)) {
             return sites;
         }
-        String caller = string(action, "callerMethod");
-        int unitIndex = integer(action, "unitIndex", -1);
+        String caller = optionalString(action, "callerMethod");
+        int unitIndex = optionalInteger(action, "unitIndex", -1);
         JsonArray exact = new JsonArray();
         if (caller.isEmpty() || unitIndex < 0) return exact;
         for (JsonElement element : sites) {
             if (!element.isJsonObject()) continue;
             JsonObject site = element.getAsJsonObject();
-            if (caller.equals(string(site, "method"))
-                    && unitIndex == integer(site, "unitIndex", -1)) {
+            if (caller.equals(optionalString(site, "method"))
+                    && unitIndex == optionalInteger(site, "unitIndex", -1)) {
                 exact.add(site.deepCopy());
             }
         }
@@ -924,7 +924,7 @@ public final class ConcolicScheduler {
         for (JsonElement element : branches) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
-            if (!"EXPLORE".equals(string(branch, "policy"))) continue;
+            if (!"EXPLORE".equals(optionalString(branch, "policy"))) continue;
             for (JsonElement operand : array(branch, "operandCells")) {
                 String cell = operand.isJsonPrimitive()
                         ? operand.getAsString().trim() : "";
@@ -959,7 +959,7 @@ public final class ConcolicScheduler {
                 result.add(element.getAsString().trim());
             }
         }
-        String cell = string(action, "cell");
+        String cell = optionalString(action, "cell");
         if (!cell.isEmpty() && !result.contains(cell)) {
             result.add(cell);
         }
@@ -967,11 +967,11 @@ public final class ConcolicScheduler {
     }
 
     private static boolean concreteOnlyInput(JsonObject action) {
-        String demand = string(action, "symbolicDemand");
-        return bool(action, "captureRootOnly", false)
-                || bool(action, "loopControlOnly", false)
-                || bool(action, "controlOnly", false)
-                || bool(action, "pathAssumptionOnly", false)
+        String demand = optionalString(action, "symbolicDemand");
+        return optionalBool(action, "captureRootOnly", false)
+                || optionalBool(action, "loopControlOnly", false)
+                || optionalBool(action, "controlOnly", false)
+                || optionalBool(action, "pathAssumptionOnly", false)
                 || demand.startsWith("CONCRETE_");
     }
 
@@ -979,7 +979,7 @@ public final class ConcolicScheduler {
      * scalar representation. */
     static String unsupportedSymbolicLeafReason(
             JsonObject action, String location, String cell) {
-        String javaType = string(action, "javaType");
+        String javaType = optionalString(action, "javaType");
         String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 javaType);
         boolean supportedScalar = (descriptor.length() == 1
@@ -1028,10 +1028,10 @@ public final class ConcolicScheduler {
     private static boolean supportedBoundedContainerState(
             JsonObject action, String location) {
         if (!"BOUNDED_CONTAINER_STATE".equals(
-                string(action, "symbolicDemand"))) {
+                optionalString(action, "symbolicDemand"))) {
             return false;
         }
-        String javaType = string(action, "javaType");
+        String javaType = optionalString(action, "javaType");
         if (JavaContainerTypes.shape(javaType)
                 == JavaContainerTypes.Shape.NONE) {
             return false;
@@ -1062,8 +1062,8 @@ public final class ConcolicScheduler {
         // is the leaf only when the path is one hop.  Order says so.
         for (String signature : new String[]{
                 pathLeafFieldSignature(action, cell),
-                firstNonBlank(string(action, "accessFieldSignature"),
-                        string(action, "leafFieldSignature")), cell}) {
+                firstNonBlank(optionalString(action, "accessFieldSignature"),
+                        optionalString(action, "leafFieldSignature")), cell}) {
             FieldPathSpec.DeclaredField declared =
                     FieldPathSpec.declaredField(signature);
             if (declared != null) return declared;
@@ -1085,11 +1085,11 @@ public final class ConcolicScheduler {
     }
 
     private static boolean staticSyntheticConstant(JsonObject action) {
-        if ("CONSTANT".equals(string(action, "sourceKind"))) {
+        if ("CONSTANT".equals(optionalString(action, "sourceKind"))) {
             return true;
         }
         List<String> path = exactActionFieldPath(action,
-                string(action, "cell"));
+                optionalString(action, "cell"));
         return !path.isEmpty()
                 && "$assertionsDisabled".equals(
                 path.get(path.size() - 1));
@@ -1099,7 +1099,7 @@ public final class ConcolicScheduler {
      * values. */
     private static String structureControlReason(JsonObject action) {
         List<String> path = exactActionFieldPath(action,
-                string(action, "cell"));
+                optionalString(action, "cell"));
         String leaf = path.isEmpty() ? "" : path.get(path.size() - 1);
         if (compilerSwitchDispatchTable(leaf)) {
             return "COMPILER_SWITCH_DISPATCH_TABLE";
@@ -1142,13 +1142,13 @@ public final class ConcolicScheduler {
         }
         if (!"size".equals(leaf)
                 || !"I".equals(JavaPrimitiveSmtSemantics
-                .javaTypeDescriptor(string(action, "javaType")))) {
+                .javaTypeDescriptor(optionalString(action, "javaType")))) {
             return false;
         }
         // A direct read of an owner's exact `int size` backing field is the
         // same cardinality projection even when no accessor call is present.
         FieldPathSpec.DeclaredField declared = declaredLeaf(action,
-                string(action, "cell"));
+                optionalString(action, "cell"));
         return declared != null && "size".equals(declared.name())
                 && "I".equals(JavaPrimitiveSmtSemantics
                 .javaTypeDescriptor(declared.type()));
@@ -1159,7 +1159,7 @@ public final class ConcolicScheduler {
         for (String field : new String[]{"declaredCallee",
                 "accessorDeclaredCallee", "implementationMethod",
                 "accessorImplementationMethod"}) {
-            String signature = string(action, field);
+            String signature = optionalString(action, field);
             if (!signature.isEmpty() && !result.contains(signature)) {
                 result.add(signature);
             }
@@ -1167,7 +1167,7 @@ public final class ConcolicScheduler {
         JsonObject materialization = object(action, "materialization");
         for (String field : new String[]{"declaredCallee",
                 "implementationMethod"}) {
-            String signature = string(materialization, field);
+            String signature = optionalString(materialization, field);
             if (!signature.isEmpty() && !result.contains(signature)) {
                 result.add(signature);
             }
@@ -1179,7 +1179,7 @@ public final class ConcolicScheduler {
             JsonArray result, Set<String> represented,
             JsonObject action, InputActionCatalog.Mode mode) {
         action.addProperty("mode", mode.name());
-        represented.add(string(action, "symbol"));
+        represented.add(optionalString(action, "symbol"));
         result.add(action);
     }
 
@@ -1199,20 +1199,20 @@ public final class ConcolicScheduler {
      * dependency role is not a value frontier at all. */
     static String concreteOnlyInputReason(
             JsonObject action, String dependencyRole) {
-        String authored = string(action, "symbolicDemand");
+        String authored = optionalString(action, "symbolicDemand");
         if (authored.startsWith("CONCRETE_")) {
             return authored;
         }
-        if (bool(action, "captureRootOnly", false)) {
+        if (optionalBool(action, "captureRootOnly", false)) {
             return "CONCRETE_CAPTURE_ROOT_ONLY";
         }
-        if (bool(action, "loopControlOnly", false)) {
+        if (optionalBool(action, "loopControlOnly", false)) {
             return "CONCRETE_LOOP_CONTROL_ONLY";
         }
-        if (bool(action, "controlOnly", false)) {
+        if (optionalBool(action, "controlOnly", false)) {
             return "CONCRETE_CONTROL_ONLY";
         }
-        if (bool(action, "pathAssumptionOnly", false)) {
+        if (optionalBool(action, "pathAssumptionOnly", false)) {
             return "CONCRETE_PATH_ASSUMPTION_ONLY";
         }
         return "CONCRETE_NON_VALUE_FRONTIER_ROLE:"
@@ -1356,9 +1356,9 @@ public final class ConcolicScheduler {
         for (JsonElement element : taskInputActions == null
                 ? new JsonArray() : taskInputActions) {
             if (!element.isJsonObject()) continue;
-            String input = firstNonBlank(string(
+            String input = firstNonBlank(optionalString(
                     element.getAsJsonObject(), "symbol"),
-                    string(element.getAsJsonObject(), "portId"));
+                    optionalString(element.getAsJsonObject(), "portId"));
             if (!input.isEmpty()) inputs.add(input);
         }
         JsonArray ports = new JsonArray();
@@ -1385,8 +1385,8 @@ public final class ConcolicScheduler {
         for (JsonElement element : candidate.branches) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
-            if ("EXPLORE".equals(string(branch, "policy"))) {
-                sites.add(string(branch, "siteId"));
+            if ("EXPLORE".equals(optionalString(branch, "policy"))) {
+                sites.add(optionalString(branch, "siteId"));
             }
         }
         List<SummaryBranchMapping> mappings =
@@ -1433,20 +1433,20 @@ public final class ConcolicScheduler {
         JsonObject flipSeed = null;
         JsonObject anyComplete = null;
         for (JsonObject summary : summaries) {
-            if (!candidate.goal.goalId().equals(string(summary, "goalId"))
+            if (!candidate.goal.goalId().equals(optionalString(summary, "goalId"))
                     || !candidate.goal.plan().regionId().equals(
-                    string(summary, "regionId"))
+                    optionalString(summary, "regionId"))
                     || !expectedInstance.equals(
                     PathObservation.plannedOccurrenceOf(
-                            string(summary, "occurrenceId")))
+                            optionalString(summary, "occurrenceId")))
                     || !ClosureGoalKind.fromTask(summary)
                     .capturesTargetReach()
-                    || string(summary, "summaryId").isEmpty()) {
+                    || optionalString(summary, "summaryId").isEmpty()) {
                 continue;
             }
             if (anyComplete == null) anyComplete = summary;
             if (flipSeed == null
-                    && !bool(summary, PathObservation.TARGET_REACHED,
+                    && !optionalBool(summary, PathObservation.TARGET_REACHED,
                     false)) {
                 flipSeed = summary;
             }
@@ -1494,10 +1494,10 @@ public final class ConcolicScheduler {
                     "runtime-refined graph must not be empty");
         }
         for (JsonObject row : rows) {
-            if (integer(row, "schemaVersion", -1) != 3
-                    || integer(row, "refinementSchemaVersion", -1) != 1
+            if (optionalInteger(row, "schemaVersion", -1) != 3
+                    || optionalInteger(row, "refinementSchemaVersion", -1) != 1
                     || !"RUNTIME_REFINED_DATAFLOW".equals(
-                    string(row, "graphKind"))) {
+                    optionalString(row, "graphKind"))) {
                 throw new IllegalArgumentException(
                         "scheduler accepts only the runtime-refined graph");
             }
@@ -1519,9 +1519,9 @@ public final class ConcolicScheduler {
             DefinitionIndex result = new DefinitionIndex();
             Set<String> seenCallReturns = new LinkedHashSet<>();
             for (JsonObject edge : edges) {
-                String source = string(edge, "fromCell");
-                if (!"GUARD".equals(string(edge, "transferKind"))) {
-                    String target = string(edge, "toCell");
+                String source = optionalString(edge, "fromCell");
+                if (!"GUARD".equals(optionalString(edge, "transferKind"))) {
+                    String target = optionalString(edge, "toCell");
                     if (!source.isEmpty() && !target.isEmpty()) {
                         result.transferSources.computeIfAbsent(target,
                                 ignored -> new ArrayList<>()).add(source);
@@ -1529,15 +1529,15 @@ public final class ConcolicScheduler {
                         result.transferCells.add(target);
                     }
                 }
-                String cell = string(edge, "toCell");
+                String cell = optionalString(edge, "toCell");
                 Matcher localCell = LOCAL_CELL.matcher(cell);
                 if (!localCell.matches()) {
                     continue;
                 }
-                String method = string(edge, "method");
-                int unitIndex = integer(edge, "unitIndex", -1);
+                String method = optionalString(edge, "method");
+                int unitIndex = optionalInteger(edge, "unitIndex", -1);
                 if (!localCell.group(1).equals(method) || unitIndex < 0
-                        || !bool(edge, "definitionSite", false)) {
+                        || !optionalBool(edge, "definitionSite", false)) {
                     continue;
                 }
                 JsonObject site = new JsonObject();
@@ -1588,7 +1588,7 @@ public final class ConcolicScheduler {
                 return result;
             }
             for (JsonObject site : sites) {
-                String method = string(site, "method");
+                String method = optionalString(site, "method");
                 if (!allowedMethods.contains(method)) {
                     continue;
                 }
@@ -1604,13 +1604,13 @@ public final class ConcolicScheduler {
         private final String regionId;
 
         private Region(JsonObject row) {
-            int schemaVersion = integer(row, "schemaVersion", -1);
+            int schemaVersion = optionalInteger(row, "schemaVersion", -1);
             if (schemaVersion != STATIC_REGION_SCHEMA_VERSION) {
                 throw new IllegalArgumentException(
                         "symbolic region requires schemaVersion "
                                 + STATIC_REGION_SCHEMA_VERSION);
             }
-            this.regionId = string(row, "regionId");
+            this.regionId = optionalString(row, "regionId");
         }
 
     }
@@ -1648,10 +1648,10 @@ public final class ConcolicScheduler {
                 JsonElement element = occurrences.get(index);
                 if (!element.isJsonObject()) continue;
                 JsonObject occurrence = element.getAsJsonObject();
-                boolean observed = bool(occurrence, "outcome", false);
-                int ordinal = integer(occurrence, "occurrence", index + 1);
+                boolean observed = optionalBool(occurrence, "outcome", false);
+                int ordinal = optionalInteger(occurrence, "occurrence", index + 1);
                 TargetBranch selected = new TargetBranch(siteId, ordinal,
-                        longInteger(occurrence, "eventSeq", -1L),
+                        optionalLongInteger(occurrence, "eventSeq", -1L),
                         observed, required,
                         observed == required ? !observed : required);
                 if (observed == required) return selected;
@@ -1734,7 +1734,7 @@ public final class ConcolicScheduler {
             java.util.TreeSet<String> sites = new java.util.TreeSet<>();
             for (JsonElement element : branches) {
                 if (!element.isJsonObject()) continue;
-                String site = string(element.getAsJsonObject(), "siteId");
+                String site = optionalString(element.getAsJsonObject(), "siteId");
                 if (!site.isEmpty()) sites.add(site);
             }
             return ArtifactIO.sha256(String.join("\n", methods)
@@ -1820,7 +1820,7 @@ public final class ConcolicScheduler {
                     : "NO_ELIGIBLE_CANDIDATE";
         }
         String targetMethod = selected == null ? ""
-                : string(selected.json(), "targetMethod");
+                : optionalString(selected.json(), "targetMethod");
         JsonObject root = selected == null ? new JsonObject()
                 : object(selected.json(), "rootSelector");
         String state = selectedGoal == null ? ""
@@ -1889,7 +1889,7 @@ public final class ConcolicScheduler {
             Set<String> catalogRegions = new LinkedHashSet<>();
             for (JsonObject region : regionCatalog == null
                     ? Collections.<JsonObject>emptyList() : regionCatalog) {
-                String regionId = string(region, "regionId");
+                String regionId = optionalString(region, "regionId");
                 if (!regionId.isEmpty()) catalogRegions.add(regionId);
                 for (JsonElement element : array(region,
                         StaticSymbolicSourceDeclaration.FIELD)) {
@@ -1909,7 +1909,7 @@ public final class ConcolicScheduler {
             }
             requireFile(path, "symbolic input selection");
             for (JsonObject row : ArtifactIO.readJsonl(path)) {
-                String regionId = firstNonBlank(string(row, "regionId"));
+                String regionId = firstNonBlank(optionalString(row, "regionId"));
                 if (regionId.isEmpty()) {
                     throw new IOException("symbolic input selection row has "
                             + "no regionId: " + row);
@@ -1931,19 +1931,19 @@ public final class ConcolicScheduler {
         /** An explicit source hook is itself the allowlist authority. */
         private static void declareMintSite(
                 Map<String, String> sites, JsonObject row) throws IOException {
-            String sourceId = firstNonBlank(string(row, "sourceId"));
-            String field = firstNonBlank(string(row, "fieldSignature"));
+            String sourceId = firstNonBlank(optionalString(row, "sourceId"));
+            String field = firstNonBlank(optionalString(row, "fieldSignature"));
             if (JsonFields.exactInteger(row, "schemaVersion", -1)
                     != StaticSymbolicSourceDeclaration.SCHEMA_VERSION
                     || !StaticSymbolicSourceDeclaration.KIND.equals(
-                    string(row, "kind"))
+                    optionalString(row, "kind"))
                     || !StaticSymbolicSourceDeclaration.AUTHORITY.equals(
-                    string(row, "authority"))
+                    optionalString(row, "authority"))
                     || sourceId.isEmpty() || field.isEmpty()) {
                 throw new IOException("malformed static symbolic source "
                         + "declaration");
             }
-            if (string(row, "declarationMethod").isEmpty()
+            if (optionalString(row, "declarationMethod").isEmpty()
                     || JsonFields.exactInteger(row,
                     "declarationUnitIndex", -1) < 0) {
                 throw new IOException("malformed static symbolic source "
@@ -1985,7 +1985,7 @@ public final class ConcolicScheduler {
                 JsonObject retained = action.deepCopy();
                 // Every input remains declared because concrete topology may
                 // use it as an instrumentation anchor.
-                if ("SYMBOLIC".equals(string(action, "mode"))) {
+                if ("SYMBOLIC".equals(optionalString(action, "mode"))) {
                     if (minted(regionId, action)) {
                         // The Java hook mints this exact root once.
                         retained.addProperty("mode", "CONCRETE");
@@ -2016,17 +2016,17 @@ public final class ConcolicScheduler {
             return names != null
                     && (names.contains(actionField(action))
                     || names.contains(actionPort(action))
-                    || names.contains(string(action, "cell")));
+                    || names.contains(optionalString(action, "cell")));
         }
 
         private static String actionField(JsonObject action) {
-            return firstNonBlank(string(action, "accessFieldSignature"),
-                    string(action, "declaredFieldSignature"));
+            return firstNonBlank(optionalString(action, "accessFieldSignature"),
+                    optionalString(action, "declaredFieldSignature"));
         }
 
         private static String actionPort(JsonObject action) {
-            return firstNonBlank(string(action, "portId"),
-                    string(action, "symbol"));
+            return firstNonBlank(optionalString(action, "portId"),
+                    optionalString(action, "symbol"));
         }
     }
 

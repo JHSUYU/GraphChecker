@@ -8,7 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.trimmed;
 
@@ -62,7 +62,7 @@ public final class MaterializationSpec {
         }
         String field = text(port, "declaredFieldSignature");
         String method = text(port, "callerMethod");
-        int unitIndex = integer(port, "unitIndex", -1);
+        int unitIndex = optionalInteger(port, "unitIndex", -1);
         String declaredCallee = text(port, "declaredCallee");
         String implementation = text(port,
                 "accessorImplementationMethod");

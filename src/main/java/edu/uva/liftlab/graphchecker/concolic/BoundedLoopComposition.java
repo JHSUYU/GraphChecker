@@ -15,8 +15,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Checks the loop-count evidence carried by each region-local path case.
@@ -63,7 +63,7 @@ public final class BoundedLoopComposition {
         Set<String> conflictingPolicies = new LinkedHashSet<>();
         for (JsonObject authority : safe(boundAuthorityRows)) {
             if (authority == null) continue;
-            String occurrence = string(authority, "occurrenceId");
+            String occurrence = optionalString(authority, "occurrenceId");
             if (occurrence.isEmpty()) continue;
             if (!authority.has(LoopBoundPolicy.FIELD)
                     || !authority.get(LoopBoundPolicy.FIELD).isJsonObject()) {
@@ -81,19 +81,19 @@ public final class BoundedLoopComposition {
         Map<String, List<JsonObject>> declarations = new LinkedHashMap<>();
         for (JsonObject plan : safe(planRows)) {
             if (plan == null) continue;
-            String occurrence = string(plan, "occurrenceId");
+            String occurrence = optionalString(plan, "occurrenceId");
             if (occurrence.isEmpty()) continue;
             LoopBoundPolicy policy = policies.get(occurrence);
             for (JsonElement element : array(plan, PLAN_FIELD)) {
                 if (!element.isJsonObject()) continue;
                 JsonObject row = element.getAsJsonObject().deepCopy();
-                String site = string(row, LoopBoundPolicy.LOOP_SITE_ID);
+                String site = optionalString(row, LoopBoundPolicy.LOOP_SITE_ID);
                 if (site.isEmpty()) {
                     model.gap(LoopBoundPolicy.LOOP_SITE_UNDECLARED,
                             occurrence, "retained loop names no loopSiteId");
                     continue;
                 }
-                String classification = string(row,
+                String classification = optionalString(row,
                         LoopBoundPolicy.LOOP_CLASSIFICATION);
                 boolean required = LoopBoundPolicy.failureRelevantLoop(row);
                 if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(
@@ -151,14 +151,14 @@ public final class BoundedLoopComposition {
     private BoundedLoop admit(String identity,
                               List<JsonObject> declarations) {
         JsonObject first = declarations.get(0);
-        String occurrence = string(first, "occurrenceId");
-        String site = string(first, LoopBoundPolicy.LOOP_SITE_ID);
-        String runtime = string(first, LoopBoundPolicy.RUNTIME_LOOP_ID);
-        String classification = string(first,
+        String occurrence = optionalString(first, "occurrenceId");
+        String site = optionalString(first, LoopBoundPolicy.LOOP_SITE_ID);
+        String runtime = optionalString(first, LoopBoundPolicy.RUNTIME_LOOP_ID);
+        String classification = optionalString(first,
                 LoopBoundPolicy.LOOP_CLASSIFICATION);
-        String classificationAuthority = string(first,
+        String classificationAuthority = optionalString(first,
                 LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY);
-        int bound = integer(first, LoopBoundPolicy.LOOP_BODY_BOUND, 0);
+        int bound = optionalInteger(first, LoopBoundPolicy.LOOP_BODY_BOUND, 0);
         boolean required = LoopBoundPolicy.failureRelevantLoop(first);
 
         if (!LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(classification)
@@ -181,18 +181,18 @@ public final class BoundedLoopComposition {
         }
         if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(classification)
                 && (bound < 1 || !LoopBoundPolicy.BOUND_FROM_DECLARATION
-                .equals(string(first,
+                .equals(optionalString(first,
                         LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY)))) {
             gap(LOOP_BODY_BOUND_UNDECLARED, identity,
                     "condition-controlled loop has no declared bound");
             return null;
         }
         for (JsonObject row : declarations) {
-            if (!classification.equals(string(row,
+            if (!classification.equals(optionalString(row,
                     LoopBoundPolicy.LOOP_CLASSIFICATION))
-                    || !classificationAuthority.equals(string(row,
+                    || !classificationAuthority.equals(optionalString(row,
                     LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY))
-                    || !runtime.equals(string(row,
+                    || !runtime.equals(optionalString(row,
                     LoopBoundPolicy.RUNTIME_LOOP_ID))
                     || required != LoopBoundPolicy.failureRelevantLoop(row)) {
                 gap(LOOP_CLASSIFICATION_DISAGREES, identity,
@@ -201,7 +201,7 @@ public final class BoundedLoopComposition {
             }
             if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(
                     classification)
-                    && bound != integer(row,
+                    && bound != optionalInteger(row,
                     LoopBoundPolicy.LOOP_BODY_BOUND, 0)) {
                 gap(LOOP_BODY_BOUND_DISAGREES, identity,
                         "duplicate declarations state different bounds");
@@ -209,7 +209,7 @@ public final class BoundedLoopComposition {
             }
         }
         return new BoundedLoop(occurrence, site, runtime, bound,
-                string(first, LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY),
+                optionalString(first, LoopBoundPolicy.LOOP_BODY_BOUND_AUTHORITY),
                 classification, classificationAuthority, required);
     }
 
@@ -221,12 +221,12 @@ public final class BoundedLoopComposition {
                 LoopBoundPolicy.PATH_LOOP_COUNTS)) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
-            String site = string(row, LoopBoundPolicy.LOOP_SITE_ID);
+            String site = optionalString(row, LoopBoundPolicy.LOOP_SITE_ID);
             if (observed.putIfAbsent(site, row) != null) {
                 duplicates.add(site);
             }
         }
-        String caseId = string(item, "caseId");
+        String caseId = optionalString(item, "caseId");
         for (BoundedLoop loop : loops) {
             if (!loop.occurrenceId.equals(occurrenceId)) continue;
             JsonObject row = observed.get(loop.loopSiteId);
@@ -242,15 +242,15 @@ public final class BoundedLoopComposition {
             }
             JsonObject countRow = caseCount(caseId, row, item);
             loop.pathCounts.add(countRow);
-            if (!loop.classification.equals(string(row,
+            if (!loop.classification.equals(optionalString(row,
                     LoopBoundPolicy.LOOP_CLASSIFICATION))
-                    || !loop.classificationAuthority.equals(string(row,
+                    || !loop.classificationAuthority.equals(optionalString(row,
                     LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY))) {
                 fail(loop, LOOP_CLASSIFICATION_DISAGREES, caseId,
                         "path count disagrees with retained loop metadata");
                 continue;
             }
-            int count = integer(row, LoopBoundPolicy.LOOP_BODY_COUNT, -1);
+            int count = optionalInteger(row, LoopBoundPolicy.LOOP_BODY_COUNT, -1);
             if (count < 0 || loop.conditionBounded()
                     && count > loop.bodyBound) {
                 fail(loop, LoopBoundPolicy.PATH_LOOP_COUNT_OUT_OF_BOUND,
@@ -286,9 +286,9 @@ public final class BoundedLoopComposition {
                 LoopBoundPolicy.PATH_LOOP_COUNT_GAPS)) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
-            String subject = string(row, "subject");
-            gap(string(row, "reason"), subject + "\n" + caseId,
-                    string(row, "detail"));
+            String subject = optionalString(row, "subject");
+            gap(optionalString(row, "reason"), subject + "\n" + caseId,
+                    optionalString(row, "detail"));
             for (BoundedLoop loop : loops) {
                 if (loop.occurrenceId.equals(occurrenceId)
                         && (loop.loopSiteId.equals(subject)
@@ -307,7 +307,7 @@ public final class BoundedLoopComposition {
                                         JsonObject item) {
         JsonObject row = observed.deepCopy();
         row.addProperty("caseId", caseId);
-        row.addProperty("occurrenceId", string(item, "occurrenceId"));
+        row.addProperty("occurrenceId", optionalString(item, "occurrenceId"));
         row.addProperty("loopCountComplete", false);
         return row;
     }
@@ -320,7 +320,7 @@ public final class BoundedLoopComposition {
                 LoopBoundPolicy.LOOP_CARDINALITIES);
         if (rows.size() == 0 || expectedRuntimeLoopId.isEmpty()) return false;
         Set<Integer> occurrences = new LinkedHashSet<>();
-        String observedRuntimeLoopId = string(observed,
+        String observedRuntimeLoopId = optionalString(observed,
                 LoopBoundPolicy.RUNTIME_LOOP_ID);
         if (!observedRuntimeLoopId.isEmpty()
                 && !expectedRuntimeLoopId.equals(observedRuntimeLoopId)) {
@@ -331,16 +331,16 @@ public final class BoundedLoopComposition {
         for (JsonElement element : rows) {
             if (!element.isJsonObject()) return false;
             JsonObject row = element.getAsJsonObject();
-            int occurrence = integer(row,
+            int occurrence = optionalInteger(row,
                     LoopBoundPolicy.DYNAMIC_OCCURRENCE, -1);
-            int cardinality = integer(row,
+            int cardinality = optionalInteger(row,
                     LoopBoundPolicy.LOOP_CARDINALITY, -1);
             if (occurrence < 1 || cardinality < 0
                     || !occurrences.add(occurrence)
-                    || !expectedRuntimeLoopId.equals(string(row,
+                    || !expectedRuntimeLoopId.equals(optionalString(row,
                     LoopBoundPolicy.RUNTIME_LOOP_ID))
                     || !LoopBoundPolicy.PATH_CARDINALITY_AUTHORITY.equals(
-                    string(row, "cardinalityAuthority"))) {
+                    optionalString(row, "cardinalityAuthority"))) {
                 return false;
             }
             maximum = Math.max(maximum, occurrence);

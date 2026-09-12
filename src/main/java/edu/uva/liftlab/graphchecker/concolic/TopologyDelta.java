@@ -18,8 +18,8 @@ import java.util.SortedSet;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Compares one raw VM result with the frozen task that planned it and records
  * the normalized {@code topology_delta.jsonl} row.
@@ -69,15 +69,15 @@ public final class TopologyDelta {
                 public int compare(JsonObject left, JsonObject right) {
                     for (String field : new String[]{"iterationId", "taskId",
                             "sourceKey", "occurrenceId"}) {
-                        int order = string(left, field)
-                                .compareTo(string(right, field));
+                        int order = optionalString(left, field)
+                                .compareTo(optionalString(right, field));
                         if (order != 0) return order;
                     }
-                    int order = string(left, "caseDigest")
-                            .compareTo(string(right, "caseDigest"));
+                    int order = optionalString(left, "caseDigest")
+                            .compareTo(optionalString(right, "caseDigest"));
                     if (order != 0) return order;
-                    return string(left, "deltaKind")
-                            .compareTo(string(right, "deltaKind"));
+                    return optionalString(left, "deltaKind")
+                            .compareTo(optionalString(right, "deltaKind"));
                 }
             };
 
@@ -156,13 +156,13 @@ public final class TopologyDelta {
         // ConcolicSummaryImporter.  Recomputing it here used to re-parse and
         // compare every branch predicate three more times per row.
         String localCaseId = observation.summary == null ? ""
-                : string(observation.summary, LocalCaseIdentity.FIELD);
+                : optionalString(observation.summary, LocalCaseIdentity.FIELD);
         if (observation.summary != null && localCaseId.isEmpty()) {
             throw new IllegalStateException(
                     "imported summary has no localCaseId");
         }
         base.addProperty("summaryId", observation.summary == null ? ""
-                : string(observation.summary, "summaryId"));
+                : optionalString(observation.summary, "summaryId"));
         base.addProperty(LocalCaseIdentity.FIELD, localCaseId);
         base.addProperty("caseDigest", caseDigest(observation, localCaseId,
                 observedIdentity, observedSchema));
@@ -238,8 +238,8 @@ public final class TopologyDelta {
     }
 
     private static String occurrenceKey(JsonObject identity) {
-        return string(identity, "sourceKey") + "\n"
-                + string(identity, "occurrenceId");
+        return optionalString(identity, "sourceKey") + "\n"
+                + optionalString(identity, "occurrenceId");
     }
 
 
@@ -283,14 +283,14 @@ public final class TopologyDelta {
         for (JsonElement element : task.inputActions().all()) {
             if (!element.isJsonObject()) continue;
             String symbol = JsonFields.firstNonBlank(
-                    string(element.getAsJsonObject(), "symbol"),
-                    string(element.getAsJsonObject(), "portId"));
+                    optionalString(element.getAsJsonObject(), "symbol"),
+                    optionalString(element.getAsJsonObject(), "portId"));
             if (!symbol.isEmpty()) symbols.add(symbol);
         }
         SortedSet<String> sites = new TreeSet<>();
         for (JsonElement element : task.branches()) {
             if (!element.isJsonObject()) continue;
-            String site = string(element.getAsJsonObject(), "siteId");
+            String site = optionalString(element.getAsJsonObject(), "siteId");
             if (!site.isEmpty()) sites.add(site);
         }
         result.add("inputSymbols", strings(symbols));
@@ -311,10 +311,10 @@ public final class TopologyDelta {
         for (JsonElement element : task.edgeBindings()) {
             if (!element.isJsonObject()) continue;
             JsonObject edge = element.getAsJsonObject();
-            String from = string(edge, "fromOccurrenceId");
-            String to = string(edge, "toOccurrenceId");
-            for (String port : new String[]{string(edge, "toInputPort"),
-                    string(edge, "fromOutputPort")}) {
+            String from = optionalString(edge, "fromOccurrenceId");
+            String to = optionalString(edge, "toOccurrenceId");
+            for (String port : new String[]{optionalString(edge, "toInputPort"),
+                    optionalString(edge, "fromOutputPort")}) {
                 if (from.isEmpty() || to.isEmpty() || port.isEmpty()) continue;
                 exchanges.add(exchangeKey(from, to, port));
             }
@@ -354,9 +354,9 @@ public final class TopologyDelta {
             for (JsonElement element : row.vmHandoffs) {
                 if (!element.isJsonObject()) continue;
                 JsonObject handoff = element.getAsJsonObject();
-                String producer = string(handoff,
+                String producer = optionalString(handoff,
                         VmHandoffEvidence.PRODUCER_OCCURRENCE_ID);
-                String port = string(handoff, "portId");
+                String port = optionalString(handoff, "portId");
                 if (producer.isEmpty() || port.isEmpty() || task == null) {
                     continue;
                 }
@@ -380,7 +380,7 @@ public final class TopologyDelta {
         if (loopSite.isEmpty() || task == null) {
             unobserved.add("loopBound");
         } else {
-            int observedMax = integer(row.pathCut,
+            int observedMax = optionalInteger(row.pathCut,
                     "maxBackedgeTraversals", -1);
             if (observedMax != task.loopBound()
                     .maxBackedgeTraversals(loopSite)) {
@@ -414,8 +414,8 @@ public final class TopologyDelta {
     /** The loop the VM cut this path at under the frozen backedge bound. */
     private static String boundedLoopSite(
             ConcolicSummaryImporter.ResultRow row) {
-        return "LOOP_BOUND".equals(string(row.pathCut, "kind"))
-                ? string(row.pathCut, "backedgeId") : "";
+        return "LOOP_BOUND".equals(optionalString(row.pathCut, "kind"))
+                ? optionalString(row.pathCut, "backedgeId") : "";
     }
 
 
@@ -425,7 +425,7 @@ public final class TopologyDelta {
             JsonObject plannedIdentity, String reason) {
         JsonArray result = new JsonArray();
         result.add(divergence(reason.isEmpty() ? "taskId" : reason,
-                string(plannedIdentity, "regionId"), row.taskId));
+                optionalString(plannedIdentity, "regionId"), row.taskId));
         return result;
     }
 
@@ -434,8 +434,8 @@ public final class TopologyDelta {
             JsonObject plannedSchema, JsonObject observedSchema) {
         JsonArray result = new JsonArray();
         for (String field : IDENTITY_FIELDS) {
-            String planned = string(plannedIdentity, field);
-            String observed = string(observedIdentity, field);
+            String planned = optionalString(plannedIdentity, field);
+            String observed = optionalString(observedIdentity, field);
             if (!planned.equals(observed)) {
                 result.add(divergence(field, planned, observed));
             }
@@ -450,8 +450,8 @@ public final class TopologyDelta {
             }
         }
         // Extra branch decisions are new guarded local cases.
-        String plannedLoop = string(plannedSchema, "loopBound");
-        String observedLoop = string(observedSchema, "loopBound");
+        String plannedLoop = optionalString(plannedSchema, "loopBound");
+        String observedLoop = optionalString(observedSchema, "loopBound");
         if (!plannedLoop.equals(observedLoop)) {
             result.add(divergence("loopBound", plannedLoop, observedLoop));
         }

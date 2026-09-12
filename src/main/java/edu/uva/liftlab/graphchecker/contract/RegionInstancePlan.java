@@ -12,7 +12,7 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Execution goals for one causal-skeleton region occurrence. */
 public final class RegionInstancePlan extends PlanRow {
@@ -109,7 +109,7 @@ public final class RegionInstancePlan extends PlanRow {
 
         public RegionInstancePlan plan() { return plan; }
 
-        public String goalId() { return string(encoded, "goalId"); }
+        public String goalId() { return optionalString(encoded, "goalId"); }
 
         public ClosureGoalKind kind() { return kind; }
 
@@ -118,7 +118,7 @@ public final class RegionInstancePlan extends PlanRow {
         }
 
         public String admissionState() {
-            return string(object(encoded, "admission"), "state");
+            return optionalString(object(encoded, "admission"), "state");
         }
 
         public JsonArray admissionBlockers() {

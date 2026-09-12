@@ -17,7 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Builds one executable task for a solver-selected path replay. */
 final class PathReplayTaskFactory {
@@ -29,14 +29,14 @@ final class PathReplayTaskFactory {
                                      JsonArray guardedReads,
                                      BranchReplayContract contract) {
         ClosureGoalKind goalKind = ClosureGoalKind.fromTask(task);
-        String queryKey = string(task, "queryKey");
+        String queryKey = optionalString(task, "queryKey");
         if (queryKey.isEmpty()) {
             throw new IllegalArgumentException("path queryKey is required");
         }
 
         JsonObject result = source.deepCopy();
         result.remove("solverPathContext");
-        if (!string(task, "goalId").equals(string(source, "goalId"))) {
+        if (!optionalString(task, "goalId").equals(optionalString(source, "goalId"))) {
             throw new IllegalArgumentException(
                     "path task and source task goals differ");
         }
@@ -84,14 +84,14 @@ final class PathReplayTaskFactory {
                         primarySourceTaskId);
         Map<String, JsonArray> readsByTask = distributeGuardedReads(
                 guardedReads, sources);
-        String queryKey = string(query, "queryKey");
+        String queryKey = optionalString(query, "queryKey");
         String groupId = "REPLAY.GROUP." + ArtifactIO.sha256(queryKey + "\n"
                 + CanonicalJson.render(assignments) + "\n"
                 + CanonicalJson.render(guardedReads));
 
         java.util.List<JsonObject> result = new ArrayList<>();
         for (JsonObject source : sources) {
-            String sourceId = string(source, "taskId");
+            String sourceId = optionalString(source, "taskId");
             String role = LinkedReplayBundle.memberRole(bundle, sourceId);
             JsonArray owned = assignmentsByTask.getOrDefault(sourceId,
                     new JsonArray());
@@ -124,15 +124,15 @@ final class PathReplayTaskFactory {
             replay.addProperty(LinkedReplayBundle.GROUP_FIELD, groupId);
             replay.addProperty(LinkedReplayBundle.ROLE_FIELD, role);
             replay.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
-                    string(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
+                    optionalString(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
             replay.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
-                    string(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
+                    optionalString(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
             result.add(replay);
         }
         result.sort(Comparator.comparing((JsonObject task) ->
-                LinkedReplayBundle.PRIMARY.equals(string(task,
+                LinkedReplayBundle.PRIMARY.equals(optionalString(task,
                         LinkedReplayBundle.ROLE_FIELD)) ? "0" : "1")
-                .thenComparing(task -> string(task, "taskId")));
+                .thenComparing(task -> optionalString(task, "taskId")));
         for (int index = 0; index < result.size(); index++) {
             result.set(index, SharedExpressionTable.compact(
                     result.get(index)));
@@ -146,10 +146,10 @@ final class PathReplayTaskFactory {
         Map<String, JsonArray> result = new LinkedHashMap<>();
         Map<String, String> occurrenceByTask = new LinkedHashMap<>();
         for (JsonObject source : sources) {
-            String taskId = string(source, "taskId");
+            String taskId = optionalString(source, "taskId");
             result.put(taskId, new JsonArray());
             occurrenceByTask.put(taskId, PathObservation
-                    .plannedOccurrenceOf(string(source, "occurrenceId")));
+                    .plannedOccurrenceOf(optionalString(source, "occurrenceId")));
         }
         if (assignments == null) return result;
         for (JsonElement element : assignments) {
@@ -158,9 +158,9 @@ final class PathReplayTaskFactory {
                         "guarded read assignment must be an object");
             }
             JsonObject assignment = element.getAsJsonObject();
-            String owner = string(assignment, "readerTaskId");
+            String owner = optionalString(assignment, "readerTaskId");
             String readerOccurrence = PathObservation.plannedOccurrenceOf(
-                    string(assignment, "readerOccurrenceId"));
+                    optionalString(assignment, "readerOccurrenceId"));
             JsonArray owned = result.get(owner);
             if (owned == null && !readerOccurrence.isEmpty()) {
                 String occurrenceOwner = null;
@@ -183,7 +183,7 @@ final class PathReplayTaskFactory {
             if (owned == null) {
                 throw new IllegalArgumentException(
                         "guarded read assignment has no linked reader: "
-                                + string(assignment, "readerTaskId"));
+                                + optionalString(assignment, "readerTaskId"));
             }
             if (readerOccurrence.isEmpty()
                     || !readerOccurrence.equals(occurrenceByTask.get(owner))) {
@@ -203,12 +203,12 @@ final class PathReplayTaskFactory {
             String primarySourceTaskId) {
         Map<String, JsonArray> result = new LinkedHashMap<>();
         for (JsonObject source : sources) {
-            result.put(string(source, "taskId"), new JsonArray());
+            result.put(optionalString(source, "taskId"), new JsonArray());
         }
         for (JsonElement element : assignments) {
             JsonObject assignment = element.getAsJsonObject();
-            String input = string(assignment, "inputSymbol");
-            String phase = string(assignment,
+            String input = optionalString(assignment, "inputSymbol");
+            String phase = optionalString(assignment,
                     "configuredSourcePhaseId");
             java.util.List<String> owners = phase.isEmpty()
                     ? actionOwners(input, decodedSources)
@@ -237,7 +237,7 @@ final class PathReplayTaskFactory {
         java.util.List<String> owners = new ArrayList<>();
         for (ExecutionTask task : sources) {
             for (JsonElement action : task.inputActions().all()) {
-                if (action.isJsonObject() && input.equals(string(
+                if (action.isJsonObject() && input.equals(optionalString(
                         action.getAsJsonObject(), "symbol"))) {
                     owners.add(task.taskId());
                     break;
@@ -279,8 +279,8 @@ final class PathReplayTaskFactory {
             return;
         }
         JsonObject requested = query.getAsJsonObject("targetBranch");
-        String siteId = string(requested, "siteId");
-        int occurrence = JsonFields.integer(requested,
+        String siteId = optionalString(requested, "siteId");
+        int occurrence = JsonFields.optionalInteger(requested,
                 "occurrence", -1);
         if (siteId.isEmpty() || occurrence < 1) {
             throw new IllegalArgumentException(
@@ -295,9 +295,9 @@ final class PathReplayTaskFactory {
                         "target branch catalog entries must be objects");
             }
             JsonObject branch = element.getAsJsonObject().deepCopy();
-            if (siteId.equals(string(branch, "siteId"))) {
+            if (siteId.equals(optionalString(branch, "siteId"))) {
                 JsonElement required = branch.get("requiredOutcome");
-                if (!JsonFields.bool(branch, "failureTarget", false)
+                if (!JsonFields.optionalBool(branch, "failureTarget", false)
                         || required == null || !required.isJsonPrimitive()
                         || !required.getAsJsonPrimitive().isBoolean()) {
                     throw new IllegalArgumentException(
@@ -309,7 +309,7 @@ final class PathReplayTaskFactory {
                         "TARGET_REPLAY_NEXT_FAILURE_GUARD");
                 branch.addProperty("selectedOccurrence", occurrence);
                 matches++;
-            } else if ("EXPLORE".equals(string(branch, "policy"))) {
+            } else if ("EXPLORE".equals(optionalString(branch, "policy"))) {
                 branch.addProperty("policy", "PATH_ASSUMPTION");
                 branch.addProperty("policyReason",
                         "TARGET_REPLAY_FRONTIER_PREFIX");
@@ -362,9 +362,9 @@ final class PathReplayTaskFactory {
                         "model assignment must be an object");
             }
             JsonObject assignment = element.getAsJsonObject();
-            String explicitKey = string(assignment,
+            String explicitKey = optionalString(assignment,
                     "modelAssignmentKey").trim();
-            String engineSymbol = string(assignment, "engineSymbol").trim();
+            String engineSymbol = optionalString(assignment, "engineSymbol").trim();
             String key = firstNonBlank(explicitKey, engineSymbol);
             if (key.isEmpty()) {
                 throw new IllegalArgumentException(

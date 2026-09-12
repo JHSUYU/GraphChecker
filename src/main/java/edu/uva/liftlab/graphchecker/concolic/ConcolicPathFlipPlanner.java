@@ -15,7 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 
 /**
@@ -42,8 +42,8 @@ public final class ConcolicPathFlipPlanner {
         List<JsonObject> executionTasks = new ArrayList<>();
         for (JsonObject task : allExecutionTasks) {
             if ((regionId.isEmpty()
-                    || regionId.equals(string(task, "regionId")))
-                    && goalId.equals(string(task, "goalId"))) {
+                    || regionId.equals(optionalString(task, "regionId")))
+                    && goalId.equals(optionalString(task, "goalId"))) {
                 executionTasks.add(task);
             }
         }
@@ -57,10 +57,10 @@ public final class ConcolicPathFlipPlanner {
         List<JsonObject> allSummaries = propagation.summaries();
         List<JsonObject> summaries = new ArrayList<>();
         for (JsonObject summary : allSummaries) {
-            if (taskById.containsKey(string(summary, "taskId"))
+            if (taskById.containsKey(optionalString(summary, "taskId"))
                     && (regionId.isEmpty()
-                    || regionId.equals(string(summary, "regionId")))
-                    && goalId.equals(string(summary, "goalId"))) {
+                    || regionId.equals(optionalString(summary, "regionId")))
+                    && goalId.equals(optionalString(summary, "goalId"))) {
                 summaries.add(summary);
             }
         }
@@ -73,8 +73,8 @@ public final class ConcolicPathFlipPlanner {
         List<JsonObject> explorationRecords = new ArrayList<>();
         for (JsonObject record : rows(options, "records")) {
             if ((regionId.isEmpty()
-                    || regionId.equals(string(record, "regionId")))
-                    && goalId.equals(string(record, "goalId"))) {
+                    || regionId.equals(optionalString(record, "regionId")))
+                    && goalId.equals(optionalString(record, "goalId"))) {
                 explorationRecords.add(record);
             }
         }
@@ -102,8 +102,8 @@ public final class ConcolicPathFlipPlanner {
                         sharedPropagation.get(SharedExpressionTable.FIELD));
             }
             JsonObject bundle = LinkedReplayBundle.create(
-                    string(task, "sourceTaskId"), allExecutionTasks,
-                    allSummaries, string(task, "sourceSummaryId"),
+                    optionalString(task, "sourceTaskId"), allExecutionTasks,
+                    allSummaries, optionalString(task, "sourceSummaryId"),
                     familyDigest, topologyEpoch);
             task.add(LinkedReplayBundle.FIELD, bundle);
         }
@@ -124,7 +124,7 @@ public final class ConcolicPathFlipPlanner {
                     result.tasks.get(index)));
         }
         Collections.sort(result.tasks, Comparator.comparing(
-                task -> string(task, "queryKey")));
+                task -> optionalString(task, "queryKey")));
 
         ArtifactIO.replaceJsonl(directory.resolve(
                 "region_path_worklist.jsonl"), result.tasks);
@@ -132,7 +132,7 @@ public final class ConcolicPathFlipPlanner {
                 PRETTY.toJson(result.manifest) + System.lineSeparator());
 
         System.out.println(PRETTY.toJson(result.manifest));
-        String state = string(result.manifest, "state");
+        String state = optionalString(result.manifest, "state");
         if (RegionPathWorklist.State.GAPPED.name().equals(state)
                 || RegionPathWorklist.State.NOT_STARTED.name().equals(state)) {
             System.exit(2);

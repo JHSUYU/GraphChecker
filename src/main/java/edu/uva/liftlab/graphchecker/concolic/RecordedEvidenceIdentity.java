@@ -2,11 +2,11 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonObject;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Who recorded one piece of VM evidence, in which run, and when. */
 public final class RecordedEvidenceIdentity {
@@ -78,8 +78,8 @@ public final class RecordedEvidenceIdentity {
         if (identity == null || identity.size() == 0) {
             return "record carries no evidence identity";
         }
-        if (!KIND.equals(string(identity, "kind"))
-                || integer(identity, "schemaVersion", -1) != SCHEMA_VERSION) {
+        if (!KIND.equals(optionalString(identity, "kind"))
+                || optionalInteger(identity, "schemaVersion", -1) != SCHEMA_VERSION) {
             return "evidence identity is not an authoritative stamp";
         }
         if (!identity.has("runId")) {
@@ -87,11 +87,11 @@ public final class RecordedEvidenceIdentity {
         }
         for (String member : new String[]{"sessionId", "taskId",
                 "occurrenceId", "sourceKey"}) {
-            if (string(identity, member).isEmpty()) {
+            if (optionalString(identity, member).isEmpty()) {
                 return "evidence identity omits " + member;
             }
         }
-        if (longInteger(identity, "snapshotOrdinal", 0L) <= 0L) {
+        if (optionalLongInteger(identity, "snapshotOrdinal", 0L) <= 0L) {
             return "evidence identity carries no snapshot ordinal";
         }
         return "";

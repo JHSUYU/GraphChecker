@@ -17,9 +17,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Content-addressed storage for immutable symbolic-expression DAGs.
@@ -245,7 +245,7 @@ public final class SharedExpressionTable {
 
     public static String anchor(JsonElement reference) {
         return isReference(reference)
-                ? string(reference.getAsJsonObject(), ANCHOR) : "";
+                ? optionalString(reference.getAsJsonObject(), ANCHOR) : "";
     }
 
     private static JsonObject reference(String anchor) {
@@ -332,9 +332,9 @@ public final class SharedExpressionTable {
         }
         JsonObject table = encoded.getAsJsonObject();
         JsonElement encodedDefinitions = table.get("definitions");
-        if (integer(table, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(string(table, "kind"))
-                || !AUTHORITY.equals(string(table, "authority"))
+        if (optionalInteger(table, "schemaVersion", -1) != SCHEMA_VERSION
+                || !KIND.equals(optionalString(table, "kind"))
+                || !AUTHORITY.equals(optionalString(table, "authority"))
                 || encodedDefinitions == null
                 || !encodedDefinitions.isJsonArray()) {
             throw new IllegalArgumentException(

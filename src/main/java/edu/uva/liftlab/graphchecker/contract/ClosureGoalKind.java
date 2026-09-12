@@ -2,7 +2,7 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonObject;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** What one replay explores for a selected region occurrence. */
 public enum ClosureGoalKind {
@@ -14,11 +14,11 @@ public enum ClosureGoalKind {
     public static final String TASK_FIELD = "goalKind";
 
     public static ClosureGoalKind fromGoal(JsonObject goal) {
-        return decode(string(goal, "kind"));
+        return decode(optionalString(goal, "kind"));
     }
 
     public static ClosureGoalKind fromTask(JsonObject task) {
-        return decode(string(task, TASK_FIELD));
+        return decode(optionalString(task, TASK_FIELD));
     }
 
     public void writeToTask(JsonObject task) {

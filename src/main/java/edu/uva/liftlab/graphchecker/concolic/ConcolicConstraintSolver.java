@@ -33,12 +33,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sha256;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.arithmetic;
 import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.arithmeticOperator;
 import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.bitwiseOperator;
@@ -227,7 +227,7 @@ public final class ConcolicConstraintSolver {
             }
             for (JsonElement element : catalog.all()) {
                 JsonObject action = element.getAsJsonObject().deepCopy();
-                String key = string(action, "symbol") + "\n"
+                String key = optionalString(action, "symbol") + "\n"
                         + CanonicalJson.render(action);
                 actions.putIfAbsent(key, action);
             }
@@ -382,7 +382,7 @@ public final class ConcolicConstraintSolver {
                 unsupported.add(origin + ":NON_OBJECT_EXPRESSION");
             } else {
                 JsonObject object = expression.getAsJsonObject();
-                String type = string(object, "_type");
+                String type = optionalString(object, "_type");
                 if ("MethodExpression".equals(type)) {
                     String constraint = methodConstraint(object, origin);
                     if (!constraint.isEmpty()) assertions.add(constraint);
@@ -409,7 +409,7 @@ public final class ConcolicConstraintSolver {
                 return null;
             }
             JsonObject object = expression.getAsJsonObject();
-            String type = string(object, "_type");
+            String type = optionalString(object, "_type");
             if ("SymbolExpression".equals(type)) {
                 return symbol(object, origin);
             }
@@ -467,8 +467,8 @@ public final class ConcolicConstraintSolver {
          * product with the primary region's local paths. */
         private Term consumerCaseMergeTerm(JsonObject merge, Sort expected,
                                            String origin) {
-            String mergeId = string(merge, "mergeId");
-            String family = string(merge, VmExpressionIr.FAMILY_KEY);
+            String mergeId = optionalString(merge, "mergeId");
+            String family = optionalString(merge, VmExpressionIr.FAMILY_KEY);
             JsonArray encoded = array(merge, "arms");
             if (mergeId.isEmpty() || family.isEmpty()
                     || encoded.size() == 0
@@ -495,7 +495,7 @@ public final class ConcolicConstraintSolver {
                 // arm recursively here expands the propagated DAG into a tree.
                 orderedArms.sort(Comparator.comparing(element ->
                         element.isJsonObject()
-                                ? string(element.getAsJsonObject(), "selector")
+                                ? optionalString(element.getAsJsonObject(), "selector")
                                 : ""));
                 for (JsonElement element : orderedArms) {
                     if (!element.isJsonObject()) {
@@ -504,7 +504,7 @@ public final class ConcolicConstraintSolver {
                         return null;
                     }
                     JsonObject arm = element.getAsJsonObject();
-                    String selector = string(arm, "selector");
+                    String selector = optionalString(arm, "selector");
                     JsonElement expression = arm.get("expression");
                     if (selector.isEmpty() || expression == null) {
                         unsupported.add(origin
@@ -611,7 +611,7 @@ public final class ConcolicConstraintSolver {
             for (JsonElement element : encodedDependencies) {
                 if (!element.isJsonObject()) continue;
                 JsonObject dependency = element.getAsJsonObject();
-                String family = string(dependency, VmExpressionIr.FAMILY_KEY);
+                String family = optionalString(dependency, VmExpressionIr.FAMILY_KEY);
                 if (!family.isEmpty()) dependencies.put(family, dependency);
             }
             Set<String> symbols = new LinkedHashSet<>();
@@ -690,16 +690,16 @@ public final class ConcolicConstraintSolver {
         private void bindConsumerFamilyDependency(JsonObject dependency,
                                                   Set<String> symbols,
                                                   String sourceActivationOccurrenceId) {
-            String family = string(dependency, VmExpressionIr.FAMILY_KEY);
+            String family = optionalString(dependency, VmExpressionIr.FAMILY_KEY);
             JsonArray arms = array(dependency, "arms");
             List<String> selectors = new ArrayList<>();
             Set<String> baseCaseSelectors = new LinkedHashSet<>();
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) continue;
                 JsonObject arm = element.getAsJsonObject();
-                String selector = string(arm, "selector");
+                String selector = optionalString(arm, "selector");
                 String caseSelector = firstNonBlank(
-                        string(arm, "caseSelector"), selector);
+                        optionalString(arm, "caseSelector"), selector);
                 if (selector.isEmpty()) {
                     unsupported.add("CONSUMER_FAMILY_ARM_UNNAMED:" + family);
                     continue;
@@ -711,7 +711,7 @@ public final class ConcolicConstraintSolver {
                 additionalModelNames.add(caseSelector);
                 baseCaseSelectors.add(caseSelector);
 
-                String observationSelector = string(arm,
+                String observationSelector = optionalString(arm,
                         SymbolicPropagationClosure.OBSERVATION_SELECTOR);
                 if (!observationSelector.isEmpty()) {
                     if (!selector.equals(observationSelector)) {
@@ -725,7 +725,7 @@ public final class ConcolicConstraintSolver {
                 bindConsumerPathCondition(family, selector,
                         array(arm, "pathCondition"), symbols,
                         sourceActivationOccurrenceId,
-                        string(arm, "occurrenceId"), -1);
+                        optionalString(arm, "occurrenceId"), -1);
             }
             if (selectors.isEmpty()) {
                 unsupported.add("CONSUMER_FAMILY_HAS_NO_ARMS:" + family);
@@ -750,7 +750,7 @@ public final class ConcolicConstraintSolver {
                 }
             }
             if (SymbolicPropagationClosure.READ_FROM_DEPENDENCY_POLICY.equals(
-                    string(dependency, "selectionPolicy"))) {
+                    optionalString(dependency, "selectionPolicy"))) {
                 readFromCaseSelectors.put(family,
                         new LinkedHashSet<>(baseCaseSelectors));
             }
@@ -935,7 +935,7 @@ public final class ConcolicConstraintSolver {
             boolean targetMapRead = captureTargetContainerReads
                     && guardedReadDepth == 0
                     && SharedStateEvidence.LOCATION_KIND_MAP_STATE.equals(
-                    string(object(read, "location"), "locationKind"));
+                    optionalString(object(read, "location"), "locationKind"));
             guardedReadDepth++;
             try {
                 Term value = lowerGuardedReadTerm(read, expected, origin);
@@ -957,10 +957,10 @@ public final class ConcolicConstraintSolver {
                 expected = Sort.ASSOCIATIVE;
             }
             String fault = SharedStateEvidence.guardedReadFault(read);
-            String readIdentity = string(read,
+            String readIdentity = optionalString(read,
                     SymbolicPropagationClosure.READ_CHOICE_IDENTITY);
             JsonArray candidates = array(read, "candidates");
-            Sort declared = sortOfJava(string(read, "_java_type"));
+            Sort declared = sortOfJava(optionalString(read, "_java_type"));
             Sort sort = expected != null && expected.containerState()
                     ? expected : declared;
             if (!fault.isEmpty() || readIdentity.isEmpty()
@@ -989,9 +989,9 @@ public final class ConcolicConstraintSolver {
                     return null;
                 }
                 JsonObject candidate = element.getAsJsonObject();
-                String candidateIdentity = string(candidate,
+                String candidateIdentity = optionalString(candidate,
                         SymbolicPropagationClosure.READ_CANDIDATE_IDENTITY);
-                String selector = string(candidate, "selector");
+                String selector = optionalString(candidate, "selector");
                 String expectedSelector = stableReadSelector(readIdentity,
                         candidateIdentity);
                 if (candidateIdentity.isEmpty()
@@ -1058,7 +1058,7 @@ public final class ConcolicConstraintSolver {
             recordGuardedReadUse(readIdentity, activation, selectors);
             return new Term(value, sort,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(
-                            string(read, "_java_type")), nullness, "");
+                            optionalString(read, "_java_type")), nullness, "");
         }
 
         /**
@@ -1190,9 +1190,9 @@ public final class ConcolicConstraintSolver {
         private void noteReadFromWriterCase(JsonObject candidate,
                                             String readSelector,
                                             String origin) {
-            String writerOwner = string(candidate,
+            String writerOwner = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_OWNER);
-            String writerSelector = string(candidate,
+            String writerSelector = optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
             JsonArray closure = array(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_CLOSURE);
@@ -1201,22 +1201,22 @@ public final class ConcolicConstraintSolver {
             if (closure.size() == 0) {
                 unsupported.add(origin
                         + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                        + string(candidate, "selector"));
+                        + optionalString(candidate, "selector"));
                 return;
             }
             for (JsonElement encoded : closure) {
                 if (!encoded.isJsonObject()) {
                     unsupported.add(origin
                             + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                            + string(candidate, "selector"));
+                            + optionalString(candidate, "selector"));
                     return;
                 }
                 JsonObject localCase = encoded.getAsJsonObject();
-                String family = string(localCase,
+                String family = optionalString(localCase,
                         SymbolicPropagationClosure.WRITER_CASE_FAMILY);
-                String owner = string(localCase,
+                String owner = optionalString(localCase,
                         SymbolicPropagationClosure.WRITER_CASE_OWNER);
-                String caseSelector = string(localCase,
+                String caseSelector = optionalString(localCase,
                         SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
                 String identity = family + "\n" + owner;
                 if (family.isEmpty() || owner.isEmpty()
@@ -1225,7 +1225,7 @@ public final class ConcolicConstraintSolver {
                         || !identities.add(identity)) {
                     unsupported.add(origin
                             + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                            + string(candidate, "selector"));
+                            + optionalString(candidate, "selector"));
                     return;
                 }
                 containsWriter |= owner.equals(writerOwner)
@@ -1239,7 +1239,7 @@ public final class ConcolicConstraintSolver {
             if (!containsWriter) {
                 unsupported.add(origin
                         + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                        + string(candidate, "selector"));
+                        + optionalString(candidate, "selector"));
             }
         }
 
@@ -1261,7 +1261,7 @@ public final class ConcolicConstraintSolver {
             if (held != null && !held.same(binding)) {
                 unsupported.add(origin
                         + ":READ_FROM_WRITER_CASE_AMBIGUOUS:"
-                        + string(candidate, "selector"));
+                        + optionalString(candidate, "selector"));
             }
         }
 
@@ -1319,9 +1319,9 @@ public final class ConcolicConstraintSolver {
                     Sort stateSort = shape == ContainerSmtCodec.Sort.INDEXED
                             ? Sort.INDEXED : Sort.ASSOCIATIVE;
                     if (identity != null && identity.isJsonObject()
-                            && "SymbolExpression".equals(string(
+                            && "SymbolExpression".equals(optionalString(
                             identity.getAsJsonObject(), "_type"))) {
-                        String raw = string(identity.getAsJsonObject(), "_exp");
+                        String raw = optionalString(identity.getAsJsonObject(), "_exp");
                         if (raw.isEmpty()) {
                             unsupported("ContainerStateIdentity:" + shape);
                             return null;
@@ -1557,7 +1557,7 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term symbol(JsonObject expression, String origin) {
-            String raw = string(expression, "_exp");
+            String raw = optionalString(expression, "_exp");
             if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
                 return new Term("nullRef", Sort.REF);
             }
@@ -1565,7 +1565,7 @@ public final class ConcolicConstraintSolver {
             if (currentConstraintSymbols != null && !raw.isEmpty()) {
                 currentConstraintSymbols.add(raw);
             }
-            String javaType = string(expression, "_java_type");
+            String javaType = optionalString(expression, "_java_type");
             Sort sort = sortOfJava(javaType);
             if (raw.isEmpty() || sort == Sort.UNKNOWN) {
                 unsupported.add(origin + ":UNSUPPORTED_SYMBOL_TYPE:"
@@ -1664,7 +1664,7 @@ public final class ConcolicConstraintSolver {
                 for (JsonObject action : actions) {
                     if (!executable(action)
                             || !"BOUNDED_CONTAINER_STATE".equals(
-                            string(action, "symbolicDemand"))
+                            optionalString(action, "symbolicDemand"))
                             || !read.stateSymbol.equals(
                             SharedStateEvidence.mapStateSymbolForAction(
                                     action))) {
@@ -1680,7 +1680,7 @@ public final class ConcolicConstraintSolver {
                 }
                 read.action = match;
                 if (read.dynamic()) {
-                    String input = string(match, "symbol");
+                    String input = optionalString(match, "symbol");
                     int count = dynamicByInput.getOrDefault(input, 0) + 1;
                     dynamicByInput.put(input, count);
                 }
@@ -1724,8 +1724,8 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term placeholder(JsonObject expression, String origin) {
-            String function = string(expression, "_place_holder_func");
-            int count = integer(expression, "_count", -1);
+            String function = optionalString(expression, "_place_holder_func");
+            int count = optionalInteger(expression, "_count", -1);
             if (!"currentTimeMills".equals(function) || count < 1) {
                 unsupported.add(origin
                         + ":UNVERIFIED_PLACEHOLDER_EXPRESSION:"
@@ -1752,9 +1752,9 @@ public final class ConcolicConstraintSolver {
 
         private Term constant(JsonObject expression, Sort expected,
                               String origin) {
-            String raw = string(expression, "_exp");
+            String raw = optionalString(expression, "_exp");
             String payload = constantPayload(raw);
-            Sort sort = sortOfJava(string(expression, "_java_type"));
+            Sort sort = sortOfJava(optionalString(expression, "_java_type"));
             if (expected == Sort.BOOL && (sort == Sort.INT
                     || sort == Sort.BOOL)) {
                 return new Term("0".equals(payload) ? "false" : "true",
@@ -1777,7 +1777,7 @@ public final class ConcolicConstraintSolver {
                 }
                 return new Term(literal, Sort.INT,
                         JavaPrimitiveSmtSemantics.widthOfJavaType(
-                                string(expression, "_java_type")));
+                                optionalString(expression, "_java_type")));
             }
             if (sort.floating()) {
                 FloatingKind kind = floatingKind(sort);
@@ -1797,7 +1797,7 @@ public final class ConcolicConstraintSolver {
                 return new Term("nullRef", Sort.REF);
             }
             unsupported.add(origin + ":UNSUPPORTED_CONSTANT_TYPE:"
-                    + firstNonBlank(string(expression, "_java_type"),
+                    + firstNonBlank(optionalString(expression, "_java_type"),
                     "MISSING"));
             return null;
         }
@@ -1808,12 +1808,12 @@ public final class ConcolicConstraintSolver {
             Term source = term(sourceExpression, null, origin + ":castSource");
             String sourceType = JavaPrimitiveSmtSemantics
                     .primitiveDescriptor(
-                    firstNonBlank(string(expression, "sourceJavaType"),
+                    firstNonBlank(optionalString(expression, "sourceJavaType"),
                             expressionJavaType(sourceExpression)));
             String targetType = JavaPrimitiveSmtSemantics
                     .primitiveDescriptor(firstNonBlank(
-                            string(expression, "targetJavaType"),
-                            string(expression, "_java_type")));
+                            optionalString(expression, "targetJavaType"),
+                            optionalString(expression, "_java_type")));
             Sort sourceSort = castSort(sourceType);
             Sort targetSort = castSort(targetType);
             boolean primitivePair = JavaPrimitiveSmtSemantics
@@ -1843,7 +1843,7 @@ public final class ConcolicConstraintSolver {
 
         private Term binary(JsonObject expression, String origin) {
             String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
-                    string(expression, "_op"));
+                    optionalString(expression, "_op"));
             JsonElement leftExpression = expression.get("_left");
             if (leftExpression == null || leftExpression.isJsonNull()) {
                 Term operand = term(expression.get("_right"), null,
@@ -2139,9 +2139,9 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term stringOperation(JsonObject expression, String origin) {
-            String operation = string(expression, "_name");
+            String operation = optionalString(expression, "_name");
             JsonArray parameters = array(expression, "_param_list");
-            boolean negated = bool(expression, "_is_not", false);
+            boolean negated = optionalBool(expression, "_is_not", false);
             if ("isEmpty".equals(operation)) {
                 List<Term> strings = stringParameters(parameters, 1, origin,
                         operation);
@@ -2376,7 +2376,7 @@ public final class ConcolicConstraintSolver {
         }
 
         private Term methodTerm(JsonObject expression, String origin) {
-            String method = firstNonBlank(string(expression, "_name"),
+            String method = firstNonBlank(optionalString(expression, "_name"),
                     "unknown_method");
             // splitElement and parseInt carry the same structural round-trip
             // semantics the composition encoder proves; this mirrors
@@ -2449,8 +2449,8 @@ public final class ConcolicConstraintSolver {
                 return SplitPrefix.gap("NOT_METHOD_EXPRESSION");
             }
             JsonObject split = expression.getAsJsonObject();
-            if (!"MethodExpression".equals(string(split, "_type"))
-                    || !isJavaSplitElement(string(split, "_name"))) {
+            if (!"MethodExpression".equals(optionalString(split, "_type"))
+                    || !isJavaSplitElement(optionalString(split, "_name"))) {
                 return SplitPrefix.gap("NOT_STRING_SPLIT_ELEMENT");
             }
             JsonArray params = array(split, "_param_list");
@@ -2493,9 +2493,9 @@ public final class ConcolicConstraintSolver {
             }
             JsonObject toString = first.getAsJsonObject();
             JsonArray toStringParams = array(toString, "_param_list");
-            if (!"OpStrExpression".equals(string(toString, "_type"))
-                    || !"toString".equals(string(toString, "_name"))
-                    || bool(toString, "_is_not", false)
+            if (!"OpStrExpression".equals(optionalString(toString, "_type"))
+                    || !"toString".equals(optionalString(toString, "_name"))
+                    || optionalBool(toString, "_is_not", false)
                     || toStringParams.size() != 1
                     || !isPrimitiveIntExpression(toStringParams.get(0))) {
                 return SplitPrefix.gap("PREFIX_NOT_PRIMITIVE_INT_TO_STRING");
@@ -3037,8 +3037,8 @@ public final class ConcolicConstraintSolver {
                 return true;
             }
             if (selector == null) return false;
-            String keyType = string(selector, "_java_type");
-            String keyValue = constantPayload(string(selector, "_exp"));
+            String keyType = optionalString(selector, "_java_type");
+            String keyValue = constantPayload(optionalString(selector, "_exp"));
             if (keyType.isEmpty() || keyValue.isEmpty()) return false;
             target.addProperty("keyJavaType", keyType);
             target.addProperty("keyValue", keyValue);
@@ -3073,12 +3073,12 @@ public final class ConcolicConstraintSolver {
      * when the action does not carry an exact observation. */
     private static String observedPrimitiveLiteral(JsonObject action,
                                                     Sort sort) {
-        if (action == null || !bool(action, "observed", false)
+        if (action == null || !optionalBool(action, "observed", false)
                 || !action.has("primitiveValue")
                 || action.get("primitiveValue").isJsonNull()) {
             return "";
         }
-        String value = string(action, "primitiveValue").trim();
+        String value = optionalString(action, "primitiveValue").trim();
         if (sort == Sort.BOOL) {
             return "true".equals(value) || "false".equals(value)
                     ? value : "";
@@ -3137,7 +3137,7 @@ public final class ConcolicConstraintSolver {
                         source.fieldSignature);
             } else {
                 assignment.addProperty("inputSymbol",
-                        string(symbolicAction.action, "symbol"));
+                        optionalString(symbolicAction.action, "symbol"));
             }
             if (names.sort.floating()) {
                 String descriptor = names.sort == Sort.FLOAT32 ? "F" : "D";
@@ -3206,7 +3206,7 @@ public final class ConcolicConstraintSolver {
             assignment.addProperty("modelAssignmentKey", modelName);
             assignment.addProperty("engineSymbol", modelName);
             assignment.addProperty("inputSymbol",
-                    string(read.action, "symbol"));
+                    optionalString(read.action, "symbol"));
             assignment.addProperty("valueType", valueType);
             if (!value.isEmpty()) assignment.addProperty("value", value);
             if (modelIsNull) assignment.addProperty("modelIsNull", true);
@@ -3230,7 +3230,7 @@ public final class ConcolicConstraintSolver {
             declared.add(element.getAsJsonObject());
         }
         declared.sort(Comparator.comparing(
-                value -> string(value, "symbol")));
+                value -> optionalString(value, "symbol")));
         return declared;
     }
 
@@ -3260,13 +3260,13 @@ public final class ConcolicConstraintSolver {
         }
 
         private static PathQuery decode(JsonObject task) throws IOException {
-            if (integer(task, "schemaVersion", -1) != 3
-                    || !"REGION_PATH_FLIP".equals(string(task, "kind"))) {
+            if (optionalInteger(task, "schemaVersion", -1) != 3
+                    || !"REGION_PATH_FLIP".equals(optionalString(task, "kind"))) {
                 throw new IOException(
                         "canonical path task requires REGION_PATH_FLIP "
                                 + "schema 3");
             }
-            String queryKey = string(task, "queryKey");
+            String queryKey = optionalString(task, "queryKey");
             if (!canonicalQueryKey(queryKey)) {
                 throw new IOException(
                         "canonical path task requires SHA-256 queryKey");
@@ -3279,7 +3279,7 @@ public final class ConcolicConstraintSolver {
                                 "solverPathContext")),
                         array(task,
                                 LinkedReplayBundle.CASE_DEPENDENCIES_FIELD),
-                        string(task, "sourceActivationOccurrenceId"));
+                        optionalString(task, "sourceActivationOccurrenceId"));
             } catch (IllegalArgumentException malformed) {
                 throw new IOException("invalid canonical path task: "
                         + malformed.getMessage(), malformed);
@@ -3308,7 +3308,7 @@ public final class ConcolicConstraintSolver {
                     != expectedSort) {
                 continue;
             }
-            String symbol = string(action, "symbol");
+            String symbol = optionalString(action, "symbol");
             if (symbol.isEmpty()) continue;
             List<JsonArray> paths = new ArrayList<>();
             paths.add(new JsonArray());
@@ -3405,7 +3405,7 @@ public final class ConcolicConstraintSolver {
     }
 
     private static Sort materializationSort(JsonObject action) {
-        String javaType = string(action, "javaType");
+        String javaType = optionalString(action, "javaType");
         String normalized = javaType.replace('/', '.');
         if ("java.lang.Boolean".equals(normalized)) return Sort.BOOL;
         if ("java.lang.Byte".equals(normalized)
@@ -3444,7 +3444,7 @@ public final class ConcolicConstraintSolver {
 
 
     private static boolean executable(JsonObject action) {
-        return "SYMBOLIC".equals(string(action, "mode"));
+        return "SYMBOLIC".equals(optionalString(action, "mode"));
     }
 
     private static final class ActionMatch {
@@ -3691,7 +3691,7 @@ public final class ConcolicConstraintSolver {
     private static String expressionJavaType(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
-        return string("MethodExpression".equals(string(object, "_type"))
+        return optionalString("MethodExpression".equals(optionalString(object, "_type"))
                 ? object(object, "_res_exp") : object, "_java_type");
     }
 

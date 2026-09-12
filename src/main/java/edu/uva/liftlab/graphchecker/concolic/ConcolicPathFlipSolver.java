@@ -18,7 +18,7 @@ import static edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner.requ
 import static edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner.requiredValue;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Solves exactly one canonical path-flip query and emits its replay task.
@@ -88,7 +88,7 @@ public final class ConcolicPathFlipSolver {
                 ConcolicConstraintSolver.solve(task, linkedSources, source,
                         Paths.get(firstNonBlank(options.get("z3"), "z3")),
                         number(options, "solver-timeout-ms", 20_000L));
-        String status = string(solved.record, "status");
+        String status = optionalString(solved.record, "status");
         List<JsonObject> replay = "SAT_MODEL_READY".equals(status)
                 ? PathReplayTaskFactory.createLinked(task, bundle,
                 linkedSources, solved.modelAssignments,
@@ -97,18 +97,18 @@ public final class ConcolicPathFlipSolver {
                 solved.replayContract)
                 : Collections.<JsonObject>emptyList();
         solved.record.addProperty("primarySourceTaskId", sourceId);
-        solved.record.addProperty("regionId", string(task, "regionId"));
-        solved.record.addProperty("goalId", string(task, "goalId"));
+        solved.record.addProperty("regionId", optionalString(task, "regionId"));
+        solved.record.addProperty("goalId", optionalString(task, "goalId"));
         solved.record.addProperty("sourceSummaryId",
-                string(task, "sourceSummaryId"));
+                optionalString(task, "sourceSummaryId"));
         solved.record.addProperty("sourcePathKey",
-                string(task, "sourcePathKey"));
+                optionalString(task, "sourcePathKey"));
         solved.record.addProperty("sourceActivationOccurrenceId",
-                string(task, "sourceActivationOccurrenceId"));
+                optionalString(task, "sourceActivationOccurrenceId"));
         solved.record.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
-                string(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
+                optionalString(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
         solved.record.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
-                string(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
+                optionalString(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
         Path directory = requiredPath(options, "output-dir");
         String record = PRETTY.toJson(solved.record);
         ArtifactIO.replace(directory.resolve("path_flip_solver_result.json"),

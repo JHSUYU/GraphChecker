@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 
 /**
@@ -192,7 +192,7 @@ public final class LoopBoundPolicy {
                     "execution task requires a loopBound contract");
         }
         JsonObject encoded = raw.getAsJsonObject();
-        if (integer(encoded, "schemaVersion", -1) != SCHEMA_VERSION) {
+        if (optionalInteger(encoded, "schemaVersion", -1) != SCHEMA_VERSION) {
             throw new IllegalArgumentException(
                     "unsupported loopBound contract");
         }
@@ -200,7 +200,7 @@ public final class LoopBoundPolicy {
         Map<String, Integer> declared = new TreeMap<String, Integer>();
         for (Map.Entry<String, JsonElement> entry : bounds.entrySet()) {
             declared.put(entry.getKey(),
-                    Integer.valueOf(integer(bounds, entry.getKey(), -1)));
+                    Integer.valueOf(optionalInteger(bounds, entry.getKey(), -1)));
         }
         // The inherited bound is fixed at MAX_LOOP_BODY_ITERATIONS by the
         // constructor, so a row never states it; only the declarations are

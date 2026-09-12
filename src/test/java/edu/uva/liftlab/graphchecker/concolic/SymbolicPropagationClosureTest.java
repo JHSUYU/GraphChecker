@@ -15,7 +15,7 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Core receiver-boundary contracts: additive merging and stable lineage. */
 public class SymbolicPropagationClosureTest {
@@ -52,10 +52,10 @@ public class SymbolicPropagationClosureTest {
         for (JsonElement encoded : dependency(result,
                 "FAMILY.CONFLICT").getAsJsonArray("arms")) {
             JsonObject arm = encoded.getAsJsonObject();
-            assertEquals(string(arm,
+            assertEquals(optionalString(arm,
                             SymbolicPropagationClosure.OBSERVATION_SELECTOR),
-                    string(arm, "selector"));
-            baseCases.add(string(arm, "caseSelector"));
+                    optionalString(arm, "selector"));
+            baseCases.add(optionalString(arm, "caseSelector"));
         }
         assertEquals(1, baseCases.size());
     }
@@ -94,12 +94,12 @@ public class SymbolicPropagationClosureTest {
         Set<String> baseCases = new LinkedHashSet<>();
         for (JsonElement encoded : dependencyArms) {
             JsonObject arm = encoded.getAsJsonObject();
-            assertEquals(string(arm,
+            assertEquals(optionalString(arm,
                             SymbolicPropagationClosure.OBSERVATION_SELECTOR),
-                    string(arm, "selector"));
+                    optionalString(arm, "selector"));
             assertTrue(arm.has("pathCondition"));
             assertFalse(arm.has("pathObservations"));
-            baseCases.add(string(arm, "caseSelector"));
+            baseCases.add(optionalString(arm, "caseSelector"));
         }
         assertEquals(1, baseCases.size());
     }
@@ -210,7 +210,7 @@ public class SymbolicPropagationClosureTest {
         Set<String> families = new LinkedHashSet<>();
         for (JsonElement encoded : rewritten.getAsJsonArray("candidates")) {
             JsonObject arm = encoded.getAsJsonObject();
-            families.add(string(arm,
+            families.add(optionalString(arm,
                     SymbolicPropagationClosure.WRITER_CASE_FAMILY));
             assertTrue(arm.has(SymbolicPropagationClosure.WRITER_CASE_OWNER));
             assertTrue(arm.has(
@@ -220,7 +220,7 @@ public class SymbolicPropagationClosureTest {
         JsonObject dependency = dependency(result,
                 families.iterator().next());
         assertEquals(SymbolicPropagationClosure.READ_FROM_DEPENDENCY_POLICY,
-                string(dependency, "selectionPolicy"));
+                optionalString(dependency, "selectionPolicy"));
         assertEquals(2, dependency.getAsJsonArray("arms").size());
 
     }
@@ -305,7 +305,7 @@ public class SymbolicPropagationClosureTest {
                 SymbolicPropagationClosure.WRITER_CASE_CLOSURE);
         Set<String> owners = new LinkedHashSet<>();
         for (JsonElement encoded : closure) {
-            owners.add(string(encoded.getAsJsonObject(),
+            owners.add(optionalString(encoded.getAsJsonObject(),
                     SymbolicPropagationClosure.WRITER_CASE_OWNER));
         }
         String falseOwner = LocalCaseIdentity.owner(outerFalse);
@@ -314,24 +314,24 @@ public class SymbolicPropagationClosureTest {
         assertTrue(owners.contains(LocalCaseIdentity.owner(writerFalse)));
         assertTrue(owners.contains(falseOwner));
         assertFalse(owners.contains(trueOwner));
-        assertEquals(falseScope, string(arm,
+        assertEquals(falseScope, optionalString(arm,
                 SymbolicPropagationClosure.OBSERVATION_SCOPE));
-        assertFalse(string(arm,
+        assertFalse(optionalString(arm,
                 SymbolicPropagationClosure.OBSERVATION_SELECTOR).isEmpty());
 
         String outerFamily = "";
         for (JsonElement encoded : closure) {
             JsonObject localCase = encoded.getAsJsonObject();
-            if (falseOwner.equals(string(localCase,
+            if (falseOwner.equals(optionalString(localCase,
                     SymbolicPropagationClosure.WRITER_CASE_OWNER))) {
-                outerFamily = string(localCase,
+                outerFamily = optionalString(localCase,
                         SymbolicPropagationClosure.WRITER_CASE_FAMILY);
             }
         }
         JsonObject outerDependency = dependency(result, outerFamily);
         assertEquals(2, outerDependency.getAsJsonArray("arms").size());
         assertEquals(SymbolicPropagationClosure.READ_FROM_DEPENDENCY_POLICY,
-                string(outerDependency, "selectionPolicy"));
+                optionalString(outerDependency, "selectionPolicy"));
     }
 
     @Test
@@ -400,20 +400,20 @@ public class SymbolicPropagationClosureTest {
                 SharedStateEvidence.GUARDED_READ_TYPE);
         JsonObject candidate = rewritten.getAsJsonArray("candidates")
                 .get(0).getAsJsonObject();
-        assertTrue(string(candidate,
+        assertTrue(optionalString(candidate,
                 SymbolicPropagationClosure.WRITER_CASE_OWNER).startsWith(
                 SymbolicPropagationClosure.INITIAL_SOURCE_CASE_PREFIX));
         assertEquals("M_INITIAL",
                 candidate.getAsJsonObject("expression").get("_exp")
                         .getAsString());
-        JsonObject dependency = dependency(result, string(candidate,
+        JsonObject dependency = dependency(result, optionalString(candidate,
                 SymbolicPropagationClosure.WRITER_CASE_FAMILY));
         assertEquals(1, dependency.getAsJsonArray("arms").size());
         JsonObject dependencyArm = dependency.getAsJsonArray("arms").get(0)
                 .getAsJsonObject();
         assertEquals(0, dependencyArm.getAsJsonArray("pathCondition")
                 .size());
-        assertEquals(scope, string(dependencyArm,
+        assertEquals(scope, optionalString(dependencyArm,
                 SymbolicPropagationClosure.OBSERVATION_SCOPE));
 
         JsonObject replayedInitial = initial.deepCopy();
@@ -433,9 +433,9 @@ public class SymbolicPropagationClosureTest {
         JsonObject replayedCandidate = firstExpressionOfType(
                 replayed.summaries(), SharedStateEvidence.GUARDED_READ_TYPE)
                 .getAsJsonArray("candidates").get(0).getAsJsonObject();
-        assertEquals(string(candidate,
+        assertEquals(optionalString(candidate,
                         SymbolicPropagationClosure.WRITER_CASE_OWNER),
-                string(replayedCandidate,
+                optionalString(replayedCandidate,
                         SymbolicPropagationClosure.WRITER_CASE_OWNER));
     }
 
@@ -531,9 +531,9 @@ public class SymbolicPropagationClosureTest {
         result.addProperty("writerContextId", ordinal);
         result.addProperty("regionEnterEventId", ordinal + 500L);
         result.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
-                string(writer, "sourceKey"));
+                optionalString(writer, "sourceKey"));
         result.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
-                string(writer, "occurrenceId"));
+                optionalString(writer, "occurrenceId"));
         result.add("expression", expression.deepCopy());
         result.add("pathGuard", SharedStateEvidence.emptyConjunction());
         result.addProperty(SymbolicPropagationClosure.WRITER_CASE_OWNER,
@@ -561,7 +561,7 @@ public class SymbolicPropagationClosureTest {
         JsonArray selectors = new JsonArray();
         for (JsonObject candidate : candidates) {
             arms.add(candidate);
-            selectors.add(string(candidate, "selector"));
+            selectors.add(optionalString(candidate, "selector"));
         }
         read.add("candidates", arms);
         read.add("exactlyOne", selectors);
@@ -581,12 +581,12 @@ public class SymbolicPropagationClosureTest {
             version.addProperty("versionKind", "WRITE");
             version.addProperty("writerContextId", index + 1L);
             version.addProperty("regionEnterEventId", enter + index);
-            version.addProperty("taskId", string(writer, "taskId"));
-            version.addProperty("regionId", string(writer, "regionId"));
+            version.addProperty("taskId", optionalString(writer, "taskId"));
+            version.addProperty("regionId", optionalString(writer, "regionId"));
             version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
-                    string(writer, "sourceKey"));
+                    optionalString(writer, "sourceKey"));
             version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
-                    string(writer, "occurrenceId"));
+                    optionalString(writer, "occurrenceId"));
             version.add(SymbolicPropagationClosure.WRITER_ACTIVATION_CLOSURE,
                     activationClosure(writer));
             versions.add(version);
@@ -596,12 +596,12 @@ public class SymbolicPropagationClosureTest {
                 read.get("readEventId").getAsLong());
         observedRead.addProperty("readerContextId", 9L);
         observedRead.addProperty("regionEnterEventId", 509L);
-        observedRead.addProperty("regionId", string(reader, "regionId"));
-        observedRead.addProperty("taskId", string(reader, "taskId"));
+        observedRead.addProperty("regionId", optionalString(reader, "regionId"));
+        observedRead.addProperty("taskId", optionalString(reader, "taskId"));
         observedRead.addProperty(SharedStateEvidence.READER_SOURCE_KEY,
-                string(reader, "sourceKey"));
+                optionalString(reader, "sourceKey"));
         observedRead.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
-                string(reader, "occurrenceId"));
+                optionalString(reader, "occurrenceId"));
         observedRead.addProperty(SharedStateEvidence.CONSUMER_SITE_ID,
                 "example.Reader#u11");
         observedRead.addProperty(
@@ -648,10 +648,10 @@ public class SymbolicPropagationClosureTest {
         JsonArray encoded = new JsonArray();
         for (JsonObject localCase : cases) {
             JsonObject address = new JsonObject();
-            address.addProperty("taskId", string(localCase, "taskId"));
-            address.addProperty("regionId", string(localCase, "regionId"));
+            address.addProperty("taskId", optionalString(localCase, "taskId"));
+            address.addProperty("regionId", optionalString(localCase, "regionId"));
             address.addProperty("occurrenceId",
-                    string(localCase, "occurrenceId"));
+                    optionalString(localCase, "occurrenceId"));
             encoded.add(address);
         }
         closure.add("cases", encoded);
@@ -670,7 +670,7 @@ public class SymbolicPropagationClosureTest {
             return new JsonObject();
         }
         JsonObject object = value.getAsJsonObject();
-        if (type.equals(string(object, "_type"))) return object;
+        if (type.equals(optionalString(object, "_type"))) return object;
         for (Map.Entry<String, JsonElement> field : object.entrySet()) {
             JsonObject found = firstExpressionOfType(field.getValue(), type);
             if (found.size() > 0) return found;
@@ -759,7 +759,7 @@ public class SymbolicPropagationClosureTest {
             SymbolicPropagationClosure.Result result, String family) {
         for (JsonElement encoded : result.caseDependencies()) {
             JsonObject row = encoded.getAsJsonObject();
-            if (family.equals(string(row, VmExpressionIr.FAMILY_KEY))) {
+            if (family.equals(optionalString(row, VmExpressionIr.FAMILY_KEY))) {
                 return row;
             }
         }
@@ -789,8 +789,8 @@ public class SymbolicPropagationClosureTest {
         }
         JsonObject object = value.getAsJsonObject();
         if (SymbolicPropagationClosure.ITE_TYPE.equals(
-                string(object, "_type"))
-                && family.equals(string(object,
+                optionalString(object, "_type"))
+                && family.equals(optionalString(object,
                 VmExpressionIr.FAMILY_KEY))) {
             return object;
         }
@@ -817,8 +817,8 @@ public class SymbolicPropagationClosureTest {
         } else if (value.isJsonObject()) {
             JsonObject object = value.getAsJsonObject();
             if (SymbolicPropagationClosure.ITE_TYPE.equals(
-                    string(object, "_type"))) {
-                result.add(string(object, "mergeId"));
+                    optionalString(object, "_type"))) {
+                result.add(optionalString(object, "mergeId"));
             }
             for (Map.Entry<String, JsonElement> field : object.entrySet()) {
                 collectMergeIds(field.getValue(), result);
@@ -836,7 +836,7 @@ public class SymbolicPropagationClosureTest {
     private static boolean containsReason(JsonArray rows, String reason) {
         for (JsonElement encoded : rows) {
             JsonObject row = encoded.getAsJsonObject();
-            if (reason.equals(string(row, "reason"))) return true;
+            if (reason.equals(optionalString(row, "reason"))) return true;
         }
         return false;
     }

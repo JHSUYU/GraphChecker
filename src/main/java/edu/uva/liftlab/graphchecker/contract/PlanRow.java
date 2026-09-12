@@ -4,7 +4,7 @@ import com.google.gson.JsonObject;
 
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * The one plan row shape.  {@link RegionInstancePlan} and {@link ExecutionTask}
@@ -54,13 +54,13 @@ public abstract class PlanRow {
 
     public JsonObject json() { return encoded; }
 
-    public String sourceKey() { return string(encoded, "sourceKey"); }
+    public String sourceKey() { return optionalString(encoded, "sourceKey"); }
 
-    public String occurrenceId() { return string(encoded, "occurrenceId"); }
+    public String occurrenceId() { return optionalString(encoded, "occurrenceId"); }
 
-    public String relationKey() { return string(encoded, "relationKey"); }
+    public String relationKey() { return optionalString(encoded, "relationKey"); }
 
-    public String regionId() { return string(encoded, "regionId"); }
+    public String regionId() { return optionalString(encoded, "regionId"); }
 
     /** This occurrence's catalog of executed mint sites, decoded once. */
     public List<ConfiguredSourcePhaseContract.Occurrence>

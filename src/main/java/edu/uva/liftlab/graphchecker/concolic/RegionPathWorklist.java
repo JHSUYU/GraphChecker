@@ -18,9 +18,9 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Builds bounded branch-flip work for one region closure. */
 public final class RegionPathWorklist {
@@ -81,22 +81,22 @@ public final class RegionPathWorklist {
             this.bounds = bounds;
             this.familySnapshotDigest = familySnapshotDigest;
             for (JsonObject task : executionTasks) {
-                String id = string(task, "taskId");
+                String id = optionalString(task, "taskId");
                 if (!id.isEmpty()) this.taskById.put(id, task);
             }
             for (JsonObject record : explorationRecords) {
-                String key = string(record, "queryKey");
+                String key = optionalString(record, "queryKey");
                 if (!key.isEmpty()) this.records.put(key, record);
             }
             for (JsonObject summary : summaries) {
                 PathObservation path = PathObservation.decode(summary,
-                        taskById.get(string(summary, "taskId")));
+                        taskById.get(optionalString(summary, "taskId")));
                 paths.add(path);
                 collectAlignmentGaps(summary);
             }
             Collections.sort(paths, Comparator.comparing(value ->
                     value.regionId() + "\n" + value.pathKey() + "\n"
-                            + string(value.replayPayload(), "summaryId")));
+                            + optionalString(value.replayPayload(), "summaryId")));
         }
 
         private Result run() {
@@ -168,7 +168,7 @@ public final class RegionPathWorklist {
             Set<String> truncatedRegions = new LinkedHashSet<>();
             List<JsonObject> retained = new ArrayList<>();
             for (JsonObject task : tasks) {
-                String region = string(task, "regionId");
+                String region = optionalString(task, "regionId");
                 int observed = pathCountByRegion.getOrDefault(region, 0);
                 int remaining = Math.max(0,
                         bounds.maxPathsPerRegion - observed);
@@ -267,8 +267,8 @@ public final class RegionPathWorklist {
                     && task.get("targetBranch").isJsonObject()
                     ? task.getAsJsonObject("targetBranch")
                     : new JsonObject();
-            String targetSite = string(target, "siteId");
-            int targetOccurrence = integer(target, "occurrence", -1);
+            String targetSite = optionalString(target, "siteId");
+            int targetOccurrence = optionalInteger(target, "occurrence", -1);
             List<SummaryBranchMapping> fatalMappings = new ArrayList<>();
             for (SummaryBranchMapping mapping : path.branchMappings()) {
                 if (mapping.isExplore()
@@ -347,7 +347,7 @@ public final class RegionPathWorklist {
             for (int index = 0; index < branches.size(); index++) {
                 if (!branches.get(index).isJsonObject()) continue;
                 JsonObject branch = branches.get(index).getAsJsonObject();
-                if (currentSite.equals(string(branch, "siteId"))) {
+                if (currentSite.equals(optionalString(branch, "siteId"))) {
                     if (current >= 0) return null;
                     current = index;
                     currentBranch = branch;
@@ -360,7 +360,7 @@ public final class RegionPathWorklist {
             for (int index = current + 1; index < branches.size(); index++) {
                 if (!branches.get(index).isJsonObject()) continue;
                 JsonObject candidate = branches.get(index).getAsJsonObject();
-                if (!bool(candidate, "failureTarget", false)
+                if (!optionalBool(candidate, "failureTarget", false)
                         || TargetReachPathQueryBuilder
                         .requiredOutcome(candidate) == null
                         || Collections.disjoint(corridor,
@@ -380,7 +380,7 @@ public final class RegionPathWorklist {
             for (JsonElement element : array(task, "branches")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject branch = element.getAsJsonObject();
-                if (!siteId.equals(string(branch, "siteId"))) continue;
+                if (!siteId.equals(optionalString(branch, "siteId"))) continue;
                 Boolean value = TargetReachPathQueryBuilder
                         .requiredOutcome(branch);
                 if (value == null || result != null && !result.equals(value)) {
@@ -397,10 +397,10 @@ public final class RegionPathWorklist {
             for (JsonElement element : array(task, "branches")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject branch = element.getAsJsonObject();
-                if (mapping.siteId().equals(string(branch, "siteId"))
+                if (mapping.siteId().equals(optionalString(branch, "siteId"))
                         && "PATH_ASSUMPTION".equals(
-                        string(branch, "policy"))) {
-                    int selectedOccurrence = integer(branch,
+                        optionalString(branch, "policy"))) {
+                    int selectedOccurrence = optionalInteger(branch,
                             "selectedOccurrence", mapping.occurrence());
                     if (selectedOccurrence == mapping.occurrence()) {
                         matches++;
@@ -421,12 +421,12 @@ public final class RegionPathWorklist {
             for (JsonElement element : array(task, "inputActions")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject action = element.getAsJsonObject();
-                if (!"SYMBOLIC".equals(string(action, "mode"))
+                if (!"SYMBOLIC".equals(optionalString(action, "mode"))
                         || !"EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1".equals(
-                        string(action, "authority"))) {
+                        optionalString(action, "authority"))) {
                     continue;
                 }
-                String symbol = string(action, "symbol");
+                String symbol = optionalString(action, "symbol");
                 if (!symbol.isEmpty()) result.add(symbol);
             }
             return result;
@@ -505,7 +505,7 @@ public final class RegionPathWorklist {
             path.scope().goalKind().writeToTask(task);
             task.addProperty("sourceTaskId", path.sourceTaskId());
             task.addProperty("sourceSummaryId",
-                    string(path.replayPayload(), "summaryId"));
+                    optionalString(path.replayPayload(), "summaryId"));
             task.addProperty("sourcePathKey", path.pathKey());
             task.addProperty("sourceActivationOccurrenceId",
                     path.occurrenceId());
@@ -523,14 +523,14 @@ public final class RegionPathWorklist {
                         && sourceTask.get("targetBranch").isJsonObject()
                         ? sourceTask.getAsJsonObject("targetBranch")
                         : new JsonObject();
-                if (mapping.siteId().equals(string(selected, "siteId"))) {
+                if (mapping.siteId().equals(optionalString(selected, "siteId"))) {
                     JsonObject next = nextTargetGuard(sourceTask,
                             mapping.siteId());
                     if (next != null) {
                         JsonObject target = new JsonObject();
                         target.addProperty("siteId",
-                                string(next, "siteId"));
-                        int occurrence = integer(next,
+                                optionalString(next, "siteId"));
+                        int occurrence = optionalInteger(next,
                                 "selectedOccurrence", -1);
                         target.addProperty("occurrence",
                                 occurrence > 0 ? occurrence : 1);
@@ -629,12 +629,12 @@ public final class RegionPathWorklist {
             List<JsonObject> pathCoverageGaps = new ArrayList<>();
             for (JsonObject record : records.values()) {
                 collectAlignmentGaps(record);
-                String kind = explorationGapKind(string(record, "status"));
+                String kind = explorationGapKind(optionalString(record, "status"));
                 if (kind.isEmpty()) continue;
                 JsonObject gap = new JsonObject();
                 gap.addProperty("kind", kind);
-                gap.addProperty("queryKey", string(record, "queryKey"));
-                gap.addProperty("reason", string(record, "reason"));
+                gap.addProperty("queryKey", optionalString(record, "queryKey"));
+                gap.addProperty("reason", optionalString(record, "reason"));
                 if (record.has("unsupported")) {
                     gap.add("unsupported", record.get("unsupported"));
                 }
@@ -652,7 +652,7 @@ public final class RegionPathWorklist {
 
         private boolean campaignBoundReached() {
             for (JsonObject gap : coverageGaps) {
-                if ("BOUND_REACHED".equals(string(gap, "kind"))) {
+                if ("BOUND_REACHED".equals(optionalString(gap, "kind"))) {
                     return true;
                 }
             }
@@ -662,7 +662,7 @@ public final class RegionPathWorklist {
         private boolean hasReplayPath() {
             for (PathObservation path : paths) {
                 JsonObject task = taskById.get(path.sourceTaskId());
-                if (!string(task, "pathQueryKey").isEmpty()) return true;
+                if (!optionalString(task, "pathQueryKey").isEmpty()) return true;
             }
             return false;
         }
@@ -678,7 +678,7 @@ public final class RegionPathWorklist {
                 if (!path.regionId().isEmpty()) inputRegions.add(path.regionId());
             }
             for (JsonObject task : taskById.values()) {
-                String region = string(task, "regionId");
+                String region = optionalString(task, "regionId");
                 if (!region.isEmpty()) inputRegions.add(region);
             }
             return inputRegions.size() == 1
@@ -705,7 +705,7 @@ public final class RegionPathWorklist {
             for (JsonElement element : array(source, "alignmentGaps")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject imported = element.getAsJsonObject().deepCopy();
-                String kind = string(imported, "kind");
+                String kind = optionalString(imported, "kind");
                 if (!RpcExpressionHandoff.GAP_KIND.equals(kind)
                         && !SharedStateEvidence.GAP_KIND.equals(kind)
                         && !CoverageDivergence.isDivergence(imported)) {
@@ -765,7 +765,7 @@ public final class RegionPathWorklist {
     }
 
     private static boolean terminal(JsonObject record) {
-        String status = string(record, "status");
+        String status = optionalString(record, "status");
         return "UNSAT".equals(status)
                 || !explorationGapKind(status).isEmpty()
                 || "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY".equals(status);

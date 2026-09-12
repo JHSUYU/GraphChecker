@@ -7,8 +7,8 @@ import edu.uva.liftlab.graphchecker.concolic.LocalCaseIdentity;
 import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** One imported region-local path observation. */
 public final class RelationSummary {
@@ -29,12 +29,12 @@ public final class RelationSummary {
      */
     public static RelationSummary decodeExpanded(JsonObject expanded) {
         if (expanded == null) expanded = new JsonObject();
-        if (!KIND.equals(string(expanded, "kind"))
+        if (!KIND.equals(optionalString(expanded, "kind"))
                 || !exactSchemaVersion(expanded)
-                || string(expanded, "regionId").isEmpty()
-                || string(expanded, "occurrenceId").isEmpty()
-                || string(expanded, "summaryId").isEmpty()
-                || string(expanded, LocalCaseIdentity.FIELD).isEmpty()) {
+                || optionalString(expanded, "regionId").isEmpty()
+                || optionalString(expanded, "occurrenceId").isEmpty()
+                || optionalString(expanded, "summaryId").isEmpty()
+                || optionalString(expanded, LocalCaseIdentity.FIELD).isEmpty()) {
             throw new IllegalArgumentException(
                     "relation summary has an unsupported schema");
         }
@@ -43,13 +43,13 @@ public final class RelationSummary {
 
     /** Read-only view which retains shared expression-node identity. */
     public JsonObject immutableJson() { return row; }
-    public String summaryId() { return string(row, "summaryId"); }
+    public String summaryId() { return optionalString(row, "summaryId"); }
     public String localCaseId() {
-        return string(row, LocalCaseIdentity.FIELD);
+        return optionalString(row, LocalCaseIdentity.FIELD);
     }
-    public String sourceKey() { return string(row, "sourceKey"); }
-    public String occurrenceId() { return string(row, "occurrenceId"); }
-    public String regionId() { return string(row, "regionId"); }
+    public String sourceKey() { return optionalString(row, "sourceKey"); }
+    public String occurrenceId() { return optionalString(row, "occurrenceId"); }
+    public String regionId() { return optionalString(row, "regionId"); }
 
     /**
      * Shallow case carrier for DAG-aware passes.  Top-level fields may be
@@ -72,7 +72,7 @@ public final class RelationSummary {
         path.add("guard", guard);
     }
 
-    public boolean pathSetClosed() { return bool(row, "pathSetClosed", false); }
+    public boolean pathSetClosed() { return optionalBool(row, "pathSetClosed", false); }
 
     private static boolean exactSchemaVersion(JsonObject source) {
         JsonElement value = source.get("schemaVersion");

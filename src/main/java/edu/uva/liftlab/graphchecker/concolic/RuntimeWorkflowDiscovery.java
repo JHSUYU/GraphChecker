@@ -23,10 +23,10 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Selects one target and its VM-observed linked replay scope. */
 public final class RuntimeWorkflowDiscovery {
@@ -198,12 +198,12 @@ public final class RuntimeWorkflowDiscovery {
         for (JsonElement element : goal.branches()) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
-            if (bool(branch, "failureTarget", false)
-                    && !bool(branch, "loopControlGuard", false)
-                    && bool(branch, "observed", false)
+            if (optionalBool(branch, "failureTarget", false)
+                    && !optionalBool(branch, "loopControlGuard", false)
+                    && optionalBool(branch, "observed", false)
                     && branch.has("requiredOutcome")
                     && !branch.get("requiredOutcome").isJsonNull()) {
-                String site = string(branch, "siteId");
+                String site = optionalString(branch, "siteId");
                 if (!site.isEmpty()) result.add(site);
             }
         }
@@ -211,7 +211,7 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     private static boolean explicitFaultEntry(RegionInstancePlan plan) {
-        return EXPLICIT_FAULT_ENTRY.equals(string(plan.json(),
+        return EXPLICIT_FAULT_ENTRY.equals(optionalString(plan.json(),
                 "rootAuthority"));
     }
 
@@ -236,16 +236,16 @@ public final class RuntimeWorkflowDiscovery {
         List<JsonObject> targetRows = new ArrayList<>();
         for (JsonObject summary : summaries) {
             if (summary == null) continue;
-            String task = string(summary, "taskId");
+            String task = optionalString(summary, "taskId");
             if (!task.isEmpty()) {
                 ObservedTaskKey key = new ObservedTaskKey(
-                        string(summary, "boundarySessionScope"), task);
+                        optionalString(summary, "boundarySessionScope"), task);
                 byTask.computeIfAbsent(key, ignored -> new ArrayList<>())
                         .add(summary);
             }
-            if (target.goal.goalId().equals(string(summary, "goalId"))
+            if (target.goal.goalId().equals(optionalString(summary, "goalId"))
                     && target.plan.regionId().equals(
-                    string(summary, "regionId"))
+                    optionalString(summary, "regionId"))
                     && target.occurrenceId.equals(plannedOccurrence(summary))) {
                 targetRows.add(summary);
             }
@@ -259,9 +259,9 @@ public final class RuntimeWorkflowDiscovery {
         Set<ObservedTaskKey> visitedTasks = new LinkedHashSet<>();
         Deque<ObservedTaskKey> work = new ArrayDeque<>();
         for (JsonObject row : targetRows) {
-            String task = string(row, "taskId");
+            String task = optionalString(row, "taskId");
             ObservedTaskKey key = new ObservedTaskKey(
-                    string(row, "boundarySessionScope"), task);
+                    optionalString(row, "boundarySessionScope"), task);
             if (!task.isEmpty() && visitedTasks.add(key)) {
                 work.addLast(key);
             }
@@ -285,13 +285,13 @@ public final class RuntimeWorkflowDiscovery {
         }
         for (JsonObject summary : summaries) {
             if (summary == null) continue;
-            String summaryScope = string(summary, "boundarySessionScope");
+            String summaryScope = optionalString(summary, "boundarySessionScope");
             String occurrence = plannedOccurrence(summary);
             if (!forwardByScope.getOrDefault(summaryScope,
                     Collections.emptySet()).contains(occurrence)) {
                 continue;
             }
-            String task = string(summary, "taskId");
+            String task = optionalString(summary, "taskId");
             ObservedTaskKey key = new ObservedTaskKey(summaryScope, task);
             if (!task.isEmpty() && visitedTasks.add(key)) {
                 work.addLast(key);
@@ -349,9 +349,9 @@ public final class RuntimeWorkflowDiscovery {
         for (JsonObject edge : edges.values()) {
             if (!AutomaticRegionEdge.summaryTraversalBinding(edge)) continue;
             String from = PathObservation.plannedOccurrenceOf(
-                    string(edge, "fromOccurrenceId"));
+                    optionalString(edge, "fromOccurrenceId"));
             String to = PathObservation.plannedOccurrenceOf(
-                    string(edge, "toOccurrenceId"));
+                    optionalString(edge, "toOccurrenceId"));
             if (candidateClosure.contains(from)
                     && candidateClosure.contains(to)) {
                 successors.computeIfAbsent(from,
@@ -404,24 +404,24 @@ public final class RuntimeWorkflowDiscovery {
         }
         for (JsonObject summary : summaries) {
             if (summary == null) continue;
-            String scope = string(summary, "boundarySessionScope");
-            String consumerTask = string(summary, "taskId");
+            String scope = optionalString(summary, "boundarySessionScope");
+            String consumerTask = optionalString(summary, "taskId");
             String summaryOccurrence = plannedOccurrence(summary);
             if (scope.isEmpty() || consumerTask.isEmpty()
                     || summaryOccurrence.isEmpty()) {
                 continue;
             }
             for (JsonObject event : VmHandoffEvidence.eventsOf(summary)) {
-                if (!scope.equals(string(event, "boundarySessionScope"))) {
+                if (!scope.equals(optionalString(event, "boundarySessionScope"))) {
                     continue;
                 }
-                String producerTask = string(event,
+                String producerTask = optionalString(event,
                         VmHandoffEvidence.PRODUCER_TASK_ID);
                 String producerOccurrence = PathObservation
-                        .plannedOccurrenceOf(string(event,
+                        .plannedOccurrenceOf(optionalString(event,
                                 VmHandoffEvidence.PRODUCER_OCCURRENCE_ID));
                 String consumerOccurrence = PathObservation
-                        .plannedOccurrenceOf(string(event,
+                        .plannedOccurrenceOf(optionalString(event,
                                 "consumerOccurrenceId"));
                 if (producerTask.isEmpty()
                         || !summaryOccurrence.equals(consumerOccurrence)
@@ -437,18 +437,18 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     private static String plannedOccurrence(JsonObject row) {
-        String planned = string(row, "plannedOccurrenceId");
+        String planned = optionalString(row, "plannedOccurrenceId");
         return planned.isEmpty() ? PathObservation.plannedOccurrenceOf(
-                string(row, "occurrenceId")) : planned;
+                optionalString(row, "occurrenceId")) : planned;
     }
 
     /** Producer tasks named by propagated handoffs and guarded field reads. */
     private static Set<ObservedTaskKey> observedProducerTasks(
             JsonObject summary, BoundaryOwnerIndex boundaryOwners) {
         Set<ObservedTaskKey> result = new LinkedHashSet<>();
-        String summaryScope = string(summary, "boundarySessionScope");
+        String summaryScope = optionalString(summary, "boundarySessionScope");
         for (JsonObject event : VmHandoffEvidence.eventsOf(summary)) {
-            String producer = string(event,
+            String producer = optionalString(event,
                     VmHandoffEvidence.PRODUCER_TASK_ID);
             if (!producer.isEmpty()) {
                 result.add(new ObservedTaskKey(scopeOf(event, summaryScope),
@@ -456,9 +456,9 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
 
-        String readerTask = string(summary, "taskId");
-        String readerOccurrence = string(summary, "occurrenceId");
-        String readerRegion = string(summary, "regionId");
+        String readerTask = optionalString(summary, "taskId");
+        String readerOccurrence = optionalString(summary, "occurrenceId");
+        String readerRegion = optionalString(summary, "regionId");
         JsonObject recorded = object(summary,
                 SharedStateEvidence.RECORDED_FIELD);
         for (JsonElement encoded : array(recorded, "versions")) {
@@ -470,10 +470,10 @@ public final class RuntimeWorkflowDiscovery {
             for (JsonElement readElement : array(envelope, "reads")) {
                 if (!readElement.isJsonObject()) continue;
                 JsonObject read = readElement.getAsJsonObject();
-                if (!readerTask.equals(string(read, "taskId"))
-                        || !readerOccurrence.equals(string(read,
+                if (!readerTask.equals(optionalString(read, "taskId"))
+                        || !readerOccurrence.equals(optionalString(read,
                         SharedStateEvidence.READER_OCCURRENCE_ID))
-                        || !readerRegion.equals(string(read, "regionId"))) {
+                        || !readerRegion.equals(optionalString(read, "regionId"))) {
                     continue;
                 }
                 // The VM ReadFromExpression payload is already validated by
@@ -500,9 +500,9 @@ public final class RuntimeWorkflowDiscovery {
             BoundaryOwnerIndex boundaryOwners,
             Set<ObservedTaskKey> result) {
         if (version == null) return;
-        if (!"INITIAL".equals(string(version, "versionKind"))) {
+        if (!"INITIAL".equals(optionalString(version, "versionKind"))) {
             String producerScope = scopeOf(version, scope);
-            String producer = string(version, "taskId");
+            String producer = optionalString(version, "taskId");
             if (!producer.isEmpty()) {
                 result.add(new ObservedTaskKey(producerScope, producer));
             }
@@ -526,20 +526,20 @@ public final class RuntimeWorkflowDiscovery {
         JsonObject closure = object(version,
                 SymbolicPropagationClosure.WRITER_ACTIVATION_CLOSURE);
         if (!SymbolicPropagationClosure.WRITER_ACTIVATION_CLOSURE_AUTHORITY
-                .equals(string(closure, "authority"))
-                || !bool(closure, "complete", false)) {
+                .equals(optionalString(closure, "authority"))
+                || !optionalBool(closure, "complete", false)) {
             return result;
         }
         for (JsonElement encoded : array(closure, "cases")) {
             if (!encoded.isJsonObject()) continue;
-            String task = string(encoded.getAsJsonObject(), "taskId");
+            String task = optionalString(encoded.getAsJsonObject(), "taskId");
             if (!task.isEmpty()) result.add(task);
         }
         return result;
     }
 
     private static String scopeOf(JsonObject evidence, String fallback) {
-        String scope = string(evidence, "boundarySessionScope");
+        String scope = optionalString(evidence, "boundarySessionScope");
         return scope.isEmpty() ? fallback : scope;
     }
 
@@ -555,20 +555,20 @@ public final class RuntimeWorkflowDiscovery {
             BoundaryOwnerIndex result = new BoundaryOwnerIndex();
             for (JsonObject summary : summaries) {
                 if (summary == null) continue;
-                String task = string(summary, "taskId");
-                String occurrence = string(summary, "occurrenceId");
-                String scope = string(summary, "boundarySessionScope");
+                String task = optionalString(summary, "taskId");
+                String occurrence = optionalString(summary, "occurrenceId");
+                String scope = optionalString(summary, "boundarySessionScope");
                 BoundaryOwner owner = new BoundaryOwner(task, occurrence);
                 if (owner.task.isEmpty() || owner.occurrence.isEmpty()
                         || scope.isEmpty()) {
                     continue;
                 }
                 for (JsonObject event : VmHandoffEvidence.eventsOf(summary)) {
-                    String eventScope = string(event,
+                    String eventScope = optionalString(event,
                             "boundarySessionScope");
                     if (eventScope.isEmpty()) eventScope = scope;
                     result.put(new ObservedBoundaryKey(eventScope,
-                            longInteger(event,
+                            optionalLongInteger(event,
                                     VmHandoffEvidence.ATTACH_EVENT_ID, -1L)),
                             owner);
                 }
@@ -585,15 +585,15 @@ public final class RuntimeWorkflowDiscovery {
                             "envelope"), "reads")) {
                         if (!readElement.isJsonObject()) continue;
                         JsonObject read = readElement.getAsJsonObject();
-                        if (!task.equals(string(read, "taskId"))
-                                || !occurrence.equals(string(read,
+                        if (!task.equals(optionalString(read, "taskId"))
+                                || !occurrence.equals(optionalString(read,
                                 SharedStateEvidence.READER_OCCURRENCE_ID))
-                                || !string(summary, "regionId").equals(
-                                string(read, "regionId"))) {
+                                || !optionalString(summary, "regionId").equals(
+                                optionalString(read, "regionId"))) {
                             continue;
                         }
                         result.put(new ObservedBoundaryKey(scope,
-                                longInteger(read, "readEventId", -1L)),
+                                optionalLongInteger(read, "readEventId", -1L)),
                                 owner);
                     }
                 }
@@ -637,7 +637,7 @@ public final class RuntimeWorkflowDiscovery {
                 if (VmExpressionIr.isConsumerBoundary(node)
                         || VmExpressionIr.isConsumerBoundaryReference(node)) {
                     ObservedBoundaryKey key = new ObservedBoundaryKey(scope,
-                            longInteger(node, VmExpressionIr.EVENT_ID, -1L));
+                            optionalLongInteger(node, VmExpressionIr.EVENT_ID, -1L));
                     if (visitedBoundaries.add(key)
                             && !ambiguous.contains(key)) {
                         BoundaryOwner owner = owners.get(key);
@@ -671,9 +671,9 @@ public final class RuntimeWorkflowDiscovery {
             SymbolicRootOwnerIndex result = new SymbolicRootOwnerIndex();
             for (JsonObject summary : summaries) {
                 if (summary == null) continue;
-                String task = string(summary, "taskId");
+                String task = optionalString(summary, "taskId");
                 String occurrence = plannedOccurrence(summary);
-                String scope = string(summary, "boundarySessionScope");
+                String scope = optionalString(summary, "boundarySessionScope");
                 if (task.isEmpty() || occurrence.isEmpty()
                         || scope.isEmpty()) {
                     continue;
@@ -683,9 +683,9 @@ public final class RuntimeWorkflowDiscovery {
                     // A reuse observes an already-propagated root; replay must
                     // activate the earlier task which actually minted it.
                     if (SymbolicSourceEvidence.isReused(event)) continue;
-                    String raw = string(event, "rawSymbol");
+                    String raw = optionalString(event, "rawSymbol");
                     String sourceOccurrence = PathObservation
-                            .plannedOccurrenceOf(string(event,
+                            .plannedOccurrenceOf(optionalString(event,
                                     "sourceOccurrenceId"));
                     if (!occurrence.equals(sourceOccurrence)) {
                         throw new IOException("symbolic source evidence owner "
@@ -719,7 +719,7 @@ public final class RuntimeWorkflowDiscovery {
                                    Set<String> candidateClosure,
                                    Set<ObservedTaskKey> result)
                 throws IOException {
-            String scope = string(summary, "boundarySessionScope");
+            String scope = optionalString(summary, "boundarySessionScope");
             if (scope.isEmpty()) return;
             Deque<JsonElement> pending = new ArrayDeque<>();
             Set<JsonElement> visited = Collections.newSetFromMap(
@@ -741,9 +741,9 @@ public final class RuntimeWorkflowDiscovery {
                     continue;
                 }
                 JsonObject node = current.getAsJsonObject();
-                if ("SymbolExpression".equals(string(node, "_type"))) {
+                if ("SymbolExpression".equals(optionalString(node, "_type"))) {
                     ObservedSymbolKey key = new ObservedSymbolKey(scope,
-                            string(node, "_exp"));
+                            optionalString(node, "_exp"));
                     if (ambiguous.contains(key)) {
                         throw new IOException("one replay scope has multiple "
                                 + "mint owners for symbolic root: "
@@ -890,11 +890,11 @@ public final class RuntimeWorkflowDiscovery {
             JsonObject edge = element.getAsJsonObject();
             if (!AutomaticRegionEdge.summaryTraversalBinding(edge)) continue;
             String from = PathObservation.plannedOccurrenceOf(
-                    string(edge, "fromOccurrenceId"));
+                    optionalString(edge, "fromOccurrenceId"));
             String to = PathObservation.plannedOccurrenceOf(
-                    string(edge, "toOccurrenceId"));
+                    optionalString(edge, "toOccurrenceId"));
             if (from.isEmpty() || to.isEmpty()) continue;
-            String id = string(edge, "edgeId");
+            String id = optionalString(edge, "edgeId");
             if (id.isEmpty()) id = ArtifactIO.sha256(CanonicalJson.render(edge));
             JsonObject prior = indexed.putIfAbsent(id, edge.deepCopy());
             if (prior != null && !prior.equals(edge)) {
@@ -914,9 +914,9 @@ public final class RuntimeWorkflowDiscovery {
             String consumer = work.removeFirst();
             for (JsonObject edge : edges.values()) {
                 String to = PathObservation.plannedOccurrenceOf(
-                        string(edge, "toOccurrenceId"));
+                        optionalString(edge, "toOccurrenceId"));
                 String from = PathObservation.plannedOccurrenceOf(
-                        string(edge, "fromOccurrenceId"));
+                        optionalString(edge, "fromOccurrenceId"));
                 if (consumer.equals(to) && plans.containsKey(from)
                         && selected.add(from)) {
                     work.addLast(from);
@@ -932,9 +932,9 @@ public final class RuntimeWorkflowDiscovery {
         for (Map.Entry<String, JsonObject> entry : edges.entrySet()) {
             JsonObject edge = entry.getValue();
             String from = PathObservation.plannedOccurrenceOf(
-                    string(edge, "fromOccurrenceId"));
+                    optionalString(edge, "fromOccurrenceId"));
             String to = PathObservation.plannedOccurrenceOf(
-                    string(edge, "toOccurrenceId"));
+                    optionalString(edge, "toOccurrenceId"));
             if (closure.contains(from) && closure.contains(to)) {
                 result.put(entry.getKey(), edge.deepCopy());
             }
@@ -960,12 +960,12 @@ public final class RuntimeWorkflowDiscovery {
         for (JsonElement element : goal.branches()) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
-            if (bool(branch, "failureTarget", false)
-                    && !bool(branch, "loopControlGuard", false)
-                    && bool(branch, "observed", false)
+            if (optionalBool(branch, "failureTarget", false)
+                    && !optionalBool(branch, "loopControlGuard", false)
+                    && optionalBool(branch, "observed", false)
                     && branch.has("requiredOutcome")
                     && !branch.get("requiredOutcome").isJsonNull()
-                    && !string(branch, "siteId").isEmpty()) {
+                    && !optionalString(branch, "siteId").isEmpty()) {
                 return true;
             }
         }
@@ -1109,9 +1109,9 @@ public final class RuntimeWorkflowDiscovery {
             for (JsonElement element : goal.branches()) {
                 if (!element.isJsonObject()) continue;
                 JsonObject branch = element.getAsJsonObject();
-                if (bool(branch, "failureTarget", false)
-                        && bool(branch, "observed", false)) {
-                    selected = Math.max(selected, longInteger(branch,
+                if (optionalBool(branch, "failureTarget", false)
+                        && optionalBool(branch, "observed", false)) {
+                    selected = Math.max(selected, optionalLongInteger(branch,
                             "selectedRuntimeEventSeq", -1L));
                 }
             }
@@ -1171,15 +1171,15 @@ public final class RuntimeWorkflowDiscovery {
             for (JsonObject edge : topologyEdges) {
                 if (target.occurrenceId.equals(
                         PathObservation.plannedOccurrenceOf(
-                                string(edge, "toOccurrenceId")))
+                                optionalString(edge, "toOccurrenceId")))
                         && AutomaticRegionEdge.tracedExchangeCandidate(edge)) {
-                    directProtocol.put(string(edge, "toInputPort"), edge);
+                    directProtocol.put(optionalString(edge, "toInputPort"), edge);
                 }
                 if (unresolvedTopology(edge)) {
                     unresolvedTopology.add(
                             PathObservation.plannedOccurrenceOf(
-                                    string(edge, "toOccurrenceId"))
-                                    + "\n" + string(edge, "toInputPort"));
+                                    optionalString(edge, "toOccurrenceId"))
+                                    + "\n" + optionalString(edge, "toInputPort"));
                 }
             }
             Set<String> inputs = new LinkedHashSet<>();
@@ -1192,7 +1192,7 @@ public final class RuntimeWorkflowDiscovery {
                 if (input.isEmpty() || !inputs.add(input)) continue;
                 if (directProtocol.containsKey(input)
                         || directProtocol.containsKey(
-                        string(action, "portId"))) {
+                        optionalString(action, "portId"))) {
                     direct = true;
                     proven.add(input);
                 } else if (exactRuntimeInput(target.occurrenceId, action)) {
@@ -1204,19 +1204,19 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private static String firstInputName(JsonObject action) {
-            String symbol = string(action, "symbol");
-            return symbol.isEmpty() ? string(action, "portId") : symbol;
+            String symbol = optionalString(action, "symbol");
+            return symbol.isEmpty() ? optionalString(action, "portId") : symbol;
         }
 
         private static boolean exactRuntimeInput(String occurrence,
                                                  JsonObject action) {
-            if (!bool(action, "observed", false)) return false;
+            if (!optionalBool(action, "observed", false)) return false;
             for (JsonElement element : array(action, "runtimeAccesses")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject access = element.getAsJsonObject();
                 if (occurrence.equals(PathObservation.plannedOccurrenceOf(
-                        string(access, "occurrenceId")))
-                        && longInteger(access, "eventSeq", -1L) >= 0L) {
+                        optionalString(access, "occurrenceId")))
+                        && optionalLongInteger(access, "eventSeq", -1L) >= 0L) {
                     return true;
                 }
             }
@@ -1224,14 +1224,14 @@ public final class RuntimeWorkflowDiscovery {
         }
 
         private static boolean unresolvedTopology(JsonObject edge) {
-            if ("RUNTIME_PROTOCOL_FLOW".equals(string(edge, "kind"))) {
+            if ("RUNTIME_PROTOCOL_FLOW".equals(optionalString(edge, "kind"))) {
                 return !AutomaticRegionEdge.tracedExchangeCandidate(edge);
             }
-            if ("RUNTIME_FIELD_FLOW".equals(string(edge, "kind"))) {
+            if ("RUNTIME_FIELD_FLOW".equals(optionalString(edge, "kind"))) {
                 return !AutomaticRegionEdge.sharedLocationCandidate(edge);
             }
             if (AutomaticRegionEdge.RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(
-                    string(edge, "kind"))) {
+                    optionalString(edge, "kind"))) {
                 return !AutomaticRegionEdge.trustedRequestFaultControl(edge);
             }
             return true;

@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** The single polarity algebra for binary concolic branch predicates. */
 public final class BranchPredicateAlgebra {
@@ -137,9 +137,9 @@ public final class BranchPredicateAlgebra {
         JsonElement canonical = canonicalView(predicate);
         if (canonical.isJsonObject()) {
             JsonObject object = canonical.getAsJsonObject();
-            String type = string(object, "_type");
+            String type = optionalString(object, "_type");
             if ("BinaryExpression".equals(type)) {
-                String opposite = COMPLEMENTS.get(string(object, "_op"));
+                String opposite = COMPLEMENTS.get(optionalString(object, "_op"));
                 if (opposite != null) {
                     JsonObject result = new JsonObject();
                     for (Map.Entry<String, JsonElement> field
@@ -233,12 +233,12 @@ public final class BranchPredicateAlgebra {
             return;
         }
         JsonObject object = value.getAsJsonObject();
-        if ("SymbolExpression".equals(string(object, "_type"))) {
-            String symbol = string(object, "_exp");
+        if ("SymbolExpression".equals(optionalString(object, "_type"))) {
+            String symbol = optionalString(object, "_exp");
             if (!symbol.isEmpty()
                     && !VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
                     && !"V".equals(symbol)) {
-                support.add(string(object, "_java_type") + '\u0000'
+                support.add(optionalString(object, "_java_type") + '\u0000'
                         + symbol);
             }
             return;
@@ -250,7 +250,7 @@ public final class BranchPredicateAlgebra {
 
     private static boolean expression(JsonElement value) {
         return value != null && value.isJsonObject()
-                && !string(value.getAsJsonObject(), "_type").isEmpty();
+                && !optionalString(value.getAsJsonObject(), "_type").isEmpty();
     }
 
     public static String complementOperator(String operator) {

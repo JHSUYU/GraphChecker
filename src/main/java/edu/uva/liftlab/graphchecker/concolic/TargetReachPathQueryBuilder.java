@@ -24,10 +24,10 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 public final class TargetReachPathQueryBuilder {
     public static final int SCHEMA_VERSION = 2;
@@ -68,7 +68,7 @@ public final class TargetReachPathQueryBuilder {
         JsonObject manifest = ArtifactIO.readObject(arguments.pathManifest);
         validatePathManifest(manifest);
         if (!ClosureGoalKind.TARGET_REACH_CLOSURE.name().equals(
-                string(manifest, ClosureGoalKind.TASK_FIELD))) {
+                optionalString(manifest, ClosureGoalKind.TASK_FIELD))) {
             // Not an evidence disagreement: this artifact is not a target
             // reach worklist at all, so there is nothing to merge from it.
             throw new IOException(
@@ -79,19 +79,19 @@ public final class TargetReachPathQueryBuilder {
         for (JsonElement element : array(manifest, "coverageGaps")) {
             if (element.isJsonObject()) {
                 JsonObject raw = element.getAsJsonObject();
-                String kind = string(raw, "kind");
+                String kind = optionalString(raw, "kind");
                 if (isTargetPathCoverageGap(kind)) {
                     coverageGaps.add(CoverageDivergence.of(
                             CoverageDivergence.Kind.TARGET, kind,
-                            string(raw, "queryKey"),
-                            string(raw, "reason")));
+                            optionalString(raw, "queryKey"),
+                            optionalString(raw, "reason")));
                 } else {
                     coverageGaps.add(raw.deepCopy());
                 }
             }
         }
-        String worklistState = string(manifest, "state");
-        String coverageState = string(manifest, "coverageState");
+        String worklistState = optionalString(manifest, "state");
+        String coverageState = optionalString(manifest, "coverageState");
         JsonArray worklistGaps = array(manifest, "gaps");
         boolean hasClassifiedCoverage = false;
         for (JsonObject gap : coverageGaps) {
@@ -106,7 +106,7 @@ public final class TargetReachPathQueryBuilder {
             coverageGaps.add(CoverageDivergence.of(
                     CoverageDivergence.Kind.TARGET,
                     "TARGET_WORKLIST_NOT_CLOSED",
-                    string(manifest, "occurrenceId"),
+                    optionalString(manifest, "occurrenceId"),
                     "state=" + worklistState + ", coverageState="
                             + firstNonBlank(coverageState, "UNSTATED")
                             + ", gaps="
@@ -131,18 +131,18 @@ public final class TargetReachPathQueryBuilder {
                     + ready.size()
                     + " and none of them waits on all the others");
         }
-        String queryKey = string(seed, "queryKey");
+        String queryKey = optionalString(seed, "queryKey");
         if (queryKey.isEmpty()) {
             throw new IOException(
                     "target seed query has no stable queryKey");
         }
-        String region = string(seed, "regionId");
-        String occurrenceId = string(seed, "occurrenceId");
-        String goalId = string(seed, "goalId");
-        String targetSite = string(seed, "targetSiteId");
-        if (!region.equals(string(manifest, "regionId"))
-                || !goalId.equals(string(manifest, "goalId"))
-                || !occurrenceId.equals(string(manifest, "occurrenceId"))
+        String region = optionalString(seed, "regionId");
+        String occurrenceId = optionalString(seed, "occurrenceId");
+        String goalId = optionalString(seed, "goalId");
+        String targetSite = optionalString(seed, "targetSiteId");
+        if (!region.equals(optionalString(manifest, "regionId"))
+                || !goalId.equals(optionalString(manifest, "goalId"))
+                || !occurrenceId.equals(optionalString(manifest, "occurrenceId"))
                 || region.isEmpty() || occurrenceId.isEmpty()
                 || goalId.isEmpty() || targetSite.isEmpty()) {
             throw new IOException(
@@ -426,8 +426,8 @@ public final class TargetReachPathQueryBuilder {
         result.addProperty("queryKey", queryKey);
         result.addProperty("regionId", region);
         result.addProperty("occurrenceId", occurrenceId);
-        if (!string(seed, "sourceKey").isEmpty()) {
-            result.addProperty("sourceKey", string(seed, "sourceKey"));
+        if (!optionalString(seed, "sourceKey").isEmpty()) {
+            result.addProperty("sourceKey", optionalString(seed, "sourceKey"));
         }
         result.addProperty("targetSiteId", targetSite);
         result.addProperty("targetOccurrence", targetOccurrence);
@@ -464,11 +464,11 @@ public final class TargetReachPathQueryBuilder {
 
     private static void validatePathManifest(JsonObject manifest)
             throws IOException {
-        if (JsonFields.integer(manifest, "schemaVersion", -1) != 1
-                || !"REGION_PATH_WORKLIST".equals(string(manifest, "kind"))) {
+        if (JsonFields.optionalInteger(manifest, "schemaVersion", -1) != 1
+                || !"REGION_PATH_WORKLIST".equals(optionalString(manifest, "kind"))) {
             throw new IOException("target path worklist schema is invalid");
         }
-        String state = string(manifest, "state");
+        String state = optionalString(manifest, "state");
         if (!("NOT_STARTED".equals(state) || "GAPPED".equals(state)
                 || "PENDING".equals(state) || "CLOSED".equals(state))) {
             throw new IOException("target path worklist state is invalid");
@@ -480,7 +480,7 @@ public final class TargetReachPathQueryBuilder {
                         + " must be an array");
             }
         }
-        String coverage = string(manifest, "coverageState");
+        String coverage = optionalString(manifest, "coverageState");
         if (!("CLOSED".equals(coverage) || "PARTIAL".equals(coverage)
                 || "SEED_ONLY".equals(coverage))) {
             throw new IOException(
@@ -525,7 +525,7 @@ public final class TargetReachPathQueryBuilder {
         Set<Integer> successors = new LinkedHashSet<>();
         for (int index = current + 1; index < catalog.size(); index++) {
             JsonObject candidate = catalog.get(index);
-            if (!bool(candidate, "failureTarget", false)
+            if (!optionalBool(candidate, "failureTarget", false)
                     || requiredOutcome(candidate) == null
                     || Collections.disjoint(corridor,
                     guardedTargetIdentities(candidate))) {
@@ -592,7 +592,7 @@ public final class TargetReachPathQueryBuilder {
                                         String siteId) throws IOException {
         int result = -1;
         for (int index = 0; index < catalog.size(); index++) {
-            if (!siteId.equals(string(catalog.get(index), "siteId"))) {
+            if (!siteId.equals(optionalString(catalog.get(index), "siteId"))) {
                 continue;
             }
             if (result >= 0) {
@@ -628,7 +628,7 @@ public final class TargetReachPathQueryBuilder {
         for (JsonElement element : array(branch,
                 "guardedSiteOutcomes")) {
             if (!element.isJsonObject()) continue;
-            String site = string(element.getAsJsonObject(), "siteId");
+            String site = optionalString(element.getAsJsonObject(), "siteId");
             if (!site.isEmpty()) result.add(site);
         }
         return result;
@@ -692,15 +692,15 @@ public final class TargetReachPathQueryBuilder {
     static List<JsonObject> solverReadySeedsForScope(
             List<JsonObject> seeds, JsonObject manifest) {
         List<JsonObject> ready = new ArrayList<>();
-        String region = string(manifest, "regionId");
-        String occurrence = string(manifest, "occurrenceId");
-        String goal = string(manifest, "goalId");
+        String region = optionalString(manifest, "regionId");
+        String occurrence = optionalString(manifest, "occurrenceId");
+        String goal = optionalString(manifest, "goalId");
         for (JsonObject row : seeds) {
-            if ("TARGET_BRANCH_SOLVER_QUERY".equals(string(row, "kind"))
-                    && bool(row, "readyForSolver", false)
-                    && region.equals(string(row, "regionId"))
-                    && occurrence.equals(string(row, "occurrenceId"))
-                    && goal.equals(string(row, "goalId"))) {
+            if ("TARGET_BRANCH_SOLVER_QUERY".equals(optionalString(row, "kind"))
+                    && optionalBool(row, "readyForSolver", false)
+                    && region.equals(optionalString(row, "regionId"))
+                    && occurrence.equals(optionalString(row, "occurrenceId"))
+                    && goal.equals(optionalString(row, "goalId"))) {
                 ready.add(row);
             }
         }
@@ -754,9 +754,9 @@ public final class TargetReachPathQueryBuilder {
         for (JsonElement element : gaps) {
             if (element.isJsonObject()) {
                 JsonObject row = element.getAsJsonObject();
-                String reason = string(row, "reason");
+                String reason = optionalString(row, "reason");
                 reasons.add(reason.isEmpty()
-                        ? string(row, "kind") : reason);
+                        ? optionalString(row, "kind") : reason);
             } else {
                 reasons.add(element.toString());
             }
@@ -774,10 +774,10 @@ public final class TargetReachPathQueryBuilder {
         // the direct-throw witness and its non-failing siblings are all seen
         // and the failure occurrence is selected among them by
         // directRequiredWitness.
-        return region.equals(string(summary, "regionId"))
+        return region.equals(optionalString(summary, "regionId"))
                 && occurrenceId.equals(PathObservation.plannedOccurrenceOf(
-                        string(summary, "occurrenceId")))
-                && goalId.equals(string(summary, "goalId"))
+                        optionalString(summary, "occurrenceId")))
+                && goalId.equals(optionalString(summary, "goalId"))
                 && ClosureGoalKind.fromTask(summary).capturesTargetReach();
     }
 
@@ -792,23 +792,23 @@ public final class TargetReachPathQueryBuilder {
     static boolean closedPathSetApplies(JsonObject manifest,
                                         JsonObject summary) {
         if (manifest == null || summary == null
-                || !"CLOSED".equals(string(manifest, "state"))
-                || !"CLOSED".equals(string(manifest, "coverageState"))
+                || !"CLOSED".equals(optionalString(manifest, "state"))
+                || !"CLOSED".equals(optionalString(manifest, "coverageState"))
                 || array(manifest, "gaps").size() != 0
                 || array(manifest, "coverageGaps").size() != 0) {
             return false;
         }
-        String manifestSource = string(manifest, "sourceKey");
-        String summarySource = string(summary, "sourceKey");
-        return string(manifest, "regionId").equals(
-                string(summary, "regionId"))
-                && string(manifest, "goalId").equals(
-                string(summary, "goalId"))
+        String manifestSource = optionalString(manifest, "sourceKey");
+        String summarySource = optionalString(summary, "sourceKey");
+        return optionalString(manifest, "regionId").equals(
+                optionalString(summary, "regionId"))
+                && optionalString(manifest, "goalId").equals(
+                optionalString(summary, "goalId"))
                 && (manifestSource.isEmpty()
                 || manifestSource.equals(summarySource))
-                && PathObservation.plannedOccurrenceOf(string(manifest,
+                && PathObservation.plannedOccurrenceOf(optionalString(manifest,
                 "occurrenceId")).equals(
-                PathObservation.plannedOccurrenceOf(string(summary,
+                PathObservation.plannedOccurrenceOf(optionalString(summary,
                         "occurrenceId")));
     }
 
@@ -902,7 +902,7 @@ public final class TargetReachPathQueryBuilder {
         private static SelectedOccurrence decode(
                 JsonObject encoded, String region, String expectedInstance,
                 String source) throws IOException {
-            String instance = string(encoded, "occurrenceId");
+            String instance = optionalString(encoded, "occurrenceId");
             if (!expectedInstance.equals(instance)) {
                 throw new IOException(source + " has inconsistent selected "
                         + "target occurrence identity");
@@ -934,7 +934,7 @@ public final class TargetReachPathQueryBuilder {
 
         private void requireExactContext(JsonObject context)
                 throws IOException {
-            if (!instance.equals(string(context, "occurrenceId"))) {
+            if (!instance.equals(optionalString(context, "occurrenceId"))) {
                 throw new IOException("selected target symbolic context has "
                         + "the wrong occurrence identity");
             }
@@ -947,7 +947,7 @@ public final class TargetReachPathQueryBuilder {
                 List<JsonObject> coverageGaps) {
             List<JsonObject> bound = new ArrayList<>();
             for (JsonObject event : VmHandoffEvidence.eventsOf(summary)) {
-                String port = string(event, "portId");
+                String port = optionalString(event, "portId");
                 if (!exactInputPorts.contains(port)) {
                     coverageGaps.add(CoverageDivergence.of(
                             CoverageDivergence.Kind.FLOW,

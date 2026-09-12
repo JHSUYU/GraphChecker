@@ -12,9 +12,9 @@ import java.util.List;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Scheduled work for one causal-skeleton region occurrence. */
 public final class ExecutionTask extends PlanRow {
@@ -51,11 +51,11 @@ public final class ExecutionTask extends PlanRow {
         JsonObject rootLoop = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
                 rootAuthority()) ? object(encoded, LoopBoundPolicy.ROOT_LOOP)
                 : new JsonObject();
-        rootLoopMethod = string(rootLoop, LoopBoundPolicy.ROOT_LOOP_METHOD);
+        rootLoopMethod = optionalString(rootLoop, LoopBoundPolicy.ROOT_LOOP_METHOD);
         rootLoopHeaderUnitIndex = rootLoopMethod.isEmpty() ? -1
-                : integer(rootLoop, LoopBoundPolicy.HEADER_UNIT_INDEX, -1);
+                : optionalInteger(rootLoop, LoopBoundPolicy.HEADER_UNIT_INDEX, -1);
         rootLoopDemandedUnitIndex = rootLoopMethod.isEmpty() ? -1
-                : integer(rootLoop, LoopBoundPolicy.DEMANDED_UNIT_INDEX, -1);
+                : optionalInteger(rootLoop, LoopBoundPolicy.DEMANDED_UNIT_INDEX, -1);
         if (!rootLoopMethod.isEmpty() && rootLoopHeaderUnitIndex < 0) {
             throw new IllegalArgumentException("execution task " + taskId()
                     + " roots a region at a loop body with no "
@@ -68,7 +68,7 @@ public final class ExecutionTask extends PlanRow {
         }
         rootLoopControlSites = textSet(rootLoop,
                 LoopBoundPolicy.LOOP_CONTROL_SITE_IDS);
-        rootLoopSiteId = string(rootLoop, LoopBoundPolicy.LOOP_SITE_ID);
+        rootLoopSiteId = optionalString(rootLoop, LoopBoundPolicy.LOOP_SITE_ID);
         fixedCountLoopSites = fixedCountLoopSites(encoded);
     }
 
@@ -131,14 +131,14 @@ public final class ExecutionTask extends PlanRow {
         for (JsonElement element : edgeBindings) {
             if (!element.isJsonObject()) continue;
             JsonObject edge = element.getAsJsonObject();
-            addPort(selectedPorts, string(edge, "fromOutputPort"));
-            addPort(selectedPorts, string(edge, "toInputPort"));
+            addPort(selectedPorts, optionalString(edge, "fromOutputPort"));
+            addPort(selectedPorts, optionalString(edge, "toInputPort"));
         }
         JsonArray retained = new JsonArray();
         for (JsonElement element : declared) {
             if (!element.isJsonObject()) continue;
             JsonObject handoff = element.getAsJsonObject();
-            String portId = string(handoff,
+            String portId = optionalString(handoff,
                     CommunicationCatalogContract.PORT_ID);
             if (selectedPorts.contains(portId)) {
                 retained.add(handoff.deepCopy());
@@ -177,9 +177,9 @@ public final class ExecutionTask extends PlanRow {
         return result;
     }
 
-    public String goalId() { return string(encoded, "goalId"); }
+    public String goalId() { return optionalString(encoded, "goalId"); }
 
-    public String taskId() { return string(encoded, "taskId"); }
+    public String taskId() { return optionalString(encoded, "taskId"); }
 
     /**
      * Stable identity of the instrumentation owned by this plan row.  A
@@ -206,14 +206,14 @@ public final class ExecutionTask extends PlanRow {
 
     public boolean executable() {
         return "EXECUTABLE".equals(
-                string(object(encoded, "admission"), "state"));
+                optionalString(object(encoded, "admission"), "state"));
     }
 
     public String rootMethod() {
-        return string(object(encoded, "rootSelector"), "method");
+        return optionalString(object(encoded, "rootSelector"), "method");
     }
 
-    public String targetMethod() { return string(encoded, "targetMethod"); }
+    public String targetMethod() { return optionalString(encoded, "targetMethod"); }
 
     /**
      * Which activation this task's region is rooted on. {@link
@@ -222,7 +222,7 @@ public final class ExecutionTask extends PlanRow {
      * entry above it; anything else leaves the root method's own entry.
      */
     public String rootAuthority() {
-        return string(encoded, LoopBoundPolicy.ROOT_AUTHORITY);
+        return optionalString(encoded, LoopBoundPolicy.ROOT_AUTHORITY);
     }
 
     /** The method holding the loop body this region is rooted at, else "". */
@@ -261,7 +261,7 @@ public final class ExecutionTask extends PlanRow {
                     encodedLoop.getAsJsonObject(),
                     LoopBoundPolicy.LOOP_EXIT_DECISIONS)) {
                 if (encodedExit != null && encodedExit.isJsonObject()) {
-                    String site = string(encodedExit.getAsJsonObject(),
+                    String site = optionalString(encodedExit.getAsJsonObject(),
                             "siteId");
                     if (!site.isEmpty()) result.add(site);
                 }
@@ -275,11 +275,11 @@ public final class ExecutionTask extends PlanRow {
         for (JsonElement element : array(task, "retainedLoops")) {
             if (!element.isJsonObject()) continue;
             JsonObject loop = element.getAsJsonObject();
-            if (!LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(string(loop,
+            if (!LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(optionalString(loop,
                     LoopBoundPolicy.LOOP_CLASSIFICATION))) {
                 continue;
             }
-            String primary = string(loop, LoopBoundPolicy.LOOP_SITE_ID);
+            String primary = optionalString(loop, LoopBoundPolicy.LOOP_SITE_ID);
             if (!primary.isEmpty()) result.add(primary);
             result.addAll(textSet(loop,
                     LoopBoundPolicy.LOOP_CONTROL_SITE_IDS));

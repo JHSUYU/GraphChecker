@@ -19,11 +19,11 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.textString;
 
 /**
@@ -205,9 +205,9 @@ public final class SharedStateEvidence {
         if (guard == null) return false;
         if (guard.isJsonNull()) return true;
         return guard.isJsonObject() && EMPTY_CONJUNCTION_KIND.equals(
-                string(guard.getAsJsonObject(), "kind"))
+                optionalString(guard.getAsJsonObject(), "kind"))
                 && EMPTY_CONJUNCTION_AUTHORITY.equals(
-                string(guard.getAsJsonObject(), "authority"));
+                optionalString(guard.getAsJsonObject(), "authority"));
     }
 
     /**
@@ -235,7 +235,7 @@ public final class SharedStateEvidence {
             JsonObject term = current.getAsJsonObject();
             if (TRUNCATED_EXPRESSION_TYPE.equals(textString(term, "_type"))
                     && VM_SERIALIZATION_TRUNCATION_AUTHORITY.equals(
-                    string(term, "expressionAuthority"))) {
+                    optionalString(term, "expressionAuthority"))) {
                 return true;
             }
             for (String field : term.keySet()) {
@@ -277,10 +277,10 @@ public final class SharedStateEvidence {
     /** Whether {@code row} is a gap this vocabulary produced. */
     public static boolean isGap(JsonObject row) {
         return row != null
-                && GAP_KIND.equals(string(row, "kind"))
-                && GAP_AUTHORITY.equals(string(row, "authority"))
-                && !string(row, "reason").isEmpty()
-                && integer(row, "statusCode", OK) != OK;
+                && GAP_KIND.equals(optionalString(row, "kind"))
+                && GAP_AUTHORITY.equals(optionalString(row, "authority"))
+                && !optionalString(row, "reason").isEmpty()
+                && optionalInteger(row, "statusCode", OK) != OK;
     }
 
 
@@ -290,11 +290,11 @@ public final class SharedStateEvidence {
     public static String locationKey(JsonObject envelope) {
         JsonObject location = object(envelope, "location");
         if (location.size() == 0) return "";
-        String kind = string(location, "locationKind");
+        String kind = optionalString(location, "locationKind");
         if (!LOCATION_KINDS.contains(kind)) return "";
-        long owner = longInteger(location, "ownerSymRid", 0L);
+        long owner = optionalLongInteger(location, "ownerSymRid", 0L);
         if (owner == 0L || !location.has("slot")) return "";
-        int slot = integer(location, "slot", 0);
+        int slot = optionalInteger(location, "slot", 0);
         if (LOCATION_KIND_MAP_STATE.equals(kind) && slot != MAP_STATE_SLOT) {
             return "";
         }
@@ -355,8 +355,8 @@ public final class SharedStateEvidence {
     }
 
     public static String sessionLocationKey(JsonObject row) {
-        String session = string(row, SESSION_LOCATION_FIELD);
-        return session.isEmpty() ? string(row, "locationKey") : session;
+        String session = optionalString(row, SESSION_LOCATION_FIELD);
+        return session.isEmpty() ? optionalString(row, "locationKey") : session;
     }
 
     /**
@@ -365,13 +365,13 @@ public final class SharedStateEvidence {
     public static Collection<String> canonicalizeLocations(
             JsonObject summary) {
         Set<String> unresolved = new LinkedHashSet<>();
-        String occurrenceId = string(summary, "occurrenceId");
+        String occurrenceId = optionalString(summary, "occurrenceId");
         JsonObject recorded = object(summary, RECORDED_FIELD);
         if (recorded.size() > 0) {
             for (JsonElement element : array(recorded, "versions")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject row = element.getAsJsonObject();
-                String key = string(row, "locationKey");
+                String key = optionalString(row, "locationKey");
                 if (isMapState(sessionLocationKey(row))) continue;
                 String named = carrierLocationKey(row, occurrenceId);
                 if (named.isEmpty()) {
@@ -395,12 +395,12 @@ public final class SharedStateEvidence {
      */
     static String mapStateSymbolForAction(JsonObject action) {
         if (action == null) return "";
-        String sourceKey = string(action, "sourceKey");
-        long receiverObjectId = longInteger(action,
+        String sourceKey = optionalString(action, "sourceKey");
+        long receiverObjectId = optionalLongInteger(action,
                 "fieldReceiverObjectId", 0L);
         JsonArray declarations = array(action, "fieldPathDeclarations");
         String declaration = declarations.size() == 0
-                ? string(action, "leafFieldSignature")
+                ? optionalString(action, "leafFieldSignature")
                 : declarations.get(declarations.size() - 1).isJsonPrimitive()
                 ? declarations.get(declarations.size() - 1).getAsString()
                 : "";
@@ -474,8 +474,8 @@ public final class SharedStateEvidence {
         List<ContainerStateIssue> issues = new ArrayList<>();
 
         for (JsonObject summary : rows) {
-            String scope = string(summary, "boundarySessionScope");
-            String sourceKey = string(summary, "sourceKey");
+            String scope = optionalString(summary, "boundarySessionScope");
+            String sourceKey = optionalString(summary, "sourceKey");
             JsonObject recorded = object(summary, RECORDED_FIELD);
             for (JsonElement element : array(recorded, "versions")) {
                 if (!element.isJsonObject()) continue;
@@ -514,7 +514,7 @@ public final class SharedStateEvidence {
                     identities.get(binding.owner));
             if (identity != null) {
                 String held = sessionLocationKey(binding.record);
-                if (string(binding.record, SESSION_LOCATION_FIELD).isEmpty()) {
+                if (optionalString(binding.record, SESSION_LOCATION_FIELD).isEmpty()) {
                     binding.record.addProperty(SESSION_LOCATION_FIELD, held);
                 }
                 binding.record.addProperty("locationKey",
@@ -583,13 +583,13 @@ public final class SharedStateEvidence {
                 continue;
             }
             JsonObject node = current.getAsJsonObject();
-            if ("ContainerRelation".equals(string(node, "_type"))
-                    && "ASSOCIATIVE".equals(string(node, "shape"))
-                    && "STATE".equals(string(node, "operation"))) {
+            if ("ContainerRelation".equals(optionalString(node, "_type"))
+                    && "ASSOCIATIVE".equals(optionalString(node, "shape"))
+                    && "STATE".equals(optionalString(node, "operation"))) {
                 JsonObject receiver = object(node, "receiver");
                 if ("SymbolExpression".equals(
-                        string(receiver, "_type"))) {
-                    String raw = string(receiver, "_exp");
+                        optionalString(receiver, "_type"))) {
+                    String raw = optionalString(receiver, "_exp");
                     long owner = associativeStateOwner(raw);
                     if (owner > 0L && !scope.isEmpty()) {
                         RuntimeMapOwner key = new RuntimeMapOwner(scope,
@@ -689,17 +689,17 @@ public final class SharedStateEvidence {
         private static RuntimeMapIdentity of(
                 JsonObject record, String sourceKey) {
             JsonObject carrier = object(record, "carrier");
-            String kind = string(carrier, "kind");
-            String declaringClass = string(carrier, "declaringClass");
-            String fieldName = string(carrier, "fieldName");
-            String descriptor = string(carrier, "descriptor");
-            long receiverObjectId = longInteger(carrier,
+            String kind = optionalString(carrier, "kind");
+            String declaringClass = optionalString(carrier, "declaringClass");
+            String fieldName = optionalString(carrier, "fieldName");
+            String descriptor = optionalString(carrier, "descriptor");
+            long receiverObjectId = optionalLongInteger(carrier,
                     "receiverObjectId", 0L);
-            String evidenceSource = string(object(record,
+            String evidenceSource = optionalString(object(record,
                     RecordedEvidenceIdentity.FIELD), "sourceKey");
             String expectedField = declaringClass + "#" + fieldName + ":"
                     + descriptor;
-            String statedField = string(carrier, "fieldKey");
+            String statedField = optionalString(carrier, "fieldKey");
             List<String> missing = new ArrayList<>();
             if (sourceKey.isEmpty()) missing.add("sourceKey");
             if (!sourceKey.equals(evidenceSource)) {
@@ -773,20 +773,20 @@ public final class SharedStateEvidence {
             JsonObject row, String occurrenceId) {
         JsonObject carrier = object(row, "carrier");
         if (carrier.size() == 0) return "";
-        String declaringClass = string(carrier, "declaringClass");
-        String fieldName = string(carrier, "fieldName");
+        String declaringClass = optionalString(carrier, "declaringClass");
+        String fieldName = optionalString(carrier, "fieldName");
         if (declaringClass.isEmpty() || fieldName.isEmpty()) return "";
-        return canonicalLocationKey(string(row, "locationKey"),
+        return canonicalLocationKey(optionalString(row, "locationKey"),
                 declaringClass + "#" + fieldName,
                 occurrenceId,
-                longInteger(carrier, "receiverObjectId", 0L));
+                optionalLongInteger(carrier, "receiverObjectId", 0L));
     }
 
     private static void rename(JsonObject row, String session,
                                String canonical) {
-        String heldSession = string(row, SESSION_LOCATION_FIELD);
+        String heldSession = optionalString(row, SESSION_LOCATION_FIELD);
         if (!heldSession.isEmpty()
-                && !heldSession.equals(string(row, "locationKey"))) return;
+                && !heldSession.equals(optionalString(row, "locationKey"))) return;
         if (heldSession.isEmpty()) {
             row.addProperty(SESSION_LOCATION_FIELD, session);
         }
@@ -806,12 +806,12 @@ public final class SharedStateEvidence {
         if (envelope == null || envelope.size() == 0) {
             return "no version envelope";
         }
-        if (!VERSIONS_ENVELOPE_KIND.equals(string(envelope, "kind"))
-                || integer(envelope, "schemaVersion", -1) != SCHEMA_VERSION) {
+        if (!VERSIONS_ENVELOPE_KIND.equals(optionalString(envelope, "kind"))
+                || optionalInteger(envelope, "schemaVersion", -1) != SCHEMA_VERSION) {
             return "envelope is not an authoritative version store";
         }
         if (!booleanMember(envelope, "selected")
-                || !bool(envelope, "selected", false)) {
+                || !optionalBool(envelope, "selected", false)) {
             return "location was never selected as a carrier";
         }
         if (locationKey(envelope).isEmpty()) {
@@ -833,7 +833,7 @@ public final class SharedStateEvidence {
         if (!booleanMember(envelope, "serializationTruncated")) {
             return "envelope omits version serialization completeness";
         }
-        if (bool(envelope, "serializationTruncated", false)) {
+        if (optionalBool(envelope, "serializationTruncated", false)) {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": version envelope";
         }
@@ -843,7 +843,7 @@ public final class SharedStateEvidence {
             if (!element.isJsonObject()) return "version is not an object";
             String fault = versionFault(element.getAsJsonObject(), mapState);
             if (!fault.isEmpty()) return fault;
-            long id = longInteger(element.getAsJsonObject(),
+            long id = optionalLongInteger(element.getAsJsonObject(),
                     "fieldVersionId", 0L);
             if (!versionIds.add(id)) {
                 return "duplicate fieldVersionId " + id;
@@ -869,9 +869,9 @@ public final class SharedStateEvidence {
      * Admits one published version.
      */
     private static String versionFault(JsonObject version, boolean mapState) {
-        long id = longInteger(version, "fieldVersionId", 0L);
+        long id = optionalLongInteger(version, "fieldVersionId", 0L);
         if (id <= 0L) return "version has no fieldVersionId";
-        String versionKind = string(version, "versionKind");
+        String versionKind = optionalString(version, "versionKind");
         if (!VERSION_KINDS.contains(versionKind)) {
             return "version " + id + " has no declared kind";
         }
@@ -880,9 +880,9 @@ public final class SharedStateEvidence {
             return "version " + id + " has kind " + versionKind
                     + " that its location kind does not publish";
         }
-        if (longInteger(version, "regionEnterEventId", 0L) <= 0L
-                || string(version, "regionId").isEmpty()
-                || string(version, "taskId").isEmpty()) {
+        if (optionalLongInteger(version, "regionEnterEventId", 0L) <= 0L
+                || optionalString(version, "regionId").isEmpty()
+                || optionalString(version, "taskId").isEmpty()) {
             return "version " + id + " names no writer case";
         }
         if (!version.has("pathGuard")) {
@@ -906,11 +906,11 @@ public final class SharedStateEvidence {
     }
 
     private static String readFault(JsonObject read) {
-        long readEvent = longInteger(read, "readEventId", 0L);
+        long readEvent = optionalLongInteger(read, "readEventId", 0L);
         if (readEvent <= 0L) return "read has no readEventId";
-        if (longInteger(read, "regionEnterEventId", 0L) <= 0L
-                || string(read, "regionId").isEmpty()
-                || string(read, "taskId").isEmpty()) {
+        if (optionalLongInteger(read, "regionEnterEventId", 0L) <= 0L
+                || optionalString(read, "regionId").isEmpty()
+                || optionalString(read, "taskId").isEmpty()) {
             return "read " + readEvent + " names no reader case";
         }
         return "";
@@ -918,14 +918,14 @@ public final class SharedStateEvidence {
 
     /** Whether the envelope's writer set is still complete. */
     public static boolean writerSetComplete(JsonObject envelope) {
-        return bool(envelope, "writerSetComplete", false);
+        return optionalBool(envelope, "writerSetComplete", false);
     }
 
     /**
      * Whether the VM dropped read-log entries for this location.
      */
     public static boolean readLogTruncated(JsonObject envelope) {
-        return bool(envelope, "readLogTruncated", false);
+        return optionalBool(envelope, "readLogTruncated", false);
     }
 
 
@@ -953,11 +953,11 @@ public final class SharedStateEvidence {
     /** Whether {@code row} is an admitted version-store record. */
     public static boolean isVersionsRecord(JsonObject row) {
         return row != null
-                && VERSIONS_RECORD_KIND.equals(string(row, "kind"))
-                && RECORD_AUTHORITY.equals(string(row, "authority"))
-                && integer(row, "schemaVersion", -1) == RECORD_SCHEMA_VERSION
+                && VERSIONS_RECORD_KIND.equals(optionalString(row, "kind"))
+                && RECORD_AUTHORITY.equals(optionalString(row, "authority"))
+                && optionalInteger(row, "schemaVersion", -1) == RECORD_SCHEMA_VERSION
                 && RecordedEvidenceIdentity.stamped(row)
-                && !string(row, "locationKey").isEmpty()
+                && !optionalString(row, "locationKey").isEmpty()
                 && versionsFault(object(row, "envelope")).isEmpty();
     }
 
@@ -992,13 +992,13 @@ public final class SharedStateEvidence {
             return "node is not a guarded read-from choice";
         }
         if (!GUARDED_READ_AUTHORITY.equals(
-                string(node, "expressionAuthority"))) {
+                optionalString(node, "expressionAuthority"))) {
             return "guarded read carries no VM authority";
         }
-        if (string(node, "_java_type").isEmpty()) {
+        if (optionalString(node, "_java_type").isEmpty()) {
             return "guarded read names no Java value sort";
         }
-        long readEvent = longInteger(node, "readEventId", 0L);
+        long readEvent = optionalLongInteger(node, "readEventId", 0L);
         if (readEvent <= 0L) return "guarded read has no readEventId";
         if (locationKey(node).isEmpty()) {
             return "guarded read names no addressable location";
@@ -1019,7 +1019,7 @@ public final class SharedStateEvidence {
             JsonElement element = candidates.get(index);
             if (!element.isJsonObject()) return "candidate is not an object";
             JsonObject candidate = element.getAsJsonObject();
-            String selector = string(candidate, "selector");
+            String selector = optionalString(candidate, "selector");
             if (selector.isEmpty()) return "candidate has no selector";
             if (!seen.add(selector)) {
                 return "duplicate candidate selector " + selector;
@@ -1044,12 +1044,12 @@ public final class SharedStateEvidence {
 
     private static String candidateFault(JsonObject candidate,
                                          boolean mapState) {
-        String selector = string(candidate, "selector");
-        long version = longInteger(candidate, "fieldVersionId", 0L);
+        String selector = optionalString(candidate, "selector");
+        long version = optionalLongInteger(candidate, "fieldVersionId", 0L);
         if (version <= 0L) {
             return "candidate " + selector + " names no recorded write";
         }
-        String versionKind = string(candidate, "versionKind");
+        String versionKind = optionalString(candidate, "versionKind");
         if (!VERSION_KINDS.contains(versionKind)
                 || !INITIAL_VERSION_KIND.equals(versionKind)
                 && stateVersionKind(versionKind) != mapState) {

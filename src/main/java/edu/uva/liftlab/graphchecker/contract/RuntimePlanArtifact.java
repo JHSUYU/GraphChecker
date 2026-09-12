@@ -20,8 +20,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Canonical runtime-planning artifact.
@@ -98,9 +98,9 @@ public final class RuntimePlanArtifact {
         List<JsonObject> compactPlans = new ArrayList<>();
         for (int index = 1; index < rows.size(); index++) {
             JsonObject row = rows.get(index);
-            if (!PLAN_KIND.equals(string(row, "kind"))) {
+            if (!PLAN_KIND.equals(optionalString(row, "kind"))) {
                 throw new IOException("unknown runtime plan row kind "
-                        + string(row, "kind") + ": " + path + ":"
+                        + optionalString(row, "kind") + ": " + path + ":"
                         + (index + 1));
             }
             compactPlans.add(row);
@@ -171,8 +171,8 @@ public final class RuntimePlanArtifact {
     private static JsonObject catalog(List<JsonObject> rows, Path path)
             throws IOException {
         if (rows.isEmpty()
-                || !CATALOG_KIND.equals(string(rows.get(0), "kind"))
-                || integer(rows.get(0), "schemaVersion", -1)
+                || !CATALOG_KIND.equals(optionalString(rows.get(0), "kind"))
+                || optionalInteger(rows.get(0), "schemaVersion", -1)
                 != SCHEMA_VERSION) {
             throw new IOException("runtime edge catalog must be the first row: "
                     + path);
@@ -195,7 +195,7 @@ public final class RuntimePlanArtifact {
             for (JsonElement bindingElement : array(goal,
                     "edgeBindings")) {
                 JsonObject binding = bindingElement.getAsJsonObject();
-                String id = string(binding, "edgeId");
+                String id = optionalString(binding, "edgeId");
                 JsonObject evidence = edgeById.get(id);
                 if (id.isEmpty() || !binding.equals(evidence)) {
                     throw new IllegalArgumentException(
@@ -253,7 +253,7 @@ public final class RuntimePlanArtifact {
             List<JsonObject> edges) {
         Map<String, JsonObject> result = new LinkedHashMap<>();
         for (JsonObject edge : edges) {
-            String id = string(edge, "edgeId");
+            String id = optionalString(edge, "edgeId");
             if (id.isEmpty() || edge.has("bindings")
                     || result.putIfAbsent(id, edge) != null) {
                 throw new IllegalArgumentException(

@@ -106,7 +106,7 @@ final class StaticSymbolicSourceDiscovery {
                                 rejected.getMessage());
                     }
                     if (phaseIdentities.add(sourceId + "\n"
-                            + JsonFields.string(phase, "siteId"))) {
+                            + JsonFields.optionalString(phase, "siteId"))) {
                         phases.add(phase);
                         phaseTraceMethods.add(signature);
                     }

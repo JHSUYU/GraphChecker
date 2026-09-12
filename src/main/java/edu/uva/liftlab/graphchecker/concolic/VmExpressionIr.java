@@ -9,9 +9,9 @@ import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * The one reading of the custom VM's expression IR the Composer and the
@@ -86,7 +86,7 @@ public final class VmExpressionIr {
         }
         if (!expression.isJsonObject()) return false;
         JsonObject node = expression.getAsJsonObject();
-        String type = string(node, "_type");
+        String type = optionalString(node, "_type");
         if (SYMBOL_TYPE.equals(type)
                 || CONSUMER_BOUNDARY_TYPE.equals(type)
                 || READ_FROM_TYPE.equals(type)) {
@@ -106,22 +106,22 @@ public final class VmExpressionIr {
     public static JsonObject exactSymbolRoot(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject root = expression.getAsJsonObject();
-        return SYMBOL_TYPE.equals(string(root, "_type"))
-                && !string(root, "_exp").isEmpty()
-                && !string(root, "_java_type").isEmpty()
+        return SYMBOL_TYPE.equals(optionalString(root, "_type"))
+                && !optionalString(root, "_exp").isEmpty()
+                && !optionalString(root, "_java_type").isEmpty()
                 && !SharedStateEvidence.containsVmSerializationTruncation(
                 root) ? root : null;
     }
 
     static boolean isConsumerBoundary(JsonElement expression) {
         return expression != null && expression.isJsonObject()
-                && CONSUMER_BOUNDARY_TYPE.equals(string(
+                && CONSUMER_BOUNDARY_TYPE.equals(optionalString(
                 expression.getAsJsonObject(), "_type"));
     }
 
     static boolean isConsumerBoundaryReference(JsonElement expression) {
         return expression != null && expression.isJsonObject()
-                && CONSUMER_BOUNDARY_REFERENCE_TYPE.equals(string(
+                && CONSUMER_BOUNDARY_REFERENCE_TYPE.equals(optionalString(
                 expression.getAsJsonObject(), "_type"));
     }
 
@@ -137,7 +137,7 @@ public final class VmExpressionIr {
             return "expression is not a ConsumerBoundaryExpression";
         }
         JsonObject row = expression.getAsJsonObject();
-        String kind = string(row, BOUNDARY_KIND);
+        String kind = optionalString(row, BOUNDARY_KIND);
         if (!(RPC_ATTACH.equals(kind) || FIELD_READ.equals(kind))) {
             return "consumer boundary has an unsupported kind";
         }
@@ -152,7 +152,7 @@ public final class VmExpressionIr {
         if (expectedEventId > 0L && eventId != expectedEventId) {
             return "consumer boundary event disagrees with its evidence";
         }
-        if (string(row, "_java_type").isEmpty()) {
+        if (optionalString(row, "_java_type").isEmpty()) {
             return "consumer boundary names no Java type";
         }
         JsonElement payload = row.get(EXPRESSION);
@@ -306,22 +306,22 @@ public final class VmExpressionIr {
     static boolean isPrimitiveIntExpression(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject object = expression.getAsJsonObject();
-        String javaType = string(object, "_java_type");
+        String javaType = optionalString(object, "_java_type");
         return "I".equals(javaType) || "int".equals(javaType);
     }
 
     static Integer exactIntLiteral(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         if (!("ConstExpr".equals(type) || "ConSymbolExp".equals(type))) {
             return null;
         }
-        String javaType = string(object, "_java_type");
+        String javaType = optionalString(object, "_java_type");
         if (!("I".equals(javaType) || "int".equals(javaType))) {
             return null;
         }
-        String value = constantPayload(string(object, "_exp"));
+        String value = constantPayload(optionalString(object, "_exp"));
         if (!value.matches("-?[0-9]+")) return null;
         try {
             return Integer.valueOf(value);
@@ -334,30 +334,30 @@ public final class VmExpressionIr {
                                      Predicate<String> stringTyped) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         if (!("ConStringSymbolExp".equals(type)
                 || "ConstExpr".equals(type)
                 || "ConSymbolExp".equals(type))) return null;
-        if (!stringTyped.test(string(object, "_java_type"))) {
+        if (!stringTyped.test(optionalString(object, "_java_type"))) {
             return null;
         }
-        return constantPayload(string(object, "_exp"));
+        return constantPayload(optionalString(object, "_exp"));
     }
 
     static boolean provablyStringValued(JsonElement expression,
                                         Predicate<String> stringTyped) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject object = expression.getAsJsonObject();
-        String type = string(object, "_type");
+        String type = optionalString(object, "_type");
         if ("ConStringSymbolExp".equals(type)) return true;
         if ("SymbolExpression".equals(type)
                 || "ConSymbolExp".equals(type)
                 || "ConstExpr".equals(type)) {
-            return stringTyped.test(string(object, "_java_type"));
+            return stringTyped.test(optionalString(object, "_java_type"));
         }
         if (!"OpStrExpression".equals(type)
-                || bool(object, "_is_not", false)) return false;
-        String operation = string(object, "_name");
+                || optionalBool(object, "_is_not", false)) return false;
+        String operation = optionalString(object, "_name");
         if ("toString".equals(operation)) {
             JsonArray params = array(object, "_param_list");
             return params.size() == 1
@@ -378,18 +378,18 @@ public final class VmExpressionIr {
             return false;
         }
         JsonObject object = expression.getAsJsonObject();
-        if (!"OpStrExpression".equals(string(object, "_type"))
-                || !"concat".equals(string(object, "_name"))
-                || bool(object, "_is_not", false)) {
+        if (!"OpStrExpression".equals(optionalString(object, "_type"))
+                || !"concat".equals(optionalString(object, "_name"))
+                || optionalBool(object, "_is_not", false)) {
             return false;
         }
         JsonArray params = array(object, "_param_list");
         if (params.size() == 0) return false;
         for (JsonElement parameter : params) {
             if (parameter != null && parameter.isJsonObject()
-                    && "OpStrExpression".equals(string(
+                    && "OpStrExpression".equals(optionalString(
                     parameter.getAsJsonObject(), "_type"))
-                    && "concat".equals(string(
+                    && "concat".equals(optionalString(
                     parameter.getAsJsonObject(), "_name"))) {
                 if (!flattenConcat(parameter, result)) return false;
             } else {

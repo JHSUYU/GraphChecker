@@ -3,9 +3,9 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 
 /** Evidence gate shared by graph discovery and SMT preparation. */
@@ -33,15 +33,15 @@ public final class AutomaticRegionEdge {
     /** Whether one edge is a candidate delivery the trace correlated. */
     public static boolean tracedExchangeCandidate(JsonObject edge) {
         if (edge == null
-                || integer(edge, "schemaVersion", -1) != 3
-                || !RUNTIME_PROTOCOL_EDGE_KIND.equals(string(edge, "kind"))
-                || string(edge, "fromOccurrenceId").isEmpty()
-                || string(edge, "toOccurrenceId").isEmpty()
-                || string(edge, "fromOutputPort").isEmpty()
-                || string(edge, "toInputPort").isEmpty()
+                || optionalInteger(edge, "schemaVersion", -1) != 3
+                || !RUNTIME_PROTOCOL_EDGE_KIND.equals(optionalString(edge, "kind"))
+                || optionalString(edge, "fromOccurrenceId").isEmpty()
+                || optionalString(edge, "toOccurrenceId").isEmpty()
+                || optionalString(edge, "fromOutputPort").isEmpty()
+                || optionalString(edge, "toInputPort").isEmpty()
                 || !TRACED_EXCHANGE_AUTHORITY.equals(firstNonBlank(
-                string(edge, "correlationAuthority"),
-                string(edge, "authority")))) {
+                optionalString(edge, "correlationAuthority"),
+                optionalString(edge, "authority")))) {
             return false;
         }
         return true;
@@ -51,16 +51,16 @@ public final class AutomaticRegionEdge {
     /** One observed shared-location relation used only to link replays. */
     public static boolean sharedLocationCandidate(JsonObject edge) {
         return edge != null
-                && integer(edge, "schemaVersion", -1) == 3
-                && "RUNTIME_FIELD_FLOW".equals(string(edge, "kind"))
-                && !string(edge, "fromOccurrenceId").isEmpty()
-                && !string(edge, "toOccurrenceId").isEmpty()
-                && !string(edge, "fromOutputPort").isEmpty()
-                && !string(edge, "toInputPort").isEmpty()
-                && !string(edge, SharedFieldFlow.EDGE_LOCATION).isEmpty()
+                && optionalInteger(edge, "schemaVersion", -1) == 3
+                && "RUNTIME_FIELD_FLOW".equals(optionalString(edge, "kind"))
+                && !optionalString(edge, "fromOccurrenceId").isEmpty()
+                && !optionalString(edge, "toOccurrenceId").isEmpty()
+                && !optionalString(edge, "fromOutputPort").isEmpty()
+                && !optionalString(edge, "toInputPort").isEmpty()
+                && !optionalString(edge, SharedFieldFlow.EDGE_LOCATION).isEmpty()
                 && SharedFieldFlow.LOCATION_MATCH_AUTHORITY.equals(
-                firstNonBlank(string(edge, "correlationAuthority"),
-                        string(edge, "authority")));
+                firstNonBlank(optionalString(edge, "correlationAuthority"),
+                        optionalString(edge, "authority")));
     }
 
     /** Evidence that may select the two recorded interaction summaries. */
@@ -77,35 +77,35 @@ public final class AutomaticRegionEdge {
      */
     public static boolean trustedRequestFaultControl(JsonObject edge) {
         if (edge == null
-                || integer(edge, "schemaVersion", -1) != 3
+                || optionalInteger(edge, "schemaVersion", -1) != 3
                 || !RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(
-                string(edge, "kind"))
+                optionalString(edge, "kind"))
                 || !EXACT_REQUEST_FAULT_CONTROL_AUTHORITY.equals(
-                firstNonBlank(string(edge, "correlationAuthority"),
-                        string(edge, "authority")))
-                || string(edge, "fromOccurrenceId").isEmpty()
-                || string(edge, "toOccurrenceId").isEmpty()
-                || string(edge, "sourceKey").isEmpty()
+                firstNonBlank(optionalString(edge, "correlationAuthority"),
+                        optionalString(edge, "authority")))
+                || optionalString(edge, "fromOccurrenceId").isEmpty()
+                || optionalString(edge, "toOccurrenceId").isEmpty()
+                || optionalString(edge, "sourceKey").isEmpty()
                 || OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
-                string(edge, "sourceKey"))
-                || !string(edge, "sourceKey").equals(
-                string(edge, "consumerSourceKey"))
-                || string(edge, "requestKey").isEmpty()
-                || string(edge, "exchangeTransaction").isEmpty()
-                || string(edge, "faultPortId").isEmpty()
-                || string(edge, "symbolicName").isEmpty()
-                || string(edge, "controlledResponseEdgeId").isEmpty()
+                optionalString(edge, "sourceKey"))
+                || !optionalString(edge, "sourceKey").equals(
+                optionalString(edge, "consumerSourceKey"))
+                || optionalString(edge, "requestKey").isEmpty()
+                || optionalString(edge, "exchangeTransaction").isEmpty()
+                || optionalString(edge, "faultPortId").isEmpty()
+                || optionalString(edge, "symbolicName").isEmpty()
+                || optionalString(edge, "controlledResponseEdgeId").isEmpty()
                 || !"CONCRETE_STRUCTURE_CARRIER".equals(
-                string(edge, "dependencyRole"))) {
+                optionalString(edge, "dependencyRole"))) {
             return false;
         }
-        long fault = longInteger(edge, "faultEventSeq", -1L);
-        long requestSend = longInteger(edge, "requestSenderEventSeq", -1L);
-        long requestReceive = longInteger(edge,
+        long fault = optionalLongInteger(edge, "faultEventSeq", -1L);
+        long requestSend = optionalLongInteger(edge, "requestSenderEventSeq", -1L);
+        long requestReceive = optionalLongInteger(edge,
                 "requestReceiverEventSeq", -1L);
-        long responseSend = longInteger(edge,
+        long responseSend = optionalLongInteger(edge,
                 "responseSenderEventSeq", -1L);
-        long responseReceive = longInteger(edge,
+        long responseReceive = optionalLongInteger(edge,
                 "responseReceiverEventSeq", -1L);
         return fault >= 0L && requestSend >= 0L
                 && requestSend < fault

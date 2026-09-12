@@ -41,8 +41,8 @@ import java.util.zip.GZIPInputStream;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.objectWithoutNulls;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
@@ -1149,12 +1149,12 @@ public final class CausynthTraceRecorder {
                 }
                 JsonObject row = JsonParser.parseString(line)
                         .getAsJsonObject();
-                String region = string(row, "regionId");
+                String region = optionalString(row, "regionId");
                 String selectedAnchor = anchorByRegion.get(region);
                 if (selectedAnchor == null) {
                     continue;
                 }
-                String rootMethod = string(row, "rootMethod");
+                String rootMethod = optionalString(row, "rootMethod");
                 boolean rooted = false;
                 for (JsonElement method : row.getAsJsonArray("methods")) {
                     rooted = rooted || rootMethod.equals(method.getAsString());
@@ -1206,10 +1206,10 @@ public final class CausynthTraceRecorder {
                 StandardCharsets.UTF_8));
         JsonObject manifest = parsed.isJsonObject()
                 ? parsed.getAsJsonObject() : new JsonObject();
-        if (integer(manifest, "schemaVersion", -1) != 1
+        if (optionalInteger(manifest, "schemaVersion", -1) != 1
                 || !"STREAMING_RUNTIME_TRACE".equals(
-                string(manifest, "kind"))
-                || !"CLOSED".equals(string(manifest, "status"))) {
+                optionalString(manifest, "kind"))
+                || !"CLOSED".equals(optionalString(manifest, "status"))) {
             throw new IOException("Runtime trace is incomplete: "
                     + manifestFile);
         }

@@ -29,13 +29,13 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Converts one VM execution row into one semantic path row. */
 public final class ConcolicSummaryImporter {
@@ -162,11 +162,11 @@ public final class ConcolicSummaryImporter {
 
         ResultRow(JsonObject raw, int line) {
             this.line = line;
-            this.taskId = string(raw, "taskId");
-            this.replayGroupId = string(raw, "replayGroupId");
-            this.familySnapshotDigest = string(raw,
+            this.taskId = optionalString(raw, "taskId");
+            this.replayGroupId = optionalString(raw, "replayGroupId");
+            this.familySnapshotDigest = optionalString(raw,
                     "familySnapshotDigest");
-            this.event = string(raw, "event");
+            this.event = optionalString(raw, "event");
             this.activationOrdinal = exactInteger(raw,
                     PathObservation.ACTIVATION_ORDINAL, -1);
             this.plannedOccurrenceId = exactText(raw,
@@ -174,13 +174,13 @@ public final class ConcolicSummaryImporter {
             this.rowOccurrenceId = exactText(raw, "occurrenceId");
             this.targetReachedFlag =
                     raw.has(PathObservation.TARGET_REACHED)
-                    ? Boolean.valueOf(bool(raw,
+                    ? Boolean.valueOf(optionalBool(raw,
                             PathObservation.TARGET_REACHED, false))
                     : null;
-            this.skipKind = string(raw, "skipKind");
-            this.skipReason = string(raw, "reason");
-            this.exitKind = string(raw, "exitKind");
-            this.exceptionType = string(raw, "exceptionType");
+            this.skipKind = optionalString(raw, "skipKind");
+            this.skipReason = optionalString(raw, "reason");
+            this.exitKind = optionalString(raw, "exitKind");
+            this.exceptionType = optionalString(raw, "exceptionType");
             this.engine = object(raw, "engineSummary");
             this.boundarySessionScope = replayGroupId.isEmpty()
                     ? "" : "replay-group:" + replayGroupId;
@@ -231,7 +231,7 @@ public final class ConcolicSummaryImporter {
                 Boolean reused = mint == null ? null
                         : exactBoolean(mint, SymbolicSourceEvidence.REUSED);
                 if (reused == null || !reused
-                        && string(mint, SymbolicSourceEvidence.SYMBOL)
+                        && optionalString(mint, SymbolicSourceEvidence.SYMBOL)
                         .isEmpty()) {
                     if (refused.isEmpty()) {
                         refused = SYMBOLIZED_INPUT_ROW_MALFORMED;
@@ -258,7 +258,7 @@ public final class ConcolicSummaryImporter {
             SortedSet<String> result = new TreeSet<>();
             for (JsonElement element : sourcePhaseObservations) {
                 if (!element.isJsonObject()) continue;
-                String matched = string(element.getAsJsonObject(),
+                String matched = optionalString(element.getAsJsonObject(),
                         "matchedPhaseId");
                 if (!matched.isEmpty()) result.add(matched);
             }
@@ -275,7 +275,7 @@ public final class ConcolicSummaryImporter {
             Set<String> result = new LinkedHashSet<>();
             for (JsonElement element : rows) {
                 if (!element.isJsonObject()) continue;
-                String site = string(element.getAsJsonObject(), "siteId");
+                String site = optionalString(element.getAsJsonObject(), "siteId");
                 if (!site.isEmpty()) result.add(site);
             }
             return result;
@@ -404,9 +404,9 @@ public final class ConcolicSummaryImporter {
             ResultRow source = sourceRows.get(issue.summary);
             if (source != null) {
                 diagnostics.add(diagnostic(source,
-                        string(issue.gap, "reason"),
-                        string(issue.gap, "locationKey") + ": "
-                                + string(issue.gap, "detail")));
+                        optionalString(issue.gap, "reason"),
+                        optionalString(issue.gap, "locationKey") + ": "
+                                + optionalString(issue.gap, "detail")));
             }
         }
         for (int index = 0; index < summaries.size(); index++) {
@@ -506,9 +506,9 @@ public final class ConcolicSummaryImporter {
 
         JsonObject object = source.getAsJsonObject();
         boolean mutableStateReceiver = "ContainerRelation".equals(
-                string(object, "_type"))
-                && "ASSOCIATIVE".equals(string(object, "shape"))
-                && "STATE".equals(string(object, "operation"));
+                optionalString(object, "_type"))
+                && "ASSOCIATIVE".equals(optionalString(object, "shape"))
+                && "STATE".equals(optionalString(object, "operation"));
         JsonObject copy = null;
         int index = 0;
         for (Map.Entry<String, JsonElement> field : object.entrySet()) {
@@ -517,7 +517,7 @@ public final class ConcolicSummaryImporter {
                     memo);
             if (mutableStateReceiver && "receiver".equals(field.getKey())
                     && detached != null && detached.isJsonObject()
-                    && "SymbolExpression".equals(string(
+                    && "SymbolExpression".equals(optionalString(
                     detached.getAsJsonObject(), "_type"))) {
                 detached = shallowCopy(detached.getAsJsonObject());
             }
@@ -563,19 +563,19 @@ public final class ConcolicSummaryImporter {
         private static ActivationCensus of(List<JsonObject> rawResults) {
             ActivationCensus census = new ActivationCensus();
             for (JsonObject raw : rawResults) {
-                if (!"CONCOLIC_REGION_RESULT".equals(string(raw, "event"))) {
+                if (!"CONCOLIC_REGION_RESULT".equals(optionalString(raw, "event"))) {
                     continue;
                 }
                 int ordinal = exactInteger(raw,
                         PathObservation.ACTIVATION_ORDINAL, -1);
                 if (ordinal < 1) continue;
-                String taskId = string(raw, "taskId");
+                String taskId = optionalString(raw, "taskId");
                 if (!census.ordinalsByTask.computeIfAbsent(taskId,
                         ignored -> new LinkedHashSet<>()).add(ordinal)) {
                     census.duplicatesByTask.computeIfAbsent(taskId,
                             ignored -> new ArrayList<>()).add(ordinal);
                 }
-                if (bool(raw, PathObservation.TARGET_REACHED, false)) {
+                if (optionalBool(raw, PathObservation.TARGET_REACHED, false)) {
                     census.targetReachedTasks.add(taskId);
                 }
             }
@@ -636,8 +636,8 @@ public final class ConcolicSummaryImporter {
         // condition at the point it gave up, and the activation then runs on
         // concretely to whatever exit it reaches.
         JsonObject engine = row.engine;
-        String engineTaskId = string(engine, "taskId");
-        String engineRegionId = string(engine, "regionId");
+        String engineTaskId = optionalString(engine, "taskId");
+        String engineRegionId = optionalString(engine, "regionId");
         if ((!engineTaskId.isEmpty()
                 && !engineTaskId.equals(task.taskId()))
                 || (!engineRegionId.isEmpty()
@@ -648,9 +648,9 @@ public final class ConcolicSummaryImporter {
                             + engineRegionId,
                     diagnostics, observation);
         }
-        if (bool(engine, "aborted", false)) {
+        if (optionalBool(engine, "aborted", false)) {
             return refuse(row, "SYMBOLIC_EXECUTION_ABORTED",
-                    firstNonBlank(string(engine, "abortReason"),
+                    firstNonBlank(optionalString(engine, "abortReason"),
                             "UNSPECIFIED"), diagnostics, observation);
         }
         String exitKind = row.exitKind;
@@ -682,11 +682,11 @@ public final class ConcolicSummaryImporter {
         boolean anyBranchDecision =
                 SemanticPath.hasAdmissibleBranchDecision(
                         row.branchMappings);
-        boolean pathConditionOmitted = bool(engine,
+        boolean pathConditionOmitted = optionalBool(engine,
                 "pathConditionOmitted", false);
         boolean branchAndAuxiliarySummary =
                 SELECTED_BRANCH_AND_AUXILIARY_AUTHORITY.equals(
-                        string(engine, "pathConditionAuthority"));
+                        optionalString(engine, "pathConditionAuthority"));
         if (pathConditionOmitted) {
             JsonElement omittedPath = engine.get("pathCondition");
             if (omittedPath == null || !omittedPath.isJsonArray()
@@ -696,17 +696,17 @@ public final class ConcolicSummaryImporter {
             if (!branchAndAuxiliarySummary) {
                 issues.add("OMITTED_PATH_CONDITION_AUTHORITY_MISSING");
             }
-            if (!bool(engine, "active", false)) {
+            if (!optionalBool(engine, "active", false)) {
                 issues.add("OMITTED_PATH_CONDITION_ENGINE_INACTIVE");
             }
-        } else if (bool(engine, "active", false)) {
+        } else if (optionalBool(engine, "active", false)) {
             // Only the selected branch plus bounded auxiliary channel is
             // admitted.
             issues.add("AMBIENT_PATH_CONDITION_NOT_ADMITTED");
         }
-        if (!bool(engine, "complete", false)) {
+        if (!optionalBool(engine, "complete", false)) {
             issues.add("VM_SUMMARY_INCOMPLETE:"
-                    + string(engine, "abortReason"));
+                    + optionalString(engine, "abortReason"));
         }
         // One shape, one reader.
         SemanticPath path = SemanticPath.fromSelectedEvidence(engine,
@@ -902,9 +902,9 @@ public final class ConcolicSummaryImporter {
                             observation.keySet())
                     && exactInteger(observation, "schemaVersion", -1) == 1
                     && "CONFIGURED_SOURCE_PHASE_OBSERVATION".equals(
-                    string(observation, "kind"))
+                    optionalString(observation, "kind"))
                     && "EXACT_ACTIVE_CALL_SITE_REPLAY_V1".equals(
-                    string(observation, "authority"))
+                    optionalString(observation, "authority"))
                     && index == expectedIndex;
             expectedIndex++;
             if (!exactSchema) {
@@ -912,7 +912,7 @@ public final class ConcolicSummaryImporter {
                         + index);
                 continue;
             }
-            String phaseId = string(observation, "matchedPhaseId");
+            String phaseId = optionalString(observation, "matchedPhaseId");
             long invocationId = positiveExactLong(observation,
                     "invocationId");
             if (!declaredPhases.contains(phaseId)
@@ -950,9 +950,9 @@ public final class ConcolicSummaryImporter {
                 BoundedLoopComposition.PLAN_FIELD)) {
             if (!element.isJsonObject()) continue;
             JsonObject declaration = element.getAsJsonObject();
-            String loopSiteId = string(declaration,
+            String loopSiteId = optionalString(declaration,
                     LoopBoundPolicy.LOOP_SITE_ID);
-            String classification = string(declaration,
+            String classification = optionalString(declaration,
                     LoopBoundPolicy.LOOP_CLASSIFICATION);
             if (loopSiteId.isEmpty()) {
                 result.gap(LoopBoundPolicy.PATH_LOOP_COUNT_MISSING, "",
@@ -1051,7 +1051,7 @@ public final class ConcolicSummaryImporter {
      * this path completed no backedge traversal. */
     static int sparseLoopCount(JsonObject counters, String runtimeLoopId) {
         return runtimeLoopId.isEmpty()
-                ? -1 : integer(counters, runtimeLoopId, 0);
+                ? -1 : optionalInteger(counters, runtimeLoopId, 0);
     }
 
     /** Exact dynamic array lengths published for one runtime natural loop. */
@@ -1063,17 +1063,17 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : source.loopCardinalities) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
-            if (!runtimeLoopId.equals(string(row,
+            if (!runtimeLoopId.equals(optionalString(row,
                     LoopBoundPolicy.RUNTIME_LOOP_ID))) {
                 continue;
             }
-            int occurrence = integer(row,
+            int occurrence = optionalInteger(row,
                     LoopBoundPolicy.DYNAMIC_OCCURRENCE, -1);
-            int cardinality = integer(row,
+            int cardinality = optionalInteger(row,
                     LoopBoundPolicy.LOOP_CARDINALITY, -1);
             if (occurrence < 1 || cardinality < 0
                     || !LoopBoundPolicy.PATH_CARDINALITY_AUTHORITY.equals(
-                    string(row, "cardinalityAuthority"))) {
+                    optionalString(row, "cardinalityAuthority"))) {
                 result.gap(LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS,
                         loopSiteId, "malformed exact array cardinality row");
                 continue;
@@ -1094,13 +1094,13 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : source.loopCardinalityGaps) {
             if (!element.isJsonObject()) continue;
             JsonObject gap = element.getAsJsonObject();
-            if (!runtimeLoopId.equals(string(gap,
+            if (!runtimeLoopId.equals(optionalString(gap,
                     LoopBoundPolicy.RUNTIME_LOOP_ID))) {
                 continue;
             }
-            result.gap(firstNonBlank(string(gap, "reason"),
+            result.gap(firstNonBlank(optionalString(gap, "reason"),
                             LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS),
-                    loopSiteId, firstNonBlank(string(gap, "detail"),
+                    loopSiteId, firstNonBlank(optionalString(gap, "detail"),
                             "runtime array cardinality observation gap"));
         }
         return exact;
@@ -1108,7 +1108,7 @@ public final class ConcolicSummaryImporter {
 
     /** Exact natural-loop counter id published with the retained loop. */
     private static String runtimeLoopId(JsonObject declaration) {
-        return string(declaration, LoopBoundPolicy.RUNTIME_LOOP_ID);
+        return optionalString(declaration, LoopBoundPolicy.RUNTIME_LOOP_ID);
     }
 
     private static final class PathLoopCounts {
@@ -1176,7 +1176,7 @@ public final class ConcolicSummaryImporter {
             JsonObject record = element.isJsonObject()
                     ? element.getAsJsonObject() : new JsonObject();
             if (VmHandoffEvidence.isEvent(record)) {
-                String port = string(record, "portId");
+                String port = optionalString(record, "portId");
                 int ordinal = ordinals.merge(port, 1, Integer::sum);
                 String identity = topologyEpoch + "\n"
                         + row.plannedOccurrenceId + "\n"
@@ -1226,10 +1226,10 @@ public final class ConcolicSummaryImporter {
             return admitted;
         }
         for (JsonObject event : row.symbolicSourceEvidence) {
-            String phaseId = string(event, "sourcePhaseId");
-            String id = string(event, "sourceId");
-            String field = string(event, "fieldSignature");
-            String sourceOccurrence = string(event,
+            String phaseId = optionalString(event, "sourcePhaseId");
+            String id = optionalString(event, "sourceId");
+            String field = optionalString(event, "fieldSignature");
+            String sourceOccurrence = optionalString(event,
                     "sourceOccurrenceId");
             String expectedOccurrence = row.rowOccurrenceId;
             boolean exactRowOccurrence = sourceOccurrence.equals(
@@ -1267,15 +1267,15 @@ public final class ConcolicSummaryImporter {
         ManualInputEvidence admitted = new ManualInputEvidence();
         Map<String, String> rawByIdentity = new LinkedHashMap<>();
         for (JsonObject observation : row.symbolizedInputs) {
-            if (!string(observation, "sourceId").isEmpty()) continue;
+            if (!optionalString(observation, "sourceId").isEmpty()) continue;
             if (!MANUAL_INPUT_OBSERVATION_KIND.equals(
-                    string(observation, "kind"))) {
+                    optionalString(observation, "kind"))) {
                 issues.add("MANUAL_SYMBOLIC_INPUT_OBSERVATION_MALFORMED:"
-                        + firstNonBlank(string(observation, "symbol"),
+                        + firstNonBlank(optionalString(observation, "symbol"),
                         "UNKNOWN") + ":unsupported observation schema");
                 continue;
             }
-            String port = string(observation, "portId");
+            String port = optionalString(observation, "portId");
             JsonObject action = exactManualAction(task, observation);
             String problem = manualObservationProblem(row, task, observation,
                     action);
@@ -1285,7 +1285,7 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             admitted.observations.add(observation);
-            if (!bool(observation, "minted", false)) {
+            if (!optionalBool(observation, "minted", false)) {
                 // Reused expressions are dependency observations. Their roots
                 // must resolve through their original source/boundary evidence.
                 continue;
@@ -1297,15 +1297,15 @@ public final class ConcolicSummaryImporter {
                 // action without being one replay-addressable scalar root.
                 continue;
             }
-            String raw = string(expression, "_exp");
-            String javaType = string(expression, "_java_type");
-            if (!sameJavaType(string(action, "javaType"), javaType)) {
+            String raw = optionalString(expression, "_exp");
+            String javaType = optionalString(expression, "_java_type");
+            if (!sameJavaType(optionalString(action, "javaType"), javaType)) {
                 // The VM may expose a structural/reference bookkeeping root
                 // for a container or object. It is an exact observation, but
                 // not the typed scalar input promised by this action.
                 continue;
             }
-            String field = string(observation, "fieldSignature");
+            String field = optionalString(observation, "fieldSignature");
             String identity = "MANUAL."
                     + CanonicalJson.sha256(task.sourceKey() + "\n"
                     + task.regionId() + "\n" + task.occurrenceId()
@@ -1330,12 +1330,12 @@ public final class ConcolicSummaryImporter {
     /** The exact frozen action named jointly by port and canonical digest. */
     private static JsonObject exactManualAction(
             ExecutionTask task, JsonObject observation) {
-        String port = string(observation, "portId");
-        String digest = string(observation, "actionDigest");
+        String port = optionalString(observation, "portId");
+        String digest = optionalString(observation, "actionDigest");
         JsonObject selected = null;
         for (JsonElement element : task.inputActions().symbolic()) {
             JsonObject action = element.getAsJsonObject();
-            if (!port.equals(string(action, "symbol"))
+            if (!port.equals(optionalString(action, "symbol"))
                     || !digest.equals(CanonicalJson.sha256(action))) {
                 continue;
             }
@@ -1352,14 +1352,14 @@ public final class ConcolicSummaryImporter {
         if (!observation.keySet().equals(MANUAL_INPUT_OBSERVATION_MEMBERS)
                 || exactInteger(observation, "schemaVersion", -1) != 1
                 || !MANUAL_INPUT_OBSERVATION_AUTHORITY.equals(
-                string(observation, "authority"))) {
+                optionalString(observation, "authority"))) {
             return "unsupported exact-action observation schema";
         }
         if (action == null) return "action is not in the frozen task";
         if (!task.occurrenceId().equals(row.plannedOccurrenceId)
-                || !row.plannedOccurrenceId.equals(string(observation,
+                || !row.plannedOccurrenceId.equals(optionalString(observation,
                 "plannedOccurrenceId"))
-                || !row.rowOccurrenceId.equals(string(observation,
+                || !row.rowOccurrenceId.equals(optionalString(observation,
                 "occurrenceId"))) {
             return "observation belongs to another occurrence";
         }
@@ -1381,34 +1381,34 @@ public final class ConcolicSummaryImporter {
                 return "fieldPath contains a malformed segment";
             }
         }
-        String field = string(observation, "fieldSignature");
+        String field = optionalString(observation, "fieldSignature");
         if (!manualFieldDeclared(action, field)) {
             return "field is not declared by the frozen action";
         }
-        String actionType = string(action, "javaType");
-        String observedType = string(observation, "javaType");
+        String actionType = optionalString(action, "javaType");
+        String observedType = optionalString(observation, "javaType");
         if (actionType.isEmpty() || observedType.isEmpty()) {
             return "Java type is absent";
         }
         JsonElement expression = observation.get("expression");
         JsonObject exact = VmExpressionIr.exactSymbolRoot(expression);
         if (exact == null) {
-            if (!string(observation, "rawSymbol").isEmpty()) {
+            if (!optionalString(observation, "rawSymbol").isEmpty()) {
                 return "non-root expression claims a raw symbol";
             }
             if (!sameJavaType(actionType, observedType)) {
                 return "non-root Java type differs from the frozen action";
             }
-        } else if (!string(observation, "rawSymbol").equals(
-                string(exact, "_exp"))
-                || !observedType.equals(string(exact, "_java_type"))) {
+        } else if (!optionalString(observation, "rawSymbol").equals(
+                optionalString(exact, "_exp"))
+                || !observedType.equals(optionalString(exact, "_java_type"))) {
             return "root metadata differs from the exact expression";
         }
         if (reused
                 && !VmExpressionIr.carriesPropagatedValue(expression)) {
             return "reused observation contains no propagated expression";
         }
-        return string(observation, "symbol").isEmpty()
+        return optionalString(observation, "symbol").isEmpty()
                 ? "requested VM label is empty" : "";
     }
 
@@ -1426,7 +1426,7 @@ public final class ConcolicSummaryImporter {
         for (String name : new String[]{"leafFieldSignature",
                 "accessFieldSignature", "declaredFieldSignature",
                 "fieldSignature", "cell"}) {
-            String value = string(action, name);
+            String value = optionalString(action, name);
             if (value.startsWith("<") && value.endsWith(">")) {
                 declared.add(value);
             }
@@ -1456,7 +1456,7 @@ public final class ConcolicSummaryImporter {
                 gaps.add(SharedStateEvidence.gap(
                         SharedStateEvidence.STAGE_VERSIONS,
                         SharedStateEvidence.MALFORMED_ENVELOPE,
-                        string(record, "locationKey"),
+                        optionalString(record, "locationKey"),
                         "recorded version store did not survive import "
                                 + "admission"));
             }
@@ -1504,7 +1504,7 @@ public final class ConcolicSummaryImporter {
     private static BranchEventCatalog taskSeedEvents(ExecutionTask task) {
         BranchEventCatalog result = new BranchEventCatalog();
         JsonObject selectedTarget = object(task.json(), "targetBranch");
-        String targetSite = string(selectedTarget, "siteId");
+        String targetSite = optionalString(selectedTarget, "siteId");
         int targetOccurrence = JsonFields.exactInteger(selectedTarget,
                 "occurrence", -1);
         int branchIndex = 0;
@@ -1515,7 +1515,7 @@ public final class ConcolicSummaryImporter {
                 return result;
             }
             JsonObject branch = element.getAsJsonObject();
-            String site = string(branch, "siteId");
+            String site = optionalString(branch, "siteId");
             JsonElement encodedOccurrences = branch.get("occurrences");
             if (site.isEmpty() || encodedOccurrences == null
                     || !encodedOccurrences.isJsonArray()) {
@@ -1571,7 +1571,7 @@ public final class ConcolicSummaryImporter {
         BranchEventCatalog result = new BranchEventCatalog();
         JsonObject selectedTarget = seedTask == null ? new JsonObject()
                 : object(seedTask.json(), "targetBranch");
-        String targetSite = string(selectedTarget, "siteId");
+        String targetSite = optionalString(selectedTarget, "siteId");
         int targetOccurrence = JsonFields.exactInteger(selectedTarget,
                 "occurrence", -1);
         int mappingIndex = 0;
@@ -1652,7 +1652,7 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : row.concreteBranchWitnesses) {
             if (!element.isJsonObject()) continue;
             JsonObject witness = element.getAsJsonObject();
-            String site = string(witness, "siteId");
+            String site = optionalString(witness, "siteId");
             JsonElement outcome = witness.get("sourceTakenOutcome");
             if (site.isEmpty() || outcome == null
                     || !outcome.isJsonPrimitive()
@@ -1804,7 +1804,7 @@ public final class ConcolicSummaryImporter {
         }
 
         JsonObject selected = object(task.json(), "targetBranch");
-        String selectedSite = string(selected, "siteId");
+        String selectedSite = optionalString(selected, "siteId");
         int selectedOccurrence = JsonFields.exactInteger(selected,
                 "occurrence", -1);
         if (!event.siteId().equals(selectedSite)
@@ -1956,8 +1956,8 @@ public final class ConcolicSummaryImporter {
                 continue;
             }
             JsonObject row = element.getAsJsonObject();
-            String site = string(row, "siteId");
-            int occurrence = integer(row, "occurrence", -1);
+            String site = optionalString(row, "siteId");
+            int occurrence = optionalInteger(row, "occurrence", -1);
             if (site.isEmpty() || occurrence < 1) {
                 issues.add("AMBIGUOUS_BRANCH_EVENT:" + site);
                 continue;
@@ -2060,14 +2060,14 @@ public final class ConcolicSummaryImporter {
     private static boolean pcPredicate(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject object = expression.getAsJsonObject();
-        if (!"BinaryExpression".equals(string(object, "_type"))
+        if (!"BinaryExpression".equals(optionalString(object, "_type"))
                 || ContainerSmtCodec.handlesFieldBinding(expression)
                 || ContainerSmtCodec.handlesAccessConstraint(expression)) {
             return false;
         }
         try {
             BranchPredicateAlgebra.complementOperator(
-                    string(object, "_op"));
+                    optionalString(object, "_op"));
             return true;
         } catch (IllegalArgumentException unsupported) {
             return false;
@@ -2081,10 +2081,10 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : task.branches()) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
-            String site = string(branch, "siteId");
+            String site = optionalString(branch, "siteId");
             try {
                 result.put(site, SummaryBranchMapping.Policy.fromWire(
-                        string(branch, "policy")));
+                        optionalString(branch, "policy")));
             } catch (IllegalArgumentException unsupported) {
                 result.put(site, SummaryBranchMapping.Policy.EXPLORE);
             }
@@ -2114,7 +2114,7 @@ public final class ConcolicSummaryImporter {
             throws IOException {
         Set<String> result = new LinkedHashSet<>();
         for (JsonObject row : rows) {
-            String id = string(row, "regionId");
+            String id = optionalString(row, "regionId");
             if (id.isEmpty() || !result.add(id)) {
                 throw new IOException("Missing or duplicate regionId " + id);
             }
@@ -2153,7 +2153,7 @@ public final class ConcolicSummaryImporter {
         for (JsonElement element : task.inputActions().all()) {
             if (element.isJsonObject()
                     && "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1".equals(
-                    string(element.getAsJsonObject(), "authority"))) {
+                    optionalString(element.getAsJsonObject(), "authority"))) {
                 return false;
             }
         }
@@ -2198,11 +2198,11 @@ public final class ConcolicSummaryImporter {
             JsonObject auxiliary = encoded.getAsJsonObject();
             if (exactInteger(auxiliary, "schemaVersion", -1) != 1
                     || !AUXILIARY_PATH_CONDITION_KIND.equals(
-                    string(auxiliary, "kind"))
+                    optionalString(auxiliary, "kind"))
                     || !AUXILIARY_PATH_CONDITION_AUTHORITY.equals(
-                    string(auxiliary, "authority"))
-                    || !bool(auxiliary, "active", false)
-                    || bool(auxiliary, "aborted", false)) {
+                    optionalString(auxiliary, "authority"))
+                    || !optionalBool(auxiliary, "active", false)
+                    || optionalBool(auxiliary, "aborted", false)) {
                 issues.add("AUXILIARY_PATH_CONDITION_MALFORMED:ENVELOPE");
                 return fromSparseEvidence(evidence, size, branchMappings);
             }
@@ -2296,7 +2296,7 @@ public final class ConcolicSummaryImporter {
         /** The VM's own name for why this slot holds no expression. */
         private static String truncationKind(JsonElement condition) {
             String kind = condition != null && condition.isJsonObject()
-                    ? string(condition.getAsJsonObject(), "truncationKind")
+                    ? optionalString(condition.getAsJsonObject(), "truncationKind")
                     : "";
             return kind.isEmpty() ? "AUXILIARY_PATH_CONDITION" : kind;
         }
@@ -2413,7 +2413,7 @@ public final class ConcolicSummaryImporter {
                 if (!element.isJsonObject()) continue;
                 JsonObject witness = object(
                         element.getAsJsonObject(), "witness");
-                int index = integer(witness, "vmPcIndex", -1);
+                int index = optionalInteger(witness, "vmPcIndex", -1);
                 if (index >= 0) result.add(index);
             }
             return result;

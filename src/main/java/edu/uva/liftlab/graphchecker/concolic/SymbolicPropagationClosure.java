@@ -18,11 +18,11 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.longInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Closes receiver-owned symbolic values before SMT lowering.
@@ -283,24 +283,24 @@ public final class SymbolicPropagationClosure {
 
         private void annotateCase(JsonObject summary, JsonObject row,
                                   int index) {
-            String occurrence = first(string(row, "occurrenceId"),
-                    string(summary, "occurrenceId"));
-            String region = string(summary, "regionId");
+            String occurrence = first(optionalString(row, "occurrenceId"),
+                    optionalString(summary, "occurrenceId"));
+            String region = optionalString(summary, "regionId");
             row.addProperty("occurrenceId", occurrence);
             row.addProperty("toOccurrenceId", occurrence);
             row.addProperty("regionId", region);
             row.addProperty("caseRegionId", region);
-            row.addProperty("taskId", first(string(row, "taskId"),
-                    first(string(row, "sourceTaskId"),
-                            string(summary, "taskId"))));
+            row.addProperty("taskId", first(optionalString(row, "taskId"),
+                    first(optionalString(row, "sourceTaskId"),
+                            optionalString(summary, "taskId"))));
             row.addProperty("boundarySessionScope", first(
-                    string(row, "boundarySessionScope"),
-                    string(summary, "boundarySessionScope")));
+                    optionalString(row, "boundarySessionScope"),
+                    optionalString(summary, "boundarySessionScope")));
             row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH,
-                    first(string(row, VmExpressionIr.TOPOLOGY_EPOCH),
-                            string(summary, VmExpressionIr.TOPOLOGY_EPOCH)));
-            String caseId = first(string(row, "caseId"),
-                    string(summary, LocalCaseIdentity.FIELD));
+                    first(optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
+                            optionalString(summary, VmExpressionIr.TOPOLOGY_EPOCH)));
+            String caseId = first(optionalString(row, "caseId"),
+                    optionalString(summary, LocalCaseIdentity.FIELD));
             String owner = LocalCaseIdentity.owner(region, occurrence,
                     caseId, index);
             LocalCaseIdentity.stamp(row, owner);
@@ -309,19 +309,19 @@ public final class SymbolicPropagationClosure {
         private void indexSummaryCases(RelationSummary summary) {
             JsonObject row = summary.pathCaseView();
             JsonObject summaryRow = summary.immutableJson();
-            String occurrence = string(row, "occurrenceId");
+            String occurrence = optionalString(row, "occurrenceId");
             String owner = LocalCaseIdentity.owner(summaryRow);
             CaseInfo info = new CaseInfo(owner,
                     LocalCaseIdentity.selector(owner),
                     summary.regionId(), occurrence,
-                    first(string(row, "taskId"),
-                            first(string(row, "sourceTaskId"),
-                                    string(summaryRow, "taskId"))),
-                    first(string(row, "boundarySessionScope"),
-                            string(summaryRow,
+                    first(optionalString(row, "taskId"),
+                            first(optionalString(row, "sourceTaskId"),
+                                    optionalString(summaryRow, "taskId"))),
+                    first(optionalString(row, "boundarySessionScope"),
+                            optionalString(summaryRow,
                                     "boundarySessionScope")),
-                    first(string(row, VmExpressionIr.TOPOLOGY_EPOCH),
-                            string(summaryRow,
+                    first(optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
+                            optionalString(summaryRow,
                                     VmExpressionIr.TOPOLOGY_EPOCH)),
                     object(row, "guard").get("conditions"));
             putCase(info);
@@ -329,10 +329,10 @@ public final class SymbolicPropagationClosure {
 
         private void indexCaseRow(JsonObject row) {
             if (row == null) return;
-            String owner = string(row, LocalCaseIdentity.OWNER);
+            String owner = optionalString(row, LocalCaseIdentity.OWNER);
             // Stamped by this class, a few statements above: the selector is
             // a pure function of the owner and is not rechecked here.
-            String selector = string(row, LocalCaseIdentity.SELECTOR);
+            String selector = optionalString(row, LocalCaseIdentity.SELECTOR);
             if (owner.isEmpty() || selector.isEmpty()) {
                 gap("CASE_CLOSURE_IDENTITY_MISSING", owner,
                         "case row has no exact owner/selector identity");
@@ -340,14 +340,14 @@ public final class SymbolicPropagationClosure {
             }
             CaseInfo held = casesByOwner.get(owner);
             CaseInfo info = new CaseInfo(owner, selector,
-                    first(string(row, "regionId"),
-                            string(row, "caseRegionId")),
-                    first(string(row, "toOccurrenceId"),
-                            string(row, "occurrenceId")),
-                    first(string(row, "taskId"),
-                            string(row, "sourceTaskId")),
-                    string(row, "boundarySessionScope"),
-                    first(string(row, VmExpressionIr.TOPOLOGY_EPOCH),
+                    first(optionalString(row, "regionId"),
+                            optionalString(row, "caseRegionId")),
+                    first(optionalString(row, "toOccurrenceId"),
+                            optionalString(row, "occurrenceId")),
+                    first(optionalString(row, "taskId"),
+                            optionalString(row, "sourceTaskId")),
+                    optionalString(row, "boundarySessionScope"),
+                    first(optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
                             held == null ? "" : held.epoch),
                     object(row, "guard").get("conditions"));
             putCase(info);
@@ -383,12 +383,12 @@ public final class SymbolicPropagationClosure {
 
         /** Exact execution observation which owns one case evidence row. */
         private CaseInfo caseForRow(JsonObject row) {
-            String owner = string(row, LocalCaseIdentity.OWNER);
-            String occurrence = first(string(row, "toOccurrenceId"),
-                    string(row, "occurrenceId"));
-            String task = first(string(row, "taskId"),
-                    string(row, "sourceTaskId"));
-            String scope = string(row, "boundarySessionScope");
+            String owner = optionalString(row, LocalCaseIdentity.OWNER);
+            String occurrence = first(optionalString(row, "toOccurrenceId"),
+                    optionalString(row, "occurrenceId"));
+            String task = first(optionalString(row, "taskId"),
+                    optionalString(row, "sourceTaskId"));
+            String scope = optionalString(row, "boundarySessionScope");
             for (CaseInfo candidate : casesByExecution.getOrDefault(
                     executionKey(scope, task, occurrence),
                     Collections.emptyList())) {
@@ -405,10 +405,10 @@ public final class SymbolicPropagationClosure {
             } catch (IllegalArgumentException ignored) {
                 return null;
             }
-            String key = executionKey(string(row, "boundarySessionScope"),
-                    first(string(row, "taskId"),
-                            string(row, "sourceTaskId")),
-                    string(row, "occurrenceId"));
+            String key = executionKey(optionalString(row, "boundarySessionScope"),
+                    first(optionalString(row, "taskId"),
+                            optionalString(row, "sourceTaskId")),
+                    optionalString(row, "occurrenceId"));
             for (CaseInfo candidate : casesByExecution.getOrDefault(key,
                     Collections.emptyList())) {
                 if (candidate.owner.equals(owner)) return candidate;
@@ -418,8 +418,8 @@ public final class SymbolicPropagationClosure {
 
         private void indexBoundaryEvidence(JsonObject row) {
             if (row == null) return;
-            String scope = string(row, "boundarySessionScope");
-            String epoch = string(row, VmExpressionIr.TOPOLOGY_EPOCH);
+            String scope = optionalString(row, "boundarySessionScope");
+            String epoch = optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH);
             CaseInfo receiver = caseForRow(row);
             for (JsonObject event : VmHandoffEvidence.eventsOf(row)) {
                 indexRpcBoundary(event, scope, epoch, receiver);
@@ -437,19 +437,19 @@ public final class SymbolicPropagationClosure {
         private void scanFieldBoundaries(JsonObject row) {
             if (row == null || fieldReads.isEmpty()) return;
             scanFieldBoundaryPayloads(row,
-                    string(row, "boundarySessionScope"));
+                    optionalString(row, "boundarySessionScope"));
         }
 
         private void indexRpcBoundary(JsonObject event, String rowScope,
                                       String rowEpoch,
                                       CaseInfo receiverCase) {
-            String familyKey = string(event,
+            String familyKey = optionalString(event,
                     VmHandoffEvidence.BOUNDARY_FAMILY_KEY);
-            String scope = first(string(event, "boundarySessionScope"),
+            String scope = first(optionalString(event, "boundarySessionScope"),
                     rowScope);
-            String epoch = first(string(event,
+            String epoch = first(optionalString(event,
                     VmHandoffEvidence.TOPOLOGY_EPOCH), rowEpoch);
-            long eventId = longInteger(event,
+            long eventId = optionalLongInteger(event,
                     VmHandoffEvidence.ATTACH_EVENT_ID, -1L);
             JsonElement encoded = event.get(VmHandoffEvidence.EXPRESSION);
             String fault = boundaryFault(encoded,
@@ -465,15 +465,15 @@ public final class SymbolicPropagationClosure {
             if (!addDynamic(scope, eventId, familyKey)) return;
             DynamicKey dynamic = new DynamicKey(scope, eventId);
             indexBoundaryOwner(dynamic, receiverCase, familyKey);
-            CaseInfo producer = uniqueProducerCase(scope, string(event,
-                    VmHandoffEvidence.PRODUCER_TASK_ID), string(event,
+            CaseInfo producer = uniqueProducerCase(scope, optionalString(event,
+                    VmHandoffEvidence.PRODUCER_TASK_ID), optionalString(event,
                     VmHandoffEvidence.PRODUCER_OCCURRENCE_ID), familyKey);
             JsonElement payload = encoded.getAsJsonObject().get(
                     VmExpressionIr.EXPRESSION);
             addArm(familyKey, VmExpressionIr.RPC_ATTACH, epoch, scope,
                     producer, receiverCase == null ? ""
                             : receiverCase.owner, payload,
-                    string(encoded.getAsJsonObject(), "_java_type"), eventId);
+                    optionalString(encoded.getAsJsonObject(), "_java_type"), eventId);
         }
 
         private void indexFieldReadEvidence(JsonObject row, String scope,
@@ -495,7 +495,7 @@ public final class SymbolicPropagationClosure {
                         && !SharedStateEvidence.readLogTruncated(envelope);
                 if (!complete) {
                     gap("READ_FROM_SNAPSHOT_INCOMPLETE",
-                            string(record, "locationKey"),
+                            optionalString(record, "locationKey"),
                             envelopeFault.isEmpty()
                                     ? "read-time writer/read retention is open"
                                     : envelopeFault);
@@ -503,7 +503,7 @@ public final class SymbolicPropagationClosure {
                 for (JsonElement readElement : array(envelope, "reads")) {
                     if (!readElement.isJsonObject()) continue;
                     JsonObject read = readElement.getAsJsonObject();
-                    String readerOccurrence = string(read,
+                    String readerOccurrence = optionalString(read,
                             SharedStateEvidence.READER_OCCURRENCE_ID);
                     // A VM version-store snapshot is session-wide. It can
                     // therefore repeat reads owned by outer, inner, or prior
@@ -517,7 +517,7 @@ public final class SymbolicPropagationClosure {
                             readerOccurrence)) {
                         continue;
                     }
-                    long eventId = longInteger(read, "readEventId", -1L);
+                    long eventId = optionalLongInteger(read, "readEventId", -1L);
                     String location = stableReadLocation(record, read,
                             readerCase);
                     // A session-local VM owner is not a replay identity. If
@@ -543,7 +543,7 @@ public final class SymbolicPropagationClosure {
                         JsonObject version = versionElement.getAsJsonObject();
                         putReadCandidateVersion(new ReadCandidateKey(
                                         scope, eventId,
-                                        longInteger(version,
+                                        optionalLongInteger(version,
                                                 "fieldVersionId", -1L)),
                                 version);
                     }
@@ -552,7 +552,7 @@ public final class SymbolicPropagationClosure {
                                     scope, epoch,
                                     // The envelope is session-wide; this row
                                     // records the exact read-time snapshot.
-                                    integer(read, "candidateCount", -1),
+                                    optionalInteger(read, "candidateCount", -1),
                                     location,
                                     object(record, "carrier"), read));
                 }
@@ -578,17 +578,17 @@ public final class SymbolicPropagationClosure {
 
         private boolean sameWriterCaseIdentity(JsonObject left,
                                                JsonObject right) {
-            return string(left, "taskId").equals(string(right, "taskId"))
-                    && string(left, "regionId").equals(
-                    string(right, "regionId"))
-                    && string(left, SharedStateEvidence.WRITER_OCCURRENCE_ID)
-                    .equals(string(right,
+            return optionalString(left, "taskId").equals(optionalString(right, "taskId"))
+                    && optionalString(left, "regionId").equals(
+                    optionalString(right, "regionId"))
+                    && optionalString(left, SharedStateEvidence.WRITER_OCCURRENCE_ID)
+                    .equals(optionalString(right,
                             SharedStateEvidence.WRITER_OCCURRENCE_ID))
-                    && string(left, SharedStateEvidence.WRITER_SOURCE_KEY)
-                    .equals(string(right,
+                    && optionalString(left, SharedStateEvidence.WRITER_SOURCE_KEY)
+                    .equals(optionalString(right,
                             SharedStateEvidence.WRITER_SOURCE_KEY))
-                    && string(left, "versionKind").equals(
-                    string(right, "versionKind"))
+                    && optionalString(left, "versionKind").equals(
+                    optionalString(right, "versionKind"))
                     && semanticIdentity(left.get("expression"), "").equals(
                     semanticIdentity(right.get("expression"), ""))
                     && semanticIdentity(left.get("pathGuard"), "").equals(
@@ -638,9 +638,9 @@ public final class SymbolicPropagationClosure {
             if (!element.isJsonObject()) return;
             JsonObject node = element.getAsJsonObject();
             if (VmExpressionIr.isConsumerBoundary(node)
-                    && VmExpressionIr.FIELD_READ.equals(string(node,
+                    && VmExpressionIr.FIELD_READ.equals(optionalString(node,
                     VmExpressionIr.BOUNDARY_KIND))) {
-                long eventId = longInteger(node, VmExpressionIr.EVENT_ID,
+                long eventId = optionalLongInteger(node, VmExpressionIr.EVENT_ID,
                         -1L);
                 FieldRead read = fieldReads.get(new DynamicKey(scope,
                         eventId));
@@ -665,7 +665,7 @@ public final class SymbolicPropagationClosure {
                             read.epoch, read.scope, read.producer,
                             read.receiverOwner,
                             payload,
-                            string(node, "_java_type"), eventId);
+                            optionalString(node, "_java_type"), eventId);
                 }
                 // A propagated field value can itself contain earlier field
                 // boundaries. Their read evidence is owned by earlier rows,
@@ -811,7 +811,7 @@ public final class SymbolicPropagationClosure {
                 // deliberately remains raw.
                 CaseInfo observation = caseForSummary(encodedSummary);
                 summaries.add(rewriteObject(encodedSummary,
-                        string(encodedSummary, "boundarySessionScope"),
+                        optionalString(encodedSummary, "boundarySessionScope"),
                         observation));
             }
             List<String> owners = new ArrayList<>(
@@ -913,7 +913,7 @@ public final class SymbolicPropagationClosure {
                     || VmExpressionIr.isConsumerBoundaryReference(node)) {
                     result = resolveBoundary(node, exactScope, observation);
                 } else {
-                    String localScope = first(string(node,
+                    String localScope = first(optionalString(node,
                             "boundarySessionScope"), exactScope);
                     JsonObject object = new JsonObject();
                     for (Map.Entry<String, JsonElement> field
@@ -976,7 +976,7 @@ public final class SymbolicPropagationClosure {
                                               JsonObject target,
                                               String scope) {
             if (!SharedStateEvidence.claimsGuardedRead(source)) return;
-            long eventId = longInteger(source, "readEventId", -1L);
+            long eventId = optionalLongInteger(source, "readEventId", -1L);
             DynamicKey dynamic = new DynamicKey(scope, eventId);
             CaseInfo owner = ambiguousBoundaryOwners.contains(dynamic)
                     ? null : boundaryOwners.get(dynamic);
@@ -1001,16 +1001,16 @@ public final class SymbolicPropagationClosure {
         }
 
         private void stampCandidateSelectors(JsonObject read) {
-            String readIdentity = string(read, READ_CHOICE_IDENTITY);
+            String readIdentity = optionalString(read, READ_CHOICE_IDENTITY);
             if (readIdentity.isEmpty()) return;
             Map<String, Integer> duplicates = new LinkedHashMap<>();
             JsonArray selectors = new JsonArray();
             for (JsonElement encoded : array(read, "candidates")) {
                 if (!encoded.isJsonObject()) continue;
                 JsonObject candidate = encoded.getAsJsonObject();
-                String owner = string(candidate, WRITER_CASE_OWNER);
+                String owner = optionalString(candidate, WRITER_CASE_OWNER);
                 if (owner.isEmpty()) continue;
-                String base = owner + "\n" + string(candidate, "versionKind")
+                String base = owner + "\n" + optionalString(candidate, "versionKind")
                         + "\n" + semanticIdentity(candidate.get("expression"),
                         owner) + "\n" + semanticIdentity(
                         candidate.get("pathGuard"), owner) + "\n"
@@ -1037,8 +1037,8 @@ public final class SymbolicPropagationClosure {
                                       JsonObject rawCandidate,
                                       JsonObject candidate,
                                       String scope) {
-            long readEvent = longInteger(read, "readEventId", -1L);
-            long versionId = longInteger(rawCandidate,
+            long readEvent = optionalLongInteger(read, "readEventId", -1L);
+            long versionId = optionalLongInteger(rawCandidate,
                     "fieldVersionId", -1L);
             if (readEvent <= 0L || versionId <= 0L) {
                 gap("READ_FROM_WRITER_CASE_MISSING", scope,
@@ -1061,13 +1061,13 @@ public final class SymbolicPropagationClosure {
                                 + " snapshot");
                 return;
             }
-            boolean initialVersion = "INITIAL".equals(string(version,
+            boolean initialVersion = "INITIAL".equals(optionalString(version,
                     "versionKind"));
             CaseInfo producer = initialVersion
                     ? initialSourceCase(read, version, scope, key)
                     : uniqueProducerCase(scope,
-                    string(version, "taskId"),
-                    string(version,
+                    optionalString(version, "taskId"),
+                    optionalString(version,
                             SharedStateEvidence.WRITER_OCCURRENCE_ID),
                     key.toString());
             if (producer == null) return;
@@ -1120,8 +1120,8 @@ public final class SymbolicPropagationClosure {
                 String subject) {
             JsonObject recorded = object(version, WRITER_ACTIVATION_CLOSURE);
             if (!WRITER_ACTIVATION_CLOSURE_AUTHORITY.equals(
-                    string(recorded, "authority"))
-                    || !bool(recorded, "complete", false)) {
+                    optionalString(recorded, "authority"))
+                    || !optionalBool(recorded, "complete", false)) {
                 gap("READ_FROM_WRITER_CASE_CLOSURE_MISSING", subject,
                         "writer version has no complete physical activation"
                                 + " closure");
@@ -1141,9 +1141,9 @@ public final class SymbolicPropagationClosure {
                     continue;
                 }
                 JsonObject address = element.getAsJsonObject();
-                String task = string(address, "taskId");
-                String region = string(address, "regionId");
-                String occurrence = string(address, "occurrenceId");
+                String task = optionalString(address, "taskId");
+                String region = optionalString(address, "regionId");
+                String occurrence = optionalString(address, "occurrenceId");
                 CaseInfo owner = uniqueProducerCase(scope, task, occurrence,
                         subject + ":" + occurrence);
                 if (owner == null || region.isEmpty()
@@ -1178,7 +1178,7 @@ public final class SymbolicPropagationClosure {
                                            String scope,
                                            ReadCandidateKey key) {
             DynamicKey readKey = new DynamicKey(scope,
-                    longInteger(read, "readEventId", -1L));
+                    optionalLongInteger(read, "readEventId", -1L));
             CaseInfo reader = ambiguousBoundaryOwners.contains(readKey)
                     ? null : boundaryOwners.get(readKey);
             String location = SharedStateEvidence.locationKey(read);
@@ -1191,9 +1191,9 @@ public final class SymbolicPropagationClosure {
                 return null;
             }
             String writerOccurrence = PathObservation.plannedOccurrenceOf(
-                    string(version,
+                    optionalString(version,
                             SharedStateEvidence.WRITER_OCCURRENCE_ID));
-            String source = first(string(version,
+            String source = first(optionalString(version,
                     SharedStateEvidence.WRITER_SOURCE_KEY), writerOccurrence);
             String identity = reader.epoch + "\n" + location + "\n" + source
                     + "\n" + writerOccurrence + "\n"
@@ -1220,10 +1220,10 @@ public final class SymbolicPropagationClosure {
         private boolean sameReadCandidate(JsonObject read,
                                           JsonObject candidate,
                                           JsonObject version) {
-            return longInteger(candidate, "fieldVersionId", -1L)
-                    == longInteger(version, "fieldVersionId", -2L)
-                    && string(candidate, "versionKind").equals(
-                    string(version, "versionKind"))
+            return optionalLongInteger(candidate, "fieldVersionId", -1L)
+                    == optionalLongInteger(version, "fieldVersionId", -2L)
+                    && optionalString(candidate, "versionKind").equals(
+                    optionalString(version, "versionKind"))
                     && sameReadCandidateValue(read,
                     candidate.get("expression"), version.get("expression"))
                     && semanticIdentity(candidate.get("pathGuard"), "")
@@ -1241,7 +1241,7 @@ public final class SymbolicPropagationClosure {
             }
             if (candidate == null || !candidate.isJsonObject()) return false;
             JsonObject query = candidate.getAsJsonObject();
-            return "ContainerRelation".equals(string(query, "_type"))
+            return "ContainerRelation".equals(optionalString(query, "_type"))
                     && semanticIdentity(query.get("receiver"), "")
                     .equals(versionIdentity);
         }
@@ -1256,8 +1256,8 @@ public final class SymbolicPropagationClosure {
         private JsonElement resolveBoundary(JsonObject boundary,
                                             String scope,
                                             CaseInfo observation) {
-            String family = string(boundary, VmExpressionIr.FAMILY_KEY);
-            long eventId = longInteger(boundary, VmExpressionIr.EVENT_ID,
+            String family = optionalString(boundary, VmExpressionIr.FAMILY_KEY);
+            long eventId = optionalLongInteger(boundary, VmExpressionIr.EVENT_ID,
                     -1L);
             DynamicKey dynamic = new DynamicKey(scope, eventId);
             Arm exact = dynamicArms.get(dynamic);
@@ -1421,14 +1421,14 @@ public final class SymbolicPropagationClosure {
             JsonArray encoded = new JsonArray();
             for (JsonElement element : arms) {
                 JsonObject arm = element.getAsJsonObject();
-                String observationSelector = string(arm,
+                String observationSelector = optionalString(arm,
                         OBSERVATION_SELECTOR);
                 if (!observationSelector.isEmpty()) {
                     JsonObject item = dependencyArm(arm,
                             observationSelector);
                     copyObservationIdentity(arm, item);
                     CaseInfo observation = caseObservation(
-                            string(arm, "caseOwner"), observationSelector);
+                            optionalString(arm, "caseOwner"), observationSelector);
                     JsonElement pathCondition = observation == null ? null
                             : rewriteElement(observation.pathCondition,
                             observation.sessionScope, observation);
@@ -1446,7 +1446,7 @@ public final class SymbolicPropagationClosure {
                     continue;
                 }
 
-                String owner = string(arm, "caseOwner");
+                String owner = optionalString(arm, "caseOwner");
                 // Composer stamps every summary of an observation-owned
                 // case with its physical selector.  Publish the dependency
                 // in that same flat identity space even when this family's
@@ -1455,7 +1455,7 @@ public final class SymbolicPropagationClosure {
                 if (observationOwners.contains(owner)) {
                     for (JsonElement observed : pathObservations(owner)) {
                         JsonObject observation = observed.getAsJsonObject();
-                        String selector = string(observation, "selector");
+                        String selector = optionalString(observation, "selector");
                         JsonObject item = dependencyArm(arm, selector);
                         copyObservationIdentity(observation, item);
                         item.add("pathCondition",
@@ -1466,7 +1466,7 @@ public final class SymbolicPropagationClosure {
                 }
 
                 JsonObject item = dependencyArm(arm,
-                        string(arm, "selector"));
+                        optionalString(arm, "selector"));
                 copyObservationIdentity(arm, item);
                 JsonElement pathCondition = closedPathCondition(owner);
                 if (pathCondition != null) {
@@ -1483,12 +1483,12 @@ public final class SymbolicPropagationClosure {
             JsonObject item = new JsonObject();
             item.addProperty("selector", selector);
             item.addProperty("caseSelector", first(
-                    string(source, "caseSelector"),
-                    string(source, "selector")));
-            item.addProperty("caseOwner", string(source, "caseOwner"));
-            item.addProperty("regionId", string(source, "regionId"));
+                    optionalString(source, "caseSelector"),
+                    optionalString(source, "selector")));
+            item.addProperty("caseOwner", optionalString(source, "caseOwner"));
+            item.addProperty("regionId", optionalString(source, "regionId"));
             item.addProperty("occurrenceId",
-                    string(source, "occurrenceId"));
+                    optionalString(source, "occurrenceId"));
             return item;
         }
 
@@ -1565,7 +1565,7 @@ public final class SymbolicPropagationClosure {
                     for (JsonElement encoded : pathObservations(owner)) {
                         JsonObject observation = encoded.getAsJsonObject();
                         JsonObject arm = new JsonObject();
-                        arm.addProperty("selector", string(observation,
+                        arm.addProperty("selector", optionalString(observation,
                                 "selector"));
                         arm.addProperty("caseSelector", producer.selector);
                         arm.addProperty("caseOwner", producer.owner);
@@ -1757,7 +1757,7 @@ public final class SymbolicPropagationClosure {
                 StringBuilder encoded = new StringBuilder("{");
                 List<String> names = new ArrayList<>(object.keySet());
                 Collections.sort(names);
-                String type = string(object, "_type");
+                String type = optionalString(object, "_type");
                 String expressionOwner = owner;
                 if (ITE_TYPE.equals(type)) {
                     // Each arm's expression belongs to its producer case, not
@@ -1797,7 +1797,7 @@ public final class SymbolicPropagationClosure {
                             continue;
                         }
                         JsonObject arm = element.getAsJsonObject();
-                        String armOwner = first(string(arm, "caseOwner"),
+                        String armOwner = first(optionalString(arm, "caseOwner"),
                                 owner);
                         appendFramed(armList,
                                 ordinaryObject(arm, armOwner));
@@ -1820,7 +1820,7 @@ public final class SymbolicPropagationClosure {
                 }
                 JsonObject location = object(read, "location");
                 StringBuilder locationShape = new StringBuilder();
-                appendFramed(locationShape, string(location, "locationKind"));
+                appendFramed(locationShape, optionalString(location, "locationKind"));
                 appendFramed(locationShape, CanonicalJson.render(
                         location.get("slot")));
                 appendFramed(encoded, "location");
@@ -1842,7 +1842,7 @@ public final class SymbolicPropagationClosure {
 
             private String readCandidate(JsonObject candidate, String owner,
                                          int index) {
-                String writerOwner = first(string(candidate,
+                String writerOwner = first(optionalString(candidate,
                         WRITER_CASE_OWNER), owner);
                 StringBuilder encoded = new StringBuilder("{candidate");
                 appendField(encoded, "selector", "arm:" + index);
@@ -2092,12 +2092,12 @@ public final class SymbolicPropagationClosure {
             this.epoch = safe(epoch);
             this.candidateCount = candidateCount;
             this.stableLocation = safe(stableLocation);
-            this.declaringClass = string(carrier, "declaringClass");
-            this.fieldName = string(carrier, "fieldName");
-            this.descriptor = string(carrier, "descriptor");
-            this.consumerSiteId = string(read,
+            this.declaringClass = optionalString(carrier, "declaringClass");
+            this.fieldName = optionalString(carrier, "fieldName");
+            this.descriptor = optionalString(carrier, "descriptor");
+            this.consumerSiteId = optionalString(read,
                     SharedStateEvidence.CONSUMER_SITE_ID);
-            this.consumerSiteOccurrence = integer(read,
+            this.consumerSiteOccurrence = optionalInteger(read,
                     SharedStateEvidence.CONSUMER_SITE_OCCURRENCE, -1);
         }
 
@@ -2127,20 +2127,20 @@ public final class SymbolicPropagationClosure {
             for (RelationSummary summary : summaries) {
                 JsonObject top = summary.immutableJson();
                 JsonObject row = summary.pathCaseView();
-                String occurrence = string(row, "occurrenceId");
+                String occurrence = optionalString(row, "occurrenceId");
                 row.addProperty("toOccurrenceId", occurrence);
                 row.addProperty("regionId", summary.regionId());
                 row.addProperty("caseRegionId", summary.regionId());
                 row.addProperty("sourceKey", summary.sourceKey());
-                row.addProperty("taskId", first(string(row, "taskId"),
-                        first(string(row, "sourceTaskId"),
-                                string(top, "taskId"))));
+                row.addProperty("taskId", first(optionalString(row, "taskId"),
+                        first(optionalString(row, "sourceTaskId"),
+                                optionalString(top, "taskId"))));
                 row.addProperty("boundarySessionScope", first(
-                        string(row, "boundarySessionScope"),
-                        string(top, "boundarySessionScope")));
+                        optionalString(row, "boundarySessionScope"),
+                        optionalString(top, "boundarySessionScope")));
                 row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH, first(
-                        string(row, VmExpressionIr.TOPOLOGY_EPOCH),
-                        string(top, VmExpressionIr.TOPOLOGY_EPOCH)));
+                        optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
+                        optionalString(top, VmExpressionIr.TOPOLOGY_EPOCH)));
                 String owner = LocalCaseIdentity.owner(top);
                 LocalCaseIdentity.stamp(row, owner);
                 rows.add(row);
@@ -2152,28 +2152,28 @@ public final class SymbolicPropagationClosure {
                 if (!paths.get(index).isJsonObject()) continue;
                 JsonObject row = JsonFields.shallowCopy(
                         paths.get(index).getAsJsonObject());
-                String plannedOccurrence = string(fatal, "occurrenceId");
-                String occurrence = first(string(row, "occurrenceId"),
+                String plannedOccurrence = optionalString(fatal, "occurrenceId");
+                String occurrence = first(optionalString(row, "occurrenceId"),
                         plannedOccurrence);
                 row.addProperty("toOccurrenceId", occurrence);
                 row.addProperty("occurrenceId", occurrence);
-                row.addProperty("regionId", string(fatal, "regionId"));
-                row.addProperty("caseRegionId", string(fatal, "regionId"));
+                row.addProperty("regionId", optionalString(fatal, "regionId"));
+                row.addProperty("caseRegionId", optionalString(fatal, "regionId"));
                 row.addProperty("sourceTaskId", first(
-                        string(row, "sourceTaskId"),
-                        first(string(fatal, "sourceTaskId"),
-                                string(fatal, "taskId"))));
-                row.addProperty("taskId", first(string(row, "taskId"),
-                        string(fatal, "taskId")));
+                        optionalString(row, "sourceTaskId"),
+                        first(optionalString(fatal, "sourceTaskId"),
+                                optionalString(fatal, "taskId"))));
+                row.addProperty("taskId", first(optionalString(row, "taskId"),
+                        optionalString(fatal, "taskId")));
                 row.addProperty("boundarySessionScope", first(
-                        string(row, "boundarySessionScope"),
-                        string(fatal, "boundarySessionScope")));
+                        optionalString(row, "boundarySessionScope"),
+                        optionalString(fatal, "boundarySessionScope")));
                 row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH, first(
-                        string(row, VmExpressionIr.TOPOLOGY_EPOCH),
-                        string(fatal, VmExpressionIr.TOPOLOGY_EPOCH)));
+                        optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
+                        optionalString(fatal, VmExpressionIr.TOPOLOGY_EPOCH)));
                 String owner = LocalCaseIdentity.owner(
-                        string(fatal, "regionId"), occurrence,
-                        first(string(row, "caseId"),
+                        optionalString(fatal, "regionId"), occurrence,
+                        first(optionalString(row, "caseId"),
                                 "TARGET_PATH." + index), index);
                 LocalCaseIdentity.stamp(row, owner);
                 rows.add(row);
@@ -2215,7 +2215,7 @@ public final class SymbolicPropagationClosure {
     }
 
     private static String scopeOf(JsonObject row) {
-        return row == null ? "" : string(row, "boundarySessionScope");
+        return row == null ? "" : optionalString(row, "boundarySessionScope");
     }
 
     private static String executionKey(String scope, String task,
@@ -2239,19 +2239,19 @@ public final class SymbolicPropagationClosure {
                                              JsonObject read,
                                              CaseInfo readerCase) {
         JsonObject carrier = object(record, "carrier");
-        String declared = string(carrier, "declaringClass") + "#"
-                + string(carrier, "fieldName");
-        long plannedReceiver = longInteger(carrier, "receiverObjectId", 0L);
-        String location = string(record, "locationKey");
+        String declared = optionalString(carrier, "declaringClass") + "#"
+                + optionalString(carrier, "fieldName");
+        long plannedReceiver = optionalLongInteger(carrier, "receiverObjectId", 0L);
+        String location = optionalString(record, "locationKey");
         String kind = SharedStateEvidence.locationKindOf(location);
         int slot = location.lastIndexOf('#');
         String stableSlot = slot < 0 ? "" : location.substring(slot + 1);
         if (!"#".equals(declared)
                 && !declared.startsWith("#")
                 && !declared.endsWith("#")) {
-            String consumerSite = string(read,
+            String consumerSite = optionalString(read,
                     SharedStateEvidence.CONSUMER_SITE_ID);
-            int consumerOccurrence = integer(read,
+            int consumerOccurrence = optionalInteger(read,
                     SharedStateEvidence.CONSUMER_SITE_OCCURRENCE, -1);
             if (!consumerSite.isEmpty() && consumerOccurrence > 0) {
                 return kind + "/consumer:"
@@ -2287,11 +2287,11 @@ public final class SymbolicPropagationClosure {
     /** Stable output position for one writer occurrence and local ordinal. */
     private static String stableWriterLocation(JsonObject record) {
         JsonObject carrier = object(record, "carrier");
-        String declaring = string(carrier, "declaringClass");
-        String field = string(carrier, "fieldName");
+        String declaring = optionalString(carrier, "declaringClass");
+        String field = optionalString(carrier, "fieldName");
         String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                string(carrier, "descriptor"));
-        String location = string(record, "locationKey");
+                optionalString(carrier, "descriptor"));
+        String location = optionalString(record, "locationKey");
         String kind = SharedStateEvidence.locationKindOf(location);
         int slot = location.lastIndexOf('#');
         String stableSlot = slot < 0 ? "" : location.substring(slot + 1);

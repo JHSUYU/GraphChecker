@@ -39,8 +39,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Execution-task parsing and immutable instrumentation selections. */
 public final class ConcolicInstrumentationSelections {
@@ -400,10 +400,10 @@ public final class ConcolicInstrumentationSelections {
                     continue;
                 }
                 JsonObject branch = element.getAsJsonObject();
-                String method = string(branch, "method");
-                int unit = JsonFields.integer(branch, "unitIndex", -1);
+                String method = optionalString(branch, "method");
+                int unit = JsonFields.optionalInteger(branch, "unitIndex", -1);
                 Matcher site = SITE_ID.matcher(
-                        string(branch, "siteId"));
+                        optionalString(branch, "siteId"));
                 if (site.matches()) {
                     method = site.group(1);
                     unit = Integer.parseInt(site.group(2));
@@ -432,7 +432,7 @@ public final class ConcolicInstrumentationSelections {
                     if (encodedExit == null || !encodedExit.isJsonObject()) {
                         continue;
                     }
-                    Matcher site = SITE_ID.matcher(string(
+                    Matcher site = SITE_ID.matcher(optionalString(
                             encodedExit.getAsJsonObject(), "siteId"));
                     if (site.matches()) {
                         unitsByMethod.computeIfAbsent(site.group(1),
@@ -464,7 +464,7 @@ public final class ConcolicInstrumentationSelections {
 
     private static FieldTarget concolicFieldTarget(JsonObject action) {
         DeclaredField field = FieldPathSpec.declaredField(
-                string(action, "accessFieldSignature"));
+                optionalString(action, "accessFieldSignature"));
         return field == null ? null
                 : new FieldTarget(field.owner(), field.name());
     }
@@ -538,15 +538,15 @@ public final class ConcolicInstrumentationSelections {
                 return;
             }
             associativeContainerState |= "BOUNDED_CONTAINER_STATE".equals(
-                    string(action, "symbolicDemand"))
-                    && JavaContainerTypes.shape(string(action, "javaType"))
+                    optionalString(action, "symbolicDemand"))
+                    && JavaContainerTypes.shape(optionalString(action, "javaType"))
                     == JavaContainerTypes.Shape.ASSOCIATIVE;
             addAccessorCallTarget(action);
-            String mode = string(action, "bindingMode");
-            String cell = string(action, "cell");
+            String mode = optionalString(action, "bindingMode");
+            String cell = optionalString(action, "cell");
             if ("METHOD_ARGUMENT".equals(mode)) {
-                String method = string(action, "method");
-                int index = integer(action, "index", -1);
+                String method = optionalString(action, "method");
+                int index = optionalInteger(action, "index", -1);
                 if (method.isEmpty() || index < 0) {
                     throw unsupported(action);
                 }
@@ -555,8 +555,8 @@ public final class ConcolicInstrumentationSelections {
                 return;
             }
             if ("LOCAL_DEFINITION".equals(mode)) {
-                String method = string(action, "method");
-                String local = string(action, "local");
+                String method = optionalString(action, "method");
+                String local = optionalString(action, "local");
                 Matcher matcher = LOCAL.matcher(cell);
                 if (matcher.matches()) {
                     method = firstNonBlank(method, matcher.group(1));
@@ -568,7 +568,7 @@ public final class ConcolicInstrumentationSelections {
                         for (JsonElement element
                                 : definitions.getAsJsonArray()) {
                             if (element.isJsonObject()) {
-                                int site = integer(element.getAsJsonObject(),
+                                int site = optionalInteger(element.getAsJsonObject(),
                                         "unitIndex", -1);
                                 if (site >= 0) {
                                     addLocal(method, local, site);
@@ -584,7 +584,7 @@ public final class ConcolicInstrumentationSelections {
                 }
                 return;
             }
-            String location = string(action, "location");
+            String location = optionalString(action, "location");
             if (!"FIELD_ACCESS".equals(mode)
                     && !"HEAP_OBJECT_FIELD".equals(location)) {
                 return;
@@ -607,11 +607,11 @@ public final class ConcolicInstrumentationSelections {
                 if (!element.isJsonObject()) continue;
                 JsonObject carrier = element.getAsJsonObject();
                 if (!"ACTIVATION_FIELD_RECEIVER".equals(
-                        string(carrier, "sourceKind"))) {
+                        optionalString(carrier, "sourceKind"))) {
                     continue;
                 }
-                String owner = string(carrier, "declaringClass");
-                String name = string(carrier, "fieldName");
+                String owner = optionalString(carrier, "declaringClass");
+                String name = optionalString(carrier, "fieldName");
                 if (owner.isEmpty() || name.isEmpty()) {
                     throw unsupported(carrier);
                 }
@@ -631,9 +631,9 @@ public final class ConcolicInstrumentationSelections {
                 String fieldKey = target.owner + "|" + target.name;
                 if (!carrierFields.contains(fieldKey)) continue;
                 addSharedCarrierAccessSite(
-                        string(action, "staticAccessSiteId"), fieldKey);
+                        optionalString(action, "staticAccessSiteId"), fieldKey);
                 addSharedCarrierAccessSite(
-                        string(action, "siteId"), fieldKey);
+                        optionalString(action, "siteId"), fieldKey);
                 for (JsonElement site : JsonFields.array(
                         action, "accessSites")) {
                     if (site.isJsonPrimitive()) {
@@ -671,10 +671,10 @@ public final class ConcolicInstrumentationSelections {
         }
 
         void addAccessorCallTarget(JsonObject action) throws IOException {
-            String caller = string(action, "accessorCallerMethod");
-            int unitIndex = integer(action, "accessorCallUnitIndex", -1);
-            String callee = string(action, "accessorDeclaredCallee");
-            String implementation = string(action,
+            String caller = optionalString(action, "accessorCallerMethod");
+            int unitIndex = optionalInteger(action, "accessorCallUnitIndex", -1);
+            String callee = optionalString(action, "accessorDeclaredCallee");
+            String implementation = optionalString(action,
                     "accessorImplementationMethod");
             boolean constrained = !caller.isEmpty() || unitIndex >= 0
                     || !callee.isEmpty() || !implementation.isEmpty();
@@ -686,7 +686,7 @@ public final class ConcolicInstrumentationSelections {
             String site = CommunicationCatalogContract.siteId(caller,
                     unitIndex);
 
-            String fieldSignature = string(action,
+            String fieldSignature = optionalString(action,
                     "accessFieldSignature");
             DeclaredField declaredField =
                     FieldPathSpec.declaredField(fieldSignature);
@@ -714,7 +714,7 @@ public final class ConcolicInstrumentationSelections {
 
         private static IOException unsupported(JsonObject action) {
             return new IOException("Unsupported concolic materialization "
-                    + string(action, "symbol"));
+                    + optionalString(action, "symbol"));
         }
 
         boolean isEmpty() {

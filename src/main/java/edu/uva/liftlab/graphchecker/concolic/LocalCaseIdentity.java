@@ -14,9 +14,9 @@ import java.util.List;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.bool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.integer;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.string;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
  * Stable identity of one region-local control case.
@@ -47,8 +47,8 @@ public final class LocalCaseIdentity {
         if (summary == null) {
             throw new IllegalArgumentException("summary is required");
         }
-        return owner(string(summary, "regionId"),
-                string(summary, "occurrenceId"), stated(summary), 0);
+        return owner(optionalString(summary, "regionId"),
+                optionalString(summary, "occurrenceId"), stated(summary), 0);
     }
 
     public static String selector(String owner) {
@@ -76,7 +76,7 @@ public final class LocalCaseIdentity {
      * payload at each decode; the stated value is the authority.</p>
      */
     public static String stated(JsonObject summary) {
-        String stated = string(summary, FIELD);
+        String stated = optionalString(summary, FIELD);
         if (stated.isEmpty()) {
             throw new IllegalArgumentException(
                     "relation summary has no localCaseId");
@@ -131,7 +131,7 @@ public final class LocalCaseIdentity {
             copyInteger(sourceRow, loop, LoopBoundPolicy.LOOP_BODY_BOUND);
             copyInteger(sourceRow, loop, LoopBoundPolicy.LOOP_BODY_COUNT);
             loop.addProperty(LoopBoundPolicy.PATH_LOOP_REACHED,
-                    bool(sourceRow, LoopBoundPolicy.PATH_LOOP_REACHED,
+                    optionalBool(sourceRow, LoopBoundPolicy.PATH_LOOP_REACHED,
                             false));
             JsonArray cardinalities = new JsonArray();
             List<JsonObject> exact = new ArrayList<>();
@@ -162,15 +162,15 @@ public final class LocalCaseIdentity {
         for (JsonObject loop : loopRows) loops.add(loop);
 
         JsonObject terminal = new JsonObject();
-        terminal.addProperty("normalExit", bool(summary, "normalExit",
+        terminal.addProperty("normalExit", optionalBool(summary, "normalExit",
                 false));
-        terminal.addProperty("boundedExit", bool(summary, "boundedExit",
+        terminal.addProperty("boundedExit", optionalBool(summary, "boundedExit",
                 false));
-        terminal.addProperty("exceptionType", string(summary,
+        terminal.addProperty("exceptionType", optionalString(summary,
                 "exceptionType"));
         if (summary.has(PathObservation.TARGET_REACHED)) {
             terminal.addProperty(PathObservation.TARGET_REACHED,
-                    bool(summary, PathObservation.TARGET_REACHED, false));
+                    optionalBool(summary, PathObservation.TARGET_REACHED, false));
         }
         JsonElement target = summary.get(PathObservation.TargetReachEvent.FIELD);
         if (target != null && target.isJsonObject()) {
@@ -214,7 +214,7 @@ public final class LocalCaseIdentity {
     }
 
     private static String required(JsonObject source, String field) {
-        String value = string(source, field);
+        String value = optionalString(source, field);
         if (value.isEmpty()) {
             throw new IllegalArgumentException(
                     "local case requires " + field);
@@ -232,14 +232,14 @@ public final class LocalCaseIdentity {
 
     private static void copyText(JsonObject source, JsonObject target,
                                  String field) {
-        String value = string(source, field);
+        String value = optionalString(source, field);
         if (!value.isEmpty()) target.addProperty(field, value);
     }
 
     private static void copyInteger(JsonObject source, JsonObject target,
                                     String field) {
         if (source.has(field)) {
-            target.addProperty(field, integer(source, field, -1));
+            target.addProperty(field, optionalInteger(source, field, -1));
         }
     }
 }
