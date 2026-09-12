@@ -983,7 +983,7 @@ public final class CausynthTraceRecorder {
                             refinedGraph);
             RuntimeSelectedRegionFinalizer.Result closure =
                     RuntimeSelectedRegionFinalizer.finalizeRegions(
-                    refinement.rows, refinedGraph, selectedSkeletons,
+                    refinement.rows, selectedSkeletons,
                     observedMethods, activationGraph.runtimeInstances,
                     runtimeObservations(trace.execution, trace.methods),
                     activationGraph.occurrenceLinks);

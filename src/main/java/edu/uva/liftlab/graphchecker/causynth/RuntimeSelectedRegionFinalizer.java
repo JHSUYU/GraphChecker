@@ -93,13 +93,12 @@ public final class RuntimeSelectedRegionFinalizer {
      * symbolic values still cross only through VM VALUE_HANDOFF edges.
      */
     public static Result finalizeRegions(
-            List<Map<String, Object>> graph, File refinedGraph,
+            List<Map<String, Object>> graph,
             File selectedSkeletons, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> runtimeObservations,
             Collection<Map<String, Object>> runtimeOccurrenceLinks)
             throws IOException {
-        requireRefinedGraph(graph, refinedGraph);
         Set<String> observed = new LinkedHashSet<>();
         if (observedMethods != null) {
             observed.addAll(observedMethods);
@@ -3241,21 +3240,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     address.declarations.size() - 1);
             return demanded.contains(location);
         };
-    }
-
-    private static void requireRefinedGraph(
-            List<Map<String, Object>> rows, File source) throws IOException {
-        if (rows.isEmpty()) {
-            throw new IOException("refined graph is empty: " + source);
-        }
-        for (Map<String, Object> row : rows) {
-            if (number(row.get("schemaVersion"), -1) != 3
-                    || number(row.get("refinementSchemaVersion"), -1) != 1
-                    || !REFINED_KIND.equals(text(row.get("graphKind")))) {
-                throw new IOException("full region planning requires a "
-                        + "schema-3 runtime-refined graph: " + source);
-            }
-        }
     }
 
     /** Recorded rows in observed order; unstamped rows sort last. */
