@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -43,6 +44,52 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 .externalCallReturnPorts(program, REGION, branches,
                         Collections.singletonList(returnObservation(89L)))
                 .size());
+    }
+
+    /**
+     * A call-return port id is published identity, so it must not be spelled
+     * from the recorder's callId.
+     *
+     * <p>callId is a global per-run event counter, so naming a port after it
+     * gave the same call return a different symbol in every recording, and
+     * two runs of one flip obligation then produced queries that differed by
+     * symbol name alone. The same return, reached under a different callId,
+     * has to be named the same.</p>
+     */
+    @Test
+    public void callReturnPortIdDoesNotDependOnTheRecordedCallId() {
+        StaticProgram program = programWithExactAccessor(88L);
+        // The occurrence recorded both calls; only their callId differs.
+        program.activations.put("node/region/REGION.reader#1", row(
+                "callIds", Arrays.asList(77L, 78L)));
+        List<Map<String, Object>> branches = Collections.singletonList(row(
+                "policy", "EXPLORE",
+                "operandCells", Collections.singletonList(LOCAL)));
+
+        List<Map<String, Object>> first = RuntimeSelectedRegionFinalizer
+                .externalCallReturnPorts(program, REGION, branches,
+                        Collections.singletonList(
+                                returnObservation(77L, 89L)));
+        List<Map<String, Object>> second = RuntimeSelectedRegionFinalizer
+                .externalCallReturnPorts(program, REGION, branches,
+                        Collections.singletonList(
+                                returnObservation(78L, 90L)));
+
+        assertEquals(1, first.size());
+        assertEquals(1, second.size());
+        assertEquals(String.valueOf(first.get(0).get("portId")),
+                String.valueOf(second.get(0).get("portId")));
+
+        // Two return events of one occurrence are still two ports: the
+        // ordinal that separates them is what replaced the callId, so it has
+        // to keep separating them.
+        List<Map<String, Object>> both = RuntimeSelectedRegionFinalizer
+                .externalCallReturnPorts(program, REGION, branches,
+                        Arrays.asList(returnObservation(77L, 89L),
+                                returnObservation(78L, 90L)));
+        assertEquals(2, both.size());
+        assertNotEquals(String.valueOf(both.get(0).get("portId")),
+                String.valueOf(both.get(1).get("portId")));
     }
 
     @Test
@@ -444,11 +491,16 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
     }
 
     private static Map<String, Object> returnObservation(long eventSeq) {
+        return returnObservation(77L, eventSeq);
+    }
+
+    private static Map<String, Object> returnObservation(long callId,
+                                                         long eventSeq) {
         return row(
                 "kind", "CALL_SITE_RETURN",
                 "siteId", SITE,
                 "declaredCallee", CALLEE,
-                "callId", 77L,
+                "callId", callId,
                 "eventSeq", eventSeq,
                 "primitiveValue", "5");
     }
