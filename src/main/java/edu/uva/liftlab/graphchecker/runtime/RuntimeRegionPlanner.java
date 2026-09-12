@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
+import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
@@ -1021,7 +1022,7 @@ final class RuntimeRegionPlanner {
                         + "#call" + rootCallId);
             }
             Set<String> allowedMethods = new LinkedHashSet<>(region.methods);
-            Set<Long> calls = longNumbers(seed.get("callIds"));
+            Set<Long> calls = MapFields.longValues(seed.get("callIds"));
             if (calls.isEmpty()) calls = trace.subtree(rootCallId);
             Set<String> observedMethods = new LinkedHashSet<>(
                     strings(seed.get("observedMethods")));
@@ -1522,13 +1523,9 @@ final class RuntimeRegionPlanner {
         goal.put("edgeBindings", bindings);
     }
 
-    /** Structural replacement for the previous Gson round-trip copy with the
-     * identical value domain: null-valued map entries are dropped, integral
-     * numbers become Long, list nulls survive. */
-    private static Map<String, Object> deepCopy(Map<String, Object> value) {
-        return (Map<String, Object>) deepCopyValue(value);
-    }
-
+    /** Structural copy with the value domain of the JSONL round trip:
+     * null-valued map entries are dropped, integral numbers become Long,
+     * list nulls survive. */
     @SuppressWarnings("unchecked")
     private static Object deepCopyValue(Object value) {
         if (value instanceof Map<?, ?>) {
@@ -3037,17 +3034,6 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    private static Set<Long> longNumbers(Object value) {
-        Set<Long> result = new LinkedHashSet<>();
-        if (value instanceof Collection<?>) {
-            for (Object item : (Collection<?>) value) {
-                if (item instanceof Number) {
-                    result.add(((Number) item).longValue());
-                }
-            }
-        }
-        return result;
-    }
 
 
     private static <T> List<T> sorted(Collection<T> source,

@@ -276,11 +276,7 @@ public final class SharedStateEvidence {
 
     /** Whether {@code row} is a gap this vocabulary produced. */
     public static boolean isGap(JsonObject row) {
-        return row != null
-                && GAP_KIND.equals(optionalString(row, "kind"))
-                && GAP_AUTHORITY.equals(optionalString(row, "authority"))
-                && !optionalString(row, "reason").isEmpty()
-                && optionalInteger(row, "statusCode", OK) != OK;
+        return JsonFields.isGapRow(row, GAP_KIND, GAP_AUTHORITY, OK);
     }
 
 

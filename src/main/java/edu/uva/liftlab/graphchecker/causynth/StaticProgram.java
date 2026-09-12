@@ -228,18 +228,6 @@ public final class StaticProgram {
     }
 
     /** The recorded call identities one row names. */
-    static Set<Long> longValues(Object value) {
-        Set<Long> result = new LinkedHashSet<>();
-        if (value instanceof Collection<?>) {
-            for (Object item : (Collection<?>) value) {
-                if (item instanceof Number) {
-                    result.add(((Number) item).longValue());
-                }
-            }
-        }
-        return result;
-    }
-
     /**
      * The single breadth-first closure driver of the static planner and the
      * runtime finalizer: FIFO from the seeds, every node visited once, so the
@@ -463,7 +451,7 @@ public final class StaticProgram {
         }
         Set<String> iterated = new LinkedHashSet<>();
         for (Map<String, Object> activation : regionActivations) {
-            Set<Long> calls = longValues(activation.get("callIds"));
+            Set<Long> calls = MapFields.longValues(activation.get("callIds"));
             for (Map.Entry<String, Set<Long>> entry
                     : callsOfRepeatedLoop.entrySet()) {
                 if (!Collections.disjoint(entry.getValue(), calls)) {

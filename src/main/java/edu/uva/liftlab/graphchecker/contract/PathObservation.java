@@ -19,6 +19,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactText;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
@@ -70,13 +71,6 @@ public final class PathObservation {
             throw new IllegalArgumentException("summary is required");
         }
         return new PathObservation(summary, task);
-    }
-
-    private static String exactText(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isString()
-                ? value.getAsString().trim() : "";
     }
 
     public String regionId() { return optionalString(raw, "regionId"); }

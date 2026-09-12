@@ -803,7 +803,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 .startsWith("EXCEPTION")) {
             return rootSourceKey;
         }
-        Set<Long> calls = StaticProgram.longValues(instance.get("callIds"));
+        Set<Long> calls = MapFields.longValues(instance.get("callIds"));
         for (Map<String, Object> branch : targetPolicies) {
             Map<String, Object> selected = selectedBranchObservation(branch,
                     calls, observations);
@@ -895,7 +895,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     regionId);
             if (regionTargets == null || regionTargets.isEmpty()) continue;
 
-            Set<Long> calls = StaticProgram.longValues(
+            Set<Long> calls = MapFields.longValues(
                     instance.get("callIds"));
             List<Map<String, Object>> bound = rows(
                     instance.get("observedFatalTargets"));
@@ -2288,7 +2288,7 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<Long, List<String>> occurrencesByCall = new LinkedHashMap<>();
         for (Map.Entry<String, Map<String, Object>> activation
                 : program.activations.entrySet()) {
-            for (Long callId : StaticProgram.longValues(
+            for (Long callId : MapFields.longValues(
                     activation.getValue().get("callIds"))) {
                 occurrencesByCall.computeIfAbsent(callId,
                         ignored -> new ArrayList<>()).add(activation.getKey());
@@ -3096,8 +3096,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 SemanticHeapAddress address = semanticHeapAddress(
                         port, access);
                 target.add(new BoundPort(region, text(port.get("portId")),
-                        first(text(access.get("sourceKey")),
-                                text(port.get("sourceKey"))),
                         first(text(access.get("occurrenceId")),
                                 text(port.get("occurrenceId"))),
                         longNumber(access.get("rootCallId"),
@@ -3762,7 +3760,6 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final class BoundPort {
         private final String region;
         private final String port;
-        private final String sourceKey;
         /** Activation identity; the only activation discriminator here. */
         private final String occurrenceId;
         /** Recorded trace evidence republished on the emitted edge. */
@@ -3773,7 +3770,7 @@ public final class RuntimeSelectedRegionFinalizer {
         private final String site;
         private final int occurrence;
 
-        private BoundPort(String region, String port, String sourceKey,
+        private BoundPort(String region, String port,
                           String occurrenceId,
                           long rootCallId, int receiver,
                           List<String> declarations,
@@ -3781,7 +3778,6 @@ public final class RuntimeSelectedRegionFinalizer {
                           int occurrence) {
             this.region = region;
             this.port = port;
-            this.sourceKey = sourceKey;
             this.occurrenceId = occurrenceId;
             this.rootCallId = rootCallId;
             this.receiver = receiver;

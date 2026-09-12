@@ -36,6 +36,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactText;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Converts one VM execution row into one semantic path row. */
@@ -1768,13 +1769,6 @@ public final class ConcolicSummaryImporter {
         return value != null && value.isJsonPrimitive()
                 && value.getAsJsonPrimitive().isBoolean()
                 ? value.getAsBoolean() : null;
-    }
-
-    private static String exactText(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        return value != null && value.isJsonPrimitive()
-                && value.getAsJsonPrimitive().isString()
-                ? value.getAsString().trim() : "";
     }
 
     private static String resultShapeRefusal(

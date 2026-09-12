@@ -15,8 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -56,6 +58,23 @@ public final class MapFields {
                     throw new IOException("null row in " + file);
                 }
                 result.add(row);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * The long values of a decoded row member that holds a list of numbers.
+     * A member that is not a list, and any element that is not a number, is
+     * not a value: the set is what the row actually stated.
+     */
+    public static Set<Long> longValues(Object value) {
+        Set<Long> result = new LinkedHashSet<>();
+        if (value instanceof Collection<?>) {
+            for (Object item : (Collection<?>) value) {
+                if (item instanceof Number) {
+                    result.add(((Number) item).longValue());
+                }
             }
         }
         return result;

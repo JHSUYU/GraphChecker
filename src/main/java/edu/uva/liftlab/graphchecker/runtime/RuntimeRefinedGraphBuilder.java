@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
+import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
@@ -30,6 +31,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.function.Function;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -224,9 +226,10 @@ final class RuntimeRefinedGraphBuilder {
                     List<Map<String, Object>> encoded = encodeBindings(
                             bindings);
                     edge.put("runtimeFieldBindings", encoded);
-                    List<String> uniquePath = uniquePath(bindings);
-                    List<String> uniqueDeclarations =
-                            uniqueDeclarations(bindings);
+                    List<String> uniquePath = uniqueFieldPath(bindings,
+                            RuntimeFieldPath::fieldNames);
+                    List<String> uniqueDeclarations = uniqueFieldPath(
+                            bindings, RuntimeFieldPath::fieldDeclarations);
                     if (!uniquePath.isEmpty()) {
                         edge.put("fieldPath", uniquePath);
                         edge.put("fieldPathDeclarations", uniqueDeclarations);
@@ -486,7 +489,7 @@ final class RuntimeRefinedGraphBuilder {
                         + "selected skeleton: " + regionId + "#call"
                         + rootCallId);
             }
-            Set<Long> calls = longNumbers(instance.get("callIds"));
+            Set<Long> calls = MapFields.longValues(instance.get("callIds"));
             if (calls.isEmpty() || !calls.contains(rootCallId)) {
                 throw new IOException("runtime activation has no rooted call "
                         + "subtree: " + regionId + "#call" + rootCallId);
@@ -591,25 +594,17 @@ final class RuntimeRefinedGraphBuilder {
         return new ArrayList<>(unique.values());
     }
 
-    private static List<String> uniquePath(
-            Collection<RuntimeFieldBinding> bindings) {
+    /**
+     * The one field path every binding of an edge states, read through
+     * {@code spelling}; no path at all when two bindings disagree, because
+     * an edge that two accesses spell differently has no single path.
+     */
+    private static List<String> uniqueFieldPath(
+            Collection<RuntimeFieldBinding> bindings,
+            Function<RuntimeFieldPath, List<String>> spelling) {
         List<String> selected = null;
         for (RuntimeFieldBinding binding : bindings) {
-            List<String> path = binding.path.fieldNames();
-            if (selected == null) {
-                selected = path;
-            } else if (!selected.equals(path)) {
-                return Collections.emptyList();
-            }
-        }
-        return selected == null ? Collections.emptyList() : selected;
-    }
-
-    private static List<String> uniqueDeclarations(
-            Collection<RuntimeFieldBinding> bindings) {
-        List<String> selected = null;
-        for (RuntimeFieldBinding binding : bindings) {
-            List<String> path = binding.path.fieldDeclarations();
+            List<String> path = spelling.apply(binding.path);
             if (selected == null) {
                 selected = path;
             } else if (!selected.equals(path)) {
@@ -789,17 +784,6 @@ final class RuntimeRefinedGraphBuilder {
     }
 
 
-    private static Set<Long> longNumbers(Object value) {
-        Set<Long> result = new LinkedHashSet<>();
-        if (value instanceof Collection<?>) {
-            for (Object item : (Collection<?>) value) {
-                if (item instanceof Number) {
-                    result.add(((Number) item).longValue());
-                }
-            }
-        }
-        return result;
-    }
 
     private static <T> List<T> values(List<T> values) {
         return values == null ? Collections.emptyList() : values;

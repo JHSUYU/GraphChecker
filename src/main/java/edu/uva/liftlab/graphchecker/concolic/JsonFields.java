@@ -180,6 +180,32 @@ public final class JsonFields {
         return primitiveString(object, field).trim();
     }
 
+    /**
+     * The string a member states, and only a string: a number or a boolean
+     * named by this field is not a text value, so it reads as absent rather
+     * than as its own rendering.
+     */
+    public static String exactText(JsonObject object, String field) {
+        JsonElement value = object == null ? null : object.get(field);
+        return value != null && value.isJsonPrimitive()
+                && value.getAsJsonPrimitive().isString()
+                ? value.getAsString().trim() : "";
+    }
+
+    /**
+     * Whether one row is a gap of the given vocabulary: its kind, its
+     * authority, a stated reason and a status other than that vocabulary's
+     * "no gap" code.  Two gap vocabularies used to spell this separately.
+     */
+    public static boolean isGapRow(JsonObject row, String kind,
+                                   String authority, int okStatus) {
+        return row != null
+                && kind.equals(optionalString(row, "kind"))
+                && authority.equals(optionalString(row, "authority"))
+                && !optionalString(row, "reason").isEmpty()
+                && optionalInteger(row, "statusCode", okStatus) != okStatus;
+    }
+
     /** {@code value} trimmed, or "" when null. */
     public static String trimmed(String value) {
         return value == null ? "" : value.trim();
