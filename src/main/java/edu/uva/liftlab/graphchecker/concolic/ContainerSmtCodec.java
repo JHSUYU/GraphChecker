@@ -40,6 +40,20 @@ public final class ContainerSmtCodec {
      * build their element arrays with a lambda.  A traversal count compared
      * against a counter needs none of those arrays.</p>
      */
+    /**
+     * One element of an indexed container, observed without its array.
+     *
+     * <p>A read at one position is decided by the mutations above the state
+     * that holds it: an append answers at the old size, an insert answers at
+     * its own position and shifts everything after it, a remove shifts back,
+     * a positional write answers at its own position.  Saying that as an
+     * ite over values leaves every state in the chain unbuilt, where
+     * `(indexed_read <state> i)` forces each one - and IndexedState is a
+     * datatype holding an array, so each costs a datatype split and an array
+     * extensionality axiom.</p>
+     */
+    private static final String SCALAR_INDEXED_READ =
+            "__SCALAR_INDEXED_READ";
     private static final String SCALAR_INDEXED_SIZE =
             "__SCALAR_INDEXED_SIZE";
 
@@ -516,6 +530,20 @@ public final class ContainerSmtCodec {
         String operation = optionalString(expression, "operation");
         String javaType = optionalString(expression, "_java_type");
         if ("INDEXED".equals(shape)
+                && SCALAR_INDEXED_READ.equals(operation)) {
+            JsonArray positions = array(expression, "arguments");
+            JsonElement state = expression.get("receiver");
+            if (positions.size() != 1 || !scalarIndexedLeaf(state)) {
+                host.unsupported("ContainerRelation:INDEXED:" + operation);
+                return null;
+            }
+            Term index = host.operand(positions.get(0), Sort.INT);
+            if (index == null) return null;
+            requireIndexedSizeMember(state, index, host);
+            Term value = indexedRead(state, index, host, memo);
+            return value == null ? null : host.unbox(value, javaType);
+        }
+        if ("INDEXED".equals(shape)
                 && SCALAR_INDEXED_SIZE.equals(operation)) {
             JsonElement state = expression.get("receiver");
             if (array(expression, "arguments").size() != 0
@@ -601,9 +629,27 @@ public final class ContainerSmtCodec {
                         + positions.size());
                 return null;
             }
+            // The element a traversal reads.  An indexed ITERATOR is the
+            // identity on its state, so the cursor is the state chain: say
+            // what the mutations above it answer at this position instead of
+            // building each of them to select one element out.
+            JsonElement cursorIr = indexedCursorState(
+                    expression.get("receiver"));
+            JsonElement projected = propagationWrapper(cursorIr)
+                    ? projectChoice(cursorIr, positions.get(0), "", javaType,
+                    SCALAR_INDEXED_READ, "INDEXED") : null;
+            if (projected != null) {
+                Term value = host.box(projected);
+                if (value != null) return host.unbox(value, javaType);
+            }
+            Term index = host.operand(positions.get(0), Sort.INT);
+            if (index != null && scalarIndexedLeaf(cursorIr)) {
+                requireIndexedSizeMember(cursorIr, index, host);
+                Term value = indexedRead(cursorIr, index, host, memo);
+                if (value != null) return host.unbox(value, javaType);
+            }
             Term cursor = host.operand(expression.get("receiver"),
                     Sort.INDEXED);
-            Term index = host.operand(positions.get(0), Sort.INT);
             if (cursor != null && index != null) {
                 requireIndexedMember(cursor, index, host);
             }
@@ -716,6 +762,31 @@ public final class ContainerSmtCodec {
                         arguments.get(0), javaType);
                 if (stored != null) {
                     return host.unbox(host.box(stored), javaType);
+                }
+            }
+            if (("READ".equals(operation) || "NEXT".equals(operation))
+                    && arguments.size() == 1) {
+                // The element a traversal reads is decided by the mutations
+                // above the state holding it, so say that instead of
+                // building each of those states to select one position out
+                // of it.
+                JsonElement projected = propagationWrapper(receiverIr)
+                        ? projectChoice(receiverIr, arguments.get(0), "",
+                        javaType, SCALAR_INDEXED_READ, "INDEXED") : null;
+                if (projected != null) {
+                    Term value = host.box(projected);
+                    if (value != null) return host.unbox(value, javaType);
+                }
+                if (scalarIndexedLeaf(receiverIr)) {
+                    Term index = host.operand(arguments.get(0), Sort.INT);
+                    if (index != null) {
+                        requireIndexedSizeMember(receiverIr, index, host);
+                        Term value = indexedRead(receiverIr, index, host,
+                                memo);
+                        if (value != null) {
+                            return host.unbox(value, javaType);
+                        }
+                    }
                 }
             }
             if ("SIZE".equals(operation)) {
@@ -1394,7 +1465,8 @@ public final class ContainerSmtCodec {
         // used by both hosts.  Keep String reads in the existing boxed
         // whole-state path until the codec Term can preserve that pair.
         if ((SCALAR_ASSOC_READ.equals(projection)
-                || SCALAR_ASSOC_NEXT.equals(projection))
+                || SCALAR_ASSOC_NEXT.equals(projection)
+                || SCALAR_INDEXED_READ.equals(projection))
                 && "VString".equals(valueKind(selectedJavaType))) {
             return null;
         }
@@ -1529,6 +1601,126 @@ public final class ContainerSmtCodec {
         String step = "APPEND".equals(operation) || "INSERT".equals(operation)
                 ? "+" : "-";
         return new Term("(" + step + " " + receiver.text + " 1)", Sort.INT,
+                IntegralWidth.JAVA_INT);
+    }
+
+    /**
+     * One indexed element, as an ite over the mutations above its state.
+     *
+     * <p>This is exactly what the preamble's indexed_append / indexed_insert
+     * / indexed_remove / indexed_write say about position {@code index},
+     * said without constructing the arrays they build.  Only the state at
+     * the bottom of the chain is ever named.</p>
+     */
+    private static Term indexedRead(JsonElement state, Term index, Host host,
+                                    ProjectionMemo memo) {
+        if (state == null || !state.isJsonObject()) return null;
+        Term cached = memo.get(memo.reads, state, index.text);
+        if (cached != null) return cached;
+        JsonObject object = state.getAsJsonObject();
+        String operation = optionalString(object, "operation");
+        if (!EXPRESSION_TYPE.equals(optionalString(object, "_type"))
+                || !"INDEXED".equals(optionalString(object, "shape"))) {
+            return null;
+        }
+        if (emptiesState(operation)) {
+            return memo.put(memo.reads, state, index.text,
+                    new Term("(VRef nullRef)", Sort.VALUE));
+        }
+        if (!indexedSizeStep(operation)) {
+            Term whole = host.operand(state, Sort.INDEXED);
+            if (whole == null) return null;
+            whole = shared(whole, host);
+            return whole == null ? null : memo.put(memo.reads, state,
+                    index.text, shared(new Term("(indexed_read "
+                    + whole.text + " " + index.text + ")", Sort.VALUE),
+                    host));
+        }
+        JsonElement receiverIr = object.get("receiver");
+        JsonArray arguments = array(object, "arguments");
+        Term result;
+        if ("APPEND".equals(operation) && arguments.size() == 1) {
+            Term size = indexedSize(receiverIr, host);
+            Term appended = memo.box(arguments.get(0), host);
+            Term previous = indexedRead(receiverIr, index, host, memo);
+            if (size == null || appended == null || previous == null) {
+                return null;
+            }
+            result = new Term("(ite (= " + index.text + " " + size.text
+                    + ") " + appended.text + " " + previous.text + ")",
+                    Sort.VALUE);
+        } else if ("WRITE".equals(operation) && arguments.size() == 2) {
+            Term at = host.operand(arguments.get(0), Sort.INT);
+            Term written = memo.box(arguments.get(1), host);
+            Term previous = indexedRead(receiverIr, index, host, memo);
+            if (at == null || written == null || previous == null) {
+                return null;
+            }
+            result = new Term("(ite (= " + index.text + " " + at.text + ") "
+                    + written.text + " " + previous.text + ")", Sort.VALUE);
+        } else if ("INSERT".equals(operation) && arguments.size() == 2) {
+            Term at = host.operand(arguments.get(0), Sort.INT);
+            Term inserted = memo.box(arguments.get(1), host);
+            Term below = indexedRead(receiverIr, index, host, memo);
+            Term above = indexedRead(receiverIr, shifted(index, "-"), host,
+                    memo);
+            if (at == null || inserted == null || below == null
+                    || above == null) {
+                return null;
+            }
+            result = new Term("(ite (< " + index.text + " " + at.text + ") "
+                    + below.text + " (ite (= " + index.text + " " + at.text
+                    + ") " + inserted.text + " " + above.text + "))",
+                    Sort.VALUE);
+        } else if ("REMOVE".equals(operation) && arguments.size() == 1) {
+            Term at = host.operand(arguments.get(0), Sort.INT);
+            Term below = indexedRead(receiverIr, index, host, memo);
+            Term above = indexedRead(receiverIr, shifted(index, "+"), host,
+                    memo);
+            if (at == null || below == null || above == null) return null;
+            result = new Term("(ite (< " + index.text + " " + at.text + ") "
+                    + below.text + " " + above.text + ")", Sort.VALUE);
+        } else {
+            return null;
+        }
+        return memo.put(memo.reads, state, index.text, shared(result, host));
+    }
+
+    /**
+     * Positional projections are Java operations, not total SMT functions,
+     * so membership is required rather than assumed - stated here from the
+     * chain's closed-form size so that requiring it does not itself build
+     * the state the projection exists to avoid.
+     */
+    private static void requireIndexedSizeMember(JsonElement state,
+                                                 Term index, Host host) {
+        Term size = indexedSize(state, host);
+        if (size == null) return;
+        host.require("(and (<= 0 " + index.text + ") (< " + index.text
+                + " " + size.text + "))");
+    }
+
+    /**
+     * The state an indexed cursor walks.  ITERATOR is the identity on its
+     * receiver for this shape, so a cursor is its state chain with any
+     * number of iterator wrappers around it.
+     */
+    private static JsonElement indexedCursorState(JsonElement cursor) {
+        JsonElement state = cursor;
+        while (state != null && state.isJsonObject()) {
+            JsonObject node = state.getAsJsonObject();
+            if (!EXPRESSION_TYPE.equals(optionalString(node, "_type"))
+                    || !"ITERATOR".equals(optionalString(node, "operation"))) {
+                return state;
+            }
+            state = node.get("receiver");
+        }
+        return cursor;
+    }
+
+    /** The neighbouring position an insert or remove shifts an element to. */
+    private static Term shifted(Term index, String step) {
+        return new Term("(" + step + " " + index.text + " 1)", Sort.INT,
                 IntegralWidth.JAVA_INT);
     }
 

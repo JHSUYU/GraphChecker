@@ -358,6 +358,70 @@ public class IndexedStateCarrierTest {
         assertEquals("(- (+ (+ (+ 0 1) 1) 1) 1)", term.text);
     }
 
+    @Test
+    public void aThreeElementChainReadsByPositionWithoutItsArrays() {
+        // append e0,e1,e2 then remove index 0: position 1 answers e2, and no
+        // element array is built to say so.
+        JsonObject chain = relation("INDEXED", "SNAPSHOT_BASE",
+                relation("INDEXED", "STATE",
+                        symbol("MAP_STATE.v1." + digest('a'))));
+        for (int index = 0; index < 3; index++) {
+            chain = withArguments(relation("INDEXED", "APPEND", chain),
+                    symbol("e" + index));
+        }
+        chain = withArguments(relation("INDEXED", "REMOVE", chain),
+                integer(0));
+        JsonObject read = withArguments(
+                relation("INDEXED", "READ", chain), integer(1));
+        read.addProperty("_java_type", "L");
+
+        RecordingHost host = new RecordingHost();
+        ContainerSmtCodec.Term term = ContainerSmtCodec.term(read, host);
+        assertNotNull(String.join(",", host.unsupported), term);
+        assertTrue(host.unsupported.isEmpty());
+        assertTrue(term.text, term.text.contains("(VRef e2)"));
+        assertFalse("no element array is built to read one position",
+                term.text.contains("indexed_append")
+                        || term.text.contains("indexed_remove")
+                        || term.text.contains("store")
+                        || term.text.contains("lambda")
+                        || term.text.contains("mkIndexedState"));
+        // Membership is stated from the chain's closed-form size.
+        assertTrue(host.required.toString(),
+                host.required.toString().contains("(- (+ (+ (+ 0 1) 1) 1) 1)"));
+    }
+
+    @Test
+    public void aReadOverTwoArmsProjectsToValueArmsWithNoStateTerm() {
+        // Two writer arms of one guarded read, each a different list state.
+        // Projecting the read inside them leaves Value arms; lowering the
+        // read over the states instead would select out of two IndexedStates.
+        JsonObject base = relation("INDEXED", "SNAPSHOT_BASE",
+                relation("INDEXED", "STATE",
+                        symbol("MAP_STATE.v1." + digest('b'))));
+        JsonObject armOne = withArguments(
+                relation("INDEXED", "APPEND", base), symbol("first"));
+        JsonObject armTwo = withArguments(
+                relation("INDEXED", "APPEND", armOne), symbol("second"));
+        JsonObject guarded = guardedRead("L", armOne, armTwo);
+        JsonObject read = withArguments(
+                relation("INDEXED", "READ", guarded), integer(0));
+        read.addProperty("_java_type", "L");
+
+        RecordingHost host = new RecordingHost();
+        ContainerSmtCodec.Term term = ContainerSmtCodec.term(read, host);
+        assertNotNull(String.join(",", host.unsupported), term);
+        // The property under test is the shape, not the element: the read
+        // was pushed inside the arms, so what comes back is a value and no
+        // state is selected out of.  Lowering the read over the arms
+        // instead would have produced (indexed_read <state> 0) against two
+        // IndexedStates - a datatype holding an array, so two datatype
+        // splits and two extensionality axioms per read.
+        assertFalse(term.text, term.text.contains("indexed_read")
+                || term.text.contains("mkIndexedState")
+                || term.text.contains("indexed_append"));
+    }
+
     // ------------------------------------------- container-valued read sort
 
     @Test
@@ -448,8 +512,12 @@ public class IndexedStateCarrierTest {
         read.addProperty("_type", SharedStateEvidence.GUARDED_READ_TYPE);
         read.addProperty("_java_type", javaType);
         JsonArray candidates = new JsonArray();
+        int ordinal = 0;
         for (JsonObject arm : arms) {
             JsonObject candidate = new JsonObject();
+            // Real evidence always carries the arm's selector; a projection
+            // refuses an arm without one rather than guess its guard.
+            candidate.addProperty("selector", "arm_" + ordinal++);
             candidate.add("expression", arm);
             candidates.add(candidate);
         }
@@ -569,7 +637,16 @@ public class IndexedStateCarrierTest {
 
         @Override
         public ContainerSmtCodec.Term box(JsonElement expression) {
-            return new ContainerSmtCodec.Term("(VRef nullRef)",
+            if (ContainerSmtCodec.handles(expression)) {
+                ContainerSmtCodec.Term inner = ContainerSmtCodec.term(
+                        expression.getAsJsonObject(), this);
+                if (inner != null) return inner;
+            }
+            String raw = expression != null && expression.isJsonObject()
+                    && expression.getAsJsonObject().has("_exp")
+                    ? expression.getAsJsonObject().get("_exp").getAsString()
+                    : "nullRef";
+            return new ContainerSmtCodec.Term("(VRef " + raw + ")",
                     ContainerSmtCodec.Sort.VALUE);
         }
 
