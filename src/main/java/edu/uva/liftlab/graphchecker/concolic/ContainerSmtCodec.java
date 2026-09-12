@@ -20,6 +20,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 /** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {
     public static final String EXPRESSION_TYPE = "ContainerRelation";
+    /** Member holding one arm's or candidate's value. */
+    private static final String EXPRESSION_MEMBER = "expression";
     /** Process-local projection nodes; never emitted by the VM or persisted. */
     private static final String SCALAR_ASSOC_MEMBER =
             "__SCALAR_ASSOC_MEMBER";
@@ -1469,6 +1471,81 @@ public final class ContainerSmtCodec {
      * iterator may see several wrappers rather than the view node directly.
      * The projection remains exact only when every recorded arm agrees.</p>
      */
+    /**
+     * The shape a guarded read answers when its value IS a container, or
+     * {@code ""} when the read answers a cell or a scalar instead.
+     *
+     * <p>The VM records the erased reference type {@code L} for such a read,
+     * because a cursor and a view are both just objects to it.  Lowered from
+     * that type the read is a reference, while its arms lower to the states
+     * they actually are - and every arm then looks like a sort conflict.
+     * The associative side of this was already handled by
+     * {@link #selectedReadViewState}; an indexed cursor had no equivalent,
+     * which is what refused every traversal of a selected list.</p>
+     */
+    static String containerValuedReadShape(JsonElement expression) {
+        return containerValuedReadShape(expression, 0);
+    }
+
+    private static String containerValuedReadShape(JsonElement expression,
+                                                   int depth) {
+        if (depth > 64 || expression == null
+                || !expression.isJsonObject()) {
+            return "";
+        }
+        JsonObject object = expression.getAsJsonObject();
+        if (VmExpressionIr.isConsumerBoundary(object)
+                || VmExpressionIr.isConsumerBoundaryReference(object)) {
+            return containerValuedReadShape(
+                    object.get(VmExpressionIr.EXPRESSION), depth + 1);
+        }
+        String type = optionalString(object, "_type");
+        if (EXPRESSION_TYPE.equals(type)) {
+            return containerValuedOperation(
+                    optionalString(object, "operation"))
+                    ? optionalString(object, "shape") : "";
+        }
+        JsonArray arms;
+        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
+            arms = array(object, "arms");
+        } else if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
+            arms = array(object, "candidates");
+        } else {
+            return "";
+        }
+        // Every arm must answer the same container shape, or the read has no
+        // one shape to be lowered at and the sort check refuses it as before.
+        String shape = "";
+        for (JsonElement arm : arms) {
+            if (!arm.isJsonObject()) return "";
+            String armShape = containerValuedReadShape(
+                    arm.getAsJsonObject().get(EXPRESSION_MEMBER), depth + 1);
+            if (armShape.isEmpty()) return "";
+            if (shape.isEmpty()) {
+                shape = armShape;
+            } else if (!shape.equals(armShape)) {
+                return "";
+            }
+        }
+        return shape;
+    }
+
+    /** Whether one relation's own value is the container, not a member. */
+    private static boolean containerValuedOperation(String operation) {
+        return "STATE".equals(operation) || "SNAPSHOT_BASE".equals(operation)
+                || "ITERATOR".equals(operation)
+                || "ENTRY_VIEW".equals(operation)
+                || "KEY_VIEW".equals(operation)
+                || "VALUE_VIEW".equals(operation)
+                || "PUT".equals(operation) || "APPEND".equals(operation)
+                || "INSERT".equals(operation) || "WRITE".equals(operation)
+                || "REMOVE".equals(operation)
+                || "REMOVE_AT".equals(operation)
+                || "REMOVE_IF".equals(operation)
+                || "CLEAR".equals(operation)
+                || "CLEAR_VIEW".equals(operation);
+    }
+
     private static String selectedReadViewKind(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();

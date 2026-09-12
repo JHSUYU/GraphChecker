@@ -294,7 +294,83 @@ public class IndexedStateCarrierTest {
         assertTrue(required, required.contains("indexed_size"));
     }
 
+    // ------------------------------------------- container-valued read sort
+
+    @Test
+    public void aCursorReadAnswersTheContainersOwnShape() {
+        // The VM records the erased reference type "L" for the cursor a
+        // traversal starts from, and that erasure resolves to a reference.
+        // The read's arms are the states they really are, so lowering the
+        // read as a reference made every arm a sort conflict and refused the
+        // whole traversal of a selected container.
+        JsonObject read = guardedRead("L",
+                relation("INDEXED", "ITERATOR", relation("INDEXED", "STATE",
+                        symbol("MAP_STATE.v1." + digest('1')))),
+                relation("INDEXED", "ITERATOR", withArguments(
+                        relation("INDEXED", "APPEND", relation("INDEXED",
+                                "STATE", symbol("MAP_STATE.v1."
+                                        + digest('1')))),
+                        symbol("A_L_1"))));
+        assertEquals("INDEXED",
+                ContainerSmtCodec.containerValuedReadShape(read));
+    }
+
+    @Test
+    public void aMapViewReadAnswersTheMapsShape() {
+        JsonObject read = guardedRead("L",
+                relation("ASSOCIATIVE", "KEY_VIEW", relation("ASSOCIATIVE",
+                        "STATE", symbol("MAP_STATE.v1." + digest('2')))));
+        assertEquals("ASSOCIATIVE",
+                ContainerSmtCodec.containerValuedReadShape(read));
+    }
+
+    @Test
+    public void aCellOrScalarReadIsNotContainerValued() {
+        // bug3's allKeys.get(keyId) reads a member, not the map, so it keeps
+        // the reference sort its erased type gives it.
+        JsonObject cell = guardedRead("L", withArguments(
+                relation("ASSOCIATIVE", "READ", relation("ASSOCIATIVE",
+                        "STATE", symbol("MAP_STATE.v1." + digest('3')))),
+                symbol("A_L_1")));
+        assertEquals("", ContainerSmtCodec.containerValuedReadShape(cell));
+
+        JsonObject size = guardedRead("I", relation("INDEXED", "SIZE",
+                relation("INDEXED", "STATE",
+                        symbol("MAP_STATE.v1." + digest('4')))));
+        assertEquals("", ContainerSmtCodec.containerValuedReadShape(size));
+    }
+
+    @Test
+    public void armsThatDisagreeOnShapeHaveNoOneShape() {
+        // Nothing to force, so the sort check still refuses the read.
+        JsonObject mixed = guardedRead("L",
+                relation("INDEXED", "ITERATOR", relation("INDEXED", "STATE",
+                        symbol("MAP_STATE.v1." + digest('5')))),
+                relation("ASSOCIATIVE", "KEY_VIEW", relation("ASSOCIATIVE",
+                        "STATE", symbol("MAP_STATE.v1." + digest('6')))));
+        assertEquals("", ContainerSmtCodec.containerValuedReadShape(mixed));
+        assertEquals("", ContainerSmtCodec.containerValuedReadShape(
+                guardedRead("L")));
+        assertEquals("",
+                ContainerSmtCodec.containerValuedReadShape(null));
+    }
+
     // --------------------------------------------------------------- helpers
+
+    private static JsonObject guardedRead(String javaType,
+                                          JsonObject... arms) {
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", SharedStateEvidence.GUARDED_READ_TYPE);
+        read.addProperty("_java_type", javaType);
+        JsonArray candidates = new JsonArray();
+        for (JsonObject arm : arms) {
+            JsonObject candidate = new JsonObject();
+            candidate.add("expression", arm);
+            candidates.add(candidate);
+        }
+        read.add("candidates", candidates);
+        return read;
+    }
 
     private static String digest(char fill) {
         StringBuilder text = new StringBuilder();

@@ -5305,9 +5305,18 @@ public final class ConcolicSmtComposer {
      */
     static Sort guardedReadSort(JsonObject node, Sort expected,
                                 Collection<Sort> armSorts) {
-        String effectiveType = guardedReadJavaType(node);
-        Sort result = sortOfJava(effectiveType);
-        if (result == Sort.VALUE) result = expected;
+        // A read whose value IS the container - the cursor a traversal
+        // starts from, or a map view - answers the container's own sort.
+        // The VM records the erased reference type L for such a read and
+        // that erasure resolves to REF, which contradicts every arm: the
+        // arms lower to the states they really are and the read was lowered
+        // as a reference, so each one read as a sort conflict and the whole
+        // traversal of a selected container was refused.
+        Sort result = containerValuedReadSort(node);
+        if (result == null) {
+            result = sortOfJava(guardedReadJavaType(node));
+            if (result == Sort.VALUE) result = expected;
+        }
 
         Collection<Sort> candidates = armSorts == null
                 ? Collections.emptyList() : armSorts;
@@ -5319,6 +5328,13 @@ public final class ConcolicSmtComposer {
             if (candidate == null || candidate != result) return null;
         }
         return result;
+    }
+
+    /** The container sort a read of a whole container answers, or null. */
+    private static Sort containerValuedReadSort(JsonObject node) {
+        String shape = ContainerSmtCodec.containerValuedReadShape(node);
+        return "INDEXED".equals(shape) ? Sort.ARRAY_VALUE
+                : "ASSOCIATIVE".equals(shape) ? Sort.MAP : null;
     }
 
     private static String guardedReadJavaType(JsonObject node) {
