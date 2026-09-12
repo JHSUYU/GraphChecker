@@ -1600,10 +1600,136 @@ public final class ConcolicSmtComposer {
         /** Both names and the Java field of every selected location. */
         private Map<String, SharedStateEvidence.LocationProvenance>
                 locationProvenance = Collections.emptyMap();
+        /** Manual symbolic root raw symbol, by the port that mints it. */
+        private final Map<String, String> manualRawByPort =
+                new LinkedHashMap<>();
+        /** Emitted SMT name of each manual root, by its raw symbol. */
+        private final Map<String, String> manualRootNames =
+                new LinkedHashMap<>();
+        /** Confirmed request-fault control edges, by controlled occurrence. */
+        private final Map<String, JsonObject> requestFaultControlEdges =
+                new LinkedHashMap<>();
+        /** Region instances whose partition the fault control edge owns. */
+        private final Set<InvocationKey> faultControlledInstances =
+                new LinkedHashSet<>();
+
+        private String recordManualRootName(String raw, String name) {
+            manualRootNames.put(raw, name);
+            return name;
+        }
+
+        /**
+         * Indexes each confirmed request-fault control edge and the manual
+         * root its fault port mints.
+         *
+         * <p>A request-fault control edge names no value port on purpose: the
+         * fault marker is an independent symbolic input and the request
+         * transaction is the membership proof.  Nothing lowered the control
+         * dependence, so the marker sat in the formula as an isolated
+         * component -- its declaration, its two case definitions and the
+         * exactly-one partition -- and neither polarity could reach the
+         * successor region it decides.</p>
+         */
+        private void indexRequestFaultControl(List<JsonObject> owners) {
+            for (JsonObject owner : owners == null
+                    ? Collections.<JsonObject>emptyList() : owners) {
+                if (owner == null) continue;
+                for (JsonObject event
+                        : SymbolicSourceEvidence.eventsOf(owner)) {
+                    if (!SymbolicSourceEvidence.isManual(event)) continue;
+                    String port = optionalString(event, "portId");
+                    String raw = optionalString(event, "rawSymbol");
+                    if (!port.isEmpty() && !raw.isEmpty()) {
+                        manualRawByPort.putIfAbsent(port, raw);
+                    }
+                }
+                for (JsonElement element : array(owner, "edgeBindings")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject edge = element.getAsJsonObject();
+                    if (!AutomaticRegionEdge.trustedRequestFaultControl(edge)
+                            || !"CONFIRMED_REQUEST_CONTROL".equals(
+                            optionalString(edge, "state"))) {
+                        continue;
+                    }
+                    String controlled = OccurrenceId.parse(optionalString(
+                            edge, "toOccurrenceId")).planned();
+                    if (controlled.isEmpty()) continue;
+                    JsonObject held = requestFaultControlEdges.putIfAbsent(
+                            controlled, edge);
+                    if (held != null && !optionalString(held, "edgeId")
+                            .equals(optionalString(edge, "edgeId"))) {
+                        // Two faults controlling one occurrence: suppressing
+                        // it on either would forbid a run the other allows.
+                        refuse("RequestFaultControlAmbiguous:" + controlled,
+                                "one controlled occurrence has two confirmed"
+                                        + " request-fault control edges");
+                    }
+                }
+            }
+        }
+
+        /**
+         * Ties a controlled region's cases to its predecessor's fault marker.
+         *
+         * <p>A region instance is otherwise partitioned unconditionally --
+         * exactly one of its cases is always active -- so "this region did not
+         * run" could not be said at all.  For an occurrence a confirmed
+         * request-fault control edge governs, the fault decides instead: the
+         * marker true forbids every case of the controlled occurrence, and the
+         * marker false keeps the ordinary exactly-one partition.  The edge's
+         * own evidence is what licenses both directions, since it proves the
+         * request was sent, the fault point passed, and the response was
+         * received and consumed in that order.</p>
+         *
+         * <p>Fail closed: an edge whose fault marker is not a lowered manual
+         * root leaves the unconditional partition exactly as it was and
+         * refuses, rather than weakening the partition for nothing.</p>
+         */
+        private void emitRequestFaultControl() {
+            for (Map.Entry<String, JsonObject> entry
+                    : requestFaultControlEdges.entrySet()) {
+                JsonObject edge = entry.getValue();
+                String edgeId = optionalString(edge, "edgeId");
+                String raw = manualRawByPort.get(optionalString(edge,
+                        "faultPortId"));
+                String fault = raw == null ? null : manualRootNames.get(raw);
+                List<String> selectors = new ArrayList<>();
+                List<InvocationKey> instances = new ArrayList<>();
+                for (Map.Entry<InvocationKey, Set<String>> partition
+                        : casePartitions.entrySet()) {
+                    if (partition.getValue().isEmpty()) continue;
+                    if (!entry.getKey().equals(OccurrenceId.parse(
+                            partition.getKey().instanceId).planned())) {
+                        continue;
+                    }
+                    instances.add(partition.getKey());
+                    selectors.addAll(partition.getValue());
+                }
+                if (selectors.isEmpty()) continue;
+                if (fault == null || fault.isEmpty()) {
+                    refuse("RequestFaultControlMarkerMissing:" + edgeId,
+                            "controlled occurrence has no lowered fault"
+                                    + " marker to depend on");
+                    continue;
+                }
+                Collections.sort(selectors);
+                List<String> idle = new ArrayList<>(selectors.size());
+                for (String selector : selectors) {
+                    idle.add("(not " + selector + ")");
+                }
+                assertNamed("request_fault_control__" + smtName(edgeId),
+                        "(and (=> " + fault + " " + and(idle) + ") (=> (not "
+                                + fault + ") "
+                                + conditionalExactlyOne("true", selectors)
+                                + "))");
+                faultControlledInstances.addAll(instances);
+            }
+        }
 
         private void registerSymbolicSources(List<JsonObject> owners) {
             locationProvenance = SharedStateEvidence.locationProvenance(
                     owners);
+            indexRequestFaultControl(owners);
             try {
                 symbolicSourceIdentities =
                         SymbolicSourceEvidence.rawSymbolIdentities(owners,
@@ -3557,7 +3683,8 @@ public final class ConcolicSmtComposer {
             RawSymbol symbol = rawSymbols.get(key);
             if (symbol == null) {
                 String name = manualIdentity != null
-                        ? "manual__" + scopeToken(manualIdentity)
+                        ? recordManualRootName(raw,
+                        "manual__" + scopeToken(manualIdentity))
                         : reusedManualKey != null
                         ? "manual_reused__" + scopeToken(reusedManualKey)
                         : rootIdentity == null
@@ -4853,9 +4980,15 @@ public final class ConcolicSmtComposer {
                                 + smtName(entry.getKey()),
                         sum.toString());
             }
+            emitRequestFaultControl();
             for (Map.Entry<InvocationKey, Set<String>> entry
                     : casePartitions.entrySet()) {
                 if (entry.getValue().isEmpty()) continue;
+                // A fault-controlled occurrence is partitioned by its
+                // predecessor's marker instead: see emitRequestFaultControl.
+                if (faultControlledInstances.contains(entry.getKey())) {
+                    continue;
+                }
                 StringBuilder sum = new StringBuilder("(= (+");
                 for (String selector : entry.getValue()) {
                     sum.append(" (ite ").append(selector)
