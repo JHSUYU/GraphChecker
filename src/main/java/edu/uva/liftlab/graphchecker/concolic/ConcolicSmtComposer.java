@@ -2553,7 +2553,10 @@ public final class ConcolicSmtComposer {
             }
             JsonElement expectedPredicate;
             if (sourceAttestation) {
-                expectedPredicate = BranchPredicateAlgebra.complement(
+                // Compared against the selected predicate and then dropped.
+                // A copy here restated the propagated DAG as a tree once per
+                // target path, which is what exhausted the composer's heap.
+                expectedPredicate = BranchPredicateAlgebra.complementView(
                         pathWitness.sourceSatisfiedPredicate());
             } else {
                 expectedPredicate = pathWitness.sourceSatisfiedPredicate();
