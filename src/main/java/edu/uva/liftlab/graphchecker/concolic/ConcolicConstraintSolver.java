@@ -699,7 +699,13 @@ public final class ConcolicConstraintSolver {
                     break;
                 }
             }
-            for (String family : readFromCaseSelectors.keySet()) {
+            // A recorded reason is evidence a human and a diff both read, so
+            // report the families in one order regardless of the order the
+            // wave's evidence was walked in.
+            List<String> readFamilies = new ArrayList<>(
+                    readFromCaseSelectors.keySet());
+            Collections.sort(readFamilies);
+            for (String family : readFamilies) {
                 Map<String, GuardedReadCaseBinding> bindings =
                         readFromWriterCases.get(family);
                 if (bindings == null || bindings.isEmpty()) {
@@ -707,7 +713,10 @@ public final class ConcolicConstraintSolver {
                             + family);
                 }
             }
-            for (String family : readFromWriterCases.keySet()) {
+            List<String> writerFamilies = new ArrayList<>(
+                    readFromWriterCases.keySet());
+            Collections.sort(writerFamilies);
+            for (String family : writerFamilies) {
                 if (boundConsumerFamilies.contains(family)
                         && !readFromCaseSelectors.containsKey(family)) {
                     unsupported.add("READ_FROM_WRITER_CASE_DEPENDENCY_MISSING:"
@@ -918,7 +927,16 @@ public final class ConcolicConstraintSolver {
             Map<String, GuardedReadCaseBinding> bindings =
                     readFromWriterCases.get(family);
             if (bindings == null || bindings.isEmpty()) return;
-            for (GuardedReadCaseBinding binding : bindings.values()) {
+            // The family work set above is drained in sorted order; drain each
+            // family's own bindings in sorted order too.  Discovery order here
+            // is the order the wave's evidence happened to be walked in, so
+            // leaving it unsorted permuted the read_selector => case_selector
+            // implications -- and the unsupported reasons below -- between two
+            // runs of the very same obligation.
+            List<String> owners = new ArrayList<>(bindings.keySet());
+            Collections.sort(owners);
+            for (String owner : owners) {
+                GuardedReadCaseBinding binding = bindings.get(owner);
                 String identity = readBindingIdentity(family, binding);
                 if (!boundReadFromWriterBindings.add(identity)) continue;
                 if (!caseSelectors.contains(binding.caseSelector)) {
