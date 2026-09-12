@@ -398,7 +398,8 @@ public final class ContainerSmtCodec {
                                                   String selectedJavaType) {
         Integer wanted = exactIndexLiteral(index);
         if (wanted == null) return null;
-        return storedIndexedWrite(receiver, wanted, selectedJavaType);
+        return storedIndexedWrite(receiver, wanted, selectedJavaType,
+                new IdentityHashMap<JsonElement, JsonElement>());
     }
 
     /**
@@ -406,16 +407,29 @@ public final class ContainerSmtCodec {
      * The wrapper is retained because its selector and dynamic event remain
      * the authority for the value even when select-over-store is exact.
      */
-    private static JsonElement storedIndexedWrite(JsonElement receiver,
-                                                  int wanted,
-                                                  String selectedJavaType) {
+    private static JsonElement storedIndexedWrite(
+            JsonElement receiver, int wanted, String selectedJavaType,
+            IdentityHashMap<JsonElement, JsonElement> memo) {
         if (receiver == null || !receiver.isJsonObject()) return null;
+        // The receiver is a decoder-owned DAG and this projection is a pure
+        // function of it once the wanted index and selected type are fixed,
+        // so one answer per node settles every path that reaches it.
+        if (memo.containsKey(receiver)) return memo.get(receiver);
+        JsonElement answer = storedIndexedWriteUncached(receiver, wanted,
+                selectedJavaType, memo);
+        memo.put(receiver, answer);
+        return answer;
+    }
+
+    private static JsonElement storedIndexedWriteUncached(
+            JsonElement receiver, int wanted, String selectedJavaType,
+            IdentityHashMap<JsonElement, JsonElement> memo) {
         JsonObject root = receiver.getAsJsonObject();
         if (VmExpressionIr.isConsumerBoundary(root)
                 || VmExpressionIr.isConsumerBoundaryReference(root)) {
             JsonElement selected = storedIndexedWrite(
                     root.get(VmExpressionIr.EXPRESSION), wanted,
-                    selectedJavaType);
+                    selectedJavaType, memo);
             if (selected == null) return null;
             JsonObject projected = copyWithout(root,
                     VmExpressionIr.EXPRESSION);
@@ -441,7 +455,8 @@ public final class ContainerSmtCodec {
                     return null;
                 }
                 JsonElement selected = storedIndexedWrite(
-                        arm.get("expression"), wanted, selectedJavaType);
+                        arm.get("expression"), wanted, selectedJavaType,
+                        memo);
                 if (selected == null) return null;
                 JsonObject projectedArm = copyWithout(arm, "expression");
                 projectedArm.add("expression", selected);
@@ -470,7 +485,7 @@ public final class ContainerSmtCodec {
         }
         // A local WRITE prefix may itself rest on a propagated array family.
         return cursor == receiver ? null
-                : storedIndexedWrite(cursor, wanted, selectedJavaType);
+                : storedIndexedWrite(cursor, wanted, selectedJavaType, memo);
     }
 
     /**
@@ -1480,7 +1495,37 @@ public final class ContainerSmtCodec {
                 && "VString".equals(valueKind(selectedJavaType))) {
             return null;
         }
+        return projectChoice(expression, index, viewKind, selectedJavaType,
+                projection, shape,
+                new IdentityHashMap<JsonElement, JsonElement>());
+    }
+
+    /**
+     * Pushes the projection down one choice, reusing the answer already
+     * settled for a node.
+     *
+     * <p>The choice is a decoder-owned DAG and this projection is a pure
+     * function of a node once index, view kind, type, projection and shape
+     * are fixed -- they are, for the whole of one top-level call.  Walking it
+     * per path instead of per node restated every shared arm once per parent
+     * that reaches it.</p>
+     */
+    private static JsonElement projectChoice(
+            JsonElement expression, JsonElement index, String viewKind,
+            String selectedJavaType, String projection, String shape,
+            IdentityHashMap<JsonElement, JsonElement> memo) {
         if (expression == null || !expression.isJsonObject()) return null;
+        if (memo.containsKey(expression)) return memo.get(expression);
+        JsonElement answer = projectChoiceUncached(expression, index,
+                viewKind, selectedJavaType, projection, shape, memo);
+        memo.put(expression, answer);
+        return answer;
+    }
+
+    private static JsonElement projectChoiceUncached(
+            JsonElement expression, JsonElement index, String viewKind,
+            String selectedJavaType, String projection, String shape,
+            IdentityHashMap<JsonElement, JsonElement> memo) {
         JsonObject root = expression.getAsJsonObject();
         String projectedJavaType = SCALAR_ASSOC_MEMBER.equals(projection)
                 || SCALAR_ASSOC_HAS.equals(projection) ? "Z"
@@ -1491,7 +1536,7 @@ public final class ContainerSmtCodec {
                 || VmExpressionIr.isConsumerBoundaryReference(root)) {
             JsonElement payload = projectChoice(
                     root.get(VmExpressionIr.EXPRESSION), index, viewKind,
-                    selectedJavaType, projection, shape);
+                    selectedJavaType, projection, shape, memo);
             if (payload == null) return null;
             JsonObject projected = copyWithout(root,
                     VmExpressionIr.EXPRESSION);
@@ -1516,7 +1561,7 @@ public final class ContainerSmtCodec {
                         || arm.get("expression") == null) return null;
                 JsonElement payload = projectChoice(
                         arm.get("expression"), index, viewKind,
-                        selectedJavaType, projection, shape);
+                        selectedJavaType, projection, shape, memo);
                 if (payload == null) return null;
                 JsonObject projectedArm = copyWithout(arm, "expression");
                 projectedArm.add("expression", payload);
