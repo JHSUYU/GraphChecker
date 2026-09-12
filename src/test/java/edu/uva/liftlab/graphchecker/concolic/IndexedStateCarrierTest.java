@@ -189,9 +189,16 @@ public class IndexedStateCarrierTest {
         assertNotNull(String.join(",", host.unsupported), term);
         assertTrue(host.unsupported.isEmpty());
         assertEquals(ContainerSmtCodec.Sort.BOOL, term.sort);
-        assertTrue(term.text, term.text.contains("indexed_size"));
-        assertTrue(term.text, term.text.contains("indexed_remove"));
-        assertTrue(term.text, term.text.contains("indexed_append"));
+        // Size is linear in the chain, so the guard is arithmetic over the
+        // one state at the bottom of it: append adds one, remove takes one
+        // away.  No state in between is built, which is what keeps an
+        // unrolled traversal from carrying a lambda-built element array per
+        // iteration.
+        assertTrue(term.text, term.text.contains(
+                "(- (+ (indexed_size "));
+        assertFalse("no element array is built for a traversal guard",
+                term.text.contains("indexed_append")
+                        || term.text.contains("indexed_remove"));
     }
 
     @Test
@@ -208,8 +215,10 @@ public class IndexedStateCarrierTest {
         ContainerSmtCodec.Term term = ContainerSmtCodec.term(size, host);
         assertNotNull(String.join(",", host.unsupported), term);
         assertTrue(host.unsupported.isEmpty());
-        assertTrue(term.text, term.text.contains("indexed_size"));
-        assertTrue(term.text, term.text.contains("indexed_insert"));
+        assertTrue(term.text, term.text.contains(
+                "(+ (indexed_size "));
+        assertFalse("an insert's element array is never built for a size",
+                term.text.contains("indexed_insert"));
         assertTrue("a Java size is bounded to the int domain",
                 host.required.toString().contains("2147483647"));
     }
@@ -292,6 +301,61 @@ public class IndexedStateCarrierTest {
         String required = host.required.toString();
         assertTrue(required, required.contains("(_ is VInt)"));
         assertTrue(required, required.contains("indexed_size"));
+    }
+
+    @Test
+    public void aThreeElementChainSizeIsPureArithmetic() {
+        // insert, insert, insert, remove, positional write: size 3, and the
+        // element arrays of none of those five states are built.
+        JsonObject state = relation("INDEXED", "STATE",
+                symbol("MAP_STATE.v1." + digest('7')));
+        JsonObject chain = state;
+        for (int index = 0; index < 3; index++) {
+            chain = withArguments(relation("INDEXED", "INSERT", chain),
+                    integer(index), symbol("A_L_" + index));
+        }
+        chain = withArguments(relation("INDEXED", "REMOVE", chain),
+                integer(1));
+        chain = withArguments(relation("INDEXED", "WRITE", chain),
+                integer(0), symbol("A_L_9"));
+        JsonObject size = relation("INDEXED", "SIZE", chain);
+        size.addProperty("_java_type", "I");
+
+        RecordingHost host = new RecordingHost();
+        ContainerSmtCodec.Term term = ContainerSmtCodec.term(size, host);
+        assertNotNull(String.join(",", host.unsupported), term);
+        assertTrue(host.unsupported.isEmpty());
+        assertEquals(ContainerSmtCodec.Sort.INT, term.sort);
+        assertEquals("(- (+ (+ (+ (indexed_size container__state) 1) 1) 1) 1)",
+                term.text);
+        assertFalse(term.text, term.text.contains("indexed_insert")
+                || term.text.contains("indexed_remove")
+                || term.text.contains("indexed_write")
+                || term.text.contains("store")
+                || term.text.contains("lambda"));
+    }
+
+    @Test
+    public void anEmptyBaseGivesTheChainAConcreteSize() {
+        // A recorded initial snapshot bottoms out in SNAPSHOT_BASE, so the
+        // size is a literal and the counter it is compared against is too.
+        JsonObject base = relation("INDEXED", "SNAPSHOT_BASE",
+                relation("INDEXED", "STATE",
+                        symbol("MAP_STATE.v1." + digest('8'))));
+        JsonObject chain = base;
+        for (int index = 0; index < 3; index++) {
+            chain = withArguments(relation("INDEXED", "APPEND", chain),
+                    symbol("A_L_" + index));
+        }
+        chain = withArguments(relation("INDEXED", "REMOVE", chain),
+                integer(0));
+        JsonObject size = relation("INDEXED", "SIZE", chain);
+        size.addProperty("_java_type", "I");
+
+        RecordingHost host = new RecordingHost();
+        ContainerSmtCodec.Term term = ContainerSmtCodec.term(size, host);
+        assertNotNull(String.join(",", host.unsupported), term);
+        assertEquals("(- (+ (+ (+ 0 1) 1) 1) 1)", term.text);
     }
 
     // ------------------------------------------- container-valued read sort

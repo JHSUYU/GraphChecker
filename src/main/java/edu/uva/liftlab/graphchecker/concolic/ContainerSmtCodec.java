@@ -29,6 +29,19 @@ public final class ContainerSmtCodec {
     private static final String SCALAR_ASSOC_HAS = "__SCALAR_ASSOC_HAS";
     private static final String SCALAR_ASSOC_READ = "__SCALAR_ASSOC_READ";
     private static final String SCALAR_ASSOC_SIZE = "__SCALAR_ASSOC_SIZE";
+    /**
+     * An indexed container's size, observed without its elements.
+     *
+     * <p>Size is linear in the mutation chain - append and insert add one,
+     * remove takes one away, a positional write changes nothing - so it can
+     * be read off the chain as arithmetic.  Lowering it as
+     * {@code (indexed_size <state>)} instead forces every state in that
+     * chain to be built, and {@code indexed_insert}/{@code indexed_remove}
+     * build their element arrays with a lambda.  A traversal count compared
+     * against a counter needs none of those arrays.</p>
+     */
+    private static final String SCALAR_INDEXED_SIZE =
+            "__SCALAR_INDEXED_SIZE";
 
     private ContainerSmtCodec() {
     }
@@ -502,6 +515,17 @@ public final class ContainerSmtCodec {
         String shape = optionalString(expression, "shape");
         String operation = optionalString(expression, "operation");
         String javaType = optionalString(expression, "_java_type");
+        if ("INDEXED".equals(shape)
+                && SCALAR_INDEXED_SIZE.equals(operation)) {
+            JsonElement state = expression.get("receiver");
+            if (array(expression, "arguments").size() != 0
+                    || !scalarIndexedLeaf(state)) {
+                host.unsupported("ContainerRelation:INDEXED:" + operation);
+                return null;
+            }
+            Term size = indexedSize(state, host);
+            return size == null ? null : javaContainerSize(size.text, host);
+        }
         if ("ASSOCIATIVE".equals(shape)
                 && (SCALAR_ASSOC_MEMBER.equals(operation)
                 || SCALAR_ASSOC_NEXT.equals(operation)
@@ -630,23 +654,32 @@ public final class ContainerSmtCodec {
             JsonElement stateExpression = stateSort == Sort.ASSOCIATIVE
                     ? associativeStateExpression(expression.get("receiver"))
                     : expression.get("receiver");
-            Term state = stateSort == Sort.INDEXED
-                    ? host.operand(stateExpression, stateSort) : null;
-            Term size = stateSort == Sort.ASSOCIATIVE
-                    ? projectedAssociativeObservation(stateExpression, null,
-                    "I", SCALAR_ASSOC_SIZE, Sort.INT, host) : null;
+            // A traversal guard needs the size, not the elements.  Reading
+            // it off the chain leaves every state below unbuilt, which is
+            // what keeps an unrolled loop over a mutated list from carrying
+            // one lambda-built array per iteration.
+            Term size = stateSort == Sort.INDEXED
+                    ? projectedSize(stateExpression, "INDEXED",
+                    SCALAR_INDEXED_SIZE, host)
+                    : projectedSize(stateExpression, "ASSOCIATIVE",
+                    SCALAR_ASSOC_SIZE, host);
+            if (size == null && stateSort == Sort.INDEXED) {
+                size = indexedSize(stateExpression, host);
+            }
             if (size == null && stateSort == Sort.ASSOCIATIVE) {
                 size = associativeSize(stateExpression, host, memo);
             }
-            if (position == null || stateSort == Sort.INDEXED && state == null
+            Term state = size != null || stateSort != Sort.INDEXED ? null
+                    : host.operand(stateExpression, stateSort);
+            if (position == null || stateSort == Sort.INDEXED
+                    && size == null && state == null
                     || stateSort == Sort.ASSOCIATIVE && size == null) {
                 host.unsupported("ContainerRelation:" + shape
                         + ":HAS_NEXT");
                 return null;
             }
-            String sizeText = stateSort == Sort.INDEXED
-                    ? "(indexed_size " + state.text + ")"
-                    : size.text;
+            String sizeText = size != null ? size.text
+                    : "(indexed_size " + state.text + ")";
             return new Term("(and (<= 0 " + position.text + ") (< "
                     + position.text + " " + sizeText + "))", Sort.BOOL);
         }
@@ -685,8 +718,21 @@ public final class ContainerSmtCodec {
                     return host.unbox(host.box(stored), javaType);
                 }
             }
-            if ("SIZE".equals(operation) && !preserveReceiver) {
-                receiverIr = sizePreservingIndexedReceiver(receiverIr);
+            if ("SIZE".equals(operation)) {
+                Term projected = projectedSize(receiverIr, "INDEXED",
+                        SCALAR_INDEXED_SIZE, host);
+                if (projected == null) {
+                    projected = indexedSize(
+                            preserveReceiver ? receiverIr
+                                    : sizePreservingIndexedReceiver(
+                                    receiverIr), host);
+                    if (projected != null) {
+                        projected = javaContainerSize(projected.text, host);
+                    }
+                }
+                if (projected != null) return projected;
+                receiverIr = preserveReceiver ? receiverIr
+                        : sizePreservingIndexedReceiver(receiverIr);
             }
             Term receiver = host.operand(receiverIr, Sort.INDEXED);
             if (receiver == null) return null;
@@ -835,6 +881,16 @@ public final class ContainerSmtCodec {
     }
 
     /** Lowers one scalar observation through a complete propagation choice. */
+    /** One container's size pushed inside a propagation choice, or null. */
+    private static Term projectedSize(JsonElement state, String shape,
+                                      String projection, Host host) {
+        if (!propagationWrapper(state)) return null;
+        JsonElement projected = projectChoice(state, null, "", "I",
+                projection, shape);
+        return projected == null ? null
+                : host.operand(projected, Sort.INT);
+    }
+
     private static Term projectedAssociativeObservation(
             JsonElement state, JsonElement argument, String javaType,
             String projection, Sort expected, Host host) {
@@ -847,7 +903,7 @@ public final class ContainerSmtCodec {
             JsonElement state, JsonElement argument, String javaType,
             String projection) {
         return propagationWrapper(state)
-                ? projectAssociativeChoice(state, argument, "", javaType,
+                ? projectChoice(state, argument, "", javaType,
                 projection) : null;
     }
 
@@ -857,10 +913,10 @@ public final class ContainerSmtCodec {
                                               ProjectionMemo memo) {
         if (propagationWrapper(entry.stateExpression)
                 && javaType != null && !javaType.isEmpty()) {
-            JsonElement member = projectAssociativeChoice(
+            JsonElement member = projectChoice(
                     entry.stateExpression, entry.indexExpression, viewKind,
                     javaType, SCALAR_ASSOC_MEMBER);
-            JsonElement selected = projectAssociativeChoice(
+            JsonElement selected = projectChoice(
                     entry.stateExpression, entry.indexExpression, viewKind,
                     javaType, SCALAR_ASSOC_NEXT);
             if (member != null && selected != null) {
@@ -1320,9 +1376,20 @@ public final class ContainerSmtCodec {
      * leaf.  Success is all-or-nothing so no writer arm or selector can be
      * silently discarded.
      */
-    private static JsonElement projectAssociativeChoice(
+    private static JsonElement projectChoice(
             JsonElement expression, JsonElement index, String viewKind,
             String selectedJavaType, String projection) {
+        return projectChoice(expression, index, viewKind, selectedJavaType,
+                projection, "ASSOCIATIVE");
+    }
+
+    /**
+     * Pushes one scalar observation inside a propagation choice, so each arm
+     * answers the scalar rather than the container it was a state of.
+     */
+    private static JsonElement projectChoice(
+            JsonElement expression, JsonElement index, String viewKind,
+            String selectedJavaType, String projection, String shape) {
         // A scalar String Term cannot carry the separate Java nullness bit
         // used by both hosts.  Keep String reads in the existing boxed
         // whole-state path until the codec Term can preserve that pair.
@@ -1335,13 +1402,14 @@ public final class ContainerSmtCodec {
         JsonObject root = expression.getAsJsonObject();
         String projectedJavaType = SCALAR_ASSOC_MEMBER.equals(projection)
                 || SCALAR_ASSOC_HAS.equals(projection) ? "Z"
-                : SCALAR_ASSOC_SIZE.equals(projection) ? "I"
+                : SCALAR_ASSOC_SIZE.equals(projection)
+                || SCALAR_INDEXED_SIZE.equals(projection) ? "I"
                 : selectedJavaType;
         if (VmExpressionIr.isConsumerBoundary(root)
                 || VmExpressionIr.isConsumerBoundaryReference(root)) {
-            JsonElement payload = projectAssociativeChoice(
+            JsonElement payload = projectChoice(
                     root.get(VmExpressionIr.EXPRESSION), index, viewKind,
-                    selectedJavaType, projection);
+                    selectedJavaType, projection, shape);
             if (payload == null) return null;
             JsonObject projected = copyWithout(root,
                     VmExpressionIr.EXPRESSION);
@@ -1364,9 +1432,9 @@ public final class ContainerSmtCodec {
                 JsonObject arm = element.getAsJsonObject();
                 if (optionalString(arm, "selector").isEmpty()
                         || arm.get("expression") == null) return null;
-                JsonElement payload = projectAssociativeChoice(
+                JsonElement payload = projectChoice(
                         arm.get("expression"), index, viewKind,
-                        selectedJavaType, projection);
+                        selectedJavaType, projection, shape);
                 if (payload == null) return null;
                 JsonObject projectedArm = copyWithout(arm, "expression");
                 projectedArm.add("expression", payload);
@@ -1375,11 +1443,14 @@ public final class ContainerSmtCodec {
             projected.add(armsField, projectedArms);
             return projected;
         }
-        if (!scalarAssociativeLeaf(root)) return null;
+        if (!("INDEXED".equals(shape) ? scalarIndexedLeaf(root)
+                : scalarAssociativeLeaf(root))) {
+            return null;
+        }
         JsonObject projected = new JsonObject();
         projected.addProperty("_type", EXPRESSION_TYPE);
         projected.addProperty("_java_type", projectedJavaType);
-        projected.addProperty("shape", "ASSOCIATIVE");
+        projected.addProperty("shape", shape);
         projected.addProperty("operation", projection);
         projected.addProperty("viewKind", viewKind);
         projected.add("receiver", root);
@@ -1387,6 +1458,78 @@ public final class ContainerSmtCodec {
         if (index != null) positions.add(index.deepCopy());
         projected.add("arguments", positions);
         return projected;
+    }
+
+    /**
+     * Whether an indexed state is a plain mutation chain whose size can be
+     * read off it, rather than something only the whole-state path can name.
+     */
+    private static boolean scalarIndexedLeaf(JsonElement expression) {
+        JsonElement cursor = expression;
+        while (cursor != null && cursor.isJsonObject()) {
+            if (propagationWrapper(cursor)) return false;
+            JsonObject object = cursor.getAsJsonObject();
+            if (!EXPRESSION_TYPE.equals(optionalString(object, "_type"))
+                    || !"INDEXED".equals(optionalString(object, "shape"))) {
+                return false;
+            }
+            String operation = optionalString(object, "operation");
+            if (emptiesState(operation)) return true;
+            if ("STATE".equals(operation)) {
+                return object.get("receiver") != null
+                        && !propagationWrapper(object.get("receiver"));
+            }
+            if (!indexedSizeStep(operation)) return false;
+            cursor = object.get("receiver");
+        }
+        return false;
+    }
+
+    /** Whether one indexed operation's size follows from its receiver's. */
+    private static boolean indexedSizeStep(String operation) {
+        return "APPEND".equals(operation) || "INSERT".equals(operation)
+                || "REMOVE".equals(operation) || "WRITE".equals(operation);
+    }
+
+    /**
+     * One indexed container's size, as arithmetic over its mutation chain.
+     *
+     * <p>Every state below the query stays unbuilt: only a chain that
+     * bottoms out in a bare STATE mentions a state term at all, and then
+     * just once.  That is the whole point - a traversal count compared
+     * against a counter has no use for the elements, and building them
+     * costs a lambda per insert and per remove.</p>
+     */
+    private static Term indexedSize(JsonElement state, Host host) {
+        if (state == null || !state.isJsonObject()) return null;
+        JsonObject object = state.getAsJsonObject();
+        if (!EXPRESSION_TYPE.equals(optionalString(object, "_type"))
+                || !"INDEXED".equals(optionalString(object, "shape"))) {
+            return null;
+        }
+        String operation = optionalString(object, "operation");
+        if (emptiesState(operation)) {
+            return new Term("0", Sort.INT, IntegralWidth.JAVA_INT);
+        }
+        if ("STATE".equals(operation)) {
+            JsonArray arguments = array(object, "arguments");
+            if (arguments.size() == 1) {
+                // An array state carries its own exact recorded length.
+                return host.operand(arguments.get(0), Sort.INT);
+            }
+            Term whole = host.operand(object, Sort.INDEXED);
+            return whole == null ? null
+                    : new Term("(indexed_size " + whole.text + ")", Sort.INT,
+                    IntegralWidth.JAVA_INT);
+        }
+        if (!indexedSizeStep(operation)) return null;
+        Term receiver = indexedSize(object.get("receiver"), host);
+        if (receiver == null) return null;
+        if ("WRITE".equals(operation)) return receiver;
+        String step = "APPEND".equals(operation) || "INSERT".equals(operation)
+                ? "+" : "-";
+        return new Term("(" + step + " " + receiver.text + " 1)", Sort.INT,
+                IntegralWidth.JAVA_INT);
     }
 
     /** The exact mutation subset supported by scalar positional lowering. */
