@@ -457,6 +457,141 @@ public class SymbolicPropagationClosureTest {
                 "CONSUMER_BOUNDARY_PRODUCER_CASE_MISSING"));
     }
 
+    /**
+     * Read evidence that cannot be addressed is reported, not dropped.
+     *
+     * <p>A recorded read with no read event id names no boundary, and a read
+     * that names no reader occurrence is claimed by its unique carrier case
+     * only while exactly one case carries the boundary.  Neither may end as
+     * a silently unaddressed read that still publishes a complete closure.
+     * </p>
+     */
+    @Test
+    public void fieldReadWithUnaddressableEvidenceIsAGapNotASilentDrop() {
+        String scope = "replay-group:unaddressable-read";
+        JsonObject writer = summary("W", "W#a1", "TASK.W", scope,
+                symbol("M_WRITER"));
+        JsonObject read = guardedRead(701L,
+                candidate("rf_only", 691L, symbol("M_WRITTEN"), writer, 1));
+        JsonObject reader = summary("R", "R#a1", "TASK.R", scope,
+                boundary(VmExpressionIr.FIELD_READ, 701L, read));
+        addGuardedReadEvidence(reader, read, writer);
+        observedRead(reader).remove("readEventId");
+
+        SymbolicPropagationClosure.Result unaddressed = rewrite(
+                Arrays.asList(writer, reader));
+
+        assertFalse(unaddressed.gaps().toString(), unaddressed.complete());
+        assertTrue(unaddressed.gaps().toString(), containsReason(
+                unaddressed.gaps(), "CONSUMER_BOUNDARY_FAMILY_MISSING"));
+
+        // The same read without a reader occurrence: one carrier case joins
+        // it, two leave it unaddressed and the boundary is refused.
+        JsonObject soleWriter = summary("W", "W#a1", "TASK.W2", scope,
+                symbol("M_WRITER"));
+        JsonObject soleRead = guardedRead(711L,
+                candidate("rf_only", 692L, symbol("M_WRITTEN"), soleWriter,
+                        1));
+        JsonObject soleReader = summary("R", "R#a2", "TASK.R2", scope,
+                boundary(VmExpressionIr.FIELD_READ, 711L, soleRead));
+        addGuardedReadEvidence(soleReader, soleRead, soleWriter);
+        observedRead(soleReader).remove(
+                SharedStateEvidence.READER_OCCURRENCE_ID);
+
+        SymbolicPropagationClosure.Result claimed = rewrite(Arrays.asList(
+                soleWriter, soleReader));
+        assertTrue(claimed.gaps().toString(), claimed.complete());
+
+        JsonObject secondCarrier = summary("R", "R#a3", "TASK.R3", scope,
+                boundary(VmExpressionIr.FIELD_READ, 711L, soleRead));
+        addGuardedReadEvidence(secondCarrier, soleRead, soleWriter);
+        observedRead(secondCarrier).remove(
+                SharedStateEvidence.READER_OCCURRENCE_ID);
+
+        SymbolicPropagationClosure.Result shared = rewrite(Arrays.asList(
+                soleWriter, soleReader, secondCarrier));
+
+        assertFalse(shared.gaps().toString(), shared.complete());
+        assertTrue(shared.gaps().toString(), containsReason(shared.gaps(),
+                "CONSUMER_BOUNDARY_FAMILY_MISSING"));
+    }
+
+    /**
+     * Completeness is the published property: a complete closure leaves no
+     * unresolved consumer boundary behind, and an incomplete one says which
+     * boundary it could not join.
+     */
+    @Test
+    public void completeClosurePublishesNoUnresolvedBoundary() {
+        String scope = "replay-group:no-open-boundary";
+        JsonObject producer = summary("P", "P#a1", "TASK.P", scope,
+                symbol("M_VALUE"));
+        JsonObject wrapped = boundary(VmExpressionIr.RPC_ATTACH, 801L,
+                symbol("M_VALUE"));
+        JsonObject receiver = summary("R", "R#a1", "TASK.R", scope, wrapped);
+        handoff(receiver, "FAMILY.OPEN", "R.in", 801L, "TASK.P", "P#a1",
+                wrapped);
+
+        SymbolicPropagationClosure.Result result = rewrite(Arrays.asList(
+                producer, receiver));
+
+        assertTrue(result.gaps().toString(), result.complete());
+        assertEquals(new JsonObject(), firstExpressionOfType(
+                result.summaries(), VmExpressionIr.CONSUMER_BOUNDARY_TYPE));
+
+        JsonObject orphan = boundary(VmExpressionIr.RPC_ATTACH, 802L,
+                symbol("M_ORPHAN"));
+        JsonObject alone = summary("A", "A#a1", "TASK.A",
+                "replay-group:open-boundary", orphan);
+        SymbolicPropagationClosure.Result open = rewrite(
+                Arrays.asList(alone));
+
+        assertFalse(open.complete());
+        assertTrue(open.gaps().toString(), containsReason(open.gaps(),
+                "CONSUMER_BOUNDARY_FAMILY_MISSING"));
+    }
+
+    /**
+     * A read taken inside an uninstrumented accessor has neither a replay
+     * consumer site nor a stable receiver id.  Its reader local case still
+     * names it exactly, so it joins a family instead of being dropped.
+     */
+    @Test
+    public void readWithNoConsumerSiteAndNoReceiverIdStillNamesItsFamily() {
+        String scope = "replay-group:accessor-read";
+        JsonObject writer = summary("W", "W#a1", "TASK.W", scope,
+                symbol("M_WRITER"));
+        JsonObject read = guardedRead(701L,
+                candidate("rf_only", 691L, symbol("M_WRITTEN"), writer, 1));
+        JsonObject reader = summary("R", "R#a1", "TASK.R", scope,
+                boundary(VmExpressionIr.FIELD_READ, 701L, read));
+        addGuardedReadEvidence(reader, read, writer);
+        JsonObject observed = observedRead(reader);
+        observed.remove(SharedStateEvidence.CONSUMER_SITE_ID);
+        observed.remove(SharedStateEvidence.CONSUMER_SITE_OCCURRENCE);
+
+        SymbolicPropagationClosure.Result result = rewrite(Arrays.asList(
+                writer, reader));
+
+        assertTrue(result.gaps().toString(), result.complete());
+        JsonObject rewritten = firstExpressionOfType(result.summaries(),
+                SharedStateEvidence.GUARDED_READ_TYPE);
+        String family = optionalString(rewritten.getAsJsonArray("candidates")
+                .get(0).getAsJsonObject(),
+                SymbolicPropagationClosure.WRITER_CASE_FAMILY);
+        assertFalse(family.isEmpty());
+        assertEquals(1, dependency(result, family)
+                .getAsJsonArray("arms").size());
+    }
+
+    /** The single read the guarded-read evidence helper published. */
+    private static JsonObject observedRead(JsonObject reader) {
+        return reader.getAsJsonObject(SharedStateEvidence.RECORDED_FIELD)
+                .getAsJsonArray("versions").get(0).getAsJsonObject()
+                .getAsJsonObject("envelope").getAsJsonArray("reads")
+                .get(0).getAsJsonObject();
+    }
+
     private static JsonObject summary(String region, String occurrence,
                                       String task, String scope,
                                       JsonElement condition) {

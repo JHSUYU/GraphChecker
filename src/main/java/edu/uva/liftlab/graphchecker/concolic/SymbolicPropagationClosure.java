@@ -545,10 +545,17 @@ public final class SymbolicPropagationClosure {
                             readerCase);
                     // A session-local VM owner is not a replay identity. If
                     // neither a unique frozen receiver nor the runtime
-                    // consumer site names this read, leave its boundary raw;
-                    // the later query scan will report the exact reachable
-                    // family gap instead of merging unrelated objects.
-                    if (location.isEmpty()) continue;
+                    // consumer site names this read, it has no replay-stable
+                    // address: say so rather than dropping the claimed read
+                    // and leaving the boundary to be addressed by something
+                    // else.
+                    if (location.isEmpty()) {
+                        gap("CONSUMER_BOUNDARY_LOCATION_UNSTABLE",
+                                optionalString(record, "locationKey"),
+                                "a claimed read has no replay-stable"
+                                        + " location");
+                        continue;
+                    }
                     int ordinal = ordinals.merge(location, 1, Integer::sum);
                     String identity = epoch + "\n"
                             + OccurrenceId.parse(
@@ -849,6 +856,10 @@ public final class SymbolicPropagationClosure {
         private boolean addDynamic(String scope, long eventId,
                                    String family) {
             if (scope.isEmpty() || eventId <= 0L || family.isEmpty()) {
+                gap("CONSUMER_BOUNDARY_FAMILY_MISSING",
+                        scope + ":" + eventId,
+                        "a boundary event carries no addressable session"
+                                + " scope, event id or family");
                 return false;
             }
             DynamicKey key = new DynamicKey(scope, eventId);
