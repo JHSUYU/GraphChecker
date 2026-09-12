@@ -2184,8 +2184,16 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (occurrence < 1 || occurrenceId == null || callId < 0L) {
                     continue;
                 }
+                // A port id is published identity, so it has to be spelled
+                // from content.  The recorder's callId is a global per-run
+                // event counter (CausynthTraceRecorder's EVENT_COUNTER), so
+                // keying on it renamed the same field root in every run.
+                // accessorOccurrence is already counted per activation per
+                // (method, siteId, declaredCallee), which is what makes this
+                // spelling both run-stable and exact.
                 String key = occurrenceId + "\n" + text(edge.get("id"))
-                        + "\n" + callId + "\n" + occurrence;
+                        + "\n" + SiteId.of(caller, unitIndex)
+                        + "\n" + declaredCallee + "\n" + occurrence;
                 if (unique.containsKey(key)) continue;
                 // The root can be a long-lived service loop.
                 String stream = occurrenceId + "\n" + callId
@@ -2292,8 +2300,11 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 for (String occurrenceId : occurrenceIds) {
-                    String stream = occurrenceId + "\n" + callId + "\n"
-                            + site;
+                    // Same reason as the accessor ports above: the
+                    // ordinal has to count return events per occurrence and
+                    // site, not per per-run callId, or the port id it names
+                    // differs between two runs of one obligation.
+                    String stream = occurrenceId + "\n" + site;
                     int ordinal = ordinals.getOrDefault(stream, 0) + 1;
                     ordinals.put(stream, ordinal);
                     String key = stream + "\n" + ordinal;
