@@ -910,23 +910,6 @@ final class RuntimeRegionPlanner {
         return RefinedFlowIndex.build(rows, source);
     }
 
-    /** In-memory planning entry point. {@code regionSource} and {@code
-     * regionEdgeSource} only label diagnostics; rows must already be in the
-     * exact JSONL value domain the file readers would produce. */
-    static Result plan(List<Map<String, Object>> regions,
-                       List<Map<String, Object>> regionEdges,
-                       RefinedFlowIndex refinedFlow,
-                       String regionSource, String regionEdgeSource,
-                       Collection<Map<String, Object>> runtimeSeeds,
-                       List<MethodEvent> methods,
-                       List<RuntimeEvent> runtimeEvents,
-                       List<FieldAccessEvent> fieldEvents,
-                       List<ProtocolEvent> protocolEvents) {
-        return plan(regions, regionEdges, refinedFlow, regionSource,
-                regionEdgeSource, runtimeSeeds, methods, runtimeEvents,
-                fieldEvents, protocolEvents, declaredLoopBounds(regions));
-    }
-
     /** The campaign policy the planned rows themselves declare. */
     static LoopBoundPolicy declaredLoopBounds(
             List<Map<String, Object>> regions) {
@@ -960,6 +943,9 @@ final class RuntimeRegionPlanner {
                 LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS, declared);
     }
 
+    /** In-memory planning entry point. {@code regionSource} and {@code
+     * regionEdgeSource} only label diagnostics; rows must already be in the
+     * exact JSONL value domain the file readers would produce. */
     static Result plan(List<Map<String, Object>> regions,
                        List<Map<String, Object>> regionEdges,
                        RefinedFlowIndex refinedFlow,
@@ -968,8 +954,10 @@ final class RuntimeRegionPlanner {
                        List<MethodEvent> methods,
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents,
-                       List<ProtocolEvent> protocolEvents,
-                       LoopBoundPolicy loopBound) {
+                       List<ProtocolEvent> protocolEvents) {
+        // One loop has one prefix: region rows that disagree on a loop's K_L
+        // are refused here, before anything is planned over them.
+        declaredLoopBounds(regions);
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();

@@ -3618,13 +3618,11 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             // Accessor-return ports are emitted only from an exact runtime
             // binding and carry that occurrence directly on the port.
-            if ("ACCESSOR_RETURN".equals(text(port.get("sourceKind")))
-                    || COMMUNICATION_SITE_PORT.equals(
-                    text(port.get("sourceKind")))
-                    || EXPLICIT_SYMBOLIC_FAULT.equals(
-                    text(port.get("sourceKind")))
-                    || EXTERNAL_CALL_RETURN.equals(
-                    text(port.get("sourceKind")))) {
+            String sourceKind = text(port.get("sourceKind"));
+            if ("ACCESSOR_RETURN".equals(sourceKind)
+                    || COMMUNICATION_SITE_PORT.equals(sourceKind)
+                    || EXPLICIT_SYMBOLIC_FAULT.equals(sourceKind)
+                    || EXTERNAL_CALL_RETURN.equals(sourceKind)) {
                 long event = longNumber(port.get("eventSeq"), -1L);
                 if (event < 0L) return 0;
                 return event <= fatalEventSeq ? 1 : -1;
