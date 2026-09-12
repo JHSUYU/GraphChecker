@@ -284,14 +284,9 @@ Expression *SymbolicAtomic::finish_method_helper(
 
 void SymbolicAtomic::init_register_class(
     MethodSymbolizer *method_symbolizer) {
-  method_symbolizer->add_invoke_helper_methods(
-      ATOMIC_INTEGER, invoke_method_helper);
-  method_symbolizer->add_finish_helper_methods(
-      ATOMIC_INTEGER, finish_method_helper);
-  method_symbolizer->add_invoke_helper_methods(
-      ATOMIC_LONG, invoke_method_helper);
-  method_symbolizer->add_finish_helper_methods(
-      ATOMIC_LONG, finish_method_helper);
+  const char *const classes[] = { ATOMIC_INTEGER, ATOMIC_LONG, NULL };
+  method_symbolizer->register_model(classes, invoke_method_helper,
+                                    finish_method_helper);
 }
 
 #endif  // ENABLE_CONCOLIC

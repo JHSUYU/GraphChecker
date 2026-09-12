@@ -61,6 +61,28 @@ void MethodSymbolizer::add_finish_helper_methods(const std::string class_name,
   _finish_helper_methods[class_name] = finish_helper_func;
 }
 
+void MethodSymbolizer::register_model(
+    const char *const *class_names,
+    bool (*invoke_helper)(MethodSymbolizerHandle &),
+    Expression *(*finish_helper)(MethodSymbolizerHandle &)) {
+  for (; *class_names != NULL; ++class_names) {
+    const std::string class_name(*class_names);
+    add_invoke_helper_methods(class_name, invoke_helper);
+    add_finish_helper_methods(class_name, finish_helper);
+  }
+}
+
+void MethodSymbolizer::register_model(
+    const std::set<std::string> &class_names,
+    bool (*invoke_helper)(MethodSymbolizerHandle &),
+    Expression *(*finish_helper)(MethodSymbolizerHandle &)) {
+  for (std::set<std::string>::const_iterator name = class_names.begin();
+       name != class_names.end(); ++name) {
+    add_invoke_helper_methods(*name, invoke_helper);
+    add_finish_helper_methods(*name, finish_helper);
+  }
+}
+
 static bool names(Symbol *symbol, const std::string &registered) {
   return symbol != NULL
       && symbol->equals(registered.c_str(), (int)registered.size());

@@ -7,6 +7,7 @@
 #include "concolic/methodSymbolizerHandle.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,27 @@ public:
                            intptr_t *locals, int locals_offset);
   void add_invoke_helper_methods(const std::string class_name, bool(*invoke_helper_func)(MethodSymbolizerHandle&));
   void add_finish_helper_methods(const std::string class_name, Expression*(*finish_helper_func)(MethodSymbolizerHandle&));
+
+  /**
+   * Registers one symbolic model for every class it claims.
+   *
+   * A model is exactly a pair of helpers -- one consulted on invoke, one on
+   * return -- installed under each of its target class names.  Every model
+   * wrote that loop out again for itself, in four slightly different shapes.
+   *
+   * The array form is NULL-terminated and is the one to use when the names
+   * are literals: it needs no dynamic initialization, so a model that has no
+   * other use for a name set does not build one, and there is no static
+   * initialization for its registration to depend on.  The set form is for
+   * the models that already keep a set because they also answer
+   * is_target_class() from it.
+   */
+  void register_model(const char *const *class_names,
+                      bool (*invoke_helper)(MethodSymbolizerHandle &),
+                      Expression *(*finish_helper)(MethodSymbolizerHandle &));
+  void register_model(const std::set<std::string> &class_names,
+                      bool (*invoke_helper)(MethodSymbolizerHandle &),
+                      Expression *(*finish_helper)(MethodSymbolizerHandle &));
 
   void add_prefix_disabled_class(const std::string class_name);
 

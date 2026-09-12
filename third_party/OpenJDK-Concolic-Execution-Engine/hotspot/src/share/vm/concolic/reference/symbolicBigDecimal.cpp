@@ -42,8 +42,9 @@ std::map<std::string, bool> SymBigDecimal::init_skip_method_names() {
 }
 
 void SymBigDecimal::init_register_class(MethodSymbolizer *m_symbolizer) {
-  m_symbolizer->add_invoke_helper_methods(SymBigDecimal::TYPE_NAME, invoke_method_helper);
-  m_symbolizer->add_finish_helper_methods(SymBigDecimal::TYPE_NAME, finish_method_helper);
+  const char *const classes[] = { SymBigDecimal::TYPE_NAME, NULL };
+  m_symbolizer->register_model(classes, invoke_method_helper,
+                               finish_method_helper);
 }
 
 SymBigDecimal::SymBigDecimal(sym_rid_t sym_rid, oop obj) : SymInstance(sym_rid), _exp(NULL),

@@ -35,8 +35,9 @@ std::map<std::string, bool> SymStrBuilder::init_skip_method_names() {
 }
 
 void SymStrBuilder::init_register_class(MethodSymbolizer *m_symbolizer) {
-  m_symbolizer->add_invoke_helper_methods(SymStrBuilder::TYPE_NAME, invoke_method_helper);
-  m_symbolizer->add_finish_helper_methods(SymStrBuilder::TYPE_NAME, finish_method_helper);
+  const char *const classes[] = { SymStrBuilder::TYPE_NAME, NULL };
+  m_symbolizer->register_model(classes, invoke_method_helper,
+                               finish_method_helper);
 }
 
 SymStrBuilder::SymStrBuilder(sym_rid_t sym_rid)

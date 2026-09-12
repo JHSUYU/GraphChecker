@@ -85,8 +85,9 @@ std::map<std::string, bool> SymString::init_skip_method_names() {
 }
 
 void SymString::init_register_class(MethodSymbolizer *m_symbolizer) {
-  m_symbolizer->add_invoke_helper_methods(SymString::TYPE_NAME, invoke_method_helper);
-  m_symbolizer->add_finish_helper_methods(SymString::TYPE_NAME, finish_method_helper);
+  const char *const classes[] = { SymString::TYPE_NAME, NULL };
+  m_symbolizer->register_model(classes, invoke_method_helper,
+                               finish_method_helper);
 }
 
 SymString::SymString(sym_rid_t sym_rid)

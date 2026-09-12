@@ -35,10 +35,8 @@ std::set<std::string> SymStrUtils::init_target_class_names() {
 }
 
 void SymStrUtils::init_register_class(MethodSymbolizer *m_symbolizer) {
-  for(std::set<std::string>::iterator it = target_class_names.begin(); it != target_class_names.end(); it++) {
-    m_symbolizer->add_invoke_helper_methods(*it, invoke_method_helper);
-    m_symbolizer->add_finish_helper_methods(*it, finish_method_helper);
-  }
+  m_symbolizer->register_model(target_class_names, invoke_method_helper,
+                               finish_method_helper);
 }
 
 bool SymStrUtils::invoke_method_helper(MethodSymbolizerHandle &handle) {

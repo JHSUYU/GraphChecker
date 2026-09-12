@@ -15,14 +15,10 @@ Expression *SymbolicUnsafe::finish_method_helper(MethodSymbolizerHandle &handle)
 }
 
 void SymbolicUnsafe::init_register_class(MethodSymbolizer *m_symbolizer) {
-  const std::string unsafe_klass_name("sun/misc/Unsafe");
-  const std::string sun_instrument("sun/instrument/TransformerManager");
-  std::vector<const std::string*> klasses;
-  klasses.push_back(&unsafe_klass_name);
-  klasses.push_back(&sun_instrument);
-  for (size_t index = 0; index < klasses.size(); ++index) {
-    m_symbolizer->add_invoke_helper_methods(klasses[index]->c_str(), invoke_method_helper);
-    m_symbolizer->add_finish_helper_methods(klasses[index]->c_str(), finish_method_helper);
-  }
+  const char *const classes[] = {
+    "sun/misc/Unsafe", "sun/instrument/TransformerManager", NULL
+  };
+  m_symbolizer->register_model(classes, invoke_method_helper,
+                               finish_method_helper);
 }
 #endif
