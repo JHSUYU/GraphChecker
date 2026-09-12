@@ -119,6 +119,26 @@ public final class SymbolicPropagationClosure {
         return true;
     }
 
+    /**
+     * The stable family key one consumer boundary carries.
+     *
+     * <p>A boundary is addressed by the planned occurrence that consumed it,
+     * within its topology epoch, by kind, by the slot the kind names -- a
+     * port for an RPC attach, a replay-stable location for a field read --
+     * and by which occurrence of that slot this is.  Both the importer, which
+     * stamps RPC boundaries as it admits a result, and this closure, which
+     * addresses field reads, key on the same five parts in the same order.
+     * </p>
+     */
+    public static String boundaryFamilyKey(String topologyEpoch,
+                                           String plannedOccurrenceId,
+                                           String boundaryKind, String slot,
+                                           int ordinal) {
+        return "CBF." + CanonicalJson.sha256(topologyEpoch + "\n"
+                + plannedOccurrenceId + "\n" + boundaryKind + "\n" + slot
+                + "\n" + ordinal);
+    }
+
     public static Result rewrite(
             Collection<RelationSummary> selectedSummaries,
             JsonObject fatal,
@@ -243,12 +263,7 @@ public final class SymbolicPropagationClosure {
                     indexSummaryCases(summary);
                 }
             }
-            List<JsonObject> indexedRows = shallowCopies(caseRows);
-            for (JsonObject row : indexedRows) indexCaseRow(row);
-            for (JsonObject row : indexedRows) indexBoundaryEvidence(row);
-            for (JsonObject row : indexedRows) scanFieldBoundaries(row);
-            claimUnsnapshottedFieldReads(indexedRows);
-            validateDynamicArms();
+            index(caseRows);
         }
 
         /** Direct raw-summary constructor used by linked replay. */
@@ -263,6 +278,15 @@ public final class SymbolicPropagationClosure {
                 JsonObject oneCase = rawCase(decoded);
                 caseRows.add(oneCase);
             }
+            index(caseRows);
+        }
+
+        /**
+         * The one indexing pass both constructors run: cases first, then the
+         * boundary evidence they own, then the payloads that name it, then
+         * the reads no snapshot addressed.
+         */
+        private void index(Collection<JsonObject> caseRows) {
             List<JsonObject> indexedRows = shallowCopies(caseRows);
             for (JsonObject row : indexedRows) indexCaseRow(row);
             for (JsonObject row : indexedRows) indexBoundaryEvidence(row);
@@ -557,13 +581,9 @@ public final class SymbolicPropagationClosure {
                         continue;
                     }
                     int ordinal = ordinals.merge(location, 1, Integer::sum);
-                    String identity = epoch + "\n"
-                            + OccurrenceId.parse(
-                            readerOccurrence).planned() + "\n"
-                            + VmExpressionIr.FIELD_READ + "\n" + location
-                            + "\n" + ordinal;
-                    String family = "CBF."
-                            + CanonicalJson.sha256(identity);
+                    String family = boundaryFamilyKey(epoch,
+                            OccurrenceId.parse(readerOccurrence).planned(),
+                            VmExpressionIr.FIELD_READ, location, ordinal);
                     if (!addDynamic(scope, eventId, family)) continue;
                     DynamicKey dynamic = new DynamicKey(scope, eventId);
                     indexBoundaryOwner(dynamic, readerCase, family);
@@ -691,12 +711,24 @@ public final class SymbolicPropagationClosure {
             }
         }
 
-        private void scanFieldBoundaryPayloads(
-                JsonElement element, String scope) {
+        /** Told one field-read boundary; answers whether to walk into it. */
+        private interface FieldBoundaryVisitor {
+            boolean visit(JsonObject boundary, long eventId);
+        }
+
+        /**
+         * Walks one propagated value for field-read boundaries.  A propagated
+         * field value can itself contain earlier field boundaries: their read
+         * evidence is owned by earlier rows, but the exact payload may only
+         * surface in this downstream row, so the walk continues into a hit
+         * unless its visitor says it is finished with it.
+         */
+        private void walkFieldBoundaries(JsonElement element, String scope,
+                                         FieldBoundaryVisitor visitor) {
             if (element == null || element.isJsonNull()) return;
             if (element.isJsonArray()) {
                 for (JsonElement child : element.getAsJsonArray()) {
-                    scanFieldBoundaryPayloads(child, scope);
+                    walkFieldBoundaries(child, scope, visitor);
                 }
                 return;
             }
@@ -705,45 +737,46 @@ public final class SymbolicPropagationClosure {
             if (VmExpressionIr.isConsumerBoundary(node)
                     && VmExpressionIr.FIELD_READ.equals(optionalString(node,
                     VmExpressionIr.BOUNDARY_KIND))) {
-                long eventId = optionalLongInteger(node, VmExpressionIr.EVENT_ID,
-                        -1L);
-                FieldRead read = fieldReads.get(new DynamicKey(scope,
-                        eventId));
-                if (read != null) {
-                    JsonElement payload = node.get(VmExpressionIr.EXPRESSION);
-                    String fault = payload != null && payload.isJsonObject()
-                            ? SharedStateEvidence.guardedReadFault(
-                            payload.getAsJsonObject())
-                            : "field boundary payload is not a guarded read";
-                    if (fault.isEmpty() && read.candidateCount
-                            != array(payload.getAsJsonObject(),
-                            "candidates").size()) {
-                        fault = "recorded read-time candidate count does not "
-                                + "match the propagated guarded read";
-                    }
-                    if (!fault.isEmpty()) {
-                        gap("READ_FROM_SNAPSHOT_MISMATCH", read.family,
-                                fault);
-                        return;
-                    }
-                    addArm(read.family, VmExpressionIr.FIELD_READ,
-                            read.epoch, read.scope, read.producer,
-                            read.receiverOwner,
-                            payload,
-                            optionalString(node, "_java_type"), eventId);
+                if (visitor.visit(node, optionalLongInteger(node,
+                        VmExpressionIr.EVENT_ID, -1L))) {
+                    walkFieldBoundaries(node.get(VmExpressionIr.EXPRESSION),
+                            scope, visitor);
                 }
-                // A propagated field value can itself contain earlier field
-                // boundaries. Their read evidence is owned by earlier rows,
-                // but the exact payload may only surface in this downstream
-                // row. Keep walking the VM-propagated expression.
-                scanFieldBoundaryPayloads(
-                        node.get(VmExpressionIr.EXPRESSION), scope);
                 return;
             }
             for (Map.Entry<String, JsonElement> field : node.entrySet()) {
                 if (evidenceField(field.getKey())) continue;
-                scanFieldBoundaryPayloads(field.getValue(), scope);
+                walkFieldBoundaries(field.getValue(), scope, visitor);
             }
+        }
+
+        private void scanFieldBoundaryPayloads(
+                JsonElement element, String scope) {
+            walkFieldBoundaries(element, scope, (node, eventId) -> {
+                FieldRead read = fieldReads.get(new DynamicKey(scope,
+                        eventId));
+                if (read == null) return true;
+                JsonElement payload = node.get(VmExpressionIr.EXPRESSION);
+                String fault = payload != null && payload.isJsonObject()
+                        ? SharedStateEvidence.guardedReadFault(
+                        payload.getAsJsonObject())
+                        : "field boundary payload is not a guarded read";
+                if (fault.isEmpty() && read.candidateCount
+                        != array(payload.getAsJsonObject(),
+                        "candidates").size()) {
+                    fault = "recorded read-time candidate count does not "
+                            + "match the propagated guarded read";
+                }
+                if (!fault.isEmpty()) {
+                    gap("READ_FROM_SNAPSHOT_MISMATCH", read.family, fault);
+                    return false;
+                }
+                addArm(read.family, VmExpressionIr.FIELD_READ,
+                        read.epoch, read.scope, read.producer,
+                        read.receiverOwner, payload,
+                        optionalString(node, "_java_type"), eventId);
+                return true;
+            });
         }
 
         /**
@@ -809,12 +842,9 @@ public final class SymbolicPropagationClosure {
                 if (location.isEmpty()) continue;
                 int ordinal = ordinals.merge(reader.owner + "\n" + location,
                         1, Integer::sum);
-                String family = "CBF." + CanonicalJson.sha256(
-                        reader.epoch + "\n"
-                                + OccurrenceId.parse(
-                                        reader.occurrence).planned() + "\n"
-                                + VmExpressionIr.FIELD_READ + "\n"
-                                + location + "\n" + ordinal);
+                String family = boundaryFamilyKey(reader.epoch,
+                        OccurrenceId.parse(reader.occurrence).planned(),
+                        VmExpressionIr.FIELD_READ, location, ordinal);
                 if (!addDynamic(key.scope, key.event, family)) continue;
                 indexBoundaryOwner(key, reader, family);
                 addArm(family, VmExpressionIr.FIELD_READ, reader.epoch,
@@ -826,31 +856,12 @@ public final class SymbolicPropagationClosure {
         /** Collects every field-read boundary one row propagated itself. */
         private void collectFieldBoundaries(JsonElement element, String scope,
                                             Map<DynamicKey, JsonObject> out) {
-            if (element == null || element.isJsonNull()) return;
-            if (element.isJsonArray()) {
-                for (JsonElement child : element.getAsJsonArray()) {
-                    collectFieldBoundaries(child, scope, out);
-                }
-                return;
-            }
-            if (!element.isJsonObject()) return;
-            JsonObject node = element.getAsJsonObject();
-            if (VmExpressionIr.isConsumerBoundary(node)
-                    && VmExpressionIr.FIELD_READ.equals(optionalString(node,
-                    VmExpressionIr.BOUNDARY_KIND))) {
-                long eventId = optionalLongInteger(node,
-                        VmExpressionIr.EVENT_ID, -1L);
+            walkFieldBoundaries(element, scope, (node, eventId) -> {
                 if (!scope.isEmpty() && eventId > 0L) {
                     out.putIfAbsent(new DynamicKey(scope, eventId), node);
                 }
-                collectFieldBoundaries(node.get(VmExpressionIr.EXPRESSION),
-                        scope, out);
-                return;
-            }
-            for (Map.Entry<String, JsonElement> field : node.entrySet()) {
-                if (evidenceField(field.getKey())) continue;
-                collectFieldBoundaries(field.getValue(), scope, out);
-            }
+                return true;
+            });
         }
 
         private boolean addDynamic(String scope, long eventId,

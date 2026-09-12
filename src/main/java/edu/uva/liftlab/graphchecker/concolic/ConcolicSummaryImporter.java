@@ -1196,12 +1196,10 @@ public final class ConcolicSummaryImporter {
             if (VmHandoffEvidence.isEvent(record)) {
                 String port = optionalString(record, "portId");
                 int ordinal = ordinals.merge(port, 1, Integer::sum);
-                String identity = topologyEpoch + "\n"
-                        + row.plannedOccurrenceId + "\n"
-                        + VmExpressionIr.RPC_ATTACH + "\n" + port + "\n"
-                        + ordinal;
-                String familyKey = "CBF."
-                        + CanonicalJson.sha256(identity);
+                String familyKey =
+                        SymbolicPropagationClosure.boundaryFamilyKey(
+                                topologyEpoch, row.plannedOccurrenceId,
+                                VmExpressionIr.RPC_ATTACH, port, ordinal);
                 JsonObject admitted = VmHandoffEvidence.withBoundaryFamily(
                         record, familyKey, topologyEpoch);
                 admitted.addProperty("boundarySessionScope",
