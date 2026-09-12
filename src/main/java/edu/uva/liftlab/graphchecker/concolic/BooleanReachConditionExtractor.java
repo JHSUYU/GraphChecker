@@ -188,6 +188,13 @@ public final class BooleanReachConditionExtractor {
                         discovery.existentialNonBooleanRootInputs);
                 if (witness.size() > 0) {
                     row.add("existentialWitness", witness);
+                }
+                JsonArray mechanisms = witnessMechanisms(manifest, inputs,
+                        values, witness);
+                if (mechanisms.size() > 0) {
+                    row.add("witnessMechanisms", mechanisms);
+                }
+                if (witness.size() > 0) {
                     if (!existentialProbeAttempted) {
                         existentialProbeAttempted = true;
                         JsonArray perturbations = existentialPerturbations(
@@ -1296,6 +1303,91 @@ public final class BooleanReachConditionExtractor {
     }
 
     /** The values that make this valuation satisfiable. */
+    /**
+     * What this witness changed about the world, in mechanism terms.
+     *
+     * <p>A model is a list of numbers until it is read next to what those
+     * roots actually returned.  Each root the witness moved off its recorded
+     * value is reported as the mechanism it is: a Boolean marker flipped is
+     * an injected fault, a wall clock moved is clock skew of that many
+     * milliseconds on that node, anything else is a plain root move.  A root
+     * the witness left at its recorded value contributes nothing, so a reader
+     * sees "RPC fault" or "clock skew of X ms on node Y" rather than a wall
+     * of assignments.</p>
+     */
+    private static JsonArray witnessMechanisms(
+            JsonObject manifest, List<RootInput> booleanInputs,
+            boolean[] booleanValues, JsonArray existentialWitness) {
+        JsonArray mechanisms = new JsonArray();
+        Map<String, JsonObject> recorded = new LinkedHashMap<>();
+        for (JsonElement element : array(manifest,
+                ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject ledger = element.getAsJsonObject();
+            String term = optionalString(ledger, "solverTerm");
+            if (!term.isEmpty()) recorded.put(term, ledger);
+        }
+        if (recorded.isEmpty()) return mechanisms;
+        Map<String, String> witnessValues = new LinkedHashMap<>();
+        for (int index = 0; index < booleanInputs.size()
+                && index < booleanValues.length; index++) {
+            witnessValues.put(booleanInputs.get(index).solverTerm,
+                    Boolean.toString(booleanValues[index]));
+        }
+        for (JsonElement element : existentialWitness) {
+            if (!element.isJsonObject()) continue;
+            JsonObject root = element.getAsJsonObject();
+            witnessValues.put(optionalString(root, "solverTerm"),
+                    optionalString(root, "value"));
+        }
+        for (Map.Entry<String, String> assigned : witnessValues.entrySet()) {
+            JsonObject ledger = recorded.get(assigned.getKey());
+            if (ledger == null) continue;
+            String was = optionalString(ledger, "recordedValue");
+            String now = normalizeIntegral(assigned.getValue());
+            if (was.isEmpty() || now.isEmpty() || was.equals(now)) continue;
+            JsonObject mechanism = new JsonObject();
+            mechanism.addProperty("sourceKey",
+                    optionalString(ledger, "sourceKey"));
+            mechanism.addProperty("siteId", optionalString(ledger, "siteId"));
+            mechanism.addProperty("solverTerm", assigned.getKey());
+            mechanism.addProperty("recordedValue", was);
+            mechanism.addProperty("witnessValue", now);
+            boolean clock = optionalBool(ledger, "wallClock", false);
+            if (clock) {
+                mechanism.addProperty("kind", "CLOCK_SKEW");
+                Long delta = skewMillis(was, now);
+                if (delta != null) {
+                    mechanism.addProperty("skewMillis", delta);
+                }
+            } else if ("true".equals(was) || "false".equals(was)) {
+                mechanism.addProperty("kind", "MARKER_FLIPPED");
+            } else {
+                mechanism.addProperty("kind", "ROOT_MOVED");
+            }
+            mechanisms.add(mechanism);
+        }
+        return mechanisms;
+    }
+
+    /** {@code (- 5)} is how a model spells -5; the ledger spells it "-5". */
+    private static String normalizeIntegral(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.startsWith("(-") && text.endsWith(")")) {
+            return "-" + text.substring(2, text.length() - 1).trim();
+        }
+        return text;
+    }
+
+    private static Long skewMillis(String recorded, String witness) {
+        try {
+            return Long.parseLong(normalizeIntegral(witness))
+                    - Long.parseLong(recorded.trim());
+        } catch (NumberFormatException notIntegral) {
+            return null;
+        }
+    }
+
     private static JsonArray existentialWitness(
             ConcolicConstraintSolver.SolverOutput answer,
             List<RootInput> roots) {

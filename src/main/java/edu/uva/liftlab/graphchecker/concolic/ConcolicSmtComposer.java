@@ -120,6 +120,8 @@ public final class ConcolicSmtComposer {
     /** Whether this artifact may be accepted as the milestone result. */
     public static final String FINAL_STATUS = "finalStatus";
     /** Whether all selected producer and target path sets were explored. */
+    /** Per lowered root: what it returned when it was recorded. */
+    public static final String RECORDED_ROOT_VALUES = "recordedRootValues";
     /** Per declared value handoff: whether its family reached a term. */
     public static final String WIRE_FLOW_BINDINGS = "wireFlowBindings";
     /**
@@ -272,6 +274,8 @@ public final class ConcolicSmtComposer {
         manifest.add("guardedReadModel", emitter.guardedReadModel());
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
+        manifest.add(RECORDED_ROOT_VALUES,
+                emitter.recordedRootLedger(runtimePlan.plans()));
         JsonArray gaps = new JsonArray();
         appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported,
                 emitter.unsupportedDetail);
@@ -1652,6 +1656,61 @@ public final class ConcolicSmtComposer {
         private String recordManualRootName(String raw, String name) {
             manualRootNames.put(raw, name);
             return name;
+        }
+
+        /**
+         * What each lowered root actually returned when it was recorded.
+         *
+         * <p>A witness is only readable next to this: a Boolean marker that
+         * came back {@code true} where the recording says {@code false} is an
+         * injected fault, and a clock 90 seconds off its recorded value is
+         * clock skew.  Without the recorded value a reader cannot tell either
+         * from an ordinary free choice, which is how {@code Long.MIN_VALUE}
+         * clocks were reported as mechanisms.</p>
+         */
+        private JsonArray recordedRootLedger(List<JsonObject> planRows) {
+            JsonArray rows = new JsonArray();
+            Set<String> seen = new LinkedHashSet<>();
+            for (JsonObject plan : planRows == null
+                    ? Collections.<JsonObject>emptyList() : planRows) {
+                if (plan == null) continue;
+                for (JsonElement goal : array(plan, "closureGoals")) {
+                    if (!goal.isJsonObject()) continue;
+                    for (JsonElement encoded
+                            : array(goal.getAsJsonObject(), "symbolize")) {
+                        if (!encoded.isJsonObject()) continue;
+                        JsonObject row = encoded.getAsJsonObject();
+                        String port = optionalString(row, "portId");
+                        String recorded = optionalString(row,
+                                "primitiveValue");
+                        if (port.isEmpty() || recorded.isEmpty()
+                                || !seen.add(port)) {
+                            continue;
+                        }
+                        String raw = manualRawByPort.get(port);
+                        String term = raw == null ? ""
+                                : firstNonBlank(manualRootNames.get(raw));
+                        if (term.isEmpty()) continue;
+                        JsonObject out = new JsonObject();
+                        out.addProperty("portId", port);
+                        out.addProperty("sourceKey",
+                                optionalString(row, "sourceKey"));
+                        out.addProperty("siteId",
+                                optionalString(row, "siteId"));
+                        out.addProperty("javaType",
+                                optionalString(row, "javaType"));
+                        out.addProperty("eventSeq",
+                                optionalLongInteger(row, "eventSeq", -1L));
+                        out.addProperty("recordedValue", recorded);
+                        out.addProperty("solverTerm", term);
+                        out.addProperty("wallClock",
+                                ClockRootPhysics.clockCallee(optionalString(
+                                        row, "declaredCallee")));
+                        rows.add(out);
+                    }
+                }
+            }
+            return rows;
         }
 
         /**
