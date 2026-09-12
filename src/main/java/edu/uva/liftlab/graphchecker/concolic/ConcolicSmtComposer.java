@@ -219,6 +219,8 @@ public final class ConcolicSmtComposer {
             emitter.lowerRelation(selection);
         }
         lowerFatalTargetPaths(emitter, fatal, fatalSite);
+        JsonObject clockPhysics = emitter.lowerClockRoots(
+                runtimePlan.plans(), arguments.clockSkewMillis);
         emitter.finishGuardedReadSelections();
         emitter.finish();
         String composedSmt = emitter.render();
@@ -242,6 +244,7 @@ public final class ConcolicSmtComposer {
         manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
                 loops.manifest());
         manifest.add("guardedReadModel", emitter.guardedReadModel());
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         JsonArray gaps = new JsonArray();
         appendGaps(gaps, "COMPOSITION_GAP", emitter.unsupported,
                 emitter.unsupportedDetail);
@@ -1616,6 +1619,67 @@ public final class ConcolicSmtComposer {
         private String recordManualRootName(String raw, String name) {
             manualRootNames.put(raw, name);
             return name;
+        }
+
+        /**
+         * Constrains each symbolized wall-clock read to what a clock can have
+         * returned: within a configured skew of the value that read actually
+         * returned, and non-decreasing across one node's recorded order.
+         *
+         * <p>Without this a {@code Timer.now()} root carried only the 64-bit
+         * integral domain, so a witness could answer {@code Long.MIN_VALUE}
+         * at one read and a negative millisecond count at the next.  Nothing
+         * is pinned to its recorded value: cross-node clock skew is a real
+         * failure mechanism for these workloads, so each node's window is
+         * anchored on its own reads and two nodes may sit up to twice the
+         * skew apart.</p>
+         *
+         * <p>A clock read the plan declares but this composition never
+         * lowered as a root contributes no constraint and is recorded with an
+         * empty solver term, so the ledger says which reads are governed.</p>
+         */
+        private JsonObject lowerClockRoots(List<JsonObject> planRows,
+                                           long skewMillis) {
+            Map<String, List<ClockRootPhysics.ClockRead>> byNode =
+                    ClockRootPhysics.readsByNode(planRows);
+            List<JsonObject> ledger = new ArrayList<>();
+            String previousGuard = enterGuard("");
+            try {
+                for (Map.Entry<String, List<ClockRootPhysics.ClockRead>> node
+                        : byNode.entrySet()) {
+                    String previousTerm = "";
+                    for (ClockRootPhysics.ClockRead read : node.getValue()) {
+                        String raw = manualRawByPort.get(read.portId);
+                        String term = raw == null ? null
+                                : manualRootNames.get(raw);
+                        if (term == null || term.isEmpty()) {
+                            ledger.add(ClockRootPhysics.ledgerRow(read, "",
+                                    "", ""));
+                            continue;
+                        }
+                        String windowAssertion = assertNamed(
+                                smtSymbols.mint("clock_window__",
+                                        read.portId, 16),
+                                ClockRootPhysics.window(term,
+                                        read.recordedValue, skewMillis));
+                        String orderAssertion = "";
+                        if (!previousTerm.isEmpty()
+                                && !previousTerm.equals(term)) {
+                            orderAssertion = assertNamed(
+                                    smtSymbols.mint("clock_monotonic__",
+                                            node.getKey() + "\n"
+                                                    + read.portId, 16),
+                                    "(<= " + previousTerm + " " + term + ")");
+                        }
+                        previousTerm = term;
+                        ledger.add(ClockRootPhysics.ledgerRow(read, term,
+                                windowAssertion, orderAssertion));
+                    }
+                }
+            } finally {
+                restoreGuard(previousGuard);
+            }
+            return ClockRootPhysics.manifest(skewMillis, ledger);
         }
 
         /**
@@ -5171,6 +5235,8 @@ public final class ConcolicSmtComposer {
         private Path runtimePlan;
         private String fatalRegion = "";
         private String occurrenceId = "";
+        private long clockSkewMillis =
+                ClockRootPhysics.DEFAULT_SKEW_MILLIS;
 
         public static Arguments parse(String[] argv) {
             Arguments result = new Arguments();
@@ -5197,6 +5263,12 @@ public final class ConcolicSmtComposer {
                     result.fatalRegion = firstNonBlank(value);
                 } else if ("occurrence-id".equals(key)) {
                     result.occurrenceId = firstNonBlank(value);
+                } else if ("clock-skew-ms".equals(key)) {
+                    result.clockSkewMillis = Long.parseLong(value);
+                    if (result.clockSkewMillis < 0L) {
+                        throw new IllegalArgumentException(
+                                "--clock-skew-ms may not be negative");
+                    }
                 } else {
                     throw new IllegalArgumentException(
                             "Unknown composer option: --" + key);
