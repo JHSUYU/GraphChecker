@@ -182,15 +182,17 @@ symbolic-merge cases merely because they repeat.
 ## Result contract
 
 Every imported region summary carries `schemaVersion`, `kind`, `goalId`,
-`taskId`, `sourceKey`, `topologyEpoch`, `boundarySessionScope`,
-`replayGroupId`, `regionId`, `occurrenceId`, `activationOrdinal`,
+`taskId`, `sourceKey`, `topologyEpoch`, `boundarySessionScope`, `regionId`,
+`occurrenceId`, `activationOrdinal`,
 `plannedOccurrenceId`, `relationKey`, `loopBound`, `goalKind`, `edgeBindings`,
 `pathCondition`, `branchMappings`, `normalExit`, `boundedExit`,
-`exceptionType`, `localCaseId`, `summaryId`, `sharedExpressionTable` and
+`exceptionType`, `localCaseId`, `summaryId` and
 `pathSetClosed`. Evidence the replay did not produce is absent rather than
 empty: `symbolicSourceEvidence`, `manualSymbolicInputObservations`,
 `recordedSharedState`, `vmHandoffEvents`, `pathLoopCounts`,
-`pathLoopCountGaps`, `alignmentGaps`, `familySnapshotDigest`, and, for a
+`pathLoopCountGaps`, `alignmentGaps`, `familySnapshotDigest`,
+`replayGroupId` when the replay named a group, `sharedExpressionTable` when
+some payload of the row refers to a hash-consed definition, and, for a
 target-reach goal, `targetReached` and `targetReach`. The importer validates
 that evidence and publishes local cases or named gaps; it writes every field
 above except `pathSetClosed`, which the campaign stamps on once the exploration
