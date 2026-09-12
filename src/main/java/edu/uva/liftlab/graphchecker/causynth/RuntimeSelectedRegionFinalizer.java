@@ -32,6 +32,7 @@ import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.firstNonEmpty;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.readRows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
@@ -311,7 +312,7 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /** The value cell one declared cut port's capture names, or {@code ""}. */
-    private static String declaredCutPortCell(Map<String, Object> port) {
+    public static String declaredCutPortCell(Map<String, Object> port) {
         String capture = text(port.get(
                 CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND));
         String definitionMethod = text(port.get(
@@ -1839,7 +1840,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     for (Map<String, Object> guard : incoming.getOrDefault(
                             outputCell,
                             Collections.<Map<String, Object>>emptyList())) {
-                        String guardSite = first(
+                        String guardSite = firstNonEmpty(
                                 text(guard.get("guardSiteId")),
                                 text(guard.get("siteId")));
                         if (!"GUARD".equals(text(guard.get("transferKind")))
@@ -2165,7 +2166,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 "containerMemberFieldBindings"}) {
             access.put(key, binding.get(key));
         }
-        access.put("staticAccessSiteId", first(
+        access.put("staticAccessSiteId", firstNonEmpty(
                 text(binding.get("siteId")), staticAccessSiteId(edge)));
         accesses.add(access);
     }
@@ -2191,7 +2192,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     edge.get("runtimeObserved")))) {
                 continue;
             }
-            String field = first(text(edge.get("declaredFieldSignature")),
+            String field = firstNonEmpty(text(edge.get("declaredFieldSignature")),
                     text(edge.get("fromCell")));
             DeclaredFieldCell declaration = DeclaredFieldCell.parse(field);
             if (declaration == null || !declaration.primitive()) continue;
@@ -2395,8 +2396,8 @@ public final class RuntimeSelectedRegionFinalizer {
                         .equals(text(binding.get("authority")))) {
                     continue;
                 }
-                String site = first(text(binding.get("siteId")), edgeSite);
-                String callee = first(
+                String site = firstNonEmpty(text(binding.get("siteId")), edgeSite);
+                String callee = firstNonEmpty(
                         text(binding.get("declaredCallee")), edgeCallee);
                 long callId = longNumber(binding.get("callId"), -1L);
                 long eventSeq = longNumber(binding.get("eventSeq"), -1L);
@@ -2701,7 +2702,7 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, List<Map<String, Object>>> bySite = new LinkedHashMap<>();
         for (Map<String, Object> edge : edges) {
             if (!"GUARD".equals(text(edge.get("transferKind")))) continue;
-            String site = first(text(edge.get("guardSiteId")),
+            String site = firstNonEmpty(text(edge.get("guardSiteId")),
                     text(edge.get("siteId")));
             if (site.isEmpty()) continue;
             List<Map<String, Object>> guards = bySite.computeIfAbsent(site,
@@ -2737,7 +2738,7 @@ public final class RuntimeSelectedRegionFinalizer {
             controlled.addAll(rows(guard.get("controlledDefinitions")));
             controlled.addAll(rows(guard.get("guardedEffects")));
             for (Map<String, Object> row : controlled) {
-                String site = first(first(
+                String site = firstNonEmpty(firstNonEmpty(
                         text(row.get("guardedMutationSiteId")),
                         text(row.get("controlledDefinitionSiteId"))),
                         text(row.get("effectSiteId")));
@@ -2829,7 +2830,7 @@ public final class RuntimeSelectedRegionFinalizer {
         private boolean loopRecurrence(
                 String site, Collection<Map<String, Object>> guards) {
             for (Map<String, Object> guard : guards) {
-                String guardSite = first(text(guard.get("guardSiteId")),
+                String guardSite = firstNonEmpty(text(guard.get("guardSiteId")),
                         text(guard.get("siteId")));
                 if (!site.equals(guardSite)) continue;
                 if (Boolean.TRUE.equals(booleanValue(
@@ -2854,7 +2855,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 List<String> sources = new ArrayList<>();
                 for (Map<String, Object> edge : incoming.getOrDefault(
                         cell, Collections.<Map<String, Object>>emptyList())) {
-                    String identity = first(text(edge.get("id")),
+                    String identity = firstNonEmpty(text(edge.get("id")),
                             text(edge.get("siteId")) + "\n"
                                     + text(edge.get("fromCell")) + "\n"
                                     + text(edge.get("toCell")));
@@ -3021,7 +3022,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 // constructed object's scalar leaves.
                 dynamicallyDefined.add(field);
                 String atomicValue = SharedFieldFlow.atomicValueField(field,
-                        first(text(edge.get("mutatorDeclaredCallee")),
+                        firstNonEmpty(text(edge.get("mutatorDeclaredCallee")),
                                 text(edge.get("invoke"))));
                 if (!atomicValue.isEmpty()) {
                     dynamicallyDefined.add(atomicValue);
@@ -3096,7 +3097,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 SemanticHeapAddress address = semanticHeapAddress(
                         port, access);
                 target.add(new BoundPort(region, text(port.get("portId")),
-                        first(text(access.get("occurrenceId")),
+                        firstNonEmpty(text(access.get("occurrenceId")),
                                 text(port.get("occurrenceId"))),
                         longNumber(access.get("rootCallId"),
                                 longNumber(port.get("rootCallId"), 0L)),
@@ -3104,7 +3105,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         address.declarations,
                         DependencyRole.normalize(
                                 port.get("dependencyRole")),
-                        first(text(access.get("staticAccessSiteId")),
+                        firstNonEmpty(text(access.get("staticAccessSiteId")),
                                 text(port.get("portId"))),
                         number(access.get(
                                 "activationLocalStaticSiteOccurrence"),
@@ -3129,9 +3130,9 @@ public final class RuntimeSelectedRegionFinalizer {
                         : port.get("fieldPathDeclarations"));
         int valueObject = number(access.get("valueObjectId"),
                 number(port.get("valueObjectId"), 0));
-        String bindingKind = first(text(access.get("bindingKind")),
+        String bindingKind = firstNonEmpty(text(access.get("bindingKind")),
                 text(port.get("bindingKind")));
-        String declaredCallee = first(
+        String declaredCallee = firstNonEmpty(
                 text(access.get("mutatorDeclaredCallee")),
                 text(port.get("mutatorDeclaredCallee")));
         String atomicValue = "CONTAINER_MUTATION".equals(bindingKind)
@@ -3191,7 +3192,7 @@ public final class RuntimeSelectedRegionFinalizer {
         List<Map<String, Object>> resourceDefault = new ArrayList<>();
         String refusal = "";
         for (Map<String, Object> access : accesses) {
-            String site = first(text(access.get("staticAccessSiteId")),
+            String site = firstNonEmpty(text(access.get("staticAccessSiteId")),
                     text(port.get("portId")));
             int occurrence = occurrences.getOrDefault(site, 0) + 1;
             occurrences.put(site, occurrence);
@@ -3246,10 +3247,6 @@ public final class RuntimeSelectedRegionFinalizer {
     private static void sortByEventSeq(List<Map<String, Object>> rows) {
         rows.sort(Comparator.comparingLong(value ->
                 longNumber(value.get("eventSeq"), Long.MAX_VALUE)));
-    }
-
-    private static String first(String left, String right) {
-        return left.isEmpty() ? right : left;
     }
 
     /**

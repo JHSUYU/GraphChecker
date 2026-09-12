@@ -28,11 +28,8 @@ import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -52,9 +49,10 @@ import java.util.UUID;
 import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.zip.GZIPInputStream;
 
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.firstNonEmpty;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
@@ -1264,39 +1262,26 @@ final class RuntimeRegionPlanner {
                                     + "request and ordered response: "
                                     + stringValue(edge.get("edgeId")));
                 }
-                Map<String, Object> evidence = new LinkedHashMap<>(edge);
-                evidence.put("schemaVersion", 3);
-                evidence.put("fromOccurrenceId", fromOccurrence);
-                evidence.put("toOccurrenceId", toOccurrence);
+                Map<String, Object> evidence = edgeEvidenceRow(edge,
+                        fromOccurrence, toOccurrence);
                 evidence.put("evidenceKind", AutomaticRegionEdge
                         .EXACT_REQUEST_FAULT_CONTROL_AUTHORITY);
                 evidence.put("correlationAuthority", AutomaticRegionEdge
                         .EXACT_REQUEST_FAULT_CONTROL_AUTHORITY);
                 evidence.put("state", "CONFIRMED_REQUEST_CONTROL");
-                result.edgeValidations.add(evidence);
-                Map<String, Object> producerGoal =
-                        goalByOccurrence.get(fromOccurrence);
-                if (producerGoal != null) {
-                    appendGoalBinding(producerGoal, evidence);
-                }
-                Map<String, Object> consumerGoal =
-                        goalByOccurrence.get(toOccurrence);
-                if (consumerGoal != null && consumerGoal != producerGoal) {
-                    appendGoalBinding(consumerGoal, evidence);
-                }
+                recordEdgeEvidence(result, goalByOccurrence, evidence,
+                        fromOccurrence, toOccurrence);
                 continue;
             }
             String fromPort = exactPort(exactPorts, fromOccurrence,
                     "OUT", stringValue(edge.get("fromPort")), edge);
             String toPort = exactPort(exactPorts, toOccurrence,
                     "IN", stringValue(edge.get("toPort")), edge);
-            Map<String, Object> evidence = new LinkedHashMap<>(edge);
+            Map<String, Object> evidence = edgeEvidenceRow(edge,
+                    fromOccurrence, toOccurrence);
             evidence.remove("fromPort");
             evidence.remove("toPort");
             evidence.remove("bindings");
-            evidence.put("schemaVersion", 3);
-            evidence.put("fromOccurrenceId", fromOccurrence);
-            evidence.put("toOccurrenceId", toOccurrence);
             evidence.put("fromOutputPort", fromPort);
             evidence.put("toInputPort", toPort);
             evidence.put("evidenceKind", protocol
@@ -1319,19 +1304,8 @@ final class RuntimeRegionPlanner {
                         "runtime field flow lacks a declared shared location: "
                                 + stringValue(edge.get("edgeId")));
             }
-            result.edgeValidations.add(evidence);
-            Map<String, Object> producerGoal =
-                    goalByOccurrence.get(fromOccurrence);
-            if (producerGoal != null) {
-                appendGoalBinding(producerGoal, evidence);
-            }
-            Map<String, Object> consumerGoal =
-                    goalByOccurrence.get(toOccurrence);
-            if (consumerGoal != null && consumerGoal != producerGoal) {
-                // The binding selects linked-replay membership. Runtime VM
-                // evidence supplies the propagated expression.
-                appendGoalBinding(consumerGoal, evidence);
-            }
+            recordEdgeEvidence(result, goalByOccurrence, evidence,
+                    fromOccurrence, toOccurrence);
         }
         // The plan catalog names the planned regions and the static
         // symbolic sources a scheduler admits inside them.  Ports, methods,
@@ -1452,10 +1426,6 @@ final class RuntimeRegionPlanner {
         return effectiveDependencyRole(semantic, javaType);
     }
 
-    private static String firstNonEmpty(String first, String second) {
-        return first == null || first.isEmpty() ? second : first;
-    }
-
     private static void addAccessOwnedCarrier(
             Map<String, Map<String, Object>> carriers,
             FieldPathSpec.DeclaredField field) {
@@ -1501,6 +1471,39 @@ final class RuntimeRegionPlanner {
         row.put("fromOutputPort", stringValue(edge.get("fromPort")));
         row.put("toInputPort", stringValue(edge.get("toPort")));
         return toJsonTreeFast(row).getAsJsonObject();
+    }
+
+    /** One edge validation row, stamped with the two selected activations. */
+    private static Map<String, Object> edgeEvidenceRow(
+            Map<String, Object> edge, String fromOccurrence,
+            String toOccurrence) {
+        Map<String, Object> evidence = new LinkedHashMap<>(edge);
+        evidence.put("schemaVersion", 3);
+        evidence.put("fromOccurrenceId", fromOccurrence);
+        evidence.put("toOccurrenceId", toOccurrence);
+        return evidence;
+    }
+
+    /** Publishes one edge validation and binds it to both endpoint goals.
+     *
+     * <p>The binding selects linked-replay membership. Runtime VM evidence
+     * supplies the propagated expression.</p> */
+    private static void recordEdgeEvidence(
+            Result result,
+            Map<String, Map<String, Object>> goalByOccurrence,
+            Map<String, Object> evidence, String fromOccurrence,
+            String toOccurrence) {
+        result.edgeValidations.add(evidence);
+        Map<String, Object> producerGoal =
+                goalByOccurrence.get(fromOccurrence);
+        if (producerGoal != null) {
+            appendGoalBinding(producerGoal, evidence);
+        }
+        Map<String, Object> consumerGoal =
+                goalByOccurrence.get(toOccurrence);
+        if (consumerGoal != null && consumerGoal != producerGoal) {
+            appendGoalBinding(consumerGoal, evidence);
+        }
     }
 
     private static void appendGoalBinding(
@@ -1997,42 +2000,11 @@ final class RuntimeRegionPlanner {
         for (Map<String, Object> port : ports) {
             if (declaredCutPort(port) && stringValue(port.get("cell")).isEmpty(
                     )) {
-                String cell = declaredCutPortCell(port);
+                String cell = RuntimeSelectedRegionFinalizer
+                        .declaredCutPortCell(port);
                 if (!cell.isEmpty()) port.put("cell", cell);
             }
         }
-    }
-
-    /** The value cell a declared cut port's capture names, or {@code ""}. */
-    private static String declaredCutPortCell(Map<String, Object> port) {
-        String capture = stringValue(port.get(
-                CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND));
-        String definitionMethod = stringValue(port.get(
-                CommunicationCatalogContract.PORT_DEFINITION_METHOD));
-        String javaType = stringValue(port.get("javaType"));
-        if (CommunicationCatalogContract.CAPTURE_METHOD_PARAMETER.equals(
-                capture)) {
-            int argumentIndex = number(port.get(
-                    CommunicationCatalogContract.PORT_ARGUMENT_INDEX), -1);
-            // The project-wide parameter cell, so "parameter n of the server
-            // entry" is one string a consumer reads rather than two fields it
-            // has to join.
-            return definitionMethod.isEmpty() || javaType.isEmpty()
-                    || argumentIndex < 0 ? ""
-                    : definitionMethod + ".param" + argumentIndex + ":"
-                    + javaType;
-        }
-        if (CommunicationCatalogContract.CAPTURE_CALL_RETURN.equals(capture)
-                || CommunicationCatalogContract.CAPTURE_METHOD_RETURN.equals(
-                capture)) {
-            // The project-wide call-return cell: what the cut call handed
-            // back, named by the callee whose frame produced it.
-            String callee = CommunicationCatalogContract.CAPTURE_CALL_RETURN
-                    .equals(capture) ? stringValue(port.get("declaredCallee"))
-                    : definitionMethod;
-            return callee.isEmpty() ? "" : callee + ".return";
-        }
-        return "";
     }
 
     /** Declared cut port ids this occurrence holds its own stamped copy of. */
@@ -2090,7 +2062,8 @@ final class RuntimeRegionPlanner {
             action.put(CommunicationCatalogContract.PORT_ARGUMENT_INDEX,
                     argumentIndex);
             action.put("index", argumentIndex);
-            action.put("cell", declaredCutPortCell(port));
+            action.put("cell", RuntimeSelectedRegionFinalizer
+                    .declaredCutPortCell(port));
         } else if (CommunicationCatalogContract.CAPTURE_CALL_RETURN.equals(
                 capture)) {
             String declaredCallee = stringValue(port.get("declaredCallee"));
@@ -2102,7 +2075,8 @@ final class RuntimeRegionPlanner {
             // unit in the client's own frame - one frame above the transport
             // and inside the client region by construction.
             action.put("location", "CALL_RETURN");
-            action.put("cell", declaredCutPortCell(port));
+            action.put("cell", RuntimeSelectedRegionFinalizer
+                    .declaredCutPortCell(port));
             action.put("unitIndex", unitIndex);
         } else {
             // CALL_ARGUMENT and METHOD_RETURN describe where a fragment
@@ -2987,14 +2961,6 @@ final class RuntimeRegionPlanner {
         Matcher matcher = FIELD.matcher(
                 declarations.get(declarations.size() - 1));
         return matcher.matches() ? matcher.group(1) : "java.lang.Object";
-    }
-
-    private static Map<String, Object> object(Object... fields) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        for (int index = 0; index + 1 < fields.length; index += 2) {
-            result.put(String.valueOf(fields[index]), fields[index + 1]);
-        }
-        return result;
     }
 
     @SuppressWarnings("unchecked")

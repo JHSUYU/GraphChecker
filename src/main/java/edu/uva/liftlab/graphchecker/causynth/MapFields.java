@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -130,6 +131,20 @@ public final class MapFields {
     /** A string with a null read as absent, for values already typed. */
     public static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    /** The left string when it states something, else the right one. */
+    public static String firstNonEmpty(String left, String right) {
+        return left == null || left.isEmpty() ? right : left;
+    }
+
+    /** One row from alternating key and value arguments, in that order. */
+    public static Map<String, Object> object(Object... keyValues) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        for (int index = 0; index + 1 < keyValues.length; index += 2) {
+            row.put(String.valueOf(keyValues[index]), keyValues[index + 1]);
+        }
+        return row;
     }
 
     public static Boolean booleanValue(Object value) {

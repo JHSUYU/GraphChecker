@@ -49,6 +49,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Callsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorParam;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ArrayAccess;
@@ -3142,11 +3143,4 @@ final class SeedBackwardStaticAnalyzer {
                 new LinkedHashSet<>(Arrays.asList(values)));
     }
 
-    private static Map<String, Object> object(Object... keyValues) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        for (int i = 0; i + 1 < keyValues.length; i += 2) {
-            map.put(String.valueOf(keyValues[i]), keyValues[i + 1]);
-        }
-        return map;
-    }
 }
