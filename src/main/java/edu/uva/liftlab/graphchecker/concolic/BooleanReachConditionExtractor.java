@@ -7,6 +7,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
@@ -37,6 +38,7 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -45,6 +47,19 @@ import java.util.regex.Pattern;
  */
 public final class BooleanReachConditionExtractor {
     private static final int MAX_EXISTENTIAL_PERTURBATIONS = 32;
+    /** Which guarded-read arm the model chose for the fatal predicate. */
+    static final String FATAL_STATE_SELECTION = "fatalStateSelection";
+    private static final String FATAL_STATE_SELECTION_KIND =
+            "FATAL_READ_STATE_SELECTION";
+    private static final String FATAL_PATH_ASSERTION = ":named fatal_path";
+    private static final Pattern MERGED_BOUNDARY_SYMBOL =
+            Pattern.compile("merged_boundary__[A-Za-z0-9_]+");
+    /** The one equality that binds a boundary constant to a read's value. */
+    private static final Pattern BOUNDARY_VALUE_BINDING = Pattern.compile(
+            "^\\(assert \\(= (merged_boundary__[A-Za-z0-9_]+)"
+            + " (rf_value__[A-Za-z0-9_]+)\\)\\)$");
+    /** A perturbation the root's own declared physics forbids. */
+    static final String WINDOW_BOUNDARY = "WINDOW_BOUNDARY";
     static final String SYMBOLIC_VARIABLE_MODELS =
             "symbolicVariableModels";
     private static final String SYMBOLIC_VARIABLE_MODEL_KIND =
@@ -162,6 +177,13 @@ public final class BooleanReachConditionExtractor {
 
         String base = SmtLibQueries.stripSolverCommands(
                 composedSmt);
+        List<JsonObject> fatalArms = fatalReadArms(composedSmt, manifest);
+        List<String> fatalArmSelectors = new ArrayList<>();
+        for (JsonObject arm : fatalArms) {
+            fatalArmSelectors.add(optionalString(arm, "selector"));
+        }
+        report.add(FATAL_STATE_SELECTION, fatalStateSelection(fatalArms,
+                Collections.<String, String>emptyMap()));
         List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         JsonArray existentialPerturbations = new JsonArray();
@@ -172,7 +194,8 @@ public final class BooleanReachConditionExtractor {
         for (int ordinal = 0; ordinal < count; ordinal++) {
             boolean[] values = valuation(ordinal, inputs.size());
             String query = valuationQuery(base, inputs, values,
-                    discovery.existentialNonBooleanRootInputs);
+                    discovery.existentialNonBooleanRootInputs,
+                    fatalArmSelectors);
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
             String status = result.status();
@@ -184,6 +207,11 @@ public final class BooleanReachConditionExtractor {
                     GSON.toJsonTree(solver.lastPinnedSelectors()));
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
+                if (!fatalArms.isEmpty() && satisfyingValuations.size() == 1) {
+                    report.add(FATAL_STATE_SELECTION, fatalStateSelection(
+                            fatalArms, ConcolicConstraintSolver.parseGetValues(
+                                    result.stdout)));
+                }
                 JsonArray witness = existentialWitness(result,
                         discovery.existentialNonBooleanRootInputs);
                 if (witness.size() > 0) {
@@ -200,7 +228,7 @@ public final class BooleanReachConditionExtractor {
                         JsonArray perturbations = existentialPerturbations(
                                 solver, query,
                                 discovery.existentialNonBooleanRootInputs,
-                                witness);
+                                witness, clockWindows(manifest));
                         for (JsonElement perturbation : perturbations) {
                             existentialPerturbations.add(perturbation);
                             if ("unsat".equals(optionalString(
@@ -751,7 +779,8 @@ public final class BooleanReachConditionExtractor {
     private static String valuationQuery(String base,
                                          List<RootInput> inputs,
                                          boolean[] values,
-                                         List<RootInput> witnessRoots) {
+                                         List<RootInput> witnessRoots,
+                                         List<String> modelSymbols) {
         StringBuilder query = new StringBuilder(base);
         for (int index = 0; index < inputs.size(); index++) {
             query.append("(assert ")
@@ -759,13 +788,22 @@ public final class BooleanReachConditionExtractor {
                     .append(")").append(System.lineSeparator());
         }
         query.append("(check-sat)").append(System.lineSeparator());
-        if (witnessRoots != null && !witnessRoots.isEmpty()) {
-            query.append("(get-value (");
+        List<String> wanted = new ArrayList<>();
+        if (witnessRoots != null) {
             for (RootInput root : witnessRoots) {
-                query.append(' ').append(root.solverTerm);
+                wanted.add(root.solverTerm);
                 if (!root.nullnessSolverTerm.isEmpty()) {
-                    query.append(' ').append(root.nullnessSolverTerm);
+                    wanted.add(root.nullnessSolverTerm);
                 }
+            }
+        }
+        if (modelSymbols != null) {
+            wanted.addAll(modelSymbols);
+        }
+        if (!wanted.isEmpty()) {
+            query.append("(get-value (");
+            for (String symbol : wanted) {
+                query.append(' ').append(symbol);
             }
             query.append("))").append(System.lineSeparator());
         }
@@ -1283,7 +1321,7 @@ public final class BooleanReachConditionExtractor {
             return result;
         }
 
-        private static BigInteger parseSmtInteger(String literal) {
+        static BigInteger parseSmtInteger(String literal) {
             String value = firstNonBlank(literal);
             try {
                 if (value.startsWith("(- ") && value.endsWith(")")) {
@@ -1434,9 +1472,154 @@ public final class BooleanReachConditionExtractor {
      * Looks for a rejected point adjacent to an already satisfying scalar
      * witness: one unsat neighbour proves the root space is constrained.
      */
+    /**
+     * Which guarded-read arms could have supplied the fatal predicate's value.
+     *
+     * <p>The fatal predicate tests one {@code merged_boundary__} constant, and
+     * a single equality binds that constant to one guarded read's value term.
+     * That read's arms are the states the target could have read from, and
+     * exactly one of their selectors is true in any model.  Which one it is
+     * decides whether a witness rests on a state the composition reconstructed
+     * or on one it reported it could not, so the arms are resolved here and
+     * their selection is published rather than left implicit in the model.</p>
+     */
+    static List<JsonObject> fatalReadArms(String composedSmt,
+                                          JsonObject manifest) {
+        Set<String> boundaries = new LinkedHashSet<>();
+        Map<String, String> boundaryValues = new LinkedHashMap<>();
+        for (String line : firstNonBlank(composedSmt).split("\\R")) {
+            String text = line.trim();
+            if (text.contains(FATAL_PATH_ASSERTION)) {
+                Matcher symbol = MERGED_BOUNDARY_SYMBOL.matcher(text);
+                while (symbol.find()) {
+                    boundaries.add(symbol.group());
+                }
+                continue;
+            }
+            Matcher binding = BOUNDARY_VALUE_BINDING.matcher(text);
+            if (binding.matches()) {
+                boundaryValues.put(binding.group(1), binding.group(2));
+            }
+        }
+        Set<String> valueTerms = new LinkedHashSet<>();
+        for (String boundary : boundaries) {
+            String value = boundaryValues.get(boundary);
+            if (value != null) {
+                valueTerms.add(value);
+            }
+        }
+        List<JsonObject> arms = new ArrayList<>();
+        if (valueTerms.isEmpty()) {
+            return arms;
+        }
+        for (JsonElement read : array(object(manifest, "guardedReadModel"),
+                "reads")) {
+            if (!read.isJsonObject()) {
+                continue;
+            }
+            for (JsonElement element
+                    : array(read.getAsJsonObject(), "arms")) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject arm = element.getAsJsonObject();
+                if (!valueTerms.contains(optionalString(arm, "valueTerm"))) {
+                    continue;
+                }
+                String selector = optionalString(arm, "selector");
+                if (selector.isEmpty()) {
+                    continue;
+                }
+                JsonObject row = new JsonObject();
+                row.addProperty("selector", selector);
+                row.addProperty("readIdentity",
+                        optionalString(arm, "readIdentity"));
+                row.addProperty("candidateIdentity",
+                        optionalString(arm, "candidateIdentity"));
+                row.addProperty("sessionLocationKey",
+                        optionalString(arm, "sessionLocationKey"));
+                row.addProperty("locationKey",
+                        optionalString(arm, "locationKey"));
+                row.addProperty("writerCaseOwner",
+                        optionalString(arm, "writerCaseOwner"));
+                row.addProperty("initialState",
+                        optionalString(arm, "writerCaseOwner").startsWith(
+                                SymbolicPropagationClosure
+                                        .INITIAL_SOURCE_CASE_PREFIX));
+                arms.add(row);
+            }
+        }
+        return arms;
+    }
+
+    /** The published arms, with the model's choice marked on each. */
+    private static JsonObject fatalStateSelection(List<JsonObject> arms,
+                                                  Map<String, String> model) {
+        JsonObject selection = new JsonObject();
+        selection.addProperty("schemaVersion", 1);
+        selection.addProperty("kind", FATAL_STATE_SELECTION_KIND);
+        selection.addProperty("authority",
+                "SOLVER_SELECTED_GUARDED_READ_ARM_V1");
+        selection.addProperty("resolved", !arms.isEmpty());
+        JsonArray rows = new JsonArray();
+        for (JsonObject arm : arms) {
+            JsonObject row = arm.deepCopy();
+            String assigned = model.get(optionalString(arm, "selector"));
+            row.addProperty("selected", "true".equals(assigned));
+            row.addProperty("modelled", assigned != null);
+            rows.add(row);
+        }
+        selection.add("arms", rows);
+        return selection;
+    }
+
+    /**
+     * The value range each clock root's own physics allows, by solver term.
+     *
+     * <p>{@link ClockRootPhysics} already asserts this window in the formula,
+     * so a perturbation outside it is rejected by that assertion rather than
+     * by anything the target predicate says.  Reading the window here lets the
+     * probe stay inside it and stop mistaking its own boundary for evidence.
+     */
+    static Map<String, BigInteger[]> clockWindows(JsonObject manifest) {
+        Map<String, BigInteger[]> windows = new LinkedHashMap<>();
+        JsonObject physics = object(manifest, ClockRootPhysics.MANIFEST_FIELD);
+        if (physics.size() == 0) {
+            return windows;
+        }
+        BigInteger skew = BigInteger.valueOf(Math.max(0L,
+                optionalLongInteger(physics, "clockSkewMillis",
+                        ClockRootPhysics.DEFAULT_SKEW_MILLIS)));
+        for (JsonElement element : array(physics, "clockReads")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject read = element.getAsJsonObject();
+            String term = optionalString(read, "solverTerm");
+            if (term.isEmpty() || !read.has("recordedValue")) {
+                continue;
+            }
+            BigInteger recorded = BigInteger.valueOf(
+                    optionalLongInteger(read, "recordedValue", 0L));
+            windows.put(term, new BigInteger[] {
+                    recorded.subtract(skew), recorded.add(skew) });
+        }
+        return windows;
+    }
+
+    /** Whether an SMT integer literal lies inside a declared window. */
+    private static boolean insideWindow(BigInteger[] window, String literal) {
+        if (window == null) {
+            return true;
+        }
+        BigInteger value = ScalarEncoding.parseSmtInteger(literal);
+        return value == null || (value.compareTo(window[0]) >= 0
+                && value.compareTo(window[1]) <= 0);
+    }
+
     private static JsonArray existentialPerturbations(
             Z3Solver solver, String query, List<RootInput> roots,
-            JsonArray witness) {
+            JsonArray witness, Map<String, BigInteger[]> windows) {
         JsonArray result = new JsonArray();
         Map<String, String> values = new LinkedHashMap<>();
         for (JsonElement element : witness) {
@@ -1452,10 +1635,26 @@ public final class BooleanReachConditionExtractor {
 
         String base = SmtLibQueries.stripSolverCommands(query);
         for (RootInput changed : roots) {
+            BigInteger[] window = windows.get(changed.solverTerm);
             for (String alternative : changed.neighboringLiterals(
                     values.get(changed.solverTerm))) {
                 if (result.size() >= MAX_EXISTENTIAL_PERTURBATIONS) {
                     return result;
+                }
+                // A value the root's own declared physics forbids is refused
+                // by that assertion, not by the target predicate, so trying
+                // it would answer a question nobody asked. Name it and move
+                // to the neighbour that is still a value the clock could have
+                // returned.
+                if (!insideWindow(window, alternative)) {
+                    JsonObject refused = changed.toJson();
+                    refused.addProperty("witnessValue",
+                            values.get(changed.solverTerm));
+                    refused.addProperty("perturbedValue", alternative);
+                    refused.addProperty("status", "skipped");
+                    refused.addProperty("rejectedBy", WINDOW_BOUNDARY);
+                    result.add(refused);
+                    continue;
                 }
                 StringBuilder candidate = new StringBuilder(base);
                 for (RootInput root : roots) {

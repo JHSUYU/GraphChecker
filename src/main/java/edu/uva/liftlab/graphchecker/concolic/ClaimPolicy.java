@@ -4,6 +4,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 import com.google.gson.Gson;
@@ -17,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -83,6 +85,12 @@ public final class ClaimPolicy {
             "DECLARED_WIRE_FLOWS_UNREALIZED";
     /** The existential witness carries no information about the target. */
     static final String WITNESS_UNINFORMATIVE = "WITNESS_UNINFORMATIVE";
+    /**
+     * The witness reads the fatal value out of an initial container state the
+     * composition reported it could not reconstruct.
+     */
+    static final String UNDETERMINED_INITIAL_STATE =
+            "UNDETERMINED_INITIAL_STATE";
     /** The solver returned neither sat nor unsat on an enumerated valuation. */
     static final String SOLVER_UNDECIDED_VALUATIONS =
             "SOLVER_UNDECIDED_VALUATIONS";
@@ -90,6 +98,12 @@ public final class ClaimPolicy {
     static final String UNSAT_CLOSURE_INCOMPLETE = "UNSAT_CLOSURE_INCOMPLETE";
     /** The solver stage reached no exact reachability decision. */
     static final String NO_EXACT_REACHABILITY = "NO_EXACT_REACHABILITY";
+    /**
+     * The experiment injects a fault marker and the target is reachable in
+     * both of its polarities with nothing else named to explain the other one.
+     */
+    static final String FAULT_MARKER_NOT_DETERMINING =
+            "FAULT_MARKER_NOT_DETERMINING";
 
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
@@ -458,6 +472,345 @@ public final class ClaimPolicy {
     }
 
     /**
+     * Carriers whose initial content the Composer reported it could not
+     * reconstruct, by the session location key its gap names.
+     */
+    static Set<String> truncatedCarriers(JsonObject manifest) {
+        Set<String> carriers = new LinkedHashSet<>();
+        for (JsonElement element
+                : array(manifest, "symbolicPropagationGaps")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject gap = element.getAsJsonObject();
+            if (SymbolicPropagationClosure.INITIAL_CONTAINER_SNAPSHOT_TRUNCATED
+                    .equals(optionalString(gap, "reason"))) {
+                String subject = optionalString(gap, "subject");
+                if (!subject.isEmpty()) {
+                    carriers.add(subject);
+                }
+            }
+        }
+        return carriers;
+    }
+
+    /**
+     * Whether the witness reads the fatal value out of a state nobody
+     * reconstructed.
+     *
+     * <p>A truncated initial container snapshot makes membership over that
+     * container a free Boolean.  The Composer publishes that as a propagation
+     * gap and still emits the formula, which is right: the other arms of the
+     * same read are real, and a witness that uses one of them is unaffected.
+     * What must not pass is a witness whose fatal value comes from the
+     * <em>initial</em> arm of exactly such a carrier -- there the solver is
+     * free to answer "the container never held that key", and the target is
+     * satisfied by an admitted hole rather than by the program.  So the
+     * selected arm decides: on the path it is a blocker naming the carrier and
+     * the arm, off the path it is an information row.</p>
+     */
+    static JsonObject initialStateEvidence(JsonObject manifest,
+                                           JsonObject reach) {
+        Set<String> carriers = truncatedCarriers(manifest);
+        JsonObject selection = object(reach,
+                BooleanReachConditionExtractor.FATAL_STATE_SELECTION);
+        JsonObject evidence = new JsonObject();
+        evidence.addProperty("truncatedCarrierCount", carriers.size());
+        evidence.add("truncatedCarriers", GSON.toJsonTree(carriers));
+        evidence.addProperty("fatalArmsResolved",
+                optionalBool(selection, "resolved", false));
+        JsonArray onPath = new JsonArray();
+        JsonArray offPath = new JsonArray();
+        for (JsonElement element : array(selection, "arms")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject arm = element.getAsJsonObject();
+            if (!carriers.contains(optionalString(arm,
+                    "sessionLocationKey"))) {
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("selector", optionalString(arm, "selector"));
+            row.addProperty("sessionLocationKey",
+                    optionalString(arm, "sessionLocationKey"));
+            row.addProperty("locationKey",
+                    optionalString(arm, "locationKey"));
+            row.addProperty("readIdentity",
+                    optionalString(arm, "readIdentity"));
+            row.addProperty("initialState",
+                    optionalBool(arm, "initialState", false));
+            if (optionalBool(arm, "selected", false)) {
+                onPath.add(row);
+            } else {
+                offPath.add(row);
+            }
+        }
+        evidence.add("onSelectedPath", onPath);
+        evidence.add("offSelectedPath", offPath);
+        evidence.addProperty("fatalCarrierTruncated",
+                onPath.size() + offPath.size() > 0);
+        return evidence;
+    }
+
+    /**
+     * The blocker that evidence justifies, or null when it justifies none.
+     *
+     * <p>Which arm the witness picked does not save a fatal read whose own
+     * container was never reconstructed. A truncated snapshot makes
+     * {@code assoc_has} over that container free, so "the key was not there"
+     * is a zero-cost premise available under every arm and every polarity --
+     * the witness that happens to use a writer arm this time is one solver
+     * decision away from not needing it. The gap is the read's, so the read
+     * is blocked while it stands.</p>
+     */
+    private static JsonObject initialStateBlocker(JsonObject evidence) {
+        JsonArray onPath = array(evidence, "onSelectedPath");
+        JsonArray offPath = array(evidence, "offSelectedPath");
+        if (onPath.size() + offPath.size() == 0) {
+            return null;
+        }
+        Set<String> carriers = new LinkedHashSet<>();
+        List<String> where = new ArrayList<>();
+        for (JsonArray arms : Arrays.asList(onPath, offPath)) {
+            for (JsonElement element : arms) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject row = element.getAsJsonObject();
+                carriers.add(optionalString(row, "sessionLocationKey"));
+                if (arms == onPath || optionalBool(row, "initialState",
+                        false)) {
+                    where.add(optionalString(row, "selector")
+                            + (arms == onPath ? " (selected" : " (available")
+                            + (optionalBool(row, "initialState", false)
+                                    ? ", initial state)" : ")"));
+                }
+            }
+        }
+        String how = onPath.size() > 0
+                ? "the witness reads the fatal value from"
+                : "the fatal read can take its value from";
+        return blocker(UNDETERMINED_INITIAL_STATE,
+                String.join(",", carriers),
+                how + " the initial state of " + carriers.size()
+                        + " carrier(s) whose initial content the composition"
+                        + " reported truncated, so membership there is a free"
+                        + " choice rather than the program's: "
+                        + String.join("; ", where));
+    }
+
+    /**
+     * What the probe actually perturbed, so a reader can see which root the
+     * root-space verdict rests on.
+     *
+     * <p>{@code constrainsRootSpace} says some root decides the target; it
+     * does not say which, and a run that injects a fault marker cares very
+     * much whether the answer is the marker or a wall clock three nodes away.
+     */
+    static JsonObject probedRoot(JsonObject reach) {
+        JsonObject probe = object(reach, "existentialRootProbe");
+        JsonObject result = new JsonObject();
+        JsonObject rejected = null;
+        int solved = 0;
+        for (JsonElement element : array(probe, "perturbations")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            if (!optionalString(row, "rejectedBy").isEmpty()) {
+                continue;
+            }
+            solved++;
+            if (rejected == null && "unsat".equals(optionalString(row,
+                    "status"))) {
+                rejected = row;
+            }
+        }
+        result.addProperty("solvedPerturbations", solved);
+        result.addProperty("rejected", rejected != null);
+        if (rejected != null) {
+            result.addProperty("sourceIdentity",
+                    optionalString(rejected, "sourceIdentity"));
+            result.addProperty("portId", optionalString(rejected, "portId"));
+            result.addProperty("occurrenceId",
+                    optionalString(rejected, "occurrenceId"));
+            result.addProperty("javaTypeDescriptor",
+                    optionalString(rejected, "javaTypeDescriptor"));
+            result.addProperty("witnessValue",
+                    optionalString(rejected, "witnessValue"));
+            result.addProperty("perturbedValue",
+                    optionalString(rejected, "perturbedValue"));
+        }
+        return result;
+    }
+
+    /**
+     * Whether the injected fault marker is what decides the target.
+     *
+     * <p>An experiment that injects a marker states a hypothesis: with the
+     * fault the target is reached, without it the target is not. The formula
+     * answers that in one way only -- the marker's two polarities disagree on
+     * satisfiability. When both polarities are satisfiable the hypothesis is
+     * refuted unless the composition can say, in mechanism terms, what else
+     * reached the target in the polarity that has no fault; and a clock
+     * pressed flat against its own window bound says nothing, because a
+     * saturated bound is the window's answer and not the program's. So the
+     * other polarity has to be explained by a named mechanism strictly inside
+     * what the recording allows, or the marker is not determining and no
+     * accepted claim may rest on it.</p>
+     */
+    static JsonObject faultMarkerEvidence(JsonObject manifest,
+                                          JsonObject reach) {
+        JsonArray markers = array(object(reach, "roots"), "booleanInputs");
+        JsonObject evidence = new JsonObject();
+        evidence.addProperty("declaredMarkers", markers.size());
+        JsonArray rows = new JsonArray();
+        evidence.add("markers", rows);
+        if (markers.size() == 0) {
+            return evidence;
+        }
+        long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
+        Map<String, String> recorded = new LinkedHashMap<>();
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+            if (element.isJsonObject()) {
+                recorded.put(optionalString(element.getAsJsonObject(),
+                        "solverTerm"), optionalString(
+                        element.getAsJsonObject(), "recordedValue"));
+            }
+        }
+        JsonArray valuations = array(reach, "valuations");
+        for (int index = 0; index < markers.size(); index++) {
+            if (!markers.get(index).isJsonObject()) {
+                continue;
+            }
+            JsonObject marker = markers.get(index).getAsJsonObject();
+            JsonObject row = new JsonObject();
+            row.addProperty("sourceIdentity",
+                    optionalString(marker, "sourceIdentity"));
+            row.addProperty("portId", optionalString(marker, "portId"));
+            row.addProperty("occurrenceId",
+                    optionalString(marker, "occurrenceId"));
+            boolean recordedPolarity = !"false".equals(recorded.get(
+                    optionalString(marker, "solverTerm")));
+            row.addProperty("recordedPolarity", recordedPolarity);
+            JsonObject atRecorded = polarity(valuations, index,
+                    recordedPolarity);
+            JsonObject flipped = polarity(valuations, index,
+                    !recordedPolarity);
+            row.addProperty("recordedPolaritySatisfiable",
+                    atRecorded != null && satisfied(atRecorded));
+            row.addProperty("flippedPolaritySatisfiable",
+                    flipped != null && satisfied(flipped));
+            boolean flips = flipped != null && satisfied(flipped)
+                    && atRecorded != null && !satisfied(atRecorded);
+            JsonArray unsaturated = unsaturatedMechanisms(atRecorded, window);
+            row.addProperty("polarityDecides", flips);
+            // A reader deciding whether to trust the mechanism needs to see
+            // how much of it is pressed against the window: six interior rows
+            // out of ten is a different claim from six out of six.
+            row.addProperty("otherPolarityMechanismCount",
+                    atRecorded == null ? 0
+                            : array(atRecorded, "witnessMechanisms").size());
+            row.addProperty("otherPolarityUnsaturatedCount",
+                    unsaturated.size());
+            row.addProperty("clockWindowMillis", window);
+            row.add("otherPolarityMechanisms", unsaturated);
+            row.addProperty("determining", flips || unsaturated.size() > 0);
+            rows.add(row);
+        }
+        return evidence;
+    }
+
+    /** The valuation that assigns this Boolean root that polarity. */
+    private static JsonObject polarity(JsonArray valuations, int index,
+                                       boolean value) {
+        for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+            JsonObject candidate = row(valuations, ordinal);
+            if (candidate == null) {
+                continue;
+            }
+            JsonArray values = array(candidate, "values");
+            if (index < values.size()
+                    && values.get(index).isJsonPrimitive()
+                    && values.get(index).getAsBoolean() == value) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Mechanism rows that name something the recording leaves room for. A
+     * clock at exactly its window bound is excluded: the bound is the
+     * analysis's own parameter, so a witness that saturates it has been
+     * pushed there by the search rather than by the program.
+     */
+    private static JsonArray unsaturatedMechanisms(JsonObject valuation,
+                                                   long window) {
+        JsonArray named = new JsonArray();
+        if (valuation == null || !satisfied(valuation)) {
+            return named;
+        }
+        for (JsonElement element : array(valuation, "witnessMechanisms")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject mechanism = element.getAsJsonObject();
+            String kind = optionalString(mechanism, "kind");
+            if (kind.isEmpty() || "MARKER_FLIPPED".equals(kind)) {
+                continue;
+            }
+            if (mechanism.has("skewMillis")) {
+                long skew = Math.abs(optionalLongInteger(mechanism,
+                        "skewMillis", 0L));
+                if (skew >= window) {
+                    continue;
+                }
+            }
+            named.add(mechanism);
+        }
+        return named;
+    }
+
+    /** The blocker a non-determining marker justifies, or null. */
+    private static JsonObject faultMarkerBlocker(JsonObject evidence) {
+        List<String> undetermined = new ArrayList<>();
+        List<String> detail = new ArrayList<>();
+        for (JsonElement element : array(evidence, "markers")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject marker = element.getAsJsonObject();
+            if (optionalBool(marker, "determining", false)) {
+                continue;
+            }
+            undetermined.add(optionalString(marker, "sourceIdentity"));
+            detail.add(optionalString(marker, "portId")
+                    + ": recorded polarity "
+                    + (optionalBool(marker, "recordedPolaritySatisfiable",
+                            false) ? "sat" : "unsat")
+                    + ", flipped polarity "
+                    + (optionalBool(marker, "flippedPolaritySatisfiable",
+                            false) ? "sat" : "unsat")
+                    + ", "
+                    + array(marker, "otherPolarityMechanisms").size()
+                    + " mechanism(s) inside the recorded window");
+        }
+        if (undetermined.isEmpty()) {
+            return null;
+        }
+        return blocker(FAULT_MARKER_NOT_DETERMINING,
+                String.join(",", undetermined),
+                "the target is reachable in both polarities of "
+                        + undetermined.size() + " declared fault marker(s)"
+                        + " and no named mechanism inside the recorded window"
+                        + " explains the polarity without the fault: "
+                        + String.join("; ", detail));
+    }
+
+    /**
      * Decides the campaign claim from the Composer's manifest and the
      * reach-condition report, and names every blocker that withholds
      * acceptance.
@@ -557,6 +910,25 @@ public final class ClaimPolicy {
                             + String.join(", ", unrealizedFlows)));
         }
 
+        // A composition may publish a propagation gap and still be
+        // FINAL_READY with no refusal; the gap is then invisible to a caller
+        // that reads only finalStatusRefusals and the solver's own gaps. One
+        // such gap changes what a witness means, so it is read here.
+        JsonObject initialState = initialStateEvidence(manifest, reach);
+        JsonObject initialStateGap = initialStateBlocker(initialState);
+        if (initialStateGap != null) {
+            blockers.add(initialStateGap);
+        }
+
+        // An injected marker is the experiment's own hypothesis, so it is the
+        // root the verdict has to rest on. A rejected perturbation of some
+        // other root is evidence about that root and no answer about this one.
+        JsonObject faultMarkers = faultMarkerEvidence(manifest, reach);
+        JsonObject markerGap = faultMarkerBlocker(faultMarkers);
+        if (markerGap != null) {
+            blockers.add(markerGap);
+        }
+
         JsonObject witnessGap = witnessBlocker(valuations, probeConstrains);
         if (witnessGap != null) {
             blockers.add(witnessGap);
@@ -616,6 +988,9 @@ public final class ClaimPolicy {
                 consumerBoundaryArms(manifest));
         rootSpace.addProperty("realizedRegions",
                 realizedRegions(manifest).size());
+        rootSpace.add("initialState", initialState);
+        rootSpace.add("faultMarkers", faultMarkers);
+        rootSpace.add("probedRoot", probedRoot(reach));
         rootSpace.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
         result.add("rootSpace", rootSpace);
