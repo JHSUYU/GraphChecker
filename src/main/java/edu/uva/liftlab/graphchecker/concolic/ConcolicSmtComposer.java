@@ -3081,8 +3081,55 @@ public final class ConcolicSmtComposer {
             if (sort == Sort.REF) {
                 constrainAllocatedReference(executionScope,
                         referenceIdentity, witness.text);
+            } else if (!VmExpressionIr.isAllocatedArrayReference(raw)) {
+                constrainContainerSizeDomain(executionScope,
+                        semanticIdentity, witness);
             }
             return witness;
+        }
+
+        /**
+         * A VM-allocated Java container object holds a Java {@code int}
+         * number of elements, so its size is in
+         * {@code [0, Integer.MAX_VALUE]} whatever path reached it.
+         *
+         * <p>The codec already states this fact wherever a {@code size()}
+         * relation is lowered, but it states it as a container requirement,
+         * which the surrounding case carries as its own path precondition.
+         * A case the solver leaves unselected therefore states nothing about
+         * the witness, and an index derived from the size -- a binary-search
+         * midpoint is {@code (low + high) / 2} -- becomes division by an
+         * unbounded integer.  The fact belongs to the allocated container
+         * rather than to one path through it, so it is stated once and
+         * unguarded, exactly as the same witness's non-nullness is.</p>
+         *
+         * <p>An allocated array is excluded: the VM records its exact
+         * length, and every use of an array state carries that length as
+         * the state's own size.  Bounding the bare witness there would name
+         * a size term no constraint mentions.</p>
+         */
+        private void constrainContainerSizeDomain(String executionScope,
+                                                  String identity,
+                                                  Term witness) {
+            String accessor = witness.sort == Sort.ARRAY_VALUE
+                    ? "indexed_size" : witness.sort == Sort.MAP
+                    ? "assoc_size" : "";
+            if (accessor.isEmpty()) return;
+            JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                    JavaPrimitiveSmtSemantics.domainOfJavaType("I");
+            if (domain == null) return;
+            String size = "(" + accessor + " " + witness.text + ")";
+            String previousGuard = currentGuard;
+            currentGuard = "";
+            try {
+                assertNamed(smtSymbols.mint(
+                                "container_size_domain_",
+                                executionScope + "\u0000" + identity, 16),
+                        "(and (<= 0 " + size + ") (<= " + size + " "
+                                + domain.upper + "))");
+            } finally {
+                currentGuard = previousGuard;
+            }
         }
 
         /** A positive VM allocation id denotes a concrete, non-null oop. */

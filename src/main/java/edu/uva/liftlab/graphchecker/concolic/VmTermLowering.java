@@ -260,6 +260,16 @@ final class VmTermLowering {
      *  froze nullRef on either side of the Value datatype; inert to SMT. */
     static List<String> preamble(boolean nullRefBeforeValueDatatype) {
         List<String> lines = new ArrayList<>();
+        // Both lowerers spell Java integral arithmetic as two's-complement
+        // wrapping, so either query is dense in nested Int
+        // "mod 4294967296" terms over container sizes and indices.  Z3's
+        // default arithmetic engine does not close those, while its
+        // simplex-based one does, so a query names the engine it is meant
+        // to be read with rather than leaving a plain "z3 query.smt2" to
+        // diverge.  This selects a strategy; it does not change what the
+        // query says, and it belongs beside the encoding that provokes it
+        // rather than in one caller.
+        lines.add("(set-option :smt.arith.solver 2)");
         lines.add("(declare-sort Ref 0)");
         if (nullRefBeforeValueDatatype) {
             lines.add("(declare-const nullRef Ref)");
