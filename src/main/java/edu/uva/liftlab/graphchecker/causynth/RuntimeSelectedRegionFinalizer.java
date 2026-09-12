@@ -409,6 +409,15 @@ public final class RuntimeSelectedRegionFinalizer {
                 communicationCaptureOrdinals(activationsById.values());
         List<Map<String, Object>> flows = new ArrayList<>();
         Set<String> emitted = new LinkedHashSet<>();
+        // The wire transaction one exchange ran on -- Hadoop's IPC client id
+        // and call number, or a SASL negotiation uuid -- is minted fresh by
+        // the workload in every run.  It correlates a request with its own
+        // response and is kept for that, but it cannot name the edge: an
+        // ordinal counted per producing and consuming occurrence, port and
+        // direction says which exchange this is in terms the next recording
+        // of the same obligation reproduces.
+        Map<String, Map<String, Integer>> exchangeOrdinals =
+                new LinkedHashMap<>();
         for (Map<String, Object> link : occurrenceLinks == null
                 ? Collections.<Map<String, Object>>emptyList()
                 : occurrenceLinks) {
@@ -481,10 +490,12 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (!exactCapture) {
                     continue;
                 }
-                String identity = text(from.get("occurrenceId")) + "\n"
+                String exchangeSite = text(from.get("occurrenceId")) + "\n"
                         + text(exactTo.get("occurrenceId")) + "\n" + portId
-                        + "\n" + text(link.get("requestKey")) + "\n"
-                        + exchangeLeg;
+                        + "\n" + direction;
+                String identity = exchangeSite + "\n"
+                        + exchangeOrdinal(exchangeOrdinals, exchangeSite,
+                        text(link.get("requestKey")) + "\n" + exchangeLeg);
                 if (!emitted.add(identity)) continue;
                 stampOccurrenceOwnedPort(fromRegion, "outputs", sending,
                         text(from.get("occurrenceId")),
@@ -493,7 +504,7 @@ public final class RuntimeSelectedRegionFinalizer {
                         receiving, text(exactTo.get("occurrenceId")),
                         longNumber(link.get("receiverEventSeq"), -1L));
                 flows.add(exchangeProducerEdge(from, exactTo, link,
-                        receiving));
+                        receiving, identity));
             }
         }
         return flows;
@@ -670,15 +681,32 @@ public final class RuntimeSelectedRegionFinalizer {
         return null;
     }
 
+    /**
+     * Which exchange of one producing/consuming occurrence pair this is.
+     *
+     * <p>Counts the distinct wire transactions seen at {@code exchangeSite}
+     * in recorded order and answers the same ordinal every time one
+     * transaction is offered again, so a retry and its original keep the
+     * numbers they were first given.</p>
+     */
+    static int exchangeOrdinal(
+            Map<String, Map<String, Integer>> ordinals, String exchangeSite,
+            String transaction) {
+        Map<String, Integer> perSite = ordinals.computeIfAbsent(exchangeSite,
+                ignored -> new LinkedHashMap<>());
+        Integer existing = perSite.get(transaction);
+        if (existing != null) return existing;
+        int assigned = perSite.size() + 1;
+        perSite.put(transaction, assigned);
+        return assigned;
+    }
+
     /** One scheduling candidate for a recorded delivery of a declared port. */
     private static Map<String, Object> exchangeProducerEdge(
             Map<String, Object> from, Map<String, Object> to,
-            Map<String, Object> link, Map<String, Object> receiving) {
+            Map<String, Object> link, Map<String, Object> receiving,
+            String identity) {
         String portId = text(receiving.get("portId"));
-        String identity = text(from.get("occurrenceId")) + "\n"
-                + text(to.get("occurrenceId")) + "\n" + portId + "\n"
-                + text(link.get("requestKey")) + "\n"
-                + text(link.get("exchangeLeg"));
         Map<String, Object> edge = new LinkedHashMap<>();
         edge.put("schemaVersion", 3);
         edge.put("kind", "RUNTIME_PROTOCOL_FLOW");
@@ -1329,10 +1357,16 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> response, String transaction,
             String sourceKey, long faultEvent, long requestSend,
             long requestReceive, long responseSend, long responseReceive) {
+        // The response edge already names this exchange from content, and it
+        // names it more exactly than the wire transaction does: one logical
+        // request can be retried on several transactions and each attempt has
+        // its own response edge.  The transaction itself is the workload's
+        // per-run IPC id, so it is evidence on the edge and not part of its
+        // name.
         String identity = text(fault.get("occurrenceId")) + "\n"
                 + text(port.get("portId")) + "\n"
                 + text(consumer.get("occurrenceId")) + "\n"
-                + transaction + "\n" + text(response.get("edgeId"));
+                + text(response.get("edgeId"));
         Map<String, Object> edge = new LinkedHashMap<>();
         edge.put("schemaVersion", 3);
         edge.put("kind",
