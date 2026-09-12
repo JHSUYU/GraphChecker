@@ -28,7 +28,7 @@ import java.util.zip.GZIPInputStream;
 /**
  * Schema-free file operations shared by concolic command boundaries.
  */
-final class ArtifactIO {
+public final class ArtifactIO {
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     private ArtifactIO() {
@@ -56,7 +56,7 @@ final class ArtifactIO {
         return parsed.getAsJsonObject();
     }
 
-    static List<JsonObject> readJsonl(Path path) throws IOException {
+    public static List<JsonObject> readJsonl(Path path) throws IOException {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException("JSONL input not found: " + path);
         }
@@ -64,8 +64,9 @@ final class ArtifactIO {
                 "Non-object JSONL row %1$s:%2$d");
     }
 
-    static List<JsonObject> readJsonl(Path path, String malformedFormat,
-                                      String nonObjectFormat)
+    public static List<JsonObject> readJsonl(Path path,
+                                             String malformedFormat,
+                                             String nonObjectFormat)
             throws IOException {
         List<JsonObject> result = new ArrayList<>();
         try (BufferedReader reader = jsonlReader(path)) {
@@ -106,59 +107,13 @@ final class ArtifactIO {
         }
     }
 
-    static void replace(Path path, String value) throws IOException {
-        Path absolute = path.toAbsolutePath().normalize();
-        Path parent = absolute.getParent();
-        if (parent != null) Files.createDirectories(parent);
-        Path temporary = Files.createTempFile(parent,
-                "artifact-" + absolute.getFileName(), ".tmp");
-        try {
-            Files.write(temporary, utf8(value));
-            try {
-                Files.move(temporary, path,
-                        StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException unsupported) {
-                Files.move(temporary, path,
-                        StandardCopyOption.REPLACE_EXISTING);
-            }
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
-    }
-
-    static void replaceJsonl(Path path, Iterable<JsonObject> rows)
-            throws IOException {
-        Path absolute = path.toAbsolutePath().normalize();
-        Path parent = absolute.getParent();
-        if (parent != null) Files.createDirectories(parent);
-        Path temporary = Files.createTempFile(parent,
-                "artifact-" + absolute.getFileName(), ".tmp");
-        try {
-            try (BufferedWriter writer = Files.newBufferedWriter(temporary,
-                    StandardCharsets.UTF_8)) {
-                if (rows != null) {
-                    for (JsonObject row : rows) {
-                        writer.write(row.toString());
-                        writer.newLine();
-                    }
-                }
-            }
-            try {
-                Files.move(temporary, path,
-                        StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException unsupported) {
-                Files.move(temporary, path,
-                        StandardCopyOption.REPLACE_EXISTING);
-            }
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
-    }
-
-    /** Atomically streams one JSON document without building a second copy. */
-    static void replaceJson(Path path, JsonElement value, Gson writer)
+    /**
+     * One artifact write: a temporary sibling, the caller's bytes, then one
+     * atomic move onto the name.  A reader of the artifact never sees a
+     * partial write, and a write that fails leaves the previous artifact
+     * where it was rather than truncating it.
+     */
+    private static void atomicReplace(Path path, Body body)
             throws IOException {
         Path absolute = path.toAbsolutePath().normalize();
         Path parent = absolute.getParent();
@@ -168,8 +123,7 @@ final class ArtifactIO {
         try {
             try (BufferedWriter output = Files.newBufferedWriter(temporary,
                     StandardCharsets.UTF_8)) {
-                writer.toJson(value, output);
-                output.newLine();
+                body.writeTo(output);
             }
             try {
                 Files.move(temporary, path,
@@ -182,6 +136,36 @@ final class ArtifactIO {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    /** What one artifact's bytes are, given the staged file to write them to. */
+    private interface Body {
+        void writeTo(BufferedWriter output) throws IOException;
+    }
+
+    static void replace(Path path, String value) throws IOException {
+        atomicReplace(path, output -> output.write(value));
+    }
+
+    static void replaceJsonl(Path path, Iterable<JsonObject> rows)
+            throws IOException {
+        atomicReplace(path, output -> {
+            if (rows != null) {
+                for (JsonObject row : rows) {
+                    output.write(row.toString());
+                    output.newLine();
+                }
+            }
+        });
+    }
+
+    /** Atomically streams one JSON document without building a second copy. */
+    static void replaceJson(Path path, JsonElement value, Gson writer)
+            throws IOException {
+        atomicReplace(path, output -> {
+            writer.toJson(value, output);
+            output.newLine();
+        });
     }
 
     static Map<String, JsonObject> uniqueIndex(

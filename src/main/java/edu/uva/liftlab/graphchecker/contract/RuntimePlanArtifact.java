@@ -3,12 +3,10 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.concolic.ArtifactIO;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -143,29 +141,8 @@ public final class RuntimePlanArtifact {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException("runtime plan artifact not found: " + path);
         }
-        List<JsonObject> rows = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            int lineNumber = 0;
-            while ((line = reader.readLine()) != null) {
-                lineNumber++;
-                if (line.trim().isEmpty()) continue;
-                JsonElement parsed;
-                try {
-                    parsed = JsonParser.parseString(line);
-                } catch (RuntimeException malformed) {
-                    throw new IOException("malformed runtime plan " + path
-                            + ":" + lineNumber, malformed);
-                }
-                if (!parsed.isJsonObject()) {
-                    throw new IOException("non-object runtime plan row "
-                            + path + ":" + lineNumber);
-                }
-                rows.add(parsed.getAsJsonObject());
-            }
-        }
-        return rows;
+        return ArtifactIO.readJsonl(path, "malformed runtime plan %1$s:%2$d",
+                "non-object runtime plan row %1$s:%2$d");
     }
 
     private static JsonObject catalog(List<JsonObject> rows, Path path)
