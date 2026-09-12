@@ -116,7 +116,78 @@ public class InitialContainerSnapshotTest {
         assertEquals(-1L, SharedStateEvidence.initialSnapshotEntries(opaque));
     }
 
+    /**
+     * The observation walker reaches the state root through the chain.
+     *
+     * <p>A snapshotted carrier's reads stand on SNAPSHOT_BASE + one PUT per
+     * entry rather than on the bare root. If the walk stops at the first PUT,
+     * every read of a snapshotted container stops being an initial
+     * observation and its recorded concrete value cannot be replayed - the
+     * snapshot would cost the pipeline the replay it already had.</p>
+     */
+    @Test
+    public void theWalkerReachesTheRootThroughATwoPutChain() {
+        JsonObject overTheChain = read(rootedSnapshot(), constant(PRESENT_ONE));
+        InitialContainerObservation.Read walked =
+                InitialContainerObservation.initialRead(overTheChain);
+        assertNotNull(walked);
+        assertEquals("ASSOCIATIVE", walked.shape);
+        assertEquals(MAP_STATE_SYMBOL, walked.stateSymbol);
+        assertEquals(MAP_STATE_SYMBOL, walked.inputPort);
+        assertNotNull(walked.selector);
+
+        // The same read over the bare opaque root still answers, which is
+        // what a truncated snapshot leaves behind.
+        InitialContainerObservation.Read opaque =
+                InitialContainerObservation.initialRead(
+                        read(stateRoot(), constant(PRESENT_ONE)));
+        assertNotNull(opaque);
+        assertEquals(MAP_STATE_SYMBOL, opaque.stateSymbol);
+
+        // A CLEAR over the chain is still the same initial state.
+        JsonObject cleared = relation("CLEAR");
+        cleared.add("receiver", rootedSnapshot());
+        cleared.add("arguments", new JsonArray());
+        assertNotNull(InitialContainerObservation.initialRead(
+                read(cleared, constant(PRESENT_ONE))));
+    }
+
     // ---- the recorded shapes -------------------------------------------
+
+    /** The canonical whole-state identity the VM mints for a carrier. */
+    private static final String MAP_STATE_SYMBOL = "MAP_STATE.v1."
+            + "d88858a60a3a45e93323246272afba670de58ffdbfc904e049e22e9b"
+            + "dbeeb4cb";
+
+    private static JsonObject stateRoot() {
+        JsonObject identity = new JsonObject();
+        identity.addProperty("_type", "SymbolExpression");
+        identity.addProperty("_java_type", "L");
+        identity.addProperty("_exp", MAP_STATE_SYMBOL);
+        JsonObject root = relation("STATE");
+        root.add("receiver", identity);
+        root.add("arguments", new JsonArray());
+        return root;
+    }
+
+    /** SNAPSHOT_BASE over the real state root, then the two PUTs. */
+    private static JsonObject rootedSnapshot() {
+        JsonObject base = relation("SNAPSHOT_BASE");
+        base.add("receiver", stateRoot());
+        base.add("arguments", new JsonArray());
+        JsonObject state = base;
+        int[] keys = {PRESENT_ONE, PRESENT_TWO};
+        for (int index = 0; index < keys.length; index++) {
+            JsonObject put = relation("PUT");
+            put.add("receiver", state);
+            JsonArray arguments = new JsonArray();
+            arguments.add(constant(keys[index]));
+            arguments.add(reference(index + 1));
+            put.add("arguments", arguments);
+            state = put;
+        }
+        return state;
+    }
 
     private static JsonObject relation(String operation) {
         JsonObject relation = new JsonObject();

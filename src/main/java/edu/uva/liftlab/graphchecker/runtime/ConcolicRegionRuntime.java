@@ -1477,7 +1477,7 @@ public final class ConcolicRegionRuntime {
                         && wholeStateContainerValue(value)) {
                     // The runtime trace selected this exact access site and
                     // supplied the actual declaring-field receiver.
-                    selectSharedMapCarrier(value,
+                    selectSharedMapCarrier(value, leafOwner,
                             exactField.getDeclaringClass().getName(),
                             exactField.getName(), javaTypeDescriptor(
                             exactField.getType().getTypeName()));
@@ -5131,6 +5131,13 @@ public final class ConcolicRegionRuntime {
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
         final List<JsonObject> sharedStateGaps = new ArrayList<>();
+        /**
+         * Containers this activation selected as whole-state carriers and
+         * declined to state the initial content of. Telemetry, not a
+         * refusal: the opaque root that stays behind is already the honest
+         * answer, and the row says which containers it is honest about.
+         */
+        final List<JsonObject> initialSnapshotSkips = new ArrayList<>();
 
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;

@@ -47,6 +47,7 @@ final class ConcolicVmBroker {
     private Method symbolizeField;
     private Method symbolizeExactField;
     private Method trackContainer;
+    private Method snapshotContainer;
     private Method getExpression;
     private Method getFieldExpression;
     private Method finishRegion;
@@ -159,6 +160,21 @@ final class ConcolicVmBroker {
             throws Exception {
         return Boolean.TRUE.equals(trackContainer.invoke(
                 null, value, prefix));
+    }
+
+    /**
+     * States one container's exact content to the recorder, so the INITIAL
+     * version of a carrier over it is the content rather than an opaque root.
+     *
+     * <p>{@code kind} is 0 for an indexed container and 1 for a map; the
+     * members are the caller's, because the VM never iterates a Java
+     * collection itself. Must be called before the container is selected: the
+     * INITIAL version records what the state root already said.</p>
+     */
+    boolean snapshotContainer(Object container, Object[] keys,
+                              Object[] values, int kind) throws Exception {
+        return Boolean.TRUE.equals(snapshotContainer.invoke(
+                null, container, keys, values, kind));
     }
 
     String expression(Object value) throws Exception {
@@ -327,6 +343,9 @@ final class ConcolicVmBroker {
                 String.class);
         api.trackContainer = method(system, "trackContainerExpression",
                 Object.class, String.class);
+        api.snapshotContainer = method(system,
+                "snapshotContainerExpression", Object.class,
+                Object[].class, Object[].class, int.class);
         api.getExpression = method(system, "getSymbolicExpression",
                 Object.class);
         api.getFieldExpression = method(system,
