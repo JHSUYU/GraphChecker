@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
@@ -13,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import java.io.BufferedReader;
@@ -1313,14 +1315,18 @@ final class ConcolicTaskPlan {
                     continue;
                 }
                 JsonObject declaration = new JsonObject();
-                // A bounded-container demand on a Map field is a whole-state
-                // location, not a reference slot: declaring it as an
-                // instance field would version the reference and lose every
-                // entry transition the composer reads from.
+                // A bounded-container demand on a container field is a
+                // whole-state location, not a reference slot: declaring it
+                // as an instance field would version the reference and lose
+                // every state transition the composer reads from.  This
+                // holds for an indexed container exactly as it does for a
+                // map - a List field versioned as a pointer publishes one
+                // WRITE for its construction and nothing for any add or
+                // remove.
                 boolean mapState = "BOUNDED_CONTAINER_STATE".equals(
                         action.symbolicDemand)
                         && javaTypeDescriptor(field.type()).startsWith("L")
-                        && isMapType(field.type());
+                        && isWholeStateContainerType(field);
                 declaration.addProperty("kind", mapState
                         ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
                         : "INSTANCE_FIELD");
@@ -1359,6 +1365,19 @@ final class ConcolicTaskPlan {
                 selected = candidate;
             }
             return selected;
+        }
+
+        /**
+         * Whether a declared field type is a container whose whole state the
+         * VM versions, rather than a reference slot.
+         */
+        static boolean isWholeStateContainerType(DeclaredField field) {
+            if (field == null) return false;
+            // The map rule is the one this build always had, reflectively
+            // widened past the three names the planner lists.
+            return isMapType(field.type())
+                    || SharedFieldFlow.wholeStateCarrierField(field.owner(),
+                    field.name(), field.type());
         }
 
         /** Whether a declared field type is a Map the VM versions whole. */

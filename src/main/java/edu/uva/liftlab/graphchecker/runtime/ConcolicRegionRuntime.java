@@ -1473,7 +1473,7 @@ public final class ConcolicRegionRuntime {
                 if ("OBSERVED_FIELD_RECEIVER".equals(action.rootKind)
                         && "BOUNDED_CONTAINER_STATE".equals(
                         action.symbolicDemand)
-                        && value instanceof Map<?, ?>) {
+                        && wholeStateContainerValue(value)) {
                     // The runtime trace selected this exact access site and
                     // supplied the actual declaring-field receiver.
                     selectSharedMapCarrier(value,
@@ -1587,12 +1587,24 @@ public final class ConcolicRegionRuntime {
      * same-named receiver - taken one bytecode earlier, so the store's own
      * {@code putfield} publishes the writer's expression as a {@code WRITE}
      * version over a pre-write initial.</p>
+     *
+     * <p>The store site is the carrier's anchor.  A carrier selected here has
+     * no read in this activation to take a consumer site from, so without one
+     * it is a location no later session can name, and it fails closed at
+     * read-out instead of publishing its versions.  The store is an exact
+     * bytecode site and its activation-local occurrence is counted the same
+     * way a read's is, so it names the receiver exactly as well.</p>
      */
-    public static void selectFieldWriteCarrier(Object owner,
+    public static void selectFieldWriteCarrier(String method, int unitIndex,
+                                               Object owner,
                                                String fieldSignature) {
         ActiveRegion active = activeRegion();
         if (active == null || owner == null) return;
-        selectAccessOwnerSharedCarriers(active, owner, fieldSignature, null);
+        int occurrence = active.materializationOccurrences.fieldWrite(
+                method, unitIndex);
+        selectAccessOwnerSharedCarriers(active, owner, fieldSignature,
+                consumerAccessAnchor(active, method, unitIndex, occurrence,
+                        owner));
     }
 
     /** Records a stable logical source a live occurrence just entered. */
@@ -4031,6 +4043,23 @@ public final class ConcolicRegionRuntime {
         return true;
     }
 
+    /**
+     * Whether a live value is a container whose whole state one carrier can
+     * select, rather than a reference slot.
+     *
+     * <p>An array is excluded: its elements already have their own element
+     * locations, and selecting the array whole would name the same storage
+     * twice.  A set is excluded because no carrier this build declares
+     * versions one whole.</p>
+     */
+    private static boolean wholeStateContainerValue(Object value) {
+        return value != null && !value.getClass().isArray()
+                && (value instanceof Map<?, ?>
+                || value instanceof List<?>
+                || value instanceof Deque<?>
+                || value instanceof java.util.Queue<?>);
+    }
+
     private static boolean containerValue(Object value) {
         return value != null && (value.getClass().isArray()
                 || value instanceof Map<?, ?>
@@ -4890,6 +4919,22 @@ public final class ConcolicRegionRuntime {
             return observe("FIELD\u0000"
                     + SiteId.render(method, unitIndex));
         }
+
+        /**
+         * A store site counts in its own namespace: a read and a write at the
+         * same bytecode index are different accesses, and sharing one counter
+         * would give the second of them an occurrence its site never had.
+         *
+         * <p>{@code SiteId.render} and not {@code SiteId.of}: the
+         * instrumentation deliberately passes a {@code -1} unit index for an
+         * accessor implementation that has no unit of its own, and a strict
+         * parse of that sentinel throws inside the workload.</p>
+         */
+        int fieldWrite(String method, int unitIndex) {
+            return observe("FIELD_WRITE\u0000"
+                    + SiteId.render(method, unitIndex));
+        }
+
 
         private int observe(String key) {
             int occurrence = observed(key) + 1;

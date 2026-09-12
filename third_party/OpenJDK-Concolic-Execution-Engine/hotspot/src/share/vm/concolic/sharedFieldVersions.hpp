@@ -205,9 +205,19 @@ public:
     // Conjunction of the writer's path condition at the write, or NULL for the
     // empty conjunction (true).
     Expression *path_guard;
+    // Set only on the INITIAL version of a whole-state carrier the recorder
+    // was told the contents of.  `entries` is how many the container held;
+    // `truncated` says the snapshot was refused for holding too many, so the
+    // value above is still the opaque state root and a reader must treat the
+    // pre-selection contents as unknown rather than empty.
+    bool initial_snapshot_present;
+    int initial_snapshot_entries;
+    bool initial_snapshot_truncated;
     Version()
         : version_id(0), version_kind(VERSION_WRITE), writer_context_id(0),
-          region_enter_event_id(0), value(NULL), path_guard(NULL) {}
+          region_enter_event_id(0), value(NULL), path_guard(NULL),
+          initial_snapshot_present(false), initial_snapshot_entries(0),
+          initial_snapshot_truncated(false) {}
   };
 
   typedef std::vector<Version> VersionList;
@@ -346,6 +356,25 @@ public:
    * the location was already selected or is not addressable.
    */
   static jlong select_carrier(const Location &location, Expression *initial);
+
+  /**
+   * As above, recording what the INITIAL value says about the container's
+   * pre-selection contents: `entries` members if `truncated` is false, or
+   * that many members the snapshot bound refused to state if it is true.
+   */
+  static jlong select_carrier(const Location &location, Expression *initial,
+                              int snapshot_entries,
+                              bool snapshot_truncated);
+
+  /**
+   * Remembers that the initial-snapshot bound refused a container holding
+   * `entries` members, so the selection that follows can say so.  Cleared
+   * with the session.
+   */
+  static void note_refused_initial_snapshot(sym_rid_t owner, int entries);
+
+  /** Members the bound refused for `owner`, or -1 if it refused nothing. */
+  static int refused_initial_snapshot(sym_rid_t owner);
   static bool is_carrier(const Location &location);
 
   /**

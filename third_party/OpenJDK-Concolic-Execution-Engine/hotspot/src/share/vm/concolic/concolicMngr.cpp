@@ -12,12 +12,15 @@
 #include "memory/resourceArea.hpp"
 #include "oops/arrayKlass.hpp"
 #include "oops/objArrayOop.hpp"
+#include "runtime/arguments.hpp"
 #include "runtime/atomic.inline.hpp"
 #include "runtime/fieldDescriptor.hpp"
 #include "runtime/thread.hpp"
 #include "utilities/ostream.hpp"
 #include "utilities/vmError.hpp"
 
+#include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef ENABLE_CONCOLIC
@@ -608,6 +611,41 @@ bool ConcolicMngr::trackContainerExpression(
   return true;
 }
 
+// The initial-snapshot bound.  A concrete snapshot states one PUT/APPEND per
+// member, so a large container would put thousands of nodes into every
+// formula that mentions its initial state.  Past the bound the container
+// keeps its opaque state root and the refusal is recorded, so a reader learns
+// the contents are unknown rather than empty.
+//
+// `-Dcausynth.concolic.initial.snapshot.max` overrides it; a memoized
+// sentinel keeps zero configurable (zero means "never snapshot").
+static const int INITIAL_SNAPSHOT_MAX_UNRESOLVED = -1;
+static int _initial_snapshot_max = INITIAL_SNAPSHOT_MAX_UNRESOLVED;
+
+int ConcolicMngr::initialSnapshotMaxEntries() {
+  int resolved = _initial_snapshot_max;
+  if (resolved != INITIAL_SNAPSHOT_MAX_UNRESOLVED) return resolved;
+  resolved = 64;
+  const char *configured =
+      Arguments::get_property("causynth.concolic.initial.snapshot.max");
+  if (configured != NULL && *configured != '\0') {
+    char *tail = NULL;
+    errno = 0;
+    long value = strtol(configured, &tail, 10);
+    if (errno == 0 && tail != configured && tail != NULL && *tail == '\0'
+        && value >= 0 && value <= 1000000L) {
+      resolved = (int) value;
+    } else {
+      tty->print_cr("[causynth] ignoring"
+                    " causynth.concolic.initial.snapshot.max=%s"
+                    " (unparseable); keeping %d entries",
+                    configured, resolved);
+    }
+  }
+  _initial_snapshot_max = resolved;
+  return resolved;
+}
+
 bool ConcolicMngr::snapshotContainerExpression(
     Handle container, Handle keys, Handle values, jint kind) {
   if (!has_active_context() || container.is_null() || values.is_null()
@@ -678,6 +716,23 @@ bool ConcolicMngr::snapshotContainerExpression(
   // held, where CLEAR reports a Collection.clear() the program executed.  The
   // two carry separate op names so that a consumer can tell a recorded
   // observation from an observed program action.
+  // Past the bound the container keeps its opaque root.  Recording the
+  // refusal is the whole difference between "held nothing" and "held
+  // something this engine declined to state": a reader that cannot tell
+  // them apart would solve with an empty container.
+  const int entries = snapshot_values->length();
+  if (entries > initialSnapshotMaxEntries()) {
+    // Root the container before recording the refusal: the record is keyed
+    // by the canonical container id, and a container with no shadow has
+    // none.  Rooting is what the snapshot below does anyway, and what a
+    // selection of this container would do a moment later - the refusal
+    // withholds the contents, not the container's identity.
+    ctx->container_state(target, shape);
+    SharedFieldVersions::note_refused_initial_snapshot(
+        ctx->canonical_container_id(target), entries);
+    return true;
+  }
+
   exp_list_t no_arguments;
   Expression *initial = ctx->container_state(target, shape);
   Expression *state = new ContainerExpression(

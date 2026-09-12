@@ -69,7 +69,13 @@ public final class JavaContainerTypes {
                     "java.lang.Object poll()",
                     "java.lang.Object remove()",
                     "java.lang.Object remove(int)",
-                    "java.lang.Object set(int,java.lang.Object)")));
+                    "java.lang.Object set(int,java.lang.Object)",
+                    // Positional insertion and truncation return nothing, so
+                    // they reach a signature parser that once rejected every
+                    // void return.  They are still exact state transitions
+                    // the container algebra publishes (INSERT and CLEAR).
+                    "void add(int,java.lang.Object)",
+                    "void clear()")));
     private static final Set<String> MAP_MUTATORS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "java.lang.Object put(java.lang.Object,java.lang.Object)",
@@ -88,6 +94,27 @@ public final class JavaContainerTypes {
                     "java.lang.Object getValue()")));
 
     private JavaContainerTypes() {
+    }
+
+    /**
+     * The shape of one declared field type whose WHOLE state a selected
+     * carrier versions, or {@link Shape#NONE} when the field is a reference
+     * slot instead.
+     *
+     * <p>This is deliberately narrower than {@link #shape(String)}: arrays
+     * already have their own element locations, and a set is not versioned
+     * whole by any carrier this build selects.  It is also deliberately
+     * name-based rather than reflective, so the answer does not depend on
+     * which types happen to be loadable in the deciding JVM.</p>
+     */
+    public static Shape wholeStateShape(String type) {
+        String value = erase(normalize(type));
+        if (value.isEmpty() || value.startsWith("[")
+                || value.endsWith("[]")) {
+            return Shape.NONE;
+        }
+        if (INDEXED.contains(value)) return Shape.INDEXED;
+        return MAPS.contains(value) ? Shape.ASSOCIATIVE : Shape.NONE;
     }
 
     public static Shape shape(String type) {
@@ -189,6 +216,13 @@ public final class JavaContainerTypes {
                 0, value.length() - ".return".length()));
     }
 
+    /** Drops a generic argument list, which a declared type may carry. */
+    private static String erase(String type) {
+        String value = type == null ? "" : type.trim();
+        int generic = value.indexOf('<');
+        return generic < 0 ? value : value.substring(0, generic).trim();
+    }
+
     private static String normalize(String type) {
         String value = type == null ? "" : type.trim();
         if (value.startsWith("L") && value.endsWith(";")) {
@@ -219,9 +253,12 @@ public final class JavaContainerTypes {
             if (separator <= 0 || separator + 1 >= subsignature.length()) {
                 return null;
             }
-            String returnType = subsignature.substring(0, separator);
-            return "void".equals(returnType) ? null
-                    : new MethodSignature(
+            // A void return is not a parse failure.  Every result-bearing
+            // predicate matches against a set whose members all name their
+            // return type, so a void subsignature can only match an
+            // operation that is genuinely declared void - today the indexed
+            // mutators add(int,E) and clear().
+            return new MethodSignature(
                     normalize(value.substring(1, ownerEnd)),
                     subsignature);
         }

@@ -3635,6 +3635,14 @@ public final class ConcolicSmtComposer {
                 }
 
                 @Override
+                public boolean preserveContainerIdentity(
+                        JsonElement expression,
+                        ContainerSmtCodec.Sort expected) {
+                    return ContainerSmtCodec
+                            .evidencedContainerIdentity(expression);
+                }
+
+                @Override
                 public ContainerSmtCodec.Term operand(
                         JsonElement expression,
                         ContainerSmtCodec.Sort expected) {
@@ -4426,6 +4434,24 @@ public final class ConcolicSmtComposer {
                         + " " + left.text + " " + right.text + ")",
                         Sort.BOOL).withPrecondition(defined);
             }
+            if (left.sort != right.sort
+                    && (left.sort == Sort.VALUE) != (right.sort == Sort.VALUE)
+                    && !"==".equals(operator) && !"!=".equals(operator)) {
+                // Exactly one side is a boxed container cell.  Arithmetic and
+                // ordering on it are operations on the element's declared
+                // type, not on the tagged transport value, so unbox by that
+                // type rather than refusing the pair.  Reference cells and
+                // cells of unknown type come back unchanged and fall into the
+                // refusal below.
+                if (left.sort == Sort.VALUE) {
+                    left = fromValue(left, VmTermLowering.expressionJavaType(
+                            expression.get("_left")));
+                } else {
+                    right = fromValue(right,
+                            VmTermLowering.expressionJavaType(
+                                    expression.get("_right")));
+                }
+            }
             if (left.sort != right.sort) {
                 unsupported.add("BinarySortConflict:" + operator + ":"
                         + left.sort + "!=" + right.sort);
@@ -4456,6 +4482,40 @@ public final class ConcolicSmtComposer {
                         return dependent(Term.of("!=".equals(operator)
                                 ? "false" : "true", Sort.BOOL),
                                 left, right);
+                    }
+                    // One side a String literal decides this by content.
+                    //
+                    // Java's == on Strings is reference identity, and a
+                    // literal is interned, so `lit == x` holds exactly when
+                    // x is that interned object.  Content equality is the
+                    // same relation over the values the other side can
+                    // actually take: it is a recorded expression, so every
+                    // value in its range is a String this execution really
+                    // produced, and two equal Strings in one interning pool
+                    // are one object.  HDFS's own SerialNumberManager
+                    // string table is exactly this comparison, and refusing
+                    // it discarded the whole formula around it.
+                    //
+                    // With no literal on either side the relation is still
+                    // reference identity between two unknown objects, which
+                    // content equality would genuinely over-approximate, so
+                    // that stays refused.
+                    Term literalSide = stringLiteral(
+                            expression.get("_left")) != null ? left
+                            : stringLiteral(expression.get("_right")) != null
+                            ? right : null;
+                    if (literalSide != null) {
+                        Term symbolSide = literalSide == left ? right : left;
+                        String equality = ContainerSmtCodec
+                                .materializedStringEquality(left.text,
+                                        right.text,
+                                        symbolSide.stringNullness);
+                        if (!equality.isEmpty()) {
+                            return dependent(Term.of("!=".equals(operator)
+                                            ? "(not " + equality + ")"
+                                            : equality, Sort.BOOL),
+                                    left, right);
+                        }
                     }
                     unsupported.add("MODEL_SEMANTICS_MISSING:"
                             + "JAVA_STRING_REFERENCE_IDENTITY:"
@@ -5104,6 +5164,56 @@ public final class ConcolicSmtComposer {
             regionSummary(selection);
         }
 
+        /**
+         * Unboxes one container cell back to the Java sort it holds.
+         *
+         * <p>A container read answers a tagged {@code Value}, and Java
+         * arithmetic or comparison on the element that read produced is an
+         * ordinary operation on the element's declared type -
+         * {@code Collections.binarySearch}'s {@code (low + high) >>> 1} over
+         * a selected list is the shape that reaches here.  Refusing the
+         * mixed sort drops the whole comparison, so the declared element
+         * type decides, and the cell's own tag is required alongside.</p>
+         *
+         * <p>A cell whose declared type names no primitive sort is returned
+         * untouched, so the caller still refuses it.  That deliberately
+         * includes a reference element: {@code (VRef nullRef)} is also what
+         * a refused guarded read leaves behind, and unboxing that would turn
+         * a visible refusal into a formula built on a term that means
+         * nothing.</p>
+         */
+        private Term fromValue(Term value, String javaType) {
+            if (value == null || value.sort != Sort.VALUE) return value;
+            String kind = ContainerSmtCodec.unboxableCellKind(javaType);
+            if (kind.isEmpty()) return value;
+            String defined = and(Arrays.asList(value.precondition,
+                    "((_ is " + kind + ") " + value.text + ")"));
+            String integral = ContainerSmtCodec.unboxIntegral(
+                    value.text, javaType);
+            if (!integral.isEmpty()) {
+                return Term.of(integral, Sort.INT,
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(javaType))
+                        .withPrecondition(defined);
+            }
+            if ("VBool".equals(kind)) {
+                return Term.of("(valueBool " + value.text + ")", Sort.BOOL)
+                        .withPrecondition(defined);
+            }
+            if ("VFloat".equals(kind)) {
+                return Term.of("(valueFloat " + value.text + ")",
+                        Sort.FLOAT32).withPrecondition(defined);
+            }
+            if ("VDouble".equals(kind)) {
+                return Term.of("(valueDouble " + value.text + ")",
+                        Sort.FLOAT64).withPrecondition(defined);
+            }
+            if ("VString".equals(kind)) {
+                return Term.nonNullString("(valueString " + value.text + ")",
+                        defined);
+            }
+            return value;
+        }
+
         /** Boxes a primitive term for container and reference expressions. */
         private Term asValue(Term term, String javaType) {
             if (term.sort == Sort.VALUE) return term;
@@ -5544,9 +5654,18 @@ public final class ConcolicSmtComposer {
      */
     static Sort guardedReadSort(JsonObject node, Sort expected,
                                 Collection<Sort> armSorts) {
-        String effectiveType = guardedReadJavaType(node);
-        Sort result = sortOfJava(effectiveType);
-        if (result == Sort.VALUE) result = expected;
+        // A read whose value IS the container - the cursor a traversal
+        // starts from, or a map view - answers the container's own sort.
+        // The VM records the erased reference type L for such a read and
+        // that erasure resolves to REF, which contradicts every arm: the
+        // arms lower to the states they really are and the read was lowered
+        // as a reference, so each one read as a sort conflict and the whole
+        // traversal of a selected container was refused.
+        Sort result = containerValuedReadSort(node);
+        if (result == null) {
+            result = sortOfJava(guardedReadJavaType(node));
+            if (result == Sort.VALUE) result = expected;
+        }
 
         Collection<Sort> candidates = armSorts == null
                 ? Collections.emptyList() : armSorts;
@@ -5558,6 +5677,19 @@ public final class ConcolicSmtComposer {
             if (candidate == null || candidate != result) return null;
         }
         return result;
+    }
+
+    /** The container sort a read of a whole container answers, or null. */
+    /** The exact String one operand is a literal for, or null. */
+    private static String stringLiteral(JsonElement expression) {
+        return VmExpressionIr.exactStringLiteral(expression,
+                type -> sortOfJava(type) == Sort.STRING);
+    }
+
+    private static Sort containerValuedReadSort(JsonObject node) {
+        String shape = ContainerSmtCodec.containerValuedReadShape(node);
+        return "INDEXED".equals(shape) ? Sort.ARRAY_VALUE
+                : "ASSOCIATIVE".equals(shape) ? Sort.MAP : null;
     }
 
     private static String guardedReadJavaType(JsonObject node) {

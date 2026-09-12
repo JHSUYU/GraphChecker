@@ -79,6 +79,22 @@ std::string unsupported(const char *category,
 // each of them does is the store's own one-counter early-out, so an unselected
 // workload keeps exactly its old cost.
 
+// Members a recorded initial snapshot states, or 0 when `state` is not one.
+//
+// A snapshot is a SNAPSHOT_BASE base with one PUT/APPEND per member, which
+// is the same node shape every later state version uses, so counting the
+// chain down to its base is exactly counting what the snapshot said.
+int snapshot_entry_count(Expression *state);
+
+// Whether this container's whole state may be selected as one carrier.
+//
+// Two conditions, and both are about not lying about the writer set.  An
+// array is refused because its elements already have their own
+// LOC_ARRAY_ELEMENT locations, and a class no model intercepts is refused
+// because its mutations would run concretely and publish no version at all -
+// a selected location whose writer set looks complete while it is not.
+bool whole_state_selectable(oop container);
+
 // Where this container's whole state lives, or an invalid location when it
 // has no shadow.  A view answers its owner's location: one logical container
 // is one location.  Allocates nothing.

@@ -141,17 +141,19 @@ public final class SharedStateEvidence {
      * the operations are the ones the container support publishes -
      * {@code PUT}, {@code REMOVE}, {@code REMOVE_IF}, {@code CLEAR},
      * {@code REMOVE_AT} and {@code CLEAR_VIEW} for a map, {@code ADD},
-     * {@code REMOVE} and {@code CLEAR} for a set.  An operation missing here
-     * is not a tolerated unknown: one unadmitted version fails the whole
-     * envelope, so the location loses every version it published and each
-     * read of it reaches the formula with no read-from arm.
+     * {@code REMOVE} and {@code CLEAR} for a set, and {@code APPEND},
+     * {@code INSERT}, {@code WRITE}, {@code REMOVE} and {@code CLEAR} for an
+     * indexed container.  An operation missing here is not a tolerated
+     * unknown: one unadmitted version fails the whole envelope, so the
+     * location loses every version it published and each read of it reaches
+     * the formula with no read-from arm.
      * {@code REMOVE_IF} represents an iterator removal controlled by a
      * recorded branch predicate.</p>
      */
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
             "RMW", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
             "STATE_CLEAR", "STATE_REMOVE_AT", "STATE_CLEAR_VIEW",
-            "STATE_ADD");
+            "STATE_ADD", "STATE_APPEND", "STATE_INSERT", "STATE_WRITE");
     /** The version kind every location may publish, whatever its shape. */
     private static final String INITIAL_VERSION_KIND = "INITIAL";
     private SharedStateEvidence() {
@@ -319,6 +321,23 @@ public final class SharedStateEvidence {
         } catch (NumberFormatException invalid) {
             return 0L;
         }
+    }
+
+    /**
+     * Whether one expression node is the STATE root of a container whose
+     * whole state a carrier versions.
+     *
+     * <p>Both whole-state shapes answer yes.  An indexed root that answered
+     * no would keep its session-local symbol instead of the content address
+     * runtime carrier evidence gives it, and one logical container would
+     * then be a different witness in every replay session.</p>
+     */
+    public static boolean isWholeStateRoot(JsonObject node) {
+        if (node == null) return false;
+        String shape = optionalString(node, "shape");
+        return "ContainerRelation".equals(optionalString(node, "_type"))
+                && "STATE".equals(optionalString(node, "operation"))
+                && ("ASSOCIATIVE".equals(shape) || "INDEXED".equals(shape));
     }
 
     /** Whether {@code locationKey} names one selected map's whole state. */
@@ -542,6 +561,11 @@ public final class SharedStateEvidence {
 
         Map<RuntimeMapOwner, RuntimeMapIdentitySet> identities =
                 new LinkedHashMap<>();
+        // Owners a carrier record names, which is what "selected" means
+        // here.  A container the VM merely tracked is referenced by its
+        // state root without ever having been selected, and owes no
+        // identity at all.
+        Set<RuntimeMapOwner> selectedOwners = new LinkedHashSet<>();
         IdentityHashMap<JsonObject, Set<RuntimeMapOwner>> subjects =
                 new IdentityHashMap<>();
         List<MapRecordBinding> records = new ArrayList<>();
@@ -567,6 +591,7 @@ public final class SharedStateEvidence {
                 }
                 RuntimeMapOwner key = new RuntimeMapOwner(scope, session,
                         owner);
+                selectedOwners.add(key);
                 subjects.computeIfAbsent(summary,
                         ignored -> new LinkedHashSet<>()).add(key);
                 RuntimeMapIdentitySet set = identities.computeIfAbsent(key,
@@ -610,6 +635,17 @@ public final class SharedStateEvidence {
             for (RuntimeMapOwner owner : referenced) {
                 RuntimeMapIdentitySet set = identities.get(owner);
                 if (uniqueIdentity(set) != null) continue;
+                if (!selectedOwners.contains(owner)) {
+                    // Nothing selected this container, so no writer set was
+                    // ever claimed for it and there is no identity to be
+                    // missing.  Its state root stays the VM-local
+                    // structural witness it already is - an existential
+                    // witness of the recorded run, scoped per replay
+                    // session exactly like an allocated array's.  Demanding
+                    // a carrier identity of it held every worklist that
+                    // merely mentions an untracked container open.
+                    continue;
+                }
                 boolean ambiguous = set != null
                         && (set.identities.size() > 1
                         || !set.identities.isEmpty()
@@ -658,9 +694,7 @@ public final class SharedStateEvidence {
                 continue;
             }
             JsonObject node = current.getAsJsonObject();
-            if ("ContainerRelation".equals(optionalString(node, "_type"))
-                    && "ASSOCIATIVE".equals(optionalString(node, "shape"))
-                    && "STATE".equals(optionalString(node, "operation"))) {
+            if (isWholeStateRoot(node)) {
                 JsonObject receiver = object(node, "receiver");
                 if ("SymbolExpression".equals(
                         optionalString(receiver, "_type"))) {

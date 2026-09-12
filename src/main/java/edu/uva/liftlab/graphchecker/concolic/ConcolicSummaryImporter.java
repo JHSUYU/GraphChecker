@@ -507,10 +507,8 @@ public final class ConcolicSummaryImporter {
         }
 
         JsonObject object = source.getAsJsonObject();
-        boolean mutableStateReceiver = "ContainerRelation".equals(
-                optionalString(object, "_type"))
-                && "ASSOCIATIVE".equals(optionalString(object, "shape"))
-                && "STATE".equals(optionalString(object, "operation"));
+        boolean mutableStateReceiver =
+                SharedStateEvidence.isWholeStateRoot(object);
         JsonObject copy = null;
         int index = 0;
         for (Map.Entry<String, JsonElement> field : object.entrySet()) {

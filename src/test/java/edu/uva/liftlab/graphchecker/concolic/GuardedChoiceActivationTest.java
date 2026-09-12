@@ -85,6 +85,66 @@ public class GuardedChoiceActivationTest {
     }
 
     /**
+     * Writers of one shared read may sit in different planned occurrences,
+     * and last-writer-wins still decides between them.
+     *
+     * <p>HDFS-17960 is exactly this shape: {@code snapshotDeletionOrdered}
+     * and the snapshot list are written in one occurrence of
+     * {@code SnapshotManager.isSnapshotDeletionOrdered} and read in another,
+     * and in {@code getNumSnapshots} - the target's own read.  The arm keys
+     * are already per writer CASE, and a case belongs to one occurrence, so
+     * nothing about the ordering had to change for arms to span occurrences;
+     * this pins that.</p>
+     */
+    @Test
+    public void lastWriterWinsSpansWriterOccurrences() throws Exception {
+        Assume.assumeTrue(z3Available());
+        // Two writers in different planned occurrences, observed in order.
+        List<String> selectors = Arrays.asList("initial_arm",
+                "occurrence_one_arm", "occurrence_two_arm");
+        List<String> activity = Arrays.asList("initial_case",
+                "occurrence_one_case", "occurrence_two_case");
+        List<String> axioms = ConcolicSmtComposer.lastWriterWins(selectors,
+                activity);
+
+        StringBuilder model = new StringBuilder(declarations("initial_arm",
+                "occurrence_one_arm", "occurrence_two_arm", "initial_case",
+                "occurrence_one_case", "occurrence_two_case"));
+        model.append("(declare-const value Int)\n")
+                .append(assertion(ConcolicSmtComposer.conditionalExactlyOne(
+                        "true", selectors)))
+                .append(assertion("(=> initial_arm (= value 0))"))
+                .append(assertion("(=> occurrence_one_arm"
+                        + " (and occurrence_one_case (= value 1)))"))
+                .append(assertion("(=> occurrence_two_arm"
+                        + " (and occurrence_two_case (= value 2)))"))
+                .append(assertion("(=> initial_arm initial_case)"));
+        for (String axiom : axioms) {
+            if (!axiom.isEmpty()) model.append(assertion(axiom));
+        }
+
+        // Both occurrences wrote, so the reader observes the later one.
+        assertEquals("unsat", solve(model + assertion("(= value 1)")
+                + assertion("occurrence_one_case")
+                + assertion("occurrence_two_case")));
+        assertEquals("sat", solve(model + assertion("(= value 2)")
+                + assertion("occurrence_one_case")
+                + assertion("occurrence_two_case")));
+        // Flipping the later occurrence's case condition falls back to the
+        // earlier occurrence's value rather than to the initial one.
+        assertEquals("sat", solve(model + assertion("(= value 1)")
+                + assertion("occurrence_one_case")
+                + assertion("(not occurrence_two_case)")));
+        assertEquals("unsat", solve(model + assertion("(= value 0)")
+                + assertion("occurrence_one_case")
+                + assertion("(not occurrence_two_case)")));
+        // With neither occurrence's case holding, the read is the initial.
+        assertEquals("sat", solve(model + assertion("(= value 0)")
+                + assertion("(not occurrence_one_case)")
+                + assertion("(not occurrence_two_case)")));
+    }
+
+    /**
      * A container read's arms must differ where the mutations between their
      * versions differ.  A writer arm that lowers to the untouched INITIAL
      * state's own expression has lost its PUT/REMOVE chain, and the container
