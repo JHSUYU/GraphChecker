@@ -8,6 +8,7 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
@@ -1308,21 +1309,56 @@ public final class ConcolicRegionRuntime {
         return boxedValue;
     }
 
+    /**
+     * The frozen actions that model one firing of a named fault marker.
+     *
+     * <p>The classification lives on {@code sourceKind}: the finalizer stamps
+     * it there when it mints the port
+     * ({@code RuntimeSelectedRegionFinalizer.explicitFaultPorts}).  Nothing
+     * writes it into {@code symbolicDemand}, which carries the scheduler's
+     * selection verdict for the same action and is either absent or
+     * {@code WORKLOAD_DECLARED_SYMBOLIC_FAULT} for a fault, so reading the
+     * demand here matched nothing and pinned every marker to {@code false}.
+     * </p>
+     *
+     * <p>A marker literal is one call site, so two in-scope requests inside
+     * one activation are two recorded firings with two roots.  The recorded
+     * {@code replayOccurrence} is what tells them apart; without it both rows
+     * answer to the name and the firing resolves to nothing.  More than one
+     * survivor is still ambiguous and the caller refuses.</p>
+     */
+    static List<SymbolizeAction> explicitFaultCandidates(
+            Collection<SymbolizeAction> actions, String name,
+            int occurrence) {
+        List<SymbolizeAction> candidates = new ArrayList<>();
+        for (SymbolizeAction action : actions == null
+                ? Collections.<SymbolizeAction>emptyList() : actions) {
+            if (!RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
+                    .equals(action.sourceKind)
+                    || !safe(name).equals(action.symbolicName)
+                    || !action.acceptsOccurrence(occurrence)) {
+                continue;
+            }
+            candidates.add(action);
+        }
+        return candidates;
+    }
+
     /** Returns the replay model for one explicitly named application fault. */
     public static boolean materializeSymbolicBoolean(String name) {
         ActiveRegion active = activeRegion();
         if (active == null) return false;
-        SymbolizeAction selected = null;
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (!"EXPLICIT_SYMBOLIC_FAULT".equals(action.symbolicDemand)
-                    || !safe(name).equals(action.symbolicName)) continue;
-            if (selected != null) {
-                active.addUnresolvedOnce("ambiguous explicit fault: " + name);
-                return false;
-            }
-            selected = action;
+        int occurrence = active.materializationOccurrences.explicitFault(
+                name);
+        List<SymbolizeAction> candidates = explicitFaultCandidates(
+                active.activation.symbolize, name, occurrence);
+        if (candidates.size() > 1) {
+            active.addUnresolvedOnce("ambiguous explicit fault: " + name
+                    + "#" + occurrence);
+            return false;
         }
-        if (selected == null) return false;
+        if (candidates.isEmpty()) return false;
+        SymbolizeAction selected = candidates.get(0);
         ModelAssignment assignment = active.assignment(selected, null);
         if (assignment == null) return false;
         Object value = coerceModelValue(assignment.valueType,
@@ -4960,6 +4996,18 @@ public final class ConcolicRegionRuntime {
                     + SiteId.render(method, unitIndex));
         }
 
+        /**
+         * A workload-declared fault marker counts per activation and per
+         * declared symbol.  The recorder counts the same firings per
+         * activation and per call site
+         * ({@code RuntimeRefinedGraphBuilder.collectAccessorBindings}); one
+         * marker literal names one call site, so the two ordinals agree and
+         * {@code replayOccurrence} selects the exact recorded firing.
+         */
+        int explicitFault(String symbolicName) {
+            return observe("EXPLICIT_FAULT\u0000" + safe(symbolicName));
+        }
+
 
         private int observe(String key) {
             int occurrence = observed(key) + 1;
@@ -5995,6 +6043,8 @@ public final class ConcolicRegionRuntime {
         final String accessorDeclaredCallee;
         final String accessorImplementationMethod;
         final String symbolicDemand;
+        /** How the finalizer classified the port that minted this action. */
+        final String sourceKind;
         /** The selection file named this input by hand: mint, do not reuse. */
         final boolean declaredSymbolicRoot;
         final String rootKind;
@@ -6051,6 +6101,7 @@ public final class ConcolicRegionRuntime {
             this.accessorImplementationMethod = optionalString(json,
                     "accessorImplementationMethod");
             this.symbolicDemand = optionalString(json, "symbolicDemand");
+            this.sourceKind = optionalString(json, "sourceKind");
             this.declaredSymbolicRoot = optionalBool(json,
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
             this.rootKind = optionalString(json, "rootKind");

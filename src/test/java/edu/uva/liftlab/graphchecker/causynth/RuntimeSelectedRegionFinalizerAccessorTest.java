@@ -9,6 +9,7 @@ import org.junit.Test;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -158,16 +159,33 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 occurrence + "\n" + portId));
     }
 
-    @Test
-    public void exactRequestTransactionSelectsOnlyItsFaultOccurrence() {
-        String faultOccurrence = "source/region/REGION.fault#1";
+    private static final String FAULT_OCCURRENCE =
+            "source/region/REGION.fault#1";
+    private static final String CONSUMER_OCCURRENCE =
+            "source/region/REGION.consumer#1";
+    private static final String TARGET_OCCURRENCE =
+            "target/region/REGION.target#1";
+    private static final String TARGET_FAULT_OCCURRENCE =
+            "target/region/REGION.fault#1";
+    private static final String TARGET_STATE_OCCURRENCE =
+            "target/region/REGION.consumer#1";
+    private static final List<String> TWO_SIDED_FAULT_RETAINED =
+            Arrays.asList("RPC.response", "RPC.target-input",
+                    "RPC.target-state-response");
+
+    /**
+     * One request whose response supplies the value the fatal target checks,
+     * and one request on the target's own node whose response maintains
+     * target-local state.  Both fire the same fault marker.
+     */
+    private static StaticProgram twoSidedFaultProgram() {
+        String faultOccurrence = FAULT_OCCURRENCE;
         String unrelatedOccurrence = "source/region/REGION.fault#2";
         String earlyOccurrence = "source/region/REGION.fault#3";
-        String consumerOccurrence = "source/region/REGION.consumer#1";
-        String targetOccurrence = "target/region/REGION.target#1";
-        String targetFaultOccurrence = "target/region/REGION.fault#1";
-        String targetStateOccurrence =
-                "target/region/REGION.consumer#1";
+        String consumerOccurrence = CONSUMER_OCCURRENCE;
+        String targetOccurrence = TARGET_OCCURRENCE;
+        String targetFaultOccurrence = TARGET_FAULT_OCCURRENCE;
+        String targetStateOccurrence = TARGET_STATE_OCCURRENCE;
         StaticProgram program = new StaticProgram();
         program.activations.put(faultOccurrence, activation(
                 "AF", "REGION.fault", faultOccurrence, "source", 10L));
@@ -244,7 +262,11 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 "attemptId", "1",
                 "senderEventSeq", 9L,
                 "receiverEventSeq", 10L));
-        List<Map<String, Object>> links = Arrays.asList(
+        return program;
+    }
+
+    private static List<Map<String, Object>> twoSidedFaultLinks() {
+        return Arrays.asList(
                 requestLink("AF", "exchange\n1\nREQUEST", "REQUEST.1",
                         1L, 3L),
                 requestLink("AE", "exchange\n1\nREQUEST", "REQUEST.1",
@@ -253,11 +275,25 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                         11L, 13L),
                 requestLink("TF", "target-state\n1\nREQUEST",
                         "REQUEST.target-state", 6L, 8L));
+    }
+
+    /**
+     * The upstream rule on its own.  The target's own state-maintenance
+     * request fires the same marker and is refused, because nothing in the
+     * recording says its response writes a location the fatal read depends
+     * on.  That is what keeps the rule off every request the target happens
+     * to have made.
+     */
+    @Test
+    public void exactRequestTransactionSelectsOnlyItsFaultOccurrence() {
+        String faultOccurrence = FAULT_OCCURRENCE;
+        String consumerOccurrence = CONSUMER_OCCURRENCE;
+        StaticProgram program = twoSidedFaultProgram();
+        List<Map<String, Object>> links = twoSidedFaultLinks();
 
         List<Map<String, Object>> controls = RuntimeSelectedRegionFinalizer
                 .exactRequestFaultControlEdges(program,
-                        Arrays.asList("RPC.response", "RPC.target-input",
-                                "RPC.target-state-response"), links);
+                        TWO_SIDED_FAULT_RETAINED, links);
 
         assertEquals(1, controls.size());
         Map<String, Object> control = controls.get(0);
@@ -291,6 +327,79 @@ public class RuntimeSelectedRegionFinalizerAccessorTest {
                 .exactRequestFaultControlEdges(program,
                         Arrays.asList("RPC.response", "RPC.target-input"),
                         links).isEmpty());
+    }
+
+    /**
+     * The target-side rule.  The same state-maintenance request is admitted
+     * once the recording shows its response on the write chain the fatal read
+     * depends on -- here the consumer it delivers into writes the location
+     * the fatal target reads.  Failing it idles that writer, which leaves the
+     * location at the arm written before the request: a control on the
+     * failure in the same sense as controlling the checked value is.
+     */
+    @Test
+    public void targetStateMaintenanceFaultIsAdmittedWhenItIdlesAFatalWriter() {
+        StaticProgram program = twoSidedFaultProgram();
+        program.regionEdges.add(fieldFlow("SF.target-state",
+                TARGET_STATE_OCCURRENCE, TARGET_OCCURRENCE,
+                "REGION.target.in.allKeys", "example.Owner#allKeys"));
+        List<String> retained = new ArrayList<>(TWO_SIDED_FAULT_RETAINED);
+        retained.add("SF.target-state");
+
+        List<Map<String, Object>> controls = RuntimeSelectedRegionFinalizer
+                .exactRequestFaultControlEdges(program, retained,
+                        twoSidedFaultLinks());
+
+        Map<String, String> controlledByFault = new LinkedHashMap<>();
+        for (Map<String, Object> control : controls) {
+            controlledByFault.put(
+                    String.valueOf(control.get("fromOccurrenceId")),
+                    String.valueOf(control.get("toOccurrenceId")));
+        }
+        assertEquals(2, controls.size());
+        assertEquals(CONSUMER_OCCURRENCE,
+                controlledByFault.get(FAULT_OCCURRENCE));
+        assertEquals(TARGET_STATE_OCCURRENCE,
+                controlledByFault.get(TARGET_FAULT_OCCURRENCE));
+
+        // The chain is transitive over the retained heap flow, so a delivery
+        // one hop further back is admitted on the same evidence.
+        StaticProgram indirect = twoSidedFaultProgram();
+        indirect.activations.put("target/region/REGION.writer#1",
+                activation("TW", "REGION.writer",
+                        "target/region/REGION.writer#1", "target", 70L));
+        indirect.regionEdges.add(fieldFlow("SF.hop-one",
+                "target/region/REGION.writer#1", TARGET_OCCURRENCE,
+                "REGION.target.in.allKeys", "example.Owner#allKeys"));
+        indirect.regionEdges.add(fieldFlow("SF.hop-two",
+                TARGET_STATE_OCCURRENCE, "target/region/REGION.writer#1",
+                "REGION.writer.in.decoded", "example.Owner#decoded"));
+        List<String> indirectRetained =
+                new ArrayList<>(TWO_SIDED_FAULT_RETAINED);
+        indirectRetained.add("SF.hop-one");
+        indirectRetained.add("SF.hop-two");
+
+        assertEquals(2, RuntimeSelectedRegionFinalizer
+                .exactRequestFaultControlEdges(indirect, indirectRetained,
+                        twoSidedFaultLinks()).size());
+
+        // Evidence the closure did not retain is no evidence: an unretained
+        // write chain leaves the state-maintenance fault refused.
+        assertEquals(1, RuntimeSelectedRegionFinalizer
+                .exactRequestFaultControlEdges(twoSidedFaultProgramWith(
+                        fieldFlow("SF.target-state", TARGET_STATE_OCCURRENCE,
+                                TARGET_OCCURRENCE,
+                                "REGION.target.in.allKeys",
+                                "example.Owner#allKeys")),
+                        TWO_SIDED_FAULT_RETAINED,
+                        twoSidedFaultLinks()).size());
+    }
+
+    private static StaticProgram twoSidedFaultProgramWith(
+            Map<String, Object> extraEdge) {
+        StaticProgram program = twoSidedFaultProgram();
+        program.regionEdges.add(extraEdge);
+        return program;
     }
 
     @Test

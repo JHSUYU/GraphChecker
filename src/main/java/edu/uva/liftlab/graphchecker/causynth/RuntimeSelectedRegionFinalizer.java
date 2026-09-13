@@ -1222,7 +1222,10 @@ public final class RuntimeSelectedRegionFinalizer {
                 ? Collections.<String>emptyList() : retainedEdgeIds);
         Set<String> targetInputProducerSources =
                 targetRequestProducerSources(program, retained);
-        if (targetInputProducerSources.isEmpty()) {
+        Set<String> fatalSharedLocationWriters =
+                fatalSharedLocationWriters(program, retained);
+        if (targetInputProducerSources.isEmpty()
+                && fatalSharedLocationWriters.isEmpty()) {
             return Collections.emptyList();
         }
         Map<String, Map<String, Object>> activationsById =
@@ -1294,10 +1297,23 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (fault == null
                         || !"EXPLICIT_FAULT_ENTRY".equals(
                         text(fault.get("rootAuthority")))
-                        || !targetInputProducerSources.contains(
-                        activationSourceKey(fault))
                         || !consumerSource.equals(
                         activationSourceKey(fault))) {
+                    continue;
+                }
+                // Two admission rules, either of which states a control on
+                // the observed failure.  The first is the upstream one: the
+                // failed request's node produced the value the target
+                // checked.  The second is the target's own side: the failed
+                // request's response is what writes -- through the recorded
+                // heap chain -- a shared location the fatal read depends on,
+                // so idling it leaves that location at the arm the recording
+                // wrote before the request.  The same-node test above holds
+                // for both: a request is only failable where it is sent.
+                if (!targetInputProducerSources.contains(
+                        activationSourceKey(fault))
+                        && !fatalSharedLocationWriters.contains(
+                        consumerOccurrence)) {
                     continue;
                 }
                 String faultOccurrence = text(fault.get("occurrenceId"));
@@ -1338,11 +1354,16 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /**
      * Sources that supplied a demanded request value directly to an observed
-     * failure target.  A fault on the target's state-maintenance traffic can
-     * also precede the failure, but it does not control the upstream value the
-     * target is checking.  Restricting request controls to these producer
-     * sources keeps the exact upstream chain without admitting every
-     * successful request that happened to initialize target-local state.
+     * failure target.  This is the first of the two request-control admission
+     * rules: a fault on one of these nodes controls the upstream value the
+     * target is checking.
+     *
+     * <p>It is not the only way a request failure controls the failure.  A
+     * target predicate that compares an incoming value against target-local
+     * state has that state as its other operand, and the target's own
+     * state-maintenance traffic is what writes it.  That case is admitted by
+     * {@link #fatalSharedLocationWriters} instead, so neither rule has to
+     * admit every successful request that happened to touch the target.</p>
      */
     private static Set<String> targetRequestProducerSources(
             StaticProgram program, Set<String> retainedEdgeIds) {
@@ -1375,6 +1396,66 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return result;
+    }
+
+    /**
+     * Occurrences whose recorded delivery lands on the write chain the fatal
+     * read depends on.
+     *
+     * <p>Walks the retained heap flow backwards from the observed failure
+     * target.  Every {@code RUNTIME_FIELD_FLOW} edge the closure kept names
+     * one shared location the reader demanded and one occurrence that wrote
+     * it, so the transitive closure of those edges is exactly the recorded
+     * write chain behind the fatal read, and nothing else on the node.</p>
+     *
+     * <p>A response delivered into a member of this set maintains the other
+     * operand of the failure's own predicate -- a membership test such as
+     * {@code allKeys.get(id) == null} reads the container the delivery
+     * fills.  Idling that delivery therefore leaves the location at the arm
+     * the recording wrote before the request, which is a control on the
+     * failure in the same sense as controlling the checked value is.  The
+     * demand is read off the recording, so a request whose response writes
+     * nothing the fatal read depends on stays out.</p>
+     */
+    private static Set<String> fatalSharedLocationWriters(
+            StaticProgram program, Set<String> retainedEdgeIds) {
+        Map<String, Set<String>> writersByReader = new LinkedHashMap<>();
+        for (Map<String, Object> edge : program.regionEdges) {
+            if (!retainedEdgeIds.contains(text(edge.get("edgeId")))
+                    || !"RUNTIME_FIELD_FLOW".equals(text(edge.get("kind")))
+                    || text(edge.get(SharedFieldFlow.EDGE_LOCATION))
+                    .isEmpty()) {
+                continue;
+            }
+            String reader = text(edge.get("toOccurrenceId"));
+            String writer = text(edge.get("fromOccurrenceId"));
+            if (reader.isEmpty() || writer.isEmpty()
+                    || reader.equals(writer)) {
+                continue;
+            }
+            writersByReader.computeIfAbsent(reader,
+                    ignored -> new LinkedHashSet<>()).add(writer);
+        }
+        Deque<String> pending = new ArrayDeque<>();
+        for (Map.Entry<String, Map<String, Object>> entry
+                : program.activations.entrySet()) {
+            Map<String, Object> activation = entry.getValue();
+            if (!text(activation.get("selection")).startsWith("EXCEPTION")
+                    || rows(activation.get("observedFatalTargets"))
+                    .isEmpty()) {
+                continue;
+            }
+            pending.addLast(entry.getKey());
+        }
+        Set<String> writers = new LinkedHashSet<>();
+        while (!pending.isEmpty()) {
+            for (String writer : writersByReader.getOrDefault(
+                    pending.removeFirst(),
+                    Collections.<String>emptySet())) {
+                if (writers.add(writer)) pending.addLast(writer);
+            }
+        }
+        return writers;
     }
 
     private static Map<String, Object> requestFaultControlEdge(
