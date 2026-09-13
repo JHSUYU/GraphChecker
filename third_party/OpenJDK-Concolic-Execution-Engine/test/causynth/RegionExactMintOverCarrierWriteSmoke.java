@@ -51,9 +51,12 @@ public final class RegionExactMintOverCarrierWriteSmoke {
         // The mint is a version too: INITIAL, the application write, the
         // mint.  A read of the carrier resolves over all three and the mint
         // is one of its arms.
+        // One writerContextId per version entry; the envelope's expression
+        // table also serializes a read's candidate fieldVersionIds, so that
+        // key is not a version count.
         String versions = System.getSharedFieldVersions(
                 holder, Holder.class.getName(), "serial", "I");
-        require(count(versions, "\"fieldVersionId\"") == 3, versions);
+        require(count(versions, "\"writerContextId\"") == 3, versions);
         require(versions.contains("M_I_field_MINT.SERIAL"), versions);
         Sink sink = new Sink();
         sink.value = holder.serial;
@@ -72,7 +75,7 @@ public final class RegionExactMintOverCarrierWriteSmoke {
         require(again.contains("\"_exp\":\"M_I_field_MINT.AGAIN"), again);
         require(count(System.getSharedFieldVersions(holder,
                 Holder.class.getName(), "serial", "I"),
-                "\"fieldVersionId\"") == 4, "second mint published no version");
+                "\"writerContextId\"") == 4, "second mint published no version");
 
         // The by-name form keeps the invariant: an existing expression is
         // never overwritten by it.
