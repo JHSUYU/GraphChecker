@@ -59,6 +59,12 @@ public final class CommunicationCatalogContract {
     public static final String CAPTURE_METHOD_RETURN = "METHOD_RETURN";
     public static final String PORT_ARGUMENT_INDEX = "argumentIndex";
     public static final String PORT_DEFINITION_METHOD = "definitionMethod";
+    /**
+     * The method whose one call builds one instance of the value a port
+     * belongs to -- the frame leaves of that port are addressed within.
+     * Optional: a port that names none is addressed within its RPC message.
+     */
+    public static final String PORT_FRAME_METHOD = "frameMethod";
     public static final String PORT_DEFINITION_UNIT_INDEX =
             "definitionUnitIndex";
 

@@ -98,9 +98,9 @@ final class WireFlowCatalog {
                     "wire flow requires id, transport, REQUEST/RESPONSE and javaType");
         }
         CaptureSite producer = CaptureSite.parse(object(row, PRODUCER),
-                methods);
+                methods, frameMethod(row, "producerFrameMethod", methods));
         CaptureSite consumer = CaptureSite.parse(object(row, CONSUMER),
-                methods);
+                methods, frameMethod(row, "consumerFrameMethod", methods));
         if (!javaType.equals(producer.javaType)
                 || !javaType.equals(consumer.javaType)) {
             throw new IllegalArgumentException("wire endpoint types differ for "
@@ -109,6 +109,28 @@ final class WireFlowCatalog {
         }
         return new WireFlow(id, transport, direction, javaType,
                 producer, consumer);
+    }
+
+    /**
+     * One side's declared frame method, or "".
+     *
+     * <p>A port is one pair of bytecode sites and a protocol sends many
+     * unrelated values of that shape through it.  The frame method is the one
+     * whose single call builds one instance of the value the port belongs to,
+     * so the leaves of that instance are addressed within it and two groups of
+     * the same shape in one message stay apart.  Declaring none is allowed and
+     * means the RPC message itself is the frame.</p>
+     */
+    private static String frameMethod(JsonObject row, String name,
+                                      Map<String, SootMethod> methods) {
+        String declared = string(row, name);
+        if (declared.isEmpty()) return "";
+        SootMethod method = methods.get(declared);
+        if (method == null || !method.isConcrete()) {
+            throw new IllegalArgumentException(
+                    "frame method did not resolve: " + declared);
+        }
+        return declared;
     }
 
     private static JsonObject object(JsonObject row, String name) {
@@ -207,20 +229,23 @@ final class WireFlowCatalog {
         final String callee;
         final int unitIndex;
         final String javaType;
+        final String frameMethod;
 
         private CaptureSite(String method, String kind, int index,
                             String callee, int unitIndex,
-                            String javaType) {
+                            String javaType, String frameMethod) {
             this.method = method;
             this.kind = kind;
             this.index = index;
             this.callee = callee;
             this.unitIndex = unitIndex;
             this.javaType = javaType;
+            this.frameMethod = frameMethod;
         }
 
         private static CaptureSite parse(JsonObject row,
-                                         Map<String, SootMethod> methods) {
+                                         Map<String, SootMethod> methods,
+                                         String frameMethod) {
             String methodName = string(row, "method");
             String kind = string(row, "kind").toUpperCase();
             int index = integer(row, "index", -1);
@@ -238,7 +263,8 @@ final class WireFlowCatalog {
                             "METHOD_PARAMETER requires only a valid index");
                 }
                 return new CaptureSite(methodName, kind, index, "", -1,
-                        method.getParameterType(index).toString());
+                        method.getParameterType(index).toString(),
+                        frameMethod);
             }
             if (METHOD_RETURN.equals(kind)) {
                 if (index >= 0 || !callee.isEmpty() || occurrence >= 0
@@ -247,7 +273,7 @@ final class WireFlowCatalog {
                             "METHOD_RETURN takes no selector");
                 }
                 return new CaptureSite(methodName, kind, -1, "", -1,
-                        method.getReturnType().toString());
+                        method.getReturnType().toString(), frameMethod);
             }
             if (!(CALL_ARGUMENT.equals(kind) || CALL_RETURN.equals(kind))
                     || callee.isEmpty() || occurrence < 0
@@ -291,7 +317,7 @@ final class WireFlowCatalog {
                         + methodName + " -> " + callee + " #" + occurrence);
             }
             return new CaptureSite(methodName, kind, index, callee,
-                    unitIndex, type.toString());
+                    unitIndex, type.toString(), frameMethod);
         }
 
         String siteId() {
@@ -304,6 +330,10 @@ final class WireFlowCatalog {
             row.put(CommunicationCatalogContract.CALL_SITE_ID, siteId());
             row.put(CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                     method);
+            if (!frameMethod.isEmpty()) {
+                row.put(CommunicationCatalogContract.PORT_FRAME_METHOD,
+                        frameMethod);
+            }
             row.put(CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
                     kind);
             if (unitIndex >= 0) {

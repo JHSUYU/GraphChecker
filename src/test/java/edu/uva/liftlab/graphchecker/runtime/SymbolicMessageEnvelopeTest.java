@@ -124,7 +124,74 @@ public class SymbolicMessageEnvelopeTest {
     /** A wire this vocabulary did not write is refused, not guessed at. */
     @Test(expected = IllegalArgumentException.class)
     public void anOlderWireIsRefused() {
-        SymbolicMessageEnvelope.installInbound("CSE3;cG9ydA,1,dA,bw,Yw");
+        SymbolicMessageEnvelope.installInbound("CSE3;cG9ydA,1,dA,bw,Yw,0");
+    }
+
+    /**
+     * Two groups of the same shape in one message do not run together.
+     *
+     * <p>The frame is the thing whose one construction builds one instance of
+     * the value the port belongs to.  Without it a receiver decoding the
+     * second group would take the first group's leaves; with it each group's
+     * elements are counted inside their own frame.</p>
+     */
+    @Test
+    public void aFrameKeepsTwoGroupsOfOneShapeApart() {
+        SymbolicMessageEnvelope.pushOutboundFrame();
+        stage(PORT, 11L);
+        stage(PORT, 12L);
+        SymbolicMessageEnvelope.popOutboundFrame();
+        SymbolicMessageEnvelope.pushOutboundFrame();
+        stage(PORT, 21L);
+        stage(PORT, 22L);
+        SymbolicMessageEnvelope.popOutboundFrame();
+        SymbolicMessageEnvelope.installInbound(
+                SymbolicMessageEnvelope.takeOutbound());
+
+        SymbolicMessageEnvelope.pushInboundFrame();
+        assertEquals(11L, SymbolicMessageEnvelope.take(PORT).handle());
+        assertEquals(12L, SymbolicMessageEnvelope.take(PORT).handle());
+        assertFalse("a frame holds only its own elements",
+                SymbolicMessageEnvelope.take(PORT).present());
+        SymbolicMessageEnvelope.popInboundFrame();
+
+        SymbolicMessageEnvelope.pushInboundFrame();
+        assertEquals(21L, SymbolicMessageEnvelope.take(PORT).handle());
+        assertEquals(22L, SymbolicMessageEnvelope.take(PORT).handle());
+        SymbolicMessageEnvelope.popInboundFrame();
+        assertEquals(0, SymbolicMessageEnvelope.inboundUnattached());
+    }
+
+    /** A decode that opens fewer frames leaves the rest unclaimed, by name. */
+    @Test
+    public void aFrameNobodyDecodesLeavesItsElementsUnclaimed() {
+        SymbolicMessageEnvelope.pushOutboundFrame();
+        stage(PORT, 11L);
+        SymbolicMessageEnvelope.popOutboundFrame();
+        SymbolicMessageEnvelope.pushOutboundFrame();
+        stage(PORT, 21L);
+        SymbolicMessageEnvelope.popOutboundFrame();
+        SymbolicMessageEnvelope.installInbound(
+                SymbolicMessageEnvelope.takeOutbound());
+
+        SymbolicMessageEnvelope.pushInboundFrame();
+        assertEquals(11L, SymbolicMessageEnvelope.take(PORT).handle());
+        SymbolicMessageEnvelope.popInboundFrame();
+
+        assertEquals(1, SymbolicMessageEnvelope.inboundUnattached());
+    }
+
+    /** A port that declares no frame is addressed within the message. */
+    @Test
+    public void anUnframedPortIsAddressedWithinTheMessage() {
+        stage(PORT, 11L);
+        stage(PORT, 22L);
+        SymbolicMessageEnvelope.installInbound(
+                SymbolicMessageEnvelope.takeOutbound());
+
+        assertEquals(0, SymbolicMessageEnvelope.peek(PORT).frame());
+        assertEquals(11L, SymbolicMessageEnvelope.take(PORT).handle());
+        assertEquals(22L, SymbolicMessageEnvelope.take(PORT).handle());
     }
 
     private static void stage(String portId, long handle) {

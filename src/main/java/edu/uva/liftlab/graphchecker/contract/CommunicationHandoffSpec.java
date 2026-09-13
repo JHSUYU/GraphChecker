@@ -24,6 +24,7 @@ public final class CommunicationHandoffSpec {
     private final String side;
     private final String captureKind;
     private final String method;
+    private final String frameMethod;
     private final String declaredCallee;
     private final int unitIndex;
     private final int argumentIndex;
@@ -40,6 +41,8 @@ public final class CommunicationHandoffSpec {
         captureKind = optionalString(row, CAPTURE_KIND);
         method = optionalString(row,
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD);
+        frameMethod = optionalString(row,
+                CommunicationCatalogContract.PORT_FRAME_METHOD);
         declaredCallee = optionalString(row,
                 CommunicationCatalogContract.DECLARED_CALLEE);
         unitIndex = optionalInteger(row,
@@ -100,6 +103,12 @@ public final class CommunicationHandoffSpec {
     public String side() { return side; }
     public String captureKind() { return captureKind; }
     public String method() { return method; }
+
+    /**
+     * The method whose one call builds one instance of the value this port
+     * belongs to, or "" when the port is framed by its RPC message.
+     */
+    public String frameMethod() { return frameMethod; }
     public String declaredCallee() { return declaredCallee; }
     public int unitIndex() { return unitIndex; }
     public int argumentIndex() { return argumentIndex; }

@@ -2260,6 +2260,60 @@ public final class ConcolicRegionRuntime {
     // ------------------------------------------------------------------
 
     /**
+     * Opens the frame around one message instance being serialized.
+     *
+     * <p>A declared port is one pair of bytecode sites, and a protocol sends
+     * many unrelated values of that shape through it.  The frame is the thing
+     * whose single construction builds one instance of the value the port
+     * belongs to; leaves staged inside it are addressed within it, so two
+     * groups of the same shape in one message stay apart.</p>
+     */
+    public static void pushOutboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.pushOutboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /** Closes the frame {@link #pushOutboundMessageFrame} opened. */
+    public static void popOutboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.popOutboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
+     * Opens the frame around one message instance being decoded.
+     *
+     * <p>The mirror of {@link #pushOutboundMessageFrame}: the receiver counts
+     * its frames the way the sender counted theirs, so the k-th frame means
+     * the same thing on both sides without either naming the other.</p>
+     */
+    public static void pushInboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.pushInboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /** Closes the frame {@link #pushInboundMessageFrame} opened. */
+    public static void popInboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.popInboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
      * Exports the live expression of one declared communication port.
      *
      * <p>The value arrives on a {@link HandoffLeafCarrier} the

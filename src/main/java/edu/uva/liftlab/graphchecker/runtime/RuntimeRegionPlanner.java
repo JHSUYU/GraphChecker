@@ -1923,6 +1923,7 @@ final class RuntimeRegionPlanner {
                 CommunicationCatalogContract.PORT_DIRECTION,
                 CommunicationCatalogContract.PORT_JAVA_TYPE,
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD,
+                CommunicationCatalogContract.PORT_FRAME_METHOD,
                 CommunicationCatalogContract.DECLARED_CALLEE}) {
             String value = stringValue(port.get(field));
             if (!value.isEmpty()) site.put(field, value);

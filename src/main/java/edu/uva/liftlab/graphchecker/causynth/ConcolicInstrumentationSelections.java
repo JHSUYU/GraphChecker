@@ -176,6 +176,12 @@ public final class ConcolicInstrumentationSelections {
             // received.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
                 methods.add(site.method());
+                // The frame is the one call that builds one instance of the
+                // value the port belongs to; without its own body woven the
+                // leaves inside it have nothing to be addressed within.
+                if (!site.frameMethod().isEmpty()) {
+                    methods.add(site.frameMethod());
+                }
             }
             // A declaration may live in a small helper called by the region
             // root.
