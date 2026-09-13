@@ -41,6 +41,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionShadowStackLifecycleSmoke.java \
   test/causynth/RegionSymbolicKeySourceSmoke.java \
   test/causynth/RegionSharedReadFromSmoke.java \
+  test/causynth/RegionExactMintOverCarrierWriteSmoke.java \
   test/causynth/RegionNestedRegionArmedReadSmoke.java \
   test/causynth/RegionStringContainsApiSmoke.java \
   test/causynth/RegionStringConversionApiSmoke.java \
@@ -79,6 +80,7 @@ for smoke in \
   RegionShadowStackLifecycleSmoke \
   RegionSymbolicKeySourceSmoke \
   RegionSharedReadFromSmoke \
+  RegionExactMintOverCarrierWriteSmoke \
   RegionNestedRegionArmedReadSmoke \
   RegionStringContainsApiSmoke \
   RegionStringConversionApiSmoke \
