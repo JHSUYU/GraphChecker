@@ -6,7 +6,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.ToNumberPolicy;
-import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
@@ -22,7 +21,6 @@ import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
@@ -30,10 +28,7 @@ import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 
 import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -85,13 +80,10 @@ final class RuntimeRegionPlanner {
     }
 
     /** Binds static region skeletons to the activations a run performed. */
-    static Result planSkeletonGraph(File skeletonFile,
+    static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
                                     List<RuntimeEvent> runtimeEvents,
                                     List<ProtocolEvent> protocolEvents) {
-        List<StaticProgram.RegionRow> skeletons = StaticProgram.regionRows(
-                read(skeletonFile),
-                RuntimeSelectedRegionFinalizer.SKELETON_KIND, skeletonFile);
         // The recorded call sites are part of this index, not an extra: the
         // across-cut attribution below asks which call site opened a frame,
         // and that answer lives in the CALL_SITE_ENTER events.
@@ -999,7 +991,6 @@ final class RuntimeRegionPlanner {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();
-        result.staticRegionCount = regions.size();
         Map<String, StaticProgram.RegionRow> regionById =
                 new LinkedHashMap<>();
         for (StaticProgram.RegionRow region : StaticProgram.regionRows(
@@ -1081,18 +1072,15 @@ final class RuntimeRegionPlanner {
             // did not retain carries none.
             String occurrenceId = stringValue(seed.get("occurrenceId"));
             if (occurrenceId.isEmpty()) continue;
-            String recordedActivationId = recordedActivationKey(root);
-            String seededActivationId = stringValue(seed.get(
-                    "activationId"));
-            if (!seededActivationId.isEmpty()
-                    && !seededActivationId.equals(recordedActivationId)) {
+            // planSkeletonGraph mints the recorded call identity once and
+            // stamps it on the seed; this stage reads it rather than
+            // spelling a second one to check the first against.
+            String exactActivationId = stringValue(seed.get("activationId"));
+            if (exactActivationId.isEmpty()) {
                 throw new IllegalArgumentException("runtime activation seed "
-                        + "disagrees with the recorded call identity: "
-                        + seededActivationId + " != "
-                        + recordedActivationId);
+                        + "carries no recorded call identity: " + regionId
+                        + "#call" + rootCallId);
             }
-            String exactActivationId = seededActivationId.isEmpty()
-                    ? recordedActivationId : seededActivationId;
             List<String> enclosingActivationIds = new ArrayList<>(
                     new LinkedHashSet<>(strings(seed.get(
                             "enclosingActivationIds"))));
@@ -1107,28 +1095,6 @@ final class RuntimeRegionPlanner {
                         + "has no retained activation seeds: " + regionId);
             }
             if (!retainedOccurrences.contains(occurrenceId)) continue;
-            // Runtime fixes the activation and the concrete sink.
-            Map<String, Object> activation = new LinkedHashMap<>();
-            activation.put("schemaVersion", 3);
-            activation.put("kind", "RUNTIME_REGION_ACTIVATION");
-            activation.put("activationId", exactActivationId);
-            if (!enclosingActivationIds.isEmpty()) {
-                activation.put("enclosingActivationIds",
-                        new ArrayList<>(enclosingActivationIds));
-            }
-            activation.put("regionId", region.regionId);
-            activation.put("occurrenceId", occurrenceId);
-            activation.put("rootCallId", root.callId);
-            activation.put("rootMethod", root.method);
-            activation.put("selection", region.selection);
-            activation.put("test", root.test);
-            activation.put("thread", root.threadName);
-            activation.put("threadId", root.tid);
-            putTraceContext(activation, root);
-            activation.put("callIds", new ArrayList<>(calls));
-            activation.put("observedMethods",
-                    new ArrayList<>(observedMethods));
-            result.runtimeInstances.add(activation);
             OccurrenceMinter.bindOccurrence(region.json, rootCallId,
                     occurrenceId);
             OccurrenceMinter.bindEdges(regionEdges, regionId, rootCallId,
@@ -1944,12 +1910,6 @@ final class RuntimeRegionPlanner {
                 stringValue(port.get("portId")));
     }
 
-    private static void putTraceContext(Map<String, Object> target,
-                                        MethodEvent event) {
-        putTraceContext(target, event, source(event));
-        putRecordedTraceIds(target, event);
-    }
-
     /** The semantic source and request this row belongs to. */
     private static void putTraceContext(Map<String, Object> target,
                                         MethodEvent event,
@@ -2565,25 +2525,9 @@ final class RuntimeRegionPlanner {
             }
         }
 
-        /** Admits one row of the runtime-refined graph, refusing any other
-         * graph the caller may have handed over. */
-        private void admitRefinedRow(
-                Map<String, Object> row, File graph) {
-            if (row == null
-                    || number(row.get("schemaVersion"), -1) != 3
-                    || number(row.get("refinementSchemaVersion"), -1) != 1
-                    || !"RUNTIME_REFINED_DATAFLOW".equals(
-                    stringValue(row.get("graphKind")))) {
-                throw new IllegalArgumentException(
-                        "concolic planning requires the "
-                                + "runtime-refined graph: " + graph);
-            }
-            FlowEdge edge = FlowEdge.decode(row);
-            if (edge != null) {
-                addEdge(edge);
-            }
-        }
-
+        /** Indexes the rows the graph refiner produced.  The refiner stamps
+         * the refined schema on every row it emits, so this stage indexes
+         * that output rather than re-checking the stamp row by row. */
         private static RefinedFlowIndex build(
                 List<Map<String, Object>> rows, File graph) {
             RefinedFlowIndex result = new RefinedFlowIndex();
@@ -2591,7 +2535,10 @@ final class RuntimeRegionPlanner {
             for (Map<String, Object> row : rows == null
                     ? Collections.<Map<String, Object>>emptyList() : rows) {
                 count++;
-                result.admitRefinedRow(row, graph);
+                FlowEdge edge = FlowEdge.decode(row);
+                if (edge != null) {
+                    result.addEdge(edge);
+                }
             }
             if (count == 0) {
                 throw new IllegalArgumentException(
@@ -3030,18 +2977,6 @@ final class RuntimeRegionPlanner {
         private SliceStep(FlowEdge edge, SliceNode towardSink) {
             this.edge = edge;
             this.towardSink = towardSink;
-        }
-    }
-
-    static List<Map<String, Object>> read(File file) {
-        if (file == null || !file.isFile()) {
-            throw new IllegalArgumentException("artifact is missing: " + file);
-        }
-        try {
-            return MapFields.readRows(file);
-        } catch (IOException failure) {
-            throw new IllegalArgumentException("cannot read " + file,
-                    failure);
         }
     }
 
