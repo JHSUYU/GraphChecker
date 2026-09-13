@@ -475,6 +475,11 @@ public final class ConcolicInstrumentationSelections {
      * Soot to expose to the VM.
      */
     static final class ConcolicMaterializationSelection {
+        /** Refusal verdict: a static final field is a replay-wide constant. */
+        static final String STATIC_CONSTANT = "STATIC_CONSTANT";
+        /** Refusal verdict: static shared state this pipeline cannot carry. */
+        static final String STATIC_FIELD_UNSUPPORTED =
+                "STATIC_FIELD_UNSUPPORTED";
         private static final String ATOMIC_INTEGER_VALUE =
                 "<java.util.concurrent.atomic.AtomicInteger: int value>";
         private static final String ATOMIC_LONG_VALUE =
@@ -829,17 +834,24 @@ public final class ConcolicInstrumentationSelections {
                     && carrierSites.getOrDefault(unitIndex,
                     Collections.emptySet()).contains(fieldKey);
             boolean sharedCarrier = sharedCarrierFields.contains(fieldKey);
+            boolean namedTarget = namedFieldTarget(owner, fieldName);
             if (!writeCarrier && field.isStatic()) {
-                // Static references have no receiver object for the shared
-                // carrier hook. Only the exact primitive read has a supported
-                // static materializer; explicit symbolic fields are checked
-                // separately below.
-                sharedCarrier = field.type() instanceof PrimType
-                        && exactCarrierRead;
+                // A getstatic has no receiver object, so MATERIALIZE_FIELD
+                // cannot stand at it: the only static read this pipeline can
+                // materialize is the primitive round trip on the local that
+                // consumed it. The rule governs BOTH authorities. Letting a
+                // field named by a plan action through here handed
+                // instrumentConsumedStaticPrimitiveFieldRead a site it could
+                // only refuse, and the refusal killed the campaign -- it is
+                // how a byte[] constant read reached the instrumenter at all.
+                return field.type() instanceof PrimType
+                        && (exactCarrierRead || namedTarget);
             }
-            if (sharedCarrier) {
-                return true;
-            }
+            return sharedCarrier || namedTarget;
+        }
+
+        /** Whether a plan action named this field, ignoring its shape. */
+        private boolean namedFieldTarget(String owner, String fieldName) {
             for (FieldTarget target : fields.values()) {
                 if (target.name.equals(fieldName)
                         && (target.owner.isEmpty()
@@ -848,6 +860,44 @@ public final class ConcolicInstrumentationSelections {
                 }
             }
             return false;
+        }
+
+        /**
+         * The verdict for one selected static field read the instrumenter
+         * cannot materialize, or {@code ""} when there is nothing to refuse.
+         *
+         * <p>A {@code static final} field is a constant: nothing inside the
+         * replayed process writes it, so it carries no shared state and
+         * concretizing it deletes no evidence.  A static NON-final field is
+         * shared state, and refusing it is a real coverage gap over the
+         * dependency the plan selected it for -- so the two are reported
+         * apart rather than under one "unsupported" name.</p>
+         */
+        String staticMaterializationRefusal(
+                String method, int unitIndex, SootFieldRef field) {
+            if (field == null || !field.isStatic()
+                    || field.type() instanceof PrimType) {
+                return "";
+            }
+            SootField declared = CausynthStaticFacts.declaredField(field);
+            SootClass declaringClass = declared == null
+                    ? field.declaringClass() : declared.getDeclaringClass();
+            String owner = declaringClass == null ? ""
+                    : stringValue(declaringClass.getName());
+            String fieldName = stringValue(declared == null
+                    ? field.name() : declared.getName());
+            String fieldKey = owner + "|" + fieldName;
+            Map<Integer, Set<String>> carrierSites =
+                    sharedCarrierFieldsBySite.get(method);
+            boolean selected = sharedCarrierFields.contains(fieldKey)
+                    || namedFieldTarget(owner, fieldName)
+                    || (carrierSites != null && carrierSites.getOrDefault(
+                    unitIndex, Collections.emptySet()).contains(fieldKey));
+            if (!selected) {
+                return "";
+            }
+            return declared != null && declared.isFinal()
+                    ? STATIC_CONSTANT : STATIC_FIELD_UNSUPPORTED;
         }
 
         /**

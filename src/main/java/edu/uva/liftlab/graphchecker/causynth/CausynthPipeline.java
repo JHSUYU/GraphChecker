@@ -380,6 +380,9 @@ public final class CausynthPipeline {
         private int boundedBackedges;
         private int fieldMaterializationSites;
         private int scannedBodies;
+        /** Static field reads the instrumenter refused, site -> verdict. */
+        private final Map<String, String> staticFieldRefusals =
+                new LinkedHashMap<>();
 
         private CampaignEnvelope(List<InstrumentationPlan> campaign) {
             this.campaign = campaign;
@@ -520,8 +523,44 @@ public final class CausynthPipeline {
                     plan.rootLoopHeaderUnitIndex());
         }
 
+        /**
+         * Records one static field read this pipeline cannot materialize.
+         *
+         * <p>Refusing is not a campaign error.  Which fields a plan selects
+         * is plan content, and a shape the instrumenter has no hook for must
+         * leave the read concrete and say so -- throwing here killed the
+         * whole campaign over one {@code static final byte[]} constant.</p>
+         */
+        private void refuseStaticFieldMaterialization(
+                String declaredSignature, String site, String verdict) {
+            staticFieldRefusals.put(verdict + " " + declaredSignature
+                    + " at " + site, verdict);
+        }
+
+        /** Static shared state left concrete: a coverage gap, not a constant. */
+        private int staticFieldCoverageGaps() {
+            int gaps = 0;
+            for (String verdict : staticFieldRefusals.values()) {
+                if (ConcolicMaterializationSelection.STATIC_FIELD_UNSUPPORTED
+                        .equals(verdict)) {
+                    gaps++;
+                }
+            }
+            return gaps;
+        }
+
         /** States the campaign envelope as static counts, not trace events. */
         private void report() {
+            if (!staticFieldRefusals.isEmpty()) {
+                LOG.warn("Left {} selected static field read(s) concrete, of "
+                                + "which {} are static non-final shared state "
+                                + "and therefore a replay coverage gap; a "
+                                + "static final field is a constant and is "
+                                + "not: {}",
+                        staticFieldRefusals.size(),
+                        staticFieldCoverageGaps(),
+                        staticFieldRefusals.keySet());
+            }
             LOG.info("Concolic campaign envelope: {} task(s); {} selected "
                             + "method(s), of which {} were scanned; "
                             + "static site counts: {} branch, "
@@ -1817,15 +1856,32 @@ public final class CausynthPipeline {
                                     fieldRef);
                     String declaredName = declared == null
                             ? fieldRef.name() : declared.getName();
+                    String staticRefusal =
+                            selection.staticMaterializationRefusal(
+                                    method.getSignature(), unitIndex,
+                                    fieldRef);
+                    if (!staticRefusal.isEmpty()) {
+                        envelope.refuseStaticFieldMaterialization(
+                                declaredSignature,
+                                SiteId.of(method.getSignature(), unitIndex),
+                                staticRefusal);
+                        continue;
+                    }
                     if (!selection.matches(method.getSignature(),
                             unitIndex, fieldRef)) {
                         continue;
                     }
                     envelope.fieldMaterializationSites++;
                     if (field instanceof StaticFieldRef) {
-                        instrumentConsumedStaticPrimitiveFieldRead(body,
-                                method, stmt, unitIndex,
+                        String refusal = instrumentConsumedStaticPrimitiveFieldRead(
+                                body, method, stmt, unitIndex,
                                 (StaticFieldRef) field, refs);
+                        if (!refusal.isEmpty()) {
+                            envelope.refuseStaticFieldMaterialization(
+                                    declaredSignature,
+                                    SiteId.of(method.getSignature(),
+                                            unitIndex), refusal);
+                        }
                         continue;
                     }
                     if (!(field instanceof InstanceFieldRef)) {
@@ -1964,7 +2020,7 @@ public final class CausynthPipeline {
      * Materializes a primitive {@code getstatic} on the exact local that
      * consumed it.
      */
-    private static void instrumentConsumedStaticPrimitiveFieldRead(
+    private static String instrumentConsumedStaticPrimitiveFieldRead(
             Body body, SootMethod method, Stmt stmt, int unitIndex,
             StaticFieldRef field, HookCatalog refs) {
         String declaredSignature =
@@ -1974,13 +2030,13 @@ public final class CausynthPipeline {
                 CausynthStaticFacts.declaredField(field.getFieldRef());
         String declaredName = declared == null
                 ? field.getFieldRef().name() : declared.getName();
+        String unsupportedVerdict = declared != null && declared.isFinal()
+                ? ConcolicMaterializationSelection.STATIC_CONSTANT
+                : ConcolicMaterializationSelection.STATIC_FIELD_UNSUPPORTED;
         if (!(stmt instanceof AssignStmt)
                 || ((AssignStmt) stmt).getRightOp() != field
                 || !(((AssignStmt) stmt).getLeftOp() instanceof Local)) {
-            throw new IllegalStateException(
-                    "STATIC_FIELD_READ_SHAPE_UNSUPPORTED: "
-                            + declaredSignature + " at "
-                            + SiteId.of(method.getSignature(), unitIndex));
+            return unsupportedVerdict;
         }
         Local consumed = (Local) ((AssignStmt) stmt).getLeftOp();
         List<Unit> after = new ArrayList<>();
@@ -1995,12 +2051,10 @@ public final class CausynthPipeline {
                         StringConstant.v(declaredSignature),
                         StringConstant.v(declaredName), boxed));
         if (!supported) {
-            throw new IllegalStateException(
-                    "STATIC_FIELD_MATERIALIZATION_UNSUPPORTED: "
-                            + declaredSignature + " at "
-                            + SiteId.of(method.getSignature(), unitIndex));
+            return unsupportedVerdict;
         }
         insertAfterSequence(body, stmt, after);
+        return "";
     }
 
     private static boolean addPrimitiveRoundTrip(
