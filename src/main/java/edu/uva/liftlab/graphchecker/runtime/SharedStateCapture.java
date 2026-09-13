@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.contract.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.AccessorCallContext;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.MissingValue;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.WriterActivationIdentity;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -31,7 +30,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteg
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CURRENT_ACCESSOR_CALL_CONTEXT;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.activeRegion;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.contextActivation;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmEnvelope;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.readExactField;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.resolveFieldPathLeafOwner;
