@@ -88,6 +88,11 @@ workflow_config_keys=(
   "schedule_summaries - r -"
   "schedule_closure_mode - r candidate"
   "schedule_max_jobs CAUSYNTH_SCHEDULE_MAX_JOBS krp -"
+  # The replay-task count this experiment expects to schedule.  It caps
+  # nothing: the scheduler publishes the kept count against it and every
+  # task it kept still runs.  Left unstated, the telemetry reports the
+  # count and judges it against no expectation at all.
+  "replay_task_budget CAUSYNTH_REPLAY_TASK_BUDGET krp -"
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
   "reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS krp -"
   "reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS krp -"
@@ -533,6 +538,11 @@ do_schedule() {
     args+=(--summaries "${schedule_summaries}")
   fi
   args+=(--closure-mode "${schedule_closure_mode}")
+  if [[ -n "${replay_task_budget//[[:space:]]/}" ]]; then
+    [[ "${replay_task_budget}" =~ ^[0-9]+$ ]] \
+      || die "replay_task_budget must be a non-negative integer: ${replay_task_budget}"
+    args+=(--replay-task-budget "${replay_task_budget}")
+  fi
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}"
 }
