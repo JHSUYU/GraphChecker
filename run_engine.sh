@@ -3484,16 +3484,7 @@ campaign_emit() {
      evidence: {
        symbolicPropagationComplete:
          ($c.symbolicPropagationComplete // false),
-       # Copied from the policy, which counts the consumer boundary families
-       # the Composer publishes. Reading the retired symbolicPropagation
-       # array here reported zero families on every real manifest.
-       consumerBoundaryFamilies:
-         ($decided.rootSpace.consumerBoundaryFamilies // 0),
-       consumerBoundaryArms:
-         ($decided.rootSpace.consumerBoundaryArms // 0),
-       unsatClosureComplete: $unsatClosureComplete,
-       casePathConditionFamilies:
-         (($c.casePathConditionDependencies // []) | length)},
+       unsatClosureComplete: $unsatClosureComplete},
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
      # The claim is what ClaimPolicy decided; acceptance is that claim

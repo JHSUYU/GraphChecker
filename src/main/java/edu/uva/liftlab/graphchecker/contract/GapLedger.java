@@ -49,6 +49,20 @@ import java.util.Set;
  * one classification.  {@code run_engine.sh} reads the JSON this class emits
  * ({@code --output}) so that the stages the claim cannot see -- IMPORT,
  * EXPLORE and CLASSIFY -- are partitioned by the same table.</p>
+ *
+ * <p>A gap code says a chain link is missing.  It is not the place to say a
+ * <em>mechanism</em> is out of scope, and one is: {@code ROTATION_RACE} --
+ * the fatal read taking the program's own last writer while the same
+ * location is written again later -- was retired from
+ * {@code WitnessLegitimacy}'s finding kinds rather than registered here.  No
+ * gap replaces it, because nothing is missing from any chain this pipeline
+ * builds: each replay fixes its own interleaving of that write and that
+ * read, the merge is a disjunction over replays that ran, and no path can
+ * exhibit a rotation order different from the one it executed.  Nothing here
+ * explores thread schedules; doing so would be a separate feature, and it
+ * would come with its own statement of which interleavings were searched --
+ * at which point the unsearched ones, not the mechanism, are what a gap code
+ * would be about.</p>
  */
 public final class GapLedger {
     /** Artifact kind of the published ledger. */

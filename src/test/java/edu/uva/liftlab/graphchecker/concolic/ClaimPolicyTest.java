@@ -89,28 +89,12 @@ public class ClaimPolicyTest {
         assertEquals(codes(ClaimPolicy.NO_EXACT_REACHABILITY), codes(claim));
     }
 
-    private static final String CONSUMER_REGION =
-            "REGION.53092d3e-263d-3a18-b7a5-ae5b437d96de";
-    private static final String PRODUCER_REGION =
-            "REGION.d930c3a2-ffc2-35e8-abea-8ff12526d930";
-    private static final String OTHER_REGION =
-            "REGION.11111111-2222-3333-4444-555555555555";
-
-    private static final String SASL_PORT =
-            "XCH.da84e470-fe7e-3068-b93f-caafeef64a70"
-                    + ".req.data-encryption-key-id";
-    private static final String BLOCK_KEY_PORT =
-            "XCH.1174244c-3118-3892-a173-6cc5895259bf.resp.block-key-id";
 
     /** One Composer handoff-ledger row whose value reached a term. */
     private static JsonObject bound(String port) {
         return ledgerRow(port, true);
     }
 
-    /** One observed family whose value no lowered expression refers to. */
-    private static JsonObject unbound(String port) {
-        return ledgerRow(port, false);
-    }
 
     private static JsonObject ledgerRow(String port, boolean bound) {
         JsonObject row = new JsonObject();
@@ -122,82 +106,11 @@ public class ClaimPolicyTest {
         return row;
     }
 
-    /** A composition that published the Composer's handoff ledger. */
-    private static JsonObject ledgerManifest(JsonObject... rows) {
-        JsonObject manifest = boundaryManifest(CONSUMER_REGION,
-                PRODUCER_REGION);
-        JsonArray ledger = new JsonArray();
-        for (JsonObject row : rows) ledger.add(row);
-        manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS, ledger);
-        return manifest;
-    }
 
     private static ClaimPolicy.PlannedSymbolicRoots noFlows() {
         return ClaimPolicy.PlannedSymbolicRoots.none();
     }
 
-
-    /**
-     * A complete composition that drew two consumer boundary families, one
-     * from each of the two named regions -- the rows the Composer publishes
-     * under casePathConditionDependencies.
-     */
-    private static JsonObject boundaryManifest(String consumer,
-                                               String producer) {
-        JsonObject manifest = manifest();
-        JsonArray dependencies = new JsonArray();
-        int ordinal = 0;
-        for (String region : Arrays.asList(consumer, producer)) {
-            JsonObject arm = new JsonObject();
-            arm.addProperty("regionId", region);
-            arm.addProperty("occurrenceId",
-                    "hdfs-17899/nn0#epoch0/region/" + region + "#1#a1");
-            JsonArray arms = new JsonArray();
-            arms.add(arm);
-            JsonObject family = new JsonObject();
-            family.addProperty("kind", "CONSUMER_BOUNDARY_CASE_DEPENDENCY");
-            family.addProperty("familyKey", "CBF.fixture" + ordinal++);
-            family.addProperty("boundaryKind", "RPC_ATTACH");
-            family.add("arms", arms);
-            dependencies.add(family);
-        }
-        manifest.add("casePathConditionDependencies", dependencies);
-        return manifest;
-    }
-
-    private static JsonObject wireFlow(JsonObject claim, String flow) {
-        for (JsonElement element : claim.getAsJsonObject("rootSpace")
-                .getAsJsonArray("wireFlows")) {
-            JsonObject row = element.getAsJsonObject();
-            if (flow.equals(row.get("flow").getAsString())) {
-                return row;
-            }
-        }
-        throw new AssertionError("no wire-flow row for " + flow);
-    }
-
-    /** A clock-only run whose one clock group the target does not need. */
-    private static JsonObject clockOnlyReach(String decisionCode) {
-        return parse("{\"schemaVersion\":4,"
-                + "\"kind\":\"BOOLEAN_REACH_CONDITION_REPORT\","
-                + "\"state\":\"CANDIDATE_READY\","
-                + "\"unsatClosureComplete\":true,"
-                + "\"gaps\":[],"
-                + "\"reachCondition\":{\"formula\":\"true\","
-                + "\"reachability\":\"REACHABLE\","
-                + "\"degeneracyCheck\":\"CONSTRAINED_ROOT_SPACE\"},"
-                + "\"mechanismNecessity\":{\"mechanisms\":[{"
-                + "\"mechanism\":\"CLOCK_SKEW\","
-                + "\"valuationOrdinal\":0,\"necessary\":false}]},"
-                + "\"clockDecisions\":{\"windowMillis\":300000,"
-                + "\"probed\":true,\"decisions\":[{"
-                + "\"atom\":\"(< expiry manual__MANUAL_dn)\","
-                + "\"sites\":[\"hdfs-17897/dn0#epoch0 removeExpiredKeys\"],"
-                + "\"decidedByWindow\":true,"
-                + "\"requiredWindowMillisAbove\":19200000,"
-                + "\"code\":\"" + decisionCode + "\"}]},"
-                + "\"valuations\":[{\"values\":[],\"status\":\"sat\"}]}");
-    }
 
     /** The root the base fixture enumerates, and what it recorded. */
     private static final String BASE_TERM = "sym__base__1";
@@ -365,38 +278,6 @@ public class ClaimPolicyTest {
     }
 
     /**
-     * The rotation race HDFS-17899 is about, read as the finding it is.
-     *
-     * <p>The witness in the polarity without the fault names one mechanism:
-     * the fatal read took the target datanode's own last {@code addKeys} while
-     * the key the wire named is installed a few events later. That is a thing
-     * that happens, so the run is accepted and the narrative says so.</p>
-     */
-    @Test
-    public void aRotationRaceOnTheOtherPolarityIsALegitimateFinding() {
-        JsonObject reach = markerReach(true, "0");
-        reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
-                .add("witnessMechanisms", parseArray(
-                        "[{\"kind\":\"ROTATION_RACE\","
-                        + "\"sessionLocationKey\":\"MAP_STATE/100#-3\","
-                        + "\"readEventId\":233,"
-                        + "\"laterWriterVersionId\":247}]"));
-
-        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
-                noFlows());
-
-        assertEquals(ClaimPolicy.SAT_CANDIDATE,
-                claim.get("claim").getAsString());
-        assertEquals(WitnessLegitimacy.EXPLAINED,
-                witnessFinding(claim, 0).get("verdict").getAsString());
-        assertTrue(witnessFinding(claim, 0).get("narrative").getAsString()
-                .contains("ROTATION_RACE at MAP_STATE/100#-3"));
-        assertEquals(WitnessLegitimacy.ROTATION_RACE,
-                witnessFinding(claim, 0).get(WitnessLegitimacy.FINDING_KIND)
-                        .getAsString());
-    }
-
-    /**
      * An unenumerated existential root space is freedom nobody wrote down, so
      * it still blocks -- and now the marker row names it as the reason rather
      * than saying nothing explains the other polarity.
@@ -489,108 +370,6 @@ public class ClaimPolicyTest {
                 witnessFinding(claim, 0).get("allRecorded").getAsBoolean());
     }
 
-    private static final String UPDATER_OCCURRENCE =
-            "hdfs-17899/balancer#epoch0/region/REGION.763d087e#5";
-    private static final String CONSTRUCTOR_OCCURRENCE =
-            "hdfs-17899/balancer#epoch0/region/REGION.763d087e#1";
-    private static final String UPDATER_SITE =
-            "<org.apache.hadoop.hdfs.server.balancer.KeyManager:"
-            + " void run()>#u12";
-    private static final String CONSTRUCTOR_SITE =
-            "<org.apache.hadoop.hdfs.server.balancer.KeyManager:"
-            + " void <init>(...)>#u4";
-
-    /** Two markers, both recording false, both with a named call site. */
-    private static JsonObject twoMarkerManifest() {
-        JsonObject manifest = manifest();
-        manifest.add(ComposedManifest.RECORDED_ROOT_VALUES, parseArray(
-                "[{\"solverTerm\":\"manual__updater\","
-                + "\"recordedValue\":\"false\",\"wallClock\":false,"
-                + "\"siteId\":\"" + UPDATER_SITE + "\"},"
-                + "{\"solverTerm\":\"manual__constructor\","
-                + "\"recordedValue\":\"false\",\"wallClock\":false,"
-                + "\"siteId\":\"" + CONSTRUCTOR_SITE + "\"}]"));
-        manifest.add(ClockRootPhysics.MANIFEST_FIELD, parse(
-                "{\"schemaVersion\":1,\"kind\":\"CLOCK_ROOT_PHYSICS\","
-                + "\"clockSkewMillis\":300000,\"clockReads\":[]}"));
-        return manifest;
-    }
-
-    /**
-     * Four valuations over two markers, in the order the extractor enumerates
-     * them: [f,f] the recorded world, [t,f] the updater's marker alone,
-     * [f,t] the constructor's alone, [t,t] both.
-     */
-    private static JsonObject twoMarkerReach(String recorded,
-                                             String updaterOnly,
-                                             String constructorOnly,
-                                             String both) {
-        JsonObject reach = reach();
-        reach.add("roots", parse(
-                "{\"booleanInputs\":["
-                + "{\"inputKind\":\"REGION_SYMBOLIC_INPUT\","
-                + "\"sourceIdentity\":\"MANUAL.updater\","
-                + "\"portId\":\"REGION.763d087e.in.getBlockKeys\","
-                + "\"occurrenceId\":\"" + UPDATER_OCCURRENCE + "\","
-                + "\"javaTypeDescriptor\":\"Z\","
-                + "\"solverTerm\":\"manual__updater\"},"
-                + "{\"inputKind\":\"REGION_SYMBOLIC_INPUT\","
-                + "\"sourceIdentity\":\"MANUAL.constructor\","
-                + "\"portId\":\"REGION.763d087e.in.updateBlockKeys\","
-                + "\"occurrenceId\":\"" + CONSTRUCTOR_OCCURRENCE + "\","
-                + "\"javaTypeDescriptor\":\"Z\","
-                + "\"solverTerm\":\"manual__constructor\"}],"
-                + "\"existentialInputs\":[]}"));
-        reach.add("valuations", parseArray(
-                "[{\"values\":[false,false],\"status\":\"" + recorded
-                + "\"},"
-                + "{\"values\":[true,false],\"status\":\"" + updaterOnly
-                + "\",\"witnessMechanisms\":[{\"kind\":"
-                + "\"MARKER_FLIPPED\",\"solverTerm\":\"manual__updater\","
-                + "\"siteId\":\"" + UPDATER_SITE + "\","
-                + "\"recordedValue\":\"false\","
-                + "\"witnessValue\":\"true\"}]},"
-                + "{\"values\":[false,true],\"status\":\""
-                + constructorOnly + "\"},"
-                + "{\"values\":[true,true],\"status\":\"" + both
-                + "\"}]"));
-        return reach;
-    }
-
-    private static JsonObject markerByIdentity(JsonObject markers,
-                                               String identity) {
-        for (JsonElement element : markers.getAsJsonArray("markers")) {
-            JsonObject row = element.getAsJsonObject();
-            if (identity.equals(row.get("sourceIdentity").getAsString())) {
-                return row;
-            }
-        }
-        throw new AssertionError("no marker row for " + identity);
-    }
-
-    private static JsonObject findingOrNull(JsonObject claim, String code,
-                                            String subject) {
-        for (JsonElement element : claim.getAsJsonObject("rootSpace")
-                .getAsJsonArray("reportedFindings")) {
-            JsonObject row = element.getAsJsonObject();
-            if (code.equals(row.get("code").getAsString())
-                    && subject.equals(row.get("subject").getAsString())) {
-                return row;
-            }
-        }
-        return null;
-    }
-
-    private static JsonObject findingWithSubject(JsonObject claim, String code,
-                                                 String subject) {
-        JsonObject row = findingOrNull(claim, code, subject);
-        if (row == null) {
-            throw new AssertionError("no reported finding " + code + "["
-                    + subject + "] in " + claim.getAsJsonObject("rootSpace")
-                            .getAsJsonArray("reportedFindings"));
-        }
-        return row;
-    }
 
     /**
      * With nothing stating one, there is no polarity and the run says so.
@@ -753,10 +532,6 @@ public class ClaimPolicyTest {
         return reach;
     }
 
-    private static final String PLANNED_SITE =
-            "<org.apache.hadoop.ipc.Client$Connection:"
-            + " void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u17";
-
 
     private static JsonObject markerRow(JsonObject claim) {
         return claim.getAsJsonObject("rootSpace")
@@ -836,36 +611,5 @@ public class ClaimPolicyTest {
                 + "\"necessary\":" + necessary + "}]}");
     }
 
-    private static final String DEK_FIELD =
-            "org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey"
-            + "#keyId";
-
-    private static JsonArray readsOn(String declaredField, String node) {
-        JsonObject arm = new JsonObject();
-        arm.addProperty("declaredField", declaredField);
-        arm.addProperty("locationKey", "INSTANCE_FIELD/" + node
-                + "/region/REGION.60480aef-4475-3abd-9303-ef693c04e7d0#1#a1"
-                + "@receiver:1@" + declaredField);
-        JsonArray arms = new JsonArray();
-        arms.add(arm);
-        JsonObject read = new JsonObject();
-        read.add("arms", arms);
-        JsonArray reads = new JsonArray();
-        reads.add(read);
-        return reads;
-    }
-
-
-    private static JsonArray readsOf(String declaredField) {
-        JsonObject arm = new JsonObject();
-        arm.addProperty("declaredField", declaredField);
-        JsonArray arms = new JsonArray();
-        arms.add(arm);
-        JsonObject read = new JsonObject();
-        read.add("arms", arms);
-        JsonArray reads = new JsonArray();
-        reads.add(read);
-        return reads;
-    }
 
 }

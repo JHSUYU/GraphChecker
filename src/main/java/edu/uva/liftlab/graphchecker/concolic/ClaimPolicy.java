@@ -54,10 +54,6 @@ public final class ClaimPolicy {
     /** Where the decision is published inside the reach-condition report. */
     public static final String CLAIM = "campaignClaim";
     static final String KIND = "CAMPAIGN_CLAIM";
-    /** The {@code kind} the communication mappings declare each flow with. */
-    /** The {@code kind} the Composer names a consumer boundary family with. */
-    private static final String CONSUMER_BOUNDARY_KIND =
-            "CONSUMER_BOUNDARY_CASE_DEPENDENCY";
     /** Every region identity the manifest and the runtime plan share. */
     private static final Pattern REGION_ID =
             Pattern.compile("REGION\\.[0-9a-fA-F-]{36}");
@@ -127,8 +123,8 @@ public final class ClaimPolicy {
      *
      * <p>This is the blocker the acceptance ruling leaves: a SAT witness is a
      * finding when everything it moved is something the world does -- a marker
-     * flip, drift inside the recorded clock window, a rotation race the
-     * recorded write order states -- and is withheld only where the witness
+     * flip, or drift inside the recorded clock window -- and is withheld
+     * only where the witness
      * was free in a way nobody wrote down. The freedoms that already carry a
      * blocker of their own ({@link #UNDECIDED_ROOT_SPACE}) are not named
      * twice; this one covers the freedom that lives in the witness
@@ -195,8 +191,8 @@ public final class ClaimPolicy {
      *
      * <p>A SAT answer is a statement about the formula. A finding is a
      * statement about the program, and it needs a named way the program
-     * could have done it: a marker flipped, a rotation race the recorded
-     * order states, a clock moved inside its window and shown to be needed,
+     * could have done it: a marker flipped, a clock moved inside its window
+     * and shown to be needed,
      * or the recorded valuation itself reaching the target while every flip
      * of a root is refuted. {@link WitnessLegitimacy#FINDING_KIND} names
      * which; where it names none there is no finding, and the run says so
@@ -388,11 +384,7 @@ public final class ClaimPolicy {
         }
 
 
-
     }
-
-
-
 
 
     /**
@@ -418,49 +410,6 @@ public final class ClaimPolicy {
         }
         return regions;
     }
-
-
-    /**
-     * How many consumer boundary families the composition realized, from the
-     * {@code casePathConditionDependencies} rows the Composer publishes.
-     */
-    static int consumerBoundaryFamilies(JsonObject manifest) {
-        Set<String> families = new LinkedHashSet<>();
-        int unnamed = 0;
-        for (JsonElement element
-                : array(manifest, "casePathConditionDependencies")) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject row = element.getAsJsonObject();
-            if (!CONSUMER_BOUNDARY_KIND.equals(optionalString(row, "kind"))) {
-                continue;
-            }
-            String family = optionalString(row, "familyKey");
-            if (family.isEmpty()) {
-                unnamed++;
-            } else {
-                families.add(family);
-            }
-        }
-        return families.size() + unnamed;
-    }
-
-    /** How many arms those consumer boundary families carry in total. */
-    static int consumerBoundaryArms(JsonObject manifest) {
-        int arms = 0;
-        for (JsonElement element
-                : array(manifest, "casePathConditionDependencies")) {
-            if (element.isJsonObject()
-                    && CONSUMER_BOUNDARY_KIND.equals(optionalString(
-                            element.getAsJsonObject(), "kind"))) {
-                arms += array(element.getAsJsonObject(), "arms").size();
-            }
-        }
-        return arms;
-    }
-
-
 
 
     /**
@@ -1628,7 +1577,6 @@ public final class ClaimPolicy {
         boolean probeConstrains = optionalBool(
                 object(reach, "existentialRootProbe"),
                 "constrainsRootSpace", false);
-        int boundaryFamilies = consumerBoundaryFamilies(manifest);
         // Whether a declared wire flow was "realized" used to be counted
         // by finding a consumer boundary family the composition had drawn
         // for it, and the value a wire carried was that family's arms.  A
@@ -1639,9 +1587,8 @@ public final class ClaimPolicy {
         // Every satisfying witness is read against the mechanisms the world
         // allows before anything is withheld. The acceptance ruling is that a
         // SAT witness is a finding -- in either polarity -- when everything it
-        // moved is a marker flip, drift inside the recorded clock window, or a
-        // rotation race the recorded write order states; only freedom nobody
-        // accounted for blocks.
+        // moved is a marker flip or drift inside the recorded clock window;
+        // only freedom nobody accounted for blocks.
         JsonObject legitimacy = witnessLegitimacy(manifest, reach, valuations,
                 degeneracy, unrealizedFlows, flows);
         boolean someSatUnexplained = optionalBool(legitimacy,
@@ -1808,7 +1755,6 @@ public final class ClaimPolicy {
                             -1) < 0 ? "NO_ACCEPTED_WITNESS" : "NO_MECHANISM",
                     "no satisfying witness this run would rest on names one"
                             + " of " + WitnessLegitimacy.MARKER_FLIPPED + ", "
-                            + WitnessLegitimacy.ROTATION_RACE + ", "
                             + WitnessLegitimacy.CLOCK_SKEW + " or "
                             + WitnessLegitimacy.RECORDED_FAILURE_EXPLAINED
                             + ", so the solver's sat answer is a statement"
@@ -1872,9 +1818,6 @@ public final class ClaimPolicy {
         rootSpace.addProperty("degeneracyCheck", degeneracy);
         rootSpace.addProperty("faultSensitive",
                 faultSensitive(valuations, probeConstrains));
-        rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
-        rootSpace.addProperty("consumerBoundaryArms",
-                consumerBoundaryArms(manifest));
         rootSpace.addProperty("realizedRegions",
                 realizedRegions(manifest).size());
         rootSpace.add("faultMarkers", faultMarkers);
