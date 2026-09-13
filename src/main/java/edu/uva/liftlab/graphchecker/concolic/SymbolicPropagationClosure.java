@@ -63,6 +63,25 @@ public final class SymbolicPropagationClosure {
     public static final String WRITER_CASE_OCCURRENCE_ID =
             "writerCaseOccurrenceId";
     /**
+     * The physical occurrence whose region entry published an INITIAL
+     * candidate's snapshot.  An INITIAL arm is owned by no region case, so
+     * this is the only tie between the snapshot and the activation that took
+     * it -- which is what decides whether the snapshot still names a value
+     * once a fault marker idles that activation.
+     *
+     * <p>It is published once per INITIAL owner in {@link
+     * Result#initialSnapshotHosts()} rather than stamped on every candidate:
+     * a candidate travels inside the propagated expressions, whose canonical
+     * rendering is content-addressed, so a field added there renames every
+     * witness minted from a node that contains one.</p>
+     */
+    public static final String INITIAL_HOST_KIND = "INITIAL_SNAPSHOT_HOST";
+    public static final String INITIAL_HOST_OWNER = "initialSourceCaseOwner";
+    public static final String INITIAL_HOST_REGION_ID =
+            "initialHostRegionId";
+    public static final String INITIAL_HOST_OCCURRENCE_ID =
+            "initialHostOccurrenceId";
+    /**
      * Exact selected-region stack captured when a physical writer region was
      * entered. Runtime entries carry task/region/occurrence addresses; this
      * pass resolves them to replay-independent local cases.
@@ -212,16 +231,19 @@ public final class SymbolicPropagationClosure {
         private final List<JsonObject> summaries;
         private final List<JsonObject> dependencies;
         private final List<JsonObject> gaps;
+        private final List<JsonObject> initialSnapshotHosts;
 
         private Result(boolean complete, JsonObject fatal,
                        List<JsonObject> summaries,
                        List<JsonObject> dependencies,
-                       List<JsonObject> gaps) {
+                       List<JsonObject> gaps,
+                       List<JsonObject> initialSnapshotHosts) {
             this.complete = complete;
             this.fatal = fatal;
             this.summaries = summaries;
             this.dependencies = dependencies;
             this.gaps = gaps;
+            this.initialSnapshotHosts = initialSnapshotHosts;
         }
 
         public boolean complete() { return complete; }
@@ -231,6 +253,14 @@ public final class SymbolicPropagationClosure {
         }
         public JsonArray caseDependencies() { return jsonRows(dependencies); }
         public JsonArray gaps() { return jsonRows(gaps); }
+
+        /**
+         * One row per INITIAL source case, naming the activation whose region
+         * entry took that snapshot; see {@link #INITIAL_HOST_KIND}.
+         */
+        public JsonArray initialSnapshotHosts() {
+            return jsonRows(initialSnapshotHosts);
+        }
 
         private static JsonArray jsonRows(Collection<JsonObject> source) {
             JsonArray result = new JsonArray();
@@ -291,6 +321,9 @@ public final class SymbolicPropagationClosure {
                 new LinkedHashSet<>();
         /** Producer cases referenced by RF arms, grouped by occurrence. */
         private final Map<String, Map<String, CaseInfo>> readFromWriterCases =
+                new LinkedHashMap<>();
+        /** INITIAL source case owner + host -> the activation that took it. */
+        private final Map<String, JsonObject> initialSnapshotHosts =
                 new LinkedHashMap<>();
         /** Dynamic boundary event -> the case that owns its VM evidence. */
         private final Map<DynamicKey, CaseInfo> boundaryOwners =
@@ -1245,7 +1278,8 @@ public final class SymbolicPropagationClosure {
             reportUnreferencedAttachFamilies();
             return new Result(gaps.isEmpty(), rewrittenFatal, summaries,
                     orderedValues(dependencies),
-                    orderedValues(gaps));
+                    orderedValues(gaps),
+                    new ArrayList<>(initialSnapshotHosts.values()));
         }
 
         /**
@@ -1520,6 +1554,14 @@ public final class SymbolicPropagationClosure {
             candidate.addProperty(WRITER_CASE_REGION_ID, producer.region);
             candidate.addProperty(WRITER_CASE_OCCURRENCE_ID,
                     producer.occurrence);
+            if (initialVersion) {
+                // The snapshot's own host: the activation whose entry took
+                // it, not the synthetic INITIAL owner the arm is keyed by.
+                noteInitialSnapshotHost(producer.owner,
+                        optionalString(version, "regionId"),
+                        optionalString(version,
+                                SharedStateEvidence.WRITER_OCCURRENCE_ID));
+            }
             // The propagated value is the exact writer observation's value.
             // Keep its JVM scope with the arm so allocation ids embedded in
             // that value are interpreted in the replay that produced them.
@@ -1537,6 +1579,32 @@ public final class SymbolicPropagationClosure {
                 encodedClosure.add(encoded);
             }
             candidate.add(WRITER_CASE_CLOSURE, encodedClosure);
+        }
+
+        /**
+         * Notes an activation whose region entry published the snapshot one
+         * INITIAL source case stands for.
+         *
+         * <p>The owner's digest fixes the <em>planned</em> writer occurrence,
+         * the location and the value, so several activations of that
+         * occurrence -- one loop iteration each, say -- share one owner.  All
+         * of them are hosts: the snapshot survives while any one of them
+         * still ran.</p>
+         */
+        private void noteInitialSnapshotHost(String owner, String regionId,
+                                             String occurrenceId) {
+            if (owner.isEmpty() || regionId.isEmpty()
+                    || occurrenceId.isEmpty()) {
+                return;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", SCHEMA_VERSION);
+            row.addProperty("kind", INITIAL_HOST_KIND);
+            row.addProperty(INITIAL_HOST_OWNER, owner);
+            row.addProperty(INITIAL_HOST_REGION_ID, regionId);
+            row.addProperty(INITIAL_HOST_OCCURRENCE_ID, occurrenceId);
+            initialSnapshotHosts.putIfAbsent(
+                    owner + "\n" + regionId + "\n" + occurrenceId, row);
         }
 
         private void registerWriterCase(CaseInfo owner) {
