@@ -424,6 +424,21 @@ public final class ConcolicSmtComposer {
      */
     public static final String GUARDED_READ_ORDER_UNKNOWN =
             "GUARDED_READ_ORDER_UNKNOWN";
+    /**
+     * A write expression this composition was asked to lower outside the
+     * summary that produced it, whose leaf reads it cannot resolve.
+     *
+     * <p>A write's value may read shared state, and those reads belong to
+     * the writer's own replay session.  A consumer may substitute its own
+     * admitted read of the same carrier
+     * ({@link SymbolicPropagationClosure#WRITE_LEAF_IDENTITY}) -- that is
+     * the only way such an expression travels.  A leaf with no stable
+     * carrier, or one this composition admits no read of, is refused by
+     * name: lowering the writer's own session-local read here would put a
+     * second, unrelated copy of that location in the formula.</p>
+     */
+    public static final String WRITE_EXPRESSION_NOT_PORTABLE =
+            "WRITE_EXPRESSION_NOT_PORTABLE";
     public static final String FINAL_REFUSED = "FINAL_REFUSED";
 
     private static final Gson GSON = new GsonBuilder()
@@ -2451,6 +2466,9 @@ public final class ConcolicSmtComposer {
                 new LinkedHashSet<>();
         /** One value term per stable guarded-read projection. */
         private final Map<String, Term> guardedReadTerms =
+                new LinkedHashMap<>();
+        /** Carrier leaf identity -> the term this composition admits for it. */
+        private final Map<String, Term> admittedReadsByLeaf =
                 new LinkedHashMap<>();
         /** Read and arm activation is accumulated before exactly-one emits. */
         private final Map<String, Set<String>> guardedReadActivations =
@@ -4767,6 +4785,12 @@ public final class ConcolicSmtComposer {
             String readCaseSelector = LocalCaseIdentity.selector(readOwner);
             if (!fault.isEmpty() || readIdentity.isEmpty()
                     || readOwner.isEmpty()) {
+                // A leaf of a write expression from another summary: the
+                // only sound answer is this composition's own read of the
+                // same carrier.
+                Term substituted = fault.isEmpty()
+                        ? substitutedCarrierRead(node, expected) : null;
+                if (substituted != null) return substituted;
                 refuseGuardedRead("UnadmittedGuardedRead:"
                                 + firstNonBlank(readIdentity,
                                 vmReadAddress(node)),
@@ -4810,7 +4834,6 @@ public final class ConcolicSmtComposer {
                                 + " value expression");
                 return unsupportedTerm(want == null ? Sort.VALUE : want);
             }
-
             List<Sort> armSorts = new ArrayList<>(arms.size());
             for (DirectReadArm arm : arms) armSorts.add(arm.term.sort);
             Sort sort = guardedReadSort(node, expected, armSorts);
@@ -4846,6 +4869,12 @@ public final class ConcolicSmtComposer {
                 guardedReadTerms.put(projectionIdentity, result);
             }
 
+            if (optionalBool(node, SymbolicPropagationClosure
+                    .WRITE_LEAF_PORTABLE, false)) {
+                admittedReadsByLeaf.putIfAbsent(optionalString(node,
+                        SymbolicPropagationClosure.WRITE_LEAF_IDENTITY),
+                        result);
+            }
             recordGuardedReadFieldFamily(node, result);
             guardedReadActivations.computeIfAbsent(readIdentity,
                     ignored -> new LinkedHashSet<>()).add(activation);
@@ -4866,8 +4895,7 @@ public final class ConcolicSmtComposer {
             String readLocation = SharedStateEvidence.locationKey(node);
             SharedStateEvidence.LocationProvenance readProvenance =
                     locationProvenance.get(readLocation);
-            String canonicalLocation = readProvenance == null
-                    ? readLocation : readProvenance.locationKey;
+            String canonicalLocation = canonicalLocationOf(node);
             String readField = readProvenance == null
                     || readProvenance.declaredField.isEmpty()
                     ? canonicalLocation : readProvenance.declaredField;
@@ -5141,6 +5169,54 @@ public final class ConcolicSmtComposer {
                                     expected)));
             return new DirectReadArm(candidate, candidateIdentity, selector,
                     value, writerCaseClosure);
+        }
+
+        /**
+         * This composition's own read of the carrier a foreign leaf names.
+         *
+         * <p>Returns null when the leaf is not one a substitution can be
+         * made for, and records a named gap while doing so, so the caller's
+         * fallback refusal never has to guess why.  A leaf with no portable
+         * carrier identity cannot travel at all; one this composition admits
+         * no read of leaves nothing to substitute; and a term of the wrong
+         * sort is not the same value however it is named.</p>
+         */
+        private Term substitutedCarrierRead(JsonObject node, Sort expected) {
+            if (!optionalBool(node, SymbolicPropagationClosure
+                    .WRITE_LEAF_PORTABLE, false)) {
+                return null;
+            }
+            String leaf = optionalString(node,
+                    SymbolicPropagationClosure.WRITE_LEAF_IDENTITY);
+            if (leaf.isEmpty()) return null;
+            Term admitted = admittedReadsByLeaf.get(leaf);
+            if (admitted == null) {
+                refuse(WRITE_EXPRESSION_NOT_PORTABLE + "[" + leaf + "]",
+                        "a write expression lowered here reads "
+                                + optionalString(node, SymbolicPropagationClosure
+                                .WRITE_LEAF_LOCATION)
+                                + " and this composition admits no read of"
+                                + " that carrier to substitute for it");
+                return null;
+            }
+            if (expected != null && admitted.sort != expected) {
+                refuse(WRITE_EXPRESSION_NOT_PORTABLE + "[" + leaf + "]",
+                        "this composition's read of "
+                                + optionalString(node, SymbolicPropagationClosure
+                                .WRITE_LEAF_LOCATION)
+                                + " is " + admitted.sort + " where the write"
+                                + " expression wants " + expected);
+                return null;
+            }
+            return admitted;
+        }
+
+        /** The cross-session name of the location one read node names. */
+        private String canonicalLocationOf(JsonObject node) {
+            String location = SharedStateEvidence.locationKey(node);
+            SharedStateEvidence.LocationProvenance provenance =
+                    locationProvenance.get(location);
+            return provenance == null ? location : provenance.locationKey;
         }
 
         private List<String> writerCaseClosureSelectors(

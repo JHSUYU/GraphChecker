@@ -126,6 +126,43 @@ public final class SymbolicPropagationClosure {
 
     public static final String READ_CHOICE_IDENTITY = "readChoiceIdentity";
     public static final String READ_CHOICE_OWNER = "readChoiceOwner";
+    /**
+     * The carrier one guarded read names, independent of the session it ran
+     * in and of whether any boundary consumed it.
+     *
+     * <p>{@link #READ_CHOICE_IDENTITY} names a read by its boundary family
+     * and the case that consumed it, which exists only for a read some other
+     * case reached through.  A write's own reads have no such consumer, so
+     * they carried no name at all, and a write expression offered to another
+     * region as a read-from arm asked that region to lower a read addressed
+     * {@code INSTANCE_FIELD/<session rid>#<slot>#event<n>} -- a foreign
+     * session's address.  This identity is the location's instead: the same
+     * shared carrier read from two regions carries the same leaf name, which
+     * is what lets a consumer substitute its own admitted arm set for the
+     * writer's leaf rather than lower the writer's read.</p>
+     */
+    public static final String WRITE_LEAF_IDENTITY = "writeLeafIdentity";
+    /** The stable location {@link #WRITE_LEAF_IDENTITY} digests. */
+    public static final String WRITE_LEAF_LOCATION = "writeLeafLocation";
+    /**
+     * Which write-expression contract one summary was published under.
+     *
+     * <p>Only {@link #PORTABLE_LEAVES_V1} states that every guarded read in
+     * the summary carries {@link #WRITE_LEAF_PORTABLE}, so a consumer can
+     * tell "this write reads nothing" from "this write was recorded before
+     * leaf identities existed".  Without the marker the two are
+     * indistinguishable, and a consumer that guesses offers arms whose
+     * leaves it then cannot resolve.</p>
+     */
+    public static final String WRITE_EXPRESSION_CONTRACT =
+            "writeExpressionContract";
+    public static final String PORTABLE_LEAVES_V1 = "PORTABLE_LEAVES_V1";
+    /**
+     * False when a guarded read has no stable location and can therefore
+     * never travel out of its own summary; the composer refuses such a leaf
+     * by name instead of reporting an unnamed read.
+     */
+    public static final String WRITE_LEAF_PORTABLE = "writeLeafPortable";
     public static final String READ_CHOICE_OCCURRENCE_ID =
             "readChoiceOccurrenceId";
     /** Dependency rows with this policy are enabled by an RF arm. */
@@ -1243,9 +1280,16 @@ public final class SymbolicPropagationClosure {
                 // boundaries into multi-case expressions; recorded evidence
                 // deliberately remains raw.
                 CaseInfo observation = caseForSummary(encodedSummary);
-                summaries.add(rewriteObject(encodedSummary,
+                JsonObject rewritten = rewriteObject(encodedSummary,
                         optionalString(encodedSummary, "boundarySessionScope"),
-                        observation));
+                        observation);
+                // Says this summary's guarded reads carry leaf identities,
+                // so a consumer may offer one of its writes as another
+                // read's arm.  A corpus recorded before that contract has no
+                // marker and is composed exactly as it was.
+                rewritten.addProperty(WRITE_EXPRESSION_CONTRACT,
+                        PORTABLE_LEAVES_V1);
+                summaries.add(rewritten);
             }
             List<String> owners = new ArrayList<>(
                     caseObservationsByOwner.keySet());
@@ -1456,6 +1500,20 @@ public final class SymbolicPropagationClosure {
             CaseInfo owner = ambiguousBoundaryOwners.contains(dynamic)
                     ? null : boundaryOwners.get(dynamic);
             String family = dynamicFamilies.get(dynamic);
+            // Stamped for every guarded read, named or not: a write's own
+            // reads are never boundary-owned and would otherwise leave the
+            // summary with no name a consumer can resolve.
+            FieldRead located = fieldReads.get(dynamic);
+            String stableLocation = located == null ? ""
+                    : located.stableLocation;
+            if (stableLocation == null || stableLocation.isEmpty()) {
+                target.addProperty(WRITE_LEAF_PORTABLE, false);
+            } else {
+                target.addProperty(WRITE_LEAF_PORTABLE, true);
+                target.addProperty(WRITE_LEAF_LOCATION, stableLocation);
+                target.addProperty(WRITE_LEAF_IDENTITY,
+                        "LEAF." + CanonicalJson.sha256(stableLocation));
+            }
             if (eventId <= 0L || family == null || family.isEmpty()
                     || owner == null) {
                 gap("READ_CHOICE_IDENTITY_MISSING",
@@ -1469,9 +1527,9 @@ public final class SymbolicPropagationClosure {
             target.addProperty(READ_CHOICE_IDENTITY, identity);
             target.addProperty(READ_CHOICE_OWNER, owner.owner);
             target.addProperty(READ_CHOICE_OCCURRENCE_ID, owner.occurrence);
-            FieldRead read = fieldReads.get(dynamic);
-            if (read != null) {
-                target.addProperty("replayReadDescriptor", read.descriptor);
+            if (located != null) {
+                target.addProperty("replayReadDescriptor",
+                        located.descriptor);
             }
         }
 
@@ -2475,7 +2533,9 @@ public final class SymbolicPropagationClosure {
                 JsonArray candidates = array(read, "candidates");
                 StringBuilder encoded = new StringBuilder("{read");
                 for (String name : new String[]{"_type", "_java_type",
-                        "expressionAuthority", "writerSetComplete", READ_CHOICE_OWNER,
+                        "expressionAuthority", "writerSetComplete",
+                        WRITE_LEAF_IDENTITY, WRITE_LEAF_LOCATION,
+                        WRITE_LEAF_PORTABLE, READ_CHOICE_OWNER,
                         READ_CHOICE_OCCURRENCE_ID}) {
                     if (!read.has(name)) continue;
                     appendFramed(encoded, name);
