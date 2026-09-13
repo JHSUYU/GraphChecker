@@ -595,6 +595,13 @@ do_compose() {
   [[ -z "${fatal_occurrence_id}" ]] \
     || selection+=(--occurrence-id "${fatal_occurrence_id}")
   require_file "runtime region plan" "${runtime_region_plan}"
+  # The task plan the replays ran under: the composer audits every lowered
+  # guarded-read family against the carriers it declared (manifest member
+  # carrierDeclarations).  A compose outside a campaign has none.
+  local -a task_plan
+  task_plan=()
+  [[ ! -s "${compose_task_plan:-}" ]] \
+    || task_plan=(--task-plan "${compose_task_plan}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
@@ -604,6 +611,7 @@ do_compose() {
     --clock-skew-ms "${clock_skew_ms}" \
     --mappings "${causynth_communication_mappings}" \
     --z3 "${z3_bin}" \
+    "${task_plan[@]}" \
     "${selection[@]}"
 }
 
@@ -2763,6 +2771,7 @@ campaign_compose() {
   campaign_json combine summaryId "${observed}" "${observed_inputs[@]}"
   require_nonempty "closure-wide observed summaries" "${observed}"
   compose_summary_inputs="${observed}"
+  compose_task_plan="${iteration_dir}/execution_task_plan.jsonl"
   composed_smt="${campaign_final}/candidate.smt2"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
   fatal_region="${target_region}"
