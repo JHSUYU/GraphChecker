@@ -69,7 +69,6 @@ workflow_config_keys=(
   "causynth_output_dir CAUSYNTH_OUTPUT_DIR krp -"
   "causynth_cache_dir CAUSYNTH_CACHE_DIR krp -"
   "causynth_target_spec CAUSYNTH_TARGET_SPEC krp -"
-  "causynth_analysis_scope CAUSYNTH_ANALYSIS_SCOPE kr -"
   "causynth_process_dirs CAUSYNTH_PROCESS_DIRS krp -"
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
@@ -453,9 +452,6 @@ do_analyze() {
   )
   if [[ -n "${trace_test}" ]]; then
     system_properties+=("-Dcausynth.trace.test=${trace_test}")
-  fi
-  if [[ -n "${causynth_analysis_scope}" ]]; then
-    system_properties+=("-Dcausynth.analysis.scope=${causynth_analysis_scope}")
   fi
   if [[ -n "${causynth_process_dirs}" ]]; then
     system_properties+=("-Dcausynth.process.dirs=${causynth_process_dirs}")
@@ -1036,13 +1032,12 @@ campaign_seed_cache_key() {
   local identity config_seed_sha
   config_seed_sha=$(campaign_digest "${config_file}")
   identity=$(jq -S -c \
-    --arg analysisScope "${causynth_analysis_scope}" \
     --arg processDirs "${causynth_process_dirs}" \
     --arg workloadWorkDir "${workload_work_dir}" \
     --arg workloadCommand "${workload_command}" \
     --arg traceTest "${trace_test}" \
     --arg configSeedSha "${config_seed_sha}" '
-    {schemaVersion: 3, kind: "CAMPAIGN_SEED_CACHE_KEY",
+    {schemaVersion: 4, kind: "CAMPAIGN_SEED_CACHE_KEY",
      inputs: {
        jar: .jar.sha256,
        config: $configSeedSha,
@@ -1056,7 +1051,6 @@ campaign_seed_cache_key() {
        graphCheckerSource: .source.graphchecker,
        workloadSource: .source.workload},
      seedConfiguration: {
-       analysisScope: $analysisScope,
        processDirs: $processDirs,
        workloadWorkDir: $workloadWorkDir,
        workloadCommand: $workloadCommand,
@@ -1807,7 +1801,6 @@ campaign_seed() {
   seed_manifest="${campaign_root}/seed-manifest.json"
   if ! jq -n \
     --argjson provenance "${campaign_provenance}" \
-    --arg analysisScope "${causynth_analysis_scope}" \
     --arg processDirs "${causynth_process_dirs}" \
     --arg workloadWorkDir "${workload_work_dir}" \
     --arg workloadCommand "${workload_command}" \
@@ -1820,7 +1813,6 @@ campaign_seed() {
       cache: {schemaVersion: 1, authority: "CONTENT_DIGEST_V1",
               key: $cacheKey, status: $cacheStatus},
       seedConfiguration: {
-        analysisScope: $analysisScope,
         processDirs: $processDirs,
         workloadWorkDir: $workloadWorkDir,
         workloadCommand: $workloadCommand,

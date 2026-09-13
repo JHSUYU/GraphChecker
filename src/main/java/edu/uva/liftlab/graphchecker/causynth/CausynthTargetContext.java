@@ -8,22 +8,19 @@ final class CausynthTargetContext {
     final String seedException;
     final String exceptionTargetId;
     final ExceptionTargetSite exceptionTargetSite;
-    final String analysisScope;
 
     CausynthTargetContext(Path outputDir,
                           String exceptionTargetId,
-                          ExceptionTargetSite exceptionTargetSite,
-                          String analysisScope) {
+                          ExceptionTargetSite exceptionTargetSite) {
         this.outputDir = outputDir;
         this.exceptionTargetId = exceptionTargetId;
         this.exceptionTargetSite = exceptionTargetSite;
         this.seedException = exceptionTargetSite == null
                 ? null : exceptionTargetSite.exceptionClass;
-        this.analysisScope = analysisScope;
     }
 
     CausynthTargetContext withExceptionTarget(ExceptionTargetSite site) {
         return new CausynthTargetContext(outputDir,
-                exceptionTargetId, site, analysisScope);
+                exceptionTargetId, site);
     }
 }

@@ -219,7 +219,7 @@ public class ConcolicAtomicCarrierSelectionTest {
                             + ";Ljava/lang/Object;)V",
                     target.getSignature(), failure.getName(), 0);
             StaticProgram program = new SeedBackwardStaticAnalyzer(
-                    new CausynthTargetContext(null, site.id, site, "TEST"))
+                    new CausynthTargetContext(null, site.id, site))
                     .analyze();
 
             Map<String, Object> receiver = program.edges.stream()
@@ -271,7 +271,7 @@ public class ConcolicAtomicCarrierSelectionTest {
                     failure.getName(), 0);
 
             StaticProgram program = new SeedBackwardStaticAnalyzer(
-                    new CausynthTargetContext(null, site.id, site, "TEST"))
+                    new CausynthTargetContext(null, site.id, site))
                     .analyze();
 
             String faultCell = fault.getSignature() + "::fault";

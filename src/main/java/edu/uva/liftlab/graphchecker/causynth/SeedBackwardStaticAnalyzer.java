@@ -259,7 +259,6 @@ final class SeedBackwardStaticAnalyzer {
         result.targetResolved.put("exception", target.seedException);
         result.targetResolved.put("constructionOrdinal",
                 target.exceptionTargetSite.exceptionConstructionOrdinal);
-        result.targetResolved.put("analysisScope", target.analysisScope);
         String targetMethod = target.exceptionTargetSite.methodSignature;
         SootMethod sootTarget = concreteMethod(targetMethod);
         if (sootTarget == null || !loadMethod(sootTarget)) {
