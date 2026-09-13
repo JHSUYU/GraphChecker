@@ -238,7 +238,20 @@ public final class GapLedger {
                 "SelectedTargetReachEventMalformed",
                 "SelectedTargetReachEventMismatch",
                 "SelectedTargetReachEventMissing",
-                "SelectedTargetSourceAttestationMalformed"}) {
+                "SelectedTargetSourceAttestationMalformed",
+                // The guarded-read refusals: a read whose arms, writer
+                // closure, choice or candidate identity the lowering could
+                // not state.
+                "GuardedReadArmMissing",
+                "GuardedReadArmSortConflict",
+                "GuardedReadCandidateIdentity",
+                "GuardedReadChoiceMissing",
+                "GuardedReadUseMissing",
+                "GuardedReadWriterClosure",
+                "GuardedReadWriterGuardMissing",
+                "RecursiveGuardedRead",
+                "UnadmittedGuardedRead",
+                "UnconstrainedContainerRead"}) {
             blocking(composer, code,
                     "a refusal the composer made: the step it refused is not in"
                             + " the formula the witness satisfies");
