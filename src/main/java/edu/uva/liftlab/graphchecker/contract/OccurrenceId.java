@@ -21,6 +21,7 @@ package edu.uva.liftlab.graphchecker.contract;
  */
 public final class OccurrenceId {
     private static final String ACTIVATION_MARKER = "#a";
+    private static final String REGION_MARKER = "/region/";
 
     private final String planned;
     private final String activation;
@@ -50,6 +51,19 @@ public final class OccurrenceId {
     /** The planned address shared by every activation of this occurrence. */
     public String planned() {
         return planned;
+    }
+
+    /**
+     * The execution source this address belongs to -- the node and epoch the
+     * occurrence ran on -- or {@code ""} when the address names none.
+     *
+     * <p>One message is sent to one peer, so the source is what decides
+     * whether two occurrences can be two consumers of one delivery or name
+     * two different ones.</p>
+     */
+    public String sourceKey() {
+        int marker = planned.indexOf(REGION_MARKER);
+        return marker <= 0 ? "" : planned.substring(0, marker);
     }
 
     /** This address as the given activation of it. */

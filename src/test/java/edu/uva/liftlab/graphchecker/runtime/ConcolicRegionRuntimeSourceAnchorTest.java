@@ -12,6 +12,8 @@ import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import org.junit.After;
 import org.junit.Test;
 
+import static java.util.Collections.singletonList;
+
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -93,9 +95,11 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
     @Test
     public void repeatedLoopPortIsDeliveredInMessageOrder() {
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
-                "producer", "producer#1", "consumer#1"));
+                "producer", "producer#1",
+                singletonList("consumer#1")));
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 42L,
-                "producer", "producer#2", "consumer#1"));
+                "producer", "producer#2",
+                singletonList("consumer#1")));
 
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
@@ -109,9 +113,11 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
     @Test
     public void messageProducerCanAddressConsumerBeforeAttachConsumesIt() {
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 0L,
-                "task-1", "producer#1#a3", "consumer#1"));
+                "task-1", "producer#1#a3",
+                singletonList("consumer#1")));
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 42L,
-                "task-2", "producer#2#a1", "consumer#1"));
+                "task-2", "producer#2#a1",
+                singletonList("consumer#1")));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
 
@@ -134,7 +140,8 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
                 1, 1, Collections.singletonMap(
                         "data-key", "producer#1"), "consumer#1", false));
         assertTrue(SymbolicMessageEnvelope.stage("data-key", 91L,
-                "task", "producer#2", "consumer#1"));
+                "task", "producer#2",
+                singletonList("consumer#1")));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
         assertTrue(ConcolicRegionRuntime.rootInvocationAddressMatches(
@@ -169,7 +176,8 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
         Map<String, String> producers = Collections.singletonMap(
                 "data-key", "producer#2");
         assertTrue(SymbolicMessageEnvelope.stage("data-key", 91L,
-                "task", "producer#2#a4", "consumer#1"));
+                "task", "producer#2#a4",
+                singletonList("consumer#1")));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
 
@@ -193,7 +201,8 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
         producers.put("data-key", "data-producer#1");
 
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
-                "block-task", "block-producer#1", "consumer#1"));
+                "block-task", "block-producer#1",
+                singletonList("consumer#1")));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
         assertFalse(ConcolicRegionRuntime.rootInvocationAddressMatches(
@@ -201,9 +210,11 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
 
         SymbolicMessageEnvelope.clear();
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
-                "block-task", "block-producer#1", "consumer#1"));
+                "block-task", "block-producer#1",
+                singletonList("consumer#1")));
         assertTrue(SymbolicMessageEnvelope.stage("data-key", 42L,
-                "data-task", "wrong-producer#1", "consumer#1"));
+                "data-task", "wrong-producer#1",
+                singletonList("consumer#1")));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
         assertFalse(ConcolicRegionRuntime.rootInvocationAddressMatches(
@@ -211,9 +222,11 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
 
         SymbolicMessageEnvelope.clear();
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
-                "block-task", "block-producer#1", "consumer#1"));
+                "block-task", "block-producer#1",
+                singletonList("consumer#1")));
         assertTrue(SymbolicMessageEnvelope.stage("data-key", 42L,
-                "data-task", "data-producer#1#a2", "consumer#1"));
+                "data-task", "data-producer#1#a2",
+                singletonList("consumer#1")));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
         assertTrue(ConcolicRegionRuntime.rootInvocationAddressMatches(

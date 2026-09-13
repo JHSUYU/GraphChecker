@@ -3,8 +3,11 @@ package edu.uva.liftlab.graphchecker.runtime;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * Message-carried symbolic values shared by every request/response transport.
@@ -15,7 +18,9 @@ import java.util.Iterator;
  * an expression lookup mechanism.</p>
  */
 public final class SymbolicMessageEnvelope {
-    private static final String SCHEMA = "CSE2";
+    private static final String SCHEMA = "CSE3";
+    /** Separator between the consumer occurrences of one entry. */
+    private static final String CONSUMERS = "\n";
     private static final int MAX_ENTRIES = 64;
     private static final int MAX_WIRE_LENGTH = 65_536;
     private static final Base64.Encoder ENCODER =
@@ -29,16 +34,28 @@ public final class SymbolicMessageEnvelope {
     private SymbolicMessageEnvelope() {
     }
 
-    /** Adds one declared port to the next message sent by this thread. */
+    /**
+     * Adds one declared port to the next message sent by this thread.
+     *
+     * <p>{@code consumerOccurrenceIds} are the planned consumer occurrences
+     * the plan authorises for this port: a producer rooted at a loop body
+     * stages one entry per iteration onto one message, and the receiver's
+     * per-element occurrences take them in order, so the entry names the set
+     * the plan bound rather than one addressee the sender cannot pick.</p>
+     */
     public static boolean stage(String portId, long handle,
                                 String producerTaskId,
                                 String producerOccurrenceId,
-                                String consumerOccurrenceId) {
+                                List<String> consumerOccurrenceIds) {
         Deque<Entry> entries = OUTBOUND.get();
         if (empty(portId) || handle < 0L || empty(producerTaskId)
                 || empty(producerOccurrenceId)
-                || empty(consumerOccurrenceId)) {
+                || consumerOccurrenceIds == null
+                || consumerOccurrenceIds.isEmpty()) {
             return false;
+        }
+        for (String consumer : consumerOccurrenceIds) {
+            if (empty(consumer) || consumer.contains(CONSUMERS)) return false;
         }
         if (entries == null) {
             entries = new ArrayDeque<>();
@@ -49,7 +66,7 @@ public final class SymbolicMessageEnvelope {
         }
         entries.addLast(new Entry(true, portId, handle,
                 producerTaskId, producerOccurrenceId,
-                consumerOccurrenceId));
+                unmodifiableCopy(consumerOccurrenceIds)));
         return true;
     }
 
@@ -67,7 +84,7 @@ public final class SymbolicMessageEnvelope {
                     .append(entry.handle).append(',')
                     .append(token(entry.producerTaskId)).append(',')
                     .append(token(entry.producerOccurrenceId)).append(',')
-                    .append(token(entry.consumerOccurrenceId));
+                    .append(token(join(entry.consumerOccurrenceIds)));
         }
         return wire.toString();
     }
@@ -132,7 +149,7 @@ public final class SymbolicMessageEnvelope {
             String portId = text(fields[0]);
             String producerTaskId = text(fields[2]);
             String producerOccurrenceId = text(fields[3]);
-            String consumerOccurrenceId = text(fields[4]);
+            List<String> consumerOccurrenceIds = split(text(fields[4]));
             long handle;
             try {
                 handle = Long.parseLong(fields[1]);
@@ -142,12 +159,35 @@ public final class SymbolicMessageEnvelope {
             if (handle < 0L || !Long.toString(handle).equals(fields[1])
                     || empty(portId) || empty(producerTaskId)
                     || empty(producerOccurrenceId)
-                    || empty(consumerOccurrenceId)) throw malformed();
+                    || consumerOccurrenceIds.isEmpty()) throw malformed();
             entries.addLast(new Entry(true, portId, handle,
                     producerTaskId, producerOccurrenceId,
-                    consumerOccurrenceId));
+                    consumerOccurrenceIds));
         }
         return entries;
+    }
+
+    /** The entry's consumer occurrences as one encodable field value. */
+    private static String join(List<String> consumers) {
+        StringBuilder joined = new StringBuilder();
+        for (String consumer : consumers) {
+            if (joined.length() > 0) joined.append(CONSUMERS);
+            joined.append(consumer);
+        }
+        return joined.toString();
+    }
+
+    /** The inverse of {@link #join}; an empty field decodes to no consumer. */
+    private static List<String> split(String value) {
+        List<String> consumers = new ArrayList<>();
+        for (String consumer : value.split(CONSUMERS, -1)) {
+            if (!empty(consumer)) consumers.add(consumer);
+        }
+        return Collections.unmodifiableList(consumers);
+    }
+
+    private static List<String> unmodifiableCopy(List<String> values) {
+        return Collections.unmodifiableList(new ArrayList<>(values));
     }
 
     private static String token(String value) {
@@ -179,23 +219,24 @@ public final class SymbolicMessageEnvelope {
     /** One immutable entry physically decoded from the current message. */
     public static final class Entry {
         private static final Entry MISSING =
-                new Entry(false, "", 0L, "", "", "");
+                new Entry(false, "", 0L, "", "",
+                        Collections.<String>emptyList());
         private final boolean present;
         private final String portId;
         private final long handle;
         private final String producerTaskId;
         private final String producerOccurrenceId;
-        private final String consumerOccurrenceId;
+        private final List<String> consumerOccurrenceIds;
 
         private Entry(boolean present, String portId, long handle,
                       String producerTaskId, String producerOccurrenceId,
-                      String consumerOccurrenceId) {
+                      List<String> consumerOccurrenceIds) {
             this.present = present;
             this.portId = portId;
             this.handle = handle;
             this.producerTaskId = producerTaskId;
             this.producerOccurrenceId = producerOccurrenceId;
-            this.consumerOccurrenceId = consumerOccurrenceId;
+            this.consumerOccurrenceIds = consumerOccurrenceIds;
         }
 
         public boolean present() { return present; }
@@ -208,8 +249,9 @@ public final class SymbolicMessageEnvelope {
             return producerOccurrenceId;
         }
 
-        public String consumerOccurrenceId() {
-            return consumerOccurrenceId;
+        /** The planned consumer occurrences the plan bound to this port. */
+        public List<String> consumerOccurrenceIds() {
+            return consumerOccurrenceIds;
         }
     }
 }
