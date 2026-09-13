@@ -18,6 +18,8 @@ import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -1070,6 +1072,340 @@ public class ClaimPolicyTest {
         assertEquals("MANUAL.other", probed.get("sourceIdentity").getAsString());
         assertEquals("the window-boundary row is not a solved perturbation",
                 1, probed.get("solvedPerturbations").getAsInt());
+    }
+
+    // ---- one marker, and several -----------------------------------------
+
+    /**
+     * One marker: the buggy polarity is the valuation that moves it, and the
+     * finding names which marker moved and where.
+     */
+    @Test
+    public void oneFlippedMarkerNamesItselfInTheWitnessFinding() {
+        JsonObject claim = ClaimPolicy.decide(markerManifest(),
+                markerReach(true, "-300000"), noFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        JsonObject flippedRow = witnessFinding(claim, 1);
+        assertEquals(1, flippedRow.get("flippedMarkerCount").getAsInt());
+        assertEquals("MANUAL.fault", flippedRow
+                .getAsJsonArray("flippedMarkers").get(0).getAsJsonObject()
+                .get("sourceIdentity").getAsString());
+        assertTrue(flippedRow.get("narrative").getAsString()
+                .startsWith("flips MANUAL.fault"));
+        assertTrue("the recorded world is the other polarity",
+                witnessFinding(claim, 0).get("allRecorded").getAsBoolean());
+    }
+
+    /**
+     * hdfs-17899-bug1: two markers on the Balancer, one of which is the bug.
+     *
+     * <p>Occurrence #1 is the constructor's {@code updateBlockKeys}; failing
+     * it aborts the test, so every valuation that flips it is unsatisfiable.
+     * Occurrence #5 is the {@code BlockKeyUpdater} thread's periodic
+     * {@code getBlockKeys}, whose catch at {@code KeyManager.java:168-170} is
+     * the path production tolerates -- that is the mechanism, and the run
+     * rests on it. Demanding a witness in "the" buggy polarity of every
+     * declared marker would refuse this run for the marker that is not the
+     * bug.</p>
+     */
+    @Test
+    public void twoMarkersAcceptTheOneThatIsTheMechanism() {
+        JsonObject claim = ClaimPolicy.decide(twoMarkerManifest(),
+                twoMarkerReach("unsat", "sat", "unsat", "unsat"), noFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        assertEquals(0, claim.getAsJsonArray("blockers").size());
+
+        // The accepted witness moved the updater thread's marker and only it.
+        JsonObject accepted = witnessFinding(claim, 1);
+        assertEquals("sat", accepted.get("status").getAsString());
+        assertEquals(WitnessLegitimacy.EXPLAINED,
+                accepted.get("verdict").getAsString());
+        assertEquals(1, accepted.get("flippedMarkerCount").getAsInt());
+        JsonObject moved = accepted.getAsJsonArray("flippedMarkers").get(0)
+                .getAsJsonObject();
+        assertEquals("MANUAL.updater", moved.get("sourceIdentity")
+                .getAsString());
+        assertEquals(UPDATER_OCCURRENCE, moved.get("occurrenceId")
+                .getAsString());
+        assertEquals(UPDATER_SITE, moved.get("siteId").getAsString());
+
+        // The constructor's marker is reported as not being the mechanism.
+        JsonObject notMechanism = findingWithSubject(claim,
+                ClaimPolicy.NOT_A_MECHANISM, "MANUAL.constructor");
+        assertTrue(notMechanism.get("detail").getAsString()
+                .contains(CONSTRUCTOR_OCCURRENCE));
+        assertTrue(notMechanism.get("detail").getAsString()
+                .contains("is not the mechanism"));
+        assertNull("the marker that is the mechanism is not reported",
+                findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
+                        "MANUAL.updater"));
+    }
+
+    /** With no flipped valuation satisfiable, there is no buggy polarity. */
+    @Test
+    public void noFlippedMarkerWitnessIsNotAnAcceptedClaim() {
+        JsonObject claim = ClaimPolicy.decide(twoMarkerManifest(),
+                twoMarkerReach("sat", "unsat", "unsat", "unsat"), noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        JsonObject gap = blocker(claim,
+                ClaimPolicy.FAULT_POLARITY_NOT_WITNESSED);
+        assertEquals("MANUAL.updater,MANUAL.constructor",
+                gap.get("subject").getAsString());
+        assertTrue(gap.get("detail").getAsString()
+                .contains("over 2 declared marker(s)"));
+        assertNotNull(findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
+                "MANUAL.updater"));
+        assertNotNull(findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
+                "MANUAL.constructor"));
+    }
+
+    /**
+     * An undecided flipped valuation is not a refutation of its marker.
+     *
+     * <p>hdfs-17899-bug1's recorded corpus times out on one of its four rows.
+     * Calling the marker "not the mechanism" on the strength of the rows that
+     * did come back would turn a solver budget into a statement about the
+     * program.</p>
+     */
+    @Test
+    public void anUndecidedFlippedValuationLeavesTheQuestionOpen() {
+        JsonObject claim = ClaimPolicy.decide(twoMarkerManifest(),
+                twoMarkerReach("unsat", "timeout", "unsat", "unsat"),
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertTrue(codes(claim).contains(
+                ClaimPolicy.SOLVER_UNDECIDED_VALUATIONS));
+        assertNull("one flipped row never came back, so nothing is decided"
+                        + " about this marker",
+                findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
+                        "MANUAL.updater"));
+        assertNotNull("the other marker's flipped rows all came back unsat",
+                findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
+                        "MANUAL.constructor"));
+    }
+
+    /**
+     * "The other polarity" is the one valuation that leaves every marker as
+     * recorded, not the first row that happens to assign one marker its
+     * recorded value.
+     *
+     * <p>With two markers the older reading answered about whichever sibling
+     * that row also moved: for the constructor's marker it picked
+     * {@code [flipped, recorded]}, which is a statement about the updater
+     * thread.</p>
+     */
+    @Test
+    public void theOtherPolarityIsTheValuationThatMovesNoMarker() {
+        JsonObject claim = ClaimPolicy.decide(twoMarkerManifest(),
+                twoMarkerReach("unsat", "sat", "unsat", "unsat"), noFlows());
+
+        JsonObject markers = claim.getAsJsonObject("rootSpace")
+                .getAsJsonObject("faultMarkers");
+        assertFalse("the all-recorded valuation is unsat here",
+                markers.get("allRecordedSatisfiable").getAsBoolean());
+        for (JsonElement element : markers.getAsJsonArray("markers")) {
+            JsonObject row = element.getAsJsonObject();
+            assertFalse("every marker answers about the same recorded world",
+                    row.get("recordedPolaritySatisfiable").getAsBoolean());
+            assertTrue(row.get("recordedPolarityStated").getAsBoolean());
+        }
+        assertTrue("the updater's flip is what reaches the target",
+                markerByIdentity(markers, "MANUAL.updater")
+                        .get("polarityDecides").getAsBoolean());
+        assertFalse(markerByIdentity(markers, "MANUAL.constructor")
+                .get("polarityDecides").getAsBoolean());
+    }
+
+    private static final String UPDATER_OCCURRENCE =
+            "hdfs-17899/balancer#epoch0/region/REGION.763d087e#5";
+    private static final String CONSTRUCTOR_OCCURRENCE =
+            "hdfs-17899/balancer#epoch0/region/REGION.763d087e#1";
+    private static final String UPDATER_SITE =
+            "<org.apache.hadoop.hdfs.server.balancer.KeyManager:"
+            + " void run()>#u12";
+    private static final String CONSTRUCTOR_SITE =
+            "<org.apache.hadoop.hdfs.server.balancer.KeyManager:"
+            + " void <init>(...)>#u4";
+
+    /** Two markers, both recording false, both with a named call site. */
+    private static JsonObject twoMarkerManifest() {
+        JsonObject manifest = manifest();
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+                "[{\"solverTerm\":\"manual__updater\","
+                + "\"recordedValue\":\"false\",\"wallClock\":false,"
+                + "\"siteId\":\"" + UPDATER_SITE + "\"},"
+                + "{\"solverTerm\":\"manual__constructor\","
+                + "\"recordedValue\":\"false\",\"wallClock\":false,"
+                + "\"siteId\":\"" + CONSTRUCTOR_SITE + "\"}]"));
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD, parse(
+                "{\"schemaVersion\":1,\"kind\":\"CLOCK_ROOT_PHYSICS\","
+                + "\"clockSkewMillis\":300000,\"clockReads\":[]}"));
+        return manifest;
+    }
+
+    /**
+     * Four valuations over two markers, in the order the extractor enumerates
+     * them: [f,f] the recorded world, [t,f] the updater's marker alone,
+     * [f,t] the constructor's alone, [t,t] both.
+     */
+    private static JsonObject twoMarkerReach(String recorded,
+                                             String updaterOnly,
+                                             String constructorOnly,
+                                             String both) {
+        JsonObject reach = reach();
+        reach.add("roots", parse(
+                "{\"booleanInputs\":["
+                + "{\"inputKind\":\"REGION_SYMBOLIC_INPUT\","
+                + "\"sourceIdentity\":\"MANUAL.updater\","
+                + "\"portId\":\"REGION.763d087e.in.getBlockKeys\","
+                + "\"occurrenceId\":\"" + UPDATER_OCCURRENCE + "\","
+                + "\"javaTypeDescriptor\":\"Z\","
+                + "\"solverTerm\":\"manual__updater\"},"
+                + "{\"inputKind\":\"REGION_SYMBOLIC_INPUT\","
+                + "\"sourceIdentity\":\"MANUAL.constructor\","
+                + "\"portId\":\"REGION.763d087e.in.updateBlockKeys\","
+                + "\"occurrenceId\":\"" + CONSTRUCTOR_OCCURRENCE + "\","
+                + "\"javaTypeDescriptor\":\"Z\","
+                + "\"solverTerm\":\"manual__constructor\"}],"
+                + "\"existentialInputs\":[]}"));
+        reach.add("valuations", parseArray(
+                "[{\"values\":[false,false],\"status\":\"" + recorded
+                + "\"},"
+                + "{\"values\":[true,false],\"status\":\"" + updaterOnly
+                + "\",\"witnessMechanisms\":[{\"kind\":"
+                + "\"MARKER_FLIPPED\",\"solverTerm\":\"manual__updater\","
+                + "\"siteId\":\"" + UPDATER_SITE + "\","
+                + "\"recordedValue\":\"false\","
+                + "\"witnessValue\":\"true\"}]},"
+                + "{\"values\":[false,true],\"status\":\""
+                + constructorOnly + "\"},"
+                + "{\"values\":[true,true],\"status\":\"" + both
+                + "\"}]"));
+        return reach;
+    }
+
+    private static JsonObject markerByIdentity(JsonObject markers,
+                                               String identity) {
+        for (JsonElement element : markers.getAsJsonArray("markers")) {
+            JsonObject row = element.getAsJsonObject();
+            if (identity.equals(row.get("sourceIdentity").getAsString())) {
+                return row;
+            }
+        }
+        throw new AssertionError("no marker row for " + identity);
+    }
+
+    private static JsonObject findingOrNull(JsonObject claim, String code,
+                                            String subject) {
+        for (JsonElement element : claim.getAsJsonObject("rootSpace")
+                .getAsJsonArray("reportedFindings")) {
+            JsonObject row = element.getAsJsonObject();
+            if (code.equals(row.get("code").getAsString())
+                    && subject.equals(row.get("subject").getAsString())) {
+                return row;
+            }
+        }
+        return null;
+    }
+
+    private static JsonObject findingWithSubject(JsonObject claim, String code,
+                                                 String subject) {
+        JsonObject row = findingOrNull(claim, code, subject);
+        if (row == null) {
+            throw new AssertionError("no reported finding " + code + "["
+                    + subject + "] in " + claim.getAsJsonObject("rootSpace")
+                            .getAsJsonArray("reportedFindings"));
+        }
+        return row;
+    }
+
+    /**
+     * Where the manifest names no recorded value, the plan that produced it
+     * does.
+     *
+     * <p>hdfs-17899-bug1's recorded manifest carries an empty
+     * {@code recordedRootValues} while its runtime plan states
+     * {@code primitiveValue: "false"} for both marker ports, with the call
+     * site. Defaulting the polarity to {@code true} there inverts every
+     * statement the gate makes about which marker is the mechanism -- the
+     * recorded world is read as the fault and the fault as the recorded
+     * world -- so the plan is consulted before the default is taken.</p>
+     */
+    @Test
+    public void thePlanSuppliesARecordedValueTheManifestOmits()
+            throws IOException {
+        JsonObject manifest = markerManifest();
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
+                new JsonArray());
+
+        JsonObject claim = ClaimPolicy.decide(manifest,
+                markerReach(true, "-300000"), planWith("false"));
+
+        JsonObject marker = markerRow(claim);
+        assertFalse(marker.get("recordedPolarity").getAsBoolean());
+        assertTrue("the plan stated it, so it is not a default",
+                marker.get("recordedPolarityStated").getAsBoolean());
+        assertEquals(PLANNED_SITE, marker.get("siteId").getAsString());
+        assertTrue("valuation 1 flips the marker off the recorded false",
+                witnessFinding(claim, 1).get("flippedMarkerCount")
+                        .getAsInt() == 1);
+        assertTrue(witnessFinding(claim, 0).get("allRecorded")
+                .getAsBoolean());
+    }
+
+    /** A manifest that does state one is the authority; the plan is backup. */
+    @Test
+    public void theManifestsRecordedValueWinsOverThePlans() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(markerManifest(),
+                markerReach(true, "-300000"), planWith("true"));
+
+        assertFalse("the manifest says false",
+                markerRow(claim).get("recordedPolarity").getAsBoolean());
+    }
+
+    /** With neither stating one, the polarity reads as true and says so. */
+    @Test
+    public void anUnstatedRecordedValueIsMarkedAsUnstated() {
+        JsonObject manifest = markerManifest();
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
+                new JsonArray());
+
+        JsonObject claim = ClaimPolicy.decide(manifest,
+                markerReach(true, "-300000"), noFlows());
+
+        JsonObject marker = markerRow(claim);
+        assertTrue(marker.get("recordedPolarity").getAsBoolean());
+        assertFalse(marker.get("recordedPolarityStated").getAsBoolean());
+    }
+
+    private static final String PLANNED_SITE =
+            "<org.apache.hadoop.ipc.Client$Connection:"
+            + " void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u17";
+
+    /** A runtime plan that symbolizes the marker port at a recorded value. */
+    private static ClaimPolicy.WireFlowEvidence planWith(String recorded)
+            throws IOException {
+        Path directory = Files.createTempDirectory("claim-plan-roots");
+        Path plan = directory.resolve("concolic_region_plan.jsonl");
+        Files.write(plan, ("{\"regionId\":\"REGION.x\","
+                + "\"closureGoals\":[{\"symbolize\":["
+                + "{\"portId\":\"REGION.sendRpcRequest.in.fault\","
+                + "\"primitiveValue\":\"" + recorded + "\","
+                + "\"javaType\":\"boolean\","
+                + "\"siteId\":\"" + PLANNED_SITE + "\","
+                + "\"declaredCallee\":\"<edu.uva.liftlab.graphchecker"
+                + ".'annotation'.Debug: boolean makeSymbolicBoolean"
+                + "(java.lang.String)>\"}]}]}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        return ClaimPolicy.WireFlowEvidence.read("", plan.toString());
     }
 
     private static JsonObject markerRow(JsonObject claim) {

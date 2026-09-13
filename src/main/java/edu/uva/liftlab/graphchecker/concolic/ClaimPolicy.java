@@ -138,6 +138,19 @@ public final class ClaimPolicy {
     static final String FAULT_POLARITY_NOT_WITNESSED =
             "FAULT_POLARITY_NOT_WITNESSED";
     /**
+     * A declared marker every flip of which is unsatisfiable.
+     *
+     * <p>An experiment may plant more than one marker, and they need not all
+     * be the bug. hdfs-17899-bug1 plants two on the Balancer: the constructor's
+     * {@code updateBlockKeys} at occurrence #1 and the {@code BlockKeyUpdater}
+     * thread's periodic {@code getBlockKeys} at occurrence #5, whose catch at
+     * {@code KeyManager.java:168-170} is the path production tolerates. Failing
+     * the constructor's call aborts the test outright, so every valuation that
+     * flips it is unsatisfiable -- that marker is not the mechanism, which is a
+     * fact worth publishing and not a reason to withhold the run.</p>
+     */
+    static final String NOT_A_MECHANISM = "NOT_A_MECHANISM";
+    /**
      * Where the initial-state evidence names the arms that are both selected
      * by the model and the untouched initial content of a truncated carrier.
      */
@@ -222,22 +235,46 @@ public final class ClaimPolicy {
         private final Map<String, Set<String>> producerRegions;
         /** The field each flow's consumer assigns what it received to. */
         private final Map<String, String> consumerFields;
+        /**
+         * What each symbolized port actually returned in the recording, by
+         * port id.
+         *
+         * <p>The plan is where the recording states this first: every
+         * {@code symbolize} row carries the {@code primitiveValue} the call
+         * returned and the {@code siteId} it returned it at. The Composer
+         * normally copies both into the manifest's recorded-root ledger, but
+         * only for ports whose manual root it managed to name, so a manifest
+         * can carry a Boolean root with no recorded value while the plan that
+         * produced it says plainly that the call returned {@code false}. A
+         * campaign gate that reads only the manifest then has to guess the
+         * recorded polarity, and guessing it inverts every statement about
+         * which marker is the mechanism.</p>
+         */
+        private final Map<String, JsonObject> plannedRoots;
 
         private WireFlowEvidence(List<String> declared,
                                  Map<String, Set<String>> consumerRegions,
                                  Map<String, Set<String>> producerRegions) {
             this(declared, consumerRegions, producerRegions,
-                    new LinkedHashMap<String, String>());
+                    new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, JsonObject>());
         }
 
         private WireFlowEvidence(List<String> declared,
                                  Map<String, Set<String>> consumerRegions,
                                  Map<String, Set<String>> producerRegions,
-                                 Map<String, String> consumerFields) {
+                                 Map<String, String> consumerFields,
+                                 Map<String, JsonObject> plannedRoots) {
             this.declared = Collections.unmodifiableList(declared);
             this.consumerRegions = consumerRegions;
             this.producerRegions = producerRegions;
             this.consumerFields = consumerFields;
+            this.plannedRoots = plannedRoots;
+        }
+
+        /** The plan's own row for this symbolized port, or null. */
+        JsonObject plannedRoot(String portId) {
+            return portId == null ? null : plannedRoots.get(portId);
         }
 
         /** An experiment that declares no cross-node flow. */
@@ -277,11 +314,37 @@ public final class ClaimPolicy {
             }
             Map<String, Set<String>> consumers = new LinkedHashMap<>();
             Map<String, Set<String>> producers = new LinkedHashMap<>();
+            Map<String, JsonObject> planned = new LinkedHashMap<>();
             for (JsonObject row : rows(plan)) {
                 collectHandoffs(row, "", consumers, producers);
+                collectSymbolizedRoots(row, planned);
             }
             return new WireFlowEvidence(declared, consumers, producers,
-                    fields);
+                    fields, planned);
+        }
+
+        /** Every symbolized port the plan states a recorded value for. */
+        private static void collectSymbolizedRoots(
+                JsonObject plan, Map<String, JsonObject> planned) {
+            for (JsonElement goal : array(plan, "closureGoals")) {
+                if (!goal.isJsonObject()) {
+                    continue;
+                }
+                for (JsonElement encoded
+                        : array(goal.getAsJsonObject(), "symbolize")) {
+                    if (!encoded.isJsonObject()) {
+                        continue;
+                    }
+                    JsonObject row = encoded.getAsJsonObject();
+                    String port = optionalString(row, "portId");
+                    if (port.isEmpty()
+                            || optionalString(row, "primitiveValue")
+                                    .isEmpty()) {
+                        continue;
+                    }
+                    planned.putIfAbsent(port, row);
+                }
+            }
         }
 
         /**
@@ -765,6 +828,189 @@ public final class ClaimPolicy {
     }
 
     /**
+     * One declared Boolean fault marker, with the polarity it recorded.
+     *
+     * <p>The marker list is the reach report's {@code roots.booleanInputs} and
+     * its order is the order of every valuation's {@code values} vector, so the
+     * index is what ties an assignment to a marker. The recorded polarity comes
+     * from the manifest's {@code recordedRootValues}; a manifest that states
+     * none leaves {@code stated} false and the polarity reads as {@code true},
+     * which is the reading 17960's configured source needs. A reader has to be
+     * able to see that difference, so it is published rather than folded away.
+     * </p>
+     */
+    static final class Marker {
+        private final int index;
+        private final String sourceIdentity;
+        private final String portId;
+        private final String occurrenceId;
+        private final String solverTerm;
+        private final String siteId;
+        private final boolean recordedPolarity;
+        private final boolean stated;
+
+        Marker(int index, JsonObject row, String recordedValue,
+               String siteId) {
+            this.index = index;
+            this.sourceIdentity = optionalString(row, "sourceIdentity");
+            this.portId = optionalString(row, "portId");
+            this.occurrenceId = optionalString(row, "occurrenceId");
+            this.solverTerm = optionalString(row, "solverTerm");
+            this.siteId = siteId == null ? "" : siteId;
+            this.stated = recordedValue != null && !recordedValue.isEmpty();
+            this.recordedPolarity = !"false".equals(recordedValue);
+        }
+
+        /** How a blocker or a finding names this marker. */
+        String name() {
+            return firstNonEmpty(sourceIdentity, solverTerm);
+        }
+
+        /** Where it sits, for a reader following the chain. */
+        String where() {
+            String at = firstNonEmpty(siteId, portId);
+            String occurrence = occurrenceId.isEmpty() ? ""
+                    : " at " + occurrenceId;
+            return at.isEmpty() ? occurrence.trim()
+                    : (occurrence.isEmpty() ? at : at + occurrence);
+        }
+
+        /** This marker's assignment under one valuation, or null. */
+        JsonObject assignment(JsonObject valuation) {
+            JsonArray values = array(valuation, "values");
+            if (index >= values.size()
+                    || !values.get(index).isJsonPrimitive()) {
+                return null;
+            }
+            boolean value = values.get(index).getAsBoolean();
+            JsonObject row = new JsonObject();
+            row.addProperty("markerIndex", index);
+            row.addProperty("sourceIdentity", sourceIdentity);
+            row.addProperty("portId", portId);
+            row.addProperty("occurrenceId", occurrenceId);
+            row.addProperty("siteId", siteId);
+            row.addProperty("solverTerm", solverTerm);
+            row.addProperty("recordedPolarity", recordedPolarity);
+            row.addProperty("recordedPolarityStated", stated);
+            row.addProperty("value", value);
+            row.addProperty("flipped", value != recordedPolarity);
+            return row;
+        }
+    }
+
+    /**
+     * Every declared fault marker, in valuation-vector order.
+     *
+     * <p>{@code siteId} is carried across from the recorded-root ledger where
+     * the manifest has one: a reader chasing "which call was made to fail"
+     * wants the call site, and the reach report's root row carries only the
+     * port.</p>
+     */
+    static List<Marker> declaredMarkers(JsonObject manifest,
+                                        JsonObject reach) {
+        return declaredMarkers(manifest, reach, WireFlowEvidence.none());
+    }
+
+    /**
+     * Every declared fault marker, in valuation-vector order, with the
+     * recorded polarity taken from the manifest where it states one and from
+     * the runtime plan where it does not.
+     */
+    static List<Marker> declaredMarkers(JsonObject manifest,
+                                        JsonObject reach,
+                                        WireFlowEvidence flows) {
+        Map<String, String> recorded = new LinkedHashMap<>();
+        Map<String, String> sites = new LinkedHashMap<>();
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject ledger = element.getAsJsonObject();
+            String term = optionalString(ledger, "solverTerm");
+            recorded.put(term, optionalString(ledger, "recordedValue"));
+            sites.put(term, optionalString(ledger, "siteId"));
+        }
+        List<Marker> markers = new ArrayList<>();
+        JsonArray rows = array(object(reach, "roots"), "booleanInputs");
+        for (int index = 0; index < rows.size(); index++) {
+            if (!rows.get(index).isJsonObject()) {
+                continue;
+            }
+            JsonObject row = rows.get(index).getAsJsonObject();
+            String term = optionalString(row, "solverTerm");
+            String value = recorded.get(term);
+            String site = sites.get(term);
+            if (value == null || value.isEmpty()) {
+                // The manifest named no recorded value for this root. The plan
+                // that produced the manifest states one for the port, so the
+                // recording is not silent -- only the ledger is.
+                JsonObject planned = flows == null ? null
+                        : flows.plannedRoot(optionalString(row, "portId"));
+                if (planned != null) {
+                    value = optionalString(planned, "primitiveValue");
+                    site = firstNonEmpty(site,
+                            optionalString(planned, "siteId"));
+                }
+            }
+            markers.add(new Marker(index, row, value, site));
+        }
+        return markers;
+    }
+
+    /** Every marker's assignment under one valuation. */
+    static JsonArray markerAssignment(JsonObject valuation,
+                                      List<Marker> markers) {
+        JsonArray rows = new JsonArray();
+        if (valuation == null) {
+            return rows;
+        }
+        for (Marker marker : markers) {
+            JsonObject row = marker.assignment(valuation);
+            if (row != null) {
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    /** The markers this valuation moved off what they recorded. */
+    private static List<Marker> flippedMarkers(JsonObject valuation,
+                                               List<Marker> markers) {
+        List<Marker> flipped = new ArrayList<>();
+        if (valuation == null) {
+            return flipped;
+        }
+        for (Marker marker : markers) {
+            JsonObject row = marker.assignment(valuation);
+            if (row != null && optionalBool(row, "flipped", false)) {
+                flipped.add(marker);
+            }
+        }
+        return flipped;
+    }
+
+    /**
+     * The valuation that leaves every marker at what it recorded: the world
+     * as the recording had it, and the only well-defined "other" polarity
+     * once more than one marker exists.
+     */
+    private static JsonObject allRecordedValuation(JsonArray valuations,
+                                                   List<Marker> markers) {
+        for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+            JsonObject candidate = row(valuations, ordinal);
+            if (candidate == null) {
+                continue;
+            }
+            if (flippedMarkers(candidate, markers).isEmpty()
+                    && array(candidate, "values").size() >= markers.size()) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Whether the injected fault marker is what decides the target.
      *
      * <p>An experiment that injects a marker states a hypothesis: with the
@@ -790,53 +1036,71 @@ public final class ClaimPolicy {
      * for the same reason.</p>
      */
     static JsonObject faultMarkerEvidence(JsonObject manifest,
-                                          JsonObject reach) {
-        JsonArray markers = array(object(reach, "roots"), "booleanInputs");
+                                          JsonObject reach,
+                                          WireFlowEvidence flows) {
+        List<Marker> markers = declaredMarkers(manifest, reach, flows);
         JsonObject evidence = new JsonObject();
         evidence.addProperty("declaredMarkers", markers.size());
         JsonArray rows = new JsonArray();
         evidence.add("markers", rows);
-        if (markers.size() == 0) {
+        if (markers.isEmpty()) {
             return evidence;
         }
         long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
-        Map<String, String> recorded = new LinkedHashMap<>();
-        for (JsonElement element
-                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
-            if (element.isJsonObject()) {
-                recorded.put(optionalString(element.getAsJsonObject(),
-                        "solverTerm"), optionalString(
-                        element.getAsJsonObject(), "recordedValue"));
-            }
-        }
         JsonArray valuations = array(reach, "valuations");
-        for (int index = 0; index < markers.size(); index++) {
-            if (!markers.get(index).isJsonObject()) {
-                continue;
-            }
-            JsonObject marker = markers.get(index).getAsJsonObject();
+        // "The other polarity" is the world as recorded, which with two
+        // markers is one valuation and not one per marker. Reading it per
+        // marker -- the first row that happens to assign this index its
+        // recorded value -- answers about whichever sibling marker that row
+        // also moved.
+        JsonObject atRecorded = allRecordedValuation(valuations, markers);
+        JsonArray unsaturated = unsaturatedMechanisms(atRecorded, window);
+        evidence.addProperty("allRecordedSatisfiable",
+                atRecorded != null && satisfied(atRecorded));
+        for (Marker marker : markers) {
             JsonObject row = new JsonObject();
-            row.addProperty("sourceIdentity",
-                    optionalString(marker, "sourceIdentity"));
-            row.addProperty("portId", optionalString(marker, "portId"));
-            row.addProperty("occurrenceId",
-                    optionalString(marker, "occurrenceId"));
-            boolean recordedPolarity = !"false".equals(recorded.get(
-                    optionalString(marker, "solverTerm")));
-            row.addProperty("recordedPolarity", recordedPolarity);
-            JsonObject atRecorded = polarity(valuations, index,
-                    recordedPolarity);
-            JsonObject flipped = polarity(valuations, index,
-                    !recordedPolarity);
+            row.addProperty("sourceIdentity", marker.sourceIdentity);
+            row.addProperty("portId", marker.portId);
+            row.addProperty("occurrenceId", marker.occurrenceId);
+            row.addProperty("siteId", marker.siteId);
+            row.addProperty("recordedPolarity", marker.recordedPolarity);
+            row.addProperty("recordedPolarityStated", marker.stated);
+            // Every enumerated valuation that moves this marker, whatever its
+            // siblings do: that is the whole evidence about this marker.
+            int flippedRows = 0;
+            int flippedSat = 0;
+            int flippedUnsat = 0;
+            for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+                JsonObject candidate = row(valuations, ordinal);
+                JsonObject assigned = candidate == null ? null
+                        : marker.assignment(candidate);
+                if (assigned == null
+                        || !optionalBool(assigned, "flipped", false)) {
+                    continue;
+                }
+                flippedRows++;
+                if (satisfied(candidate)) {
+                    flippedSat++;
+                } else if (decided(candidate)) {
+                    flippedUnsat++;
+                }
+            }
+            row.addProperty("flippedValuations", flippedRows);
+            row.addProperty("flippedSatisfiable", flippedSat);
+            row.addProperty("flippedUnsatisfiable", flippedUnsat);
             row.addProperty("recordedPolaritySatisfiable",
                     atRecorded != null && satisfied(atRecorded));
-            row.addProperty("flippedPolaritySatisfiable",
-                    flipped != null && satisfied(flipped));
-            boolean flips = flipped != null && satisfied(flipped)
+            row.addProperty("flippedPolaritySatisfiable", flippedSat > 0);
+            // Not the mechanism: every way of moving this marker was refuted.
+            // An undecided row is not a refutation, so a timeout leaves the
+            // question open rather than answering it.
+            row.addProperty(NOT_A_MECHANISM.toLowerCase(java.util.Locale.ROOT),
+                    flippedRows > 0 && flippedSat == 0
+                            && flippedUnsat == flippedRows);
+            boolean flips = flippedSat > 0
                     && atRecorded != null && !satisfied(atRecorded);
-            JsonArray unsaturated = unsaturatedMechanisms(atRecorded, window);
             JsonArray necessary = necessaryMechanisms(reach,
-                    optionalString(marker, "solverTerm"), recordedPolarity);
+                    marker.solverTerm, marker.recordedPolarity);
             row.addProperty("polarityDecides", flips);
             // A reader deciding whether to trust the mechanism needs to see
             // how much of it is pressed against the window: six interior rows
@@ -855,11 +1119,32 @@ public final class ClaimPolicy {
         return evidence;
     }
 
-    /** The valuation that assigns this Boolean root that polarity. */
-    private static JsonObject polarity(JsonArray valuations, int index,
-                                       boolean value) {
-        int ordinal = polarityOrdinal(valuations, index, value);
-        return ordinal < 0 ? null : row(valuations, ordinal);
+    /** The findings a marker that is not the mechanism justifies. */
+    private static List<JsonObject> notAMechanismFindings(
+            JsonObject faultMarkers) {
+        List<JsonObject> findings = new ArrayList<>();
+        String field = NOT_A_MECHANISM.toLowerCase(java.util.Locale.ROOT);
+        for (JsonElement element : array(faultMarkers, "markers")) {
+            if (!element.isJsonObject()
+                    || !optionalBool(element.getAsJsonObject(), field,
+                            false)) {
+                continue;
+            }
+            JsonObject marker = element.getAsJsonObject();
+            findings.add(blocker(NOT_A_MECHANISM,
+                    optionalString(marker, "sourceIdentity"),
+                    "every enumerated valuation that flips this marker is"
+                            + " unsatisfiable ("
+                            + optionalInteger(marker, "flippedValuations", 0)
+                            + " of them), so failing "
+                            + firstNonEmpty(optionalString(marker, "siteId"),
+                                    optionalString(marker, "portId"))
+                            + " at " + optionalString(marker, "occurrenceId")
+                            + " does not reach the target: this marker is not"
+                            + " the mechanism, and the run does not rest on"
+                            + " it"));
+        }
+        return findings;
     }
 
     /**
@@ -993,28 +1278,44 @@ public final class ClaimPolicy {
      * and which of them live in the witness itself rather than in a gap the
      * composition already publishes under a blocker of its own.</p>
      *
-     * <p>The buggy polarity is the flip of what the marker recorded: an
-     * experiment that records {@code false} and injects {@code true} is asking
-     * about {@code true}. Where a manifest carries no recorded value the
-     * recorded polarity reads as {@code true}, which is what makes 17960's
-     * configured {@code ordered=false} its buggy polarity. A run with no
-     * Boolean root at all -- the clock cases -- asks only that some satisfying
-     * witness be explained.</p>
+     * <p>The buggy polarity is <em>some</em> enumerated valuation that moves
+     * at least one marker off what it recorded, is satisfiable, and is
+     * explained. It is not "every marker flipped", and it is not one fixed
+     * marker: an experiment may plant several and they need not all be the
+     * bug. hdfs-17899-bug1 plants two on the Balancer, and flipping the
+     * constructor's {@code updateBlockKeys} at occurrence #1 aborts the test,
+     * so demanding a witness there would refuse a run whose actual mechanism
+     * is the other marker -- the {@code BlockKeyUpdater} thread's periodic
+     * {@code getBlockKeys} at occurrence #5, whose catch is the path
+     * production tolerates. The "other" polarity is correspondingly the one
+     * valuation that leaves every marker as recorded.</p>
+     *
+     * <p>Where a manifest carries no recorded value the recorded polarity
+     * reads as {@code true}, which is what makes 17960's configured
+     * {@code ordered=false} its buggy polarity; the marker rows say whether
+     * the manifest actually stated it. A run with no Boolean root at all --
+     * the clock cases -- asks only that some satisfying witness be
+     * explained.</p>
      */
     private static JsonObject witnessLegitimacy(
             JsonObject manifest, JsonObject reach, JsonArray valuations,
             String degeneracy, JsonObject initialState,
-            List<String> unrealizedFlows) {
+            List<String> unrealizedFlows, WireFlowEvidence flows) {
         long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
         List<WitnessLegitimacy.Freedom> composition =
                 WitnessLegitimacy.compositionFreedoms(degeneracy,
                         array(initialState, FREE_INITIAL_ARMS),
                         unrealizedFlows);
+        List<Marker> markers = declaredMarkers(manifest, reach, flows);
         JsonArray findings = new JsonArray();
         Set<String> freedoms = new LinkedHashSet<>();
         Set<String> witnessLocal = new LinkedHashSet<>();
         boolean someSatUnexplained = false;
         boolean someSatWitnessExplained = false;
+        // Some valuation moved a marker, was satisfiable, and was explained:
+        // that is the buggy polarity, whichever marker it moved.
+        boolean flippedWitnessAccepted = false;
+        int acceptedOrdinal = -1;
         // Per valuation: satisfied, and free of the freedom that lives in the
         // witness itself. Composition freedoms are excluded here because each
         // already withholds acceptance under its own blocker, and asking the
@@ -1022,8 +1323,9 @@ public final class ClaimPolicy {
         List<Boolean> witnessExplained = new ArrayList<>();
         for (int index = 0; index < valuations.size(); index++) {
             JsonObject candidate = row(valuations, index);
+            JsonArray assignment = markerAssignment(candidate, markers);
             JsonObject finding = WitnessLegitimacy.classify(candidate, index,
-                    window, composition);
+                    window, composition, assignment);
             findings.add(finding);
             Set<String> local = new LinkedHashSet<>();
             for (JsonElement element : array(finding, "freedoms")) {
@@ -1043,6 +1345,12 @@ public final class ClaimPolicy {
             }
             if (local.isEmpty()) {
                 someSatWitnessExplained = true;
+                if (!flippedMarkers(candidate, markers).isEmpty()) {
+                    flippedWitnessAccepted = true;
+                    if (acceptedOrdinal < 0) {
+                        acceptedOrdinal = index;
+                    }
+                }
             }
             if (WitnessLegitimacy.UNEXPLAINED.equals(
                     optionalString(finding, "verdict"))) {
@@ -1064,9 +1372,24 @@ public final class ClaimPolicy {
         result.addProperty("witnessLocalFreedomCodes",
                 String.join(",", witnessLocal));
         result.addProperty("faultPolarityNotWitnessed",
-                unwitnessedFaultPolarity(manifest, reach, valuations,
-                        witnessExplained, someSatWitnessExplained));
+                markers.isEmpty()
+                        ? (someSatWitnessExplained ? ""
+                                : "the enumerated valuations")
+                        : (flippedWitnessAccepted ? "" : markerNames(markers)));
+        // Which valuation the acceptance rests on, so a probe can assert that
+        // marker assignment rather than guess one.
+        result.addProperty("acceptedValuationOrdinal", acceptedOrdinal);
+        result.addProperty("declaredMarkers", markers.size());
         return result;
+    }
+
+    /** Every declared marker, named as a blocker subject names them. */
+    private static String markerNames(List<Marker> markers) {
+        List<String> names = new ArrayList<>();
+        for (Marker marker : markers) {
+            names.add(marker.name());
+        }
+        return String.join(",", names);
     }
 
     /**
@@ -1083,66 +1406,6 @@ public final class ClaimPolicy {
                 || WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE.equals(code);
     }
 
-    /**
-     * The declared fault markers whose buggy polarity produced no explained
-     * witness, as one subject string, or empty when every one of them did.
-     */
-    private static String unwitnessedFaultPolarity(
-            JsonObject manifest, JsonObject reach, JsonArray valuations,
-            List<Boolean> witnessExplained,
-            boolean someSatWitnessExplained) {
-        JsonArray markers = array(object(reach, "roots"), "booleanInputs");
-        if (markers.size() == 0) {
-            // No Boolean root: the mechanism is the finding, so one satisfying
-            // witness the composition explains is the whole requirement.
-            return someSatWitnessExplained ? "" : "the enumerated valuations";
-        }
-        Map<String, String> recorded = new LinkedHashMap<>();
-        for (JsonElement element
-                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
-            if (element.isJsonObject()) {
-                recorded.put(optionalString(element.getAsJsonObject(),
-                        "solverTerm"), optionalString(
-                        element.getAsJsonObject(), "recordedValue"));
-            }
-        }
-        List<String> unwitnessed = new ArrayList<>();
-        for (int index = 0; index < markers.size(); index++) {
-            if (!markers.get(index).isJsonObject()) {
-                continue;
-            }
-            JsonObject marker = markers.get(index).getAsJsonObject();
-            boolean recordedPolarity = !"false".equals(recorded.get(
-                    optionalString(marker, "solverTerm")));
-            int ordinal = polarityOrdinal(valuations, index,
-                    !recordedPolarity);
-            if (ordinal < 0 || ordinal >= witnessExplained.size()
-                    || !witnessExplained.get(ordinal)) {
-                unwitnessed.add(firstNonEmpty(
-                        optionalString(marker, "sourceIdentity"),
-                        optionalString(marker, "solverTerm")));
-            }
-        }
-        return String.join(",", unwitnessed);
-    }
-
-    /** Where the valuation assigning this root that polarity sits. */
-    private static int polarityOrdinal(JsonArray valuations, int index,
-                                       boolean value) {
-        for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
-            JsonObject candidate = row(valuations, ordinal);
-            if (candidate == null) {
-                continue;
-            }
-            JsonArray values = array(candidate, "values");
-            if (index < values.size()
-                    && values.get(index).isJsonPrimitive()
-                    && values.get(index).getAsBoolean() == value) {
-                return ordinal;
-            }
-        }
-        return -1;
-    }
 
     /**
      * Decides the campaign claim from the Composer's manifest and the
@@ -1181,7 +1444,7 @@ public final class ClaimPolicy {
         // accounted for blocks.
         JsonObject initialState = initialStateEvidence(manifest, reach);
         JsonObject legitimacy = witnessLegitimacy(manifest, reach, valuations,
-                degeneracy, initialState, unrealizedFlows);
+                degeneracy, initialState, unrealizedFlows, flows);
         boolean someSatUnexplained = optionalBool(legitimacy,
                 "someSatisfyingWitnessUnexplained", false);
         String witnessFreedom = optionalString(legitimacy, "freedomCodes");
@@ -1279,7 +1542,8 @@ public final class ClaimPolicy {
         // An injected marker is the experiment's own hypothesis, so it is the
         // root the verdict has to rest on. A rejected perturbation of some
         // other root is evidence about that root and no answer about this one.
-        JsonObject faultMarkers = faultMarkerEvidence(manifest, reach);
+        JsonObject faultMarkers = faultMarkerEvidence(manifest, reach,
+                flows);
         JsonObject markerGap = faultMarkerBlocker(faultMarkers,
                 someSatUnexplained ? witnessFreedom : "");
         if (markerGap != null && someSatUnexplained) {
@@ -1296,16 +1560,20 @@ public final class ClaimPolicy {
                             + witnessLocalFreedom));
         }
 
-        // The campaign's own hypothesis: the buggy polarity is the one that
-        // has to have produced an explained witness.
+        // The campaign's own hypothesis: some way of moving a declared marker
+        // off what it recorded has to have produced a satisfied witness this
+        // composition explains. Which marker is not fixed in advance -- an
+        // experiment may plant several and only one be the bug.
         String unwitnessedFault = optionalString(legitimacy,
                 "faultPolarityNotWitnessed");
         if ("REACHABLE".equals(reachability) && !unwitnessedFault.isEmpty()) {
             blockers.add(blocker(FAULT_POLARITY_NOT_WITNESSED,
                     unwitnessedFault,
-                    "the buggy polarity of " + unwitnessedFault
-                            + " is not a satisfied witness this composition"
-                            + " explains, so no accepted claim rests on it"));
+                    "no enumerated valuation that flips a declared fault"
+                            + " marker off its recorded value is a satisfied"
+                            + " witness this composition explains, over "
+                            + optionalInteger(legitimacy, "declaredMarkers", 0)
+                            + " declared marker(s): " + unwitnessedFault));
         }
 
         JsonObject witnessGap = witnessBlocker(valuations, probeConstrains);
@@ -1394,7 +1662,20 @@ public final class ClaimPolicy {
                             + " writer arm rather than that carrier's initial"
                             + " content"));
         }
+        // A marker every flip of which is unsatisfiable is not the mechanism.
+        // That is a statement about the experiment's own hypothesis, and it is
+        // published rather than held against the run: hdfs-17899-bug1's
+        // constructor marker aborts the test, and the run rests on the other
+        // one.
+        for (JsonObject row : notAMechanismFindings(faultMarkers)) {
+            reportedFindings.add(row);
+        }
         rootSpace.add("reportedFindings", reportedFindings);
+        // Which valuation the acceptance rests on, so a probe asserting the
+        // buggy polarity has one marker assignment to assert rather than a
+        // guess at which marker the bug is.
+        rootSpace.addProperty("acceptedValuationOrdinal",
+                optionalInteger(legitimacy, "acceptedValuationOrdinal", -1));
         result.add(WitnessLegitimacy.FINDINGS,
                 legitimacy.getAsJsonArray("valuations"));
         rootSpace.add("probedRoot", probedRoot(reach));
