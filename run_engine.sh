@@ -2826,6 +2826,10 @@ campaign_write_coverage_gaps() {
            | {stage: "COMPOSE", source: "SYMBOLIC_PROPAGATION",
               code: (.reason // .kind // ""),
               subject: (.subject // ""), detail: (.detail // "")}]
+       + [$composed.faultControlGaps[]?
+           | {stage: "COMPOSE", source: "FAULT_CONTROL",
+              code: (.reason // .kind // ""),
+              subject: (.subject // ""), detail: (.detail // "")}]
        + [$pathClosures[]? as $closure
            | $closure.coverageGaps[]?
            | {stage: "EXPLORE", source: "PATH_WORKLIST",
