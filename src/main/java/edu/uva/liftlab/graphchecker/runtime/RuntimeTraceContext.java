@@ -65,10 +65,11 @@ final class RuntimeTraceContext {
                     "source alias registration requires alias and anchor");
         }
         synchronized (LOCK) {
-            SourceRef source = SOURCE_ALIASES.get(anchor);
+            SourceRef source = resolveNamedAnchorLocked(anchor);
             if (source == null) {
                 throw new IllegalArgumentException(
-                        "source anchor is not registered");
+                        "source anchor is not registered: "
+                                + describeAnchor(anchor));
             }
             requireUnchangedAliasLocked(alias, source);
             bindSourceLocked(alias, source);
@@ -84,10 +85,15 @@ final class RuntimeTraceContext {
     }
 
     static long beginRequest(Object sourceAlias, String apiName) {
-        SourceRef source = sourceFor(sourceAlias);
+        SourceRef source;
+        synchronized (LOCK) {
+            source = resolveNamedAnchorLocked(sourceAlias);
+        }
         if (source == null) {
             throw new IllegalArgumentException(
-                    "request source alias is not registered");
+                    "request source alias is not registered: "
+                            + describeAnchor(sourceAlias) + " for request "
+                            + MapFields.safe(apiName));
         }
         return beginRequest(source, apiName);
     }
@@ -139,10 +145,11 @@ final class RuntimeTraceContext {
         SourceRef previous;
         SourceRef next;
         synchronized (LOCK) {
-            previous = SOURCE_ALIASES.get(anchor);
+            previous = resolveNamedAnchorLocked(anchor);
             if (previous == null) {
                 throw new IllegalArgumentException(
-                        "source anchor is not registered");
+                        "source anchor is not registered: "
+                                + describeAnchor(anchor));
             }
             if (!previous.kind().equals(nextSource.kind())
                     || !previous.role().equals(nextSource.role())
@@ -371,6 +378,78 @@ final class RuntimeTraceContext {
 
     private static void bindSourceLocked(Object alias, SourceRef source) {
         SOURCE_ALIASES.put(alias, source);
+    }
+
+    /**
+     * Resolves an anchor the workload named explicitly in an API call.
+     *
+     * <p>Registration is by object identity because identity is the only
+     * attribution a replay can reproduce.  The application is still free to
+     * replace the object it handed over with a value-equal successor:
+     * HDFS swaps {@code DataNode.id} for a fresh {@code DatanodeRegistration}
+     * on every DataNode re-registration, so the anchor a workload registered
+     * before a block-report lease expired is no longer the anchor it passes
+     * afterwards.  Refusing the successor throws out of instrumentation into
+     * the workload and ends the run; every region downstream of that source
+     * is then skipped as anchor-unmatched, and the campaign fails stages
+     * later with no trace of why.
+     *
+     * <p>Only an explicitly named anchor is resolved this way.  Root
+     * attribution keeps using {@link #sourceFor} and stays identity-exact: a
+     * receiver that registered nothing must go on inheriting its ambient
+     * source rather than being matched by value against unrelated objects.
+     */
+    private static SourceRef resolveNamedAnchorLocked(Object anchor) {
+        SourceRef registered = SOURCE_ALIASES.get(anchor);
+        if (registered != null) return registered;
+        SourceRef replaced = replacedAnchorLocked(anchor);
+        // The successor is the identity every later call will carry, so bind
+        // it once instead of rescanning on each request.
+        if (replaced != null) bindSourceLocked(anchor, replaced);
+        return replaced;
+    }
+
+    /**
+     * The source a value-equal predecessor of {@code anchor} registered.
+     *
+     * <p>The successor names the same logical source only when both objects
+     * declare value equality, agree in both directions, and no second
+     * registered anchor answering to it names a different source.  Anything
+     * else stays unresolved: a guessed source is a wrong causal chain.
+     */
+    private static SourceRef replacedAnchorLocked(Object anchor) {
+        if (!declaresValueEquality(anchor)) return null;
+        SourceRef match = null;
+        for (Map.Entry<Object, SourceRef> entry : SOURCE_ALIASES.entrySet()) {
+            Object candidate = entry.getKey();
+            if (candidate == anchor
+                    || !declaresValueEquality(candidate)
+                    || !anchor.equals(candidate)
+                    || !candidate.equals(anchor)) {
+                continue;
+            }
+            if (match != null && !match.equals(entry.getValue())) return null;
+            match = entry.getValue();
+        }
+        return match;
+    }
+
+    /** Whether this object answers by value rather than only by identity. */
+    private static boolean declaresValueEquality(Object value) {
+        if (value == null) return false;
+        try {
+            return Object.class != value.getClass()
+                    .getMethod("equals", Object.class).getDeclaringClass();
+        } catch (NoSuchMethodException unreachable) {
+            return false;
+        }
+    }
+
+    /** Names an anchor a caller passed, without calling its toString(). */
+    private static String describeAnchor(Object anchor) {
+        if (anchor == null) return "null";
+        return anchor.getClass().getName() + "@"
+                + Integer.toHexString(System.identityHashCode(anchor));
     }
 
     /**
