@@ -1771,23 +1771,33 @@ public final class ConcolicRegionRuntime {
             JsonElement expression = engineExpression(api.fieldExpression(
                     owner, declaringClass, field.getName(), descriptor,
                     value));
-            active.recordConfiguredSourceMint(entry, safe(sourceId),
-                    safe(fieldSignature), symbol, expression, reused);
             // Only the occurrence that minted the VM leaf owns source
             // evidence and its model assignment.  A propagated bare or
             // compound expression remains the consumer's exact input and is
-            // recorded above as reuse without acquiring a second identity.
+            // recorded below as reuse without acquiring a second identity.
+            JsonObject evidence = null;
             if (!reused) {
                 // Fail closed: a concrete write is not a materialized
                 // symbolic input until the VM has accepted the exact field
-                // and returned one exact root for it.  A named read says so
-                // on its row, so nothing downstream reads it as a mint.
-                active.recordSymbolicSource(entry.key(),
-                        SymbolicSourceEvidence.event(entry.phaseId(),
-                                safe(sourceId),
-                                active.occurrenceId(),
-                                safe(fieldSignature), expression,
-                                entry.ordinal, reused, symbol));
+                // and returned one exact root for it.  The evidence row is
+                // built before the mint row so that a read-back the VM did
+                // not replace -- the shape this catch names -- leaves no row
+                // claiming a symbol it never published.
+                try {
+                    evidence = SymbolicSourceEvidence.event(entry.phaseId(),
+                            safe(sourceId), active.occurrenceId(),
+                            safe(fieldSignature), expression,
+                            entry.ordinal, reused, symbol);
+                } catch (IllegalArgumentException refused) {
+                    throw new IllegalStateException(refused.getMessage()
+                            + " (VM read-back after symbolizeExactField: "
+                            + describeReadBack(expression) + ")", refused);
+                }
+            }
+            active.recordConfiguredSourceMint(entry, safe(sourceId),
+                    safe(fieldSignature), symbol, expression, reused);
+            if (evidence != null) {
+                active.recordSymbolicSource(entry.key(), evidence);
             }
             if (assignment != null) {
                 // A concrete write is not a materialized symbolic input until
@@ -1806,6 +1816,25 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+
+    /**
+     * The outermost shape of what the VM handed back for a minted field, for
+     * the unresolved-input line.  A mint that reads back as anything but one
+     * VM symbol means the VM kept an expression the field already carried,
+     * and the line should say what that was rather than only that the
+     * evidence contract refused it.
+     */
+    static String describeReadBack(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) {
+            return expression == null ? "no expression"
+                    : expression.toString();
+        }
+        JsonObject node = expression.getAsJsonObject();
+        String type = optionalString(node, "_type");
+        String raw = optionalString(node, "_exp");
+        return type.isEmpty() ? "untyped expression"
+                : raw.isEmpty() ? type : type + " " + raw;
+    }
 
     private static JsonElement engineExpression(String serialized) {
         try {

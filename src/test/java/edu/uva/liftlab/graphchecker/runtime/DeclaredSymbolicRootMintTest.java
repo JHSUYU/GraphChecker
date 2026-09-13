@@ -2,12 +2,15 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.concolic.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * A field the experiment declared must mint, even over a constant.
@@ -128,6 +131,74 @@ public class DeclaredSymbolicRootMintTest {
     public void theHookReadsNothingAsNoAuthority() {
         assertFalse("an unsymbolized field answers \"no\"",
                 ConcolicRegionRuntime.configuredSourceCarriesAuthority(null));
+    }
+
+    private static final String SERIAL_NO_PHASE =
+            "SOURCE_PHASE.b6cff494-49b4-3843-afe6-6bc8564e0315";
+    private static final String SERIAL_NO_SOURCE = "HDFS.BLOCK_KEY.SERIAL_NO";
+    private static final String SERIAL_NO_OCCURRENCE = "hdfs-17899/nn0#epoch0"
+            + "/region/REGION.aaa1cfd7-659b-3340-8d12-c81925e1de94#1#a1";
+    private static final String SERIAL_NO_FIELD = "<org.apache.hadoop.hdfs"
+            + ".security.token.block.BlockTokenSecretManager: int serialNo>";
+
+    /**
+     * What the hook read back after its mint on the first run that reached
+     * it: the very chain above, unchanged.  The VM had kept the propagated
+     * shadow, so the "mint" produced no symbol, and the evidence contract
+     * has to refuse that read-back rather than let a carrier-wrapped
+     * constant pose as a root.  The runtime line that files the refusal
+     * names the shape, so the next diagnosis starts from the VM.
+     */
+    @Test
+    public void aMintThatReadsBackTheCarrierTreeIsRefusedAsEvidence() {
+        JsonObject chain = binary("+",
+                binary("%", binary("+", readFromConstant(), constant()),
+                        readFromConstant()),
+                readFromConstant());
+        try {
+            SymbolicSourceEvidence.event(SERIAL_NO_PHASE, SERIAL_NO_SOURCE,
+                    SERIAL_NO_OCCURRENCE, SERIAL_NO_FIELD, chain, 1, false,
+                    "sym__" + SERIAL_NO_SOURCE + "__x__1");
+            fail("a propagated tree is not a minted root");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains("must carry one non-constant VM symbol"));
+        }
+        assertEquals("BinaryExpression",
+                ConcolicRegionRuntime.describeReadBack(chain));
+        assertEquals("no expression",
+                ConcolicRegionRuntime.describeReadBack(null));
+    }
+
+    /**
+     * What the read-back is once the VM replaces the shadow: one
+     * {@code FieldSymbolExp} carrying the phase's engine label, exactly as
+     * HDFS-17960's {@code snapshotDeletionOrdered} mint reads back.
+     */
+    @Test
+    public void aMintThatReadsBackOneVmSymbolIsEvidence() {
+        String label = SymbolicSourceEvidence.engineLabelForPhase(
+                SERIAL_NO_PHASE, SERIAL_NO_SOURCE);
+        String raw = "M_I_field_" + label + "_org/apache/hadoop/hdfs/"
+                + "security/token/block/BlockTokenSecretManager";
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "I");
+        symbol.addProperty("_exp", raw);
+        String name = "sym__" + SERIAL_NO_SOURCE + "__"
+                + SERIAL_NO_OCCURRENCE + "__1";
+        JsonObject row = SymbolicSourceEvidence.event(SERIAL_NO_PHASE,
+                SERIAL_NO_SOURCE, SERIAL_NO_OCCURRENCE, SERIAL_NO_FIELD,
+                symbol, 1, false, name);
+        assertEquals(SymbolicSourceEvidence.KIND,
+                row.get("kind").getAsString());
+        assertEquals(raw, row.get("rawSymbol").getAsString());
+        assertEquals("I", row.get("javaType").getAsString());
+        assertFalse(row.get(SymbolicSourceEvidence.REUSED).getAsBoolean());
+        assertEquals(name, row.get(SymbolicSourceEvidence.SYMBOL)
+                .getAsString());
+        assertEquals("SymbolExpression " + raw,
+                ConcolicRegionRuntime.describeReadBack(symbol));
     }
 
     private static JsonObject binary(String op, JsonObject left,
