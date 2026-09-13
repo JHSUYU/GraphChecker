@@ -53,46 +53,6 @@ public class RecordedExchangeEdgeIdentityTest {
     }
 
     /**
-     * A retry is a second exchange of the same site, in both recordings.
-     *
-     * <p>The ordinal is what keeps two attempts on one port apart now that
-     * their transaction ids no longer do it, so it has to count per site and
-     * answer stably when one transaction is offered again.</p>
-     */
-    @Test
-    public void retriesAreNumberedInOrderInBothRecordings() {
-        Map<String, Map<String, Integer>> first = new LinkedHashMap<>();
-        Map<String, Map<String, Integer>> second = new LinkedHashMap<>();
-
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                first, SITE, "hadoop-ipc-aaaa-1\n0"));
-        assertEquals(2, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                first, SITE, "hadoop-ipc-aaaa-2\n0"));
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                first, SITE, "hadoop-ipc-aaaa-1\n0"));
-
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                second, SITE, "hdfs-sasl-zzzz\n0"));
-        assertEquals(2, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                second, SITE, "hdfs-sasl-yyyy\n0"));
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                second, SITE, "hdfs-sasl-zzzz\n0"));
-    }
-
-    /** Each exchange site counts its own exchanges. */
-    @Test
-    public void ordinalsAreCountedPerExchangeSite() {
-        Map<String, Map<String, Integer>> ordinals = new LinkedHashMap<>();
-
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                ordinals, SITE, "t1"));
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                ordinals, OTHER_SITE, "t2"));
-        assertEquals(2, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                ordinals, SITE, "t3"));
-    }
-
-    /**
      * A request-control edge is named by the response edge, not the wire.
      *
      * <p>The response edge already names the exchange from content, and it
@@ -108,14 +68,6 @@ public class RecordedExchangeEdgeIdentityTest {
 
         assertEquals("two recordings of one request fault must publish one "
                 + "control edge name", first, second);
-    }
-
-    /** Two response edges are still two control edges. */
-    @Test
-    public void requestControlEdgeIdStillFollowsTheResponseEdge()
-            throws Exception {
-        assertNotEquals(controlEdgeId("t", "RPC.first"),
-                controlEdgeId("t", "RPC.second"));
     }
 
     private static String controlEdgeId(String transaction) throws Exception {

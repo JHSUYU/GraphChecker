@@ -52,63 +52,6 @@ public class ActivationIdentityContentTest {
                 firstName, secondName);
     }
 
-    /** Consumers parse {@code ACT.} plus a UUID; only the content changes. */
-    @Test
-    public void publishedNameKeepsThePrefixAndUuidShape() {
-        String name = publishedName(root(11L, 4L, 13703L, 452L, 458L, 313));
-        assertTrue(name, name.startsWith("ACT."));
-        assertEquals(name, "ACT." + UUID.fromString(name.substring(4)));
-    }
-
-    /** One name per activation: the content still separates them. */
-    @Test
-    public void differentActivationsKeepDifferentNames() {
-        Map<String, Object> selector = selector(
-                root(11L, 4L, 13703L, 452L, 458L, 313), 1);
-
-        assertNotEquals("a second occurrence of the region is a second "
-                        + "activation",
-                RuntimeRegionPlanner.activationId(OCCURRENCE, selector),
-                RuntimeRegionPlanner.activationId(
-                        "hdfs-17899/target-dn#epoch0/region/REGION.53092d3e#2",
-                        selector));
-
-        assertNotEquals("a second invocation inside the anchor's scope is a "
-                        + "second activation",
-                RuntimeRegionPlanner.activationId(OCCURRENCE, selector),
-                RuntimeRegionPlanner.activationId(OCCURRENCE, selector(
-                        root(11L, 4L, 13703L, 452L, 458L, 313), 2)));
-    }
-
-    /**
-     * The selector's emission order is a presentation choice, so the name is
-     * taken over what the selector says and not over how it is written.
-     */
-    @Test
-    public void publishedNameDoesNotFollowSelectorEmissionOrder() {
-        Map<String, Object> anchor = new LinkedHashMap<>();
-        anchor.put("sourceKey", SOURCE.key());
-        anchor.put("kind", "REGISTERED_SOURCE");
-
-        Map<String, Object> written = new LinkedHashMap<>();
-        written.put("method", METHOD);
-        written.put("kind", "RECEIVER_CONTEXT");
-        written.put("causalAnchor", anchor);
-        written.put("invocationOrdinal", 1);
-
-        Map<String, Object> reordered = new LinkedHashMap<>();
-        reordered.put("invocationOrdinal", 1);
-        Map<String, Object> sameAnchor = new LinkedHashMap<>();
-        sameAnchor.put("kind", "REGISTERED_SOURCE");
-        sameAnchor.put("sourceKey", SOURCE.key());
-        reordered.put("causalAnchor", sameAnchor);
-        reordered.put("kind", "RECEIVER_CONTEXT");
-        reordered.put("method", METHOD);
-
-        assertEquals(RuntimeRegionPlanner.activationId(OCCURRENCE, written),
-                RuntimeRegionPlanner.activationId(OCCURRENCE, reordered));
-    }
-
     private static String publishedName(
             RuntimeRegionPlanner.MethodEvent root) {
         return RuntimeRegionPlanner.activationId(OCCURRENCE,

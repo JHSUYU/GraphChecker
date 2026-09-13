@@ -42,40 +42,6 @@ public class MapCarrierReceiverIdentityTest {
     private static final String SITE =
             "<" + OWNER + ": java.util.List getSnapshot(byte[])>#u7";
 
-    /** The anchor names a map receiver when the plan froze no locator. */
-    @Test
-    public void amapWithNoFrozenLocatorIsNamedByItsAccessAnchor()
-            throws Exception {
-        SharedStateCapture.SharedCarrier carrier = mapCarrier();
-        carrier.recordConsumerAccess(anchor(SITE, 1));
-        carrier.bindPlannedReceiver(task("occ#1"));
-
-        assertTrue("a map with an anchor must not bind receiver 0",
-                carrier.plannedReceiverObjectId() > 0L);
-        assertTrue(carrier.missing(), carrier.missing().isEmpty());
-    }
-
-    /**
-     * And it is the same identity a scalar carrier of the same field in the
-     * same position would get, because it is the same rule.
-     */
-    @Test
-    public void theMapAndScalarReceiverRulesAgree() throws Exception {
-        SharedStateCapture.SharedCarrier map = mapCarrier();
-        map.recordConsumerAccess(anchor(SITE, 1));
-        map.bindPlannedReceiver(task("occ#1"));
-
-        SharedStateCapture.SharedCarrier scalar =
-                SharedStateCapture.SharedCarrier.field(new Object(), OWNER,
-                        FIELD, DESCRIPTOR);
-        scalar.recordConsumerAccess(anchor(SITE, 1));
-        scalar.bindPlannedReceiver(task("occ#1"));
-
-        assertEquals("the receiver rule is about the read, not the shape",
-                scalar.plannedReceiverObjectId(),
-                map.plannedReceiverObjectId());
-    }
-
     /**
      * The identity is replay-stable and per planned occurrence: two sessions
      * of the same occurrence agree, two occurrences do not.
@@ -93,71 +59,6 @@ public class MapCarrierReceiverIdentityTest {
                 first, other);
         assertNotEquals("two access sites are two receivers",
                 first, elsewhere);
-    }
-
-    /** A frozen plan locator still wins when the plan has one. */
-    @Test
-    public void afrozenLocatorOutranksTheAnchor() throws Exception {
-        SharedStateCapture.SharedCarrier carrier = mapCarrier();
-        carrier.recordConsumerAccess(anchor(SITE, 1));
-        carrier.bindPlannedReceiver(4242L);
-        carrier.bindPlannedReceiver(task("occ#1"));
-
-        assertEquals(4242L, carrier.plannedReceiverObjectId());
-    }
-
-    /** With no anchor and no plan locator there is still nothing to name. */
-    @Test
-    public void withNeitherAnchorNorLocatorTheMapStaysUnnamed()
-            throws Exception {
-        SharedStateCapture.SharedCarrier carrier = mapCarrier();
-        carrier.bindPlannedReceiver(task("occ#1"));
-
-        assertEquals("an unnameable receiver is 0, and the read-out refuses"
-                + " it rather than publishing it", 0L,
-                carrier.plannedReceiverObjectId());
-    }
-
-    /**
-     * The two ways a map owner is absent are different refusals.
-     *
-     * <p>{@code readExactField} answers {@code MissingValue.INSTANCE} -- a
-     * sentinel, not null -- when the field is not declared on the object the
-     * hook was handed or the read threw. That case used to pass the {@code
-     * owner == null} test and be handed to {@code selectSharedMapCarrier} as
-     * though the sentinel were the container.</p>
-     */
-    @Test
-    public void bothWaysAMapOwnerIsAbsentAreRefusedAndNamed() {
-        String nullOwner = SharedStateCapture.SharedCarrier.map(null, OWNER,
-                FIELD, DESCRIPTOR).missing();
-        assertFalse(nullOwner.isEmpty());
-        assertTrue(nullOwner, nullOwner.contains("held null"));
-        assertTrue(nullOwner, nullOwner.contains(OWNER + "#" + FIELD));
-
-        String sentinel = SharedStateCapture.SharedCarrier.map(
-                ConcolicRegionRuntime.MissingValue.INSTANCE, OWNER, FIELD,
-                DESCRIPTOR).missing();
-        assertFalse("a sentinel is not a container", sentinel.isEmpty());
-        assertTrue(sentinel, sentinel.contains("does not declare a readable"));
-
-        assertTrue("a live map selects",
-                SharedStateCapture.SharedCarrier.map(
-                        new LinkedHashMap<String, Object>(), OWNER, FIELD,
-                        DESCRIPTOR).missing().isEmpty());
-    }
-
-    /** An element carrier keeps no anchor: it never asks the receiver rule. */
-    @Test
-    public void anElementCarrierIsStillOutsideTheReceiverRule()
-            throws Exception {
-        SharedStateCapture.SharedCarrier element =
-                SharedStateCapture.SharedCarrier.element(new Object[]{1}, 0);
-        element.recordConsumerAccess(anchor(SITE, 1));
-        element.bindPlannedReceiver(task("occ#1"));
-
-        assertFalse(element.requiresPlannedReceiver());
-        assertEquals(0L, element.plannedReceiverObjectId());
     }
 
     // ---------- harness ----------

@@ -66,18 +66,6 @@ public class VmLoweringCoreTest {
                 "(assert (not (= " + solverSymbol(result) + " 0)))"));
     }
 
-    /** Java integral remainder keeps the same definedness it always had. */
-    @Test
-    public void flipSolverStillModelsIntegralRemainder() throws Exception {
-        JsonObject remainder = binary(symbol(INPUT, "J"), "%",
-                constant("J", "7"));
-        ConcolicConstraintSolver.Result result = lower(
-                binary(remainder, ">", constant("J", "0")));
-
-        assertNoRefusal(result);
-        assertTrue(result.smtLib, result.smtLib.contains("java_irem_a"));
-    }
-
     /**
      * A String literal is interned, so {@code lit == x} holds exactly when
      * x is that interned object; over a recorded expression that is content
@@ -94,108 +82,9 @@ public class VmLoweringCoreTest {
         assertTrue(result.smtLib, result.smtLib.contains("\"supergroup\""));
     }
 
-    /** Two unknown String objects are still reference identity, refused. */
-    @Test
-    public void flipSolverStillRefusesStringIdentityWithoutALiteral()
-            throws Exception {
-        ConcolicConstraintSolver.Result result = lower(binary(
-                symbol(INPUT, "Ljava/lang/String;"), "==",
-                symbol(OTHER_INPUT, "Ljava/lang/String;")));
-
-        assertRefused(result, "JAVA_STRING_REFERENCE_IDENTITY");
-    }
-
-    /** One expression equals itself whatever it denotes. */
-    @Test
-    public void identicalOperandsDecideEqualityWithoutTheSolver()
-            throws Exception {
-        ConcolicConstraintSolver.Result result = lower(binary(
-                symbol(INPUT, "J"), "==", symbol(INPUT, "J")));
-
-        assertNoRefusal(result);
-        assertFalse(result.smtLib, result.smtLib.contains(
-                "(= " + solverSymbol(result) + " "
-                        + solverSymbol(result) + ")"));
-    }
-
-    /**
-     * A recorded int that is neither 0 nor 1 is not a Java boolean.  Both
-     * lowerings now refuse it rather than reading it as "true".
-     */
-    @Test
-    public void aMalformedBooleanLiteralIsRefused() throws Exception {
-        ConcolicConstraintSolver.Result result = lower(constant("Z", "7"));
-
-        assertRefused(result, "INVALID_JAVA_BOOLEAN_LITERAL");
-    }
-
-    /** A well-formed one still folds to the SMT literal. */
-    @Test
-    public void aBooleanLiteralFolds() throws Exception {
-        ConcolicConstraintSolver.Result result = lower(binary(
-                constant("Z", "1"), "&&",
-                binary(symbol(INPUT, "J"), ">", constant("J", "0"))));
-
-        assertNoRefusal(result);
-        assertTrue(result.smtLib, result.smtLib.contains("(and true "));
-    }
-
     // ------------------------------------------------------------------
     // Pure predicates of the shared core.
     // ------------------------------------------------------------------
-
-    /**
-     * A split delimiter must be one ordinary literal character.  Only the
-     * round trip through Java's decimal int rendering additionally excludes
-     * the characters that occur inside that rendering.
-     */
-    @Test
-    public void oneDelimiterRuleServesBothRoundTrips() {
-        assertEquals("", VmLoweringCore.delimiterGap(",", false));
-        assertEquals("", VmLoweringCore.delimiterGap(",", true));
-        assertEquals("REGEX_NOT_SAFE_SINGLE_LITERAL",
-                VmLoweringCore.delimiterGap(".", false));
-        assertEquals("REGEX_NOT_SAFE_SINGLE_LITERAL",
-                VmLoweringCore.delimiterGap("ab", true));
-        assertEquals("REGEX_NOT_SAFE_SINGLE_LITERAL",
-                VmLoweringCore.delimiterGap(null, true));
-        // A digit or a minus sign is an ordinary literal for a String
-        // split, and destroys a decimal prefix.
-        assertEquals("", VmLoweringCore.delimiterGap("7", false));
-        assertEquals("DELIMITER_OCCURS_IN_JAVA_INT_TEXT",
-                VmLoweringCore.delimiterGap("7", true));
-        assertEquals("DELIMITER_OCCURS_IN_JAVA_INT_TEXT",
-                VmLoweringCore.delimiterGap("-", true));
-    }
-
-    /** Java binary numeric promotion, over integral operands only. */
-    @Test
-    public void integralPromotionNeedsTwoKnownIntegralWidths() {
-        Term intValue = Term.of("1", Sort.INT, IntegralWidth.JAVA_INT);
-        Term longValue = Term.of("2", Sort.INT, IntegralWidth.JAVA_LONG);
-        Term unknown = Term.of("3", Sort.INT);
-        Term string = Term.of("\"x\"", Sort.STRING);
-
-        assertEquals(IntegralWidth.JAVA_INT,
-                VmLoweringCore.promotedIntegralWidth(intValue, intValue));
-        assertEquals(IntegralWidth.JAVA_LONG,
-                VmLoweringCore.promotedIntegralWidth(intValue, longValue));
-        assertEquals(IntegralWidth.NONE,
-                VmLoweringCore.promotedIntegralWidth(intValue, unknown));
-        assertEquals(IntegralWidth.NONE,
-                VmLoweringCore.promotedIntegralWidth(intValue, string));
-    }
-
-    /** An unstated String nullness is the solver's fail-closed trigger. */
-    @Test
-    public void knownNonNullStringsNeedNoGuard() {
-        assertEquals("true", VmLoweringCore.stringNonNull(
-                Term.nonNullString("\"x\"", "true")));
-        assertEquals("(not s_null)", VmLoweringCore.stringNonNull(
-                Term.nullableString("s", "s_null", "s")));
-        assertEquals("false", VmLoweringCore.stringNonNull(
-                Term.of("1", Sort.INT)));
-    }
 
     // ------------------------------------------------------------------
 

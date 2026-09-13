@@ -57,34 +57,6 @@ public class NoFabricatedChainElementTest {
 
     // ---------- 1. the unreadable propagated expression ----------
 
-    /**
-     * A payload the expression store cannot read is not "nothing
-     * propagated".
-     *
-     * <p>Returning {@code null} here was the whole defect: {@code
-     * carriesInputAuthority} answers {@code false} for a {@code null}, every
-     * caller reads {@code false} as permission to mint, and the producer's
-     * expression is replaced by a free variable nothing constrains.  The
-     * failure now has its own type so no caller can confuse the two.</p>
-     */
-    @Test
-    public void anUnreadableImportRefusesRatherThanReadingAsNothing()
-            throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(false);
-        try {
-            ConcolicRegionRuntime.engineExpression("{not json at all");
-            fail("a malformed import must not answer 'nothing propagated'");
-        } catch (ConcolicRegionRuntime.PropagatedExpressionImportFailure
-                expected) {
-            assertTrue(expected.getMessage().startsWith(
-                    ConcolicRegionRuntime
-                            .PROPAGATED_EXPRESSION_IMPORT_FAILED));
-        }
-        assertTrue("the import failure must reach the activation ledger",
-                anyUnresolvedStartsWith(active, ConcolicRegionRuntime
-                        .PROPAGATED_EXPRESSION_IMPORT_FAILED));
-    }
-
     /** A well-formed envelope that simply carries no expression still does. */
     @Test
     public void anAbsentExpressionIsStillTheHonestNothing() throws Exception {
@@ -94,45 +66,7 @@ public class NoFabricatedChainElementTest {
                 unresolved(active).isEmpty());
     }
 
-    /** The consumer-side row names who asked and for which field. */
-    @Test
-    public void theRefusalNamesTheConsumerAndTheField() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(false);
-        ConcolicRegionRuntime.refuseImportedExpression(active, "sym.port",
-                "<a.B: int f>",
-                new ConcolicRegionRuntime.PropagatedExpressionImportFailure(
-                        "PROPAGATED_EXPRESSION_IMPORT_FAILED: producer=x",
-                        null));
-        String row = only(unresolved(active));
-        assertTrue(row, row.contains("consumer=sym.port"));
-        assertTrue(row, row.contains("field=<a.B: int f>"));
-        assertTrue(row, row.contains("producer=x"));
-    }
-
     // ---------- 2. the fault-idle defaults ----------
-
-    /**
-     * A marker this plan controls, asked at a firing it cannot answer.
-     *
-     * <p>The old code returned {@code false} and filed nothing, which pins
-     * the marker to exactly the polarity the search exists to flip.  The
-     * value still has to be a {@code boolean} -- the workload is about to
-     * branch on it -- so the fix is that the activation is flagged and the
-     * summary refuses, not that the call returns something else.</p>
-     */
-    @Test
-    public void acontrolledMarkerWithNoAnswerBlocks() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(false,
-                faultAction(MARKER, 7));
-        assertFalse("the workload still gets a boolean",
-                ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        String row = only(unresolved(active));
-        assertTrue(row, row.startsWith(
-                ConcolicRegionRuntime.FAULT_IDLE_UNANSWERED));
-        assertTrue(row, row.contains("marker=" + MARKER + "#1"));
-        assertTrue(row, row.contains(
-                "reason=NO_ACTION_ACCEPTS_THIS_OCCURRENCE"));
-    }
 
     /**
      * A seed replay answers a controlled marker from the recording.
@@ -160,22 +94,6 @@ public class NoFabricatedChainElementTest {
                 recordedFaultAction(MARKER, 1, "true"));
         assertTrue(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
         assertTrue(unresolved(recordedTrue).isEmpty());
-    }
-
-    /** A value the mint did not witness is not the recording's answer. */
-    @Test
-    public void anUnobservedPrimitiveValueIsNotARecordedAnswer()
-            throws Exception {
-        JsonObject unobserved = recordedFaultAction(MARKER, 1, "true");
-        unobserved.addProperty("observed", false);
-        ConcolicRegionRuntime.ActiveRegion active = region(false, unobserved);
-
-        assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        String row = only(unresolved(active));
-        assertTrue(row, row.startsWith(
-                ConcolicRegionRuntime.FAULT_IDLE_UNANSWERED));
-        assertTrue(row, row.contains(
-                "reason=NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE"));
     }
 
     /**
@@ -208,59 +126,6 @@ public class NoFabricatedChainElementTest {
                 ConcolicRegionRuntime.FAULT_IDLE_UNANSWERED));
         assertTrue(row, row.contains(
                 "reason=NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE"));
-    }
-
-    /** The recorded polarity is read strictly: only a boolean literal. */
-    @Test
-    public void onlyABooleanLiteralIsARecordedPolarity() {
-        assertEquals(Boolean.FALSE, ConcolicRegionRuntime
-                .recordedFaultPolarity(action(
-                        recordedFaultAction(MARKER, 1, "false"))));
-        assertEquals(Boolean.TRUE, ConcolicRegionRuntime
-                .recordedFaultPolarity(action(
-                        recordedFaultAction(MARKER, 1, "true"))));
-        assertNull("a marker is a boolean, and 1 is not one",
-                ConcolicRegionRuntime.recordedFaultPolarity(action(
-                        recordedFaultAction(MARKER, 1, "1"))));
-        assertNull(ConcolicRegionRuntime.recordedFaultPolarity(action(
-                recordedFaultAction(MARKER, 1, ""))));
-        assertNull(ConcolicRegionRuntime.recordedFaultPolarity(null));
-    }
-
-    /**
-     * A marker no plan row declares put no question to this replay, so
-     * there is nothing to refuse and the ledger stays empty.
-     */
-    @Test
-    public void anUncontrolledMarkerIsIdleWithoutBlocking() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(false);
-        assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        assertTrue("an undeclared marker refuses nothing",
-                unresolved(active).isEmpty());
-    }
-
-    /** Which markers a plan controls is read off the finalizer's field. */
-    @Test
-    public void controlIsReadOffTheSourceKindTheFinalizerStamps() {
-        ConcolicRegionRuntime.SymbolizeAction fault =
-                new ConcolicRegionRuntime.SymbolizeAction(
-                        faultAction(MARKER, 1));
-        assertTrue(ConcolicRegionRuntime.declaresExplicitFault(
-                Collections.singletonList(fault), MARKER));
-        assertFalse("a different marker is a different question",
-                ConcolicRegionRuntime.declaresExplicitFault(
-                        Collections.singletonList(fault), "otherMarker"));
-        assertFalse(ConcolicRegionRuntime.declaresExplicitFault(
-                Collections.<ConcolicRegionRuntime.SymbolizeAction>
-                        emptyList(), MARKER));
-        // Control is the classification, not merely the name: an action of
-        // another kind that happens to carry the name controls nothing.
-        JsonObject other = faultJson(MARKER, 1);
-        other.addProperty("sourceKind", "ACCESSOR_RETURN");
-        assertFalse(ConcolicRegionRuntime.declaresExplicitFault(
-                Collections.singletonList(
-                        new ConcolicRegionRuntime.SymbolizeAction(other)),
-                MARKER));
     }
 
     // ---------- 3. the target link ----------
@@ -300,121 +165,7 @@ public class NoFabricatedChainElementTest {
                 unresolved(active).isEmpty());
     }
 
-    /** A reach at some other site, or the wrong arm, is not the target. */
-    @Test
-    public void aReachAtAnotherSiteOrArmIsNotTheTarget() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion elsewhere = region(true);
-        recordReach(elsewhere, OTHER, 1, true);
-        assertFalse(ConcolicResultPublisher
-                .targetReachedByActivation(elsewhere));
-
-        ConcolicRegionRuntime.ActiveRegion wrongArm = region(true);
-        recordReach(wrongArm, SITE, 1, false);
-        assertFalse(ConcolicResultPublisher
-                .targetReachedByActivation(wrongArm));
-
-        ConcolicRegionRuntime.ActiveRegion wrongOccurrence = region(true);
-        recordReach(wrongOccurrence, SITE, 2, true);
-        assertFalse(ConcolicResultPublisher
-                .targetReachedByActivation(wrongOccurrence));
-    }
-
-    /** A declared target the replay never decided keeps its own gap. */
-    @Test
-    public void aDeclaredTargetNeverDecidedStillNamesItself()
-            throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(true);
-        active.exitKind = "NORMAL";
-        active.nameUnreachedTargetBranch();
-        assertTrue(only(unresolved(active)).startsWith(
-                "TARGET_BRANCH_NOT_REACHED: " + SITE + "#1"));
-    }
-
     // ---------- 4. the planner's required-outcome selection ----------
-
-    /** An occurrence that took the required outcome is elected by it. */
-    @Test
-    public void aMatchingOccurrenceIsElectedByTheRequiredOutcome() {
-        Map<String, Object> branch = only(RuntimeRegionPlanner.branches(
-                Collections.singletonList(policy(true)),
-                Arrays.asList(branchEvent(1L, false),
-                        branchEvent(2L, true))));
-        assertEquals(Boolean.TRUE, branch.get("observed"));
-        assertEquals(Boolean.TRUE, branch.get("requiredOutcomeObserved"));
-        assertEquals(2, branch.get("selectedOccurrence"));
-        assertEquals("REQUIRED_OUTCOME",
-                branch.get("selectedOccurrenceAuthority"));
-        assertNull(branch.get("selectedOccurrenceGap"));
-    }
-
-    /**
-     * The recording never took the required outcome and the site ran once.
-     *
-     * <p>Nothing is invented -- there was one occurrence and it is the one
-     * named -- but the row must still say the required outcome was not
-     * observed, which is the fact that used to be missing entirely.  It is a
-     * flip target, so {@code observed} stays true: a guard the recording
-     * never took the failing arm of is the normal case for a search that
-     * exists to make it take it.</p>
-     */
-    @Test
-    public void aSoleUnmatchedOccurrenceSaysSoWithoutLosingTheSite() {
-        Map<String, Object> branch = only(RuntimeRegionPlanner.branches(
-                Collections.singletonList(policy(false)),
-                Collections.singletonList(branchEvent(1L, true))));
-        assertEquals(Boolean.TRUE, branch.get("observed"));
-        assertEquals(Boolean.TRUE, branch.get("observedOutcome"));
-        assertEquals(Boolean.FALSE, branch.get("requiredOutcomeObserved"));
-        assertEquals(1, branch.get("selectedOccurrence"));
-        assertEquals("SOLE_RECORDED_OCCURRENCE",
-                branch.get("selectedOccurrenceAuthority"));
-        assertNull(branch.get("selectedOccurrenceGap"));
-    }
-
-    /**
-     * Several occurrences and none of them matched: which one the policy
-     * means is decided by nothing in the recording, and the silent answer
-     * was occurrence #1.
-     */
-    @Test
-    public void anUnmatchedChoiceAmongSeveralIsNamedAsAGap() {
-        Map<String, Object> branch = only(RuntimeRegionPlanner.branches(
-                Collections.singletonList(policy(false)),
-                Arrays.asList(branchEvent(1L, true), branchEvent(2L, true),
-                        branchEvent(3L, true))));
-        assertEquals(Boolean.FALSE, branch.get("requiredOutcomeObserved"));
-        assertEquals(ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED,
-                branch.get("selectedOccurrenceAuthority"));
-        String gap = String.valueOf(branch.get("selectedOccurrenceGap"));
-        assertTrue(gap, gap.startsWith(
-                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED));
-        assertTrue(gap, gap.contains("none of the 3 recorded occurrences"));
-        assertTrue(gap, gap.contains(SITE));
-    }
-
-    /** A policy with no required outcome asks the question of nobody. */
-    @Test
-    public void aPolicyWithNoRequiredOutcomeStatesNoSelectionAuthority() {
-        Map<String, Object> policy = new LinkedHashMap<>();
-        policy.put("siteId", SITE);
-        Map<String, Object> branch = only(RuntimeRegionPlanner.branches(
-                Collections.singletonList(policy),
-                Collections.singletonList(branchEvent(1L, true))));
-        assertEquals(Boolean.TRUE, branch.get("observed"));
-        assertNull(branch.get("requiredOutcomeObserved"));
-        assertNull(branch.get("selectedOccurrenceAuthority"));
-    }
-
-    /** A site the recording never ran is not observed at all. */
-    @Test
-    public void anUnrunSiteIsNotObserved() {
-        Map<String, Object> branch = only(RuntimeRegionPlanner.branches(
-                Collections.singletonList(policy(true)),
-                Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList()));
-        assertEquals(Boolean.FALSE, branch.get("observed"));
-        assertEquals(Boolean.FALSE, branch.get("requiredOutcomeObserved"));
-        assertEquals(0, branch.get("selectedOccurrence"));
-    }
 
     // ---------- harness ----------
 

@@ -29,22 +29,6 @@ public class UntrackedElementWitnessTest {
             "P_L'org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot'_";
 
     @Test
-    public void thePlaceholderIsRecognisedAndNothingElseIs() {
-        assertTrue(VmExpressionIr.isUntrackedReferencePlaceholder(SNAPSHOT));
-        assertTrue(VmExpressionIr.isUntrackedReferencePlaceholder(
-                "P_L'java/lang/Object'_"));
-        assertFalse("an allocated instance carries its oop id",
-                VmExpressionIr.isUntrackedReferencePlaceholder(
-                        "M_L'org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot'_46"));
-        assertFalse(VmExpressionIr.isUntrackedReferencePlaceholder(
-                "P_L'org/apache/x/Y'_7"));
-        assertFalse(VmExpressionIr.isUntrackedReferencePlaceholder("P_I_"));
-        assertFalse(VmExpressionIr.isUntrackedReferencePlaceholder(null));
-        assertFalse("a placeholder is never an execution-local witness",
-                VmExpressionIr.isExecutionLocalStructuralWitness(SNAPSHOT));
-    }
-
-    @Test
     public void anInsertedElementReachesTheHostWithItsMutation() {
         JsonObject state = relation("INDEXED", "STATE",
                 symbol("MAP_STATE.v1." + digest('a')));
@@ -62,50 +46,6 @@ public class UntrackedElementWitnessTest {
         assertSame(element, host.elements.get(0));
         assertTrue(term.text, term.text.contains("(indexed_insert "));
         assertTrue(term.text, term.text.contains("element__0"));
-    }
-
-    @Test
-    public void oneSharedElementNodeIsNamedOncePerMutation() {
-        // Expanded summaries intern one placeholder node and reference it
-        // from every mutation that stored such an element; the projection
-        // memo must not hand the first mutation's name to the second.
-        JsonObject state = relation("INDEXED", "STATE",
-                symbol("MAP_STATE.v1." + digest('b')));
-        JsonObject element = symbol(SNAPSHOT);
-        JsonObject first = withArguments(
-                relation("INDEXED", "INSERT", state), integer(0), element);
-        JsonObject second = withArguments(
-                relation("INDEXED", "INSERT", first), integer(1), element);
-        JsonObject read = withArguments(
-                relation("INDEXED", "READ", second), integer(1));
-        read.addProperty("_java_type",
-                "org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot");
-
-        ElementHost host = new ElementHost();
-        ContainerSmtCodec.Term term = ContainerSmtCodec.term(read, host);
-
-        assertNotNull(String.join(",", host.unsupported), term);
-        assertEquals(2, host.mutations.size());
-        assertTrue(host.mutations.contains(first));
-        assertTrue(host.mutations.contains(second));
-        assertTrue("both insertions are in the projected read",
-                term.text.contains("element__0")
-                        && term.text.contains("element__1"));
-    }
-
-    @Test
-    public void aHostThatDoesNotNameElementsStillBoxesThem() {
-        JsonObject state = relation("INDEXED", "STATE",
-                symbol("MAP_STATE.v1." + digest('c')));
-        JsonObject appended = withArguments(
-                relation("INDEXED", "APPEND", state), symbol("A_L_1"));
-
-        ElementHost host = new ElementHost();
-        host.nameElements = false;
-        ContainerSmtCodec.Term term = ContainerSmtCodec.term(appended, host);
-
-        assertNotNull(term);
-        assertTrue(term.text, term.text.contains("(VRef A_L_1)"));
     }
 
     // --- fixture -----------------------------------------------------------

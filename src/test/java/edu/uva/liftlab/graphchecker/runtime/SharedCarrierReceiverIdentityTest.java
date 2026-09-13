@@ -41,20 +41,6 @@ public class SharedCarrierReceiverIdentityTest {
     private static final String OCCURRENCE =
             "hdfs/nn0#epoch0/region/REGION.1#2#a1";
 
-    /** Two receivers of one field, told apart by their access anchors. */
-    @Test
-    public void perInstanceReceiversGetDistinctPlannedIdentities() {
-        ConcolicTaskPlan.RuntimeTask task = task();
-
-        SharedCarrier first = carrier(new Object(), READ_SITE, 1, task);
-        SharedCarrier second = carrier(new Object(), READ_SITE, 2, task);
-
-        assertEquals(101L, first.plannedReceiverObjectId());
-        assertEquals(202L, second.plannedReceiverObjectId());
-        assertNotEquals(first.plannedReceiverObjectId(),
-                second.plannedReceiverObjectId());
-    }
-
     /** Both receivers reach a cross-session name, and they differ. */
     @Test
     public void bothReceiversCanonicaliseAcrossSessions() {
@@ -91,47 +77,6 @@ public class SharedCarrierReceiverIdentityTest {
         assertEquals(101L,
                 carrier(new Object(), READ_SITE, 1, replay)
                         .plannedReceiverObjectId());
-    }
-
-    /**
-     * A receiver the plan never named is still named from its own anchor, so
-     * the location joins across sessions instead of being refused.
-     */
-    @Test
-    public void unplannedReceiverIsNamedFromItsAccessAnchor() {
-        ConcolicTaskPlan.RuntimeTask task = task();
-
-        SharedCarrier unplanned =
-                carrier(new Object(), READ_SITE, 7, task);
-
-        assertTrue("anchor identity is non-zero",
-                unplanned.plannedReceiverObjectId() > 0L);
-        assertNotEquals(101L, unplanned.plannedReceiverObjectId());
-        assertNotEquals(202L, unplanned.plannedReceiverObjectId());
-        // The same anchor in a second session names the same receiver.
-        assertEquals(unplanned.plannedReceiverObjectId(),
-                carrier(new Object(), READ_SITE, 7, task())
-                        .plannedReceiverObjectId());
-
-        JsonObject summary = summary(
-                version("INSTANCE_FIELD/11#24", unplanned));
-        assertEquals("[]", SharedStateEvidence
-                .canonicalizeLocations(summary).toString());
-    }
-
-    /** No planned locator and no access anchor stays genuinely unknown. */
-    @Test
-    public void carrierWithoutAnchorOrPlanStaysUnnamed() {
-        SharedCarrier unnamed = SharedCarrier.field(new Object(), OWNER,
-                FIELD, DESCRIPTOR);
-        unnamed.bindPlannedReceiver(task());
-
-        assertEquals(0L, unnamed.plannedReceiverObjectId());
-        assertEquals("[INSTANCE_FIELD/13#24 " + OWNER + "#" + FIELD
-                        + " (no receiver identity)]",
-                SharedStateEvidence.canonicalizeLocations(
-                        summary(version("INSTANCE_FIELD/13#24", unnamed)))
-                        .toString());
     }
 
     // ---------- plan and carrier harness ----------

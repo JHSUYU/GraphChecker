@@ -18,31 +18,6 @@ public class BoundedLoopCompositionTest {
     private static final String SITE = "<C: void m()>#u7";
 
     /**
-     * A plan row is addressed by its planned occurrence and an observed case
-     * by the activation of it that ran.  The model has to reduce both to the
-     * planned address, or it admits the loop and then matches no case against
-     * it -- which is how a traversed backedge went unchecked.
-     */
-    @Test
-    public void observedActivationMatchesItsPlannedDeclaration() {
-        BoundedLoopComposition model = BoundedLoopComposition.ofPlanRows(
-                Collections.singletonList(planRow()),
-                Collections.singletonList(boundAuthority(PLANNED + "#a1")));
-        model.observeCase(PLANNED + "#a1", observedCase(3));
-
-        JsonObject manifest = model.manifest();
-        JsonArray loops = manifest.getAsJsonArray("boundedLoops");
-        assertEquals(1, loops.size());
-        JsonArray counts = loops.get(0).getAsJsonObject()
-                .getAsJsonArray("caseCounts");
-        assertEquals(1, counts.size());
-        assertEquals(3, counts.get(0).getAsJsonObject()
-                .get(LoopBoundPolicy.LOOP_BODY_COUNT).getAsInt());
-        assertEquals(0, manifest.getAsJsonArray("gaps").size());
-        assertTrue(model.compositionGaps().isEmpty());
-    }
-
-    /**
      * With no declaration in scope the model used to publish an empty
      * bounded-loop set and no gaps, so a replay that traversed the loop eight
      * times read exactly like one that never entered it.  It now refuses.

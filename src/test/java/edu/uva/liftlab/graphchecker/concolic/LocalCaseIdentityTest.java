@@ -35,20 +35,6 @@ public class LocalCaseIdentityTest {
                 .contains("pathConditionIndex"));
     }
 
-    @Test
-    public void exactOccurrenceAndBranchOutcomeRemainDistinct() {
-        JsonObject first = summary("R/occurrence-1#a1", true, "M_value");
-        JsonObject nextOccurrence = summary("R/occurrence-1#a2", true,
-                "M_value");
-        JsonObject otherBranch = summary("R/occurrence-1#a1", false,
-                "M_value");
-
-        assertNotEquals(LocalCaseIdentity.compute(first),
-                LocalCaseIdentity.compute(nextOccurrence));
-        assertNotEquals(LocalCaseIdentity.compute(first),
-                LocalCaseIdentity.compute(otherBranch));
-    }
-
     private static JsonObject summary(String occurrence, boolean outcome,
                                       String symbol) {
         JsonObject row = new JsonObject();

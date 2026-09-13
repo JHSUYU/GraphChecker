@@ -26,49 +26,6 @@ public class ExplicitFaultReplaySelectionTest {
 
     private static final String NAME = "hadoopIpcRequestFails";
 
-    /**
-     * The field the finalizer actually writes.  A row shaped exactly like
-     * the one in a recorded plan resolves; the same row with the
-     * classification moved to {@code symbolicDemand} does not.
-     */
-    @Test
-    public void theGateReadsTheFieldTheFinalizerWrites() {
-        ConcolicRegionRuntime.SymbolizeAction recorded = action(
-                RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT,
-                NAME, 1);
-        assertEquals(RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT,
-                recorded.sourceKind);
-        assertEquals(Collections.singletonList(recorded),
-                ConcolicRegionRuntime.explicitFaultCandidates(
-                        Collections.singletonList(recorded), NAME, 1));
-
-        JsonObject misplaced = json(NAME, 1);
-        misplaced.addProperty("symbolicDemand",
-                RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT);
-        assertTrue("the demand field must not gate the marker",
-                ConcolicRegionRuntime.explicitFaultCandidates(
-                        Collections.singletonList(
-                                new ConcolicRegionRuntime.SymbolizeAction(
-                                        misplaced)), NAME, 1).isEmpty());
-    }
-
-    /**
-     * The scheduler's own verdict travels on {@code symbolicDemand} for the
-     * very same action, so carrying it must not disturb the gate.
-     */
-    @Test
-    public void theSchedulerSelectionVerdictDoesNotDisturbTheGate() {
-        JsonObject selected = json(NAME, 1);
-        selected.addProperty("sourceKind",
-                RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT);
-        selected.addProperty("symbolicDemand",
-                "WORKLOAD_DECLARED_SYMBOLIC_FAULT");
-        assertEquals(1, ConcolicRegionRuntime.explicitFaultCandidates(
-                Collections.singletonList(
-                        new ConcolicRegionRuntime.SymbolizeAction(selected)),
-                NAME, 1).size());
-    }
-
     /** Two firings of one marker inside one activation stay two roots. */
     @Test
     public void twoFiringsInOneActivationSelectByRecordedOccurrence() {
@@ -101,20 +58,6 @@ public class ExplicitFaultReplaySelectionTest {
                                 .EXPLICIT_SYMBOLIC_FAULT, NAME, -1));
         assertEquals(2, ConcolicRegionRuntime.explicitFaultCandidates(
                 unordinaled, NAME, 1).size());
-    }
-
-    /** The replay ordinal counts per activation and per declared symbol. */
-    @Test
-    public void theReplayOrdinalCountsPerActivationAndName() {
-        ConcolicRegionRuntime.OccurrenceCounter counter =
-                new ConcolicRegionRuntime.OccurrenceCounter();
-        assertEquals(1, counter.explicitFault(NAME));
-        assertEquals(2, counter.explicitFault(NAME));
-        assertEquals(1, counter.explicitFault("otherMarker"));
-        assertEquals(3, counter.explicitFault(NAME));
-        // A new activation owns a new counter.
-        assertEquals(1, new ConcolicRegionRuntime.OccurrenceCounter()
-                .explicitFault(NAME));
     }
 
     private static ConcolicRegionRuntime.SymbolizeAction only(

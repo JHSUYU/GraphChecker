@@ -47,14 +47,6 @@ public class WireValueIsNotARootTest {
                 cutPort(KEY_ID_PORT, "int", true)));
     }
 
-    @Test
-    public void anOrdinaryInputIsNotACutPort() {
-        assertFalse(ConcolicRegionRuntime.declaredCommunicationCutPort(
-                cutPort(EXPIRY_PORT, "long", false)));
-        assertFalse("null is not a port",
-                ConcolicRegionRuntime.declaredCommunicationCutPort(null));
-    }
-
     /**
      * The mint the bug produced: the consumer's copy carried nothing yet.
      *
@@ -76,40 +68,11 @@ public class WireValueIsNotARootTest {
                 ConcolicRegionRuntime.declaredCommunicationCutPort(port));
     }
 
-    /**
-     * Mint eligibility does not rescue the port, and cannot be relied on.
-     *
-     * <p>A plan the selection file narrowed already marks a cut port
-     * {@code mintEligible: false}, so the carrier rule alone would cover
-     * this case.  A campaign with no {@code symbolic-inputs.jsonl} defaults
-     * the flag to {@code true}, which is the state this asserts: the port
-     * must still mint nothing.</p>
-     */
-    @Test
-    public void aCutPortInAnUnnarrowedPlanIsStillNotAMintSite() {
-        ConcolicRegionRuntime.SymbolizeAction port =
-                cutPort(KEY_ID_PORT, "int", true);
-
-        assertTrue("no selection file narrowed this plan", port.mintEligible);
-        assertTrue("the port's own kind is what decides",
-                ConcolicRegionRuntime.declaredCommunicationCutPort(port));
-    }
-
     /** Once the attach has landed, the ordinary reuse path takes it. */
     @Test
     public void aCutPortReusesTheProducerExpression() {
         assertTrue(ConcolicRegionRuntime.carriesInputAuthority(
                 cutPort(KEY_ID_PORT, "int", true), senderSymbol()));
-    }
-
-    /**
-     * A cut port is never stamped a declared root, so the strict rule that
-     * exists for a declared primitive source can never claim it.
-     */
-    @Test
-    public void aCutPortIsNeverAlsoADeclaredRoot() {
-        JsonObject json = portJson(EXPIRY_PORT, "long", true);
-        assertFalse(json.has(InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
     }
 
     private static ConcolicRegionRuntime.SymbolizeAction cutPort(

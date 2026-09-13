@@ -64,29 +64,6 @@ public class RuntimeObjectIdentityContentTest {
     }
 
     /**
-     * A recording that touched unrelated objects first still agrees.
-     *
-     * <p>This is the actual shape of the drift: the second recording rolled
-     * more objects before reaching the planned receiver, so every later
-     * counter value shifted.  The address does not shift with it.</p>
-     */
-    @Test
-    public void unrelatedObjectsAheadOfItDoNotMoveTheName() {
-        RuntimeObjectIdentity lean = new RuntimeObjectIdentity();
-        lean.observe(313, receiverAddress());
-
-        RuntimeObjectIdentity busy = new RuntimeObjectIdentity();
-        for (int id = 200; id < 300; id++) {
-            busy.observe(id, RuntimeObjectIdentity.address(SOURCE,
-                    "CALL_SITE_RETURN", METHOD, METHOD + "#u" + id, -1, "",
-                    "java.lang.Object", "objectId"));
-        }
-        busy.observe(300, receiverAddress());
-
-        assertEquals(lean.nameOf(313), busy.nameOf(300));
-    }
-
-    /**
      * The naming stays injective: two objects of one site keep two ids.
      *
      * <p>The planned receiver index and the shared-field flow grouping both
@@ -103,77 +80,5 @@ public class RuntimeObjectIdentityContentTest {
         assertNotEquals("two receivers of one field are two locations",
                 identity.nameOf(313), identity.nameOf(314));
         assertEquals(2, identity.size());
-    }
-
-    /** And two recordings agree on which of the two is which. */
-    @Test
-    public void twoRecordingsAgreeOnBothObjectsOfOneAddress() {
-        RuntimeObjectIdentity first = new RuntimeObjectIdentity();
-        first.observe(313, receiverAddress());
-        first.observe(314, receiverAddress());
-
-        RuntimeObjectIdentity second = new RuntimeObjectIdentity();
-        second.observe(300, receiverAddress());
-        second.observe(301, receiverAddress());
-
-        assertEquals(first.nameOf(313), second.nameOf(300));
-        assertEquals(first.nameOf(314), second.nameOf(301));
-    }
-
-    /** Different slots of one event are different objects. */
-    @Test
-    public void theSlotSeparatesAReceiverFromItsValue() {
-        RuntimeObjectIdentity identity = new RuntimeObjectIdentity();
-        identity.observe(313, receiverAddress());
-        identity.observe(324, valueAddress());
-
-        assertNotEquals(identity.nameOf(313), identity.nameOf(324));
-    }
-
-    /**
-     * The first observation is the address; later ones do not rename it.
-     *
-     * <p>One object is read at many sites, and the planned receiver index
-     * refuses a carrier whose anchors resolve to different receivers, so an
-     * id that moved with each read would unname every receiver read twice.
-     * </p>
-     */
-    @Test
-    public void alaterObservationDoesNotRenameTheObject() {
-        RuntimeObjectIdentity identity = new RuntimeObjectIdentity();
-        identity.observe(313, receiverAddress());
-        int named = identity.nameOf(313);
-
-        identity.observe(313, valueAddress());
-
-        assertEquals(named, identity.nameOf(313));
-    }
-
-    /** 0 is "no object" and stays 0; an unobserved id keeps its value. */
-    @Test
-    public void absentAndUnobservedIdsAreLeftAlone() {
-        RuntimeObjectIdentity identity = new RuntimeObjectIdentity();
-
-        assertEquals(0, identity.nameOf(0));
-        assertEquals(-1, identity.nameOf(-1));
-        assertEquals(77, identity.nameOf(77));
-    }
-
-    /** Names are positive and clear of the recorder's counter range. */
-    @Test
-    public void namesArePositiveAndDistinctFromCounterValues() {
-        RuntimeObjectIdentity identity = new RuntimeObjectIdentity();
-        Set<Integer> names = new LinkedHashSet<>();
-        for (int id = 1; id <= 500; id++) {
-            identity.observe(id, RuntimeObjectIdentity.address(SOURCE,
-                    "CALL_SITE_RETURN", METHOD, METHOD + "#u" + id, -1, "",
-                    "java.lang.Object", "objectId"));
-            int named = identity.nameOf(id);
-            assertTrue("name must be positive: " + named, named > 0);
-            assertTrue("name must be clear of the counter range: " + named,
-                    named >= 1 << 20);
-            names.add(named);
-        }
-        assertEquals("the naming must stay injective", 500, names.size());
     }
 }

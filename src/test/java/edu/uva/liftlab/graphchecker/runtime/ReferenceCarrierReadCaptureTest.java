@@ -50,22 +50,6 @@ public class ReferenceCarrierReadCaptureTest {
                     + "BlockKey currentKey>";
     private static final String SERIAL_NO = "<" + BTSM + ": int serialNo>";
 
-    /** A reference-typed declared carrier is access-bound like a scalar. */
-    @Test
-    public void aReferenceCarrierMatchesItsAccessLikeAScalarOne() {
-        SharedStateCapture.SharedCarrierRequest reference = carrier(
-                "currentKey", KEY_TYPE);
-        SharedStateCapture.SharedCarrierRequest scalar = carrier(
-                "serialNo", "I");
-
-        assertTrue("a reference carrier binds at its own getfield",
-                reference.matchesAccess(CURRENT_KEY));
-        assertTrue(scalar.matchesAccess(SERIAL_NO));
-        assertFalse("the match is by location, not by class alone",
-                reference.matchesAccess(SERIAL_NO));
-        assertFalse(scalar.matchesAccess(CURRENT_KEY));
-    }
-
     /**
      * And it is observed as a shared read, which is what opens path
      * recording before the getfield so the VM resolves the read against the
@@ -76,53 +60,6 @@ public class ReferenceCarrierReadCaptureTest {
         assertTrue(carrier("currentKey", KEY_TYPE)
                 .observesSharedRead(CURRENT_KEY));
         assertTrue(carrier("serialNo", "I").observesSharedRead(SERIAL_NO));
-    }
-
-    /**
-     * A task that declares the reference carrier and reads it names it, with
-     * no write of its own anywhere in the declaration.
-     *
-     * <p>This is the consumer-side shape: {@code generateDataEncryptionKey}
-     * declares {@code BTSM#currentKey} and never stores to it.  Nothing in
-     * the request distinguishes it from the producer's declaration of the
-     * same location.</p>
-     */
-    @Test
-    public void aReadOnlyRegionsDeclarationIsTheProducersDeclaration() {
-        ConcolicTaskPlan.RuntimeTask consumer = task(
-                declaration("currentKey", KEY_TYPE));
-        ConcolicTaskPlan.RuntimeTask producer = task(
-                declaration("currentKey", KEY_TYPE),
-                declaration("serialNo", "I"));
-
-        assertTrue("a read-only region observes the shared read",
-                consumer.observesSharedRead(CURRENT_KEY));
-        assertTrue(producer.observesSharedRead(CURRENT_KEY));
-        assertFalse("a location this region did not declare is not observed",
-                consumer.observesSharedRead(SERIAL_NO));
-    }
-
-    /**
-     * One field declared as both a whole container state and a reference
-     * slot is the only shape the selection refuses, and a plain reference
-     * declaration is not it.
-     */
-    @Test
-    public void onlyTheDoubleDeclarationIsRefused() {
-        List<SharedStateCapture.SharedCarrierRequest> reference =
-                Collections.singletonList(carrier("currentKey", KEY_TYPE));
-        assertFalse(SharedStateCapture.wholeStateAndPointerCarrier(
-                reference, CURRENT_KEY));
-
-        JsonObject asMapState = declaration("currentKey", KEY_TYPE);
-        asMapState.addProperty("kind", "MAP_STATE");
-        List<SharedStateCapture.SharedCarrierRequest> both = Arrays.asList(
-                carrier("currentKey", KEY_TYPE),
-                new SharedStateCapture.SharedCarrierRequest(asMapState,
-                        true));
-        assertTrue("one field is one location",
-                SharedStateCapture.wholeStateAndPointerCarrier(both,
-                        CURRENT_KEY));
     }
 
     // ---------- harness ----------

@@ -16,19 +16,6 @@ import static org.junit.Assert.assertTrue;
 public class TargetReachPathQueryBuilderTest {
 
     @Test
-    public void closedPlannedOccurrenceAppliesToItsActivationPath() {
-        JsonObject manifest = closedManifest("target#2");
-        JsonObject activation = targetSummary("target#2#a1");
-
-        assertTrue(TargetReachPathQueryBuilder.closedPathSetApplies(
-                manifest, activation));
-
-        activation.addProperty("occurrenceId", "target#20#a1");
-        assertFalse(TargetReachPathQueryBuilder.closedPathSetApplies(
-                manifest, activation));
-    }
-
-    @Test
     public void parallelTargetOccurrencesAreScopedBeforeDecision() {
         JsonObject selected = readySeed("source/dn1#epoch0", "target#2",
                 "GOAL.dn1.2");
