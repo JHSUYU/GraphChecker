@@ -289,6 +289,15 @@ final class SharedStateCapture {
         String locationKey = SharedStateEvidence.locationKey(envelope);
         JsonObject record = SharedStateEvidence.versionsRecord(locationKey,
                 envelope, identity);
+        if (carrier != null) {
+            // The VM addresses a location by its own session identity, which
+            // is a number that means nothing in the next session.  The
+            // carrier is the only name that crosses: the declaring class,
+            // field, descriptor and receiver that say which location in the
+            // program this is.  One per location -- it describes the slot,
+            // not any one write to it.
+            record.add("carrier", carrier.toJson());
+        }
         return new SharedStateResult(SharedStateEvidence.STAGE_VERSIONS,
                 SharedStateEvidence.OK, locationKey,
                 writeLogRecord(record));
@@ -311,6 +320,14 @@ final class SharedStateCapture {
      * selection flags.  None of it is an input to in-session resolution, and
      * publishing it made the write log four times its own size.</p>
      *
+     * <p>The carrier stays with it, once per location.  A session-local owner
+     * rid is not a name the next session can resolve, so without the
+     * declaring class, field, descriptor and receiver the location cannot be
+     * matched across sessions at all -- which is what
+     * {@code canonicalizeLocations} and {@code RuntimeMapIdentity.of} do with
+     * it.  Dropping it cost 18 LOCATION_NOT_NAMED_ACROSS_SESSIONS and 12
+     * SHARED_STATE_MAP_STATE_IDENTITY_MISSING.</p>
+     *
      * <p>An INITIAL version stays, tagged as one: a value the recording did
      * not watch being produced is still the value, and saying which kind it
      * is what keeps "the program computed this" apart from "the recording
@@ -322,6 +339,7 @@ final class SharedStateCapture {
         copyIfPresent(record, published, "kind");
         copyIfPresent(record, published, "authority");
         copyIfPresent(record, published, "locationKey");
+        copyIfPresent(record, published, "carrier");
         JsonObject publishedEnvelope = new JsonObject();
         copyIfPresent(envelope, publishedEnvelope, "kind");
         copyIfPresent(envelope, publishedEnvelope, "schemaVersion");

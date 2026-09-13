@@ -61,6 +61,7 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registe
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootInvocationAddressMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ROOT_NEVER_EXECUTED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
 
 /** The bounded campaign this JVM executes. */
@@ -191,7 +192,18 @@ final class ConcolicTaskPlan {
             // answered for end-of-run diagnostics. Goal completion owns
             // the separate decision to admit another activation.
             if (occurrenceClaimed[index]) continue;
-            if (task.unaddressedCandidates == 0) continue;
+            if (task.unaddressedCandidates == 0) {
+                // Nothing compatible ran at all -- not one activation the
+                // address could have been compared against.  That is a
+                // different statement from "several ran and none matched",
+                // and it used to be no statement: the task published neither
+                // an activation nor a skip, and the importer met silence.
+                writeSkipped(task, SKIP_ROOT_NEVER_EXECUTED,
+                        "the planned root did not execute in this replay: no"
+                                + " compatible activation was offered for "
+                                + task.occurrenceId, null);
+                continue;
+            }
             writeSkipped(task, task.rootContextSelector
                             .anchorSourceNeverExisted()
                             ? SKIP_ANCHOR_SOURCE_NEVER_EXISTED
@@ -547,11 +559,17 @@ final class ConcolicTaskPlan {
         }
         if (selector.inheritedContextAnchor) {
             if (!inheritedMatches) {
-                return inherited == null
-                        ? "matching root inherited no source; its anchor "
-                        + "names " + task.sourceKey
-                        : "matching root inherited " + inherited.key()
-                        + " instead of " + task.sourceKey;
+                // Inheriting a DIFFERENT source is evidence that this is not
+                // the planned occurrence; inheriting NONE is the absence of
+                // evidence, and the two are not the same thing.  A flip
+                // replay reaches the same activation by a path that carries
+                // no inherited context, and refusing it there withheld the
+                // occurrence over a fact nobody established.  Node, epoch,
+                // region and ordinal still have to agree.
+                if (inherited != null) {
+                    return "matching root inherited " + inherited.key()
+                            + " instead of " + task.sourceKey;
+                }
             }
             if (registeredReceiverSource != null && !receiverMatches) {
                 return "matching root receiver belonged to "

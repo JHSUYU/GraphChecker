@@ -62,6 +62,23 @@ public class OccurrenceAddressIsNotARequestTest {
                 task().occurrenceId);
     }
 
+    /**
+     * An absent inherited source is not evidence of another occurrence.
+     *
+     * <p>Inheriting a <em>different</em> source says this activation belongs
+     * elsewhere.  Inheriting <em>none</em> says nothing at all, and a flip
+     * replay reaches the planned activation by a path that carries no
+     * inherited context -- so refusing it there withheld the occurrence over
+     * a fact nobody established.</p>
+     */
+    @Test
+    public void anAbsentInheritedSourceIsNotAMismatch() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        assertEquals("", ConcolicTaskPlan.sourceMismatch(task, null,
+                RuntimeTraceContext.current()));
+    }
+
     private static ConcolicTaskPlan.RuntimeTask task() {
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
                 row("plans/hdfs-17899-bug3-loop-body-producer.json")));

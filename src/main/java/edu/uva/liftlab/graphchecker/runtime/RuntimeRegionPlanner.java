@@ -67,13 +67,6 @@ final class RuntimeRegionPlanner {
     /** Authority of one recorded exchange link between two occurrences. */
     static final String DELIVERY_LINK_AUTHORITY =
             "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1";
-    /** A recorded activation this stage could not attribute to a source. */
-    static final String GAP_RUNTIME_SOURCE_UNSTAMPED =
-            "RUNTIME_ACTIVATION_SOURCE_UNSTAMPED";
-    /** Authority of a source taken from the first stamped frame inside the
-     * activation rather than from its root frame. */
-    static final String UPGRADED_SOURCE_AUTHORITY =
-            "FIRST_STAMPED_FRAME_INSIDE_ACTIVATION";
     /** The protocol server stub a run entered as its own region root. */
     static final String COMMUNICATION_ENTRY = "COMMUNICATION_ENTRY";
     private RuntimeRegionPlanner() {
@@ -323,14 +316,11 @@ final class RuntimeRegionPlanner {
             Map<String, Object> link = new LinkedHashMap<>();
             link.put("schemaVersion", 3);
             link.put("kind", "RUNTIME_OCCURRENCE_LINK");
-            link.put("linkKind", "SERVER_ENTRY");
             link.put("fromActivationId", activationId);
-            link.put("fromRegionId", stringValue(activation.get("regionId")));
             link.put("fromRootCallId", activation.get("rootCallId"));
             link.put("callSiteId", stringValue(exported.get("callSiteId")));
             link.put("toActivationId",
                     stringValue(toActivation.get("activationId")));
-            link.put("toRegionId", stringValue(toActivation.get("regionId")));
             link.put("toRootCallId", toActivation.get("rootCallId"));
             link.put("exchangeLeg", stringValue(exported.get("exchangeLeg")));
             link.put("senderEventSeq", exported.get("eventSeq"));
@@ -340,9 +330,6 @@ final class RuntimeRegionPlanner {
             link.put("transport", stringValue(exported.get("transport")));
             link.put("requestKey", requestKey);
             link.put("requestApi", stringValue(exported.get("requestApi")));
-            link.put("crossThread",
-                    !String.valueOf(activation.get("threadId")).equals(
-                            String.valueOf(toActivation.get("threadId"))));
             link.put("authority", DELIVERY_LINK_AUTHORITY);
             result.occurrenceLinks.add(link);
         }
@@ -518,7 +505,6 @@ final class RuntimeRegionPlanner {
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
         activation.put("thread", root.threadName);
-        activation.put("threadId", root.tid);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
         putRecordedTraceIds(activation, root);
@@ -1162,17 +1148,7 @@ final class RuntimeRegionPlanner {
             plan.put("kind", "CONCOLIC_REGION_PLAN");
             // The semantic source of this activation - sourceKey, sourceKind,
             // sourceRole, sourceId and sourceEpoch - is published once, by
-            // putTraceContext below.  Where that source came FROM is this
-            // row's own diagnostic: an activation the pipeline could not
-            // attribute to any source is a named gap, never an authority.
-            plan.put("sourceAuthority",
-                    occurrenceTarget && semanticContext != root
-                            && semanticContext.source != null
-                            ? "SELECTED_TARGET_EVENT_SOURCE"
-                            : semanticContext.source != null
-                            ? "EXPLICIT_TRACE_SOURCE"
-                            : stamped.size() == 1 ? UPGRADED_SOURCE_AUTHORITY
-                            : GAP_RUNTIME_SOURCE_UNSTAMPED);
+            // putTraceContext below.
             plan.put("occurrenceId", occurrenceId);
             plan.put("regionId", region.regionId);
             // The once-only-root rule (README "Loops"): a region rooted on a
@@ -1300,8 +1276,6 @@ final class RuntimeRegionPlanner {
                 }
                 Map<String, Object> evidence = edgeEvidenceRow(edge,
                         fromOccurrence, toOccurrence);
-                evidence.put("evidenceKind", AutomaticRegionEdge
-                        .EXACT_REQUEST_FAULT_CONTROL_AUTHORITY);
                 evidence.put("correlationAuthority", AutomaticRegionEdge
                         .EXACT_REQUEST_FAULT_CONTROL_AUTHORITY);
                 evidence.put("state", "CONFIRMED_REQUEST_CONTROL");
@@ -1320,9 +1294,6 @@ final class RuntimeRegionPlanner {
             evidence.remove("bindings");
             evidence.put("fromOutputPort", fromPort);
             evidence.put("toInputPort", toPort);
-            evidence.put("evidenceKind", protocol
-                    ? AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY
-                    : SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
             evidence.put("correlationAuthority", protocol
                     ? AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY
                     : SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
@@ -2362,66 +2333,12 @@ final class RuntimeRegionPlanner {
                 branch.put("selectedRuntimeEventSeq", selected.seq);
                 branch.put("selectedCallId", selected.callId);
             }
-            if (requiredDeclared) {
-                stateRequiredOutcomeSelection(branch, requiredObserved,
-                        occurrences.size(), site);
-            }
             branch.put("occurrences", encoded);
             result.add(branch);
         }
         return result;
     }
 
-    /**
-     * States how the occurrence of a required-outcome policy was chosen.
-     *
-     * <p>The loop above searches the recorded occurrences for one that took
-     * the required outcome.  When the search fails, {@code selectedIndex} is
-     * still 0 -- and the row used to say nothing at all about that, so a
-     * policy whose required outcome no occurrence took was published
-     * indistinguishably from one whose first occurrence took it.  Downstream
-     * that reads as "occurrence #1 is the one the policy means", which for a
-     * failure target is the fatal cutoff being supplied by a guard that never
-     * took the failing arm.</p>
-     *
-     * <p>So the row now states the fact:
-     * {@code requiredOutcomeObserved} answers the question the search asked,
-     * and {@code selectedOccurrenceAuthority} says which of three things the
-     * published ordinal is -- the occurrence that took the required outcome,
-     * the only occurrence there was, or a choice among several that nothing
-     * in the recording decides.  The third is the invented one, and it is
-     * named as {@link ConcolicRegionRuntime#TARGET_REACH_NOT_OBSERVED} on the
-     * row so a consumer can refuse it.</p>
-     *
-     * <p>The ordinal itself is left in place.  Withholding it would take the
-     * fatal-prefix boundary out from under a replay that is otherwise sound
-     * ({@code FATAL_PREFIX_BOUNDARY_MISSING}), and the blocking answer to an
-     * unwitnessed target belongs at replay time, where {@code
-     * ConcolicResultPublisher.targetReachedByActivation} requires the
-     * declared occurrence to have actually been decided.</p>
-     */
-    private static void stateRequiredOutcomeSelection(
-            Map<String, Object> branch, boolean requiredObserved,
-            int occurrenceCount, String site) {
-        branch.put("requiredOutcomeObserved", requiredObserved);
-        if (requiredObserved) {
-            branch.put("selectedOccurrenceAuthority", "REQUIRED_OUTCOME");
-            return;
-        }
-        if (occurrenceCount <= 1) {
-            branch.put("selectedOccurrenceAuthority",
-                    "SOLE_RECORDED_OCCURRENCE");
-            return;
-        }
-        branch.put("selectedOccurrenceAuthority",
-                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED);
-        branch.put("selectedOccurrenceGap",
-                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED
-                + ": none of the " + occurrenceCount + " recorded "
-                + "occurrences of " + site + " took the required outcome, so "
-                + "which one this policy names is not decided by the "
-                + "recording");
-    }
 
     /** Copies a complete switch successor authority into a task occurrence. */
     private static void addExactSwitchDecision(
@@ -2542,9 +2459,6 @@ final class RuntimeRegionPlanner {
                 ? "" : semanticContext.requestApi);
     }
 
-    private static SourceRef source(MethodEvent event) {
-        return sourceOf(event.source);
-    }
 
     /** Every distinct logical source the frames of one activation carry, in
      * recorded order.
