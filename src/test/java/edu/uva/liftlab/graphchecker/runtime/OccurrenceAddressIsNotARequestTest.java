@@ -8,6 +8,7 @@ import org.junit.Test;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -77,6 +78,37 @@ public class OccurrenceAddressIsNotARequestTest {
 
         assertEquals("", ConcolicTaskPlan.sourceMismatch(task, null,
                 RuntimeTraceContext.current()));
+    }
+
+    /**
+     * An activation nothing attributed to a node is still the occurrence.
+     *
+     * <p>The exact row lane AY refused: a seed replay's target activation
+     * with no registered trace source, whose anchor names the node and epoch
+     * it ran on.  Refusing it at close simply moved the refusal that was
+     * removed at entry -- and on 17960 it left the run with no TARGET_REACH
+     * occurrence at all, because every target task was skipped this way.
+     * Evidence that the activation ran somewhere <em>else</em> still
+     * refuses; evidence nobody offered does not.</p>
+     */
+    @Test
+    public void anUnattributedActivationIsStillTheOccurrence() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        assertEquals("", task.rootContextSelector.unconfirmed(
+                Collections.<String>emptySet()));
+    }
+
+    /** An activation attributed to another node is refused, as before. */
+    @Test
+    public void anActivationOnAnotherNodeIsRefused() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        String refusal = task.rootContextSelector.unconfirmed(
+                Collections.singleton("hdfs-17899/source-dn#epoch0"));
+
+        assertTrue(refusal, refusal.contains("occurrence ran on"));
+        assertTrue(refusal, refusal.contains("source-dn"));
     }
 
     private static ConcolicTaskPlan.RuntimeTask task() {

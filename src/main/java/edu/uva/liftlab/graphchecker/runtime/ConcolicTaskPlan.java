@@ -840,11 +840,18 @@ final class ConcolicTaskPlan {
          */
         String unconfirmed(Set<String> attributedSourceKeys) {
             if (attributedSourceKeys.isEmpty()) {
-                if (!OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
-                        sourceKey)) {
-                    return "occurrence is attributed to no registered trace "
-                            + "source, but its anchor names " + sourceKey;
-                }
+                // Nothing attributed this activation to any node.  That is
+                // the absence of evidence, not evidence of another node --
+                // the same distinction the admission test draws for an
+                // absent inherited source, and it has to be drawn here too
+                // or the refusal simply moves from entry to close.  A replay
+                // reconstructs a receiver without its alias registration and
+                // reaches a region by a path that carries no inherited
+                // context; on 17960 that is every target activation of the
+                // seed, and refusing them left the run with no TARGET_REACH
+                // at all.  Node, epoch, region and ordinal still decided
+                // that this candidate was compatible; what is missing is a
+                // second opinion nobody offered.
                 return "";
             }
             boolean sameSource = false;
