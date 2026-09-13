@@ -328,14 +328,26 @@ public final class PathMergeComposer {
         List<JsonObject> rows = new ArrayList<>();
         List<JsonObject> group = replays.get(
                 optionalString(path, "replayGroupId"));
-        if (group != null) rows.addAll(group);
-        JsonObject shared = new JsonObject();
-        shared.add("sharedFieldVersions",
-                array(object(path, SharedStateEvidence.RECORDED_FIELD),
-                        "versions"));
-        rows.add(shared);
+        if (group != null) {
+            rows.addAll(group);
+            // An imported summary keeps its versions under the recorded
+            // shared state; the resolver reads the runtime spelling, so
+            // each row is also offered under that name.
+            for (JsonObject summary : group) {
+                rows.add(versionRow(summary));
+            }
+        }
+        rows.add(versionRow(path));
         rows.add(fatal);
         return rows;
+    }
+
+    private static JsonObject versionRow(JsonObject owner) {
+        JsonObject row = new JsonObject();
+        row.add("sharedFieldVersions",
+                array(object(owner, SharedStateEvidence.RECORDED_FIELD),
+                        "versions"));
+        return row;
     }
 
     private static JsonElement resolve(InSessionReadResolver resolver,
