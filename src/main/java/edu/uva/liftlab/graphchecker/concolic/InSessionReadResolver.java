@@ -227,11 +227,17 @@ public final class InSessionReadResolver {
         }
         if ("ConsumerBoundaryExpression".equals(type)) {
             long event = optionalLongInteger(node, "eventId", -1L);
-            JsonElement arrived = handoffs.get(event);
-            // The producer's own expression is what the wire carried; the
-            // inner expression is only this node's local view of it.
-            JsonElement source = arrived != null ? arrived
-                    : node.get(VmExpressionIr.EXPRESSION);
+            // The boundary's own inner expression already names the
+            // producer's location, in the producer's numbering: the VM
+            // substituted the sender's term here when the value arrived.
+            // The matching vmHandoffEvents row points at this same node --
+            // it records that the hop happened and who produced it, not a
+            // second expression -- so following it instead re-enters this
+            // node and the cycle guard refuses a value that was determined.
+            JsonElement source = node.get(VmExpressionIr.EXPRESSION);
+            if (source == null) {
+                source = unwrapBoundary(handoffs.get(event), event);
+            }
             if (source == null) {
                 return unresolved("boundary " + event + " carries nothing");
             }
@@ -286,6 +292,34 @@ public final class InSessionReadResolver {
         }
         if (!unresolved(resolved)) resolvedReads.put(key, resolved);
         return resolved;
+    }
+
+    /**
+     * The expression a handoff carried, below its own boundary node.
+     *
+     * <p>A {@code vmHandoffEvents} entry records the attached expression as
+     * the consumer sees it, which is the boundary node <em>wrapping</em> the
+     * producer's value.  Substituting it for that same node re-enters the
+     * node -- the resolver's cycle guard then refuses a value it could have
+     * determined, which is how every consumer-side key write on
+     * hdfs-17899-bug3 came back {@code UNRESOLVED<cycle through …>}.  Only
+     * the wrapper is peeled, and only when it names this event: a boundary
+     * of some other event inside the carried expression is a real hop and is
+     * followed.</p>
+     */
+    private static JsonElement unwrapBoundary(JsonElement carried,
+                                              long event) {
+        JsonElement value = carried;
+        while (value != null && value.isJsonObject()) {
+            JsonObject node = value.getAsJsonObject();
+            if (!"ConsumerBoundaryExpression".equals(
+                    optionalString(node, "_type"))
+                    || optionalLongInteger(node, "eventId", -1L) != event) {
+                return value;
+            }
+            value = node.get(VmExpressionIr.EXPRESSION);
+        }
+        return value;
     }
 
     private JsonElement guarded(String token, JsonElement expression,
