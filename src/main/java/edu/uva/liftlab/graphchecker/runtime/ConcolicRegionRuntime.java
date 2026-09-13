@@ -2974,7 +2974,7 @@ public final class ConcolicRegionRuntime {
                                 : branchSite,
                         permuted ? active.activation.targetBranchOccurrence
                                 : prepared.occurrence,
-                        decision.outcome());
+                        decision.outcome(), vmEventId);
             }
         } catch (Throwable throwable) {
             active.addUnresolvedOnce(decision.observationNoun()
@@ -3032,7 +3032,8 @@ public final class ConcolicRegionRuntime {
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
-        JsonObject mapping = branchMapping(method, unitIndex, occurrence);
+        JsonObject mapping = branchMapping(method, unitIndex, occurrence,
+                vmEventId);
         // Exact VM ownership is one condition for an IfStmt.
         int mappingBaseline = conditionIndex >= 0
                 ? conditionIndex : baseline;
@@ -3124,7 +3125,8 @@ public final class ConcolicRegionRuntime {
         int mappingLimit = conditionIndices.isEmpty()
                 ? baseline : conditionIndices.get(
                 conditionIndices.size() - 1) + 1;
-        JsonObject mapping = branchMapping(method, unitIndex, occurrence);
+        JsonObject mapping = branchMapping(method, unitIndex, occurrence,
+                vmEventId);
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
         if (!attestation.valid) {
@@ -3146,7 +3148,7 @@ public final class ConcolicRegionRuntime {
             int decisionOrdinal = 1;
             for (Integer conditionIndex : conditionIndices) {
                 JsonObject predicate = branchMapping(method, unitIndex,
-                        occurrence);
+                        occurrence, vmEventId);
                 predicate.addProperty("rawPathConditionSize", mappingLimit);
                 predicate.addProperty("rawPathConditionBaseline",
                         mappingBaseline);
@@ -3174,13 +3176,30 @@ public final class ConcolicRegionRuntime {
         return attestation.valid;
     }
 
+    /**
+     * One published decision row.
+     *
+     * <p>{@code vmEventId} is the VM's own event sequence number for the
+     * decision -- the id the native marker returned immediately before the
+     * workload's branch.  It is the only monotone per-replay clock the
+     * publication carries: {@code unitIndex} and the path-condition indices
+     * are positions inside a method and inside one condition window, and
+     * {@code startedAtMillis} is telemetry.  A composer needs this to say
+     * which decisions were taken before an anchor and in what order two
+     * activations' decisions interleave.</p>
+     *
+     * <p>It is published only when the VM assigned one.  A decision recorded
+     * with the symbolic gate closed has no VM event, and stating a zero there
+     * would order it ahead of everything the VM did record.</p>
+     */
     private static JsonObject branchMapping(
-            String method, int unitIndex, int occurrence) {
+            String method, int unitIndex, int occurrence, long vmEventId) {
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", SiteId.render(method, unitIndex));
         mapping.addProperty("method", safe(method));
         mapping.addProperty("unitIndex", unitIndex);
         mapping.addProperty("occurrence", occurrence);
+        if (vmEventId > 0L) mapping.addProperty("vmEventId", vmEventId);
         return mapping;
     }
 
@@ -5906,7 +5925,7 @@ public final class ConcolicRegionRuntime {
                         && activation.targetBranchOccurrence
                         == observation.occurrence()) {
                     recordTargetReach(site, observation.occurrence(),
-                            decision.outcome());
+                            decision.outcome(), 0L);
                 }
                 return observation;
             } catch (Throwable ignored) {
@@ -5934,7 +5953,8 @@ public final class ConcolicRegionRuntime {
         private void recordDecisionRow(
                 String method, int unitIndex, int occurrence,
                 ExactConcreteBranchObservation observation) {
-            JsonObject mapping = branchMapping(method, unitIndex, occurrence);
+            JsonObject mapping = branchMapping(method, unitIndex, occurrence,
+                    0L);
             mapping.addProperty("rawPathConditionSize", 0);
             mapping.addProperty("rawPathConditionBaseline", 0);
             mapping.add("concreteObservation", observation.toJson());
@@ -6033,13 +6053,16 @@ public final class ConcolicRegionRuntime {
          * Records the declared target branch event this occurrence decided.
          */
         private void recordTargetReach(String siteId, int occurrence,
-                                       boolean outcome) {
+                                       boolean outcome, long vmEventId) {
             if (targetReach != null) return;
             JsonObject reach = new JsonObject();
             reach.addProperty("kind", "TARGET_REACH_EVENT");
             reach.addProperty("siteId", safe(siteId));
             reach.addProperty("occurrence", occurrence);
             reach.addProperty("outcome", outcome);
+            // The anchor is read on the same clock as the decisions, so a
+            // composer can say which of them were taken before it.
+            if (vmEventId > 0L) reach.addProperty("vmEventId", vmEventId);
             targetReach = reach;
             diag("TARGET_REACHED", "token=" + token + " site=" + safe(siteId)
                     + "#" + occurrence);

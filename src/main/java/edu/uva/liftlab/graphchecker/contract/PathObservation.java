@@ -134,12 +134,23 @@ public final class PathObservation {
         private final String siteId;
         private final int occurrence;
         private final boolean outcome;
+        /**
+         * The VM event sequence number at which the anchor was recorded, or
+         * {@code 0} when this replay's VM assigned none.  It is the same
+         * clock the branch-decision rows publish, so a composer can say which
+         * decisions were taken before the anchor and order two activations'
+         * decisions against each other; the other published positions
+         * (unit index, path-condition index) are local to a method or to one
+         * condition window and repeat across activations.
+         */
+        private final long vmEventId;
 
         private TargetReachEvent(String siteId, int occurrence,
-                                 boolean outcome) {
+                                 boolean outcome, long vmEventId) {
             this.siteId = siteId;
             this.occurrence = occurrence;
             this.outcome = outcome;
+            this.vmEventId = vmEventId;
         }
 
         public static TargetReachEvent decode(JsonElement encoded) {
@@ -148,12 +159,14 @@ public final class PathObservation {
                         FIELD + " must be an object");
             }
             JsonObject event = encoded.getAsJsonObject();
-            if (event.size() != 4
+            boolean clocked = event.has("vmEventId");
+            if (event.size() != (clocked ? 5 : 4)
                     || !event.has("kind") || !event.has("siteId")
                     || !event.has("occurrence") || !event.has("outcome")) {
                 throw new IllegalArgumentException(
                         FIELD + " must contain exactly kind, siteId, "
-                                + "occurrence and outcome");
+                                + "occurrence and outcome, and at most "
+                                + "vmEventId");
             }
             JsonElement kind = event.get("kind");
             JsonElement site = event.get("siteId");
@@ -193,13 +206,39 @@ public final class PathObservation {
                 throw new IllegalArgumentException(
                         FIELD + ".outcome must be a boolean");
             }
+            long vmEventId = 0L;
+            if (clocked) {
+                JsonElement clock = event.get("vmEventId");
+                try {
+                    if (!clock.isJsonPrimitive()
+                            || !clock.getAsJsonPrimitive().isNumber()) {
+                        throw new ArithmeticException("not a number");
+                    }
+                    vmEventId = new BigDecimal(
+                            clock.getAsString()).longValueExact();
+                } catch (RuntimeException malformed) {
+                    throw new IllegalArgumentException(
+                            FIELD + ".vmEventId must be an exact integer",
+                            malformed);
+                }
+                if (vmEventId <= 0L) {
+                    // A replay whose VM assigned no event states no field at
+                    // all; a zero would order this anchor ahead of every
+                    // decision the VM did number.
+                    throw new IllegalArgumentException(
+                            FIELD + ".vmEventId must be positive");
+                }
+            }
             return new TargetReachEvent(site.getAsString(), occurrence,
-                    taken.getAsBoolean());
+                    taken.getAsBoolean(), vmEventId);
         }
 
         public String siteId() { return siteId; }
         public int occurrence() { return occurrence; }
         public boolean outcome() { return outcome; }
+
+        /** The VM event this anchor was recorded at, or 0 when unclocked. */
+        public long vmEventId() { return vmEventId; }
 
         public boolean matches(String site, int ordinal, boolean taken) {
             return siteId.equals(site) && occurrence == ordinal
@@ -207,6 +246,21 @@ public final class PathObservation {
         }
 
         public JsonObject toJson() {
+            JsonObject event = toIdentityJson();
+            if (vmEventId > 0L) event.addProperty("vmEventId", vmEventId);
+            return event;
+        }
+
+        /**
+         * The anchor without its clock, for identity digests.
+         *
+         * <p>Which VM event this anchor was recorded at is a fact about when
+         * the path ran, not about which path it is.  Two replays of one path
+         * number their events differently -- everything the process did
+         * beforehand shifts them -- so folding the clock into a case identity
+         * would make every re-exploration of a path a new case.</p>
+         */
+        public JsonObject toIdentityJson() {
             JsonObject event = new JsonObject();
             event.addProperty("kind", KIND);
             event.addProperty("siteId", siteId);

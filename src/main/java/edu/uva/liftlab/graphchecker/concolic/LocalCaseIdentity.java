@@ -176,8 +176,9 @@ public final class LocalCaseIdentity {
         if (target != null && target.isJsonObject()) {
             PathObservation.TargetReachEvent event =
                     PathObservation.TargetReachEvent.decode(target);
+            // Without the VM clock: see TargetReachEvent.toIdentityJson.
             terminal.add(PathObservation.TargetReachEvent.FIELD,
-                    event.toJson());
+                    event.toIdentityJson());
         }
 
         JsonObject identity = new JsonObject();
