@@ -466,15 +466,29 @@ final class ConcolicResultPublisher {
         return true;
     }
 
-    /** Whether this activation decided the selected fatal target event. */
+    /**
+     * Whether this activation decided the selected fatal target event.
+     *
+     * <p>Only the declared target occurrence answers this.  A task that
+     * captures target reach and declares no target branch used to have
+     * <em>any</em> throw count as a reach: whatever exception the workload
+     * happened to exit through stood in for a fatal site nobody checked, and
+     * {@link ConcolicRegionRuntime.ActiveRegion#nameUnreachedTargetBranch}
+     * returned early for exactly that case, so no gap was filed either.  That
+     * fabricates the target link itself -- the one edge the whole claim rests
+     * on -- out of an unrelated exception.</p>
+     *
+     * <p>There is nothing to state when the plan never named which occurrence
+     * of which site is the target, so the honest answer is "not reached", and
+     * the missing declaration is filed as {@code TARGET_REACH_NOT_OBSERVED}
+     * by {@code nameUnreachedTargetBranch}.  An occurrence that was never
+     * composed is already a first-class answer downstream: {@code
+     * TargetOccurrenceElection.SKIPPED_UNOBSERVED}.</p>
+     */
     private static boolean targetReachedByActivation(ActiveRegion active) {
         RuntimeTask task = active.activation;
-        if (task.declaresTargetBranch()) {
-            return task.reachedRequiredTargetOutcome(active.targetReach);
-        }
-        return task.capturesTargetReach
-                && "THROW".equals(safe(active.exitKind))
-                && !safe(active.exceptionType).isEmpty();
+        return task.declaresTargetBranch()
+                && task.reachedRequiredTargetOutcome(active.targetReach);
     }
 
     /** Adds decoded shared-state evidence to an otherwise complete result. */

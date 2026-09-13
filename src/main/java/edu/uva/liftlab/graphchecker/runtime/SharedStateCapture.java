@@ -210,7 +210,13 @@ final class SharedStateCapture {
                     api::snapshotContainer, carrier.owner(),
                     carrier.contentMonitor(), carrier.mapState());
         } catch (Throwable unavailable) {
-            outcome = null;
+            // A failed install leaves the INITIAL version opaque, exactly as
+            // a declined one does -- so it files the same row.  Turning it
+            // into a silent null here bypassed the INITIAL_SNAPSHOT_SKIPPED
+            // row below and manufactured a free initial container that read
+            // as though it had simply never been offered.
+            outcome = InitialContainerSnapshot.unavailable(
+                    rootCause(unavailable));
         }
         if (outcome == null) return;
         if (outcome.stated) {

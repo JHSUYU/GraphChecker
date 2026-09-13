@@ -82,6 +82,23 @@ public final class SymbolicPropagationClosure {
     public static final String INITIAL_HOST_OCCURRENCE_ID =
             "initialHostOccurrenceId";
     /**
+     * Whether this row states the host activation or only records that it
+     * could not be stated.
+     *
+     * <p>An INITIAL arm is owned by no region case, so the host row is the
+     * only tie between the snapshot and the activation that took it.  When
+     * the writer version carries no region or occurrence, the tie does not
+     * exist -- and an absent row and an unknown host used to look alike, both
+     * being nothing at all.  A row with this field {@code false} is the
+     * difference: it says the question was asked and has no answer, which is
+     * a fact the composer can refuse on, rather than a silence it reads as
+     * "hosted".</p>
+     */
+    public static final String INITIAL_HOST_STATED = "initialHostStated";
+    /** One INITIAL arm whose host activation could not be stated. */
+    public static final String INITIAL_HOST_UNKNOWN =
+            "INITIAL_SNAPSHOT_HOST_UNKNOWN";
+    /**
      * Exact selected-region stack captured when a physical writer region was
      * entered. Runtime entries carry task/region/occurrence addresses; this
      * pass resolves them to replay-independent local cases.
@@ -1593,8 +1610,32 @@ public final class SymbolicPropagationClosure {
          */
         private void noteInitialSnapshotHost(String owner, String regionId,
                                              String occurrenceId) {
-            if (owner.isEmpty() || regionId.isEmpty()
-                    || occurrenceId.isEmpty()) {
+            if (owner.isEmpty()) {
+                // Nothing to key the fact to; the arm itself is unowned.
+                gap(INITIAL_HOST_UNKNOWN, "",
+                        "an INITIAL arm's snapshot names no owner, so its "
+                        + "host activation cannot be stated at all");
+                return;
+            }
+            if (regionId.isEmpty() || occurrenceId.isEmpty()) {
+                // The writer version did not say which activation's entry
+                // took this snapshot.  Returning in silence here is what let
+                // an INITIAL arm with no known host survive every fault
+                // marker: with no host row, "the host idled" can never be
+                // shown, so the arm keeps whatever standing it had.  Carry
+                // the fact into the corpus instead, on a row shaped like the
+                // stated one, so the composer can refuse on it.
+                JsonObject unknown = new JsonObject();
+                unknown.addProperty("schemaVersion", SCHEMA_VERSION);
+                unknown.addProperty("kind", INITIAL_HOST_KIND);
+                unknown.addProperty(INITIAL_HOST_OWNER, owner);
+                unknown.addProperty(INITIAL_HOST_STATED, false);
+                initialSnapshotHosts.putIfAbsent(owner + "\n\n", unknown);
+                gap(INITIAL_HOST_UNKNOWN, owner,
+                        "the writer version of this INITIAL arm's snapshot "
+                        + "carries no " + (regionId.isEmpty()
+                        ? "regionId" : "writerOccurrenceId")
+                        + ", so no activation can be shown to have hosted it");
                 return;
             }
             JsonObject row = new JsonObject();
@@ -1603,6 +1644,7 @@ public final class SymbolicPropagationClosure {
             row.addProperty(INITIAL_HOST_OWNER, owner);
             row.addProperty(INITIAL_HOST_REGION_ID, regionId);
             row.addProperty(INITIAL_HOST_OCCURRENCE_ID, occurrenceId);
+            row.addProperty(INITIAL_HOST_STATED, true);
             initialSnapshotHosts.putIfAbsent(
                     owner + "\n" + regionId + "\n" + occurrenceId, row);
         }

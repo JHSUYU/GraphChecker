@@ -1313,10 +1313,63 @@ public final class ConcolicRegionRuntime {
         return candidates;
     }
 
+    /**
+     * The name one unanswered fault-control question answers to.
+     *
+     * <p>{@link #materializeSymbolicBoolean} must hand the workload a
+     * {@code boolean}: the marker stands at a call site the program is about
+     * to branch on, so there is no third value to return and no point at
+     * which the replay can stop.  What it must not do is let the
+     * {@code false} it returns pass for an answer.  A marker this plan does
+     * control, asked at a firing the plan cannot answer, is exactly the
+     * question the search exists to decide, and pinning it to the polarity
+     * the search wants to flip is a fabricated chain element -- so the value
+     * stays concrete and the activation is flagged, which refuses the
+     * summary at import.</p>
+     *
+     * <p>A marker this plan does not control at all is a different thing: no
+     * question was put to the replay, the recording ran the same hook to the
+     * same {@code false}, and there is nothing to refuse.  Those firings are
+     * named on the diagnostic stream instead, so a corpus can still be
+     * grepped for them.</p>
+     */
+    static final String FAULT_IDLE_UNANSWERED = "FAULT_IDLE_UNANSWERED";
+
+    /**
+     * The name one unwitnessed target link answers to.
+     *
+     * <p>Used on both sides of the link: by the replay, when a target-reach
+     * task names no fatal occurrence for its reach to be checked against, and
+     * by {@code RuntimeRegionPlanner}, when a declared required outcome was
+     * taken by no recorded occurrence of its site.</p>
+     */
+    static final String TARGET_REACH_NOT_OBSERVED =
+            "TARGET_REACH_NOT_OBSERVED";
+
+    /** Whether this activation's plan controls the named fault marker. */
+    static boolean declaresExplicitFault(
+            Collection<SymbolizeAction> actions, String name) {
+        for (SymbolizeAction action : actions == null
+                ? Collections.<SymbolizeAction>emptyList() : actions) {
+            if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
+                    .equals(action.sourceKind)
+                    && safe(name).equals(action.symbolicName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Returns the replay model for one explicitly named application fault. */
     public static boolean materializeSymbolicBoolean(String name) {
         ActiveRegion active = activeRegion();
-        if (active == null) return false;
+        if (active == null) {
+            // Outside every replayed region: no activation is claiming
+            // anything about this firing, so there is no ledger to refuse.
+            diag(FAULT_IDLE_UNANSWERED, "marker=" + safe(name)
+                    + " reason=NO_ACTIVE_REGION");
+            return false;
+        }
         int occurrence = active.materializationOccurrences.explicitFault(
                 name);
         List<SymbolizeAction> candidates = explicitFaultCandidates(
@@ -1326,10 +1379,20 @@ public final class ConcolicRegionRuntime {
                     + "#" + occurrence);
             return false;
         }
-        if (candidates.isEmpty()) return false;
+        boolean controlled = declaresExplicitFault(
+                active.activation.symbolize, name);
+        if (candidates.isEmpty()) {
+            active.noteFaultIdle(name, occurrence, controlled,
+                    "NO_ACTION_ACCEPTS_THIS_OCCURRENCE");
+            return false;
+        }
         SymbolizeAction selected = candidates.get(0);
         ModelAssignment assignment = active.assignment(selected, null);
-        if (assignment == null) return false;
+        if (assignment == null) {
+            active.noteFaultIdle(name, occurrence, controlled,
+                    "NO_MODEL_ASSIGNMENT");
+            return false;
+        }
         Object value = coerceModelValue(assignment.valueType,
                 assignment.value, Boolean.class);
         if (!(value instanceof Boolean)) {
@@ -1454,6 +1517,13 @@ public final class ConcolicRegionRuntime {
                             exactField.getDeclaringClass().getName(),
                             exactField.getName(), javaTypeDescriptor(
                             exactField.getType().getTypeName()), value));
+                } catch (PropagatedExpressionImportFailure unreadable) {
+                    // Not "nothing propagated": the producer's expression is
+                    // there and could not be read.  Minting would answer that
+                    // with a root nothing constrains.
+                    refuseImportedExpression(active, action.symbol,
+                            leafFieldSignature, unreadable);
+                    continue;
                 } catch (Throwable unsymbolized) {
                     carried = null;
                 }
@@ -1711,6 +1781,13 @@ public final class ConcolicRegionRuntime {
                 carried = engineExpression(api.fieldExpression(owner,
                         declaringClass, field.getName(), descriptor,
                         field.get(owner)));
+            } catch (PropagatedExpressionImportFailure unreadable) {
+                // A declared source whose carried expression could not be
+                // read must not be answered by minting a second root over
+                // the top of the one already in the field.
+                refuseImportedExpression(active, entry.key(),
+                        safe(fieldSignature), unreadable);
+                return false;
             } catch (Throwable unsymbolized) {
                 carried = null;
             }
@@ -1845,16 +1922,94 @@ public final class ConcolicRegionRuntime {
                 : raw.isEmpty() ? type : type + " " + raw;
     }
 
+    /**
+     * The name one unreadable propagated producer expression answers to.
+     *
+     * <p>A malformed or unreadable import is not "nothing propagated".  The
+     * producer did deliver a value and it does carry an expression; what
+     * failed is this replay's ability to read it.  Reading those two answers
+     * as one is how a consumer whose producer expression could not be
+     * imported acquired a <em>fresh unconstrained root</em> in its place:
+     * {@link #carriesInputAuthority} was asked about a {@code null}, said
+     * "nothing propagated", and the caller minted.  That manufactures a
+     * freedom the recording never had, and a witness is free to exploit
+     * it.</p>
+     *
+     * <p>So the failure travels as its own exception.  Every caller either
+     * lets it reach a handler that files a named gap, or catches it here and
+     * keeps the consumer's value concrete-and-flagged; none of them mints.
+     * The row lands in {@code unresolvedInputs}, which {@code
+     * ConcolicSummaryImporter} turns into {@code UNRESOLVED_INPUT} and
+     * refuses the whole summary under, so the gap blocks rather than
+     * decorates.</p>
+     */
+    static final String PROPAGATED_EXPRESSION_IMPORT_FAILED =
+            "PROPAGATED_EXPRESSION_IMPORT_FAILED";
+
+    /**
+     * A propagated producer expression this replay could not import.
+     *
+     * <p>Its own type, so the three call sites that legitimately read "the VM
+     * has no expression for this value" as {@code null} can keep doing that
+     * for an unsymbolized read while still refusing an import that failed.
+     * </p>
+     */
+    static final class PropagatedExpressionImportFailure
+            extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        PropagatedExpressionImportFailure(String detail, Throwable cause) {
+            super(detail, cause);
+        }
+    }
+
     private static JsonElement engineExpression(String serialized) {
+        ActiveRegion active = activeRegion();
         try {
-            ActiveRegion active = activeRegion();
             VmExpressionTable.Store store = active == null
                     ? workloadExpressionStore
                     : active.expressionStore;
             return store.importField(serialized, "expression");
         } catch (RuntimeException malformed) {
-            return null;
+            String detail = PROPAGATED_EXPRESSION_IMPORT_FAILED
+                    + ": producer=" + describeImportPayload(serialized)
+                    + " occurrence=" + (active == null ? "<none>"
+                    : safe(active.activation.occurrenceId))
+                    + ": " + rootCause(malformed);
+            // Recorded here as well as at the consumer, because a call site
+            // that lets the failure propagate to its own handler names the
+            // consumer but loses which import failed.
+            if (active != null) active.addUnresolvedOnce(detail);
+            throw new PropagatedExpressionImportFailure(detail, malformed);
         }
+    }
+
+    /**
+     * Files one unreadable producer expression against the consumer that
+     * asked for it, and leaves that consumer's value concrete.
+     *
+     * <p>The row names the consumer port, the field it read and the
+     * activation, beside the producer detail the import carried.  There is no
+     * value to state and no freedom to grant, so the only honest answer is a
+     * gap that blocks.</p>
+     */
+    static void refuseImportedExpression(
+            ActiveRegion active, String consumerSymbol, String fieldSignature,
+            PropagatedExpressionImportFailure unreadable) {
+        if (active == null) return;
+        active.addUnresolvedOnce(PROPAGATED_EXPRESSION_IMPORT_FAILED
+                + ": consumer=" + safe(consumerSymbol)
+                + " field=" + safe(fieldSignature)
+                + " occurrence=" + safe(active.activation.occurrenceId)
+                + ": " + safe(unreadable.getMessage()));
+    }
+
+    /** The outermost shape of a VM payload an import refused, for the row. */
+    static String describeImportPayload(String serialized) {
+        String value = safe(serialized);
+        if (value.isEmpty()) return "<empty payload>";
+        return value.length() <= 160 ? value
+                : value.substring(0, 160) + "...(" + value.length() + " B)";
     }
 
     /** Resolves a native session DAG while retaining content sharing here. */
@@ -3808,6 +3963,12 @@ public final class ConcolicRegionRuntime {
         JsonElement carried;
         try {
             carried = primitiveBoxExpression(api, concrete);
+        } catch (PropagatedExpressionImportFailure unreadable) {
+            // Keep the value the replay actually holds, flagged, rather than
+            // replacing an unreadable propagated box with a free root.
+            refuseImportedExpression(active, action.symbol, fieldSignature,
+                    unreadable);
+            return concrete;
         } catch (Throwable unsymbolized) {
             carried = null;
         }
@@ -5815,12 +5976,28 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
-         * Names a declared target branch event this occurrence never decided.
+         * Names a declared target branch event this occurrence never decided,
+         * and the target task that declared no such event at all.
+         *
+         * <p>The second case used to return here in silence, which is what
+         * let {@code targetReachedByActivation} read any throw as the reach:
+         * no declaration to check it against, and no row saying the check was
+         * impossible.  A target-reach task with no named fatal occurrence has
+         * no target link to state, and that is a gap like any other.</p>
          */
         void nameUnreachedTargetBranch() {
-            if (targetReach != null || !activation.declaresTargetBranch()) {
+            if (!activation.declaresTargetBranch()) {
+                if (activation.capturesTargetReach) {
+                    addUnresolvedOnce(TARGET_REACH_NOT_OBSERVED
+                            + ": this target-reach task names no target read "
+                            + "or throw occurrence, so no site this replay "
+                            + "decided can be shown to be the one it claims "
+                            + "to reach (exit " + safe(exitKind) + " "
+                            + safe(exceptionType) + ")");
+                }
                 return;
             }
+            if (targetReach != null) return;
             addUnresolvedOnce("TARGET_BRANCH_NOT_REACHED: "
                     + activation.targetBranchLabel()
                     + " was not decided before this occurrence ended at "
@@ -5858,6 +6035,28 @@ public final class ConcolicRegionRuntime {
         void addUnresolvedOnce(String detail) {
             String value = safe(detail);
             if (!value.isEmpty()) unresolved.add(value);
+        }
+
+        /**
+         * Records one firing of a fault marker this replay could not answer.
+         *
+         * <p>{@code controlled} decides whether it blocks: a marker the plan
+         * declares is a question the search asked and the model did not
+         * answer, and the polarity it would otherwise default to is the very
+         * one the search exists to flip.  A marker the plan never declared
+         * put no question to this replay.</p>
+         */
+        void noteFaultIdle(String name, int occurrence, boolean controlled,
+                           String reason) {
+            String subject = "marker=" + safe(name) + "#" + occurrence
+                    + " reason=" + safe(reason);
+            diag(FAULT_IDLE_UNANSWERED, subject + " controlled=" + controlled
+                    + " occurrence=" + safe(activation.occurrenceId));
+            if (controlled) {
+                addUnresolvedOnce(FAULT_IDLE_UNANSWERED + ": " + subject
+                        + "; this plan controls the marker, so an unanswered "
+                        + "firing may not read back as its idle polarity");
+            }
         }
 
         private void addBranchCoverageGap(JsonObject gap) {
