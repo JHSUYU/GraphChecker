@@ -260,11 +260,12 @@ public final class BooleanReachConditionExtractor {
             }
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
+                Map<String, String> model =
+                        ConcolicConstraintSolver.parseGetValues(result.stdout);
                 if (!fatalArms.isEmpty() && satisfyingValuations.size() == 1) {
                     report.add(FATAL_STATE_SELECTION, asEvidence(
-                            fatalStateSelection(fatalArms,
-                                    ConcolicConstraintSolver.parseGetValues(
-                                            result.stdout)), evidenceOnly));
+                            fatalStateSelection(fatalArms, model),
+                            evidenceOnly));
                 }
                 JsonArray witness = existentialWitness(result,
                         discovery.existentialNonBooleanRootInputs);
@@ -273,6 +274,15 @@ public final class BooleanReachConditionExtractor {
                 }
                 JsonArray mechanisms = witnessMechanisms(manifest, inputs,
                         values, witness);
+                // The recorded write order is a mechanism too, and this
+                // valuation's own model is what says whether it holds: the
+                // fatal read took the program's last writer while the same
+                // location is written again afterwards.
+                JsonObject race = RecordedOrderRace.of(manifest, fatalArms,
+                        model);
+                if (race != null) {
+                    mechanisms.add(race);
+                }
                 if (mechanisms.size() > 0) {
                     row.add("witnessMechanisms", mechanisms);
                 }
@@ -2037,6 +2047,15 @@ public final class BooleanReachConditionExtractor {
                         optionalString(arm, "locationKey"));
                 row.addProperty("writerCaseOwner",
                         optionalString(arm, "writerCaseOwner"));
+                // Carried through so the recorded write order stays readable
+                // from the selection alone: which version this arm names, and
+                // the read event that retained it.
+                row.addProperty(RecordedOrderRace.WRITER_VERSION,
+                        optionalLongInteger(arm,
+                                RecordedOrderRace.WRITER_VERSION, -1L));
+                row.addProperty(RecordedOrderRace.READ_EVENT,
+                        optionalLongInteger(arm,
+                                RecordedOrderRace.READ_EVENT, -1L));
                 row.addProperty("initialState",
                         optionalString(arm, "writerCaseOwner").startsWith(
                                 SymbolicPropagationClosure
