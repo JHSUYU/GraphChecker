@@ -98,10 +98,9 @@ workflow_config_keys=(
   # returned.  Cross-node skew is a failure mechanism the checker explores,
   # so this bounds it rather than pinning a clock to its recording.
   "clock_skew_ms CAUSYNTH_CLOCK_SKEW_MS krp 300000"
-  # Which composition builds candidate.smt2.  "path-merge" merges the
-  # anchored target's paths from the expressions propagation carried;
-  # "stitch" is the read-from reconstruction it replaces, kept only so the
-  # two can be compared on one recording during the transition.
+  # Which composition builds candidate.smt2.  The merge of the anchored
+  # target's paths is the only one; the key stays so a future composition
+  # can be run against a recording beside it.
   "composer COMPOSER krp path-merge"
 )
 
@@ -605,11 +604,8 @@ do_compose() {
     path-merge)
       composer_main=edu.uva.liftlab.graphchecker.concolic.PathMergeComposer
       ;;
-    stitch)
-      composer_main=edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer
-      ;;
     *)
-      die "unknown composer: ${composer} (expected path-merge or stitch)"
+      die "unknown composer: ${composer} (expected path-merge)"
       ;;
   esac
   run_java_main "${composer_main}" \

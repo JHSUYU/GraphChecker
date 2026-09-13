@@ -26,9 +26,8 @@ public class VmLoweringCoreTest {
     /** Both lowerings are the shared core, not two copies of it. */
     @Test
     public void bothLowerersAreTheSharedCore() throws Exception {
-        assertSame(VmLoweringCore.class, Class.forName(
-                "edu.uva.liftlab.graphchecker.concolic"
-                        + ".ConcolicSmtComposer$Emitter").getSuperclass());
+        assertSame(VmLoweringCore.class,
+                PathMergeLowering.class.getSuperclass());
         assertSame(VmLoweringCore.class, Class.forName(
                 "edu.uva.liftlab.graphchecker.concolic"
                         + ".ConcolicConstraintSolver$Encoder")

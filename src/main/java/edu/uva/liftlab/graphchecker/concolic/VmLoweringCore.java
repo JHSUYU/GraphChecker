@@ -32,7 +32,7 @@ import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.numeric;
 
 /**
  * The one lowering of a recorded VM expression into SMT-LIB, shared by
- * {@code ConcolicSmtComposer.Emitter} (final composition) and
+ * {@code PathMergeLowering} (final composition) and
  * {@code ConcolicConstraintSolver.Encoder} (path flipping).
  *
  * <p>Both callers lower the same IR with the same operator semantics and

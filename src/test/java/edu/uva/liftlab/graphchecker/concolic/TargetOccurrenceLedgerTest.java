@@ -43,7 +43,7 @@ public class TargetOccurrenceLedgerTest {
     /** Both handshakes are named, and exactly the elected one is composed. */
     @Test
     public void everyObservedTargetOccurrenceIsNamed() {
-        JsonArray ledger = ConcolicSmtComposer.targetReachOccurrences(
+        JsonArray ledger = PathMergeComposer.targetReachOccurrences(
                 bothHandshakes(), fatalQuery(DATANODE_HANDSHAKE,
                         "GOAL.TARGET_REACH.2"));
         assertEquals(2, ledger.size());

@@ -59,7 +59,7 @@ public class BooleanReachConditionExtractorSolverTest {
         JsonObject manifest = clockManifest("true");
         manifest.add(ComposedManifest.MANUAL_SOURCE_MATERIALIZATION_FIELD,
                 singleton(manualClock()));
-        manifest.add(ConcolicSmtComposer
+        manifest.add(ComposedManifest
                 .CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
                 singleton(configuredBoolean()));
         String smt = "(set-logic ALL)\n"
@@ -105,8 +105,8 @@ public class BooleanReachConditionExtractorSolverTest {
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 3);
         row.addProperty("kind",
-                ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_KIND);
-        row.addProperty("authority", ConcolicSmtComposer
+                ComposedManifest.CONFIGURED_SOURCE_MATERIALIZATION_KIND);
+        row.addProperty("authority", ComposedManifest
                 .CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY);
         row.addProperty("sourceKey", "hdfs/nn0#epoch1");
         row.addProperty("sourceId", "TEST.CONFIG.ENABLED");
@@ -199,7 +199,7 @@ public class BooleanReachConditionExtractorSolverTest {
         manifest.add("casePathConditionDependencies", new JsonArray());
         manifest.add("caseSelectorPartitions", new JsonArray());
         manifest.add("targetReachLedger", new JsonArray());
-        manifest.add(ConcolicSmtComposer
+        manifest.add(ComposedManifest
                 .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, new JsonArray());
         manifest.add(ComposedManifest.MANUAL_SOURCE_MATERIALIZATION_FIELD,
                 new JsonArray());
@@ -300,9 +300,9 @@ public class BooleanReachConditionExtractorSolverTest {
         JsonObject manifest = candidateManifest();
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", 1);
-        root.addProperty("kind", ConcolicSmtComposer
+        root.addProperty("kind", ComposedManifest
                 .MANUAL_SOURCE_MATERIALIZATION_KIND);
-        root.addProperty("authority", ConcolicSmtComposer
+        root.addProperty("authority", ComposedManifest
                 .MANUAL_SOURCE_MATERIALIZATION_AUTHORITY);
         root.addProperty("portId", "REGION.clock.in.now");
         root.addProperty("occurrenceId",
@@ -393,7 +393,7 @@ public class BooleanReachConditionExtractorSolverTest {
 
     private static JsonObject markerAndClockManifest(long recorded) {
         JsonObject manifest = clockRootManifest(recorded, 300000L);
-        JsonArray roots = manifest.getAsJsonArray(ConcolicSmtComposer
+        JsonArray roots = manifest.getAsJsonArray(ComposedManifest
                 .MANUAL_SOURCE_MATERIALIZATION_FIELD);
         JsonObject marker = roots.get(0).getAsJsonObject().deepCopy();
         marker.addProperty("portId", "REGION.rpc.in.fault");

@@ -34,6 +34,11 @@ public final class ComposedManifest {
     /** The roots, what each one recorded, and where they disagree. */
     public static final String CONFIGURED_SOURCE_MATERIALIZATION_FIELD =
             "configuredSourceMaterializations";
+    public static final String CONFIGURED_SOURCE_MATERIALIZATION_KIND =
+            "CONFIGURED_SYMBOLIC_SOURCE_MATERIALIZATION";
+    public static final String CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY =
+            "COMPOSER_CONFIGURED_SOURCE_PHASE_TERM_V3";
+    public static final int CONFIGURED_SOURCE_MATERIALIZATION_SCHEMA = 3;
     public static final String MANUAL_SOURCE_MATERIALIZATION_FIELD =
             "manualSymbolicRootMaterializations";
     public static final String MANUAL_SOURCE_MATERIALIZATION_KIND =

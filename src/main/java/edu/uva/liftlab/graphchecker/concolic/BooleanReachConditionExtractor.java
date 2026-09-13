@@ -3254,7 +3254,7 @@ public final class BooleanReachConditionExtractor {
                 JsonObject manifest, List<String> gaps) {
             ConfiguredSourceCatalog result = new ConfiguredSourceCatalog();
             JsonElement encoded = manifest == null ? null : manifest.get(
-                    ConcolicSmtComposer
+                    ComposedManifest
                             .CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
             if (encoded == null || !encoded.isJsonArray()) {
                 gaps.add("CONFIGURED_SOURCE_MATERIALIZATIONS_MISSING");
@@ -3341,10 +3341,10 @@ public final class BooleanReachConditionExtractor {
 
         private static ConfiguredSourceInfo decode(JsonObject row) {
             if (row == null || optionalInteger(row, "schemaVersion", -1) != 3
-                    || !ConcolicSmtComposer
+                    || !ComposedManifest
                     .CONFIGURED_SOURCE_MATERIALIZATION_KIND.equals(
                     optionalString(row, "kind"))
-                    || !ConcolicSmtComposer
+                    || !ComposedManifest
                     .CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY.equals(
                     optionalString(row, "authority"))) {
                 return null;

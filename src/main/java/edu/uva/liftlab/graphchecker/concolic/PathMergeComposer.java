@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.TargetAnchorEvidence;
 
@@ -18,6 +20,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -134,6 +137,9 @@ public final class PathMergeComposer {
                             "Malformed observed summary %1$s:%2$d",
                             "Non-object observed summary %1$s:%2$d")));
         }
+        List<RegionInstancePlan> regionPlans = arguments.runtimePlan == null
+                ? Collections.<RegionInstancePlan>emptyList()
+                : RuntimePlanArtifact.read(arguments.runtimePlan).regionPlans();
         RootInventory roots = RootInventory.of(summaries);
         Map<String, List<JsonObject>> replays = byReplayGroup(summaries);
 
@@ -267,7 +273,7 @@ public final class PathMergeComposer {
 
         JsonObject manifest = manifest(arguments, fatal, site, occurrence,
                 required, pathRows, rootRows, reachLedger, gates,
-                selectors, lowering);
+                selectors, lowering, regionPlans);
         return new Result(lowering.render(), manifest);
     }
 
@@ -435,6 +441,8 @@ public final class PathMergeComposer {
      */
     static final class RootInventory {
         final Map<String, JsonObject> byRawSymbol = new LinkedHashMap<>();
+        /** Raw symbol -> the node and epoch whose recording minted it. */
+        private final Map<String, String> sourceKeys = new LinkedHashMap<>();
         private final Map<String, String> recorded = new LinkedHashMap<>();
         private final Set<String> disagreed = new LinkedHashSet<>();
 
@@ -446,6 +454,8 @@ public final class PathMergeComposer {
                     String raw = optionalString(event, "rawSymbol");
                     if (raw.isEmpty()) continue;
                     inventory.byRawSymbol.putIfAbsent(raw, event);
+                    inventory.sourceKeys.putIfAbsent(raw,
+                            optionalString(summary, "sourceKey"));
                     String value = SymbolicSourceEvidence
                             .recordedValueOf(event);
                     if (value.isEmpty()) continue;
@@ -463,30 +473,35 @@ public final class PathMergeComposer {
         /** One manifest row for one root, as the claim policy reads it. */
         JsonObject materialization(JsonObject declared, String solverTerm) {
             JsonObject row = new JsonObject();
-            row.addProperty("schemaVersion", 3);
-            row.addProperty("kind",
-                    "CONFIGURED_SYMBOLIC_SOURCE_MATERIALIZATION");
-            row.addProperty("authority", TargetAnchorEvidence.AUTHORITY);
-            if (declared != null) {
-                for (String member : new String[]{"sourceId",
-                        "sourcePhaseId", "sourceOccurrenceId",
-                        "fieldSignature", "javaType", "portId"}) {
-                    if (declared.has(member)) {
-                        row.add(member, declared.get(member).deepCopy());
-                    }
-                }
-                String raw = optionalString(declared, "rawSymbol");
-                row.addProperty("rawSymbol", raw);
-                row.addProperty("recordedValue",
-                        disagreed.contains(raw) ? ""
-                                : firstNonBlank(recorded.get(raw)));
-                row.addProperty("recordedValueDisagreement",
-                        disagreed.contains(raw));
-            } else {
-                row.addProperty("recordedValue", "");
-                row.addProperty("recordedValueDisagreement", false);
+            row.addProperty("schemaVersion", ComposedManifest
+                    .CONFIGURED_SOURCE_MATERIALIZATION_SCHEMA);
+            row.addProperty("kind", ComposedManifest
+                    .CONFIGURED_SOURCE_MATERIALIZATION_KIND);
+            row.addProperty("authority", ComposedManifest
+                    .CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY);
+            String raw = declared == null ? ""
+                    : optionalString(declared, "rawSymbol");
+            row.addProperty("sourceKey",
+                    firstNonBlank(sourceKeys.get(raw)));
+            for (String member : new String[]{"sourceId", "sourcePhaseId",
+                    "sourceOccurrenceId", "fieldSignature", "portId"}) {
+                row.addProperty(member, declared == null ? ""
+                        : optionalString(declared, member));
             }
+            String javaType = declared == null ? ""
+                    : optionalString(declared, "javaType");
+            VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
+            row.addProperty("rawSymbol", raw);
+            row.addProperty("javaType", javaType);
+            row.addProperty("javaTypeDescriptor", javaType);
+            row.addProperty("sort", sort.name());
+            row.addProperty("smtSort", sort.smt);
             row.addProperty("solverTerm", solverTerm);
+            row.addProperty(ComposedManifest.RECORDED_SOURCE_VALUE,
+                    disagreed.contains(raw) ? ""
+                            : firstNonBlank(recorded.get(raw)));
+            row.addProperty(ComposedManifest.RECORDED_VALUE_CONFLICT,
+                    disagreed.contains(raw));
             return row;
         }
     }
@@ -537,7 +552,8 @@ public final class PathMergeComposer {
                                        JsonArray reachLedger,
                                        JsonArray gates,
                                        List<String> selectors,
-                                       PathMergeLowering lowering)
+                                       PathMergeLowering lowering,
+                                       List<RegionInstancePlan> regionPlans)
             throws IOException {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -582,7 +598,7 @@ public final class PathMergeComposer {
         manifest.add(ComposedManifest.FAULT_CONTROL_GAPS_FIELD,
                 new JsonArray());
         manifest.add(ComposedManifest.TARGET_REACH_OCCURRENCES,
-                targetReachOccurrences(fatal, site, occurrence));
+                targetReachOccurrences(regionPlans, fatal));
 
         JsonObject merge = new JsonObject();
         merge.addProperty("schemaVersion", 1);
@@ -641,20 +657,65 @@ public final class PathMergeComposer {
         return manifest;
     }
 
-    /** The occurrences of the anchored site this artifact composed. */
-    private static JsonArray targetReachOccurrences(JsonObject fatal,
-                                                    String site,
-                                                    int occurrence) {
-        JsonArray rows = new JsonArray();
-        JsonObject row = new JsonObject();
-        row.addProperty("siteId", site);
-        row.addProperty("occurrence", occurrence);
-        row.addProperty("regionId", optionalString(fatal, "regionId"));
-        row.addProperty("occurrenceId",
-                optionalString(fatal, "occurrenceId"));
-        row.addProperty("composed", true);
-        rows.add(row);
-        return rows;
+    /**
+     * Every planned target occurrence, and which one this formula lowered.
+     *
+     * <p>An annotated failure site executes as many times as the workload
+     * runs it, and everything downstream narrows to one of those
+     * occurrences: one reach query is built, and this composition is handed
+     * exactly that query.  Left unsaid, the narrowing makes a verdict about
+     * one execution of the site read as a verdict about the site.  So the
+     * whole set is named -- one row per planned occurrence, with the sites
+     * it observed and whether this formula reached it -- and the claim can
+     * report per occurrence.</p>
+     */
+    static JsonArray targetReachOccurrences(
+            List<RegionInstancePlan> regionPlans, JsonObject fatal) {
+        String composedOccurrence = OccurrenceId.parse(
+                optionalString(fatal, "occurrenceId")).planned();
+        String composedGoal = optionalString(fatal, "goalId");
+        JsonArray result = new JsonArray();
+        for (RegionInstancePlan plan : regionPlans) {
+            for (RegionInstancePlan.Goal goal : plan.goals()) {
+                if (!goal.kind().capturesTargetReach()) continue;
+                String occurrence = OccurrenceId.parse(
+                        plan.occurrenceId()).planned();
+                JsonObject row = new JsonObject();
+                row.addProperty("occurrenceId", occurrence);
+                row.addProperty("regionId", plan.regionId());
+                row.addProperty("goalId", goal.goalId());
+                row.add("failureSites", observedFailureSites(goal));
+                // The goal is the exact address; the occurrence is the
+                // fallback for a query that names no goal of its own.
+                row.addProperty("composed", composedGoal.isEmpty()
+                        ? occurrence.equals(composedOccurrence)
+                        : composedGoal.equals(goal.goalId()));
+                result.add(row);
+            }
+        }
+        return result;
+    }
+
+    /** The failure guards this goal actually observed taking a decision. */
+    private static JsonArray observedFailureSites(
+            RegionInstancePlan.Goal goal) {
+        Set<String> sites = new LinkedHashSet<>();
+        for (JsonElement element : goal.branches()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!optionalBool(branch, "failureTarget", false)
+                    || optionalBool(branch, "loopControlGuard", false)
+                    || !optionalBool(branch, "observed", false)
+                    || !branch.has("requiredOutcome")
+                    || branch.get("requiredOutcome").isJsonNull()) {
+                continue;
+            }
+            String site = optionalString(branch, "siteId");
+            if (!site.isEmpty()) sites.add(site);
+        }
+        JsonArray result = new JsonArray();
+        for (String site : sites) result.add(site);
+        return result;
     }
 
     private static JsonArray recordedRootValues(JsonArray rootRows) {

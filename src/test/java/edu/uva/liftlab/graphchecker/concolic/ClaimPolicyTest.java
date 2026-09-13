@@ -777,9 +777,9 @@ public class ClaimPolicyTest {
         JsonObject manifest = manifest();
         manifest.add(ComposedManifest.RECORDED_ROOT_VALUES,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer
+        manifest.add(ComposedManifest
                 .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, parseArray(
-                "[{\"kind\":\"" + ConcolicSmtComposer
+                "[{\"kind\":\"" + ComposedManifest
                         .CONFIGURED_SOURCE_MATERIALIZATION_KIND + "\","
                 + "\"sourceKey\":\"hdfs-17960/nn0#epoch1\","
                 + "\"sourceId\":\"" + ORDERED_SOURCE + "\","

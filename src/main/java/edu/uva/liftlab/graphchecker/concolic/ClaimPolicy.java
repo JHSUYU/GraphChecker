@@ -1255,7 +1255,7 @@ public final class ClaimPolicy {
                 sites.put(term, optionalString(ledger, "siteId"));
             }
         }
-        for (JsonElement element : array(manifest, ConcolicSmtComposer
+        for (JsonElement element : array(manifest, ComposedManifest
                 .CONFIGURED_SOURCE_MATERIALIZATION_FIELD)) {
             if (!element.isJsonObject()) {
                 continue;
@@ -1324,7 +1324,7 @@ public final class ClaimPolicy {
     /**
      * Every reading a composer-side conflict row already holds.
      *
-     * <p>{@link ConcolicSmtComposer#RECORDED_VALUE_CONFLICT} is the list of
+     * <p>{@link ComposedManifest#RECORDED_VALUE_CONFLICT} is the list of
      * values two mints of one source disagreed on, comma separated. Read as
      * one string it would print as a single made-up value.</p>
      */

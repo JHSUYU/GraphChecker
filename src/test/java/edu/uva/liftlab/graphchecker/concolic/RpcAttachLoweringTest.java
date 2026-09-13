@@ -115,7 +115,7 @@ public class RpcAttachLoweringTest {
                     .append(" Bool)\n");
         }
         model.append("(declare-const merged_boundary__wire Int)\n")
-                .append(assertion(ConcolicSmtComposer.conditionalExactlyOne(
+                .append(assertion(SmtLibQueries.conditionalExactlyOne(
                         "true", selectors)));
         for (String selector : selectors) {
             model.append(assertion("(=> " + selector
