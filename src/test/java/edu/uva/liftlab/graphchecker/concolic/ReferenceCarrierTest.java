@@ -231,11 +231,17 @@ public class ReferenceCarrierTest {
                 .trim();
     }
 
+    /**
+     * Whether z3 can be run at all.
+     *
+     * <p>This used to close z3's stdout before waiting on it, so z3 died on
+     * EPIPE, the probe read a non-zero exit as "no z3", and the one test that
+     * proves the reference binding really separates its writers skipped on
+     * every host that had z3 installed.  Let the process write and exit.</p>
+     */
     private static boolean z3Available() {
         try {
-            Process process = new ProcessBuilder("z3", "--version")
-                    .redirectErrorStream(true).start();
-            process.getInputStream().close();
+            Process process = new ProcessBuilder("z3", "-version").start();
             return process.waitFor() == 0;
         } catch (Exception unavailable) {
             return false;
