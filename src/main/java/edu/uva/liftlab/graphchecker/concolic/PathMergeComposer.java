@@ -208,12 +208,19 @@ public final class PathMergeComposer {
                 }
                 continue;
             }
+            // One selector per PATH, not per region-local case.  Two
+            // replays can traverse the same local case with different
+            // values -- that is the whole point of a flip -- and giving
+            // them one selector made the exactly-one partition count the
+            // same choice twice, which forces it false and leaves the
+            // disjunction resting on whatever is left.
             String selector = LocalCaseIdentity.selector(
                     firstNonBlank(optionalString(path,
                             LocalCaseIdentity.FIELD),
-                            "path#" + pathOrdinal));
+                            "path#" + pathOrdinal)
+                            + "\0" + optionalString(path, "replayGroupId"));
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
-            lowering.beginPath();
+            lowering.beginPath(optionalString(path, "replayGroupId"));
             List<String> terms = new ArrayList<>();
             for (int index = 0; index < resolved.size(); index++) {
                 terms.add(lowering.condition(resolved.get(index),

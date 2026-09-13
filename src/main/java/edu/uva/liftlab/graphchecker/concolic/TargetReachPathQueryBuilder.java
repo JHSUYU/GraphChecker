@@ -261,12 +261,15 @@ public final class TargetReachPathQueryBuilder {
 
         Map<String, JsonObject> pathsByKey = new LinkedHashMap<>();
         Map<String, JsonObject> symbolicSources = new LinkedHashMap<>();
-        // One exact required-outcome execution is already an existential
-        JsonObject directWitness = directRequiredWitness(summaries,
-                observations, region, occurrenceId, goalId, targetSite,
-                targetOccurrence, fatalRequiredOutcome);
+        // Every activation that executed the anchored site is a disjunct of
+        // Fatal_T.  One of them taking the failing edge used to end the
+        // search here -- an execution that reached the failure was read as
+        // the whole existential answer -- and the query then held that one
+        // path.  But a disjunction over one path says nothing about which
+        // root valuation reaches the failure: the activations that decided
+        // against it, with their own values, are what make the answer
+        // depend on the root at all.
         for (JsonObject summary : summaries) {
-            if (directWitness != null && summary != directWitness) continue;
             if (!inScope(summary, region, occurrenceId, goalId)) continue;
             // Parsing is the schema/admission boundary for branch-owned
             // predicates. The importer already normalized the PC; this check
@@ -313,12 +316,18 @@ public final class TargetReachPathQueryBuilder {
                     targetMapping.sourceTakenOutcome())) {
                 continue;
             }
-            boolean sourceAttested = sourceWitness != null
-                    && sourceWitness.sourceTakenOutcome()
-                    == targetMapping.sourceTakenOutcome();
             boolean requiredAttested = fatalRequiredOutcome
                     == targetMapping.sourceTakenOutcome();
-            if (!sourceAttested && !requiredAttested) continue;
+            // Which outcome this activation decided is not an admission
+            // test.  It used to be: a path was admitted only if its target
+            // decision agreed with the elected source's or with the one the
+            // failure needs, which on a healthy recording drops whichever of
+            // the two families the elected source is not -- and the merge
+            // wants both.  The activation that decided against the failure
+            // contributes the disjunct its own values make false; the one
+            // that decided for it contributes the disjunct that carries the
+            // claim.  What is required is that this activation executed the
+            // anchored site and said so, which is checked above.
             // No side evidence from an unattested target path enters the
             // query either. Shared state and consumer-boundary references
             JsonObject shared = object(summary,
@@ -402,7 +411,12 @@ public final class TargetReachPathQueryBuilder {
                 path.add(LoopBoundPolicy.PATH_LOOP_COUNT_GAPS,
                         loopCountGaps);
             }
-            String pathKey = observation.pathKey();
+            // One path is one replay's traversal of this region-local case.
+            // Keying by the case alone kept the first replay to reach it and
+            // dropped every other replay's values for the same shape, which
+            // is precisely the set the disjunction is over.
+            String pathKey = observation.pathKey() + "\u0000"
+                    + optionalString(summary, "replayGroupId");
             path.add("constraints", constraints);
             path.add(TargetAnchorEvidence.FIELD, anchorEvidence(
                     summary, observation, targetMapping, constraints,
@@ -655,42 +669,6 @@ public final class TargetReachPathQueryBuilder {
         }
     }
 
-    /** Selects one exact required-outcome target execution by stable key. */
-    private static JsonObject directRequiredWitness(
-            List<JsonObject> summaries,
-            Map<JsonObject, PathObservation> observations,
-            String region, String occurrenceId,
-            String goalId, String targetSite, int targetOccurrence,
-            boolean requiredOutcome) throws IOException {
-        JsonObject selected = null;
-        String selectedKey = null;
-        for (JsonObject summary : summaries) {
-            if (!inScope(summary, region, occurrenceId, goalId)) continue;
-            PathObservation observation = observed(observations, summary);
-            if (!observation.branchMappingIssue().isEmpty()) continue;
-            SummaryBranchMapping mapping = targetSiteMapping(observation,
-                    targetSite, targetOccurrence);
-            PathObservation.TargetReachEvent event;
-            try {
-                event = observation.targetReachEvent();
-            } catch (IllegalArgumentException malformed) {
-                throw new IOException("Malformed target reach event: "
-                        + malformed.getMessage(), malformed);
-            }
-            if (mapping == null
-                    || mapping.sourceTakenOutcome() != requiredOutcome
-                    || event == null || !event.matches(targetSite,
-                    targetOccurrence, requiredOutcome)) {
-                continue;
-            }
-            String key = observation.pathKey();
-            if (selected == null || key.compareTo(selectedKey) < 0) {
-                selected = summary;
-                selectedKey = key;
-            }
-        }
-        return selected;
-    }
 
     /** Solver-ready candidates for this exact target worklist. Multiplicity is
      * preserved so decidingSeed still rejects a true in-scope ambiguity. */
@@ -889,13 +867,27 @@ public final class TargetReachPathQueryBuilder {
                             "location"));
             if (!location.isEmpty()) carriers.add(location);
         }
+        // pi_p is every decision this activation made on the way to the
+        // target, not the slice of them the target's operands depend on.
+        // The slice is computed over the unresolved dependency graph; once a
+        // predicate's operands resolve to the values the replay produced it
+        // depends on nothing, and the slice then drops exactly the guards
+        // that say which root valuation this execution ran under -- which is
+        // the only thing that makes the disjunction a question about roots.
+        JsonArray whole = new JsonArray();
+        JsonArray recorded = observation.pathCondition();
+        for (int index = 0; index < recorded.size(); index++) {
+            if (index == target.summaryPcIndex()) continue;
+            whole.add(recorded.get(index));
+        }
+        whole.add(constraints.get(constraints.size() - 1));
         return TargetAnchorEvidence.build(target.siteId(),
                 target.occurrence(), optionalString(summary, "sourceKey"),
                 optionalString(summary, "regionId"),
                 observation.occurrenceId(),
                 optionalString(summary, "topologyEpoch"),
                 target.sourceTakenOutcome(), fatalRequiredOutcome,
-                constraints, selectors, roots, carriers);
+                whole, selectors, roots, carriers);
     }
 
     private static JsonArray flippedTargetConstraints(

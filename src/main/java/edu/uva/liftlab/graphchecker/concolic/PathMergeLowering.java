@@ -64,6 +64,17 @@ final class PathMergeLowering extends VmLoweringCore {
      * whose lowering raised it.</p>
      */
     private List<String> pathSideConditions;
+    /**
+     * Which replay's values are being lowered.
+     *
+     * <p>An execution-local identity -- the object a parameter referred to,
+     * the container a state symbol names -- is local to the execution that
+     * produced it.  Two replays' expressions mention the same VM symbol for
+     * two different objects, so a name minted without the replay in it makes
+     * one constant carry both, and the two paths' facts about it contradict:
+     * a disjunction of perfectly satisfiable paths comes back unsat.</p>
+     */
+    private String pathScope = "";
     /** Allocated container reference -> the state sort it carries. */
     private final Map<String, Sort> containerStates = new LinkedHashMap<>();
     private final Set<String> unsupported = new LinkedHashSet<>();
@@ -258,7 +269,8 @@ final class PathMergeLowering extends VmLoweringCore {
 
     /** One execution-local identity, named once and left free. */
     private String opaque(String raw, Sort sort) {
-        String name = symbols.mint("identity__", sort + " " + raw, 10);
+        String name = symbols.mint("identity__",
+                pathScope + "\0" + sort + "\0" + raw, 10);
         declare(name, sort);
         opaqueIdentities.put(name, raw);
         return name;
@@ -372,7 +384,8 @@ final class PathMergeLowering extends VmLoweringCore {
                                 identity.getAsJsonObject(), "_exp");
                         if (!raw.isEmpty()) {
                             String name = symbols.mint("container__",
-                                    shape + " " + raw, 10);
+                                    pathScope + "\0" + shape
+                                            + "\0" + raw, 10);
                             declare(name, stateSort);
                             containerStates.put(name, stateSort);
                             return new ContainerSmtCodec.Term(name, shape);
@@ -551,15 +564,16 @@ final class PathMergeLowering extends VmLoweringCore {
         Sort declared = sort == null || sort == Sort.UNKNOWN
                 ? Sort.VALUE : sort;
         String name = symbols.mint("unsupported__",
-                declared + "#" + unsupported.size(), 10);
+                pathScope + "#" + declared + "#" + unsupported.size(), 10);
         declare(name, declared);
         return Term.of(name, declared, declared == Sort.INT
                 ? IntegralWidth.JAVA_INT : IntegralWidth.NONE);
     }
 
     /** Opens one path: its side conditions belong to it alone. */
-    void beginPath() {
+    void beginPath(String scope) {
         pathSideConditions = new ArrayList<>();
+        pathScope = scope == null ? "" : scope;
     }
 
     /** Closes it, answering the side conditions its lowering raised. */
@@ -567,6 +581,7 @@ final class PathMergeLowering extends VmLoweringCore {
         List<String> conditions = pathSideConditions == null
                 ? Collections.<String>emptyList() : pathSideConditions;
         pathSideConditions = null;
+        pathScope = "";
         return conditions;
     }
 
