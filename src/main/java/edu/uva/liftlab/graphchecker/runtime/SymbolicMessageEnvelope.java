@@ -118,9 +118,18 @@ public final class SymbolicMessageEnvelope {
         return wire.toString();
     }
 
-    /** Replaces the receiver thread's current message with this exact wire. */
+    /**
+     * Replaces the receiver thread's current message with this exact wire.
+     *
+     * <p>A message displaced rather than closed is dropped without a
+     * finding: a transport that reinstalls mid-exchange -- a handshake that
+     * carries the same values across several legs, say -- has not finished
+     * with them, and calling that a lost leaf would be an accusation the
+     * envelope cannot support.  {@link #clearInbound()} is where a message
+     * ends, and that is where its unclaimed elements are named.</p>
+     */
     public static void installInbound(String wire) {
-        clearInbound();
+        INBOUND.remove();
         INBOUND.set(new Inbound(decode(wire)));
     }
 
@@ -168,7 +177,13 @@ public final class SymbolicMessageEnvelope {
         return message == null ? 0 : message.unattached();
     }
 
-    /** Clears test/workload thread state without retaining a sent message. */
+    /**
+     * Clears test/workload thread state without retaining a sent message.
+     *
+     * <p>A session boundary, not a message boundary: nothing is reported,
+     * because what a session drops was never a message this side agreed to
+     * decode.</p>
+     */
     public static void clear() {
         OUTBOUND.remove();
         INBOUND.remove();
