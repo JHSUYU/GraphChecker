@@ -57,10 +57,16 @@ public class BoundedLoopCompositionTest {
                 .size());
         assertEquals(1, model.compositionGaps().size());
         JsonObject gap = model.compositionGaps().get(0);
-        assertEquals(BoundedLoopComposition.GAP_KIND,
+        // The composition copy is stamped with its own reason as kind,
+        // because the acceptance gate names a refusal by that member and one
+        // shared GAP_KIND made every distinct finding read as one row.
+        assertEquals(BoundedLoopComposition.LOOP_OBSERVED_UNDECLARED,
                 gap.get("kind").getAsString());
         assertEquals(BoundedLoopComposition.LOOP_OBSERVED_UNDECLARED,
                 gap.get("reason").getAsString());
+        assertEquals(BoundedLoopComposition.GAP_KIND,
+                model.manifest().getAsJsonArray("gaps").get(0)
+                        .getAsJsonObject().get("kind").getAsString());
         assertTrue(gap.get("subject").getAsString().startsWith(PLANNED));
     }
 
