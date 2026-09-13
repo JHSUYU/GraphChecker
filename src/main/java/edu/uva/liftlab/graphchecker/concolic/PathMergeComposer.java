@@ -860,7 +860,6 @@ public final class PathMergeComposer {
         Path manifest;
         String fatalRegion = "";
         String occurrenceId = "";
-        String mappings = "";
         Path z3;
         long clockSkewMillis = ClockRootPhysics.DEFAULT_SKEW_MILLIS;
 
@@ -887,8 +886,6 @@ public final class PathMergeComposer {
                     result.fatalRegion = value;
                 } else if ("--occurrence-id".equals(key)) {
                     result.occurrenceId = value;
-                } else if ("--mappings".equals(key)) {
-                    result.mappings = value;
                 } else if ("--z3".equals(key)) {
                     result.z3 = value.trim().isEmpty()
                             ? null : Paths.get(value);
