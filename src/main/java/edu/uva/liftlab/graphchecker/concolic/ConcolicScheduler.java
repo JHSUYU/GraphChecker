@@ -831,6 +831,7 @@ public final class ConcolicScheduler {
                 "rootSelector"), "method");
         Set<String> guardDependent = definitions.guardDependentCells(
                 exploredGuardOperands(demandedBranches));
+        Set<String> declaredCarriers = declaredCarrierLocations(goal);
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
@@ -887,7 +888,9 @@ public final class ConcolicScheduler {
             boolean referenceCarrier = !boundedContainerState
                     && slice != null && slice.usable()
                     && slice.carries(action)
-                    && supportedReferenceCarrier(binding, location);
+                    && supportedReferenceCarrier(binding, location)
+                    && declaredReferenceCarrier(declaredCarriers, slice,
+                    action, cell);
             if (referenceCarrier) {
                 binding.addProperty("symbolicDemand",
                         REFERENCE_CARRIER_DEMAND);
@@ -1171,6 +1174,41 @@ public final class ConcolicScheduler {
             return "CONCRETE_FIELD_LEAF_TYPE_MISMATCH";
         }
         return "";
+    }
+
+    /** The {@code owner#field} keys one goal declares as shared carriers. */
+    private static Set<String> declaredCarrierLocations(Goal goal) {
+        Set<String> locations = new LinkedHashSet<>();
+        for (JsonElement element : goal.sharedCarriers()) {
+            if (!element.isJsonObject()) continue;
+            String location = SharedCarrierSlice.location(
+                    element.getAsJsonObject());
+            if (!location.isEmpty()) locations.add(location);
+        }
+        return locations;
+    }
+
+    /**
+     * Whether the replay will actually track this reference.
+     *
+     * <p>A reference port is tracked and never minted, which makes the
+     * carrier declaration the whole of its materialization: with no
+     * declaration the replay has nothing to select, the getfield resolves no
+     * writer, and the port would reach the runtime as a SYMBOLIC input it
+     * cannot serve.  The plan therefore admits the demand only where the
+     * planner declared the location and the slice keeps it -- the same two
+     * facts {@link SharedCarrierSlice} uses to decide what is versioned.  A
+     * plan frozen before references were declared keeps its old concrete
+     * answer rather than gaining a port with no carrier behind it.</p>
+     */
+    private static boolean declaredReferenceCarrier(
+            Set<String> declaredCarriers, RootDependenceSlice slice,
+            JsonObject action, String cell) {
+        FieldPathSpec.DeclaredField leaf = declaredLeaf(action, cell);
+        if (leaf == null) return false;
+        String location = SharedFieldFlow.fieldKey(leaf.owner(), leaf.name());
+        return !location.isEmpty() && declaredCarriers.contains(location)
+                && slice.reachesLocation(location, null);
     }
 
     /**

@@ -282,7 +282,8 @@ public class RootDependentCarrierTest {
                         Collections.singleton(ORDERED));
 
         JsonArray planned = ConcolicScheduler.materializationPlan(
-                goal(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
+                goal(declaredCarriers(CURRENT_KEY),
+                        structureCarrier(CURRENT_KEY, BLOCK_KEY)),
                 actions(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
                 ConcolicScheduler.DefinitionIndex.from(
                         Collections.<JsonObject>emptyList()),
@@ -294,6 +295,34 @@ public class RootDependentCarrierTest {
                         .get("symbolicDemand").getAsString());
         assertTrue(planned.get(0).getAsJsonObject()
                 .get("rootDependentStructureCarrier").getAsBoolean());
+    }
+
+    /**
+     * A reference with no carrier declaration stays concrete.
+     *
+     * <p>A reference port is tracked and never minted, so the declaration is
+     * the whole of its materialization: without one the replay selects
+     * nothing, the getfield resolves no writer, and a SYMBOLIC port would
+     * reach the runtime as an input it cannot serve.  A plan frozen before
+     * references were declared therefore keeps its old answer.</p>
+     */
+    @Test
+    public void anUndeclaredReferenceIsNotTracked() throws Exception {
+        ConcolicScheduler.RootDependenceSlice slice =
+                ConcolicScheduler.RootDependenceSlice.forward(
+                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
+                                edge(GUARD_LOCAL, CURRENT_KEY, "GUARD")),
+                        Collections.singleton(ORDERED));
+
+        JsonArray planned = ConcolicScheduler.materializationPlan(
+                goal(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
+                actions(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
+                ConcolicScheduler.DefinitionIndex.from(
+                        Collections.<JsonObject>emptyList()),
+                Collections.<String>emptySet(), new JsonArray(), slice);
+
+        assertEquals("CONCRETE", mode(planned, 0));
+        assertEquals("CONCRETE_UNSUPPORTED_LEAF_TYPE", demand(planned, 0));
     }
 
     /**
@@ -314,7 +343,8 @@ public class RootDependentCarrierTest {
                         Collections.singleton(ORDERED));
 
         JsonArray planned = ConcolicScheduler.materializationPlan(
-                goal(structureCarrier(COUNTER, BLOCK_KEY)),
+                goal(declaredCarriers(COUNTER),
+                        structureCarrier(COUNTER, BLOCK_KEY)),
                 actions(structureCarrier(COUNTER, BLOCK_KEY)),
                 ConcolicScheduler.DefinitionIndex.from(
                         Collections.<JsonObject>emptyList()),
@@ -452,11 +482,20 @@ public class RootDependentCarrierTest {
     /** The minimal region plan {@code materializationPlan} reads a root
      *  selector from, carrying these proposals. */
     private static RegionInstancePlan.Goal goal(JsonObject... proposed) {
+        return goal(new JsonArray(), proposed);
+    }
+
+    /** The same goal, with the shared locations the planner declared. */
+    private static RegionInstancePlan.Goal goal(JsonArray carriers,
+                                                JsonObject... proposed) {
         JsonObject closureGoal = new JsonObject();
         closureGoal.addProperty("goalId", "GOAL.1");
         closureGoal.addProperty("kind", "REGION_PATH_CLOSURE");
         closureGoal.add("symbolize", actions(proposed));
         closureGoal.add("runtimeDefinitionMethods", new JsonArray());
+        if (carriers.size() > 0) {
+            closureGoal.add("sharedCarriers", carriers);
+        }
         JsonArray goals = new JsonArray();
         goals.add(closureGoal);
         JsonObject plan = new JsonObject();
@@ -466,6 +505,21 @@ public class RootDependentCarrierTest {
         plan.addProperty("regionId", NN);
         plan.add("closureGoals", goals);
         return RegionInstancePlan.decode(plan).goals().get(0);
+    }
+
+    /** One planner-declared shared location, as the runtime plan spells it. */
+    private static JsonArray declaredCarriers(String... fieldSignatures) {
+        JsonArray carriers = new JsonArray();
+        for (String signature : fieldSignatures) {
+            FieldPathSpec.DeclaredField field =
+                    FieldPathSpec.declaredField(signature);
+            JsonObject carrier = new JsonObject();
+            carrier.addProperty("kind", "DECLARED_FIELD");
+            carrier.addProperty("declaringClass", field.owner());
+            carrier.addProperty("fieldName", field.name());
+            carriers.add(carrier);
+        }
+        return carriers;
     }
 
     private static JsonObject base(String sourceKind) {
