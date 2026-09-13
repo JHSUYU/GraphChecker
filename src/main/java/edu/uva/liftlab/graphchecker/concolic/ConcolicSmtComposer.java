@@ -284,6 +284,20 @@ public final class ConcolicSmtComposer {
                         guardedReads)));
         emitter.finish();
         String composedSmt = emitter.render();
+        // An arm the formula itself refutes is stated up front, so a solver
+        // is not left to discover it inside the arm's own cone; nothing
+        // recorded is assumed.  Without a solver the formula is untouched.
+        DeadCaseLemmas.Result deadCases;
+        try {
+            deadCases = DeadCaseLemmas.prove(composedSmt,
+                    emitter.unconditionalCasePartitions(), arguments.z3,
+                    arguments.deadCaseArmRlimit);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("dead-case probing interrupted",
+                    interrupted);
+        }
+        composedSmt = deadCases.smtLib;
 
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 2);
@@ -304,6 +318,7 @@ public final class ConcolicSmtComposer {
                 GSON.toJsonTree(emitter.unconditionalCasePartitions()));
         manifest.add(CONDITIONAL_CASE_PARTITIONS,
                 GSON.toJsonTree(emitter.conditionalCasePartitions()));
+        manifest.add(DeadCaseLemmas.MANIFEST_FIELD, deadCases.ledger);
         manifest.add(FAULT_CONTROL_CLOSURE_FIELD,
                 emitter.faultControlClosureLedger());
         manifest.add(FAULT_CONTROL_GAPS_FIELD, emitter.faultControlGaps());
@@ -5665,6 +5680,9 @@ public final class ConcolicSmtComposer {
         private String mappings = "";
         private long clockSkewMillis =
                 ClockRootPhysics.DEFAULT_SKEW_MILLIS;
+        /** Solver for {@link DeadCaseLemmas}; absent means no probing. */
+        private Path z3;
+        private long deadCaseArmRlimit = DeadCaseLemmas.DEFAULT_ARM_RLIMIT;
 
         public static Arguments parse(String[] argv) {
             Arguments result = new Arguments();
@@ -5698,6 +5716,15 @@ public final class ConcolicSmtComposer {
                     if (result.clockSkewMillis < 0L) {
                         throw new IllegalArgumentException(
                                 "--clock-skew-ms may not be negative");
+                    }
+                } else if ("z3".equals(key)) {
+                    result.z3 = firstNonBlank(value).isEmpty() ? null
+                            : Paths.get(value);
+                } else if ("dead-case-rlimit".equals(key)) {
+                    result.deadCaseArmRlimit = Long.parseLong(value);
+                    if (result.deadCaseArmRlimit < 0L) {
+                        throw new IllegalArgumentException(
+                                "--dead-case-rlimit may not be negative");
                     }
                 } else {
                     throw new IllegalArgumentException(

@@ -603,6 +603,7 @@ do_compose() {
     --manifest "${composition_manifest}" \
     --clock-skew-ms "${clock_skew_ms}" \
     --mappings "${causynth_communication_mappings}" \
+    --z3 "${z3_bin}" \
     "${selection[@]}"
 }
 

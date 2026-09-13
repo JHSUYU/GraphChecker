@@ -563,6 +563,27 @@ controlled occurrence is idle, and its negation implies the exactly-one
 partition. Advertising such a partition unconditionally would invite a consumer
 to pin it and silently freeze the marker.
 
+**Dead case arms.** An EXPLORE replay can observe a case whose path condition
+no model of the final composition admits -- the arm contradicts the
+target-reach obligation the formula was composed under. The formula already
+refutes it, but only after a solver has reasoned through the arm's whole cone,
+and z3 can spend its entire budget there before it commits to the live
+sibling: on HDFS-17960 the ordered-deletion arms of the root's own region carry
+the binary searches over free `children` lists and the lambda-valued snapshot
+chains, and the plain buggy polarity timed out at 600 s while each arm on its
+own is decided in 0.3 s. When the composer is given `--z3`, `DeadCaseLemmas`
+asks every arm of every unconditional multi-arm partition alone,
+`formula ∧ arm`, under a deterministic z3 resource limit (`--dead-case-rlimit`,
+default 5,000,000; `0` disables the pass). An `unsat` answer is a theorem of
+the formula, so `(not arm)` is asserted as a named `dead_case_lemma__<hash>`
+before `(check-sat)`; the model set is unchanged and nothing recorded is
+assumed, which is what separates a lemma from a pinned case frontier. Lemmas
+found earlier are carried into later probes, which stays sound and makes them
+cheap. Conditional partitions are never probed, nor is a fail-closed formula.
+The manifest's `deadCaseLemmas` ledger lists every probe with its status and
+elapsed time, and every lemma with the partition it decides. Without `--z3` the
+formula is untouched and the ledger says `skipped: NO_SOLVER`.
+
 **Containers.** A Java container is lowered as a state witness, not as a fresh
 symbol per access: `AssocState` for maps (`assoc_present`, `assoc_values`,
 `assoc_order`, `assoc_position`) and `IndexedState` for lists and arrays. Size
